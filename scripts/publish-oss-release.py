@@ -18,7 +18,7 @@ import html
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import oss2
 
@@ -39,6 +39,28 @@ def human(n):
 
 def short_sha(h):
     return (h[:16] + "…" + h[-8:]) if len(h) > 26 else h
+
+
+def release_time(iso):
+    """'2026-10-15 16:54 (UTC+8)' — the team ships from UTC+8, so the page does
+    too, and says so. The page script mirrors this for a re-fetched APK."""
+    try:
+        t = datetime.fromisoformat(iso).astimezone(timezone(timedelta(hours=8)))
+    except (TypeError, ValueError):
+        return ""
+    return t.strftime("%Y-%m-%d %H:%M") + " (UTC+8)"
+
+
+def read_android_manifest(bucket, prefix):
+    """The current android/latest.json, or None for a brand with no APK."""
+    try:
+        m = json.loads(bucket.get_object(f"{prefix}/android/latest.json").read())
+    except oss2.exceptions.NoSuchKey:
+        return None
+    except Exception as e:  # never fail the desktop release over the APK pointer
+        print(f"::warning::could not read android/latest.json: {e}")
+        return None
+    return m if isinstance(m, dict) and m.get("url") else None
 
 
 def hex_to_rgb(value):
@@ -479,6 +501,12 @@ if (-not $claimed) {
 Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
 '''.replace("__WIN_X64__", amuxd_url("windows", "x86_64")).replace("__SCHEME__", scheme)
 
+    auth = oss2.Auth(os.environ["OSS_ACCESS_KEY_ID"], os.environ["OSS_ACCESS_KEY_SECRET"])
+    endpoint = os.environ["OSS_ENDPOINT"]
+    if not endpoint.startswith("http"):
+        endpoint = "https://" + endpoint
+    bucket = oss2.Bucket(auth, endpoint, os.environ["OSS_BUCKET"])
+
     # --- release page (logo + size + truncated sha + copy + one-liners) ---
     accent, accent2 = resolve_accent(build_config)
     css = build_css(accent, accent2)
@@ -490,6 +518,20 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
 
     lang = page_cfg.get("lang") or "zh-CN"
     s = strings(lang)
+
+    # The APK ships on its own cadence (scripts/publish-android-apk.py). Bake the
+    # current one into the page so the Android tab never depends on a single
+    # client-side fetch succeeding; the page script still re-fetches to pick up
+    # an APK published after this page.
+    android = read_android_manifest(bucket, prefix)
+    ad = android or {}
+    ad_url = ad.get("url") or "#"
+    ad_label = f'Android {ad["version"]}' if ad.get("version") else "Android"
+    ad_sub = " · ".join(filter(None, [
+        f'APK · {int(ad["size"]) / 1048576:.1f} MB' if ad.get("size") else "",
+        s["released_on"].format(date=release_time(ad["pub_date"])) if ad.get("pub_date") else "",
+    ]))
+    ad_h = ad.get("sha256") or ""
 
     cards = "\n".join(_card(d, s) for d in downloads)
     amuxd_cards = "\n".join(_card(d, s) for d in amuxd_downloads)
@@ -518,23 +560,27 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
         + ('<meta name="robots" content="noindex">' if noindex else "")
         + '<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
-        '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
+        # media=print + onload: Google Fonts is often unreachable or stalls from
+        # mainland networks, and a render-blocking stylesheet also holds back the
+        # inline <script> at the end of <body>. The system font stack is fine.
+        '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" '
+        'rel="stylesheet" media="print" onload="this.media=&#39;all&#39;">'
         f"<title>{html.escape(title)}</title><style>{css}</style></head><body>"
         '<div class="card">'
         f'<img class="logo" src="{logo_url}" alt="{html.escape(app_name)}">'
         f"{badge_html}"
         f"<h1>{html.escape(app_name)} {html.escape(version)}</h1>"
         f'<div class="meta"><b>{html.escape(version)}</b> · '
-        f'{s["released_on"].format(date=pub_date[:10])}</div>'
+        f'{s["released_on"].format(date=release_time(pub_date))}</div>'
         # --- desktop / amuxd toggle ---
         '<div class="seg" role="tablist">'
         f'<button class="on" data-p="desktop" onclick="pick(this)">'
         f'{s["tab_desktop"].format(app=html.escape(app_name))}</button>'
         f'<button data-p="amuxd" onclick="pick(this)">{s["tab_amuxd"]}</button>'
-        # Hidden until android/latest.json loads: the APK ships on its own
-        # cadence (scripts/publish-android-apk.py), and a brand with no Android
-        # build never shows the tab at all.
-        f'<button data-p="android" onclick="pick(this)" hidden>{s["tab_android"]}</button></div>'
+        # Hidden only when no APK existed at publish time; the script below still
+        # reveals it if one appears later. A brand with no Android build never
+        # shows the tab.
+        f'<button data-p="android" onclick="pick(this)"{"" if android else " hidden"}>{s["tab_android"]}</button></div>'
         # --- panel: desktop app ---
         '<div class="panel on" data-panel="desktop">'
         f'<div class="lbl"><span class="os-ico">{APPLE_SVG}</span><span class="os">macOS</span> {s["install_terminal"]}</div>'
@@ -559,17 +605,17 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
         f"{amuxd_cards}"
         f'<footer>{s["amuxd_footer"]}</footer>'
         "</div>"
-        # --- panel: Android app (filled client-side from android/latest.json) ---
+        # --- panel: Android app (baked from android/latest.json, refreshed client-side) ---
         '<div class="panel" data-panel="android">'
         f'<p class="intro">{s["android_intro"]}</p>'
-        '<div class="dl"><a class="dl-main" id="ad-a" href="#">'
+        f'<div class="dl"><a class="dl-main" id="ad-a" href="{html.escape(ad_url)}">'
         f'<span class="dl-ico">{ANDROID_SVG}</span>'
-        '<span class="dlc"><span class="dl-label" id="ad-l">Android</span>'
-        '<span class="dl-sub" id="ad-s"></span></span>'
+        f'<span class="dlc"><span class="dl-label" id="ad-l">{html.escape(ad_label)}</span>'
+        f'<span class="dl-sub" id="ad-s">{html.escape(ad_sub)}</span></span>'
         '<span class="arr">↓</span></a>'
         '<div class="sha-row"><span class="sha-k">SHA256</span>'
-        '<code class="sha" id="ad-h"></code>'
-        '<button class="sha-copy" id="ad-c" '
+        f'<code class="sha" id="ad-h">{html.escape(short_sha(ad_h))}</code>'
+        f'<button class="sha-copy" id="ad-c" data-sha="{html.escape(ad_h)}" '
         f"onclick=\"navigator.clipboard.writeText(this.dataset.sha);this.textContent=&#39;{s['copied']}&#39;;"
         f'setTimeout(()=>this.textContent=&#39;{s["copy"]}&#39;,1200)">{s["copy"]}</button></div></div>'
         f'<footer>{s["android_footer"]}</footer>'
@@ -583,10 +629,14 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
         'document.querySelectorAll(".card>footer").forEach(x=>x.hidden=p==="android");'
         'document.querySelectorAll(".panel").forEach(x=>x.classList.toggle("on",x.dataset.panel===p));}'
         # Relative URL: the manifest sits next to this page under the same prefix.
-        'fetch("android/latest.json",{cache:"no-store"}).then(r=>r.ok?r.json():null).then(m=>{'
+        # Retried: one dropped request used to leave the tab hidden until a reload.
+        'function ad(n){fetch("android/latest.json",{cache:"no-store"}).then(r=>{if(r.ok)return r.json();if(r.status!==404)throw 0;return null;}).then(m=>{'
         'if(!m||!m.url)return;'
-        'var b=document.querySelector(\'.seg button[data-p="android"]\');'
-        'var mb=(m.size/1048576).toFixed(1)+" MB";'
+        'var b=document.querySelector(\'.seg button[data-p="android"]\'),w=b.hidden;'
+        'var mb=(m.size/1048576).toFixed(1)+" MB",d=new Date(m.pub_date);'
+        # Same shape as release_time() in this script.
+        f'if(!isNaN(d))mb+=" · "+{json.dumps(s["released_on"])}.replace("{{date}}",'
+        'new Date(d.getTime()+288e5).toISOString().slice(0,16).replace("T"," ")+" (UTC+8)");'
         'document.getElementById("ad-a").href=m.url;'
         'document.getElementById("ad-l").textContent="Android "+m.version;'
         'document.getElementById("ad-s").textContent="APK · "+mb;'
@@ -594,17 +644,17 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
         'document.getElementById("ad-h").textContent=h.length>26?h.slice(0,16)+"…"+h.slice(-8):h;'
         'document.getElementById("ad-c").dataset.sha=h;'
         'b.hidden=false;'
-        'if(/Android/i.test(navigator.userAgent))pick(b);'
-        '}).catch(()=>{});'
+        # Only when the fetch is what revealed the tab; a baked-in tab was
+        # already auto-selected below, and the visitor may have moved on.
+        'if(w&&/Android/i.test(navigator.userAgent))pick(b);'
+        '}).catch(()=>{if(n<3)setTimeout(()=>ad(n+1),1500*(n+1));});}'
+        'ad(0);'
+        # Baked-in tab: auto-select it on phones without waiting for the fetch.
+        'var ab=document.querySelector(\'.seg button[data-p="android"]\');'
+        'if(!ab.hidden&&/Android/i.test(navigator.userAgent))pick(ab);'
         "</script>"
         "</body></html>"
     )
-
-    auth = oss2.Auth(os.environ["OSS_ACCESS_KEY_ID"], os.environ["OSS_ACCESS_KEY_SECRET"])
-    endpoint = os.environ["OSS_ENDPOINT"]
-    if not endpoint.startswith("http"):
-        endpoint = "https://" + endpoint
-    bucket = oss2.Bucket(auth, endpoint, os.environ["OSS_BUCKET"])
 
     short_cache = {"Cache-Control": "max-age=60, must-revalidate"}
     json_ct = {"Content-Type": "application/json; charset=utf-8"}
