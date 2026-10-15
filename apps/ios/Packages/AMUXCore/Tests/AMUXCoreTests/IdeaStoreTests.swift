@@ -309,8 +309,7 @@ struct IdeaStoreTests {
         let store = IdeaStore(teamID: "team-1", repository: repository, modelContext: context)
 
         await store.reload()
-        store.moveIdeas(from: IndexSet(integer: 0), to: 2)
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await store.moveIdeas(from: IndexSet(integer: 0), to: 2)?.value
 
         #expect(store.ideas.map(\.id) == ["idea-2", "idea-1"])
         #expect(store.activities(for: "idea-1").map(\.activityType) == ["reorder"])

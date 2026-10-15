@@ -252,8 +252,11 @@ public final class IdeaStore {
         }
     }
 
-    public func moveIdeas(from source: IndexSet, to destination: Int) {
-        guard let repository = connectedRepository() else { return }
+    /// Reorders locally right away, then syncs and logs a `reorder` activity in
+    /// the background. The returned task lets callers (tests) await that sync.
+    @discardableResult
+    public func moveIdeas(from source: IndexSet, to destination: Int) -> Task<Void, Never>? {
+        guard let repository = connectedRepository() else { return nil }
         let movedRecords = source.compactMap { index in
             ideas.indices.contains(index) ? ideas[index] : nil
         }
@@ -268,7 +271,7 @@ public final class IdeaStore {
         try? modelContext.save()
 
         let orderedIDs = reordered.map(\.id)
-        Task {
+        return Task {
             do {
                 try await repository.reorderIdeas(teamID: teamID, ideaIDs: orderedIDs)
                 for record in movedRecords {
