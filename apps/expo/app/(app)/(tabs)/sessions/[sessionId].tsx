@@ -1183,6 +1183,12 @@ export default function SessionDetailRoute() {
           }}
           onSend={() => {
             impactLight();
+            // A keystroke's debounced save still pending would land after
+            // this clear and bring the sent text back as a draft.
+            if (draftSaveTimer.current) {
+              clearTimeout(draftSaveTimer.current);
+              draftSaveTimer.current = null;
+            }
             if (sessionId) {
               void saveComposerDraft(sessionId, "");
             }
