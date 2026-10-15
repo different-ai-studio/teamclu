@@ -5,6 +5,8 @@ import { presentActionSheet } from "./ActionSheetHost";
 export type SheetAction = {
   label: string;
   style?: "default" | "destructive";
+  /** The current choice of a picker (iOS `Picker` in a `Menu` checks it). */
+  checked?: boolean;
   run: () => void;
 };
 
@@ -22,7 +24,8 @@ export function showActionSheet(
     ActionSheetIOS.showActionSheetWithOptions(
       {
         title: options.title,
-        options: [...actions.map((a) => a.label), options.cancelLabel],
+        // The native sheet has no check mark; mark the current choice in text.
+        options: [...actions.map((a) => (a.checked ? `✓ ${a.label}` : a.label)), options.cancelLabel],
         cancelButtonIndex: actions.length,
         destructiveButtonIndex: actions.findIndex((a) => a.style === "destructive"),
       },

@@ -33,6 +33,7 @@ import {
 } from "../components/IdeaProgressComposer";
 import type { Idea, IdeaActivity, IdeaStatus } from "../idea-types";
 import { showActionSheet } from "../../../ui/action-sheet";
+import { StatusDot } from "../../../ui/atoms/StatusDot";
 import { t } from "../../../lib/i18n";
 
 export type IdeaDetailScreenProps = {
@@ -74,24 +75,31 @@ type StatusPill = {
   background: string;
 };
 
+/**
+ * The status pill, as iOS `statusPillMenu`: the same words as the status menu
+ * (`IdeaRecord.statusLabel`, upper-cased), so the pill and the choice it opens
+ * never disagree. The upper-case `OPEN`/`IN PROGRESS` keys it used to read
+ * were translated apart from the menu's, and "open" and "in progress" both
+ * came out as 进行中.
+ */
 function statusPill(status: IdeaStatus): StatusPill {
   switch (status) {
     case "done":
       return {
-        label: t("DONE"),
+        label: t("Done"),
         foreground: hai.sage,
         background: "rgba(107,142,90,0.12)",
       };
     case "in_progress":
       return {
-        label: t("IN PROGRESS"),
+        label: t("In Progress"),
         foreground: hai.basalt,
         background: hai.pebble,
       };
     case "open":
     default:
       return {
-        label: t("OPEN"),
+        label: t("Open"),
         foreground: hai.cinnabar,
         background: "rgba(184,75,54,0.10)",
       };
@@ -206,6 +214,7 @@ export function IdeaDetailScreen({
                   showActionSheet(
                     choices.map(([value, label]) => ({
                       label,
+                      checked: value === idea.status,
                       run: () => {
                         if (value !== idea.status) onSetStatus(value);
                       },
@@ -215,10 +224,22 @@ export function IdeaDetailScreen({
                 }}
                 style={[styles.pill, { backgroundColor: statusPill(idea.status).background }]}
               >
+                {/* In flight breathes, as on iOS; open and done hold still. */}
+                <StatusDot
+                  breathing={idea.status === "in_progress"}
+                  color={statusPill(idea.status).foreground}
+                  size={6}
+                />
                 <Text style={[styles.pillText, { color: statusPill(idea.status).foreground }]}>
-                  {statusPill(idea.status).label}
-                  {onSetStatus ? " ▾" : ""}
+                  {statusPill(idea.status).label.toUpperCase()}
                 </Text>
+                {onSetStatus ? (
+                  <Ionicons
+                    color={statusPill(idea.status).foreground}
+                    name="chevron-down"
+                    size={9}
+                  />
+                ) : null}
               </Pressable>
               <TextInput
                 editable={!busyAction}
@@ -602,16 +623,18 @@ const styles = StyleSheet.create({
     color: colors.basalt,
     ...typography.secondaryBody,
   },
+  // iOS: a 22pt capsule, dot · label · chevron, 5pt apart.
   pill: {
     alignItems: "center",
     alignSelf: "flex-start",
-    borderRadius: radii.chip,
-    height: 20,
-    justifyContent: "center",
-    paddingHorizontal: 8,
+    borderRadius: 11,
+    flexDirection: "row",
+    gap: 5,
+    height: 22,
+    paddingHorizontal: 9,
   },
   pillText: {
-    fontSize: 10,
+    fontSize: 10.5,
     fontWeight: "700",
     letterSpacing: 0.3,
   },

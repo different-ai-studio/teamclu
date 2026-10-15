@@ -1,3 +1,4 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -74,6 +75,7 @@ export function ActionSheetHost() {
                 >
                   {action.label}
                 </Text>
+                {action.checked ? <Ionicons color={colors.onyx} name="checkmark" size={18} /> : null}
               </Pressable>
             ))}
           </ScrollView>
@@ -130,7 +132,9 @@ const styles = StyleSheet.create({
     right: 0,
   },
   row: {
-    justifyContent: "center",
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
     minHeight: 52,
     paddingHorizontal: spacing.xl,
   },

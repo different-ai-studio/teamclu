@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { StyleSheet, Text, View } from "react-native";
 
+import { t } from "../../../lib/i18n";
 import { formatRelativeAbbreviated } from "../../../lib/relative-time";
 import { colors, hai, iosType, spacing } from "../../../ui/theme";
 import { actorIdHash } from "../../actors/team-stats";
@@ -90,9 +91,13 @@ export function IdeaRow({
 
   return (
     <View style={styles.row}>
-      <View style={styles.gutter}>
-        <StatusGlyph status={idea.status} />
-      </View>
+      {/* The feed states status in words, as iOS `IdeaFeedCard`; the compact
+          row (search, archive) keeps iOS `IdeaRow`'s glyph. */}
+      {feed ? null : (
+        <View style={styles.gutter}>
+          <StatusGlyph status={idea.status} />
+        </View>
+      )}
 
       <View style={styles.body}>
         <Text numberOfLines={2} style={[styles.title, isDone ? styles.titleDone : null]}>
@@ -124,6 +129,13 @@ export function IdeaRow({
           <Text style={styles.updatedAt}>
             {formatRelativeAbbreviated(idea.updatedAt || idea.createdAt)}
           </Text>
+          {/* Only once it has moved off "open": a tag on every new post would
+              say nothing (iOS `IdeaFeedCard.byline`). */}
+          {feed && idea.status !== "open" ? (
+            <Text style={styles.statusTag}>
+              {(idea.status === "done" ? t("Done") : t("In Progress")).toUpperCase()}
+            </Text>
+          ) : null}
         </View>
 
         {feed ? (
@@ -165,6 +177,17 @@ const styles = StyleSheet.create({
     color: colors.onyx,
     flexShrink: 1,
     ...iosType.caption,
+  },
+  statusTag: {
+    backgroundColor: hai.pebble,
+    borderRadius: 6,
+    color: hai.basalt,
+    fontSize: 9.5,
+    fontWeight: "600",
+    letterSpacing: 0.18 * 9.5,
+    overflow: "hidden",
+    paddingHorizontal: 7,
+    paddingVertical: 3,
   },
   creatorSpacer: {
     flex: 1,
