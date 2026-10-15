@@ -38,6 +38,7 @@ public struct SettingsView: View {
     @State private var showSignOutConfirm = false
     @State private var showPendingInvites = false
     @State private var showEditProfileSheet = false
+    @State private var showTeamSwitchSheet = false
 
     /// Cached actor row for the current member, used to source the
     /// identity-card display name without an extra RPC.
@@ -142,6 +143,22 @@ public struct SettingsView: View {
                 if let onboarding {
                     PendingInvitesSheet(coordinator: onboarding)
                         .presentationDetents([.medium, .large])
+                }
+            }
+            .sheet(isPresented: $showTeamSwitchSheet) {
+                if let onboarding {
+                    TeamSwitchSheet(
+                        coordinator: onboarding,
+                        currentTeamID: activeTeam?.id
+                    ) { teamID, choices in
+                        // Close both sheets before switching: the switch
+                        // flips the route through the splash and rebuilds
+                        // the whole shell underneath them.
+                        showTeamSwitchSheet = false
+                        dismiss()
+                        Task { await onboarding.switchTeam(to: teamID, choices: choices) }
+                    }
+                    .presentationDetents([.medium, .large])
                 }
             }
             .task {
@@ -389,12 +406,7 @@ public struct SettingsView: View {
                         }
                         Spacer(minLength: 8)
                         Button {
-                            // Dismiss first: the route flip to the org→team
-                            // picker replaces the whole shell underneath this
-                            // sheet.
-                            let coordinator = onboarding
-                            dismiss()
-                            Task { await coordinator?.beginTeamSwitch() }
+                            showTeamSwitchSheet = true
                         } label: {
                             Label("Switch Team", systemImage: "arrow.left.arrow.right")
                                 .font(.system(size: 13.5, weight: .semibold))

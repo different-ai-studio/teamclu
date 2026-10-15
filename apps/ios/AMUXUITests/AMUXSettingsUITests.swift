@@ -41,9 +41,28 @@ final class AMUXSettingsUITests: XCTestCase {
             sleep(1)
         }
 
+        // Switch Team opens a sheet over Settings (no route flip); close it
+        // without picking so the E2E account stays in its team.
+        app.buttons["settings.switchTeamButton"].tap()
+        let closeSwitch = app.buttons["teamSwitch.closeButton"]
+        XCTAssertTrue(closeSwitch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'teamSwitch.row.'"))
+            .firstMatch.waitForExistence(timeout: 10))
+        attachScreenshot(app, name: "settings-team-switch-sheet")
+        closeSwitch.tap()
+        XCTAssertTrue(app.buttons["settings.switchTeamButton"].waitForExistence(timeout: 5))
+
         app.buttons["settings.teamInfoButton"].tap()
         XCTAssertTrue(app.navigationBars["Team Info"].waitForExistence(timeout: 5))
         attachScreenshot(app, name: "settings-team-info")
+        app.navigationBars.buttons.firstMatch.tap()
+
+        let notifications = app.buttons["Notifications"]
+        if notifications.waitForExistence(timeout: 5) {
+            notifications.tap()
+            XCTAssertTrue(app.switches["notifications.pushToggle"].waitForExistence(timeout: 5))
+            attachScreenshot(app, name: "settings-notifications")
+        }
     }
 
     private func attachScreenshot(_ app: XCUIApplication, name: String) {
