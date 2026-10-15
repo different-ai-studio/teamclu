@@ -33,6 +33,7 @@ import { ConnectionBannerOverlay } from "../components/ConnectionBannerOverlay";
 import { DaySeparator } from "../components/DaySeparator";
 import { buildThinkingPreview } from "../components/agent-thinking-presentation";
 import { dayLabel, isSameCalendarDay } from "../components/day-separator-labels";
+import { buildMarkdownStyles } from "../components/markdown-styles";
 import { MentionsPopup } from "../components/MentionsPopup";
 import {
   applyMention,
@@ -443,23 +444,14 @@ function isOwnOutgoingFeedSource(
   );
 }
 
-const turnMarkdown = {
-  body: { color: hai.onyx, ...typography.body, marginBottom: 0, marginTop: 0 },
-  code_inline: {
-    backgroundColor: hai.pebble,
-    borderRadius: 4,
-    color: hai.onyx,
-    paddingHorizontal: 4,
-  },
-  code_block: {
-    backgroundColor: hai.pebble,
-    borderRadius: 6,
-    color: hai.onyx,
-    padding: 8,
-  },
-  link: { color: hai.cinnabar, textDecorationLine: "underline" as const },
-  paragraph: { color: hai.onyx, marginBottom: 0, marginTop: 0 },
-};
+const turnMarkdown = buildMarkdownStyles({
+  base: typography.body,
+  hairline: StyleSheet.hairlineWidth,
+  link: hai.cinnabar,
+  rule: hai.hairline,
+  surface: hai.pebble,
+  text: hai.onyx,
+});
 
 function AgentTurnCard({
   onLongPress,

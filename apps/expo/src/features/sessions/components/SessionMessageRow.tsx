@@ -23,6 +23,7 @@ import { buildThinkingBody, buildThinkingPreview } from "./agent-thinking-presen
 import { AudioPlayerChip } from "./AudioPlayerChip";
 import { useAttachmentImageSource } from "./attachment-image-source";
 import { ImageLightbox } from "./ImageLightbox";
+import { buildMarkdownStyles, hasBlockMarkdown } from "./markdown-styles";
 import { PermissionBanner } from "./PermissionBanner";
 import { ToolCallLine } from "./ToolCallLine";
 import { mentionPlainText } from "../mention-display";
@@ -403,6 +404,7 @@ export function SessionMessageRow({
         style={({ pressed }) => [
           styles.surface,
           isAgentReply ? styles.surfaceAgent : styles.surfaceBounded,
+          !isAgentReply && hasBlockMarkdown(body) ? styles.surfaceBlock : null,
           isOwnMessage ? styles.surfaceOwn : styles.surfaceOther,
           pressed ? styles.surfacePressed : null,
         ]}
@@ -620,97 +622,24 @@ function AttachmentChip({
   );
 }
 
-/**
- * Markdown styling for the two bubble variants.
- *
- * `fence` is not optional decoration: react-native-markdown-display routes
- * ```-fenced blocks through it and indented blocks through `code_block`, and
- * agents emit fenced code almost exclusively. Styling only `code_block` left
- * the common case on the library's defaults.
- *
- * Same reason the blockquote and table rules are here. Their defaults are
- * hardcoded `#F5F5F5` / `#CCC` / `#000000`, which are off-palette everywhere
- * and unreadable inside the dark own-message bubble.
- */
-const OWN_SURFACE = "rgba(248,246,241,0.18)";
+/** Markdown styling for the two bubble variants; see `markdown-styles`. */
+const ownMarkdown = buildMarkdownStyles({
+  base: iosType.subheadline,
+  hairline: StyleSheet.hairlineWidth,
+  link: hai.mist,
+  rule: "rgba(248,246,241,0.35)",
+  surface: "rgba(248,246,241,0.18)",
+  text: hai.mist,
+});
 
-const ownMarkdown = {
-  body: { color: hai.mist, ...iosType.subheadline, marginBottom: 0, marginTop: 0 },
-  code_inline: {
-    backgroundColor: OWN_SURFACE,
-    borderRadius: 4,
-    color: hai.mist,
-    paddingHorizontal: 4,
-  },
-  code_block: {
-    backgroundColor: OWN_SURFACE,
-    borderRadius: 6,
-    color: hai.mist,
-    padding: 8,
-  },
-  fence: {
-    backgroundColor: OWN_SURFACE,
-    borderRadius: 6,
-    color: hai.mist,
-    padding: 8,
-  },
-  blockquote: {
-    backgroundColor: OWN_SURFACE,
-    borderColor: "rgba(248,246,241,0.45)",
-    borderLeftWidth: 3,
-    marginLeft: 0,
-    paddingHorizontal: 8,
-  },
-  table: {
-    borderColor: "rgba(248,246,241,0.35)",
-    borderRadius: 4,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  tr: { borderBottomWidth: StyleSheet.hairlineWidth, borderColor: "rgba(248,246,241,0.35)" },
-  th: { color: hai.mist, padding: 6 },
-  td: { color: hai.mist, padding: 6 },
-  link: { color: hai.mist, textDecorationLine: "underline" as const },
-  paragraph: { color: hai.mist, marginBottom: 0, marginTop: 0 },
-};
-
-const otherMarkdown = {
-  body: { color: hai.onyx, ...iosType.subheadline, marginBottom: 0, marginTop: 0 },
-  code_inline: {
-    backgroundColor: hai.pebble,
-    borderRadius: 4,
-    color: hai.onyx,
-    paddingHorizontal: 4,
-  },
-  code_block: {
-    backgroundColor: hai.pebble,
-    borderRadius: 6,
-    color: hai.onyx,
-    padding: 8,
-  },
-  fence: {
-    backgroundColor: hai.pebble,
-    borderRadius: 6,
-    color: hai.onyx,
-    padding: 8,
-  },
-  blockquote: {
-    backgroundColor: hai.pebble,
-    borderColor: hai.slate,
-    borderLeftWidth: 3,
-    marginLeft: 0,
-    paddingHorizontal: 8,
-  },
-  table: {
-    borderColor: hai.hairline,
-    borderRadius: 4,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  tr: { borderBottomWidth: StyleSheet.hairlineWidth, borderColor: hai.hairline },
-  th: { color: hai.onyx, padding: 6 },
-  td: { color: hai.onyx, padding: 6 },
-  link: { color: hai.cinnabar, textDecorationLine: "underline" as const },
-  paragraph: { color: hai.onyx, marginBottom: 0, marginTop: 0 },
-};
+const otherMarkdown = buildMarkdownStyles({
+  base: iosType.subheadline,
+  hairline: StyleSheet.hairlineWidth,
+  link: hai.cinnabar,
+  rule: hai.hairline,
+  surface: hai.pebble,
+  text: hai.onyx,
+});
 
 const styles = StyleSheet.create({
   attachmentImage: {
@@ -771,6 +700,10 @@ const styles = StyleSheet.create({
      replies run to the full column width instead. */
   surfaceBounded: {
     maxWidth: 260,
+  },
+  // See `hasBlockMarkdown`: lists and headings need a definite width.
+  surfaceBlock: {
+    width: 260,
   },
   surfaceAgent: {
     alignSelf: "stretch",
