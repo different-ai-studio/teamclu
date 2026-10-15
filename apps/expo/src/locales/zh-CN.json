@@ -515,7 +515,7 @@
   "Image upload is unavailable for this team.": "该团队暂不支持图片上传。",
   "IMAGES": "图片",
   "IMAGES · {{count}}": "图片 · {{count}}",
-  "In Progress": "处理中",
+  "In Progress": "进行中",
   "IN PROGRESS": "进行中",
   "In reply to {{value}}": "回复 {{value}}",
   "Info": "信息",
@@ -687,7 +687,7 @@
   "online": "在线",
   "Only the owner keeps access after making it personal.": "设为个人专属后，只有所有者保留访问权限。",
   "OPEN": "进行中",
-  "Open": "进行中",
+  "Open": "未开始",
   "Open a session before attaching files.": "请先打开一个会话再添加附件。",
   "Open agent turn details": "查看 Agent 回复详情",
   "Open ideas will appear once created": "创建后进行中的想法会出现在这里",
@@ -1107,5 +1107,6 @@
   "Couldn't forward": "转发失败",
   "Image on clipboard": "剪贴板里有图片",
   "Paste image": "粘贴图片",
-  "Double-tap to zoom": "双击缩放"
+  "Double-tap to zoom": "双击缩放",
+  "More": "更多"
 }

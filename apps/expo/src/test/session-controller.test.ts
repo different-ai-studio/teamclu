@@ -360,6 +360,38 @@ describe("createSessionsController", () => {
       expect(cache.save).toHaveBeenCalledWith("team-1", fresh);
     });
 
+    it("still paints cached rows when a quiet refresh starts alongside the load", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 4, 18, 12, 0, 0));
+
+      const { createSessionsController } = await import("../features/sessions/session-controller");
+      const cached = [
+        createSession(
+          "cached-1",
+          new Date(2026, 4, 18, 10, 0, 0).toISOString(),
+          new Date(2026, 4, 17, 10, 0, 0).toISOString(),
+        ),
+      ];
+      const pending = createDeferredPromise<SessionSummary[]>();
+      const api: SessionsApi = { listSessions: vi.fn().mockReturnValue(pending.promise) };
+      const cache = {
+        load: vi.fn().mockResolvedValue(cached),
+        save: vi.fn().mockResolvedValue(undefined),
+        clear: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const controller = createSessionsController(api as any, "team-1", null, cache);
+      // App launch: the mount effect loads, the focus effect refreshes quietly.
+      void controller.load();
+      void controller.refresh({ quiet: true });
+
+      await vi.waitFor(() => {
+        expect(controller.getState().sessions).toEqual(cached);
+      });
+      expect(controller.getState().status).toBe("loaded");
+      pending.resolve(cached);
+    });
+
     it("keeps cached rows visible when the network load fails", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 4, 18, 12, 0, 0));

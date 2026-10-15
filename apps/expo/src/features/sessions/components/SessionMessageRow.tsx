@@ -13,7 +13,6 @@ import {
   Text,
   View,
 } from "react-native";
-import Markdown from "react-native-markdown-display";
 
 import { t } from "../../../lib/i18n";
 import { colors, hai, iosType, radii, spacing, typography } from "../../../ui/theme";
@@ -23,8 +22,9 @@ import { buildThinkingBody, buildThinkingPreview } from "./agent-thinking-presen
 import { AudioPlayerChip } from "./AudioPlayerChip";
 import { useAttachmentImageSource } from "./attachment-image-source";
 import { ImageLightbox } from "./ImageLightbox";
-import { buildMarkdownStyles, hasBlockMarkdown, MARKDOWN_BLOCK_GAP } from "./markdown-styles";
-import { StreamingMarkdown } from "./StreamingMarkdown";
+import { buildMarkdownStyles, hasBlockMarkdown } from "./markdown-styles";
+import { MessageMarkdown } from "./MessageMarkdown";
+import { OTHER_PALETTE, OWN_PALETTE } from "./markdown-palettes";
 import { PermissionBanner } from "./PermissionBanner";
 import { ToolCallLine } from "./ToolCallLine";
 import { mentionPlainText } from "../mention-display";
@@ -463,19 +463,13 @@ export function SessionMessageRow({
         <ImageLightbox onClose={() => setLightboxUrl(null)} url={lightboxUrl} />
 
         {body.length > 0 ? (
-          isStreaming ? (
-            <StreamingMarkdown
-              gap={MARKDOWN_BLOCK_GAP}
-              style={isOwnMessage ? ownMarkdown : otherMarkdown}
-              text={body}
-            />
-          ) : (
-            <Markdown
-              style={isOwnMessage ? ownMarkdown : otherMarkdown}
-            >
-              {body}
-            </Markdown>
-          )
+          <MessageMarkdown
+            definiteWidth={isAgentReply || hasBlockMarkdown(body)}
+            palette={isOwnMessage ? OWN_PALETTE : OTHER_PALETTE}
+            streaming={isStreaming}
+            style={isOwnMessage ? ownMarkdown : otherMarkdown}
+            text={body}
+          />
         ) : null}
 
         {isStreaming ? (
@@ -637,23 +631,8 @@ function AttachmentChip({
 }
 
 /** Markdown styling for the two bubble variants; see `markdown-styles`. */
-const ownMarkdown = buildMarkdownStyles({
-  base: iosType.subheadline,
-  hairline: StyleSheet.hairlineWidth,
-  link: hai.mist,
-  rule: "rgba(248,246,241,0.35)",
-  surface: "rgba(248,246,241,0.18)",
-  text: hai.mist,
-});
-
-const otherMarkdown = buildMarkdownStyles({
-  base: iosType.subheadline,
-  hairline: StyleSheet.hairlineWidth,
-  link: hai.cinnabar,
-  rule: hai.hairline,
-  surface: hai.pebble,
-  text: hai.onyx,
-});
+const ownMarkdown = buildMarkdownStyles(OWN_PALETTE);
+const otherMarkdown = buildMarkdownStyles(OTHER_PALETTE);
 
 const styles = StyleSheet.create({
   attachmentImage: {

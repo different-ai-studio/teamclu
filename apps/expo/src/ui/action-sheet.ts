@@ -1,14 +1,19 @@
 import { ActionSheetIOS, Alert, Platform } from "react-native";
 
+import { presentActionSheet } from "./ActionSheetHost";
+
 export type SheetAction = {
   label: string;
   style?: "default" | "destructive";
+  /** The current choice of a picker (iOS `Picker` in a `Menu` checks it). */
+  checked?: boolean;
   run: () => void;
 };
 
 /**
- * A native action list: the iOS action sheet, an alert on Android. The
- * cancel entry is added here.
+ * An action list: the native action sheet on iOS, `ActionSheetHost` on
+ * Android. The cancel entry is added here. The alert is only a fallback for
+ * when no host is mounted — it shows at most three buttons on Android.
  */
 export function showActionSheet(
   actions: readonly SheetAction[],
@@ -19,12 +24,16 @@ export function showActionSheet(
     ActionSheetIOS.showActionSheetWithOptions(
       {
         title: options.title,
-        options: [...actions.map((a) => a.label), options.cancelLabel],
+        // The native sheet has no check mark; mark the current choice in text.
+        options: [...actions.map((a) => (a.checked ? `✓ ${a.label}` : a.label)), options.cancelLabel],
         cancelButtonIndex: actions.length,
         destructiveButtonIndex: actions.findIndex((a) => a.style === "destructive"),
       },
       (index) => actions[index]?.run(),
     );
+    return;
+  }
+  if (presentActionSheet({ actions, cancelLabel: options.cancelLabel, title: options.title })) {
     return;
   }
   Alert.alert(options.title ?? "", undefined, [

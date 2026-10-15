@@ -1,11 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
+import { FlashList } from "@shopify/flash-list";
 import {
-  ActionSheetIOS,
-  Alert,
   Keyboard,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -21,6 +19,7 @@ import { SkeletonRow } from "../../../ui/atoms/SkeletonRow";
 import { PrimaryButton } from "../../../ui/button";
 import { AppCard } from "../../../ui/card";
 import { PageHeader } from "../../../ui/PageHeader";
+import { showActionSheet } from "../../../ui/action-sheet";
 import { TextPromptModal } from "../../../ui/TextPromptModal";
 import { impactLight, selectionTick } from "../../../lib/haptics";
 import { t } from "../../../lib/i18n";
@@ -36,7 +35,7 @@ import {
 } from "../composer-drafts";
 import type { SessionLiveActivity } from "../live-activity";
 import type { SessionContext } from "../session-context-names";
-import type { SessionGroup, SessionsListState } from "../session-types";
+import type { SessionGroup, SessionSummary, SessionsListState } from "../session-types";
 
 type SessionsListScreenProps = {
   /** Extra bottom inset so content clears the floating tab bar. */
@@ -74,6 +73,9 @@ type SessionsListScreenProps = {
   searchMessageContent?: (query: string) => Promise<ReadonlySet<string>>;
 };
 
+/** How long the list waits for rows before showing a loading skeleton. */
+const SKELETON_DELAY_MS = 400;
+
 export function SessionGroupSection({
   actorGlyphById,
   group,
@@ -107,52 +109,111 @@ export function SessionGroupSection({
   // `t()` here (not `useTranslation()`) deliberately: this component is
   // exercised in tests by calling it as a plain function outside of a React
   // render pass, where hooks have no dispatcher to attach to.
+  const rowProps: SessionListRowProps = {
+    actorGlyphById,
+    activityBySessionId,
+    contextBySessionId,
+    draftBySessionId,
+    mutedSessionIds,
+    onLongPressSession,
+    onSelectSession,
+    pinnedSessionIds,
+    runtimeBySessionId,
+    selectedSessionId,
+    selection,
+    selectionMode,
+  };
   return (
     <View style={styles.group}>
       <SectionEyebrow label={t(group.label)} style={styles.groupLabel} />
       <View style={styles.groupItems}>
-        {group.sessions.map((session, index) => {
-          const checked = selection.has(session.sessionId);
-          return (
-            <View
-              key={session.sessionId}
-              style={[styles.sessionRowOuter, checked ? styles.sessionRowChecked : null]}
-            >
-              <View style={styles.sessionRowInner}>
-                {selectionMode ? (
-                  <View style={[styles.checkbox, checked ? styles.checkboxOn : null]}>
-                    {checked ? (
-                      <Ionicons color="#F8F6F1" name="checkmark" size={14} />
-                    ) : null}
-                  </View>
-                ) : null}
-                <View style={{ flex: 1 }}>
-                  <SessionRow
-                    actorGlyphById={actorGlyphById}
-                    isActive={selectedSessionId === session.sessionId}
-                    isMuted={mutedSessionIds?.has(session.sessionId) ?? false}
-                    activity={activityBySessionId?.get(session.sessionId) ?? "quiet"}
-                    isPinned={pinnedSessionIds?.has(session.sessionId) ?? false}
-                    runtime={runtimeBySessionId?.get(session.sessionId) ?? null}
-                    context={contextBySessionId?.get(session.sessionId) ?? null}
-                    draft={draftBySessionId?.get(session.sessionId) ?? null}
-                    onLongPress={
-                      onLongPressSession
-                        ? () => onLongPressSession(session.sessionId)
-                        : undefined
-                    }
-                    onPress={(s) => onSelectSession(s.sessionId)}
-                    session={session}
-                  />
-                </View>
-              </View>
-              {index < group.sessions.length - 1 ? (
-                <Hairline style={styles.rowDivider} />
-              ) : null}
-            </View>
-          );
-        })}
+        {group.sessions.map((session, index) =>
+          renderSessionListRow(session, index === group.sessions.length - 1, rowProps),
+        )}
       </View>
+    </View>
+  );
+}
+
+type SessionListItem =
+  | { kind: "header"; key: string; label: string }
+  | { kind: "row"; key: string; session: SessionSummary; isLastInGroup: boolean };
+
+type SessionListRowProps = {
+  actorGlyphById?: ReadonlyMap<string, string>;
+  activityBySessionId?: ReadonlyMap<string, SessionLiveActivity>;
+  contextBySessionId?: ReadonlyMap<string, SessionContext>;
+  draftBySessionId?: ReadonlyMap<string, string>;
+  mutedSessionIds?: ReadonlySet<string>;
+  onLongPressSession?: (id: string) => void;
+  onSelectSession: (sessionId: string) => void;
+  pinnedSessionIds?: ReadonlySet<string>;
+  runtimeBySessionId?: ReadonlyMap<string, SessionRowRuntime>;
+  selectedSessionId: string | null;
+  selection: ReadonlySet<string>;
+  selectionMode: boolean;
+};
+
+/**
+ * One session row with its checkbox and divider. A plain function, not a
+ * component: `SessionGroupSection` is called directly in tests, and the
+ * virtualized list renders the same rows one item at a time.
+ */
+function renderSessionListRow(
+  session: SessionSummary,
+  isLastInGroup: boolean,
+  {
+    actorGlyphById,
+    activityBySessionId,
+    contextBySessionId,
+    draftBySessionId,
+    mutedSessionIds,
+    onLongPressSession,
+    onSelectSession,
+    pinnedSessionIds,
+    runtimeBySessionId,
+    selectedSessionId,
+    selection,
+    selectionMode,
+  }: SessionListRowProps,
+) {
+  const checked = selection.has(session.sessionId);
+  return (
+    <View
+      key={session.sessionId}
+      style={[styles.sessionRowOuter, checked ? styles.sessionRowChecked : null]}
+    >
+      <View style={styles.sessionRowInner}>
+        {selectionMode ? (
+          <View style={[styles.checkbox, checked ? styles.checkboxOn : null]}>
+            {checked ? (
+              <Ionicons color="#F8F6F1" name="checkmark" size={14} />
+            ) : null}
+          </View>
+        ) : null}
+        <View style={{ flex: 1 }}>
+          <SessionRow
+            actorGlyphById={actorGlyphById}
+            isActive={selectedSessionId === session.sessionId}
+            isMuted={mutedSessionIds?.has(session.sessionId) ?? false}
+            activity={activityBySessionId?.get(session.sessionId) ?? "quiet"}
+            isPinned={pinnedSessionIds?.has(session.sessionId) ?? false}
+            runtime={runtimeBySessionId?.get(session.sessionId) ?? null}
+            context={contextBySessionId?.get(session.sessionId) ?? null}
+            draft={draftBySessionId?.get(session.sessionId) ?? null}
+            onLongPress={
+              onLongPressSession
+                ? () => onLongPressSession(session.sessionId)
+                : undefined
+            }
+            onPress={(s) => onSelectSession(s.sessionId)}
+            session={session}
+          />
+        </View>
+      </View>
+      {!isLastInGroup ? (
+        <Hairline style={styles.rowDivider} />
+      ) : null}
     </View>
   );
 }
@@ -297,26 +358,15 @@ export function SessionsListScreen({
         { label: t("Archive"), destructive: true, run: () => void onArchiveBatch?.([sessionId]) },
         { label: t("More…"), run: () => toggleSelection(sessionId) },
       ];
-      const cancelLabel = t("Cancel");
-      if (Platform.OS === "ios") {
-        ActionSheetIOS.showActionSheetWithOptions(
-          {
-            options: [...actions.map((a) => a.label), cancelLabel],
-            cancelButtonIndex: actions.length,
-            destructiveButtonIndex: actions.findIndex((a) => a.destructive),
-          },
-          (index) => actions[index]?.run(),
-        );
-        return;
-      }
-      Alert.alert(t("Session actions"), undefined, [
-        ...actions.map((a) => ({
-          text: a.label,
-          style: a.destructive ? ("destructive" as const) : undefined,
-          onPress: a.run,
+      // Seven entries: an Android alert showed three of them.
+      showActionSheet(
+        actions.map((a) => ({
+          label: a.label,
+          style: a.destructive ? ("destructive" as const) : ("default" as const),
+          run: a.run,
         })),
-        { text: cancelLabel, style: "cancel" as const },
-      ]);
+        { cancelLabel: t("Cancel") },
+      );
     },
     [
       pinnedSessionIds,
@@ -401,6 +451,52 @@ export function SessionsListScreen({
     return [pinnedGroup, ...remainingGroups];
   }, [state.groups, query, pinnedSessionIds, contentMatches]);
 
+  // Virtualized: group labels and rows are one flat list, so only the rows on
+  // screen render. A ScrollView drew all of them before the first frame.
+  const listItems = useMemo<SessionListItem[]>(() => {
+    const out: SessionListItem[] = [];
+    for (const group of filteredGroups) {
+      out.push({ kind: "header", key: `header:${group.label}`, label: group.label });
+      group.sessions.forEach((session, index) => {
+        out.push({
+          kind: "row",
+          key: session.sessionId,
+          session,
+          isLastInGroup: index === group.sessions.length - 1,
+        });
+      });
+    }
+    return out;
+  }, [filteredGroups]);
+
+  const rowProps: SessionListRowProps = {
+    actorGlyphById,
+    activityBySessionId,
+    contextBySessionId,
+    draftBySessionId,
+    mutedSessionIds,
+    onLongPressSession: (id) => {
+      if (selectionMode) {
+        toggleSelection(id);
+      } else {
+        showRowContextMenu(id);
+      }
+    },
+    onSelectSession: (id) => {
+      if (selectionMode) {
+        toggleSelection(id);
+      } else {
+        dismissSearchKeyboard();
+        onSelectSession(id);
+      }
+    },
+    pinnedSessionIds,
+    runtimeBySessionId,
+    selectedSessionId: selectedSessionId ?? null,
+    selection,
+    selectionMode,
+  };
+
   const handleNewSession = () => {
     if (onNewSession) {
       onNewSession();
@@ -417,6 +513,22 @@ export function SessionsListScreen({
     setPlaceholderMessage(t("Shortcuts drawer — coming with the Shortcuts sub-spec."));
   };
 
+  // The skeleton only for a wait that is actually felt. Launch paints from the
+  // local cache about a quarter-second in, and a skeleton flashed for that
+  // gap read as the app loading twice; it now shows only after
+  // SKELETON_DELAY_MS with nothing to draw (first sign-in, no cache).
+  const isWaitingForRows =
+    state.status === "loading" || (state.status === "idle" && state.sessions.length === 0);
+  const [skeletonDue, setSkeletonDue] = useState(false);
+  useEffect(() => {
+    if (!isWaitingForRows) {
+      setSkeletonDue(false);
+      return;
+    }
+    const timer = setTimeout(() => setSkeletonDue(true), SKELETON_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [isWaitingForRows]);
+
   const headerBar = (
     <HeaderBar
       onNewSession={handleNewSession}
@@ -424,7 +536,7 @@ export function SessionsListScreen({
     />
   );
 
-  if (state.status === "loading" || (state.status === "idle" && state.sessions.length === 0)) {
+  if (isWaitingForRows) {
     return (
       <ScrollView
         contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
@@ -439,12 +551,14 @@ export function SessionsListScreen({
       >
         {headerBar}
         {placeholderMessage ? <Text style={styles.feedback}>{placeholderMessage}</Text> : null}
-        <View>
-          <SkeletonRow />
-          <SkeletonRow />
-          <SkeletonRow />
-          <SkeletonRow />
-        </View>
+        {skeletonDue ? (
+          <View>
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+          </View>
+        ) : null}
       </ScrollView>
     );
   }
@@ -470,89 +584,15 @@ export function SessionsListScreen({
 
   return (
     <View style={styles.screen}>
-    <ScrollView
-      contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
+    <FlashList
+      contentContainerStyle={{ paddingBottom: bottomInset + spacing.xxxl }}
+      data={listItems}
+      extraData={rowProps}
+      getItemType={(item) => item.kind}
+      keyExtractor={(item) => item.key}
       keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
-      onScrollBeginDrag={dismissSearchKeyboard}
-      refreshControl={
-        <RefreshControl
-          onRefresh={onRefresh}
-          refreshing={state.isRefreshing}
-          tintColor={colors.slate}
-        />
-      }
-      style={{ flex: 1 }}
-    >
-      <View onTouchStart={dismissSearchKeyboard}>{headerBar}</View>
-      {placeholderMessage ? <Text style={styles.feedback}>{placeholderMessage}</Text> : null}
-
-      {state.status === "error" && state.errorMessage ? (
-        <AppCard compact style={styles.banner}>
-          <Text style={styles.bannerText}>{state.errorMessage}</Text>
-        </AppCard>
-      ) : null}
-
-      <View style={styles.searchField}>
-        <Ionicons color={colors.slate} name="search" size={16} />
-        <TextInput
-          autoCapitalize="none"
-          autoCorrect={false}
-          onChangeText={setQuery}
-          placeholder={t("Search sessions")}
-          ref={searchInputRef}
-          placeholderTextColor={colors.slate}
-          selectionColor={colors.cinnabar}
-          style={styles.searchInput}
-          value={query}
-        />
-        {query.length > 0 ? (
-          <Pressable
-            accessibilityLabel={t("Clear search")}
-            accessibilityRole="button"
-            hitSlop={6}
-            onPress={() => setQuery("")}
-          >
-            <Ionicons color={colors.slate} name="close-circle" size={16} />
-          </Pressable>
-        ) : null}
-      </View>
-
-      {filteredGroups.length > 0 ? (
-        <View onTouchStart={dismissSearchKeyboard} style={styles.groups}>
-          {filteredGroups.map((group) => (
-            <SessionGroupSection
-              actorGlyphById={actorGlyphById}
-              group={group}
-              key={group.label}
-              onLongPressSession={(id) => {
-                if (selectionMode) {
-                  toggleSelection(id);
-                } else {
-                  showRowContextMenu(id);
-                }
-              }}
-              onSelectSession={(id) => {
-                if (selectionMode) {
-                  toggleSelection(id);
-                } else {
-                  dismissSearchKeyboard();
-                  onSelectSession(id);
-                }
-              }}
-              mutedSessionIds={mutedSessionIds}
-              activityBySessionId={activityBySessionId}
-              pinnedSessionIds={pinnedSessionIds}
-              runtimeBySessionId={runtimeBySessionId}
-              selectedSessionId={selectedSessionId}
-              selection={selection}
-              selectionMode={selectionMode}
-              contextBySessionId={contextBySessionId}
-              draftBySessionId={draftBySessionId}
-            />
-          ))}
-        </View>
-      ) : (
+      ListEmptyComponent={
         <View style={styles.stateBlock}>
           {!hasAgents && onInviteAgent ? (
             <>
@@ -573,8 +613,63 @@ export function SessionsListScreen({
             </>
           )}
         </View>
-      )}
-    </ScrollView>
+      }
+      ListHeaderComponent={
+        <View style={styles.listHeader}>
+          <View onTouchStart={dismissSearchKeyboard}>{headerBar}</View>
+          {placeholderMessage ? <Text style={styles.feedback}>{placeholderMessage}</Text> : null}
+
+          {state.status === "error" && state.errorMessage ? (
+            <AppCard compact style={styles.banner}>
+              <Text style={styles.bannerText}>{state.errorMessage}</Text>
+            </AppCard>
+          ) : null}
+
+          <View style={styles.searchField}>
+            <Ionicons color={colors.slate} name="search" size={16} />
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setQuery}
+              placeholder={t("Search sessions")}
+              ref={searchInputRef}
+              placeholderTextColor={colors.slate}
+              selectionColor={colors.cinnabar}
+              style={styles.searchInput}
+              value={query}
+            />
+            {query.length > 0 ? (
+              <Pressable
+                accessibilityLabel={t("Clear search")}
+                accessibilityRole="button"
+                hitSlop={6}
+                onPress={() => setQuery("")}
+              >
+                <Ionicons color={colors.slate} name="close-circle" size={16} />
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      }
+      onScrollBeginDrag={dismissSearchKeyboard}
+      refreshControl={
+        <RefreshControl
+          onRefresh={onRefresh}
+          refreshing={state.isRefreshing}
+          tintColor={colors.slate}
+        />
+      }
+      renderItem={({ item }) =>
+        item.kind === "header" ? (
+          <SectionEyebrow label={t(item.label)} style={styles.listGroupLabel} />
+        ) : (
+          <View onTouchStart={dismissSearchKeyboard}>
+            {renderSessionListRow(item.session, item.isLastInGroup, rowProps)}
+          </View>
+        )
+      }
+      style={{ flex: 1 }}
+    />
 
     {selectionMode ? (
       <View style={styles.batchBar}>
@@ -685,6 +780,17 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   groupItems: {},
+  listHeader: {
+    gap: spacing.lg,
+  },
+  // A group label in the flat list: the space the group gap and the label's
+  // own gap used to give it.
+  listGroupLabel: {
+    marginBottom: spacing.sm,
+    marginTop: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
   groupLabel: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,

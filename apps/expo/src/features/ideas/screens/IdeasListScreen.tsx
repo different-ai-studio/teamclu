@@ -2,9 +2,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ActionSheetIOS,
-  Alert,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -29,6 +26,7 @@ import { SwipeableRow } from "../../../ui/SwipeableRow";
 import { impactLight, selectionTick } from "../../../lib/haptics";
 import { colors, radii, spacing, typography } from "../../../ui/theme";
 import { IdeaRow } from "../components/IdeaRow";
+import { showActionSheet } from "../../../ui/action-sheet";
 import {
   isDoneIdea,
   isMineIdea,
@@ -200,29 +198,15 @@ export function IdeasListScreen({
         });
       }
 
-      const labels = [...entries.map((entry) => entry.label), t("Cancel")];
-      const dispatch = (index: number) => {
-        entries[index]?.run();
-      };
-      if (Platform.OS === "ios") {
-        ActionSheetIOS.showActionSheetWithOptions(
-          {
-            options: labels,
-            cancelButtonIndex: entries.length,
-            destructiveButtonIndex: 0,
-          },
-          dispatch,
-        );
-        return;
-      }
-      Alert.alert(t("Idea actions"), undefined, [
-        ...entries.map((entry, index) => ({
-          text: entry.label,
-          style: entry.destructive ? ("destructive" as const) : undefined,
-          onPress: () => dispatch(index),
+      // Up to five entries: an Android alert showed three of them.
+      showActionSheet(
+        entries.map((entry) => ({
+          label: entry.label,
+          style: entry.destructive ? ("destructive" as const) : ("default" as const),
+          run: entry.run,
         })),
-        { text: t("Cancel"), style: "cancel" as const },
-      ]);
+        { cancelLabel: t("Cancel") },
+      );
     },
     [isFiltered, onArchiveBatch, onReorder, state.ideas, t],
   );

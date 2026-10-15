@@ -2,7 +2,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
@@ -34,6 +33,8 @@ import {
   type IdeaImageSource,
 } from "../components/IdeaProgressComposer";
 import type { Idea, IdeaActivity, IdeaStatus } from "../idea-types";
+import { showActionSheet } from "../../../ui/action-sheet";
+import { StatusDot } from "../../../ui/atoms/StatusDot";
 import { t } from "../../../lib/i18n";
 
 export type IdeaDetailScreenProps = {
@@ -49,7 +50,6 @@ export type IdeaDetailScreenProps = {
   onSelectSession?: (sessionId: string) => void;
   onSetStatus?: (next: IdeaStatus) => void;
   onStartSession?: () => void;
-  onToggleStatus?: () => void;
   /** Like/unlike the idea; `liked` is the desired state, not a toggle. */
   onToggleLike?: (liked: boolean) => void;
   relatedSessions?: ReadonlyArray<{
@@ -75,24 +75,31 @@ type StatusPill = {
   background: string;
 };
 
+/**
+ * The status pill, as iOS `statusPillMenu`: the same words as the status menu
+ * (`IdeaRecord.statusLabel`, upper-cased), so the pill and the choice it opens
+ * never disagree. The upper-case `OPEN`/`IN PROGRESS` keys it used to read
+ * were translated apart from the menu's, and "open" and "in progress" both
+ * came out as 进行中.
+ */
 function statusPill(status: IdeaStatus): StatusPill {
   switch (status) {
     case "done":
       return {
-        label: t("DONE"),
+        label: t("Done"),
         foreground: hai.sage,
         background: "rgba(107,142,90,0.12)",
       };
     case "in_progress":
       return {
-        label: t("IN PROGRESS"),
+        label: t("In Progress"),
         foreground: hai.basalt,
         background: hai.pebble,
       };
     case "open":
     default:
       return {
-        label: t("OPEN"),
+        label: t("Open"),
         foreground: hai.cinnabar,
         background: "rgba(184,75,54,0.10)",
       };
@@ -125,7 +132,6 @@ export function IdeaDetailScreen({
   onSelectSession,
   onSetStatus,
   onStartSession,
-  onToggleStatus,
   onToggleLike,
   relatedSessions,
   activities,
@@ -156,12 +162,67 @@ export function IdeaDetailScreen({
       descDraft.trim() !== (idea.description ?? "").trim());
   return (
     <View style={styles.screen}>
+      {/* iOS keeps the page's actions in the navigation bar: start a session,
+          and archive behind "⋯" with a confirmation. They used to be three
+          full-width buttons under the post — Archive the loudest thing on a
+          page whose subject is the idea. Status changes through the pill. */}
       <GlassHeader>
-        <View style={styles.headerSlot} />
+        <View style={styles.headerSide}>
+          <Pressable
+            accessibilityLabel={tHook("Close")}
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={onClose}
+            style={styles.headerSlot}
+          >
+            <Ionicons color={colors.onyx} name="close" size={26} />
+          </Pressable>
+        </View>
         <Text style={styles.headerTitle}>{tHook("Idea")}</Text>
-        <Pressable hitSlop={8} onPress={onClose} style={styles.headerSlot}>
-          <Ionicons color={colors.onyx} name="close" size={26} />
-        </Pressable>
+        <View style={[styles.headerSide, styles.headerSideEnd]}>
+          {idea && onStartSession ? (
+            <Pressable
+              accessibilityLabel={tHook("Start a session")}
+              accessibilityRole="button"
+              hitSlop={8}
+              onPress={onStartSession}
+              style={styles.headerIconButton}
+            >
+              <Ionicons color={colors.onyx} name="chatbubbles-outline" size={22} />
+            </Pressable>
+          ) : null}
+          {idea && onArchive ? (
+            <Pressable
+              accessibilityLabel={tHook("More")}
+              accessibilityRole="button"
+              disabled={busyAction !== null}
+              hitSlop={8}
+              onPress={() =>
+                showActionSheet(
+                  [
+                    {
+                      label: tHook("Archive"),
+                      style: "destructive",
+                      run: () =>
+                        Alert.alert(
+                          tHook("Archive this idea?"),
+                          tHook("Archived ideas are hidden from the main list but can be restored later."),
+                          [
+                            { text: tHook("Cancel"), style: "cancel" },
+                            { text: tHook("Archive"), style: "destructive", onPress: onArchive },
+                          ],
+                        ),
+                    },
+                  ],
+                  { cancelLabel: tHook("Cancel") },
+                )
+              }
+              style={[styles.headerIconButton, busyAction !== null ? styles.actionBusy : null]}
+            >
+              <Ionicons color={colors.onyx} name="ellipsis-horizontal" size={22} />
+            </Pressable>
+          ) : null}
+        </View>
       </GlassHeader>
 
       <ScrollView
@@ -198,38 +259,41 @@ export function IdeaDetailScreen({
                 hitSlop={4}
                 onPress={() => {
                   if (!onSetStatus) return;
-                  const labels = [
-                    tHook("Open"),
-                    tHook("In Progress"),
-                    tHook("Done"),
-                    tHook("Cancel"),
+                  const choices: Array<[IdeaStatus, string]> = [
+                    ["open", tHook("Open")],
+                    ["in_progress", tHook("In Progress")],
+                    ["done", tHook("Done")],
                   ];
-                  const values: IdeaStatus[] = ["open", "in_progress", "done"];
-                  const dispatch = (index: number) => {
-                    if (index < 0 || index >= values.length) return;
-                    if (values[index] === idea.status) return;
-                    onSetStatus(values[index]);
-                  };
-                  if (Platform.OS === "ios") {
-                    ActionSheetIOS.showActionSheetWithOptions(
-                      { options: labels, cancelButtonIndex: 3 },
-                      dispatch,
-                    );
-                    return;
-                  }
-                  Alert.alert(tHook("Set status"), undefined, [
-                    { text: labels[0], onPress: () => dispatch(0) },
-                    { text: labels[1], onPress: () => dispatch(1) },
-                    { text: labels[2], onPress: () => dispatch(2) },
-                    { text: labels[3], style: "cancel" },
-                  ]);
+                  // Three choices plus cancel: an Android alert dropped one.
+                  showActionSheet(
+                    choices.map(([value, label]) => ({
+                      label,
+                      checked: value === idea.status,
+                      run: () => {
+                        if (value !== idea.status) onSetStatus(value);
+                      },
+                    })),
+                    { cancelLabel: tHook("Cancel") },
+                  );
                 }}
                 style={[styles.pill, { backgroundColor: statusPill(idea.status).background }]}
               >
+                {/* In flight breathes, as on iOS; open and done hold still. */}
+                <StatusDot
+                  breathing={idea.status === "in_progress"}
+                  color={statusPill(idea.status).foreground}
+                  size={6}
+                />
                 <Text style={[styles.pillText, { color: statusPill(idea.status).foreground }]}>
-                  {statusPill(idea.status).label}
-                  {onSetStatus ? " ▾" : ""}
+                  {statusPill(idea.status).label.toUpperCase()}
                 </Text>
+                {onSetStatus ? (
+                  <Ionicons
+                    color={statusPill(idea.status).foreground}
+                    name="chevron-down"
+                    size={9}
+                  />
+                ) : null}
               </Pressable>
               <TextInput
                 editable={!busyAction}
@@ -359,73 +423,6 @@ export function IdeaDetailScreen({
               </View>
             ) : null}
 
-            {onStartSession ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={onStartSession}
-                style={({ pressed }) => [
-                  styles.actionButton,
-                  styles.actionStart,
-                  pressed ? styles.actionPressed : null,
-                ]}
-              >
-                <Text style={[styles.actionText, styles.actionStartText]}>
-                  {tHook("Start a session")}
-                </Text>
-              </Pressable>
-            ) : null}
-
-            {(onToggleStatus || onArchive) ? (
-              <View style={styles.actions}>
-                {onToggleStatus ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={busyAction !== null}
-                    onPress={onToggleStatus}
-                    style={({ pressed }) => [
-                      styles.actionButton,
-                      idea.status === "done"
-                        ? styles.actionReopen
-                        : styles.actionDone,
-                      busyAction !== null ? styles.actionBusy : null,
-                      pressed && busyAction === null ? styles.actionPressed : null,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.actionText,
-                        idea.status === "done"
-                          ? styles.actionReopenText
-                          : styles.actionDoneText,
-                      ]}
-                    >
-                      {busyAction === "toggleStatus"
-                        ? tHook("Saving…")
-                        : idea.status === "done"
-                        ? tHook("Reopen")
-                        : tHook("Mark done")}
-                    </Text>
-                  </Pressable>
-                ) : null}
-                {onArchive ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={busyAction !== null}
-                    onPress={onArchive}
-                    style={({ pressed }) => [
-                      styles.actionButton,
-                      styles.actionArchive,
-                      busyAction !== null ? styles.actionBusy : null,
-                      pressed && busyAction === null ? styles.actionPressed : null,
-                    ]}
-                  >
-                    <Text style={[styles.actionText, styles.actionArchiveText]}>
-                      {busyAction === "archive" ? tHook("Archiving…") : tHook("Archive")}
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            ) : null}
           </>
         )}
       </ScrollView>
@@ -480,53 +477,17 @@ const styles = StyleSheet.create({
   engagement: {
     paddingHorizontal: spacing.xs,
   },
-  actionArchive: {
-    backgroundColor: "rgba(184,75,54,0.10)",
-  },
-  actionArchiveText: {
-    color: hai.cinnabar,
-  },
   actionBusy: {
     opacity: 0.5,
   },
-  actionButton: {
-    alignItems: "center",
-    borderRadius: radii.button,
-    paddingVertical: 14,
-  },
-  actionDone: {
-    backgroundColor: hai.onyx,
-  },
-  actionDoneText: {
-    color: hai.paper,
-  },
   actionPressed: {
     opacity: 0.85,
-  },
-  actionReopen: {
-    backgroundColor: hai.pebble,
   },
   composerDock: {
     backgroundColor: colors.mist,
     paddingBottom: spacing.md,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
-  },
-  actionStart: {
-    backgroundColor: hai.cinnabar,
-    marginBottom: spacing.sm,
-  },
-  actionStartText: {
-    color: hai.paper,
-  },
-  actionReopenText: {
-    color: hai.onyx,
-  },
-  actionText: {
-    ...typography.cardTitle,
-  },
-  actions: {
-    gap: spacing.sm,
   },
   saveButton: {
     alignItems: "center",
@@ -574,6 +535,20 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     ...typography.body,
   },
+  // Both sides as wide as the two actions, so the title stays centred.
+  headerSide: {
+    flexDirection: "row",
+    width: 88,
+  },
+  headerSideEnd: {
+    justifyContent: "flex-end",
+  },
+  headerIconButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 40,
+    minWidth: 40,
+  },
   headerSlot: {
     alignItems: "center",
     justifyContent: "center",
@@ -613,16 +588,18 @@ const styles = StyleSheet.create({
     color: colors.basalt,
     ...typography.secondaryBody,
   },
+  // iOS: a 22pt capsule, dot · label · chevron, 5pt apart.
   pill: {
     alignItems: "center",
     alignSelf: "flex-start",
-    borderRadius: radii.chip,
-    height: 20,
-    justifyContent: "center",
-    paddingHorizontal: 8,
+    borderRadius: 11,
+    flexDirection: "row",
+    gap: 5,
+    height: 22,
+    paddingHorizontal: 9,
   },
   pillText: {
-    fontSize: 10,
+    fontSize: 10.5,
     fontWeight: "700",
     letterSpacing: 0.3,
   },

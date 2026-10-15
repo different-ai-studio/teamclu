@@ -1,5 +1,6 @@
 import { Redirect, useFocusEffect, useRouter } from "expo-router";
 import { rememberOpeningSession } from "../../../../src/features/sessions/opening-session";
+import { prefetchSessionMessages } from "../../../../src/features/sessions/session-detail-cache";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { routeToHref, useConnectedAgentsStore, useOnboarding, useTeamMqtt } from "../../../_layout";
 import { createActorsApi } from "../../../../src/features/actors/actor-api";
@@ -480,6 +481,7 @@ export default function SessionsIndexRoute() {
       onSelectSession={(sessionId) => {
         const summary = listState.sessions.find((session) => session.sessionId === sessionId);
         if (summary) rememberOpeningSession(summary);
+        prefetchSessionMessages(sessionId);
         router.push(`/(app)/sessions/${sessionId}`);
       }}
       onShortcuts={() => {
