@@ -26,3 +26,20 @@ export function isWindowsPlatform(): boolean {
   // The UA spells it out in full ("Windows NT 10.0"), so it needs no such care.
   return (navigator.userAgent ?? '').toLowerCase().includes('windows')
 }
+
+/**
+ * macOS is the only desktop where the window draws its controls over the page:
+ * `tauri.macos.conf.json` asks for the overlay title bar, so the traffic lights
+ * sit inside the webview. Windows and Linux keep a native title bar above it.
+ * Same three sources as above; the UA spells it "Macintosh".
+ */
+export function isMacPlatform(): boolean {
+  const uaPlatform = (
+    navigator as Navigator & { userAgentData?: { platform?: string } }
+  ).userAgentData?.platform
+  const platforms = [uaPlatform, navigator.platform]
+    .filter((p): p is string => !!p)
+    .map((p) => p.toLowerCase())
+  if (platforms.some((p) => p.startsWith('mac'))) return true
+  return (navigator.userAgent ?? '').toLowerCase().includes('macintosh')
+}
