@@ -5,7 +5,6 @@ import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
 import { MessageList, type MessageListHandle } from "./MessageList";
 import { ChatInputArea } from "./ChatInputArea";
 import { SessionErrorAlert } from "./SessionErrorAlert";
-import { SessionNoticeList } from "./SessionNoticeList";
 import { useChatSend } from "./use-chat-send";
 import type { VoiceSendIntent } from "@/lib/messages/voice-send-intent";
 import type { VoiceRoute, VoiceSegment } from "@/lib/voice/local-voice-input";
@@ -51,7 +50,6 @@ import {
   quickChatLocalDaemonAgent,
   useQuickChatReadiness,
 } from "@/hooks/use-quick-chat-readiness";
-import { useSessionNoticeStore } from "@/stores/session-notice-store";
 import { hasVisiblePendingPermissions } from "./PermissionCard";
 import { collectAcpStreamingPermissions } from "@/lib/teamclu/acp-permission-entries";
 import { interruptAgentActor } from "@/lib/teamclu/interrupt-agent";
@@ -575,20 +573,11 @@ export function SessionChatColumn({
     sessionError?.sessionId && sessionError.sessionId === sessionId ? sessionError : null;
   const visibleError =
     error && errorSessionId && errorSessionId === sessionId ? error : null;
-  const hasSessionNotices = useSessionNoticeStore((s) =>
-    sessionId ? (s.bySession[sessionId]?.length ?? 0) > 0 : false,
-  );
-  const messageBottomContent =
-    visibleSessionError || visibleError || hasSessionNotices ? (
-      <>
-        {hasSessionNotices && sessionId ? <SessionNoticeList sessionId={sessionId} /> : null}
-        {visibleSessionError ? (
-          <SessionErrorAlert error={visibleSessionError} onDismiss={clearSessionError} />
-        ) : visibleError ? (
-          <SessionErrorAlert error={visibleError} onDismiss={() => setError(null)} />
-        ) : null}
-      </>
-    ) : null;
+  const messageBottomContent = visibleSessionError ? (
+    <SessionErrorAlert error={visibleSessionError} onDismiss={clearSessionError} />
+  ) : visibleError ? (
+    <SessionErrorAlert error={visibleError} onDismiss={() => setError(null)} />
+  ) : null;
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>

@@ -9,7 +9,6 @@ import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useSessionStore } from "@/stores/session-store";
-import { useSessionNoticeStore } from "@/stores/session-notice-store";
 import { useAgentModelPickStore } from "@/stores/agent-model-pick-store";
 
 describe("resetClientChatState", () => {
@@ -53,9 +52,6 @@ describe("resetClientChatState", () => {
       draftInput: "draft",
       pendingPermissions: [{ id: "perm-1" }],
     });
-    useSessionNoticeStore.setState({
-      bySession: { "session-a": [{ id: "n1", message: "notice" }] },
-    });
     useAgentModelPickStore.setState({
       bySessionAgent: { "session-a": { "agent-1": "model-a" } },
     });
@@ -76,7 +72,6 @@ describe("resetClientChatState", () => {
     expect(Object.keys(useV2StreamingStore.getState().byKey)).toHaveLength(0);
     expect(useV2StreamingStore.getState().archived).toHaveLength(0);
     expect(useEngagedAgentStore.getState().getAgents("session-a")).toEqual([]);
-    expect(useSessionNoticeStore.getState().bySession).toEqual({});
     expect(useAgentModelPickStore.getState().bySessionAgent).toEqual({});
   });
 });

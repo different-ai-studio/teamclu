@@ -968,16 +968,6 @@
       "metaOffline": "→ {{name}}（离线）",
       "metaStale": "→ {{name}}（需重新绑定）"
     },
-    "sessionNotice": {
-      "sentStaleOne": "已发送。{{name}} 已与当前本机 Agent 断开，建议重新 @ 本机 Agent。",
-      "sentStaleMany": "已发送。{{count}} 个 Agent 需重新绑定。",
-      "sentOfflineOne": "已发送。{{name}} 当前离线，将在上线后尝试处理（不保证）。",
-      "sentOfflineMany": "已发送。{{count}} 个 Agent 当前离线，将在上线后尝试处理（不保证）。",
-      "sentMixed": "已发送。{{offlineCount}} 个 Agent 离线、{{staleCount}} 个需重新绑定 — 上线或重绑后再确认是否送达。",
-      "sentRuntimeErrorOne": "已发送。{{name}} 启动失败，请重试启动后确认是否处理。",
-      "sentRuntimeErrorMany": "已发送。{{count}} 个 Agent 启动失败，请重试启动后确认是否处理。",
-      "sentUnavailableMixed": "已发送。部分 Agent 离线、需重绑或启动失败，请恢复后确认是否处理。"
-    },
     "newSessionDialog": {
       "title": "新会话",
       "subtitle": "从一条消息开始",
@@ -4104,6 +4094,7 @@
     "listSubtitle": "本对话 {{count}} 个话题",
     "listOpen": "查看话题列表",
     "listClose": "关闭话题列表",
+    "resize": "拖动调整宽度，双击恢复默认",
     "listLoading": "加载话题…",
     "listEmpty": "暂无话题"
   }

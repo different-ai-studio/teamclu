@@ -46,8 +46,6 @@ import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
 import { promoteCreatedSessionToUi } from "@/lib/session/promote-created-session";
 import { useEngagedAgentUiStates } from "@/hooks/use-engaged-agent-ui-states";
 import { quickChatWelcomeAgent } from "@/hooks/use-quick-chat-readiness";
-import { buildPostSendSessionNotice } from "@/lib/session/session-agent-notice-text";
-import { useSessionNoticeStore } from "@/stores/session-notice-store";
 import { toMentionDeliverySnapshot } from "@/lib/session/session-agent-ui-state";
 import { type MessageListHandle } from "./MessageList";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
@@ -599,13 +597,6 @@ export function useChatSend({
             at: new Date().toISOString(),
             markUnread: false,
           });
-
-          const noticeText = voiceIntent?.kind === "voice-silent"
-            ? null
-            : buildPostSendSessionNotice(engagedUiEntries, t);
-          if (noticeText) {
-            useSessionNoticeStore.getState().append(sid, noticeText);
-          }
 
           // Runtime ensure + MQTT publish happen inside the outbox sender
           // (insert → runtimeStart/catchup → mqtt). Do not fire a parallel
