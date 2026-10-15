@@ -20,6 +20,10 @@ vi.mock("expo-haptics", () => ({
   selectionAsync: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock("@shopify/flash-list", () => ({
+  FlashList: (props: Record<string, unknown>) => React.createElement("FlashList", props),
+}));
+
 vi.mock("react-native", () => {
   const makeComponent =
     (name: string) =>
