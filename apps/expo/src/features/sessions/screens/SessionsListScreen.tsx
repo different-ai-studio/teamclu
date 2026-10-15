@@ -74,6 +74,9 @@ type SessionsListScreenProps = {
   searchMessageContent?: (query: string) => Promise<ReadonlySet<string>>;
 };
 
+/** How long the list waits for rows before showing a loading skeleton. */
+const SKELETON_DELAY_MS = 400;
+
 export function SessionGroupSection({
   actorGlyphById,
   group,
@@ -417,6 +420,22 @@ export function SessionsListScreen({
     setPlaceholderMessage(t("Shortcuts drawer — coming with the Shortcuts sub-spec."));
   };
 
+  // The skeleton only for a wait that is actually felt. Launch paints from the
+  // local cache about a quarter-second in, and a skeleton flashed for that
+  // gap read as the app loading twice; it now shows only after
+  // SKELETON_DELAY_MS with nothing to draw (first sign-in, no cache).
+  const isWaitingForRows =
+    state.status === "loading" || (state.status === "idle" && state.sessions.length === 0);
+  const [skeletonDue, setSkeletonDue] = useState(false);
+  useEffect(() => {
+    if (!isWaitingForRows) {
+      setSkeletonDue(false);
+      return;
+    }
+    const timer = setTimeout(() => setSkeletonDue(true), SKELETON_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [isWaitingForRows]);
+
   const headerBar = (
     <HeaderBar
       onNewSession={handleNewSession}
@@ -424,7 +443,7 @@ export function SessionsListScreen({
     />
   );
 
-  if (state.status === "loading" || (state.status === "idle" && state.sessions.length === 0)) {
+  if (isWaitingForRows) {
     return (
       <ScrollView
         contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
@@ -439,12 +458,14 @@ export function SessionsListScreen({
       >
         {headerBar}
         {placeholderMessage ? <Text style={styles.feedback}>{placeholderMessage}</Text> : null}
-        <View>
-          <SkeletonRow />
-          <SkeletonRow />
-          <SkeletonRow />
-          <SkeletonRow />
-        </View>
+        {skeletonDue ? (
+          <View>
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+          </View>
+        ) : null}
       </ScrollView>
     );
   }
