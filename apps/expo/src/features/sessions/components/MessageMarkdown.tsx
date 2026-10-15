@@ -18,7 +18,7 @@ function colorInt(value: string): number {
   return typeof processed === "number" ? processed : 0;
 }
 
-function nativeConfig(palette: MarkdownPalette): NativeMarkdownConfig {
+export function nativeConfig(palette: MarkdownPalette): NativeMarkdownConfig {
   let config = configs.get(palette);
   if (!config) {
     config = {

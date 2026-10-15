@@ -22,8 +22,9 @@ import { buildThinkingBody, buildThinkingPreview } from "./agent-thinking-presen
 import { AudioPlayerChip } from "./AudioPlayerChip";
 import { useAttachmentImageSource } from "./attachment-image-source";
 import { ImageLightbox } from "./ImageLightbox";
-import { buildMarkdownStyles, hasBlockMarkdown, type MarkdownPalette } from "./markdown-styles";
+import { buildMarkdownStyles, hasBlockMarkdown } from "./markdown-styles";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { OTHER_PALETTE, OWN_PALETTE } from "./markdown-palettes";
 import { PermissionBanner } from "./PermissionBanner";
 import { ToolCallLine } from "./ToolCallLine";
 import { mentionPlainText } from "../mention-display";
@@ -630,22 +631,6 @@ function AttachmentChip({
 }
 
 /** Markdown styling for the two bubble variants; see `markdown-styles`. */
-const OWN_PALETTE: MarkdownPalette = {
-  base: iosType.subheadline,
-  hairline: StyleSheet.hairlineWidth,
-  link: hai.mist,
-  rule: "rgba(248,246,241,0.35)",
-  surface: "rgba(248,246,241,0.18)",
-  text: hai.mist,
-};
-const OTHER_PALETTE: MarkdownPalette = {
-  base: iosType.subheadline,
-  hairline: StyleSheet.hairlineWidth,
-  link: hai.cinnabar,
-  rule: hai.hairline,
-  surface: hai.pebble,
-  text: hai.onyx,
-};
 const ownMarkdown = buildMarkdownStyles(OWN_PALETTE);
 const otherMarkdown = buildMarkdownStyles(OTHER_PALETTE);
 

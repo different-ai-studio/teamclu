@@ -32,7 +32,8 @@ import { ConnectionBannerOverlay } from "../components/ConnectionBannerOverlay";
 import { DaySeparator } from "../components/DaySeparator";
 import { buildThinkingPreview } from "../components/agent-thinking-presentation";
 import { dayLabel, isSameCalendarDay } from "../components/day-separator-labels";
-import { buildMarkdownStyles, type MarkdownPalette } from "../components/markdown-styles";
+import { buildMarkdownStyles } from "../components/markdown-styles";
+import { TURN_PALETTE } from "../components/markdown-palettes";
 import { MessageMarkdown } from "../components/MessageMarkdown";
 import { MentionsPopup } from "../components/MentionsPopup";
 import {
@@ -448,14 +449,6 @@ function isOwnOutgoingFeedSource(
   );
 }
 
-const TURN_PALETTE: MarkdownPalette = {
-  base: typography.body,
-  hairline: StyleSheet.hairlineWidth,
-  link: hai.cinnabar,
-  rule: hai.hairline,
-  surface: hai.pebble,
-  text: hai.onyx,
-};
 const turnMarkdown = buildMarkdownStyles(TURN_PALETTE);
 
 function AgentTurnCard({
@@ -854,6 +847,31 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     // showing the list in the same frame flashed the pre-scroll position.
     requestAnimationFrame(() => requestAnimationFrame(() => setFeedRevealed(true)));
   };
+  // Opening at the bottom, rows keep growing after the first layout: a
+  // native markdown view learns its height a frame after it mounts, so a long
+  // reply starts short and then expands. The one scroll to the end on load
+  // landed above the real end — halfway through the reply, or flashing
+  // between its top and its end. Until the reader touches the list (or
+  // FEED_SETTLE_MS passes), every growth goes back to the end and scroll
+  // events cannot switch following off; the list shows once the height has
+  // held still for FEED_REVEAL_QUIET_MS.
+  const feedSettling = useRef(!openedOnTarget.current);
+  const revealQuietTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleFeedAtEnd = () => {
+    messageListRef.current?.scrollToEnd({ animated: false });
+    if (revealQuietTimer.current) clearTimeout(revealQuietTimer.current);
+    revealQuietTimer.current = setTimeout(revealFeed, FEED_REVEAL_QUIET_MS);
+  };
+  useEffect(() => {
+    if (!feedSettling.current) return;
+    const timer = setTimeout(() => {
+      feedSettling.current = false;
+    }, FEED_SETTLE_MS);
+    return () => {
+      clearTimeout(timer);
+      if (revealQuietTimer.current) clearTimeout(revealQuietTimer.current);
+    };
+  }, []);
   const shouldStickToFeedBottom = useRef(!openedOnTarget.current);
   const targetSettleUntil = useRef(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -947,6 +965,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     // momentary "near the bottom" here would hand control back to the
     // follow-the-tail logic and snap the feed to the end.
     if (pendingTarget.current || Date.now() < targetSettleUntil.current) return;
+    if (feedSettling.current) return;
     const nearBottom = isFeedNearBottom({
       contentHeight: contentSize.height,
       offsetY: contentOffset.y,
@@ -1023,7 +1042,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     if (feedRevealed || !hasMessages) return;
     const timer = setTimeout(() => {
       setFeedRevealed(true);
-    }, 600);
+    }, FEED_SETTLE_MS);
     return () => clearTimeout(timer);
   }, [feedRevealed, hasMessages]);
 
@@ -1308,10 +1327,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
             // First layout is done: land on the newest row (the initial index
             // aligns its top, not its bottom), and only then show the list.
             onLoad={() => {
-              if (!openedOnTarget.current) {
-                messageListRef.current?.scrollToEnd({ animated: false });
-                revealFeed();
-              }
+              if (!openedOnTarget.current) settleFeedAtEnd();
             }}
             // Open on the newest row: rendering starts there, not at the top.
             initialScrollIndex={
@@ -1368,6 +1384,10 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               hasMeasuredFeedLayout.current = true;
               // Opening on a pushed message or a saved position, not the end.
               if (pendingTarget.current) return;
+              if (feedSettling.current) {
+                settleFeedAtEnd();
+                return;
+              }
               if (
                 shouldAutoScrollFeed({
                   isInitialLayout,
@@ -1379,6 +1399,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
             }}
             onScroll={handleFeedScroll}
             onScrollBeginDrag={() => {
+              feedSettling.current = false;
               // The reader took over; stop steering toward the saved spot.
               if (pendingTarget.current?.mode === "anchor") pendingTarget.current = null;
               targetSettleUntil.current = 0;
@@ -1744,6 +1765,15 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
  * callbacks passed in read the current handlers through `latest`, which is
  * what lets the comparator ignore their identity.
  */
+/** How long an opened feed keeps returning to its end while rows settle. */
+const FEED_SETTLE_MS = 1500;
+/**
+ * How long the feed's height must hold still before it is shown. Measured on
+ * a moto g35: FlashList keeps measuring rows above the end for up to ~0.8s
+ * on a session of long replies, in bursts under ~130ms apart.
+ */
+const FEED_REVEAL_QUIET_MS = 150;
+
 const MemoAgentTurnCard = memo(AgentTurnCard, propsEqualIgnoringFunctions);
 const MemoMessageRow = memo(SessionMessageRow, propsEqualIgnoringFunctions);
 
