@@ -191,7 +191,9 @@ function streamingMessage(turn: AgentTurnFeedItem, text: string): SessionMessage
     turnId: "",
     replyToMessageId: "",
     metadata: null,
-    createdAt: new Date().toISOString(),
+    // When the stream began, not "now": a fresh timestamp per render made the
+    // row's props differ on every chunk even when nothing else had.
+    createdAt: turn.stream?.startedAt ?? "",
     attachments: [],
   };
 }

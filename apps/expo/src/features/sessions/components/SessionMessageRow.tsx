@@ -23,7 +23,8 @@ import { buildThinkingBody, buildThinkingPreview } from "./agent-thinking-presen
 import { AudioPlayerChip } from "./AudioPlayerChip";
 import { useAttachmentImageSource } from "./attachment-image-source";
 import { ImageLightbox } from "./ImageLightbox";
-import { buildMarkdownStyles, hasBlockMarkdown } from "./markdown-styles";
+import { buildMarkdownStyles, hasBlockMarkdown, MARKDOWN_BLOCK_GAP } from "./markdown-styles";
+import { StreamingMarkdown } from "./StreamingMarkdown";
 import { PermissionBanner } from "./PermissionBanner";
 import { ToolCallLine } from "./ToolCallLine";
 import { mentionPlainText } from "../mention-display";
@@ -107,15 +108,20 @@ function agentNoteStyle(kind: string): { eyebrow: string; tint: string } {
   return { eyebrow: t("TOOL"), tint: hai.basalt };
 }
 
+// Built once: constructing an Intl formatter is slow on Hermes, and this ran
+// for every row on every render.
+let clockFormat: Intl.DateTimeFormat | null = null;
+
 export function formatTimestamp(value: string): string {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("en-US", {
+  clockFormat ??= new Intl.DateTimeFormat("en-US", {
     hour12: false,
     hour: "2-digit",
     minute: "2-digit",
-  }).format(date);
+  });
+  return clockFormat.format(date);
 }
 
 export function SessionMessageRow({
@@ -457,11 +463,19 @@ export function SessionMessageRow({
         <ImageLightbox onClose={() => setLightboxUrl(null)} url={lightboxUrl} />
 
         {body.length > 0 ? (
-          <Markdown
-            style={isOwnMessage ? ownMarkdown : otherMarkdown}
-          >
-            {body}
-          </Markdown>
+          isStreaming ? (
+            <StreamingMarkdown
+              gap={MARKDOWN_BLOCK_GAP}
+              style={isOwnMessage ? ownMarkdown : otherMarkdown}
+              text={body}
+            />
+          ) : (
+            <Markdown
+              style={isOwnMessage ? ownMarkdown : otherMarkdown}
+            >
+              {body}
+            </Markdown>
+          )
         ) : null}
 
         {isStreaming ? (

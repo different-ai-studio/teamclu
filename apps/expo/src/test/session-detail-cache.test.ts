@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createSessionDetailCache } from "../features/sessions/session-detail-cache";
 import { createSessionsCache } from "../features/sessions/session-cache";
@@ -74,6 +74,37 @@ describe("session detail cache", () => {
     expect(loaded?.messages[0]?.attachments).toEqual([
       { url: "https://example.test/a.png", mime: "image/png" },
     ]);
+  });
+
+  it("rewrites only the rows that changed while the timeline only grows", async () => {
+    const m1 = message({ messageId: "m1", createdAt: "2026-01-01T00:00:01Z" });
+    const m2 = message({ messageId: "m2", content: "draft", createdAt: "2026-01-01T00:00:02Z" });
+    await cache.save("s1", { session: session(), messages: [m1, m2] });
+
+    const runs = vi.spyOn(db, "runAsync");
+    const m2Edited = { ...m2, content: "final" };
+    const m3 = message({ messageId: "m3", createdAt: "2026-01-01T00:00:03Z" });
+    await cache.saveMessages("s1", [m1, m2Edited, m3]);
+    const statements = runs.mock.calls.map(([sql]) => String(sql));
+    expect(statements.filter((sql) => sql.startsWith("INSERT"))).toHaveLength(2);
+    expect(statements.some((sql) => sql.startsWith("DELETE"))).toBe(false);
+    runs.mockRestore();
+
+    const loaded = await cache.load("s1");
+    expect(loaded?.messages.map((m) => [m.messageId, m.content])).toEqual([
+      ["m1", "hello"],
+      ["m2", "final"],
+      ["m3", "hello"],
+    ]);
+  });
+
+  it("replaces the whole scope once a message is gone", async () => {
+    const m1 = message({ messageId: "m1", createdAt: "2026-01-01T00:00:01Z" });
+    const m2 = message({ messageId: "m2", createdAt: "2026-01-01T00:00:02Z" });
+    await cache.save("s1", { session: session(), messages: [m1, m2] });
+    await cache.saveMessages("s1", [m1]);
+    const loaded = await cache.load("s1");
+    expect(loaded?.messages.map((m) => m.messageId)).toEqual(["m1"]);
   });
 
   it("orders the timeline oldest-first", async () => {

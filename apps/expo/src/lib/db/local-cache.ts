@@ -160,6 +160,15 @@ const MESSAGE_COLUMNS = [
   "created_at", "cached_at",
 ];
 
+function messageRow(sessionId: string, m: CachedMessage, now: number): unknown[] {
+  return [
+    m.messageId, sessionId, m.teamId, m.senderActorId, m.kind, m.content,
+    m.model, m.turnId, m.replyToMessageId,
+    m.metadata == null ? null : JSON.stringify(m.metadata),
+    JSON.stringify(m.attachments ?? []), m.createdAt, now,
+  ];
+}
+
 export async function saveMessages(
   db: CacheDb,
   sessionId: string,
@@ -172,12 +181,30 @@ export async function saveMessages(
     scopeColumn: "session_id",
     scopeValue: sessionId,
     columns: MESSAGE_COLUMNS,
-    rows: messages.map((m) => [
-      m.messageId, sessionId, m.teamId, m.senderActorId, m.kind, m.content,
-      m.model, m.turnId, m.replyToMessageId,
-      m.metadata == null ? null : JSON.stringify(m.metadata),
-      JSON.stringify(m.attachments ?? []), m.createdAt, now,
-    ]),
+    rows: messages.map((m) => messageRow(sessionId, m, now)),
+  });
+}
+
+/**
+ * Writes `messages` without touching the session's other rows. For a timeline
+ * that only grew or changed in place, this is the whole of what `saveMessages`
+ * would rewrite, minus every row that did not change.
+ */
+export async function upsertMessages(
+  db: CacheDb,
+  sessionId: string,
+  messages: ReadonlyArray<CachedMessage>,
+  now = Date.now(),
+): Promise<void> {
+  if (!sessionId || messages.length === 0) return;
+  const placeholders = MESSAGE_COLUMNS.map(() => "?").join(", ");
+  await inTransaction(db, async () => {
+    for (const m of messages) {
+      await db.runAsync(
+        `INSERT OR REPLACE INTO cached_messages (${MESSAGE_COLUMNS.join(", ")}) VALUES (${placeholders})`,
+        ...messageRow(sessionId, m, now),
+      );
+    }
   });
 }
 

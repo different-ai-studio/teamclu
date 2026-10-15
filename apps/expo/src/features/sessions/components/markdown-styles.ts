@@ -45,12 +45,15 @@ function heading(fontSize: number, color: string) {
   };
 }
 
+/** Space between blocks — a paragraph, list, heading or fence. */
+export const MARKDOWN_BLOCK_GAP = 6;
+
 export function buildMarkdownStyles({ base, hairline, link, rule, surface, text }: MarkdownPalette) {
   const size = base.fontSize;
   return {
     // Blocks are spaced by the body's gap, not their own margins, so the first
     // and last add nothing and a one-line bubble keeps its usual height.
-    body: { color: text, ...base, gap: 6, marginBottom: 0, marginTop: 0 },
+    body: { color: text, ...base, gap: MARKDOWN_BLOCK_GAP, marginBottom: 0, marginTop: 0 },
     heading1: heading(size + 4, text),
     heading2: heading(size + 2, text),
     heading3: heading(size + 1, text),

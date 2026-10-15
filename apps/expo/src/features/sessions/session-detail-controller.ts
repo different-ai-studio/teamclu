@@ -99,6 +99,8 @@ export const STALE_STREAM_TIMEOUT_MS = 90_000;
 type SessionDetailControllerDeps = {
   /** Test seam for the stale-stream watchdog. */
   staleStreamTimeoutMs?: number;
+  /** How often a growing stream is published; 0 publishes every chunk. */
+  streamEmitIntervalMs?: number;
   api: Pick<
     SessionsApi,
     | "getSession"
@@ -514,7 +516,38 @@ export function createSessionDetailController(
     // background snapshots, which never pass `publishTimelineState` — so the
     // stale-stream watchdog is armed here rather than there.
     armStaleStreamWatchdog(timeline);
+    cancelDeferredEmit();
     emit();
+  }
+
+  /**
+   * Streamed text arrives one network chunk at a time — often dozens a second
+   * — and every emit is a synchronous render of the whole session screen. A
+   * change that only grows a stream's text is published at most once per
+   * interval instead; `getState` still returns it at once, and any other
+   * change emits immediately and takes the pending text with it.
+   */
+  const STREAM_EMIT_INTERVAL_MS = deps.streamEmitIntervalMs ?? 50;
+  let deferredEmitTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function cancelDeferredEmit() {
+    if (!deferredEmitTimer) return;
+    clearTimeout(deferredEmitTimer);
+    deferredEmitTimer = null;
+  }
+
+  function setStreamingState(nextState: SessionDetailControllerState) {
+    state = nextState;
+    armStaleStreamWatchdog(timeline);
+    if (STREAM_EMIT_INTERVAL_MS <= 0) {
+      emit();
+      return;
+    }
+    if (deferredEmitTimer) return;
+    deferredEmitTimer = setTimeout(() => {
+      deferredEmitTimer = null;
+      emit();
+    }, STREAM_EMIT_INTERVAL_MS);
   }
 
   function disconnectRealtime() {
@@ -586,14 +619,21 @@ export function createSessionDetailController(
   }
 
   function publishTimelineState(next: TimelineState) {
+    const messagesChanged = next.messages !== timeline.messages;
     timeline = next;
-    setState({
+    const nextState = {
       ...state,
       messages: next.messages,
       streamingByAgent: next.streamingByAgent,
       status: nextStatusForMessages(state.session, next.messages, state.status),
-    });
-    scheduleTimelinePersist();
+    };
+    if (messagesChanged) {
+      setState(nextState);
+      // Streamed text is not a row yet; it is persisted when it commits.
+      scheduleTimelinePersist();
+    } else {
+      setStreamingState(nextState);
+    }
   }
 
   /**

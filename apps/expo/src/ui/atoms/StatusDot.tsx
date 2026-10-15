@@ -10,7 +10,7 @@ export type StatusDotProps = {
   size?: number;
   /** Overrides the kind's colour. iOS drives some dots straight off a token. */
   color?: string;
-  /** Overrides whether the dot breathes. Defaults to active/working. */
+  /** Overrides whether the dot breathes. Defaults to `working` only. */
   breathing?: boolean;
   style?: ViewStyle;
 };
@@ -62,8 +62,11 @@ export function StatusDot({
     };
   }, []);
 
-  const shouldBreathe =
-    (breathing ?? (kind === "active" || kind === "working")) && !reduceMotion;
+  // Only work in flight breathes by default, as on iOS. "active" used to as
+  // well, and it marks every finished reply card, the live header and each
+  // ready agent chip — a screen of idle loops that kept the render thread
+  // drawing every frame long after the agent had stopped.
+  const shouldBreathe = (breathing ?? kind === "working") && !reduceMotion;
 
   useEffect(() => {
     if (!shouldBreathe) {

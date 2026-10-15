@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
@@ -42,7 +42,7 @@ import {
   type MentionTarget,
 } from "../components/mentions";
 import { SessionComposerShell } from "../components/SessionComposerShell";
-import { SessionMessageRow } from "../components/SessionMessageRow";
+import { formatTimestamp, SessionMessageRow } from "../components/SessionMessageRow";
 import { SessionPlansPanel } from "../components/SessionPlansPanel";
 import {
   getOutboxSnapshot,
@@ -99,6 +99,7 @@ import type { SessionMessage, SessionSummary } from "../session-types";
 import { impactLight, selectionTick, successTone } from "../../../lib/haptics";
 import { showActionSheet, type SheetAction } from "../../../ui/action-sheet";
 import { showToast } from "../../../ui/Toast";
+import { propsEqualIgnoringFunctions } from "../../../lib/memo-props";
 import { MessageSelectionBar } from "../components/MessageSelectionBar";
 import { SessionSearchBar } from "../components/SessionSearchBar";
 import {
@@ -395,14 +396,7 @@ function streamPreview(text: string): string {
 }
 
 function formatTime(value: string): string {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("en-US", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+  return formatTimestamp(value);
 }
 
 
@@ -723,6 +717,30 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     () => foldToolResults(state.messages),
     [state.messages],
   );
+
+  // A reply's quoted message, by id — each row used to search every message.
+  const messageById = useMemo(
+    () => new Map(state.messages.map((message) => [message.messageId, message])),
+    [state.messages],
+  );
+
+  // Rows are memoized and skip renders, so the callbacks they hold must not
+  // capture a stale render: each one reads the current handlers from here.
+  const latest = useRef<{
+    feedItems: readonly FeedItem[];
+    onDeleteMessage: typeof onDeleteMessage;
+    onEditMessage: typeof onEditMessage;
+    onReplyToMessage: typeof onReplyToMessage;
+    onFeedback: typeof onFeedback;
+    onRetryFailed: typeof onRetryFailed;
+    onGrantPermission: typeof onGrantPermission;
+    onDenyPermission: typeof onDenyPermission;
+    onAgentInterrupt: typeof onAgentInterrupt;
+    showTurnActions: (key: string, turn: AgentTurnFeedItem) => void;
+    openTurn: (key: string) => void;
+    startSelection: (key: string) => void;
+    scrollToIndex: (index: number) => void;
+  } | null>(null);
 
   const feedSources = useMemo(
     () =>
@@ -1155,6 +1173,23 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     showActionSheet(actions, { cancelLabel: tHook("Cancel") });
   };
 
+  latest.current = {
+    feedItems,
+    onDeleteMessage,
+    onEditMessage,
+    onReplyToMessage,
+    onFeedback,
+    onRetryFailed,
+    onGrantPermission,
+    onDenyPermission,
+    onAgentInterrupt,
+    showTurnActions,
+    openTurn: setSelectedTurnKey,
+    startSelection,
+    scrollToIndex: (index) =>
+      messageListRef.current?.scrollToIndex({ animated: true, index, viewPosition: 0.3 }),
+  };
+
   const wrapRow = (key: string, node: React.ReactNode) => {
     const highlighted = key === highlightKey ? styles.highlightRow : null;
     const source = sourceByKey.get(key);
@@ -1333,19 +1368,26 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               if (item.kind === "separator") {
                 return <DaySeparator label={item.label} />;
               }
+              const live = () => latest.current!;
               if (item.kind === "agentTurn") {
                 return wrapRow(
                   item.key,
-                  <AgentTurnCard
-                    onLongPress={selection ? undefined : () => showTurnActions(item.key, item.turn)}
-                    onOpenDetail={() => setSelectedTurnKey(item.key)}
-                    onInterrupt={onAgentInterrupt}
+                  <MemoAgentTurnCard
+                    onLongPress={
+                      selection ? undefined : () => live().showTurnActions(item.key, item.turn)
+                    }
+                    onOpenDetail={() => live().openTurn(item.key)}
+                    onInterrupt={
+                      onAgentInterrupt ? (agentId) => live().onAgentInterrupt?.(agentId) : undefined
+                    }
                     feedbackKind={
                       item.turn.finalMessage
                         ? feedbackByMessageId?.get(item.turn.finalMessage.messageId) ?? null
                         : null
                     }
-                    onFeedback={onFeedback}
+                    onFeedback={
+                      onFeedback ? (messageId, kind) => live().onFeedback?.(messageId, kind) : undefined
+                    }
                     senderAvatarGlyph={
                       senderAvatarGlyphs?.get(item.turn.agentId) ?? null
                     }
@@ -1359,41 +1401,36 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               const isOwn = ownActorId ? msg.senderActorId === ownActorId : false;
               const replyToMessage =
                 msg.replyToMessageId && msg.replyToMessageId.length > 0
-                  ? state.messages.find((m) => m.messageId === msg.replyToMessageId) ??
-                    null
+                  ? messageById.get(msg.replyToMessageId) ?? null
                   : null;
               const rowSource = sourceByKey.get(item.key);
               return wrapRow(
                 item.key,
-                <SessionMessageRow
+                <MemoMessageRow
                   isOwnMessage={isOwn}
                   onSelect={
                     !selection && rowSource && selectableMessage(rowSource)
-                      ? () => startSelection(item.key)
+                      ? () => live().startSelection(item.key)
                       : undefined
                   }
                   message={msg}
-                  onDelete={onDeleteMessage}
+                  onDelete={onDeleteMessage ? (m) => live().onDeleteMessage?.(m) : undefined}
                   onEdit={
                     onEditMessage
-                      ? (m) => onEditMessage(m.messageId, m.content)
+                      ? (m) => live().onEditMessage?.(m.messageId, m.content)
                       : undefined
                   }
                   onJumpToReply={(targetId) => {
-                    const index = feedItems.findIndex(
+                    const index = live().feedItems.findIndex(
                       (entry) => entry.kind === "message" && entry.message.messageId === targetId,
                     );
-                    if (index >= 0) {
-                      messageListRef.current?.scrollToIndex({
-                        animated: true,
-                        index,
-                        viewPosition: 0.3,
-                      });
-                    }
+                    if (index >= 0) live().scrollToIndex(index);
                   }}
-                  onRetryOutbox={onRetryFailed}
+                  onRetryOutbox={onRetryFailed ? (id) => live().onRetryFailed?.(id) : undefined}
                   feedbackKind={feedbackByMessageId?.get(msg.messageId) ?? null}
-                  onFeedback={onFeedback ? (kind) => onFeedback(msg.messageId, kind) : undefined}
+                  onFeedback={
+                    onFeedback ? (kind) => live().onFeedback?.(msg.messageId, kind) : undefined
+                  }
                   toolResult={(() => {
                     if (msg.kind.trim().toLowerCase() !== "agent_tool_call") return undefined;
                     const meta =
@@ -1406,7 +1443,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                   })()}
                   onReply={
                     onReplyToMessage
-                      ? (m) => onReplyToMessage(m.messageId)
+                      ? (m) => live().onReplyToMessage?.(m.messageId)
                       : undefined
                   }
                   outboxStatus={
@@ -1414,8 +1451,16 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                       ? (outboxByMessageId.get(msg.messageId) as OutboxStatus | undefined)
                       : undefined
                   }
-                  onGrantPermission={onGrantPermission}
-                  onDenyPermission={onDenyPermission}
+                  onGrantPermission={
+                    onGrantPermission
+                      ? (requestId, m) => live().onGrantPermission?.(requestId, m)
+                      : undefined
+                  }
+                  onDenyPermission={
+                    onDenyPermission
+                      ? (requestId, m) => live().onDenyPermission?.(requestId, m)
+                      : undefined
+                  }
                   resolvedPermission={(() => {
                     if (msg.kind.trim().toLowerCase() !== "permission_request")
                       return null;
@@ -1658,6 +1703,15 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     </View>
   );
 }
+
+/**
+ * The feed's rows, memoized. Every streamed chunk re-renders the screen; with
+ * plain components that re-rendered every mounted row along with it. The
+ * callbacks passed in read the current handlers through `latest`, which is
+ * what lets the comparator ignore their identity.
+ */
+const MemoAgentTurnCard = memo(AgentTurnCard, propsEqualIgnoringFunctions);
+const MemoMessageRow = memo(SessionMessageRow, propsEqualIgnoringFunctions);
 
 const styles = StyleSheet.create({
   empty: {

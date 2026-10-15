@@ -3,6 +3,7 @@ import {
   loadSessions,
   saveMessages,
   saveSessions,
+  upsertMessages,
 } from "../../lib/db/local-cache";
 import { openCacheDb, type CacheDb } from "../../lib/db/cache-db";
 import type { MessageAttachment, SessionMessage, SessionSummary } from "./session-types";
@@ -32,6 +33,8 @@ export type SessionDetailCache = {
 export function createSessionDetailCache(
   getCacheDb: () => Promise<CacheDb> = openCacheDb,
 ): SessionDetailCache {
+  /** What each session's last write held, by message id. */
+  const lastSaved = new Map<string, Map<string, SessionMessage>>();
   const toSessionMessage = (row: {
     messageId: string;
     sessionId: string;
@@ -132,11 +135,22 @@ export function createSessionDetailCache(
     },
     async saveMessages(sessionId, messages) {
       if (!sessionId) return;
+      // Timeline rows are immutable: a message that changed is a new object.
+      // When nothing was removed since the last write, only the rows whose
+      // object changed need writing — during a busy turn that is a handful,
+      // against rewriting the whole session every second.
+      const previous = lastSaved.get(sessionId);
+      const nextIds = new Set(messages.map((message) => message.messageId));
+      const onlyGrewOrChanged =
+        previous !== undefined && [...previous.keys()].every((id) => nextIds.has(id));
+      const toWrite = onlyGrewOrChanged
+        ? messages.filter((message) => previous.get(message.messageId) !== message)
+        : messages;
       try {
-        await saveMessages(
+        await (onlyGrewOrChanged ? upsertMessages : saveMessages)(
           await getCacheDb(),
           sessionId,
-          messages.map((message) => ({
+          toWrite.map((message) => ({
             messageId: message.messageId,
             sessionId: message.sessionId || sessionId,
             teamId: message.teamId,
@@ -151,12 +165,15 @@ export function createSessionDetailCache(
             createdAt: message.createdAt,
           })),
         );
+        // Only after the write landed, so rows a failed write missed go next time.
+        lastSaved.set(sessionId, new Map(messages.map((message) => [message.messageId, message])));
       } catch {
         // best-effort
       }
     },
     async clear(sessionId) {
       if (!sessionId) return;
+      lastSaved.delete(sessionId);
       try {
         await saveMessages(await getCacheDb(), sessionId, []);
       } catch {
