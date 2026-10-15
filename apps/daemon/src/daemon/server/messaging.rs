@@ -1243,6 +1243,11 @@ impl DaemonServer {
         if message_id.is_empty() {
             return;
         }
+        // Store the canonical (lower-case) UUID form the backend returns, so
+        // an upper-case id off MQTT does not leave a cursor in a second
+        // spelling (#1696).
+        let message_id = message_id.to_ascii_lowercase();
+        let message_id = message_id.as_str();
         {
             let mut agents = self.agents.lock().await;
             agents.advance_message_cursor(runtime_id, message_id);

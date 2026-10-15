@@ -1519,7 +1519,12 @@ impl SessionManager {
         self.subscribed_live_sessions.iter().cloned().collect()
     }
 
+    /// Message ids are UUIDs, which compare case-insensitively (RFC 4122).
+    /// iOS publishes `UUID().uuidString` (upper case) on MQTT while the copy
+    /// read back from Postgres is lower case, so a case-sensitive key let the
+    /// same message through twice (#1696).
     pub fn should_process_message(&mut self, session_id: &str, message_id: &str) -> bool {
+        let message_id = message_id.to_ascii_lowercase();
         self.record_recent_event(format!("message:{session_id}:{message_id}"))
     }
 
@@ -1932,6 +1937,11 @@ mod tests {
 
         assert!(sm.should_process_message("s1", "m1"));
         assert!(!sm.should_process_message("s1", "m1"));
+
+        // #1696: the MQTT copy from iOS is upper case, the persisted copy is
+        // lower case — both are the same message.
+        assert!(sm.should_process_message("s1", "76f88f18-cb4c-49f0-a4a1-b08c9f81b583"));
+        assert!(!sm.should_process_message("s1", "76F88F18-CB4C-49F0-A4A1-B08C9F81B583"));
 
         let created = teamclu::IdeaEvent {
             event: Some(teamclu::idea_event::Event::Created(teamclu::Idea {
