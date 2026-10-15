@@ -1,0 +1,22 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.teamclu'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.teamclumarkdown"
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
+
+dependencies {
+  def markwonVersion = '4.6.2'
+  implementation "io.noties.markwon:core:$markwonVersion"
+  implementation "io.noties.markwon:ext-strikethrough:$markwonVersion"
+  implementation "io.noties.markwon:ext-tables:$markwonVersion"
+}

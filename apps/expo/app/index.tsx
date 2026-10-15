@@ -1,5 +1,5 @@
 import { Redirect } from "expo-router";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -15,14 +15,12 @@ export default function IndexRoute() {
   const { t } = useTranslation();
   const { controller, retryBootstrap, applyServerChange, state } = useOnboarding();
   const href = routeToHref(state.route);
-  // Bootstrap often resolves in well under one lap of the mark. iOS waits for
-  // the animation before moving on (`ApertureSplashView.onLapFinished`); hold
-  // the redirect the same way so the splash isn't torn down mid-lap.
-  const [lapFinished, setLapFinished] = useState(false);
+  // Leave as soon as bootstrap knows where to go. iOS holds the redirect until
+  // the mark finishes its 2.8s lap (`ApertureSplashView.onLapFinished`); on
+  // Android that wait was most of a cold start, so the splash is cut short.
   const [serverOpen, setServerOpen] = useState(false);
-  const handleLapFinished = useCallback(() => setLapFinished(true), []);
 
-  if (href && lapFinished) {
+  if (href) {
     return <Redirect href={href} />;
   }
 
@@ -99,7 +97,7 @@ export default function IndexRoute() {
     );
   }
 
-  return <ApertureSplashScreen onLapFinished={handleLapFinished} />;
+  return <ApertureSplashScreen />;
 }
 
 const styles = StyleSheet.create({

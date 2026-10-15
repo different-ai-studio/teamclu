@@ -1,4 +1,5 @@
 import {
+  type CachedMessage,
   deleteMessages,
   loadMessages,
   loadSessions,
@@ -31,12 +32,40 @@ export type SessionDetailCache = {
  * in `session-detail-controller`. Rows carry no such clamp, so scrolling back
  * through a long session no longer has to hit the network.
  */
+/** How many of a session's newest rows its first frame reads. */
+const FIRST_PAINT_MESSAGES = 120;
+const PREFETCH_TTL_MS = 5_000;
+const prefetchedMessages = new Map<string, { at: number; rows: Promise<CachedMessage[]> }>();
+
+/**
+ * Starts reading a session's newest rows the moment the list is tapped, so the
+ * read overlaps the screen transition instead of starting after the detail
+ * screen mounts. The detail cache's next `load` of that session takes it.
+ */
+export function prefetchSessionMessages(
+  sessionId: string,
+  getCacheDb: () => Promise<CacheDb> = openCacheDb,
+): void {
+  if (!sessionId) return;
+  prefetchedMessages.set(sessionId, {
+    at: Date.now(),
+    rows: getCacheDb()
+      .then((db) => loadMessages(db, sessionId, FIRST_PAINT_MESSAGES))
+      .catch(() => []),
+  });
+}
+
+function takePrefetchedMessages(sessionId: string): Promise<CachedMessage[]> | null {
+  const entry = prefetchedMessages.get(sessionId);
+  prefetchedMessages.delete(sessionId);
+  return entry && Date.now() - entry.at < PREFETCH_TTL_MS ? entry.rows : null;
+}
+
 export function createSessionDetailCache(
   getCacheDb: () => Promise<CacheDb> = openCacheDb,
 ): SessionDetailCache {
   /** What each session's last write held, by message id. */
   const lastSaved = new Map<string, Map<string, SessionMessage>>();
-  const FIRST_PAINT_MESSAGES = 120;
   const toSessionMessage = (row: {
     messageId: string;
     sessionId: string;
@@ -73,7 +102,10 @@ export function createSessionDetailCache(
         // The newest rows only: enough to fill the screen and the network's
         // first page, without reading a long session's whole history before
         // the first frame. Older pages come from the network as you scroll.
-        const messages = await loadMessages(db, sessionId, FIRST_PAINT_MESSAGES);
+        const prefetched = takePrefetchedMessages(sessionId);
+        const messages = prefetched
+          ? await prefetched
+          : await loadMessages(db, sessionId, FIRST_PAINT_MESSAGES);
         // The session row is scoped by team, and the caller only knows the
         // session id, so find it by walking the message rows' team back into
         // the sessions table. A session with no cached messages still has a

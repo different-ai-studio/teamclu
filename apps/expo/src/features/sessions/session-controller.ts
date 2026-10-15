@@ -106,14 +106,18 @@ export function createSessionsController(
 
   const isCurrentRequest = (id: number) => id === requestId;
 
-  const hydrateFromCache = async (currentRequestId: number) => {
+  const hydrateFromCache = async () => {
     if (!cache || hydratedFromCache || !teamId) return;
     hydratedFromCache = true;
     try {
       const cached = await cache.load(teamId);
-      if (!cached || !isCurrentRequest(currentRequestId)) return;
-      // Don't clobber rows that arrived from the network while disk I/O
-      // was in flight — the network is authoritative.
+      // Not gated on the request id: launch fires `load` and the focus
+      // effect's quiet `refresh` together, and the refresh made this result
+      // "stale" — so the cached rows were dropped and the list sat on its
+      // skeleton until the network answered. The controller serves one team,
+      // so cached rows are never another team's; the one thing to avoid is
+      // clobbering rows the network already delivered.
+      if (!cached || cached.length === 0) return;
       if (state.sessions.length > 0) return;
       setUnreadSessionCount(unreadBadgeCount(cached, teamId), teamId);
       setState(buildDerivedState(cached));
@@ -127,7 +131,7 @@ export function createSessionsController(
 
     // Kick off the cache hydration in parallel — first paint comes from
     // disk while the network fetch is still pending.
-    void hydrateFromCache(currentRequestId);
+    void hydrateFromCache();
 
     try {
       const sessions = await api.listSessions(teamId, currentActorId ?? undefined);

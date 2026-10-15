@@ -5,7 +5,6 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   AppState,
-  FlatList,
   Image,
   KeyboardAvoidingView,
   NativeScrollEvent,
@@ -18,7 +17,7 @@ import {
   Text,
   View,
 } from "react-native";
-import Markdown from "react-native-markdown-display";
+import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { initialWindowMetrics, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Hairline } from "../../../ui/atoms/Hairline";
@@ -33,7 +32,8 @@ import { ConnectionBannerOverlay } from "../components/ConnectionBannerOverlay";
 import { DaySeparator } from "../components/DaySeparator";
 import { buildThinkingPreview } from "../components/agent-thinking-presentation";
 import { dayLabel, isSameCalendarDay } from "../components/day-separator-labels";
-import { buildMarkdownStyles } from "../components/markdown-styles";
+import { buildMarkdownStyles, type MarkdownPalette } from "../components/markdown-styles";
+import { MessageMarkdown } from "../components/MessageMarkdown";
 import { MentionsPopup } from "../components/MentionsPopup";
 import {
   applyMention,
@@ -419,6 +419,16 @@ function agentTurnPreview(turn: AgentTurnFeedItem): string {
   return t("Working…");
 }
 
+/**
+ * The live card's single line: the reply being written, never thinking or tool
+ * calls (those are on the trace page), as iOS `ActiveStreamRow.lastLine`. Only
+ * the tail of the buffer is touched, so a long reply is not copied per chunk.
+ */
+function liveLine(turn: AgentTurnFeedItem): string {
+  const text = turn.stream?.text ?? "";
+  return text.slice(-240).replace(/\s+/g, " ").trim();
+}
+
 function agentTurnTime(turn: AgentTurnFeedItem): string {
   return formatTime(turn.finalMessage?.createdAt || turn.stream?.startedAt || turn.createdAt);
 }
@@ -438,14 +448,15 @@ function isOwnOutgoingFeedSource(
   );
 }
 
-const turnMarkdown = buildMarkdownStyles({
+const TURN_PALETTE: MarkdownPalette = {
   base: typography.body,
   hairline: StyleSheet.hairlineWidth,
   link: hai.cinnabar,
   rule: hai.hairline,
   surface: hai.pebble,
   text: hai.onyx,
-});
+};
+const turnMarkdown = buildMarkdownStyles(TURN_PALETTE);
 
 function AgentTurnCard({
   onLongPress,
@@ -543,21 +554,33 @@ function AgentTurnCard({
             </Pressable>
           ) : null}
         </View>
-        {(turn.finalMessage?.model || turn.stream?.model) ? (
+        {turn.finalMessage?.model || turn.stream?.model || !turn.finalMessage ? (
+          // A live card holds the line before the model name arrives, so the
+          // name landing does not push the card taller.
           <Text numberOfLines={1} style={styles.turnModel}>
-            {turn.finalMessage?.model || turn.stream?.model}
+            {turn.finalMessage?.model || turn.stream?.model || " "}
           </Text>
         ) : null}
         {turn.finalMessage ? (
-          <Markdown style={turnMarkdown}>{preview || tHook("(empty message)")}</Markdown>
+          <MessageMarkdown
+            definiteWidth
+            palette={TURN_PALETTE}
+            style={turnMarkdown}
+            text={preview || tHook("(empty message)")}
+          />
         ) : (
-          <Text numberOfLines={4} style={styles.turnPreview}>
-            {preview}
+          // One line, as iOS `ActiveStreamCardView`: up to four lines made the
+          // card grow and shrink with every paragraph the agent wrote. The
+          // newest words stay in view by truncating the front.
+          <Text ellipsizeMode="head" numberOfLines={1} style={styles.turnPreview}>
+            {liveLine(turn) || tHook("Working…")}
             {isWorking && cursorVisible ? " ▌" : ""}
           </Text>
         )}
-        {detailCount > 0 ? (
-          <View style={styles.turnDetailRow}>
+        {detailCount > 0 || !turn.finalMessage ? (
+          <View
+            style={[styles.turnDetailRow, detailCount > 0 ? null : styles.turnDetailRowReserved]}
+          >
             <Ionicons color={colors.slate} name="list-outline" size={13} />
             <Text style={styles.turnDetailText}>
               {tHook("Process · {{count}}", { count: detailCount })}
@@ -800,7 +823,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
 
   const hasMessages = feedSources.length > 0;
 
-  const messageListRef = useRef<FlatList<FeedItem> | null>(null);
+  const messageListRef = useRef<FlashListRef<FeedItem> | null>(null);
   const feedKeys = feedSources.map((source) => source.key);
   const previousFeedKeys = useRef<string[]>(feedKeys);
   const hasMeasuredFeedLayout = useRef(false);
@@ -826,17 +849,10 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
   // stays transparent until that first scroll has landed (or a short timeout,
   // so it can never stay hidden).
   const [feedRevealed, setFeedRevealed] = useState(false);
-  // Opening at the bottom, the list first gets only its last few items: it
-  // renders from its first item, so it used to lay out the oldest rows (long
-  // replies included) only to scroll past them — about a second on a session
-  // of long answers. The rest are added above once the tail is on screen;
-  // `maintainVisibleContentPosition` keeps the view where it is meanwhile.
-  const [tailOnly, setTailOnly] = useState(() => !openedOnTarget.current);
   const revealFeed = () => {
-    requestAnimationFrame(() => {
-      setFeedRevealed(true);
-      requestAnimationFrame(() => setTailOnly(false));
-    });
+    // Two frames: FlashList applies a scroll on its next layout pass, and
+    // showing the list in the same frame flashed the pre-scroll position.
+    requestAnimationFrame(() => requestAnimationFrame(() => setFeedRevealed(true)));
   };
   const shouldStickToFeedBottom = useRef(!openedOnTarget.current);
   const targetSettleUntil = useRef(0);
@@ -887,21 +903,11 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feedSources.length]);
 
-  const tailOffset = tailOnly ? Math.max(0, feedItems.length - INITIAL_TAIL_ITEMS) : 0;
-  const listItems = tailOffset > 0 ? feedItems.slice(tailOffset) : feedItems;
   const hasFeedHeader =
-    tailOffset === 0 &&
-    (state.isLoadingOlder || (state.canLoadOlder && onLoadOlder !== undefined));
-  // VirtualizedList reads stickyHeaderIndices as positions among the scroll
-  // view's children, and a ListHeaderComponent takes the first of those — so a
-  // header shifts every day separator by one.
-  const stickyIndices = useMemo(
-    () =>
-      separatorIndices
-        .filter((index) => index >= tailOffset)
-        .map((index) => index - tailOffset + (hasFeedHeader ? 1 : 0)),
-    [hasFeedHeader, separatorIndices, tailOffset],
-  );
+    state.isLoadingOlder || (state.canLoadOlder && onLoadOlder !== undefined);
+  // FlashList counts sticky headers among the data, so the list header does
+  // not shift them (VirtualizedList counted it as the first child).
+  const stickyIndices = separatorIndices;
 
   useEffect(() => {
     // Only growth at the *tail* is a new message to follow. A back-scrolled
@@ -951,29 +957,11 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     if (nearBottom) setNewBelowCount(0);
   };
 
-  // Rows far off screen have estimated heights, so a jump can miss; measure
-  // toward it and try again (a few times) until the row is actually laid out.
-  const scrollRetry = useRef({ attempts: 0, viewPosition: 0 });
-  const scrollToFeedIndex = (index: number, viewPosition: number, isRetry = false) => {
+  // FlashList measures its way to a row it has not laid out yet, so one call
+  // lands; VirtualizedList needed a retry loop for that.
+  const scrollToFeedIndex = (index: number, viewPosition: number) => {
     if (index < 0) return;
-    if (!isRetry) scrollRetry.current = { attempts: 0, viewPosition };
-    try {
-      messageListRef.current?.scrollToIndex({ animated: false, index, viewPosition });
-    } catch {
-      // onScrollToIndexFailed handles the retry
-    }
-  };
-  const handleScrollToIndexFailed = (info: {
-    index: number;
-    averageItemLength: number;
-  }) => {
-    messageListRef.current?.scrollToOffset({
-      animated: false,
-      offset: info.averageItemLength * info.index,
-    });
-    if (scrollRetry.current.attempts >= 4) return;
-    scrollRetry.current.attempts += 1;
-    setTimeout(() => scrollToFeedIndex(info.index, scrollRetry.current.viewPosition, true), 80);
+    void messageListRef.current?.scrollToIndex({ animated: false, index, viewPosition });
   };
 
   const readRows = useMemo<ReadPositionRow[]>(
@@ -1035,7 +1023,6 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     if (feedRevealed || !hasMessages) return;
     const timer = setTimeout(() => {
       setFeedRevealed(true);
-      setTailOnly(false);
     }, 600);
     return () => clearTimeout(timer);
   }, [feedRevealed, hasMessages]);
@@ -1313,15 +1300,23 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
 
       <View style={styles.feed}>
         {hasMessages ? (
-          <FlatList
+          <FlashList
             contentContainerStyle={styles.feedContent}
-            style={feedRevealed ? null : styles.feedHidden}
-            // On by default on Android, where rows inserted above the clipped
-            // ones (the tail-first expansion, an older page) can leave the
-            // native children out of step and crash in addViewAt. The list is
-            // virtualized, so few rows are mounted anyway.
-            removeClippedSubviews={false}
-            data={listItems}
+            style={feedRevealed ? undefined : styles.feedHidden}
+            data={feedItems}
+            getItemType={(item) => item.kind}
+            // First layout is done: land on the newest row (the initial index
+            // aligns its top, not its bottom), and only then show the list.
+            onLoad={() => {
+              if (!openedOnTarget.current) {
+                messageListRef.current?.scrollToEnd({ animated: false });
+                revealFeed();
+              }
+            }}
+            // Open on the newest row: rendering starts there, not at the top.
+            initialScrollIndex={
+              openedOnTarget.current || feedItems.length === 0 ? undefined : feedItems.length - 1
+            }
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
             keyExtractor={(item) => item.key}
@@ -1329,8 +1324,6 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               // Also the retry path: `onStartReached` fires once per content
               // length, so a page that fails to load leaves the gesture spent
               // until the feed changes underneath it.
-              // Keep this in step with `hasFeedHeader`, which offsets the
-              // sticky separators.
               !hasFeedHeader ? null : state.isLoadingOlder ? (
                 <View style={styles.loadOlder}>
                   <ActivityIndicator color={colors.slate} size="small" />
@@ -1348,12 +1341,11 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                 </Pressable>
               ) : null
             }
-            // Anchors the scroll to the first row that was already on screen,
-            // so a page arriving above it does not shove the transcript down.
-            maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+            // FlashList keeps the rows on screen in place when a page arrives
+            // above them by default; following new rows below stays ours
+            // (`shouldAutoScrollForNewFeedItem`).
             onStartReached={() => {
               if (
-                tailOffset > 0 ||
                 !onLoadOlder ||
                 !shouldLoadOlderOnStartReached({
                   canLoadOlder: state.canLoadOlder,
@@ -1384,7 +1376,6 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               ) {
                 messageListRef.current?.scrollToEnd({ animated: false });
               }
-              if (isInitialLayout) revealFeed();
             }}
             onScroll={handleFeedScroll}
             onScrollBeginDrag={() => {
@@ -1392,7 +1383,6 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               if (pendingTarget.current?.mode === "anchor") pendingTarget.current = null;
               targetSettleUntil.current = 0;
             }}
-            onScrollToIndexFailed={handleScrollToIndexFailed}
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={viewabilityConfig}
             refreshControl={
@@ -1754,9 +1744,6 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
  * callbacks passed in read the current handlers through `latest`, which is
  * what lets the comparator ignore their identity.
  */
-/** How many feed items a session opening at the bottom renders first. */
-const INITIAL_TAIL_ITEMS = 12;
-
 const MemoAgentTurnCard = memo(AgentTurnCard, propsEqualIgnoringFunctions);
 const MemoMessageRow = memo(SessionMessageRow, propsEqualIgnoringFunctions);
 
@@ -1963,6 +1950,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 14,
     marginTop: 6,
+  },
+  // Holds the row's height on a live card before it has anything to count.
+  turnDetailRowReserved: {
+    opacity: 0,
   },
   turnDetailRow: {
     alignItems: "center",
