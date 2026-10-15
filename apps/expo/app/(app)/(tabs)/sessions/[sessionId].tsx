@@ -51,6 +51,7 @@ import {
   permissionOptionsOf,
 } from "../../../../src/features/sessions/permission-options";
 import { createSessionDetailController } from "../../../../src/features/sessions/session-detail-controller";
+import { openingSession } from "../../../../src/features/sessions/opening-session";
 import { emptyTimelineState } from "../../../../src/features/sessions/timeline-reducer";
 import { createSessionDetailCache } from "../../../../src/features/sessions/session-detail-cache";
 import { createStreamingSnapshotStore } from "../../../../src/features/sessions/streaming-snapshot";
@@ -337,10 +338,21 @@ export default function SessionDetailRoute() {
         ? "/(app)/sessions"
         : null;
 
-  const detailState = useSyncExternalStore(
+  const liveDetailState = useSyncExternalStore(
     controller?.subscribe ?? (() => () => {}),
     controller?.getState ?? (() => fallbackDetailState),
     controller?.getState ?? (() => fallbackDetailState),
+  );
+  // Opened from the list: paint the screen from the summary the list already
+  // had, instead of a "Loading session" card until the disk read lands. The
+  // feed stays blank until there is history to show (`historySettled`).
+  const openingSummary = useMemo(() => (sessionId ? openingSession(sessionId) : null), [sessionId]);
+  const detailState = useMemo<SessionDetailControllerState>(
+    () =>
+      liveDetailState.status === "loading" && openingSummary
+        ? { ...liveDetailState, status: "ready", session: liveDetailState.session ?? openingSummary }
+        : liveDetailState,
+    [liveDetailState, openingSummary],
   );
 
   // Save the in-flight streaming buffers on the way out, drop them on the way

@@ -4,6 +4,7 @@ import { createSessionDetailCache } from "../features/sessions/session-detail-ca
 import { createSessionsCache } from "../features/sessions/session-cache";
 import type { SessionMessage, SessionSummary } from "../features/sessions/session-types";
 import { createMemoryCacheDb } from "./helpers/memory-db";
+import { loadMessages } from "../lib/db/local-cache";
 
 function session(partial: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -164,7 +165,31 @@ describe("session detail cache", () => {
       }),
     );
     await cache.save("s1", { session: session(), messages: many });
-    expect((await cache.load("s1"))?.messages.length).toBe(500);
+    expect(await loadMessages(db, "s1")).toHaveLength(500);
+  });
+
+  it("reads only the newest rows for the first frame, and a later write keeps the rest", async () => {
+    const many = Array.from({ length: 500 }, (_, i) =>
+      message({
+        messageId: `m${String(i).padStart(4, "0")}`,
+        createdAt: `2026-01-01T00:00:00Z`,
+      }),
+    );
+    await cache.save("s1", { session: session(), messages: many });
+
+    const fresh = createSessionDetailCache(async () => db);
+    const loaded = (await fresh.load("s1"))!.messages;
+    expect(loaded).toHaveLength(120);
+    expect(loaded[0]?.messageId).toBe("m0380");
+    expect(loaded.at(-1)?.messageId).toBe("m0499");
+
+    // The timeline holds only what was loaded, plus a new row and minus one.
+    const next = [...loaded.slice(1), message({ messageId: "m0500", createdAt: "2026-01-01T00:00:01Z" })];
+    await fresh.saveMessages("s1", next);
+    const rows = await loadMessages(db, "s1");
+    expect(rows).toHaveLength(500);
+    expect(rows.some((row) => row.messageId === "m0380")).toBe(false);
+    expect(rows.some((row) => row.messageId === "m0000")).toBe(true);
   });
 
   it("clears one session's timeline", async () => {

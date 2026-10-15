@@ -185,6 +185,23 @@ export async function saveMessages(
   });
 }
 
+export async function deleteMessages(
+  db: CacheDb,
+  sessionId: string,
+  messageIds: ReadonlyArray<string>,
+): Promise<void> {
+  if (!sessionId || messageIds.length === 0) return;
+  await inTransaction(db, async () => {
+    for (const id of messageIds) {
+      await db.runAsync(
+        "DELETE FROM cached_messages WHERE session_id = ? AND message_id = ?",
+        sessionId,
+        id,
+      );
+    }
+  });
+}
+
 /**
  * Writes `messages` without touching the session's other rows. For a timeline
  * that only grew or changed in place, this is the whole of what `saveMessages`
@@ -208,15 +225,24 @@ export async function upsertMessages(
   });
 }
 
+/** Oldest-first; with `limit`, only the newest `limit` rows. */
 export async function loadMessages(
   db: CacheDb,
   sessionId: string,
+  limit?: number,
 ): Promise<CachedMessage[]> {
   if (!sessionId) return [];
-  const rows = await db.getAllAsync(
-    "SELECT * FROM cached_messages WHERE session_id = ? ORDER BY created_at ASC, message_id ASC",
-    sessionId,
-  );
+  const rows =
+    limit != null
+      ? await db.getAllAsync(
+          "SELECT * FROM (SELECT * FROM cached_messages WHERE session_id = ? ORDER BY created_at DESC, message_id DESC LIMIT ?) ORDER BY created_at ASC, message_id ASC",
+          sessionId,
+          limit,
+        )
+      : await db.getAllAsync(
+          "SELECT * FROM cached_messages WHERE session_id = ? ORDER BY created_at ASC, message_id ASC",
+          sessionId,
+        );
   return rows.map((raw) => ({
     messageId: str(raw.message_id),
     sessionId: str(raw.session_id),

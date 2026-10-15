@@ -821,6 +821,23 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
         : null,
   );
   const openedOnTarget = useRef(pendingTarget.current !== null);
+  // The feed lays out from its first row and only then scrolls to where it
+  // opens, so it used to show the oldest messages for a moment and jump. It
+  // stays transparent until that first scroll has landed (or a short timeout,
+  // so it can never stay hidden).
+  const [feedRevealed, setFeedRevealed] = useState(false);
+  // Opening at the bottom, the list first gets only its last few items: it
+  // renders from its first item, so it used to lay out the oldest rows (long
+  // replies included) only to scroll past them — about a second on a session
+  // of long answers. The rest are added above once the tail is on screen;
+  // `maintainVisibleContentPosition` keeps the view where it is meanwhile.
+  const [tailOnly, setTailOnly] = useState(() => !openedOnTarget.current);
+  const revealFeed = () => {
+    requestAnimationFrame(() => {
+      setFeedRevealed(true);
+      requestAnimationFrame(() => setTailOnly(false));
+    });
+  };
   const shouldStickToFeedBottom = useRef(!openedOnTarget.current);
   const targetSettleUntil = useRef(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -870,14 +887,20 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feedSources.length]);
 
+  const tailOffset = tailOnly ? Math.max(0, feedItems.length - INITIAL_TAIL_ITEMS) : 0;
+  const listItems = tailOffset > 0 ? feedItems.slice(tailOffset) : feedItems;
   const hasFeedHeader =
-    state.isLoadingOlder || (state.canLoadOlder && onLoadOlder !== undefined);
+    tailOffset === 0 &&
+    (state.isLoadingOlder || (state.canLoadOlder && onLoadOlder !== undefined));
   // VirtualizedList reads stickyHeaderIndices as positions among the scroll
   // view's children, and a ListHeaderComponent takes the first of those — so a
   // header shifts every day separator by one.
   const stickyIndices = useMemo(
-    () => (hasFeedHeader ? separatorIndices.map((index) => index + 1) : separatorIndices),
-    [hasFeedHeader, separatorIndices],
+    () =>
+      separatorIndices
+        .filter((index) => index >= tailOffset)
+        .map((index) => index - tailOffset + (hasFeedHeader ? 1 : 0)),
+    [hasFeedHeader, separatorIndices, tailOffset],
   );
 
   useEffect(() => {
@@ -982,9 +1005,10 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
       // here; the reader's next scroll corrects it if the target was the end.
       setIsAtBottom(false);
       const index = feedItems.findIndex((item) => item.key === key);
-      requestAnimationFrame(() =>
-        scrollToFeedIndex(index, target.mode === "focus" ? 0.5 : 0),
-      );
+      requestAnimationFrame(() => {
+        scrollToFeedIndex(index, target.mode === "focus" ? 0.5 : 0);
+        revealFeed();
+      });
       if (target.mode === "focus") {
         setHighlightKey(key);
         setTimeout(() => setHighlightKey((current) => (current === key ? null : current)), 2000);
@@ -999,10 +1023,22 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     }
     pendingTarget.current = null;
     shouldStickToFeedBottom.current = true;
-    requestAnimationFrame(() => messageListRef.current?.scrollToEnd({ animated: false }));
+    requestAnimationFrame(() => {
+      messageListRef.current?.scrollToEnd({ animated: false });
+      revealFeed();
+    });
     // feedItems is rebuilt from feedSources every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feedSources, hasMessages, state.historySettled, state.isLoadingOlder, state.canLoadOlder]);
+
+  useEffect(() => {
+    if (feedRevealed || !hasMessages) return;
+    const timer = setTimeout(() => {
+      setFeedRevealed(true);
+      setTailOnly(false);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [feedRevealed, hasMessages]);
 
   // "N unread ↑": once the network page is in, count what others posted since
   // the reader was last here. Shown from FIRST_UNREAD_THRESHOLD rows, until
@@ -1279,7 +1315,13 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
         {hasMessages ? (
           <FlatList
             contentContainerStyle={styles.feedContent}
-            data={feedItems}
+            style={feedRevealed ? null : styles.feedHidden}
+            // On by default on Android, where rows inserted above the clipped
+            // ones (the tail-first expansion, an older page) can leave the
+            // native children out of step and crash in addViewAt. The list is
+            // virtualized, so few rows are mounted anyway.
+            removeClippedSubviews={false}
+            data={listItems}
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
             keyExtractor={(item) => item.key}
@@ -1289,7 +1331,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               // until the feed changes underneath it.
               // Keep this in step with `hasFeedHeader`, which offsets the
               // sticky separators.
-              state.isLoadingOlder ? (
+              !hasFeedHeader ? null : state.isLoadingOlder ? (
                 <View style={styles.loadOlder}>
                   <ActivityIndicator color={colors.slate} size="small" />
                 </View>
@@ -1311,6 +1353,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
             maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
             onStartReached={() => {
               if (
+                tailOffset > 0 ||
                 !onLoadOlder ||
                 !shouldLoadOlderOnStartReached({
                   canLoadOlder: state.canLoadOlder,
@@ -1341,6 +1384,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               ) {
                 messageListRef.current?.scrollToEnd({ animated: false });
               }
+              if (isInitialLayout) revealFeed();
             }}
             onScroll={handleFeedScroll}
             onScrollBeginDrag={() => {
@@ -1484,7 +1528,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               );
             }}
           />
-        ) : (
+        ) : !state.historySettled ? null : (
           <View style={styles.empty}>
             <Ionicons
               color={colors.slate}
@@ -1710,10 +1754,16 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
  * callbacks passed in read the current handlers through `latest`, which is
  * what lets the comparator ignore their identity.
  */
+/** How many feed items a session opening at the bottom renders first. */
+const INITIAL_TAIL_ITEMS = 12;
+
 const MemoAgentTurnCard = memo(AgentTurnCard, propsEqualIgnoringFunctions);
 const MemoMessageRow = memo(SessionMessageRow, propsEqualIgnoringFunctions);
 
 const styles = StyleSheet.create({
+  feedHidden: {
+    opacity: 0,
+  },
   empty: {
     alignItems: "center",
     flex: 1,
