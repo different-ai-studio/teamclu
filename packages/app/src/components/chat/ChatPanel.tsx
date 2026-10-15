@@ -35,7 +35,6 @@ import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
 import { createQuickSession, describeQuickSessionFailure, type QuickSessionFailureReason } from "@/lib/session/create-quick-session";
 import { isSoloAgentSession } from "@/lib/session/session-empty-thread-starters";
 import { ChatInputArea } from "./ChatInputArea";
-import { SessionNoticeList } from "./SessionNoticeList";
 import { useEngagedAgentRuntimeMap } from "@/hooks/use-engaged-agent-runtime-map";
 import { useEngagedAgentUiStates } from "@/hooks/use-engaged-agent-ui-states";
 import { useEnsureEngagedRuntimesOnSessionFocus } from "@/hooks/use-ensure-engaged-runtimes-on-session-focus";
@@ -45,7 +44,6 @@ import {
   quickChatWelcomeAgent,
   useQuickChatReadiness,
 } from "@/hooks/use-quick-chat-readiness";
-import { useSessionNoticeStore } from "@/stores/session-notice-store";
 import { MessageList, type MessageListHandle } from "./MessageList";
 import { useChatSend } from "./use-chat-send";
 import type { VoiceSendIntent } from "@/lib/messages/voice-send-intent";
@@ -392,14 +390,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     ensureParticipantModels(activeSessionId);
   }, [activeSessionId]);
 
-  const prevActiveSessionRef = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    const prev = prevActiveSessionRef.current;
-    if (prev && prev !== activeSessionId) {
-      useSessionNoticeStore.getState().clearSession(prev);
-    }
-    prevActiveSessionRef.current = activeSessionId;
-  }, [activeSessionId]);
   const addAgentForSession = React.useCallback(
     (agent: AttachedAgent) => {
       const sid = useSessionSelectionStore.getState().activeSessionId;
@@ -1151,25 +1141,16 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     }
   }, [displaySessionId, displayMessages, displayV2Streams]);
 
-  const hasSessionNotices = useSessionNoticeStore((s) =>
-    displaySessionId ? (s.bySession[displaySessionId]?.length ?? 0) > 0 : false,
-  );
-  const messageBottomContent =
-    visibleSessionError || visibleError || hasSessionNotices ? (
-    <>
-      {hasSessionNotices ? <SessionNoticeList sessionId={displaySessionId} /> : null}
-      {visibleSessionError ? (
-        <SessionErrorAlert
-          error={visibleSessionError}
-          onDismiss={clearSessionError}
-        />
-      ) : visibleError ? (
-        <SessionErrorAlert
-          error={visibleError}
-          onDismiss={() => setError(null)}
-        />
-      ) : null}
-    </>
+  const messageBottomContent = visibleSessionError ? (
+    <SessionErrorAlert
+      error={visibleSessionError}
+      onDismiss={clearSessionError}
+    />
+  ) : visibleError ? (
+    <SessionErrorAlert
+      error={visibleError}
+      onDismiss={() => setError(null)}
+    />
   ) : null;
 
   // ── Render ────────────────────────────────────────────────────────────

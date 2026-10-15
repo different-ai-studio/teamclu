@@ -17,6 +17,7 @@ import { resolveOrphanSubagentParentToolId, shouldBufferUnboundChildAcpEvent, sh
 import { routeSubagentAcpEvent } from "@/lib/teamclu/subagent-acp-route";
 import { tryBindChildFromPermission } from "@/lib/teamclu/subagent-acp-binding";
 import { handleCompactionRawEvent } from "@/lib/stream/handle-compaction-raw-event";
+import { parseQuestionSettlementBody } from "@/lib/teamclu/question-settlement";
 import { useSessionStore } from "@/stores/session-store";
 import type { TFunction } from "i18next";
 import type { DecodedLiveEvent } from "@/lib/daemon/teamclu-events";
@@ -486,7 +487,15 @@ export function handleAcpEvent(
                       source: "agent",
                     });
                   } else {
-                    store.resolveQuestion(String(payload.requestID ?? payload.id ?? ""));
+                    const tool = (payload.tool ?? {}) as { callID?: string };
+                    const settlement = parseQuestionSettlementBody(payload);
+                    store.settleQuestionFromPeer({
+                      questionId: String(payload.requestID ?? payload.id ?? ""),
+                      toolCallId: typeof tool.callID === "string" ? tool.callID : "",
+                      answers: settlement?.answers ?? [],
+                      answeredBy: settlement?.answeredBy ?? "",
+                      rejected: method === "question_rejected" || settlement?.rejected === true,
+                    });
                   }
                 } catch (e) {
                   console.warn("[question] raw event parse failed", e);

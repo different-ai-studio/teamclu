@@ -18,7 +18,7 @@ export function ThreadAnchorPreview({ message }: { message: StoreMessage }) {
   const initial = (displayName || "A").slice(0, 1).toUpperCase();
 
   return (
-    <div className="shrink-0 border-b border-border-soft bg-[#fbf9f4] px-3 py-2.5">
+    <div className="shrink-0 border-b border-border-soft bg-paper px-3 py-2.5">
       <div className="mb-2 text-[10.5px] font-semibold uppercase tracking-wide text-faint">
         {t("thread.anchorLabel")}
       </div>

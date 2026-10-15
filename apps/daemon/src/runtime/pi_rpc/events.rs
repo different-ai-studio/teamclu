@@ -580,10 +580,18 @@ async fn handle_ui_request(
                 };
                 (route.event_tx.clone(), route.turn_reply_to.clone())
             };
-            shared
-                .questions
-                .lock()
-                .insert(id.clone(), session_id.clone());
+            let tool_call_id = payload
+                .get("toolCallId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            shared.questions.lock().insert(
+                id.clone(),
+                super::PendingQuestion {
+                    session_id: session_id.clone(),
+                    tool_call_id,
+                },
+            );
             let ev = translate::question_asked_event(&id, &payload);
             crate::runtime::agent_trace::log_acp_event(&session_id, &ev);
             let _ = event_tx
@@ -948,9 +956,21 @@ mod tests {
         handle_event(&shared, &key, &client, &ev).await;
 
         assert_eq!(
-            shared.questions.lock().get("ui_7").map(String::as_str),
+            shared
+                .questions
+                .lock()
+                .get("ui_7")
+                .map(|q| q.session_id.as_str()),
             Some("pi:/s/a.jsonl"),
             "question registered for AnswerQuestion routing"
+        );
+        assert_eq!(
+            shared
+                .questions
+                .lock()
+                .get("ui_7")
+                .map(|q| q.tool_call_id.as_str()),
+            Some("call_9"),
         );
         let frame = rx.try_recv().expect("question_asked forwarded");
         match frame.event.event.as_ref().unwrap() {
@@ -989,7 +1009,11 @@ mod tests {
         handle_event(&shared, &key, &client, &ev).await;
 
         assert_eq!(
-            shared.questions.lock().get("ui_full").map(String::as_str),
+            shared
+                .questions
+                .lock()
+                .get("ui_full")
+                .map(|q| q.session_id.as_str()),
             Some("pi:/s/a.jsonl"),
             "Full access auto-approves tool permissions only; questions still wait"
         );
@@ -997,6 +1021,38 @@ mod tests {
         match frame.event.event.as_ref().unwrap() {
             amux::acp_event::Event::Raw(raw) => assert_eq!(raw.method, "question_asked"),
             other => panic!("expected question_asked, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn question_settlement_is_broadcast_on_the_session() {
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let (route, mut rx) = test_route(key, "/s/a.jsonl");
+        shared.routes.lock().insert("pi:/s/a.jsonl".into(), route);
+
+        super::super::emit_question_settled(
+            &shared,
+            "pi:/s/a.jsonl",
+            "ui_7",
+            "call_9",
+            r#"[["yes"]]"#,
+            "member-1",
+            false,
+        )
+        .await;
+
+        let frame = rx.try_recv().expect("question_replied forwarded");
+        match frame.event.event.as_ref().unwrap() {
+            amux::acp_event::Event::Raw(raw) => {
+                assert_eq!(raw.method, "question_replied");
+                let body: serde_json::Value = serde_json::from_slice(&raw.json_payload).unwrap();
+                assert_eq!(body["requestID"], "ui_7");
+                assert_eq!(body["tool"]["callID"], "call_9");
+                assert_eq!(body["answeredBy"], "member-1");
+                assert_eq!(body["answers"][0][0], "yes");
+            }
+            other => panic!("expected question_replied, got {other:?}"),
         }
     }
 

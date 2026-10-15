@@ -292,7 +292,13 @@ impl DaemonServer {
                     .agents
                     .lock()
                     .await
-                    .answer_question_for_topic(&agent_id, &request_id, answers_json, *reject)
+                    .answer_question_for_topic(
+                        &agent_id,
+                        &request_id,
+                        answers_json,
+                        *reject,
+                        &approver,
+                    )
                     .await
                     .inspect_err(|e| {
                         warn!(

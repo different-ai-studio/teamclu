@@ -1262,6 +1262,43 @@ input,
     animation: stream-loading-dot 1s ease-in-out infinite;
 }
 
+@keyframes thread-resize-hint-edge {
+    0%,
+    100% {
+        opacity: 0.35;
+    }
+    50% {
+        opacity: 1;
+    }
+}
+.thread-resize-hint-edge {
+    animation: thread-resize-hint-edge 0.9s ease-in-out 2;
+}
+.thread-resize-hint-grip {
+    animation: thread-resize-hint-grip 1.8s ease-in-out 1;
+}
+@keyframes thread-resize-hint-grip {
+    0% { opacity: 0; transform: translate(-50%, -50%); }
+    8% { opacity: 1; transform: translate(-50%, -50%); }
+    20% { opacity: 1; transform: translate(calc(-50% - 18px), -50%); }
+    32% { opacity: 1; transform: translate(-50%, -50%); }
+    44% { opacity: 1; transform: translate(calc(-50% - 18px), -50%); }
+    56% { opacity: 1; transform: translate(-50%, -50%); }
+    68% { opacity: 1; transform: translate(calc(-50% - 18px), -50%); }
+    80% { opacity: 1; transform: translate(-50%, -50%); }
+    100% { opacity: 0; transform: translate(-50%, -50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .thread-resize-hint-edge,
+    .thread-resize-hint-grip {
+        animation: none;
+    }
+    .thread-resize-hint-grip {
+        opacity: 1;
+        transform: translate(-50%, -50%);
+    }
+}
+
 /* Terminal-style block caret — sharp on/off blink */
 @keyframes terminal-caret-blink {
     0%,

@@ -1405,6 +1405,57 @@ async function bridgeMcpServer(
  *  Must match `QUESTION_MARKER` in `pi_rpc/translate.rs`. */
 const QUESTION_MARKER = "teamclu.question=";
 
+/** Trailer on the tool result. Must match `QUESTION_SETTLED_MARKER` in
+ *  `packages/app/src/lib/teamclu/question-settlement.ts`. */
+const QUESTION_SETTLED_MARKER = "teamclu.question.settled=";
+
+type QuestionReply = {
+  answers: string[][];
+  rejected: boolean;
+  trailer: string;
+};
+
+function normalizeAnswerRows(parsed: unknown): string[][] {
+  if (Array.isArray(parsed)) {
+    return parsed.map((row) =>
+      Array.isArray(row)
+        ? row.map(String)
+        : row === undefined || row === null
+          ? []
+          : [String(row)],
+    );
+  }
+  if (parsed === undefined || parsed === null) return [];
+  return [[String(parsed)]];
+}
+
+/** The host replies with `{answers, answeredBy, rejected}` (see
+ *  `question_reply_value`). A bare array is an older daemon, or a TUI select. */
+function parseQuestionReply(value: string): QuestionReply {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      Array.isArray((parsed as { answers?: unknown }).answers)
+    ) {
+      return {
+        answers: normalizeAnswerRows((parsed as { answers: unknown }).answers),
+        rejected: (parsed as { rejected?: unknown }).rejected === true,
+        trailer: `${QUESTION_SETTLED_MARKER}${value}`,
+      };
+    }
+    return { answers: normalizeAnswerRows(parsed), rejected: false, trailer: "" };
+  } catch {
+    return { answers: [[value]], rejected: false, trailer: "" };
+  }
+}
+
+function questionResultText(lines: string[], trailer: string): string {
+  return [lines.filter(Boolean).join("\n"), trailer].filter(Boolean).join("\n");
+}
+
 type QuestionSpec = {
   question?: string;
   header?: string;
@@ -1607,25 +1658,29 @@ function registerQuestionTool(pi: ExtensionAPI, ownTools: Set<string>): void {
           isError: true,
         };
       }
-      // amuxd answers with `[["label", …], …]` (one array per question, in
-      // order); a bare string is a plain select's answer to question 1.
-      let answers: string[][];
-      try {
-        const parsed = JSON.parse(value);
-        answers = Array.isArray(parsed)
-          ? parsed.map((a: unknown) =>
-              Array.isArray(a) ? a.map(String) : a === undefined || a === null ? [] : [String(a)],
-            )
-          : [[String(parsed)]];
-      } catch {
-        answers = [[value]];
+      // amuxd answers with `{answers, answeredBy, rejected}`. A bare array or
+      // string is an older daemon, or a plain select's answer to question 1.
+      const reply = parseQuestionReply(value);
+      if (reply.rejected) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: questionResultText(
+                ["The user dismissed the question without answering."],
+                reply.trailer,
+              ),
+            },
+          ],
+          isError: true,
+        };
       }
       const lines = questions.map((q, i) => {
-        const answer = answers[i] ?? [];
+        const answer = reply.answers[i] ?? [];
         const label = q.header || q.question || `Question ${i + 1}`;
         return `${label}: ${answer.length > 0 ? answer.join(", ") : "(no answer)"}`;
       });
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      return { content: [{ type: "text", text: questionResultText(lines, reply.trailer) }] };
     },
   });
 }

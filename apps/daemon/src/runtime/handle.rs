@@ -282,12 +282,14 @@ impl RuntimeHandle {
         request_id: &str,
         answers_json: &str,
         reject: bool,
+        answered_by: &str,
     ) -> crate::error::Result<()> {
         if let Some(ref tx) = self.cmd_tx {
             tx.send(AcpCommand::AnswerQuestion {
                 request_id: request_id.to_string(),
                 answers_json: answers_json.to_string(),
                 reject,
+                answered_by: answered_by.to_string(),
             })
             .await
             .map_err(|_| crate::error::AmuxError::Agent("ACP command channel closed".into()))

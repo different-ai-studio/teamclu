@@ -533,6 +533,57 @@ pub fn compaction_event(phase: &str, payload: &serde_json::Value) -> amux::AcpEv
 /// question tool: `{id, questions, tool: {callID}}`. `request_id` is the
 /// extension_ui_request id — the same id `AnswerQuestion` sends back, which is
 /// what lets the reply become an `extension_ui_response`.
+/// JSON `value` handed back to the question tool's select dialog.
+/// The extension appends this string to the tool result so a client that
+/// opens the session later can still show who answered.
+pub fn question_reply_value(answers_json: &str, answered_by: &str, reject: bool) -> String {
+    question_reply_body(answers_json, answered_by, reject).to_string()
+}
+
+fn question_reply_body(answers_json: &str, answered_by: &str, reject: bool) -> serde_json::Value {
+    let answers = serde_json::from_str::<serde_json::Value>(answers_json)
+        .ok()
+        .filter(|value| value.is_array())
+        .unwrap_or_else(|| serde_json::json!([]));
+    serde_json::json!({
+        "answers": answers,
+        "answeredBy": answered_by,
+        "rejected": reject,
+    })
+}
+
+/// `question_replied` / `question_rejected` raw event. Clients already dismiss
+/// the card on these methods; the body is what lets them show the result.
+pub fn question_settled_event(
+    request_id: &str,
+    tool_call_id: &str,
+    answers_json: &str,
+    answered_by: &str,
+    reject: bool,
+) -> amux::AcpEvent {
+    let mut body = question_reply_body(answers_json, answered_by, reject);
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("requestID".to_string(), serde_json::json!(request_id));
+        obj.insert("id".to_string(), serde_json::json!(request_id));
+        obj.insert(
+            "tool".to_string(),
+            serde_json::json!({ "callID": tool_call_id }),
+        );
+    }
+    let method = if reject {
+        "question_rejected"
+    } else {
+        "question_replied"
+    };
+    amux::AcpEvent {
+        event: Some(amux::acp_event::Event::Raw(amux::AcpRawJson {
+            method: method.to_string(),
+            json_payload: serde_json::to_vec(&body).unwrap_or_default(),
+        })),
+        model: String::new(),
+    }
+}
+
 pub fn question_asked_event(request_id: &str, payload: &serde_json::Value) -> amux::AcpEvent {
     let body = serde_json::json!({
         "id": request_id,
@@ -1102,6 +1153,26 @@ mod tests {
         // Unmarked / corrupt titles are not questions.
         assert!(parse_question_payload("Pick one").is_none());
         assert!(parse_question_payload("teamclu.question=not json").is_none());
+
+        let settled = question_settled_event("ui_1", "call_3", r#"[["a"]]"#, "member-1", false);
+        match settled.event.as_ref().unwrap() {
+            amux::acp_event::Event::Raw(raw) => {
+                assert_eq!(raw.method, "question_replied");
+                let body: serde_json::Value = serde_json::from_slice(&raw.json_payload).unwrap();
+                assert_eq!(body["requestID"], "ui_1");
+                assert_eq!(body["tool"]["callID"], "call_3");
+                assert_eq!(body["answers"][0][0], "a");
+                assert_eq!(body["answeredBy"], "member-1");
+                assert_eq!(body["rejected"], false);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let skipped = question_settled_event("ui_1", "call_3", "[]", "张三", true);
+        match skipped.event.as_ref().unwrap() {
+            amux::acp_event::Event::Raw(raw) => assert_eq!(raw.method, "question_rejected"),
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(question_reply_value("not-json", "member-1", false).contains("\"answers\":[]"));
 
         let ev = question_asked_event("ui_1", &parsed);
         match ev.event.as_ref().unwrap() {

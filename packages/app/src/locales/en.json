@@ -835,6 +835,9 @@
         "count": "{{count}} questions",
         "countOne": "{{count}} question",
         "answered": "Answered",
+        "answeredBy": "{{name}} chose {{answer}}",
+        "skipped": "Skipped",
+        "skippedBy": "{{name}} skipped",
         "processingAnswer": "Processing answer...",
         "waitingForResponse": "Waiting for response...",
         "customAnswerPlaceholder": "Or type a custom answer...",
@@ -967,16 +970,6 @@
       "sendConfirmAction": "Send anyway",
       "metaOffline": "→ {{name}} (offline)",
       "metaStale": "→ {{name}} (rebind required)"
-    },
-    "sessionNotice": {
-      "sentStaleOne": "Sent. {{name}} is no longer linked to this machine's agent — consider @-mentioning the local agent again.",
-      "sentStaleMany": "Sent. {{count}} agents need to be rebound.",
-      "sentOfflineOne": "Sent. {{name}} is offline; delivery will be attempted when online (not guaranteed).",
-      "sentOfflineMany": "Sent. {{count}} agents are offline; delivery will be attempted when online (not guaranteed).",
-      "sentMixed": "Sent. {{offlineCount}} agent(s) offline and {{staleCount}} need rebinding — check delivery when they are available.",
-      "sentRuntimeErrorOne": "Sent. {{name}} failed to start; retry it and verify processing.",
-      "sentRuntimeErrorMany": "Sent. {{count}} agents failed to start; retry them and verify processing.",
-      "sentUnavailableMixed": "Sent. Some agents are offline, need rebinding, or failed to start; recover them and verify processing."
     },
     "newSessionDialog": {
       "title": "New session",
@@ -4104,6 +4097,7 @@
     "listSubtitle": "{{count}} threads in this session",
     "listOpen": "View threads",
     "listClose": "Close thread list",
+    "resize": "Drag to resize. Double-click to reset.",
     "listLoading": "Loading threads…",
     "listEmpty": "No threads yet"
   }
