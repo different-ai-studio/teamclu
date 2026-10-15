@@ -1,5 +1,7 @@
 import { ActionSheetIOS, Alert, Platform } from "react-native";
 
+import { presentActionSheet } from "./ActionSheetHost";
+
 export type SheetAction = {
   label: string;
   style?: "default" | "destructive";
@@ -7,8 +9,9 @@ export type SheetAction = {
 };
 
 /**
- * A native action list: the iOS action sheet, an alert on Android. The
- * cancel entry is added here.
+ * An action list: the native action sheet on iOS, `ActionSheetHost` on
+ * Android. The cancel entry is added here. The alert is only a fallback for
+ * when no host is mounted — it shows at most three buttons on Android.
  */
 export function showActionSheet(
   actions: readonly SheetAction[],
@@ -25,6 +28,9 @@ export function showActionSheet(
       },
       (index) => actions[index]?.run(),
     );
+    return;
+  }
+  if (presentActionSheet({ actions, cancelLabel: options.cancelLabel, title: options.title })) {
     return;
   }
   Alert.alert(options.title ?? "", undefined, [

@@ -26,6 +26,7 @@ import { AppState, Platform, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ToastHost, showToast } from "../src/ui/Toast";
+import { ActionSheetHost } from "../src/ui/ActionSheetHost";
 import { createConfiguredInviteApi, parseInviteToken } from "../src/features/onboarding/invite-api";
 import { formatJoinLink, parseJoinLink } from "../src/features/onboarding/join-link";
 import { t } from "../src/lib/i18n";
@@ -659,6 +660,7 @@ function RootLayout() {
           <View style={styles.layout}>
             <Slot />
             <ToastHost />
+            <ActionSheetHost />
             <AndroidUpdatePrompt />
           </View>
         </SafeAreaView>

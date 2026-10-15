@@ -2,9 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ActionSheetIOS,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -34,6 +32,7 @@ import {
   type IdeaImageSource,
 } from "../components/IdeaProgressComposer";
 import type { Idea, IdeaActivity, IdeaStatus } from "../idea-types";
+import { showActionSheet } from "../../../ui/action-sheet";
 import { t } from "../../../lib/i18n";
 
 export type IdeaDetailScreenProps = {
@@ -198,31 +197,21 @@ export function IdeaDetailScreen({
                 hitSlop={4}
                 onPress={() => {
                   if (!onSetStatus) return;
-                  const labels = [
-                    tHook("Open"),
-                    tHook("In Progress"),
-                    tHook("Done"),
-                    tHook("Cancel"),
+                  const choices: Array<[IdeaStatus, string]> = [
+                    ["open", tHook("Open")],
+                    ["in_progress", tHook("In Progress")],
+                    ["done", tHook("Done")],
                   ];
-                  const values: IdeaStatus[] = ["open", "in_progress", "done"];
-                  const dispatch = (index: number) => {
-                    if (index < 0 || index >= values.length) return;
-                    if (values[index] === idea.status) return;
-                    onSetStatus(values[index]);
-                  };
-                  if (Platform.OS === "ios") {
-                    ActionSheetIOS.showActionSheetWithOptions(
-                      { options: labels, cancelButtonIndex: 3 },
-                      dispatch,
-                    );
-                    return;
-                  }
-                  Alert.alert(tHook("Set status"), undefined, [
-                    { text: labels[0], onPress: () => dispatch(0) },
-                    { text: labels[1], onPress: () => dispatch(1) },
-                    { text: labels[2], onPress: () => dispatch(2) },
-                    { text: labels[3], style: "cancel" },
-                  ]);
+                  // Three choices plus cancel: an Android alert dropped one.
+                  showActionSheet(
+                    choices.map(([value, label]) => ({
+                      label,
+                      run: () => {
+                        if (value !== idea.status) onSetStatus(value);
+                      },
+                    })),
+                    { cancelLabel: tHook("Cancel") },
+                  );
                 }}
                 style={[styles.pill, { backgroundColor: statusPill(idea.status).background }]}
               >

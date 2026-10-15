@@ -3,10 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExtern
 import { useTranslation } from "react-i18next";
 import { FlashList } from "@shopify/flash-list";
 import {
-  ActionSheetIOS,
-  Alert,
   Keyboard,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -22,6 +19,7 @@ import { SkeletonRow } from "../../../ui/atoms/SkeletonRow";
 import { PrimaryButton } from "../../../ui/button";
 import { AppCard } from "../../../ui/card";
 import { PageHeader } from "../../../ui/PageHeader";
+import { showActionSheet } from "../../../ui/action-sheet";
 import { TextPromptModal } from "../../../ui/TextPromptModal";
 import { impactLight, selectionTick } from "../../../lib/haptics";
 import { t } from "../../../lib/i18n";
@@ -360,26 +358,15 @@ export function SessionsListScreen({
         { label: t("Archive"), destructive: true, run: () => void onArchiveBatch?.([sessionId]) },
         { label: t("More…"), run: () => toggleSelection(sessionId) },
       ];
-      const cancelLabel = t("Cancel");
-      if (Platform.OS === "ios") {
-        ActionSheetIOS.showActionSheetWithOptions(
-          {
-            options: [...actions.map((a) => a.label), cancelLabel],
-            cancelButtonIndex: actions.length,
-            destructiveButtonIndex: actions.findIndex((a) => a.destructive),
-          },
-          (index) => actions[index]?.run(),
-        );
-        return;
-      }
-      Alert.alert(t("Session actions"), undefined, [
-        ...actions.map((a) => ({
-          text: a.label,
-          style: a.destructive ? ("destructive" as const) : undefined,
-          onPress: a.run,
+      // Seven entries: an Android alert showed three of them.
+      showActionSheet(
+        actions.map((a) => ({
+          label: a.label,
+          style: a.destructive ? ("destructive" as const) : ("default" as const),
+          run: a.run,
         })),
-        { text: cancelLabel, style: "cancel" as const },
-      ]);
+        { cancelLabel: t("Cancel") },
+      );
     },
     [
       pinnedSessionIds,
