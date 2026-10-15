@@ -268,7 +268,7 @@ export function makeWikiMaintainerRepo(host: WikiMaintainerHost) {
       const { db } = await access(teamId, "prune wiki maintainer checkpoints");
       const { data, error } = await db
         .from("wiki_maintainer_checkpoints")
-        .select("id,generation,object_key,manifest")
+        .select("id,generation,parent_generation,object_key,manifest")
         .eq("team_id", teamId);
       if (error) throw error;
       const rows = data ?? [];
@@ -278,16 +278,22 @@ export function makeWikiMaintainerRepo(host: WikiMaintainerHost) {
         .eq("team_id", teamId)
         .maybeSingle();
       if (stateError) throw stateError;
+      const current = rows.find((row: any) => row.id === stateRow?.current_checkpoint_id);
+      const alsoKeep: number[] = [];
+      if (current) {
+        alsoKeep.push(Number(current.generation));
+        const parent = Number(current.parent_generation);
+        if (Number.isInteger(parent) && parent >= 1) alsoKeep.push(parent);
+      }
       const keep = new Set(
         retainedCheckpointGenerations(
           rows.map((row: any) => ({
             generation: Number(row.generation),
             baseline: row.manifest?.baseline === true,
           })),
+          alsoKeep,
         ),
       );
-      const current = rows.find((row: any) => row.id === stateRow?.current_checkpoint_id);
-      if (current) keep.add(Number(current.generation));
       const dropped = rows.filter((row: any) => !keep.has(Number(row.generation)));
       if (dropped.length === 0) return [];
       const { error: deleteError } = await db

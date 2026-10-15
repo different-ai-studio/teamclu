@@ -579,6 +579,51 @@ describe('wiki-maintainer-client', () => {
     })
   })
 
+  it('reports the latest restore failure when the parent generation is already gone', async () => {
+    getMaintainerStatus.mockResolvedValue({
+      config: { version: 39, config: { compilerModel: 'team/default' }, updatedAt: '' },
+      generation: 76,
+      stage: 'ready_to_publish',
+      publishedCommit: 'c'.repeat(40),
+      checkpoint: {
+        generation: 76,
+        parentGeneration: 75,
+        manifest: { compilerModel: 'cursor/default' },
+      },
+    })
+    downloadLatestCheckpoint.mockResolvedValue({
+      generation: 76,
+      url: 'https://objects.example/latest',
+      sha256: 'a'.repeat(64),
+      size: 10,
+    })
+    downloadCheckpoint.mockImplementation(async (_teamId: string, generation: number) => {
+      if (generation === 76) {
+        return {
+          generation: 76,
+          url: 'https://objects.example/latest',
+          sha256: 'a'.repeat(64),
+          size: 10,
+        }
+      }
+      throw new Error('wiki maintainer checkpoint not found')
+    })
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'kb_maintainer_local_checkpoint_status') return { generation: 0 }
+      if (command === 'kb_maintainer_restore_checkpoint') {
+        throw new Error(
+          'The managed Agent runtime is not installed. Finish local Agent setup, then try again.',
+        )
+      }
+      return null
+    })
+
+    await expect(loadWikiMaintenanceBootstrap('team-1')).rejects.toThrow(
+      'The managed Agent runtime is not installed. Finish local Agent setup, then try again.',
+    )
+    expect(downloadCheckpoint).toHaveBeenCalledWith('team-1', 75)
+  })
+
   it('uploads a compressed baseline after publish and still succeeds if that upload fails', async () => {
     getMaintainerStatus.mockResolvedValue({
       config: { version: 1, config: { compilerModel: 'team/glm-4.6' }, updatedAt: '' },

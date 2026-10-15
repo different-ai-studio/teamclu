@@ -105,12 +105,16 @@ async function restoreLatestCheckpoint(
     )
   } catch (latestError) {
     if (status.checkpoint.parentGeneration < 1) throw latestError
-    await restoreCheckpointGeneration(
-      teamId,
-      status.checkpoint.parentGeneration,
-      null,
-      'exact',
-    )
+    try {
+      await restoreCheckpointGeneration(
+        teamId,
+        status.checkpoint.parentGeneration,
+        null,
+        'exact',
+      )
+    } catch {
+      throw latestError
+    }
   }
 }
 
