@@ -78,6 +78,14 @@ pub(crate) struct Route {
 
 /// Bookkeeping for a pending `extension_ui_request(confirm)`: enough to route
 /// the reply and to persist an "always allow" grant.
+/// A `question` select waiting on a person. `tool_call_id` is what the
+/// clients key the card on, so the settlement event can close that card.
+#[derive(Clone)]
+pub(crate) struct PendingQuestion {
+    pub(crate) session_id: String,
+    pub(crate) tool_call_id: String,
+}
+
 pub(crate) struct PendingPermission {
     pub(crate) session_id: String,
     /// `teamclu.always-pattern=` trailer from the confirm message; written to
@@ -91,9 +99,9 @@ pub(crate) struct Shared {
     pub(crate) routes: parking_lot::Mutex<HashMap<String, Route>>,
     /// extension_ui_request id → pending permission bookkeeping.
     pub(crate) permissions: parking_lot::Mutex<HashMap<String, PendingPermission>>,
-    /// extension_ui_request id → session, for pending `question` selects
-    /// (answered via `AcpCommand::AnswerQuestion`).
-    pub(crate) questions: parking_lot::Mutex<HashMap<String, String>>,
+/// extension_ui_request id → session, for pending `question` selects
+/// (answered via `AcpCommand::AnswerQuestion`).
+pub(crate) questions: parking_lot::Mutex<HashMap<String, PendingQuestion>>,
 }
 
 impl Shared {
@@ -1279,11 +1287,18 @@ async fn resolve_permission(
 /// `answers_json` is the client's `[[selected labels], ...]` — passed through
 /// as the dialog's `value`; the TeamClu extension parses it back into
 /// per-question answers for the model.
-async fn answer_question(shared: &Arc<Shared>, request_id: &str, answers_json: &str, reject: bool) {
-    let Some(session_id) = shared.questions.lock().remove(request_id) else {
+async fn answer_question(
+    shared: &Arc<Shared>,
+    request_id: &str,
+    answers_json: &str,
+    reject: bool,
+    answered_by: &str,
+) {
+    let Some(pending) = shared.questions.lock().remove(request_id) else {
         warn!(request_id, "no pending pi question request found");
         return;
     };
+    let session_id = pending.session_id.clone();
     let pool_key = shared
         .routes
         .lock()
@@ -1297,18 +1312,67 @@ async fn answer_question(shared: &Arc<Shared>, request_id: &str, answers_json: &
         warn!(request_id, worktree = %pool_key.worktree, "question reply: pi process gone");
         return;
     };
-    let response = if reject {
-        serde_json::json!({"type": "extension_ui_response", "id": request_id, "cancelled": true})
-    } else {
-        serde_json::json!({"type": "extension_ui_response", "id": request_id, "value": answers_json})
-    };
+    // Always a value, including a skip: `cancelled` would drop `answered_by`
+    // before the extension can write it into the tool result.
+    let response = serde_json::json!({
+        "type": "extension_ui_response",
+        "id": request_id,
+        "value": translate::question_reply_value(answers_json, answered_by, reject),
+    });
     if let Err(e) = proc.client.notify(response).await {
         warn!(request_id, session_id = %session_id, error = %e, "pi question reply failed");
         // Leave a chance to retry: re-register the request.
         shared
             .questions
             .lock()
-            .insert(request_id.to_string(), session_id);
+            .insert(request_id.to_string(), pending);
+        return;
+    }
+    emit_question_settled(
+        shared,
+        &session_id,
+        request_id,
+        &pending.tool_call_id,
+        answers_json,
+        answered_by,
+        reject,
+    )
+    .await;
+}
+
+/// Tell every client on this session that the question is closed. Same
+/// `event_tx` path as `question_asked`, so the people who did not answer
+/// drop the card instead of waiting on a turn that has already moved on.
+pub(crate) async fn emit_question_settled(
+    shared: &Arc<Shared>,
+    session_id: &str,
+    request_id: &str,
+    tool_call_id: &str,
+    answers_json: &str,
+    answered_by: &str,
+    reject: bool,
+) {
+    let (event_tx, reply_to) = {
+        let routes = shared.routes.lock();
+        let Some(route) = routes.get(session_id) else {
+            warn!(session_id, request_id, "question settled: session unrouted");
+            return;
+        };
+        (route.event_tx.clone(), route.turn_reply_to.clone())
+    };
+    let ev = translate::question_settled_event(
+        request_id,
+        tool_call_id,
+        answers_json,
+        answered_by,
+        reject,
+    );
+    crate::runtime::agent_trace::log_acp_event(session_id, &ev);
+    if let Err(e) = event_tx
+        .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to))
+        .await
+    {
+        warn!(request_id, session_id, error = %e, "question settled event dropped");
     }
 }
 
@@ -1434,8 +1498,9 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                 request_id,
                 answers_json,
                 reject,
+                answered_by,
             } => {
-                answer_question(&shared, &request_id, &answers_json, reject).await;
+                answer_question(&shared, &request_id, &answers_json, reject, &answered_by).await;
             }
             AcpCommand::SetModel {
                 acp_session_id,
@@ -1479,7 +1544,7 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                 shared
                     .questions
                     .lock()
-                    .retain(|_, sid| sid != &acp_session_id);
+                    .retain(|_, pending| pending.session_id != acp_session_id);
                 // Host mode: also release the session inside the child —
                 // detaching used to only drop routing state, leaving the
                 // `AgentSession` (and its memory) resident until process

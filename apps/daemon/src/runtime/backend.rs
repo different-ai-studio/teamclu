@@ -75,6 +75,9 @@ pub enum AcpCommand {
         /// JSON `[[selected labels], ...]` — one array per question, in order.
         answers_json: String,
         reject: bool,
+        /// Actor id of the desktop member who answered, or a display name when
+        /// the answer came from a chat channel. Broadcast with the settlement.
+        answered_by: String,
     },
     /// Switch the model used by a bound session (applied on the next prompt).
     SetModel {

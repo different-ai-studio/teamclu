@@ -64,6 +64,7 @@ impl RuntimeManager {
         request_id: &str,
         answers_json: &str,
         reject: bool,
+        answered_by: &str,
     ) -> crate::error::Result<()> {
         let agent_key = self
             .resolve_permission_runtime_key(topic_runtime_id)
@@ -72,7 +73,7 @@ impl RuntimeManager {
             })?;
         #[cfg(test)]
         {
-            let _ = (request_id, answers_json, reject, agent_key);
+            let _ = (request_id, answers_json, reject, answered_by, agent_key);
             return Ok(());
         }
         #[cfg(not(test))]
@@ -81,7 +82,7 @@ impl RuntimeManager {
                 crate::error::AmuxError::Agent(format!("agent {} not found", agent_key))
             })?;
             handle
-                .answer_question(request_id, answers_json, reject)
+                .answer_question(request_id, answers_json, reject, answered_by)
                 .await
         }
     }

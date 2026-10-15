@@ -5,23 +5,37 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useSessionStore } from '@/stores/session-store'
+import { useCurrentTeamStore } from '@/stores/current-team'
+import { useActorDirectoryStore } from '@/stores/actor-directory-store'
+import { useSessionParticipantStore } from '@/stores/session-participant-store'
 import type { Question } from '@/stores/session-types'
+import {
+  answererLabel,
+  answersRecordFromOrdered,
+  parseQuestionSettlementResult,
+} from '@/lib/teamclu/question-settlement'
 import { ToolCallDisclosure } from './tool-calls/ToolCallDisclosure'
 
 interface QuestionCardProps {
   toolCallId: string
   questions?: Question[] | unknown
   isCompleted?: boolean
+  /** Tool result text. Carries the settlement trailer for clients that missed the live event. */
+  result?: unknown
 }
 
-export const QuestionCard = React.memo(function QuestionCard({ toolCallId, questions, isCompleted }: QuestionCardProps) {
+export const QuestionCard = React.memo(function QuestionCard({ toolCallId, questions, isCompleted, result }: QuestionCardProps) {
   const { t } = useTranslation()
   const pendingQuestions = useSessionStore(s => s.pendingQuestions)
   const answeredSnapshot = useSessionStore(
     (s) => s.answeredQuestionsByToolCallId?.[toolCallId],
   )
+  const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
+  const actors = useActorDirectoryStore((s) => (teamId ? s.byTeam[teamId]?.actors : undefined))
+  const participantsBySession = useSessionParticipantStore((s) => s.participantsBySession)
   const pendingQuestion = pendingQuestions.find(q => q.toolCallId === toolCallId)
   const propQuestions = Array.isArray(questions) ? (questions as Question[]) : []
+  const fromResult = React.useMemo(() => parseQuestionSettlementResult(result), [result])
   // Tool-call arguments may lag or omit questions; the question.asked event
   // (pendingQuestion) is authoritative. After answer, read the local snapshot.
   const questionList: Question[] = propQuestions.length
@@ -82,12 +96,33 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
       return answers[questionId] || customInputs[questionId]?.trim()
     })
   
-  // Determine if we should show the interactive UI (options to select)
-  const showInteractiveUI = isPending && !hasSubmitted
+  const fromResultAnswers = fromResult
+    ? answersRecordFromOrdered(questionList, fromResult.answers)
+    : null
+  const savedAnswers =
+    answeredSnapshot?.answers && Object.keys(answeredSnapshot.answers).length > 0
+      ? answeredSnapshot.answers
+      : (fromResultAnswers ?? {})
+  const answeredBy = answeredSnapshot?.answeredBy || fromResult?.answeredBy
+  const rejected = answeredSnapshot?.rejected === true || fromResult?.rejected === true
+  const isSettled = Boolean(answeredSnapshot) || Boolean(fromResult)
+  // A settlement from anyone in the session closes the form. The live event
+  // and the tool-result trailer both count; the options must not stay up.
+  const showInteractiveUI = isPending && !hasSubmitted && !isSettled
   const firstQuestion = questionList[0]
-  const savedAnswers = answeredSnapshot?.answers ?? {}
-  const stateLabel = isCompleted
-    ? t('chat.toolCall.question.answered', 'Answered')
+  const answererName = React.useMemo(() => {
+    const known = [
+      ...(actors ?? []).map((actor) => ({ id: actor.id, name: actor.display_name })),
+      ...Object.values(participantsBySession)
+        .flat()
+        .map((participant) => ({ id: participant.actorId, name: participant.displayName })),
+    ]
+    return answererLabel(answeredBy, known)
+  }, [actors, participantsBySession, answeredBy])
+  const stateLabel = isSettled || isCompleted
+    ? rejected
+      ? t('chat.toolCall.question.skipped', 'Skipped')
+      : t('chat.toolCall.question.answered', 'Answered')
     : isWaitingForCompletion
       ? t('chat.toolCall.question.processingAnswer', 'Processing answer...')
       : isPending
@@ -101,16 +136,16 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
       title={t('chat.toolCall.question.title', 'Question')}
       target={firstQuestion?.header || firstQuestion?.question}
       meta={stateLabel}
-      status={isCompleted ? <Check className="h-3 w-3 text-green-600" /> : undefined}
+      status={!rejected && (isSettled || isCompleted) ? <Check className="h-3 w-3 text-green-600" /> : undefined}
       defaultOpen={questionList.length > 0}
     >
       {/* Questions */}
       <div className="space-y-4 px-3 py-3">
         {questionList.map((question, qIndex) => {
           const questionId = question.id || String(qIndex)
-          const selectedOption = answers[questionId] ?? savedAnswers[questionId]
+          const selectedOption = answers[questionId] ?? savedAnswers[questionId] ?? savedAnswers[String(qIndex)]
           const customInput = customInputs[questionId] || ''
-          const savedAnswer = savedAnswers[questionId]
+          const savedAnswer = savedAnswers[questionId] ?? savedAnswers[String(qIndex)]
           const displayAnswer = customInput || selectedOption || savedAnswer
 
           return (
@@ -189,13 +224,33 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
                 </div>
               )}
 
-              {/* Show selected answer for completed or submitted questions */}
-              {(isCompleted || isWaitingForCompletion) && displayAnswer && (
+              {(isSettled || isCompleted || isWaitingForCompletion) && (displayAnswer || rejected) && (
                 <div className="px-4 py-2 rounded-lg bg-muted/30 text-sm">
-                  <span className="text-muted-foreground">
-                    {t('chat.toolCall.question.answerLabel', 'Answer: ')}
-                  </span>
-                  <span className="font-medium">{displayAnswer}</span>
+                  {rejected ? (
+                    <span className="font-medium">
+                      {answererName
+                        ? t('chat.toolCall.question.skippedBy', {
+                            name: answererName,
+                            defaultValue: '{{name}} skipped',
+                          })
+                        : t('chat.toolCall.question.skipped', 'Skipped')}
+                    </span>
+                  ) : answererName && displayAnswer ? (
+                    <span className="font-medium">
+                      {t('chat.toolCall.question.answeredBy', {
+                        name: answererName,
+                        answer: displayAnswer,
+                        defaultValue: '{{name}} chose {{answer}}',
+                      })}
+                    </span>
+                  ) : (
+                    <>
+                      <span className="text-muted-foreground">
+                        {t('chat.toolCall.question.answerLabel', 'Answer: ')}
+                      </span>
+                      <span className="font-medium">{displayAnswer}</span>
+                    </>
+                  )}
                 </div>
               )}
             </div>
