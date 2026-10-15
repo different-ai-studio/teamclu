@@ -273,42 +273,47 @@ export function IdeasListScreen({
 
   if (state.status === "loading" || (state.status === "idle" && state.ideas.length === 0)) {
     return (
-      <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
-        refreshControl={
-          <RefreshControl
-            onRefresh={onRefresh}
-            refreshing={state.isRefreshing}
-            tintColor={colors.slate}
-          />
-        }
-        style={styles.screen}
-      >
+      <View style={styles.screen}>
         {headerBar}
-        <View>
-          <SkeletonRow avatar={false} />
-          <SkeletonRow avatar={false} />
-          <SkeletonRow avatar={false} />
-        </View>
-      </ScrollView>
+        <ScrollView
+          contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
+          refreshControl={
+            <RefreshControl
+              onRefresh={onRefresh}
+              refreshing={state.isRefreshing}
+              tintColor={colors.slate}
+            />
+          }
+          style={styles.scroll}
+        >
+          <View>
+            <SkeletonRow avatar={false} />
+            <SkeletonRow avatar={false} />
+            <SkeletonRow avatar={false} />
+          </View>
+        </ScrollView>
+      </View>
     );
   }
 
   if (state.status === "error" && state.ideas.length === 0) {
     return (
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]} style={styles.screen}>
+      <View style={styles.screen}>
         {headerBar}
-        <View style={styles.stateBlock}>
-          <Text style={styles.stateTitle}>{t("Couldn't load ideas")}</Text>
-          <Text style={styles.stateBody}>{state.errorMessage ?? t("Try again in a moment.")}</Text>
-          <PrimaryButton fullWidth={false} label={t("Retry")} onPress={onLoad} />
-        </View>
-      </ScrollView>
+        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]} style={styles.scroll}>
+          <View style={styles.stateBlock}>
+            <Text style={styles.stateTitle}>{t("Couldn't load ideas")}</Text>
+            <Text style={styles.stateBody}>{state.errorMessage ?? t("Try again in a moment.")}</Text>
+            <PrimaryButton fullWidth={false} label={t("Retry")} onPress={onLoad} />
+          </View>
+        </ScrollView>
+      </View>
     );
   }
 
   return (
     <View style={styles.screen}>
+      {headerBar}
       <ScrollView
       contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
       keyboardDismissMode="interactive"
@@ -320,10 +325,8 @@ export function IdeasListScreen({
           tintColor={colors.slate}
         />
       }
-      style={{ flex: 1 }}
+      style={styles.scroll}
     >
-      {headerBar}
-
       <View style={styles.searchField}>
         <Ionicons color={colors.slate} name="search" size={16} />
         <TextInput
@@ -543,6 +546,9 @@ const styles = StyleSheet.create({
   content: {
     gap: spacing.md,
     paddingBottom: spacing.xxxl,
+    // The header sits above the scroll view, fixed; this is the gap it used to
+    // put between itself and the first scrolled row.
+    paddingTop: spacing.md,
   },
   emptyFilterBody: {
     color: colors.slate,
@@ -630,6 +636,9 @@ const styles = StyleSheet.create({
   },
   screen: {
     backgroundColor: colors.mist,
+    flex: 1,
+  },
+  scroll: {
     flex: 1,
   },
   workspaceChip: {
