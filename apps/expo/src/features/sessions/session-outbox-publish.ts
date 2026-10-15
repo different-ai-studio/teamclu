@@ -22,6 +22,9 @@ export async function publishOutboxRowViaMqtt(
     kind: MessageKind.TEXT,
     content: row.content,
     createdAt: createdAtSeconds,
+    // Live receivers render the quote from this; without it a reply only
+    // showed its quote after the next history load.
+    replyToMessageId: row.replyToMessageId ?? "",
   });
   const sessionMessage = create(SessionMessageEnvelopeSchema, {
     message: protoMessage,

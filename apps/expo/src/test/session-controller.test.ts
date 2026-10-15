@@ -146,6 +146,36 @@ describe("createSessionsController", () => {
     await refreshPromise;
   });
 
+  it("a quiet refresh over loaded rows never enters the refreshing state", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 4, 18, 12, 0, 0));
+
+    const { createSessionsController } = await import("../features/sessions/session-controller");
+    const rows = [
+      createSession(
+        "session-1",
+        new Date(2026, 4, 18, 11, 0, 0).toISOString(),
+        new Date(2026, 4, 17, 11, 0, 0).toISOString(),
+      ),
+    ];
+    const deferredRefresh = createDeferredPromise<SessionSummary[]>();
+    const api: SessionsApi = {
+      listSessions: vi.fn().mockResolvedValueOnce(rows).mockReturnValueOnce(deferredRefresh.promise),
+    };
+    const controller = createSessionsController(api as any, "team-1");
+    await controller.load();
+    const seen: boolean[] = [];
+    controller.subscribe(() => seen.push(controller.getState().isRefreshing));
+
+    const refreshPromise = controller.refresh({ quiet: true });
+    expect(controller.getState()).toMatchObject({ status: "loaded", isRefreshing: false });
+    deferredRefresh.resolve(rows);
+    await refreshPromise;
+
+    expect(seen).not.toContain(true);
+    expect(controller.getState().status).toBe("loaded");
+  });
+
   it("keeps the last loaded rows visible while refresh is in flight", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 4, 18, 12, 0, 0));

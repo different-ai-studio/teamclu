@@ -26,6 +26,7 @@ import { PermissionBanner } from "./PermissionBanner";
 import { ToolCallLine } from "./ToolCallLine";
 import { mentionPlainText } from "../mention-display";
 import { toolCallPresentation, type ToolResult } from "../tool-display";
+import { successTone } from "../../../lib/haptics";
 
 const HIDDEN_MESSAGE_KINDS = new Set<string>([]);
 
@@ -193,6 +194,7 @@ export function SessionMessageRow({
         label: tHook("Copy"),
         run: () => {
           void Clipboard.setStringAsync(message.content);
+          successTone();
         },
       },
     ];

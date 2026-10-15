@@ -10,6 +10,12 @@ export type TeamMqttClient = {
   subscribe: (filter: string, handler: TopicHandler) => () => void;
   publish: (topic: string, payload: Uint8Array, retain?: boolean) => Promise<void>;
   onConnectionState: (listener: (state: ConnectionState) => void) => () => void;
+  /**
+   * The app came back to the foreground. A dropped client may be sitting in a
+   * backoff wait of up to 30s; reconnect now instead. A live client is left
+   * alone — tearing it down would only cost a reconnect and a history refetch.
+   */
+  resume: () => void;
   dispose: () => Promise<void>;
 };
 
@@ -96,11 +102,15 @@ export function createTeamMqttClient(deps: Deps): TeamMqttClient {
         return;
       }
       reconnectAttempt = 0;
+      // A new connection starts with no subscriptions (clean session). Restore
+      // them before announcing "connected": listeners refetch history on that
+      // edge, and an event landing between the refetch and the SUBSCRIBE would
+      // otherwise be lost.
+      await Promise.allSettled(
+        [...brokerSubscriptions].map((filter) => adapter.subscribe(filter)),
+      );
+      if (disposed) return;
       setConnectionState("connected");
-      // A new connection starts with no subscriptions (clean session).
-      for (const filter of brokerSubscriptions) {
-        void adapter.subscribe(filter).catch(() => {});
-      }
     } catch {
       setConnectionState("disconnected");
       reconnecting = false;
@@ -128,10 +138,18 @@ export function createTeamMqttClient(deps: Deps): TeamMqttClient {
   return {
     async start() {
       messageUnsubscribe = adapter.onMessage(dispatch);
-      await connectOnce(deps.password);
+      // Started before the first connect resolves: a launch without network
+      // must keep retrying, not leave the app offline until it is restarted.
+      started = true;
+      try {
+        await connectOnce(deps.password);
+      } catch (error) {
+        setConnectionState("disconnected");
+        scheduleReconnect();
+        throw error;
+      }
       // A resolved connect is a connection, whether or not the adapter said so.
       setConnectionState("connected");
-      started = true;
     },
     subscribe(filter, handler) {
       let set = handlers.get(filter);
@@ -168,6 +186,14 @@ export function createTeamMqttClient(deps: Deps): TeamMqttClient {
       return () => {
         stateListeners.delete(listener);
       };
+    },
+    resume() {
+      if (!started || disposed || reconnecting) return;
+      if (connectionState === "connected") return;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      reconnectAttempt = 0;
+      void reconnect();
     },
     async dispose() {
       disposed = true;

@@ -92,11 +92,15 @@ export function createSessionsController(
     notify();
   };
 
-  const beginRequest = (mode: "load" | "refresh") => {
+  const beginRequest = (mode: "load" | "refresh", quiet = false) => {
     requestId += 1;
     const currentRequestId = requestId;
     const preserveRows = mode === "refresh" && state.sessions.length > 0;
-    setState(buildLoadingState(state, preserveRows, mode === "refresh" && preserveRows));
+    // A quiet refresh over rows already on screen changes nothing until the
+    // answer lands: no "refreshing" state, so no pull-to-refresh spinner.
+    if (!(quiet && preserveRows)) {
+      setState(buildLoadingState(state, preserveRows, mode === "refresh" && preserveRows));
+    }
     return { currentRequestId, preserveRows };
   };
 
@@ -146,8 +150,14 @@ export function createSessionsController(
     }
   };
 
-  const refresh = async () => {
-    const { currentRequestId, preserveRows } = beginRequest("refresh");
+  /**
+   * `quiet`: a background refresh (the list regained focus, a message
+   * arrived). It must not drive the pull-to-refresh control — set while the
+   * screen is mid-transition, iOS shows the spinner and never takes it down.
+   * Only a pull by hand shows it.
+   */
+  const refresh = async (options?: { quiet?: boolean }) => {
+    const { currentRequestId, preserveRows } = beginRequest("refresh", options?.quiet === true);
 
     try {
       const sessions = await api.listSessions(teamId, currentActorId ?? undefined);

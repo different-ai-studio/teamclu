@@ -28,6 +28,12 @@ import {
   saveComposerDraft,
 } from "../../../../src/features/sessions/composer-drafts";
 import type { AgentChip } from "../../../../src/features/sessions/components/AgentChipBar";
+import {
+  endChatMetric,
+  markChatMetric,
+  startChatMetric,
+} from "../../../../src/lib/telemetry/chat-metrics";
+import { hydrateReadPositions } from "../../../../src/features/sessions/session-read-position";
 import { createOutboxDao } from "../../../../src/features/sessions/outbox-db";
 import { createOutboxSender } from "../../../../src/features/sessions/outbox-sender";
 import type { OutboxSqliteDb } from "../../../../src/features/sessions/outbox-db";
@@ -56,7 +62,7 @@ import {
   agentBackendDisplayName,
   runtimeStatusName,
 } from "../../../../src/features/sessions/agent-runtime-state";
-import { impactLight, selectionTick, successTone } from "../../../../src/lib/haptics";
+import { impactLight, selectionTick, successTone, warningTone } from "../../../../src/lib/haptics";
 import { androidTabBarStyle } from "../../../../src/ui/tab-bar";
 import { showToast } from "../../../../src/ui/Toast";
 import { supabase } from "../../../../src/lib/supabase/client";
@@ -95,6 +101,7 @@ const fallbackDetailState: SessionDetailControllerState = {
   pendingQuestions: [],
   canLoadOlder: false,
   isLoadingOlder: false,
+  historySettled: false,
 };
 
 type RouteRuntimeInfo = {
@@ -133,9 +140,13 @@ export default function SessionDetailRoute() {
   const { t } = useTranslation();
   const router = useRouter();
   const navigation = useNavigation();
-  const { sessionId: rawSessionId } = useLocalSearchParams<{
+  const { sessionId: rawSessionId, focusMessageId: rawFocusMessageId } = useLocalSearchParams<{
     sessionId?: string | string[];
+    focusMessageId?: string | string[];
   }>();
+  // Set when a push opened this screen: the message to scroll to.
+  const focusMessageId =
+    (Array.isArray(rawFocusMessageId) ? rawFocusMessageId[0] : rawFocusMessageId) || undefined;
 
   // Hide the parent tab bar while a session detail is on screen. Restore on
   // unmount so the bar comes back on pop.
@@ -228,7 +239,10 @@ export default function SessionDetailRoute() {
         send: (row) => {
           // Track this id so onChange can sync its status from the DAO.
           recentMessageIdsRef.current.add(row.messageId);
-          return publishOutboxRowViaOptionalMqtt(row, mqttSnapshot);
+          return publishOutboxRowViaOptionalMqtt(row, mqttSnapshot).then(() => {
+            markChatMetric("chat.send", row.messageId, "published");
+            endChatMetric("chat.send", row.messageId);
+          });
         },
         onChange: () => {
           void syncOutboxFromDao(dao, Array.from(recentMessageIdsRef.current));
@@ -267,6 +281,12 @@ export default function SessionDetailRoute() {
         return;
       }
 
+      // The screen reads the saved read position synchronously on mount.
+      await hydrateReadPositions();
+      if (cancelled) {
+        void nextController.dispose();
+        return;
+      }
       setController(nextController);
       await nextController.load();
 
@@ -286,6 +306,14 @@ export default function SessionDetailRoute() {
       resetOutbox();
     };
   }, [currentTeam, sessionId, state.currentMemberActorId, state.route, teamMqtt]);
+
+  // M1: push of this screen → first frame on screen + network history in.
+  // The screen marks both; leaving first means no sample.
+  useEffect(() => {
+    if (!sessionId) return;
+    startChatMetric("chat.open_session", sessionId, { endWhenMarked: ["first_frame", "seeded"] });
+    return () => endChatMetric("chat.open_session", sessionId, "cancelled");
+  }, [sessionId]);
 
   // Persist composer text per-session as it changes (debounced via ref).
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -633,7 +661,8 @@ export default function SessionDetailRoute() {
         next.set(requestId, granted);
         return next;
       });
-      selectionTick();
+      if (granted) successTone();
+      else warningTone();
       showToast("success", granted ? t("Permission allowed") : t("Permission denied"));
     } catch (err) {
       showToast(
@@ -964,6 +993,7 @@ export default function SessionDetailRoute() {
 
       {canRenderSessionDetail(detailState) ? (
         <SessionDetailScreen
+          focusMessageId={focusMessageId}
           agentChips={agentChips}
           composerText={detailState.composerText}
           connectionState={detailState.connectionState}

@@ -46,6 +46,7 @@ import {
   type TimelineState,
 } from "./timeline-reducer";
 import type { createCloudSessionsApi } from "./cloud-api";
+import { endChatMetric, markChatMetric, startChatMetric } from "../../lib/telemetry/chat-metrics";
 
 export type SessionDetailConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -73,6 +74,12 @@ export type SessionDetailControllerState = {
   canLoadOlder: boolean;
   /** A back-scroll fetch is in flight. */
   isLoadingOlder: boolean;
+  /**
+   * The newest page from the network has been folded in (or failed). Until
+   * then the feed may be cache-only, so a row the screen is looking for —
+   * a restored read position, a message a push pointed at — may still arrive.
+   */
+  historySettled: boolean;
 };
 
 type SessionsApi = ReturnType<typeof createCloudSessionsApi>;
@@ -155,6 +162,7 @@ const initialState: SessionDetailControllerState = {
   pendingQuestions: [],
   canLoadOlder: false,
   isLoadingOlder: false,
+  historySettled: false,
 };
 
 function toIsoFromSeconds(value: bigint): string {
@@ -848,6 +856,7 @@ export function createSessionDetailController(
           streamingByAgent: timeline.streamingByAgent,
           canLoadOlder: false,
           isLoadingOlder: false,
+          historySettled: false,
         });
       }
 
@@ -921,6 +930,7 @@ export function createSessionDetailController(
             status: "error",
             errorMessage: toErrorMessage(sessionResult.reason, "加载会话失败。"),
             isRefreshing: false,
+            historySettled: true,
           });
           // `load()` dropped the realtime listener on entry; returning without
           // putting it back left a refresh that failed (flaky network right
@@ -932,6 +942,7 @@ export function createSessionDetailController(
             status: "error",
             errorMessage: toErrorMessage(sessionResult.reason, "加载会话失败。"),
             isRefreshing: false,
+            historySettled: true,
           });
         }
         return;
@@ -947,6 +958,7 @@ export function createSessionDetailController(
           messages: [],
           isRefreshing: false,
           streamingByAgent: timeline.streamingByAgent,
+          historySettled: true,
         });
         return;
       }
@@ -959,6 +971,7 @@ export function createSessionDetailController(
           messages: state.messages,
           errorMessage: toErrorMessage(messagesResult.reason, "加载消息失败。"),
           isRefreshing: false,
+          historySettled: true,
         });
         await connectRealtime(session, currentToken);
         return;
@@ -984,6 +997,7 @@ export function createSessionDetailController(
         isRefreshing: preserveExisting,
         streamingByAgent: timeline.streamingByAgent,
         canLoadOlder: olderCursor !== null,
+        historySettled: true,
       });
 
       // Persist authoritative network state for the next cold start.
@@ -1123,6 +1137,8 @@ export function createSessionDetailController(
         const createdAtSeconds = BigInt(Math.floor(Date.parse(createdAt) / 1000));
         const messageId = uuidV4();
         outboxMessageId = messageId;
+        // M3: ends when the outbox has published it (see the route's send).
+        startChatMetric("chat.send", messageId);
         setOutboxStatus(messageId, "sending");
 
         const pendingAttachments = takePendingAttachments(deps.teamId, deps.sessionId);
@@ -1153,6 +1169,7 @@ export function createSessionDetailController(
           attachments: attachmentsPayload,
           replyToMessageId: replyTo,
         });
+        markChatMetric("chat.send", messageId, "persisted");
 
         const optimisticMessage: SessionMessage = {
           content,
@@ -1198,6 +1215,7 @@ export function createSessionDetailController(
             })),
             createdAt: Date.parse(createdAt),
           });
+          markChatMetric("chat.send", messageId, "enqueued");
           await syncOutboxFromDao(deps.outbox.dao, [messageId]);
         } else {
           // Fallback path (existing inline publish)
@@ -1208,6 +1226,7 @@ export function createSessionDetailController(
             kind: MessageKind.TEXT,
             content,
             createdAt: createdAtSeconds,
+            replyToMessageId: replyTo ?? "",
           });
           const sessionMessage = create(SessionMessageEnvelopeSchema, {
             message: protoMessage,
@@ -1228,8 +1247,11 @@ export function createSessionDetailController(
               toBinary(LiveEventEnvelopeSchema, envelope),
               false,
             );
+            markChatMetric("chat.send", messageId, "published");
+            endChatMetric("chat.send", messageId);
           } catch {
             setOutboxStatus(messageId, "failed");
+            endChatMetric("chat.send", messageId, "failed");
             setState({
               ...state,
               messages: mergedMessages,
@@ -1256,6 +1278,7 @@ export function createSessionDetailController(
       } catch (error) {
         if (outboxMessageId) {
           setOutboxStatus(outboxMessageId, "failed");
+          endChatMetric("chat.send", outboxMessageId, "failed");
         }
         setState({
           ...state,

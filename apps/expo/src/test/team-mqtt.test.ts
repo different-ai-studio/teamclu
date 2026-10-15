@@ -164,4 +164,59 @@ describe("TeamMqttClient reconnect", () => {
     await flush();
     expect(connect).not.toHaveBeenCalled();
   });
+
+  it("keeps retrying when the very first connect fails", async () => {
+    const { adapter, connect } = createDroppableAdapter();
+    connect.mockRejectedValueOnce(new Error("offline"));
+    const client = createTeamMqttClient({
+      adapter, url: "mqtt://x", username: "u", password: "p", clientId: "c",
+      reconnectDelayMs: () => 0,
+    });
+    const states: string[] = [];
+    client.onConnectionState((s) => states.push(s));
+    await expect(client.start()).rejects.toThrow("offline");
+    for (let i = 0; i < 4; i += 1) await flush();
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(states.at(-1)).toBe("connected");
+    await client.dispose();
+  });
+
+  it("restores subscriptions before announcing the reconnect", async () => {
+    const { adapter, subscribe, drop } = createDroppableAdapter();
+    const client = createTeamMqttClient({
+      adapter, url: "mqtt://x", username: "u", password: "p", clientId: "c",
+      reconnectDelayMs: () => 0,
+    });
+    await client.start();
+    client.subscribe("amux/t/session/s/live", () => {});
+    subscribe.mockClear();
+    const subscribedWhenConnected: number[] = [];
+    client.onConnectionState((s) => {
+      if (s === "connected") subscribedWhenConnected.push(subscribe.mock.calls.length);
+    });
+    drop();
+    for (let i = 0; i < 4; i += 1) await flush();
+    expect(subscribedWhenConnected).toEqual([0, 1]);
+  });
+
+  it("resume() skips the backoff wait for a dropped client and leaves a live one alone", async () => {
+    const { adapter, connect, drop } = createDroppableAdapter();
+    const client = createTeamMqttClient({
+      adapter, url: "mqtt://x", username: "u", password: "p", clientId: "c",
+      reconnectDelayMs: () => 60_000,
+    });
+    await client.start();
+    client.resume();
+    await flush();
+    expect(connect).toHaveBeenCalledTimes(1);
+
+    drop();
+    await flush();
+    expect(connect).toHaveBeenCalledTimes(1);
+    client.resume();
+    await flush();
+    await flush();
+    expect(connect).toHaveBeenCalledTimes(2);
+    await client.dispose();
+  });
 });

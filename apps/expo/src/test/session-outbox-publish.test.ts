@@ -48,3 +48,22 @@ describe("publishOutboxRowViaOptionalMqtt", () => {
     );
   });
 });
+
+describe("publishOutboxRowViaMqtt reply quote", () => {
+  it("carries replyToMessageId so live receivers can render the quote", async () => {
+    const { fromBinary } = await import("@bufbuild/protobuf");
+    const { LiveEventEnvelopeSchema, SessionMessageEnvelopeSchema } = await import(
+      "@teamclu/app/proto/teamclu_pb"
+    );
+    const { publishOutboxRowViaMqtt } = await import(
+      "../features/sessions/session-outbox-publish"
+    );
+    const mqtt = { publish: vi.fn().mockResolvedValue(undefined) };
+
+    await publishOutboxRowViaMqtt(row({ replyToMessageId: "quoted-1" }), mqtt);
+
+    const envelope = fromBinary(LiveEventEnvelopeSchema, mqtt.publish.mock.calls[0]![1]);
+    const body = fromBinary(SessionMessageEnvelopeSchema, envelope.body);
+    expect(body.message?.replyToMessageId).toBe("quoted-1");
+  });
+});

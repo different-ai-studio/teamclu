@@ -71,9 +71,27 @@ import { registerNativePushToken } from "../src/features/notifications/push-regi
 import { getDb } from "../src/lib/db/sqlite";
 import { decodeActorPresence } from "../src/features/actors/actor-presence";
 import { setActiveUnreadTeam } from "../src/features/sessions/unread-store";
+import {
+  endChatMetric,
+  markChatMetric,
+  startChatMetric,
+  tagChatMetric,
+} from "../src/lib/telemetry/chat-metrics";
+import {
+  replyRequestFromResponse,
+  sendNotificationReply,
+  SESSION_MESSAGE_CATEGORY,
+  SESSION_REPLY_ACTION,
+} from "../src/features/notifications/notification-reply";
+import { saveComposerDraft } from "../src/features/sessions/composer-drafts";
+import { createConfiguredSessionsApi } from "../src/features/sessions/api-provider";
 import { useAppIconBadgeSync } from "../src/features/notifications/app-icon-badge-sync";
 import { AndroidUpdatePrompt } from "../src/features/updates/AndroidUpdatePrompt";
 import { useOfflineLaunchRevalidation } from "../src/features/onboarding/use-offline-launch-revalidation";
+
+// M4: from the JS bundle starting to the session list's first rows (the
+// list marks the end). The native process start before JS is not counted.
+startChatMetric("app.cold_start", "", { startedAt: Date.now() });
 
 const onboardingApi = createOnboardingApi(supabase);
 const introFlagStore = createIntroFlagStore();
@@ -174,7 +192,8 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
-    void controller.bootstrap().catch(() => {
+    // Opens on the cached team when it can, checking memberships behind it.
+    void controller.launch().catch(() => {
       // Error state is stored inside the controller for the routes to render.
     });
   }, [controller, hydrated]);
@@ -292,7 +311,50 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (state.route !== "ready") return;
 
+    // The reply field on message notifications (FC sends the category).
+    void Notifications.setNotificationCategoryAsync(SESSION_MESSAGE_CATEGORY, [
+      {
+        identifier: SESSION_REPLY_ACTION,
+        buttonTitle: t("Reply"),
+        textInput: { submitButtonTitle: t("Send"), placeholder: t("Reply…") },
+        options: { opensAppToForeground: false },
+      },
+    ]).catch(() => {
+      // No reply field; the notification still opens the session.
+    });
+
+    const handledReplies = new Set<string>();
+    const sendReplyFromResponse = (response: unknown): boolean => {
+      const reply = replyRequestFromResponse(response);
+      if (!reply) return false;
+      // The same response can arrive from the listener and from the
+      // last-response replay on launch; send it once.
+      const key = `${notificationResponseDedupeKey(response) ?? reply.sessionId}:${reply.text}`;
+      if (handledReplies.has(key)) return true;
+      handledReplies.add(key);
+      const api = createConfiguredSessionsApi(supabase);
+      void sendNotificationReply(reply, {
+        getUserId: async () => (await supabase.auth.getSession()).data?.session?.user.id ?? null,
+        resolveMemberActorId: (teamId, userId) => api.resolveMemberActorId(teamId, userId),
+        insertOutgoingMessage: (input) => api.insertOutgoingMessage(input),
+        saveDraft: saveComposerDraft,
+        notifyFailure: async (sessionId) => {
+          await Notifications.scheduleNotificationAsync({
+            content: {
+              title: t("Reply not sent"),
+              body: t("Saved as a draft in the session."),
+              data: { session_id: sessionId },
+            },
+            trigger: null,
+          });
+        },
+      });
+      return true;
+    };
+
     const openSessionFromResponse = (response: unknown) => {
+      // A reply typed into the notification stays where it was typed.
+      if (sendReplyFromResponse(response)) return;
       const href = notificationResponseToSessionHref(response);
       if (!href) return;
       const dedupeKey = notificationResponseDedupeKey(response) ?? href;
@@ -395,6 +457,12 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
 
   // The Sessions badge belongs to one team. Switching (or signing out) zeroes
   // it, and a late answer from the previous team's list is dropped.
+  useEffect(() => {
+    if (state.route === "ready") markChatMetric("app.cold_start", "", "route_ready");
+    // Signed out / onboarding: no list to reach, not a cold-start sample.
+    else if (state.route !== "loading") endChatMetric("app.cold_start", "", "cancelled");
+  }, [state.route]);
+
   const activeTeamId = state.currentTeam?.id ?? null;
   useEffect(() => {
     setActiveUnreadTeam(activeTeamId);
@@ -411,6 +479,40 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
     if (!state.currentTeam || !state.currentMemberActorId) return;
 
     let disposed = false;
+    // Back in the foreground: a client dropped while backgrounded reconnects
+    // now rather than at the end of its backoff wait.
+    let stopResumeMetric: (() => void) | null = null;
+    const foregroundSubscription = AppState.addEventListener("change", (next) => {
+      if (next !== "active") return;
+      const client = teamMqttRef.current;
+      if (!client) return;
+      // M5: back in the foreground → MQTT usable again (at once if it stayed up).
+      stopResumeMetric?.();
+      startChatMetric("app.foreground_resume");
+      let done = false;
+      let unsubscribe: (() => void) | null = null;
+      const timeout = setTimeout(() => finish("failed"), 60_000);
+      const finish = (outcome: "ok" | "failed" | "cancelled") => {
+        if (done) return;
+        done = true;
+        clearTimeout(timeout);
+        unsubscribe?.();
+        stopResumeMetric = null;
+        endChatMetric("app.foreground_resume", "", outcome);
+      };
+      stopResumeMetric = () => finish("cancelled");
+      let wasConnected: boolean | null = null;
+      unsubscribe = client.onConnectionState((connection) => {
+        // The first call replays the current state.
+        if (wasConnected === null) {
+          wasConnected = connection === "connected";
+          tagChatMetric("app.foreground_resume", "", "path", wasConnected ? "alive" : "reconnect");
+        }
+        if (connection === "connected") finish("ok");
+      });
+      if (done) unsubscribe();
+      client.resume();
+    });
 
     void (async () => {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -439,8 +541,10 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
       });
       try {
         await mqtt.start();
+        markChatMetric("app.cold_start", "", "mqtt_connected");
       } catch {
-        return;
+        // Keep the client: it retries with backoff (and on foreground), so a
+        // launch without network comes online once the network does.
       }
       if (disposed) {
         void mqtt.dispose();
@@ -478,6 +582,8 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
 
     return () => {
       disposed = true;
+      foregroundSubscription.remove();
+      stopResumeMetric?.();
       void connectedAgentsStoreRef.current?.dispose();
       void teamMqttRef.current?.dispose();
       connectedAgentsStoreRef.current = null;

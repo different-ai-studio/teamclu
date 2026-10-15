@@ -270,3 +270,29 @@ export function buildSessionFeedSources(
   openTurns.sort(byCreatedAtThenKey);
   return [...sources, ...openTurns];
 }
+
+/**
+ * The feed row that shows server message `messageId`: the message row itself,
+ * or the agent turn whose reply or process contains it (iOS
+ * `feedItemID(containingServerMessageID:)`). Case-insensitive — push payloads
+ * and older clients do not agree on UUID case.
+ */
+export function feedKeyContainingMessageId(
+  sources: readonly SessionFeedSource[],
+  messageId: string,
+): string | null {
+  const wanted = messageId.trim().toLowerCase();
+  if (!wanted) return null;
+  const matches = (id: string | undefined) => (id ?? "").toLowerCase() === wanted;
+  for (const source of sources) {
+    if (source.kind === "message") {
+      if (matches(source.message.messageId)) return source.key;
+      continue;
+    }
+    const { turn } = source;
+    if (matches(turn.finalMessage?.messageId) || turn.runtimeEvents.some((e) => matches(e.messageId))) {
+      return source.key;
+    }
+  }
+  return null;
+}

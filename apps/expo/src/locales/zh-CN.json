@@ -1083,5 +1083,12 @@
   "Download size {{size}}": "下载大小 {{size}}",
   "Downloading… {{percent}}%": "正在下载… {{percent}}%",
   "Downloaded. Follow the system prompt to install.": "已下载，请按系统提示完成安装。",
-  "Update failed: {{message}}": "更新失败：{{message}}"
+  "Update failed: {{message}}": "更新失败：{{message}}",
+  "Draft:": "草稿：",
+  "{{value}} unread": "{{value}} 条未读",
+  "{{value}} new messages": "{{value}} 条新消息",
+  "Jump to latest": "回到最新",
+  "Reply…": "回复…",
+  "Reply not sent": "回复未发出",
+  "Saved as a draft in the session.": "已存为该会话的草稿。"
 }

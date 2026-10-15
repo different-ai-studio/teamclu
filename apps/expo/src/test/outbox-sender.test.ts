@@ -112,4 +112,44 @@ describe("OutboxSender", () => {
     expect(dao.failed.length).toBe(1);
     expect(dao.failed[0].attempts).toBeGreaterThanOrEqual(20);
   });
+
+  it("sends a newly enqueued row immediately instead of waiting for the tick", async () => {
+    const dao = createFakeDao();
+    const send = vi.fn().mockResolvedValue(undefined);
+    const sender = createOutboxSender({ dao, send, onChange: () => {}, tickMs: 60_000 });
+    sender.start();
+    await sender.enqueue({
+      messageId: "m1", sessionId: "s", teamId: "t", senderActorId: "a",
+      content: "hi", mentionActorIds: [], replyToMessageId: null,
+      attachments: [], createdAt: 0,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    sender.stop();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(dao.delivered).toEqual(["m1"]);
+  });
+
+  it("never sends a row twice when a wake lands during a pass", async () => {
+    const dao = createFakeDao();
+    let release: () => void = () => {};
+    const send = vi.fn(() => new Promise<void>((resolve) => { release = resolve; }));
+    const sender = createOutboxSender({ dao, send, onChange: () => {}, tickMs: 60_000 });
+    sender.start();
+    const base = {
+      sessionId: "s", teamId: "t", senderActorId: "a", content: "hi",
+      mentionActorIds: [], replyToMessageId: null, attachments: [], createdAt: 0,
+    };
+    await sender.enqueue({ ...base, messageId: "m1" });
+    await vi.advanceTimersByTimeAsync(0);
+    await sender.enqueue({ ...base, messageId: "m2" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    sender.stop();
+    expect(send.mock.calls.map((c) => (c as unknown as [{ messageId: string }])[0].messageId)).toEqual(["m1", "m2"]);
+    expect(dao.delivered).toEqual(["m1", "m2"]);
+  });
 });
