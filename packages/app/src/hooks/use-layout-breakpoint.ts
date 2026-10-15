@@ -4,7 +4,11 @@ import { isSoloBuild } from '@/lib/config/solo-build'
 type LayoutBreakpoint = 'wide' | 'medium' | 'narrow'
 
 const WIDE_MIN_WIDTH = 1024
-const SESSION_LIST_MIN_WIDTH = 900
+// Below the desktop window's 800px minimum (tauri.conf.json), so a desktop
+// window always keeps the session list column; the sidebar becomes a drawer
+// instead. Narrow is left for phone-width web views. It was 900, which made
+// 800–899px desktop windows lose both the column and the nav.
+const SESSION_LIST_MIN_WIDTH = 768
 
 export function getLayoutBreakpointForWidth(width: number): LayoutBreakpoint {
   if (width >= WIDE_MIN_WIDTH) return 'wide'

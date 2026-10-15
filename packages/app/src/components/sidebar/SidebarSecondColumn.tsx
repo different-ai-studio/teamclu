@@ -15,13 +15,21 @@ const AppsColumn = lazyNamed(() => import('./AppsColumn'), 'AppsColumn')
 const ActorsView = lazyNamed(() => import('@/components/panel/ActorsView'), 'ActorsView')
 const IdeasView = lazyNamed(() => import('@/components/panel/IdeasView'), 'IdeasView')
 
-export function SidebarSecondColumn({ showNewSessionActions }: { showNewSessionActions?: boolean } = {}) {
+export function SidebarSecondColumn({
+  showNewSessionActions,
+  onDismiss,
+}: {
+  showNewSessionActions?: boolean
+  /** Forwarded to the session list, which calls it once a session is opened
+   * (the narrow layout's sheet closes itself). */
+  onDismiss?: () => void
+} = {}) {
   const embedMode = useUIStore((s) => s.embedMode)
   const filter = useUIStore((s) => s.sidebarFilter)
   const features = useFeatures()
   const column = resolveLazyColumn({ embedMode, filter, appsEnabled: features.apps })
   if (column) return <Suspense fallback={<PaneLoading />}>{column}</Suspense>
-  return <SessionListColumn showNewSessionActions={showNewSessionActions} />
+  return <SessionListColumn showNewSessionActions={showNewSessionActions} onDismiss={onDismiss} />
 }
 
 function resolveLazyColumn({

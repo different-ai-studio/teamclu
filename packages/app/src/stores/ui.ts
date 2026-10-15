@@ -87,6 +87,10 @@ interface UIState {
   localDaemonExpanded: boolean
   /** Action sheet open (⋯ menu). */
   localDaemonSheetOpen: boolean
+  /** Narrow layout's bottom sheet that stands in for the second column. In
+   * the store, not in NarrowChatHeader, so picking a section in the nav drawer
+   * can bring it up. */
+  narrowListSheetOpen: boolean
   /** Standalone automation panel (CronSection) without opening full Settings. */
   automationPanelOpen: boolean
   /** App control panel (design §2.4) — mutually exclusive with workspace RightPanel. */
@@ -101,6 +105,7 @@ interface UIState {
   openNewSessionDialog: (initialMessage?: string | null) => void
   closeNewSessionDialog: () => void
   setSidebarFilter: (filter: SidebarFilter) => void
+  setNarrowListSheetOpen: (open: boolean) => void
   toggleIdeasSection: () => void
   toggleMoreNav: () => void
   setMoreNavExpanded: (expanded: boolean) => void
@@ -169,6 +174,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   moreNavExpanded: false,
   localDaemonExpanded: false,
   localDaemonSheetOpen: false,
+  narrowListSheetOpen: false,
   automationPanelOpen: false,
   appControlPanelOpen: false,
   draftIdeaId: null,
@@ -411,6 +417,7 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   clearActorDraft: () => set({ draftPreselectedActor: null }),
 
+  setNarrowListSheetOpen: (open) => set({ narrowListSheetOpen: open }),
   setSidebarFilter: (filter) => {
     const current = get().sidebarFilter
     const isLeavingKnowledge =

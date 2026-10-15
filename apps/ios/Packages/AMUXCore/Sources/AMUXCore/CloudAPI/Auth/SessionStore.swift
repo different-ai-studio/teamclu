@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Owns the access/refresh token lifecycle that the Supabase SDK previously
 /// managed: Keychain persistence, proactive + reactive refresh, and the
@@ -10,8 +11,12 @@ public actor SessionStore {
 
     private var session: StoredSession?
     private var refreshTask: Task<Void, Never>?
-    private var continuations: [UUID: AsyncStream<Void>.Continuation] = [:]
-    private var revocationContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
+    /// Subscribers are registered synchronously, under a lock, the moment a
+    /// stream is created. Registering through a `Task` hop onto the actor let
+    /// an event emitted right after subscribing go out before the subscriber
+    /// was listed, and it was silently lost.
+    private nonisolated let continuations = Mutex<[UUID: AsyncStream<Void>.Continuation]>([:])
+    private nonisolated let revocationContinuations = Mutex<[UUID: AsyncStream<Void>.Continuation]>([:])
 
     /// Refresh this many seconds before the JWT `exp` to absorb clock skew.
     private let refreshLeadSeconds: TimeInterval = 60
@@ -110,21 +115,15 @@ public actor SessionStore {
     public nonisolated func tokenRefreshes() -> AsyncStream<Void> {
         AsyncStream { continuation in
             let id = UUID()
-            Task { await self.register(id: id, continuation: continuation) }
-            continuation.onTermination = { _ in Task { await self.unregister(id: id) } }
+            continuations.withLock { $0[id] = continuation }
+            continuation.onTermination = { [weak self] _ in
+                self?.continuations.withLock { $0[id] = nil }
+            }
         }
     }
 
-    private func register(id: UUID, continuation: AsyncStream<Void>.Continuation) {
-        continuations[id] = continuation
-    }
-
-    private func unregister(id: UUID) {
-        continuations[id] = nil
-    }
-
     private func emitRefresh() {
-        for c in continuations.values { c.yield() }
+        for c in continuations.withLock({ Array($0.values) }) { c.yield() }
     }
 
     /// Emits when the server refuses the refresh token and the session is
@@ -134,21 +133,15 @@ public actor SessionStore {
     public nonisolated func sessionRevocations() -> AsyncStream<Void> {
         AsyncStream { continuation in
             let id = UUID()
-            Task { await self.registerRevocation(id: id, continuation: continuation) }
-            continuation.onTermination = { _ in Task { await self.unregisterRevocation(id: id) } }
+            revocationContinuations.withLock { $0[id] = continuation }
+            continuation.onTermination = { [weak self] _ in
+                self?.revocationContinuations.withLock { $0[id] = nil }
+            }
         }
     }
 
-    private func registerRevocation(id: UUID, continuation: AsyncStream<Void>.Continuation) {
-        revocationContinuations[id] = continuation
-    }
-
-    private func unregisterRevocation(id: UUID) {
-        revocationContinuations[id] = nil
-    }
-
     private func emitRevocation() {
-        for c in revocationContinuations.values { c.yield() }
+        for c in revocationContinuations.withLock({ Array($0.values) }) { c.yield() }
     }
 
     private func refreshLocked() async throws -> StoredSession {

@@ -22,7 +22,10 @@ import {
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 const SIDEBAR_WIDTH = "20rem"
-const SIDEBAR_WIDTH_MOBILE = "20rem"
+// The drawer is portalled to <body>, outside the wrapper that sets
+// --sidebar-width, so it carries its own width — matched to the 220px the app
+// gives the inline sidebar, whose contents are laid out for that width.
+const SIDEBAR_WIDTH_MOBILE = "220px"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
@@ -34,6 +37,10 @@ type SidebarContextProps = {
   setOpenMobile: (open: boolean) => void
   isMobile: boolean
   toggleSidebar: () => void
+  /** A <Sidebar> is mounted under this provider. Layouts that leave it out
+   * (solo builds, the extension) must not offer a control that opens nothing. */
+  hasSidebar: boolean
+  registerSidebar: () => () => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -46,6 +53,8 @@ const FALLBACK_SIDEBAR_CONTEXT: SidebarContextProps = {
   setOpenMobile: () => {},
   isMobile: false,
   toggleSidebar: () => {},
+  hasSidebar: false,
+  registerSidebar: () => () => {},
 }
 
 function useSidebar() {
@@ -66,6 +75,7 @@ function SidebarProvider({
   defaultOpen = true,
   open: openProp,
   onOpenChange: setOpenProp,
+  overlay,
   className,
   style,
   children,
@@ -74,9 +84,24 @@ function SidebarProvider({
   defaultOpen?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
+  /** Show the sidebar as a drawer over the page instead of inline. Defaults to
+   * the viewport check; the app passes its own layout breakpoint, because its
+   * inline sidebar needs far more room than the 768px that check allows. */
+  overlay?: boolean
 }) {
-  const isMobile = useIsMobile()
+  const viewportIsMobile = useIsMobile()
+  const isMobile = overlay ?? viewportIsMobile
   const [openMobile, setOpenMobile] = React.useState(false)
+  const [sidebarCount, setSidebarCount] = React.useState(0)
+  const registerSidebar = React.useCallback(() => {
+    setSidebarCount((n) => n + 1)
+    return () => setSidebarCount((n) => n - 1)
+  }, [])
+
+  // A drawer left open must not reappear the next time the layout narrows.
+  React.useEffect(() => {
+    if (!isMobile) setOpenMobile(false)
+  }, [isMobile])
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
@@ -120,7 +145,9 @@ function SidebarProvider({
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
   // This makes it easier to style the sidebar with Tailwind classes.
-  const state = open ? "expanded" : "collapsed"
+  // As a drawer the sidebar never takes inline room, so it reads as collapsed:
+  // surfaces that show an expand control when it is collapsed keep showing it.
+  const state = open && !isMobile ? "expanded" : "collapsed"
 
   const contextValue = React.useMemo<SidebarContextProps>(
     () => ({
@@ -131,8 +158,10 @@ function SidebarProvider({
       openMobile,
       setOpenMobile,
       toggleSidebar,
+      hasSidebar: sidebarCount > 0,
+      registerSidebar,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, sidebarCount, registerSidebar]
   )
 
   return (
@@ -172,7 +201,8 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+  const { isMobile, state, openMobile, setOpenMobile, registerSidebar } = useSidebar()
+  React.useEffect(() => registerSidebar(), [registerSidebar])
 
   if (collapsible === "none") {
     return (
