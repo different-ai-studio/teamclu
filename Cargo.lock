@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "amuxd"
-version = "0.4.1-beta.95"
+version = "0.4.1-beta.96"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -9642,7 +9642,7 @@ dependencies = [
 
 [[package]]
 name = "teamclu"
-version = "0.4.1-beta.95"
+version = "0.4.1-beta.96"
 dependencies = [
  "aes-gcm",
  "anyhow",
