@@ -3528,6 +3528,146 @@ test("repeated preflight preserves an approved token and rejects a different pro
   assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
 });
 
+test("release deploy clears an abandoned preflight without changing live status", async () => {
+  for (const status of ["live", "uninstalled"]) {
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_status: status, deploy_token: APP_PREFLIGHT_TOKEN, deploy_started_at: null }] } });
+    const repo = appsRepo(db);
+    assert.equal((await repo.releaseAppDeploy("app-1", { deployToken: APP_PREFLIGHT_TOKEN }))?.released, true);
+    const { data } = await db.from("apps").select("*").eq("id", "app-1").maybeSingle();
+    assert.equal(data.deploy_token, null);
+    assert.equal(data.fc_status, status);
+  }
+});
+
+test("release deploy records a build failure and clears its reservation", async () => {
+  const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_status: "awaiting_build", deploy_token: APP_PREFLIGHT_TOKEN, deploy_started_at: new Date().toISOString() }] } });
+  const repo = appsRepo(db);
+  assert.equal((await repo.releaseAppDeploy("app-1", { deployToken: APP_PREFLIGHT_TOKEN, deployError: "build failed" }))?.released, true);
+  const { data } = await db.from("apps").select("*").eq("id", "app-1").maybeSingle();
+  assert.equal(data.deploy_token, null);
+  assert.equal(data.deploy_started_at, null);
+  assert.equal(data.fc_status, "deploy_error");
+  assert.equal(data.provision_error, "build failed");
+});
+
+test("release deploy finishes the matching build lifecycle so a retry can start", async () => {
+  const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_status: "awaiting_build", deploy_token: APP_PREFLIGHT_TOKEN }] } });
+  const { data: operation } = await db.rpc("begin_app_lifecycle", { p_app_id: "app-1", p_kind: "deploy", p_token: APP_PREFLIGHT_TOKEN });
+  await appsRepo(db).releaseAppDeploy("app-1", { deployToken: APP_PREFLIGHT_TOKEN, deployError: "build failed" });
+  assert.equal(operation.status, "succeeded");
+  assert.equal((await db.rpc("begin_app_lifecycle", { p_app_id: "app-1", p_kind: "deploy", p_token: "retry-token" })).error, null);
+});
+
+test("release deploy cannot cancel another caller's start before awaiting_build", async () => {
+  for (const status of ["live", "deploy_error"]) {
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_status: status, deploy_token: APP_PREFLIGHT_TOKEN }] } });
+    const { data: operation } = await db.rpc("begin_app_lifecycle", { p_app_id: "app-1", p_kind: "deploy", p_token: APP_PREFLIGHT_TOKEN });
+    assert.deepEqual(await appsRepo(db).releaseAppDeploy("app-1", { deployToken: APP_PREFLIGHT_TOKEN }), { released: false });
+    assert.equal(operation.status, "pending");
+  }
+});
+
+test("release deploy retries lifecycle completion after the app row was cleared", async () => {
+  const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_status: "awaiting_build", deploy_token: APP_PREFLIGHT_TOKEN }] } });
+  const { data: operation } = await db.rpc("begin_app_lifecycle", { p_app_id: "app-1", p_kind: "deploy", p_token: APP_PREFLIGHT_TOKEN });
+  const rpc = db.rpc.bind(db);
+  let failOnce = true;
+  db.rpc = async (name, args) => {
+    if (name === "finish_app_lifecycle" && failOnce) {
+      failOnce = false;
+      return { data: null, error: new Error("temporary lifecycle failure") };
+    }
+    return rpc(name, args);
+  };
+  const repo = appsRepo(db);
+  const input = { deployToken: APP_PREFLIGHT_TOKEN, deployError: "build failed" };
+  await assert.rejects(() => repo.releaseAppDeploy("app-1", input), /temporary lifecycle failure/);
+  assert.deepEqual(await repo.releaseAppDeploy("app-1", input), { released: true });
+  assert.equal(operation.status, "succeeded");
+});
+
+test("release deploy preserves the lifecycle fence after a provider timeout", async () => {
+  for (const token of [null, APP_PREFLIGHT_TOKEN]) {
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_status: "deploy_error", deploy_token: token, deploy_started_at: null }] } });
+    const { data: operation } = await db.rpc("begin_app_lifecycle", { p_app_id: "app-1", p_kind: "deploy", p_token: APP_PREFLIGHT_TOKEN });
+    operation.in_flight = true;
+    assert.deepEqual(await appsRepo(db).releaseAppDeploy("app-1", { deployToken: APP_PREFLIGHT_TOKEN, deployError: "provider timeout" }), { released: false });
+    assert.equal(operation.status, "pending");
+    assert.equal(operation.in_flight, true);
+  }
+});
+
+test("release deploy never finishes a different lifecycle operation", async () => {
+  for (const [kind, token] of [["deploy", "other-token"], ["undeploy", APP_PREFLIGHT_TOKEN]]) {
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_status: "awaiting_build", deploy_token: APP_PREFLIGHT_TOKEN }] } });
+    const { data: operation } = await db.rpc("begin_app_lifecycle", { p_app_id: "app-1", p_kind: kind, p_token: token });
+    assert.deepEqual(await appsRepo(db).releaseAppDeploy("app-1", { deployToken: APP_PREFLIGHT_TOKEN, deployError: "failed" }), { released: false });
+    assert.equal(operation.status, "pending");
+  }
+});
+
+test("release deploy cannot clear a different token or a provider deployment", async () => {
+  for (const [status, token, error] of [["awaiting_build", "new-token", "failed"], ["deploying", APP_PREFLIGHT_TOKEN, "failed"], ["building", APP_PREFLIGHT_TOKEN, "failed"], ["uninstalling", APP_PREFLIGHT_TOKEN, "failed"], ["uninstall_failed", APP_PREFLIGHT_TOKEN, "failed"], ["awaiting_build", APP_PREFLIGHT_TOKEN, undefined]]) {
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_status: status, deploy_token: token, deploy_started_at: "2026-10-18T00:00:00Z" }] } });
+    const repo = appsRepo(db);
+    assert.deepEqual(await repo.releaseAppDeploy("app-1", { deployToken: APP_PREFLIGHT_TOKEN, deployError: error }), { released: false });
+    const { data } = await db.from("apps").select("*").eq("id", "app-1").maybeSingle();
+    assert.equal(data.deploy_token, token);
+    assert.equal(data.fc_status, status);
+  }
+});
+
+test("release deploy requires admin permission before writing", async () => {
+  for (const level of ["view", "prompt"]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls, actorRow: { id: "other-member" }, seed: {
+      apps: [{ ...APP_ROW, deploy_token: APP_PREFLIGHT_TOKEN }],
+      app_member_access: [{ app_id: "app-1", member_id: "other-member", permission_level: level }],
+    } }));
+    assert.equal(await repo.releaseAppDeploy("app-1", { deployToken: APP_PREFLIGHT_TOKEN }), null);
+    assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
+  }
+});
+
+test("release deploy cannot overwrite a concurrent finalize or newer token", async () => {
+  for (const change of [{ fc_status: "deploying" }, { deploy_token: "newer-token" }]) {
+    const app = { ...APP_ROW, fc_status: "awaiting_build", deploy_token: APP_PREFLIGHT_TOKEN, deploy_started_at: "2026-10-18T00:00:00Z" };
+    const db = appsSupabase({ seed: { apps: [app] } });
+    const from = db.from.bind(db);
+    db.from = (table: string) => {
+      const builder = from(table);
+      if (table === "apps") {
+        const update = builder.update.bind(builder);
+        builder.update = (row: unknown) => {
+          update(row);
+          const maybeSingle = builder.maybeSingle.bind(builder);
+          builder.maybeSingle = () => {
+            Object.assign(app, change);
+            return maybeSingle();
+          };
+          return builder;
+        };
+      }
+      return builder;
+    };
+    const result = await appsRepo(db).releaseAppDeploy("app-1", { deployToken: APP_PREFLIGHT_TOKEN, deployError: "failed" });
+    assert.deepEqual(result, { released: false });
+    assert.equal(app.fc_status, change.fc_status ?? "awaiting_build");
+    assert.equal(app.deploy_token, change.deploy_token ?? APP_PREFLIGHT_TOKEN);
+  }
+});
+
+test("release deploy lets an authorized admin grantee use the service writer", async () => {
+  const app = { ...APP_ROW, fc_status: "awaiting_build", deploy_token: APP_PREFLIGHT_TOKEN };
+  const adminCalls: any[] = [];
+  const db = appsSupabase({ actorRow: { id: "admin-member" }, seed: {
+    apps: [app], app_member_access: [{ app_id: "app-1", member_id: "admin-member", permission_level: "admin" }],
+  } });
+  const repo = appsRepo(db, { createServiceRoleClient: () => appsSupabase({ seed: { apps: [app] }, calls: adminCalls }) });
+  await repo.releaseAppDeploy("app-1", { deployToken: APP_PREFLIGHT_TOKEN, deployError: "build failed" });
+  assert.equal(adminCalls.filter(c => c.table === "apps" && c.op === "update").length, 1);
+});
+
 test("a tampered preflight token cannot mint an upload handle", async () => {
   let minted = 0;
   const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {

@@ -1535,68 +1535,80 @@ async fn run_app_deploy(
         )
         .await?;
     let preflight_token = row_str(&preflight, "token").ok_or("preflight returned no token")?;
-    super::confirm::confirm_with_user(
-        app,
-        super::confirm::app_deploy_with_preview(zh, row, &preflight["preview"]),
-    )
-    .await?;
-    start_body["preflightToken"] = json!(preflight_token);
-    let started = api
-        .call(
-            Method::POST,
-            &app_path(&app_id, "/deploy"),
-            Some(&start_body),
-            Some(Duration::from_secs(60)),
-            "Starting the deploy (needs admin on the app)",
+    let mut build_started = false;
+    let result = async {
+        super::confirm::confirm_with_user(
+            app,
+            super::confirm::app_deploy_with_preview(zh, row, &preflight["preview"]),
         )
         .await?;
-    let deploy_token = row_str(&started, "deployToken")
-        .unwrap_or_default()
-        .to_string();
-    let handle = match started.get("image").filter(|v| v.is_object()) {
-        Some(image) => DeployHandle::Push(image.clone()),
-        None => {
-            let url = row_str(&started, "presignedPut").unwrap_or_default();
-            if url.is_empty() {
-                return Err("deploy start returned no upload handle".to_string());
+        start_body["preflightToken"] = json!(preflight_token);
+        let started = api
+            .call(
+                Method::POST,
+                &app_path(&app_id, "/deploy"),
+                Some(&start_body),
+                Some(Duration::from_secs(60)),
+                "Starting the deploy (needs admin on the app)",
+            )
+            .await?;
+        build_started = true;
+        let deploy_token = row_str(&started, "deployToken")
+            .unwrap_or_default()
+            .to_string();
+        let handle = match started.get("image").filter(|v| v.is_object()) {
+            Some(image) => DeployHandle::Push(image.clone()),
+            None => {
+                let url = row_str(&started, "presignedPut").unwrap_or_default();
+                if url.is_empty() {
+                    return Err("deploy start returned no upload handle".to_string());
+                }
+                DeployHandle::Upload(url.to_string())
             }
-            DeployHandle::Upload(url.to_string())
+        };
+        if deploy_token.is_empty() {
+            return Err("deploy start returned no deploy token".to_string());
         }
-    };
-    if deploy_token.is_empty() {
-        return Err("deploy start returned no deploy token".to_string());
-    }
 
-    // From here the server has written `awaiting_build` and this call owns it.
-    match finish_app_deploy(
-        api,
-        &app_id,
-        &team_id,
-        via_gitea,
-        git_commit_sha,
-        &revision,
-        &deploy_token,
-        &handle,
-    )
-    .await
-    {
-        Ok(finished) => Ok(finished),
-        Err(reason) => {
-            let reason = redact_deploy_secrets(&reason);
-            let _ = api
-                .send(
-                    Method::PATCH,
-                    &app_path(&app_id, ""),
-                    Some(&json!({
-                        "fcStatus": "deploy_error",
-                        "deployError": reason,
-                    })),
-                    None,
-                )
-                .await;
-            Err(reason)
-        }
+        finish_app_deploy(
+            api,
+            &app_id,
+            &team_id,
+            via_gitea,
+            git_commit_sha,
+            &revision,
+            &deploy_token,
+            &handle,
+        )
+        .await
     }
+    .await;
+    if let Err(reason) = &result {
+        let reason = redact_deploy_secrets(reason);
+        // Compare-and-release on the server: a cancelled approval preserves
+        // live status; a failed build is recorded only while awaiting_build.
+        // A timed-out finalize may still be running and must stay fenced.
+        let release = deploy_release_body(preflight_token, build_started, &reason);
+        let _ = api
+            .send(
+                Method::POST,
+                &app_path(&app_id, "/deploy/release"),
+                Some(&release),
+                Some(Duration::from_secs(10)),
+            )
+            .await;
+    }
+    result.map_err(|reason| redact_deploy_secrets(&reason))
+}
+
+fn deploy_release_body(token: &str, build_started: bool, reason: &str) -> Value {
+    let mut body = json!({ "deployToken": token });
+    // Identical preflights share a token. Only a successful start response
+    // authorizes this caller to report a failed build under that token.
+    if build_started {
+        body["deployError"] = json!(redact_deploy_secrets(reason));
+    }
+    body
 }
 
 // ─── Logs ───────────────────────────────────────────────────────────────────
@@ -1758,6 +1770,17 @@ mod tests {
         assert_eq!(patch["authRules"], rules);
     }
 
+    #[test]
+    fn approval_cancellation_cannot_fail_a_build_started_by_another_caller() {
+        assert_eq!(
+            super::deploy_release_body("shared-preflight", false, "approval timed out"),
+            serde_json::json!({ "deployToken": "shared-preflight" })
+        );
+        assert_eq!(
+            super::deploy_release_body("shared-preflight", true, "build failed"),
+            serde_json::json!({ "deployToken": "shared-preflight", "deployError": "build failed" })
+        );
+    }
     #[test]
     fn status_exposes_selected_checkout_revision_and_cleanliness() {
         let mut status = serde_json::json!({});

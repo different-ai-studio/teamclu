@@ -108,6 +108,9 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
     async preflightAppDeploy(appId, input) {
       return client.post<AppDeployPreflightResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy/preflight`, input);
     },
+    async releaseAppDeploy(appId, input) {
+      return client.post<{ released: boolean; app?: AppRow }>(`/v1/apps/${encodeURIComponent(appId)}/deploy/release`, input);
+    },
     async finalizeDeploy(appId, input) {
       return client.post<AppRow>(`/v1/apps/${encodeURIComponent(appId)}/deploy/finalize`, input);
     },

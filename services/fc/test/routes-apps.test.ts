@@ -48,6 +48,19 @@ test("POST deploy/preflight forwards declaration and revision without minting a 
   assert.equal(result.body.token, "opaque");
 });
 
+test("POST deploy/release forwards the matching token and failure reason", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const body = { deployToken: "owned-token", deployError: "build failed" };
+  let seen;
+  const result = await findRoute(routes, "POST", "/v1/apps/:appId/deploy/release")[2]({
+    params: { appId: "app-1" }, json: body,
+    repository: { releaseAppDeploy: async (id, input) => { seen = { id, input }; return { released: false }; } },
+  });
+  assert.deepEqual(seen, { id: "app-1", input: body });
+  assert.deepEqual(result.body, { released: false });
+});
+
 test("POST /v1/apps creates and returns 201", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);

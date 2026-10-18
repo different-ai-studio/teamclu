@@ -4,6 +4,10 @@
  * Implemented by lib/supabase-repo.ts; gated by
  * test/repository-contract.test.ts against a stub client.
  */
+/** Admin-only compare-and-release. Missing/stale tokens never clear another
+ * attempt. deployError permits failing awaiting_build, never deploying. */
+export type AppDeployReleaseInput = { deployToken?: string; deployError?: string };
+
 export function runBusinessRepositoryContract({ test, assert, createRepository }) {
   test("repository contract: auth-info returns raw config and active org catalog", async () => {
     const info = await createRepository().getAppAuthInfo("app-1");

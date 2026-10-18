@@ -12,6 +12,7 @@ import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
+import type { AppDeployReleaseInput } from "./repository-contract.js";
 import { ADMIN_LIST_CAP, clampPage, IN_FILTER_BATCH, isPlatformOperator, safeSearch } from "./platform-operators.js";
 import {
   DEFAULT_LIST_LIMIT,
@@ -5305,6 +5306,56 @@ export function createSupabaseBusinessRepository(options) {
       if (updateError) throw updateError;
       if (!updated) throw new ApiError(409, "deploy_in_progress", "app deploy state changed during preflight");
       return result;
+    },
+
+    async releaseAppDeploy(appId: string, input: AppDeployReleaseInput) {
+      if (typeof input?.deployToken !== "string" || !input.deployToken.trim()) {
+        throw new ApiError(400, "validation_failed", "deployToken is required");
+      }
+      const { data: existing, error } = await supabase.from("apps")
+        .select("id, team_id, created_by_actor_id, fc_status, deploy_token, deploy_started_at")
+        .eq("id", appId).maybeSingle();
+      if (error) throw error;
+      if (!existing) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(existing);
+      if (!permission || permission.level !== "admin") return null;
+      const failedBuild = existing.fc_status === "awaiting_build";
+      const hasFailure = typeof input.deployError === "string" && !!input.deployError.trim();
+      if (![null, undefined, "not_deployed", "uninstalled", "live", "deploy_error", "awaiting_build"].includes(existing.fc_status) ||
+          (failedBuild && !hasFailure)) {
+        return { released: false };
+      }
+      const lifecycleAdmin = await serviceRoleClient("app deployment lifecycle release");
+      const { data: lifecycle, error: lifecycleError } = await lifecycleAdmin.from("app_lifecycle_operations")
+        .select("id, token, kind, status, in_flight").eq("app_id", appId).neq("status", "succeeded").maybeSingle();
+      if (lifecycleError) throw lifecycleError;
+      if (lifecycle && (lifecycle.in_flight || lifecycle.kind !== "deploy" || lifecycle.token !== input.deployToken ||
+          (!failedBuild && (existing.fc_status !== "deploy_error" || !hasFailure)))) return { released: false };
+      if (existing.deploy_token !== input.deployToken) {
+        // A prior release may have cleared the app row before the lifecycle
+        // completion call failed. Retrying can finish only that old operation.
+        if (lifecycle && existing.deploy_token == null && existing.deploy_started_at == null && existing.fc_status === "deploy_error") {
+          await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: input.deployToken });
+          return { released: true };
+        }
+        return { released: false };
+      }
+      const writer = await this.isAppCreator(existing.team_id, existing.created_by_actor_id)
+        ? supabase : await serviceRoleClient("release an app deploy authorized by an admin grant");
+      let update = writer.from("apps").update({
+        deploy_token: null,
+        deploy_started_at: null,
+        ...(failedBuild ? { fc_status: "deploy_error", provision_error: input.deployError!.slice(0, 800) } : {}),
+        updated_at: new Date().toISOString(),
+      }).eq("id", appId).eq("deploy_token", input.deployToken);
+      update = existing.fc_status == null ? update.is("fc_status", null) : update.eq("fc_status", existing.fc_status);
+      update = existing.deploy_started_at == null ? update.is("deploy_started_at", null) : update.eq("deploy_started_at", existing.deploy_started_at);
+      const { data: updated, error: updateError } = await update.select(APP_COLUMNS).maybeSingle();
+      if (updateError) throw updateError;
+      if (updated && lifecycle) {
+        await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: input.deployToken });
+      }
+      return updated ? { released: true, app: mapApp(updated) } : { released: false };
     },
 
     async deployApp(appId: string, input: { gitCommitSha?: string; revision?: string; declaration?: unknown; preflightToken?: string }) {

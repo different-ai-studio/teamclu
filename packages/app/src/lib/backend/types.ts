@@ -1607,6 +1607,7 @@ export interface AppsBackend {
     input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; preflightToken: string },
   ): Promise<DeployAppResult>;
   preflightAppDeploy(appId: string, input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; migrationIntent?: boolean }): Promise<AppDeployPreflightResult>;
+  releaseAppDeploy(appId: string, input: { deployToken: string; deployError?: string }): Promise<{ released: boolean; app?: AppRow }>;
   /** Finalize FC deploy after the artifact is uploaded: points the function at
    *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
   finalizeDeploy(

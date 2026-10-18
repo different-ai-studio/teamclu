@@ -7468,6 +7468,43 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/apps/{appId}/deploy/release:
+    post:
+      operationId: releaseAppDeploy
+      summary: Release an abandoned preflight or failed build reservation
+      description: >-
+        Admin only. Atomically releases only the supplied deploy token and
+        observed deployment state. A preflight cancellation preserves live status.
+        Releasing awaiting_build requires deployError and records deploy_error.
+        Completes only the matching deploy lifecycle after releasing a failed build.
+        Never releases building, deploying, or uninstall lifecycle operations. A stale token
+        is a successful no-op with released false.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deployToken]
+              properties:
+                deployToken: { type: string, minLength: 1 }
+                deployError: { type: string, maxLength: 800 }
+      responses:
+        "200":
+          description: Whether the matching reservation was released, with the updated app when released.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [released]
+                properties:
+                  released: { type: boolean }
+                  app: { $ref: "#/components/schemas/App" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/apps/{appId}/deploy:
     post:
       operationId: deployApp
