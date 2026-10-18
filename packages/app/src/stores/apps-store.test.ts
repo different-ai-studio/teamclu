@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   updateAppDeployStatus: vi.fn(),
   deployApp: vi.fn(),
   preflightAppDeploy: vi.fn(),
-  releaseAppDeploy: vi.fn(),
+  cancelAppDeployPreflight: vi.fn(),
   finalizeDeploy: vi.fn(),
   getGitCredential: vi.fn(),
   revokeGitCredential: vi.fn(),
@@ -49,7 +49,7 @@ vi.mock("@/lib/backend", () => ({
       updateAppDeployStatus: mocks.updateAppDeployStatus,
       deployApp: mocks.deployApp,
       preflightAppDeploy: mocks.preflightAppDeploy,
-      releaseAppDeploy: mocks.releaseAppDeploy,
+      cancelAppDeployPreflight: mocks.cancelAppDeployPreflight,
       finalizeDeploy: mocks.finalizeDeploy,
       getGitCredential: mocks.getGitCredential,
       revokeGitCredential: mocks.revokeGitCredential,
@@ -873,7 +873,7 @@ describe("apps-store deploy", () => {
       token: "preflight-1",
       preview: { firstDeploy: true, changes: [], requiresMigrationApproval: false },
     });
-    mocks.releaseAppDeploy.mockResolvedValue({ released: false });
+    mocks.cancelAppDeployPreflight.mockResolvedValue({ cancelled: false });
     mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
       workspace_has_active_turn: false,
     });
@@ -1012,8 +1012,8 @@ describe("apps-store deploy", () => {
       expect.objectContaining({ gitCommitSha: "abc1234567890" }),
     );
     expect(mocks.finalizeDeploy).not.toHaveBeenCalled();
-    expect(mocks.releaseAppDeploy).toHaveBeenCalledWith(
-      "app-1", { deployToken: "tok-1", deployError: expect.stringContaining("构建版本与预检版本不一致") },
+    expect(mocks.updateAppDeployStatus).toHaveBeenCalledWith(
+      "app-1", "deploy_error", expect.stringContaining("构建版本与预检版本不一致"), "tok-1",
     );
   });
 
@@ -1070,7 +1070,7 @@ describe("apps-store deploy", () => {
     expect(mocks.getGitHead).toHaveBeenCalled();
     expect(mocks.preflightAppDeploy).toHaveBeenCalled();
     expect(mocks.deployApp).not.toHaveBeenCalled();
-    expect(mocks.releaseAppDeploy).toHaveBeenCalledWith("app-1", { deployToken: "preflight-1" });
+    expect(mocks.cancelAppDeployPreflight).toHaveBeenCalledWith("app-1", "preflight-1");
   });
 
   it("authMode=platform skips public confirm", async () => {
@@ -1091,7 +1091,7 @@ describe("apps-store deploy", () => {
     mocks.deployApp.mockRejectedValueOnce(new Error("a deploy is already in progress"));
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
-    expect(mocks.releaseAppDeploy).toHaveBeenCalledWith("app-1", { deployToken: "preflight-1" });
+    expect(mocks.cancelAppDeployPreflight).toHaveBeenCalledWith("app-1", "preflight-1");
     expect(mocks.buildDaemonApp).not.toHaveBeenCalled();
     expect(mocks.updateAppDeployStatus).not.toHaveBeenCalled();
   });
@@ -1157,13 +1157,13 @@ describe("apps-store deploy", () => {
       deployToken: "tok-1",
     });
     mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("unreachable"));
-    mocks.releaseAppDeploy.mockResolvedValueOnce({ released: true, app: { ...readyApp(), fcStatus: "deploy_error" } });
+    mocks.updateAppDeployStatus.mockResolvedValueOnce({ ...readyApp(), fcStatus: "deploy_error" });
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
 
     expect(mocks.finalizeDeploy).not.toHaveBeenCalled();
-    expect(mocks.releaseAppDeploy).toHaveBeenCalledWith(
-      "app-1", { deployToken: "tok-1", deployError: expect.stringContaining("amuxd") },
+    expect(mocks.updateAppDeployStatus).toHaveBeenCalledWith(
+      "app-1", "deploy_error", expect.stringContaining("amuxd"), "tok-1",
     );
     expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "deploy_error" });
   });
@@ -1180,8 +1180,8 @@ describe("apps-store deploy", () => {
     );
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
-    expect(mocks.releaseAppDeploy).toHaveBeenCalledWith(
-      "app-1", { deployToken: "tok-1", deployError: expect.stringContaining("未提交") },
+    expect(mocks.updateAppDeployStatus).toHaveBeenCalledWith(
+      "app-1", "deploy_error", expect.stringContaining("未提交"), "tok-1",
     );
   });
 
@@ -1197,7 +1197,7 @@ describe("apps-store deploy", () => {
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
 
-    expect(mocks.releaseAppDeploy).toHaveBeenCalledWith("app-1", { deployToken: "tok-1", deployError: "fc exploded" });
+    expect(mocks.updateAppDeployStatus).toHaveBeenCalledWith("app-1", "deploy_error", "fc exploded", "tok-1");
     expect(useAppsStore.getState().deployingIds).toEqual([]);
   });
 

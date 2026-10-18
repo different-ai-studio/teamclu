@@ -1585,15 +1585,14 @@ async fn run_app_deploy(
     .await;
     if let Err(reason) = &result {
         let reason = redact_deploy_secrets(reason);
-        // Compare-and-release on the server: a cancelled approval preserves
-        // live status; a failed build is recorded only while awaiting_build.
-        // A timed-out finalize may still be running and must stay fenced.
-        let release = deploy_release_body(preflight_token, build_started, &reason);
+        // Failed builds use the normal status transition. Approval cancellation
+        // only withdraws preflight; a timed-out provider call stays fenced.
+        let (method, path, body) = deploy_failure_request(preflight_token, build_started, &reason);
         let _ = api
             .send(
-                Method::POST,
-                &app_path(&app_id, "/deploy/release"),
-                Some(&release),
+                method,
+                &app_path(&app_id, path),
+                Some(&body),
                 Some(Duration::from_secs(10)),
             )
             .await;
@@ -1601,14 +1600,25 @@ async fn run_app_deploy(
     result.map_err(|reason| redact_deploy_secrets(&reason))
 }
 
-fn deploy_release_body(token: &str, build_started: bool, reason: &str) -> Value {
-    let mut body = json!({ "deployToken": token });
-    // Identical preflights share a token. Only a successful start response
-    // authorizes this caller to report a failed build under that token.
+fn deploy_failure_request(
+    token: &str,
+    build_started: bool,
+    reason: &str,
+) -> (Method, &'static str, Value) {
     if build_started {
-        body["deployError"] = json!(redact_deploy_secrets(reason));
+        (
+            Method::PATCH,
+            "",
+            json!({ "fcStatus": "deploy_error", "deployToken": token, "deployError": redact_deploy_secrets(reason) }),
+        )
+    } else {
+        // A reused preflight may already belong to another window's build.
+        (
+            Method::DELETE,
+            "/deploy/preflight",
+            json!({ "deployToken": token }),
+        )
     }
-    body
 }
 
 // ─── Logs ───────────────────────────────────────────────────────────────────
@@ -1771,14 +1781,19 @@ mod tests {
     }
 
     #[test]
-    fn approval_cancellation_cannot_fail_a_build_started_by_another_caller() {
+    fn approval_cancellation_only_withdraws_preflight() {
+        let (method, path, body) =
+            super::deploy_failure_request("shared-token", false, "approval timed out");
+        assert_eq!(method, reqwest::Method::DELETE);
+        assert_eq!(path, "/deploy/preflight");
+        assert_eq!(body, serde_json::json!({"deployToken": "shared-token"}));
+        let (method, path, body) =
+            super::deploy_failure_request("shared-token", true, "build failed");
+        assert_eq!(method, reqwest::Method::PATCH);
+        assert_eq!(path, "");
         assert_eq!(
-            super::deploy_release_body("shared-preflight", false, "approval timed out"),
-            serde_json::json!({ "deployToken": "shared-preflight" })
-        );
-        assert_eq!(
-            super::deploy_release_body("shared-preflight", true, "build failed"),
-            serde_json::json!({ "deployToken": "shared-preflight", "deployError": "build failed" })
+            body,
+            serde_json::json!({"deployToken": "shared-token", "fcStatus": "deploy_error", "deployError": "build failed"})
         );
     }
     #[test]

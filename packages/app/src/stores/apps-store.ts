@@ -218,17 +218,19 @@ async function patchStatus(set: SetState, appId: string, status: string): Promis
 }
 
 /**
- * Release only this attempt's reservation. The server preserves live status
- * on cancellation and refuses to interrupt a provider deployment.
+ * Report a local build failure through the normal status update. Approval
+ * cancellation only withdraws its unused preflight reservation.
  */
-async function releaseDeploy(set: SetState, appId: string, deployToken: string, reason?: string): Promise<void> {
+async function finishFailedDeployAttempt(set: SetState, appId: string, deployToken: string, reason?: string): Promise<void> {
   try {
-    const result = await getBackend().apps.releaseAppDeploy(appId, {
-      deployToken, ...(reason ? { deployError: reason } : {}),
-    });
-    if (result.app) mergeRow(set, result.app);
+    if (reason) {
+      const updated = await getBackend().apps.updateAppDeployStatus(appId, "deploy_error", reason, deployToken);
+      if (updated) mergeRow(set, updated);
+    } else {
+      await getBackend().apps.cancelAppDeployPreflight(appId, deployToken);
+    }
   } catch (e) {
-    console.warn("deploy reservation release failed (non-fatal)", e);
+    console.warn("deploy attempt writeback failed (non-fatal)", e);
   }
 }
 
@@ -1041,7 +1043,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       deployError = reason;
       await toastError(i18n.t("apps.deployFailed", "Deploy failed"), reason);
     } finally {
-      if (reservationToken) await releaseDeploy(set, appId, reservationToken, buildStarted ? deployError : undefined);
+      if (reservationToken) await finishFailedDeployAttempt(set, appId, reservationToken, buildStarted ? deployError : undefined);
       set((s) => ({ deployingIds: s.deployingIds.filter((id) => id !== appId) }));
       // Leave `done` visible briefly; footer clears the bar after linger.
       window.setTimeout(() => clearDeployProgress(set, appId), 1200);

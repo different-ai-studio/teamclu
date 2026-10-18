@@ -7297,7 +7297,10 @@ paths:
                 fcStatus: { $ref: "#/components/schemas/AppFcStatus" }
                 deployError:
                   type: string
-                  description: "Reason stored alongside `fcStatus: deploy_error`."
+                  description: "Reason stored alongside `fcStatus: deploy_error`. This transition atomically clears the attempt token and start time and finishes its matching non-in-flight deploy lifecycle."
+                deployToken:
+                  type: string
+                  description: "Required when reporting deploy_error; must match the current local build attempt. Active provider finalization cannot be failed by a client."
                 authMode:
                   $ref: "#/components/schemas/AppAuthMode"
                   description: >-
@@ -7468,17 +7471,13 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
-  /v1/apps/{appId}/deploy/release:
-    post:
-      operationId: releaseAppDeploy
-      summary: Release an abandoned preflight or failed build reservation
+    delete:
+      operationId: cancelAppDeployPreflight
+      summary: Withdraw an unused deployment preflight reservation
       description: >-
-        Admin only. Atomically releases only the supplied deploy token and
-        observed deployment state. A preflight cancellation preserves live status.
-        Releasing awaiting_build requires deployError and records deploy_error.
-        Completes only the matching deploy lifecycle after releasing a failed build.
-        Never releases building, deploying, or uninstall lifecycle operations. A stale token
-        is a successful no-op with released false.
+        Admin only. Atomically cancels the matching token only before a deployment
+        lifecycle has started. Preserves deployment status and all lifecycle records.
+        Stale tokens or an active deployment return cancelled false.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
@@ -7491,18 +7490,16 @@ paths:
               required: [deployToken]
               properties:
                 deployToken: { type: string, minLength: 1 }
-                deployError: { type: string, maxLength: 800 }
       responses:
         "200":
-          description: Whether the matching reservation was released, with the updated app when released.
+          description: Whether the unused reservation was cancelled.
           content:
             application/json:
               schema:
                 type: object
-                required: [released]
+                required: [cancelled]
                 properties:
-                  released: { type: boolean }
-                  app: { $ref: "#/components/schemas/App" }
+                  cancelled: { type: boolean }
         "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
   /v1/apps/{appId}/deploy:

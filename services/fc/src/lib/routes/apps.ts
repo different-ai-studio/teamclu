@@ -154,9 +154,9 @@ export function registerApps(router, tickDeps = { createServiceRoleClient, makeA
     return { body: out };
   });
 
-  router.post("/v1/apps/:appId/deploy/release", async (ctx) => {
+  router.delete("/v1/apps/:appId/deploy/preflight", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
-    const out = await ctx.repository.releaseAppDeploy(appId, ctx.json ?? {});
+    const out = await ctx.repository.cancelAppDeployPreflight(appId, ctx.json ?? {});
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });
