@@ -1579,7 +1579,7 @@ export interface AppsBackend {
   updateAppProvisionStatus(appId: string, provisionStatus: string): Promise<AppRow | null>;
   /** Report a deploy-lifecycle status the client owns (today: `deploy_error`
    *  when the local daemon build never finished). Returns null on 404. */
-  updateAppDeployStatus(appId: string, fcStatus: string, deployError?: string): Promise<AppRow | null>;
+  updateAppDeployStatus(appId: string, fcStatus: string, deployError?: string, deployToken?: string): Promise<AppRow | null>;
   /** Rename an app (PATCH name). Returns null on 404. */
   renameApp(appId: string, name: string): Promise<AppRow | null>;
   /**
@@ -1607,6 +1607,7 @@ export interface AppsBackend {
     input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; preflightToken: string },
   ): Promise<DeployAppResult>;
   preflightAppDeploy(appId: string, input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; migrationIntent?: boolean }): Promise<AppDeployPreflightResult>;
+  cancelAppDeployPreflight(appId: string, deployToken: string): Promise<{ cancelled: boolean }>;
   /** Finalize FC deploy after the artifact is uploaded: points the function at
    *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
   finalizeDeploy(

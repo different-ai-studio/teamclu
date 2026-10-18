@@ -33,7 +33,7 @@ export type CloudApiClient = {
   post<T>(path: string, body: unknown, options?: { idempotencyKey?: string }): Promise<T>;
   patch<T>(path: string, body: unknown, options?: { idempotencyKey?: string }): Promise<T>;
   put<T>(path: string, body: unknown, options?: { idempotencyKey?: string }): Promise<T>;
-  delete<T>(path: string, options?: { idempotencyKey?: string }): Promise<T>;
+  delete<T>(path: string, options?: { idempotencyKey?: string; body?: unknown }): Promise<T>;
   postRaw<T>(path: string, body: BodyInit, options?: { contentType?: string }): Promise<T>;
   getRaw(path: string): Promise<Response>;
 };
@@ -130,7 +130,7 @@ export function createCloudApiClient(args: {
     post: (path, body, options) => request("POST", path, body, options),
     patch: (path, body, options) => request("PATCH", path, body, options),
     put: (path, body, options) => request("PUT", path, body, options),
-    delete: (path, options) => request("DELETE", path, undefined, options),
+    delete: (path, options) => request("DELETE", path, options?.body, options),
     postRaw: <T>(path: string, body: BodyInit, options?: { contentType?: string }) =>
       requestRaw("POST", path, body as BodyInit, options).then(async (res) => {
         const text = await res.text();

@@ -66,9 +66,9 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         throw e;
       }
     },
-    async updateAppDeployStatus(appId, fcStatus, deployError) {
+    async updateAppDeployStatus(appId, fcStatus, deployError, deployToken) {
       try {
-        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { fcStatus, deployError });
+        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { fcStatus, deployError, deployToken });
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;
@@ -107,6 +107,9 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
     },
     async preflightAppDeploy(appId, input) {
       return client.post<AppDeployPreflightResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy/preflight`, input);
+    },
+    async cancelAppDeployPreflight(appId, deployToken) {
+      return client.delete<{ cancelled: boolean }>(`/v1/apps/${encodeURIComponent(appId)}/deploy/preflight`, { body: { deployToken } });
     },
     async finalizeDeploy(appId, input) {
       return client.post<AppRow>(`/v1/apps/${encodeURIComponent(appId)}/deploy/finalize`, input);

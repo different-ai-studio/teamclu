@@ -4942,6 +4942,7 @@ export function createSupabaseBusinessRepository(options) {
         provisionStatus?: string;
         fcStatus?: string;
         deployError?: string;
+        deployToken?: string;
         authMode?: string;
         authAudience?: string;
         authScope?: string;
@@ -4959,7 +4960,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain",
+          "provision_status, fc_status, name, slug, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain, deploy_token, deploy_started_at",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -4986,6 +4987,22 @@ export function createSupabaseBusinessRepository(options) {
         created_by_actor_id: cur.created_by_actor_id,
       });
       if (callerPermission?.level !== "admin") return null;
+      if (patch.fcStatus === "deploy_error") {
+        if (!patch.deployToken || patch.deployToken !== cur.deploy_token) {
+          throw new ApiError(409, "deploy_token_mismatch", "failure must match the current deployment attempt");
+        }
+        // The client owns the local build, never an active provider finalize.
+        if (!["awaiting_build", "building"].includes(cur.fc_status)) {
+          throw new ApiError(409, "lifecycle_conflict", "this build no longer owns the deploy state");
+        }
+        const admin = await serviceRoleClient("validate deployment failure lifecycle");
+        const { data: lifecycle, error } = await admin.from("app_lifecycle_operations")
+          .select("token, kind, in_flight").eq("app_id", appId).neq("status", "succeeded").maybeSingle();
+        if (error) throw error;
+        if (lifecycle && (lifecycle.kind !== "deploy" || lifecycle.token !== patch.deployToken || lifecycle.in_flight)) {
+          throw new ApiError(409, "lifecycle_conflict", "this failure does not own the build lifecycle");
+        }
+      }
       const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
 
       // Validated before the auth-mode change below, which has side effects (it
@@ -5116,14 +5133,19 @@ export function createSupabaseBusinessRepository(options) {
       const writer = callerIsCreator
         ? supabase
         : await serviceRoleClient("apply an app update authorized by an admin grant");
-      const { data, error } = await writer
-        .from("apps")
-        .update(set)
-        .eq("id", appId)
-        .select(APP_COLUMNS)
-        .maybeSingle();
+      let update = writer.from("apps").update(set).eq("id", appId);
+      if (patch.fcStatus === "deploy_error") {
+        // The database clears attempt fields and finishes its lifecycle in
+        // this transaction. Guard the write against late results from a build.
+        update = update.eq("deploy_token", patch.deployToken).eq("fc_status", cur.fc_status);
+        update = cur.deploy_started_at == null ? update.is("deploy_started_at", null) : update.eq("deploy_started_at", cur.deploy_started_at);
+      }
+      const { data, error } = await update.select(APP_COLUMNS).maybeSingle();
       if (error) throw error;
-      if (!data) return null;
+      if (!data) {
+        if (patch.fcStatus === "deploy_error") throw new ApiError(409, "deploy_token_mismatch", "deployment changed before failure was recorded");
+        return null;
+      }
       // The proxy caches auth settings per host; without this a saved rule waits out the TTL.
       invalidateAppHosts({ id: appId, slug: cur.slug, customDomain: cur.custom_domain });
       return mapApp(data);
@@ -5272,6 +5294,13 @@ export function createSupabaseBusinessRepository(options) {
       assertLifecycleAvailable(existing.fc_status);
       const progress = checkDeployInProgress({ fc_status: existing.fc_status, deploy_started_at: existing.deploy_started_at });
       if (progress === "blocked") throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
+      if (progress === "stale") {
+        const abandoned = await this.updateApp(appId, { fcStatus: "deploy_error", deployToken: existing.deploy_token, deployError: "previous build timed out" });
+        if (!abandoned) return null;
+        existing.deploy_token = null;
+        existing.deploy_started_at = null;
+        existing.fc_status = "deploy_error";
+      }
       const revision = String(input?.revision ?? "");
       if (existing.git_auth_kind === GITEA_AUTH_KIND) {
         const head = await this.getAppGitHead(appId);
@@ -5305,6 +5334,20 @@ export function createSupabaseBusinessRepository(options) {
       if (updateError) throw updateError;
       if (!updated) throw new ApiError(409, "deploy_in_progress", "app deploy state changed during preflight");
       return result;
+    },
+
+    async cancelAppDeployPreflight(appId: string, input: { deployToken?: string }) {
+      if (typeof input?.deployToken !== "string" || !input.deployToken.trim()) {
+        throw new ApiError(400, "validation_failed", "deployToken is required");
+      }
+      const { data: existing, error } = await supabase.from("apps")
+        .select("id, team_id, created_by_actor_id").eq("id", appId).maybeSingle();
+      if (error) throw error;
+      if (!existing) return null;
+      if ((await this.resolveAppCallerPermissionForApp(existing))?.level !== "admin") return null;
+      const admin = await serviceRoleClient("cancel app deployment preflight");
+      const cancelled = await lifecycleRpc(admin, "cancel_app_deploy_preflight", { p_app_id: appId, p_token: input.deployToken });
+      return { cancelled: cancelled === true };
     },
 
     async deployApp(appId: string, input: { gitCommitSha?: string; revision?: string; declaration?: unknown; preflightToken?: string }) {
@@ -5354,18 +5397,10 @@ export function createSupabaseBusinessRepository(options) {
       if (!info) return null;
       assertNoUnexpectedOriginEntries(info.originSecurity);
       verifyAppDeployPreflight(input.preflightToken, appId, revision, declaration, info.currentDeployment);
-      if (progress === "stale") {
-        await supabase.from("apps").update({
-          fc_status: "deploy_error",
-          provision_error: "previous deploy timed out",
-          deploy_started_at: null,
-          updated_at: new Date().toISOString(),
-        }).eq("id", appId);
-        existing.fc_status = "deploy_error";
-      }
+      if (progress === "stale") throw new ApiError(409, "deploy_in_progress", "stale deployment must be reconciled before starting; request a new preflight");
       if (!startDeploy) throw deployUnavailable(deployUnavailableReason);
       const lifecycleAdmin = await serviceRoleClient("app deployment lifecycle");
-      const lifecycle = await lifecycleRpc(lifecycleAdmin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "deploy", p_token: input.preflightToken });
+      await lifecycleRpc(lifecycleAdmin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "deploy", p_token: input.preflightToken });
       const deployToken = input.preflightToken;
       const deployStartedAt = new Date().toISOString();
       try {
@@ -5410,17 +5445,20 @@ export function createSupabaseBusinessRepository(options) {
           revision,
         };
       } catch (e: any) {
-        await supabase
+        let failure = supabase
           .from("apps")
           .update({
             fc_status: "deploy_error",
             provision_error: String(e?.message ?? e),
-            deploy_token: null,
-            deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
-          .eq("id", appId);
-        await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: input.preflightToken });
+          .eq("id", appId).eq("deploy_token", deployToken);
+        failure = existing.fc_status == null ? failure.is("fc_status", null) : failure.eq("fc_status", existing.fc_status);
+        failure = existing.deploy_started_at == null ? failure.is("deploy_started_at", null) : failure.eq("deploy_started_at", existing.deploy_started_at);
+        const { error: failureError } = await failure;
+        if (failureError) throw failureError;
+        // The failure transition's trigger also completes the matching
+        // non-flight lifecycle. A lost state claim must not release it.
         throw new ApiError(502, "deploy_failed", String(e?.message ?? e));
       }
     },
@@ -5577,11 +5615,9 @@ export function createSupabaseBusinessRepository(options) {
           .update({
             fc_status: "deploy_error",
             provision_error: String(e?.message ?? e),
-            deploy_token: null,
-            deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
-          .eq("id", appId);
+          .eq("id", appId).eq("deploy_token", deployToken).eq("fc_status", "deploying");
         if (!/timeout|timedout|etimedout|econnreset/i.test(String(e?.code ?? ""))) {
           await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: deployToken });
         }

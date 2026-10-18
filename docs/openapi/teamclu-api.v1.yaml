@@ -7297,7 +7297,10 @@ paths:
                 fcStatus: { $ref: "#/components/schemas/AppFcStatus" }
                 deployError:
                   type: string
-                  description: "Reason stored alongside `fcStatus: deploy_error`."
+                  description: "Reason stored alongside `fcStatus: deploy_error`. This transition atomically clears the attempt token and start time and finishes its matching non-in-flight deploy lifecycle."
+                deployToken:
+                  type: string
+                  description: "Required when reporting deploy_error; must match the current local build attempt. Active provider finalization cannot be failed by a client."
                 authMode:
                   $ref: "#/components/schemas/AppAuthMode"
                   description: >-
@@ -7468,6 +7471,37 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: cancelAppDeployPreflight
+      summary: Withdraw an unused deployment preflight reservation
+      description: >-
+        Admin only. Atomically cancels the matching token only before a deployment
+        lifecycle has started. Preserves deployment status and all lifecycle records.
+        Stale tokens or an active deployment return cancelled false.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deployToken]
+              properties:
+                deployToken: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Whether the unused reservation was cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled]
+                properties:
+                  cancelled: { type: boolean }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/apps/{appId}/deploy:
     post:
       operationId: deployApp

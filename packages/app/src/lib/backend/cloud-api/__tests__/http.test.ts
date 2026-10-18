@@ -73,4 +73,15 @@ describe("createCloudApiClient auth recovery", () => {
     await expect(client.get("/v1/teams")).rejects.toMatchObject({ status: 401, message: "JWT expired" });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  it("sends a preflight cancellation token in the DELETE body, not the URL", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ cancelled: true }), {
+      headers: { "Content-Type": "application/json" },
+    }));
+    const client = createCloudApiClient({ baseUrl: "https://fc.example.com", auth: { getSession: async () => null }, fetchImpl });
+    await client.delete("/v1/apps/app-1/deploy/preflight", { body: { deployToken: "attempt-token" } });
+    expect(fetchImpl).toHaveBeenCalledWith("https://fc.example.com/v1/apps/app-1/deploy/preflight", expect.objectContaining({
+      method: "DELETE", body: JSON.stringify({ deployToken: "attempt-token" }),
+    }));
+  });
 });

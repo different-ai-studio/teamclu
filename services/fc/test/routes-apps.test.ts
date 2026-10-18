@@ -48,6 +48,19 @@ test("POST deploy/preflight forwards declaration and revision without minting a 
   assert.equal(result.body.token, "opaque");
 });
 
+test("DELETE deploy/preflight only withdraws the matching reservation", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const body = { deployToken: "owned-token" };
+  let seen;
+  const result = await findRoute(routes, "DELETE", "/v1/apps/:appId/deploy/preflight")[2]({
+    params: { appId: "app-1" }, json: body,
+    repository: { cancelAppDeployPreflight: async (id, input) => { seen = { id, input }; return { cancelled: false }; } },
+  });
+  assert.deepEqual(seen, { id: "app-1", input: body });
+  assert.deepEqual(result.body, { cancelled: false });
+});
+
 test("POST /v1/apps creates and returns 201", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);

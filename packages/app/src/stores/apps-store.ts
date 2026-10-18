@@ -218,19 +218,19 @@ async function patchStatus(set: SetState, appId: string, status: string): Promis
 }
 
 /**
- * Report a failed deploy back to the cloud API so `fc_status` lands on
- * `deploy_error` with a reason. The desktop drives the middle of the deploy (it
- * kicks the daemon build), so nothing else can tell the cloud the build never
- * finished — without this the row stays at `awaiting_build` forever and the
- * next finalize is rejected as an illegal transition. Non-fatal: the user is
- * already being toasted about the failure.
+ * Report a local build failure through the normal status update. Approval
+ * cancellation only withdraws its unused preflight reservation.
  */
-async function reportDeployError(set: SetState, appId: string, reason: string): Promise<void> {
+async function finishFailedDeployAttempt(set: SetState, appId: string, deployToken: string, reason?: string): Promise<void> {
   try {
-    const updated = await getBackend().apps.updateAppDeployStatus(appId, "deploy_error", reason);
-    if (updated) mergeRow(set, updated);
+    if (reason) {
+      const updated = await getBackend().apps.updateAppDeployStatus(appId, "deploy_error", reason, deployToken);
+      if (updated) mergeRow(set, updated);
+    } else {
+      await getBackend().apps.cancelAppDeployPreflight(appId, deployToken);
+    }
   } catch (e) {
-    console.warn("deploy error writeback failed (non-fatal)", e);
+    console.warn("deploy attempt writeback failed (non-fatal)", e);
   }
 }
 
@@ -912,7 +912,9 @@ export const useAppsStore = create<AppsState>((set, get) => ({
 
     set((s) => ({ deployingIds: [...s.deployingIds, appId] }));
     setDeployProgress(set, appId, "prepare");
-    let deployStarted = false;
+    let reservationToken: string | undefined;
+    let buildStarted = false;
+    let deployError: string | undefined;
     try {
       // Only a Gitea-managed app deploys a commit off the forge. An imported
       // app has no repo of ours and no credential for the one it came from, so
@@ -941,10 +943,11 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       }
       const revision = viaGitea ? gitCommitSha! : declared.contentDigest;
       // The UI presents the exact server preview before using this intent.
-      // A declined dialog leaves only a replaceable preflight token, no handle.
+      // Keep the token so every exit can release this attempt's reservation.
       const preflight = await getBackend().apps.preflightAppDeploy(appId, {
         revision, declaration: declared.declaration, ...(gitCommitSha ? { gitCommitSha } : {}), migrationIntent: true,
       });
+      reservationToken = preflight.token;
       if (app.authMode === "none" || preflight.preview.changes.length > 0) {
         const fields = preflight.preview.changes.map(c => `${c.field}: ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join("\n");
         const accepted = await publicDeployConfirm.run(`${PUBLIC_DEPLOY_CONFIRM_MESSAGE}${fields ? `\n\n本次变更：\n${fields}` : ""}`);
@@ -956,7 +959,8 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         declaration: declared.declaration,
         preflightToken: preflight.token,
       });
-      deployStarted = true;
+      reservationToken = started.deployToken;
+      buildStarted = true;
       mergeRow(set, started);
 
       setDeployProgress(set, appId, "build");
@@ -994,7 +998,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
           build.outcome === "unreachable"
             ? mapDeployErrorReason("amuxd daemon is not connected")
             : mapDeployErrorReason(build.error ?? "应用构建或上传失败");
-        await reportDeployError(set, appId, reason);
+        deployError = reason;
         await toastError("部署失败：构建未完成", reason);
         return;
       }
@@ -1032,12 +1036,14 @@ export const useAppsStore = create<AppsState>((set, get) => ({
        // server, so a successful finalize clears the warning on its own — there
        // is no local flag left to reset here.
       mergeRow(set, finalized);
+      reservationToken = undefined;
       setDeployProgress(set, appId, "done");
     } catch (e) {
       const reason = mapCloudDeployError(e);
-      if (deployStarted) await reportDeployError(set, appId, reason);
+      deployError = reason;
       await toastError(i18n.t("apps.deployFailed", "Deploy failed"), reason);
     } finally {
+      if (reservationToken) await finishFailedDeployAttempt(set, appId, reservationToken, buildStarted ? deployError : undefined);
       set((s) => ({ deployingIds: s.deployingIds.filter((id) => id !== appId) }));
       // Leave `done` visible briefly; footer clears the bar after linger.
       window.setTimeout(() => clearDeployProgress(set, appId), 1200);
