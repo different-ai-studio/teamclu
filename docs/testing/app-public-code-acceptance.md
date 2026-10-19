@@ -131,17 +131,26 @@ Rust warnings include unset release CLOUD_API_URL and future incompatibility in
 4. **Frontend 10 skips:** opt-in live daemon tests are disabled: nine session
    binding cases (`SESSION_BINDING_LIVE`) and one mid-turn follow-up case
    (`REPRO_MID_TURN_LIVE`). No real daemon/live acceptance is claimed.
-5. **Backend 13 skips:** three `live-sync-query.test.ts` cases require
-   `FC_LIVE_TEST=1`; five `self-host-e2e.test.ts` groups (Auth, Runtime config,
-   Team lifecycle, Session + Messages, Storage) require `FC_E2E=1`; five
+5. **Backend 13 skipped tests, plus five skipped suites:** three
+   `live-sync-query.test.ts` cases require `FC_LIVE_TEST=1`; five
    `sync-flow.test.ts` cases skipped because local Supabase at
-   `127.0.0.1:54321` is unreachable (`TypeError: fetch failed`). No flags were
-   enabled to contact live systems.
+   `127.0.0.1:54321` is unreachable (`TypeError: fetch failed`); five
+   `sync-mode.test.ts` cases skipped with “local Supabase not available or
+   fixtures failed”: current mode, unknown team, owner mode change, invalid
+   mode and direct UPDATE guard. Separately, five `self-host-e2e.test.ts`
+   suites (Auth, Runtime config, Team lifecycle, Session + Messages, Storage)
+   require `FC_E2E=1`; these suites are not part of the 13 skipped-test total.
+   No flags were enabled to contact live systems.
 6. **OpenAPI warnings:** six existing `no-ambiguous-paths` warnings (sessions
    by-acp, threads, thread-summaries, messages, mute; actor access); three
    `operation-4xx-response` warnings (public config, team quotas, workspace
    git config); one `operation-2xx-response` warning (OAuth authorize).
    These locations precede the feature additions and match earlier evidence.
+7. **Frontend baseline warning:** the full, focused and exported-baseline
+   runs all emit the existing Vite warning that `__dirname` in
+   `vite.config.ts:9:41` is unsupported by the future native config loader.
+   This is a tooling warning, not a new feature failure; no unrelated config
+   was changed.
 
 No new deterministic product defect was demonstrated by this task. This is a
 qualified finding, not a fully green-suite or release-ready assertion. No test
