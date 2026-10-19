@@ -2129,6 +2129,7 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   const items = await repo.listApps({ teamId: "team-1", limit: 100 });
   assert.equal(items.length, 1);
   assert.deepEqual(Object.keys(items[0]).sort(), [
+    "appCode", "appCodeUrl", "usesAppCodeDomain",
     "authMode", "authAudience", "authScope", "authRules", "authModePendingRedeploy",
     "envPendingRedeploy", "typePendingRedeploy",
     "createdAt", "createdByActorId",
@@ -4761,4 +4762,33 @@ test("apps: code collision constraint with another error code is not retried", a
   const { repo, inserts } = appInsertErrors([failure]);
   await assert.rejects(() => repo.createApp(localApp), (error) => error === failure);
   assert.equal(inserts(), 1);
+});
+
+test("apps: app responses expose a candidate code URL while publicUrl follows active mode", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  try {
+    for (const mode of [false, true, undefined]) {
+      const calls: any[] = [];
+      const row = { ...APP_ROW, id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", app_code: "k7m2q9vx4n8p", uses_app_code_domain: mode };
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [row] } }));
+      const app = await repo.getApp(row.id);
+      assert.equal(app.appCode, "k7m2q9vx4n8p");
+      assert.equal(app.usesAppCodeDomain, mode === true);
+      assert.equal(app.appCodeUrl, "https://a-k7m2q9vx4n8p.apps.example.com");
+      assert.equal(app.publicUrl, mode ? "https://a-k7m2q9vx4n8p.apps.example.com" : "https://shop-18e4ecad.apps.example.com");
+      const columns = calls.find((call) => call.table === "apps" && call.op === "select").columns.split(",").map((column: string) => column.trim());
+      assert.ok(columns.includes("app_code"));
+      assert.ok(columns.includes("uses_app_code_domain"));
+    }
+    delete process.env.APPS_PUBLIC_DOMAIN;
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, app_code: "k7m2q9vx4n8p", uses_app_code_domain: true }] } }));
+    const app = await repo.getApp(APP_ROW.id);
+    assert.equal(app.appCode, "k7m2q9vx4n8p");
+    assert.equal(app.appCodeUrl, null);
+    assert.equal(app.publicUrl, null);
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+  }
 });

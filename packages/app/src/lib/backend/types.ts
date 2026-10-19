@@ -1229,6 +1229,11 @@ export interface AppRow {
   teamId: string;
   name: string;
   slug: string;
+  /** Permanent random public identifier; older servers may omit it. */
+  appCode?: string;
+  usesAppCodeDomain?: boolean;
+  /** Candidate URL for an existing app; active only after an opted-in deploy. */
+  appCodeUrl?: string | null;
   type: string;
   visibility: "personal" | "team";
   workspaceId: string | null;

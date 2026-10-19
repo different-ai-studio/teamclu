@@ -1,7 +1,7 @@
-import { appPublicLabel, appsPublicDomain, parseAppPublicHost } from "./apps-public-host.js";
+import { appPublicUrl, parseAppPublicHost } from "./apps-public-host.js";
 
 /**
- * Serving deployed apps on `<slug>-<id8>.<APPS_PUBLIC_DOMAIN>`.
+ * Serving active code domains and legacy slug/id aliases under APPS_PUBLIC_DOMAIN.
  *
  * Two halves, both driven by the request's Host:
  *
@@ -21,6 +21,8 @@ import { appPublicLabel, appsPublicDomain, parseAppPublicHost } from "./apps-pub
 export interface VanityApp {
   id: string;
   slug: string;
+  appCode?: string | null;
+  usesAppCodeDomain?: boolean;
   fcEndpoint: string | null;
   fcStatus: string | null;
   /** `apps.team_id`. The org gate resolves the app's org through it. */
@@ -70,18 +72,23 @@ export function selectByIdPrefix(rows: VanityApp[], idPrefix: string): VanityApp
  * Reads via PostgREST with the service-role key, which is how every other
  * tokenless path here reads the database.
  *
- * Filters on slug alone and matches the id prefix in memory rather than asking
+ * Code hosts use exact app_code equality (the unique index), gated on active
+ * mode. Fetch two rows so even an impossible duplicate fails closed.
+ *
+ * Legacy hosts filter on slug and match the id prefix in memory rather than asking
  * PostgREST for `id like '…%'`: `id` is a uuid column, and Postgres has no
  * `uuid ~~ text` operator — that filter fails as a query error, not as an empty
  * result. At most one row per team shares a slug, so the list is tiny.
  */
 const LOOKUP_COLUMNS =
-  "id, slug, fc_endpoint, fc_status, team_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
+  "id, slug, app_code, uses_app_code_domain, fc_endpoint, fc_status, team_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
 
 function mapVanityRow(r: any): VanityApp {
   return {
     id: r.id,
     slug: r.slug,
+    appCode: r.app_code ?? null,
+    usesAppCodeDomain: r.uses_app_code_domain,
     fcEndpoint: r.fc_endpoint ?? null,
     fcStatus: r.fc_status ?? null,
     teamId: r.team_id ?? null,
@@ -98,6 +105,16 @@ export function makeSupabaseVanityLookup(getClient: () => any): LookupVanityApp 
   return async (host: string) => {
     const name = host.split(":")[0].trim().toLowerCase();
     const parsed = parseAppPublicHost(host);
+    if (parsed?.appCode) {
+      const { data, error } = await getClient()
+        .from("apps")
+        .select(LOOKUP_COLUMNS)
+        .eq("app_code", parsed.appCode)
+        .eq("uses_app_code_domain", true)
+        .limit(2);
+      if (error) throw new Error(`vanity app lookup failed: ${error.message}`);
+      return data?.length === 1 ? mapVanityRow(data[0]) : null;
+    }
     if (parsed) {
       const { data, error } = await getClient()
         .from("apps")
@@ -155,12 +172,14 @@ export function invalidateVanityHost(host: string | null | undefined): void {
 
 /** Drop every hostname an app answers on. Never throws: callers run it after a write already landed. */
 export function invalidateAppHosts(
-  app: { id: string; slug: string | null | undefined; customDomain?: string | null },
+  app: { id: string; slug: string | null | undefined; appCode?: string | null; usesAppCodeDomain?: boolean; customDomain?: string | null },
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  const domain = appsPublicDomain(env);
-  const label = app.slug ? appPublicLabel(app.slug, app.id) : null;
-  if (domain && label) invalidateVanityHost(`${label}.${domain}`);
+  // Invalidate both aliases even before opt-in, including a cached code-host miss.
+  for (const code of [null, app.appCode]) {
+    const origin = appPublicUrl(app.slug, app.id, env, code);
+    if (origin) invalidateVanityHost(origin.slice("https://".length));
+  }
   invalidateVanityHost(app.customDomain);
 }
 
