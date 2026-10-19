@@ -800,6 +800,65 @@ pub fn bot_id_from_binding(binding: &str) -> Option<&str> {
     rest.split('/').next().filter(|s| !s.is_empty())
 }
 
+/// Registry key for a SeaTalk app's persona. Prefixed so it cannot collide
+/// with a WeCom bot id, and so the WeCom-only `CLAUDE.local.md` write (which
+/// looks up bare bot ids) leaves the shared workspace alone.
+pub fn seatalk_persona_key(app_id: &str) -> String {
+    format!("seatalk:{app_id}")
+}
+
+/// App id from `seatalk://<app_id>/...`.
+pub fn seatalk_app_id_from_binding(binding: &str) -> Option<&str> {
+    let rest = binding.strip_prefix("seatalk://")?;
+    rest.split('/').next().filter(|s| !s.is_empty())
+}
+
+/// Persona configured for this chat, if any.
+///
+/// WeCom keys the registry by bot id. SeaTalk keys it by
+/// [`seatalk_persona_key`]. Whitespace-only prompts are treated as unset.
+pub fn system_prompt_for_binding<'a>(
+    binding: &str,
+    configs: &'a HashMap<String, BotRuntimeConfig>,
+) -> Option<&'a str> {
+    let prompt = if let Some(bot_id) = bot_id_from_binding(binding) {
+        configs.get(bot_id).and_then(|c| c.system_prompt.as_deref())
+    } else if let Some(app_id) = seatalk_app_id_from_binding(binding) {
+        configs
+            .get(&seatalk_persona_key(app_id))
+            .and_then(|c| c.system_prompt.as_deref())
+    } else {
+        None
+    };
+    prompt.map(str::trim).filter(|p| !p.is_empty())
+}
+
+/// User-visible body of one gateway turn.
+///
+/// The first turn of a fresh session gets the send-tool preamble, including
+/// the persona when one is configured. A SeaTalk persona is repeated on later
+/// turns: that channel has no per-bot workspace file to carry it. WeCom's
+/// persona is written to `CLAUDE.local.md` and only rides the first turn.
+pub fn gateway_turn_body(
+    needs_preamble: bool,
+    binding: &str,
+    persona: Option<&str>,
+    sender_display: &str,
+    text: &str,
+) -> String {
+    if needs_preamble {
+        let channel = channel_name_from_binding(binding);
+        return build_first_turn_prompt(channel, persona, sender_display, text);
+    }
+    let persona = persona
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && binding.starts_with("seatalk://"));
+    if let Some(persona) = persona {
+        return format!("[SYSTEM] {persona}\n\n[{sender_display}] {text}");
+    }
+    format!("[{sender_display}] {text}")
+}
+
 /// Build the first-turn prompt for a freshly-spawned gateway session: the
 /// per-bot persona (if any), then the standard send-tool note, then the
 /// user's message. Subsequent turns use `[sender] text` plus the reply-token
@@ -889,18 +948,17 @@ impl AmuxdAgentHandle {
         // caller may have already primed the session — `already_primed`
         // settles the race so we never double-prime.
         let needs_preamble = outcome.spawned && !self.already_primed(session).await;
-        let body = if needs_preamble {
-            let channel = channel_name_from_binding(&outcome.binding);
-            let bot_prompt = {
-                let configs = self.bot_configs.lock().await;
-                bot_id_from_binding(&outcome.binding)
-                    .and_then(|b| configs.get(b))
-                    .and_then(|c| c.system_prompt.clone())
-            };
-            build_first_turn_prompt(channel, bot_prompt.as_deref(), sender_display, text)
-        } else {
-            format!("[{sender_display}] {text}")
+        let persona = {
+            let configs = self.bot_configs.lock().await;
+            system_prompt_for_binding(&outcome.binding, &configs).map(str::to_string)
         };
+        let body = gateway_turn_body(
+            needs_preamble,
+            &outcome.binding,
+            persona.as_deref(),
+            sender_display,
+            text,
+        );
 
         // Registering here rather than at spawn is what makes the send tool
         // survive a reused attachment: this runs on every turn, including the
@@ -2778,6 +2836,51 @@ pub(crate) mod tests {
         let p = build_first_turn_prompt("wecom", None, "Bob", "hi");
         assert!(p.contains("amuxd-send"));
         assert!(p.contains("[Bob] hi"));
+    }
+
+    #[test]
+    fn seatalk_persona_is_looked_up_by_app_id_and_repeated_on_later_turns() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            seatalk_persona_key("app001"),
+            BotRuntimeConfig {
+                system_prompt: Some("  只用中文回答。  ".into()),
+                ..BotRuntimeConfig::default()
+            },
+        );
+        let binding = "seatalk://app001/group/g1/thread/t1";
+        assert_eq!(
+            system_prompt_for_binding(binding, &configs),
+            Some("只用中文回答。")
+        );
+        assert_eq!(
+            system_prompt_for_binding("seatalk://other/single/E1", &configs),
+            None
+        );
+        assert_eq!(seatalk_app_id_from_binding("wecom://bot/x"), None);
+
+        let first = gateway_turn_body(true, binding, Some("只用中文回答。"), "Alice", "你好");
+        assert!(first.contains("只用中文回答。"));
+        assert!(first.contains("amuxd-send"));
+        assert!(first.contains("[Alice] 你好"));
+
+        let later = gateway_turn_body(false, binding, Some("只用中文回答。"), "Alice", "再问一次");
+        assert!(later.starts_with("[SYSTEM] 只用中文回答。"));
+        assert!(later.contains("[Alice] 再问一次"));
+        assert!(
+            !later.contains("amuxd-send"),
+            "later turns keep the persona without repeating the send-tool preamble"
+        );
+
+        // WeCom still carries its persona only on the first turn.
+        let wecom_later = gateway_turn_body(
+            false,
+            "wecom://botA/botA/single/u",
+            Some("你是法务助手"),
+            "Bob",
+            "hi",
+        );
+        assert_eq!(wecom_later, "[Bob] hi");
     }
 
     /// Verify `set_model` stores `(provider, model)` as a tuple so the

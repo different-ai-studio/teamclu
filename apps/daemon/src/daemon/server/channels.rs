@@ -142,6 +142,25 @@ impl DaemonServer {
                     );
                 }
             }
+            // SeaTalk is one app, not a bot list. Key it apart from WeCom bot
+            // ids so the persona is found from `seatalk://<app_id>/...` and is
+            // not written into the shared workspace's CLAUDE.local.md.
+            if let Some(seatalk) = &cfg.channels.seatalk {
+                let prompt = seatalk
+                    .system_prompt
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty());
+                if let Some(prompt) = prompt.filter(|_| !seatalk.app_id.is_empty()) {
+                    m.insert(
+                        crate::channels::agent_handle::seatalk_persona_key(&seatalk.app_id),
+                        BotRuntimeConfig {
+                            system_prompt: Some(prompt.to_string()),
+                            ..BotRuntimeConfig::default()
+                        },
+                    );
+                }
+            }
             m
         };
 
