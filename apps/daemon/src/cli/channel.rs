@@ -154,6 +154,7 @@ fn bind(cfg: &mut DaemonConfig, b: ChannelBindArgs) -> anyhow::Result<()> {
                 allow_from: vec![],
                 group_policy: "open".to_string(),
                 group_allow_from: vec![],
+                system_prompt: None,
             });
         }
     }

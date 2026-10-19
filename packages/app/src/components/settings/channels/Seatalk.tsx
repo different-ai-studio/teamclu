@@ -209,6 +209,28 @@ export function SeaTalkChannel() {
         )}
       </div>
 
+      <div className="space-y-1">
+        <label className="text-[13px] font-medium">
+          {t('settings.channels.seatalk.systemPrompt', 'System prompt')}
+        </label>
+        <textarea
+          className="w-full min-h-[88px] rounded-md border border-border bg-paper px-3 py-2 text-[13px]"
+          value={localConfig.systemPrompt ?? ''}
+          onChange={(e) => updateLocalConfig({ systemPrompt: e.target.value || undefined })}
+          placeholder={t(
+            'settings.channels.seatalk.systemPromptPlaceholder',
+            'Optional instructions this SeaTalk bot follows when it replies',
+          )}
+          rows={3}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          {t(
+            'settings.channels.seatalk.systemPromptHint',
+            'After you save, every reply from this bot includes this prompt.',
+          )}
+        </p>
+      </div>
+
       <div className="p-3 rounded-lg bg-muted/40 text-[13px] space-y-1">
         <p className="font-medium">{t('settings.channels.seatalk.portalChecklist', 'SeaTalk portal checklist')}</p>
         <ul className="list-disc list-inside text-muted-foreground space-y-1">

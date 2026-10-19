@@ -80,6 +80,8 @@ export interface SeaTalkConfig {
   /** `disabled` | `allowlist` | `open` — default `open` for @bot */
   groupPolicy: string
   groupAllowFrom: string[]
+  /** Optional persona applied to every reply from this SeaTalk app. */
+  systemPrompt?: string
 }
 
 export type SeaTalkGatewayStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

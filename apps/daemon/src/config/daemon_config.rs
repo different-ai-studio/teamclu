@@ -698,6 +698,12 @@ pub struct SeaTalkChannel {
     pub group_policy: String,
     #[serde(default)]
     pub group_allow_from: Vec<String>,
+    /// Persona for this SeaTalk app. Injected into every gateway turn.
+    ///
+    /// WeCom stores the same idea per bot. SeaTalk has one app, so the prompt
+    /// lives on the channel. Older team.toml files omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 fn default_seatalk_mode() -> String {
@@ -1046,6 +1052,33 @@ secret = "secretB"
         assert_eq!(bots[0].system_prompt.as_deref(), Some("You are A."));
         assert!(bots[1].enabled, "bot enabled defaults to true");
         assert_eq!(bots[1].workspace_id, None);
+    }
+
+    #[test]
+    fn seatalk_parses_system_prompt_and_defaults_when_absent() {
+        let with_prompt: SeaTalkChannel = toml::from_str(
+            r#"
+enabled = true
+app_id = "app001"
+app_secret = "sec"
+system_prompt = "只用中文。"
+"#,
+        )
+        .unwrap();
+        assert_eq!(with_prompt.system_prompt.as_deref(), Some("只用中文。"));
+        assert_eq!(with_prompt.mode, "websocket");
+        assert_eq!(with_prompt.dm_policy, "open");
+        assert_eq!(with_prompt.group_policy, "open");
+
+        let legacy: SeaTalkChannel = toml::from_str(
+            r#"
+enabled = true
+app_id = "app001"
+app_secret = "sec"
+"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.system_prompt, None);
     }
 
     #[test]

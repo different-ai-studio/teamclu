@@ -134,6 +134,7 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
         group_allow_from: Array.isArray(config.groupAllowFrom)
           ? config.groupAllowFrom
           : [],
+        system_prompt: String(config.systemPrompt ?? "").trim() || undefined,
       };
     case "kook":
       return {
@@ -223,6 +224,10 @@ function fromDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Cha
         groupAllowFrom: Array.isArray(config.group_allow_from)
           ? config.group_allow_from
           : [],
+        systemPrompt:
+          typeof config.system_prompt === "string" && config.system_prompt.trim()
+            ? config.system_prompt
+            : undefined,
       };
     case "kook":
       return {
