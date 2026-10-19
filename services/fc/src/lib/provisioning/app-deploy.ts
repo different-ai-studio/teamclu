@@ -1,4 +1,4 @@
-import { appFcRouteHost, appPublicLabel, appPublicUrl } from "../apps-public-host.js";
+import { appCurrentPublicUrl, appFcRouteHost, appPublicLabel, appPublicUrl } from "../apps-public-host.js";
 import { randomBytes } from "node:crypto";
 import {
   provisionAppPostgres,
@@ -79,6 +79,8 @@ export function parseDeployToken(raw: unknown): string {
 }
 
 type DeployGateRow = {
+  appCode?: string | null;
+  usesAppCodeDomain?: boolean;
   id: string;
   slug: string;
   runtime?: string | null;
@@ -116,7 +118,7 @@ export function assertDeployAllowed(row: DeployGateRow): void {
   if (authMode === "third") {
     throw new ApiError(409, "unsupported_auth_mode", "third-party login is not supported for deploy yet");
   }
-  if (authMode === "platform" && !appPublicUrl(row.slug, row.id)) {
+  if (authMode === "platform" && !appCurrentPublicUrl(row)) {
     throw new ApiError(409, "vanity_required", "platform auth requires an apps public domain");
   }
 }

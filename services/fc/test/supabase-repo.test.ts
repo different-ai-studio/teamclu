@@ -1966,6 +1966,10 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
           return Promise.resolve({ data: matchRows()[0] ?? null, error: null });
         },
         then(resolve: any, reject: any) {
+          if (ctx.op === "update") {
+            const matched = matchRows();
+            state[table] = state[table].map((row: any) => matched.includes(row) ? { ...row, ...ctx.update } : row);
+          }
           return Promise.resolve({ data: matchRows(), error: null }).then(resolve, reject);
         },
       };
@@ -4762,6 +4766,245 @@ test("apps: code collision constraint with another error code is not retried", a
   const { repo, inserts } = appInsertErrors([failure]);
   await assert.rejects(() => repo.createApp(localApp), (error) => error === failure);
   assert.equal(inserts(), 1);
+});
+
+
+test("apps: existing domains change only after an explicitly opted-in successful deploy", async () => {
+  for (const optIn of [undefined, false, true]) {
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
+      provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
+      fc_endpoint: "https://existing.fcapp.run",
+    }] } }), {
+      startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+      finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
+    });
+    const started = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: optIn });
+    assert.equal(started.usesAppCodeDomain, false, "starting a build must keep the current address");
+    const finished = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+    assert.equal(finished.usesAppCodeDomain, optIn === true);
+    assert.equal(finished.fcEndpoint, "https://existing.fcapp.run");
+  }
+});
+
+
+test("apps: failed opted-in deploy preserves the legacy domain", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
+    provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
+    fc_endpoint: "https://existing.fcapp.run",
+  }] } }), {
+    startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+    finalizeDeploy: async () => { throw new Error("deployment failed"); },
+  });
+  const started = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: true });
+  await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(started.deployToken)), /deployment failed/);
+  const app = await repo.getApp("app-1");
+  assert.equal(app.usesAppCodeDomain, false);
+  assert.equal(app.fcEndpoint, "https://existing.fcapp.run");
+});
+
+test("apps: existing undeployed apps do not silently opt into code domains", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
+    provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
+    fc_endpoint: null,
+  }] } }), {
+    startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+    finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
+  });
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const finished = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+  assert.equal(finished.usesAppCodeDomain, false);
+});
+
+test("apps: unchecked retry does not inherit a failed domain switch", async () => {
+  let attempts = 0;
+  const db = appsSupabase({ seed: { apps: [{ ...APP_ROW,
+    provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
+    fc_endpoint: "https://existing.fcapp.run",
+  }] } });
+  const repo = appsRepo(db, {
+    startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+    finalizeDeploy: async () => {
+      if (++attempts === 1) throw new Error("first attempt failed");
+      return { fcEndpoint: "https://existing.fcapp.run" };
+    },
+  });
+  const first = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: true });
+  assert.equal((await db.from("apps").select("*").eq("id", "app-1").maybeSingle()).data.deploy_use_app_code_domain, true);
+  await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(first.deployToken)), /first attempt failed/);
+  const retry = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: false });
+  await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(first.deployToken)),
+    (e: any) => e.code === "deploy_token_mismatch" && e.statusCode === 409);
+  const live = await repo.finalizeDeploy("app-1", appFinalize(retry.deployToken));
+  assert.equal(live.usesAppCodeDomain, false);
+  assert.equal((await db.from("apps").select("*").eq("id", "app-1").maybeSingle()).data.deploy_use_app_code_domain, null);
+  await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(retry.deployToken)),
+    (e: any) => e.code === "deploy_token_mismatch" && e.statusCode === 409);
+});
+
+test("apps: code domain choice rejects non-booleans before provisioning", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+    startDeploy: async () => { assert.fail("invalid choice reached provisioning"); },
+  });
+  for (const value of ["true", "false", 1, null]) {
+    await assert.rejects(() => repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: value as any }),
+      (e: any) => e.code === "validation_failed" && e.statusCode === 400);
+  }
+});
+
+test("apps: already active code domain never reverts on unchecked or omitted deploys", async () => {
+  for (const choice of [undefined, false]) {
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW,
+      provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: true,
+    }] } });
+    const repo = appsRepo(db, {
+      startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+      finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
+    });
+    const started = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: choice });
+    assert.equal(started.usesAppCodeDomain, true);
+    const live = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+    assert.equal(live.usesAppCodeDomain, true);
+  }
+});
+
+test("apps: platform auth env follows the persisted attempt domain choice", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  const authBase = process.env.AUTH_BASE_URL;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  process.env.AUTH_BASE_URL = "https://login.example.com";
+  try {
+    for (const choice of [false, true]) {
+      const db = appsSupabase({ seed: { apps: [{ ...APP_ROW,
+        provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false, auth_mode: "platform",
+      }] } });
+      let deployedEnv: any;
+      const repo = appsRepo(db, {
+        startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+        finalizeDeploy: async ({ platformAuthEnv }: any) => {
+          deployedEnv = platformAuthEnv;
+          assert.equal((await repo.getApp("app-1")).usesAppCodeDomain, false);
+          return { fcEndpoint: "https://existing.fcapp.run" };
+        },
+      });
+      const started = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: choice });
+      // A finalize body cannot override the native-approved choice on the token.
+      await repo.finalizeDeploy("app-1", { ...appFinalize(started.deployToken), useAppCodeDomain: !choice } as any);
+      assert.equal(deployedEnv.APP_PUBLIC_URL, choice
+        ? "https://a-k7m2q9vx4n8p.apps.example.com"
+        : "https://my-app-app-1.apps.example.com");
+    }
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+    if (authBase === undefined) delete process.env.AUTH_BASE_URL;
+    else process.env.AUTH_BASE_URL = authBase;
+  }
+});
+
+test("apps: domain gate treats absent mode as legacy even when a raw code is present", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  const authBase = process.env.AUTH_BASE_URL;
+  process.env.AUTH_BASE_URL = "https://login.example.com";
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  try {
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
+      provision_status: "ready", app_code: "invalid", auth_mode: "platform",
+    }] } }), {
+      startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+      finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
+    });
+    const started = await repo.deployApp("app-1", APP_DEPLOY);
+    const live = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+    assert.equal(live.usesAppCodeDomain, false);
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+    if (authBase === undefined) delete process.env.AUTH_BASE_URL;
+    else process.env.AUTH_BASE_URL = authBase;
+  }
+});
+
+test("apps: code domain finalize cannot overwrite a replacement deployToken", async () => {
+  for (const fails of [false, true]) {
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW,
+      provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
+    }] } });
+    const repo = appsRepo(db, {
+      startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+      finalizeDeploy: async () => {
+        // A timed-out finalizer can finish after a newer attempt owns the row.
+        await db.from("apps").update({ deploy_token: "replacement-token", deploy_use_app_code_domain: false,
+          fc_status: "awaiting_build" }).eq("id", "app-1").select("*").maybeSingle();
+        if (fails) throw new Error("old finalizer failed");
+        return { fcEndpoint: "https://existing.fcapp.run" };
+      },
+    });
+    const started = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: true });
+    await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(started.deployToken)));
+    const row = (await db.from("apps").select("*").eq("id", "app-1").maybeSingle()).data;
+    assert.equal(row.deploy_token, "replacement-token");
+    assert.equal(row.deploy_use_app_code_domain, false);
+    assert.equal(row.fc_status, "awaiting_build");
+    assert.equal(row.uses_app_code_domain, false);
+  }
+});
+
+test("apps: code domain remains active when finalizing an older attempt without a choice", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  const authBase = process.env.AUTH_BASE_URL;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  process.env.AUTH_BASE_URL = "https://login.example.com";
+  try {
+    for (const requested of [null, false]) {
+      let deployedEnv: any;
+      const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
+        provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: true,
+        deploy_use_app_code_domain: requested, deploy_token: "old-token", fc_status: "awaiting_build",
+        fc_function_name: "existing-function", auth_mode: "platform",
+      }] } }), {
+        finalizeDeploy: async ({ platformAuthEnv }: any) => {
+          deployedEnv = platformAuthEnv;
+          return { fcEndpoint: "https://existing.fcapp.run" };
+        },
+      });
+      const live = await repo.finalizeDeploy("app-1", appFinalize("old-token"));
+      assert.equal(live.usesAppCodeDomain, true);
+      assert.equal(deployedEnv.APP_PUBLIC_URL, "https://a-k7m2q9vx4n8p.apps.example.com");
+    }
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+    if (authBase === undefined) delete process.env.AUTH_BASE_URL;
+    else process.env.AUTH_BASE_URL = authBase;
+  }
+});
+
+test("apps: successful domain activation invalidates both cached host aliases", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  __resetVanityCache();
+  try {
+    const id = "18e4ecad-6189-495b-a873-7fe09179a5f5";
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, id, slug: "shop", provision_status: "ready",
+      app_code: "k7m2q9vx4n8p", uses_app_code_domain: false, fc_status: "live", fc_endpoint: "https://old.fcapp.run",
+    }] } });
+    const lookup = makeVanityLookup({ getServiceRoleClient: () => db });
+    assert.equal((await lookup("shop-18e4ecad.apps.example.com"))?.fcEndpoint, "https://old.fcapp.run");
+    assert.equal(await lookup("a-k7m2q9vx4n8p.apps.example.com"), null);
+    const repo = appsRepo(db, {
+      startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+      finalizeDeploy: async () => ({ fcEndpoint: "https://new.fcapp.run" }),
+    });
+    const started = await repo.deployApp(id, { ...APP_DEPLOY, useAppCodeDomain: true });
+    await repo.finalizeDeploy(id, appFinalize(started.deployToken));
+    for (const host of ["shop-18e4ecad.apps.example.com", "a-k7m2q9vx4n8p.apps.example.com"]) {
+      assert.equal((await lookup(host))?.fcEndpoint, "https://new.fcapp.run");
+    }
+  } finally {
+    __resetVanityCache();
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+  }
 });
 
 test("apps: app responses expose a candidate code URL while publicUrl follows active mode", async () => {

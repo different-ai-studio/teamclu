@@ -4975,19 +4975,22 @@ export function createSupabaseBusinessRepository(options) {
       return customDomainView(data);
     },
 
-    async deployApp(appId: string, input: { gitCommitSha?: string; runtime?: string }) {
+    async deployApp(appId: string, input: { gitCommitSha?: string; runtime?: string; useAppCodeDomain?: boolean }) {
       // Optional: only a Gitea-managed app pins its deploy to a forge commit.
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
       // What the checkout declares, read by the daemon before it asked for a
       // deploy. It decides which handle this deploy carries — an OSS upload or
       // a registry to push an image to — so it has to arrive here, not at
       // finalize where the rest of the declaration does.
+      if (input?.useAppCodeDomain !== undefined && typeof input.useAppCodeDomain !== "boolean") {
+        throw new ApiError(400, "validation_failed", "useAppCodeDomain must be a boolean");
+      }
       const declaredBuildKind = parseDeclaredBuildKind(input?.runtime);
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, deploy_started_at")
+        .select("id, slug, app_code, uses_app_code_domain, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, deploy_started_at")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -4997,7 +5000,7 @@ export function createSupabaseBusinessRepository(options) {
       if (existing.provision_status !== "ready") {
         throw new ApiError(409, "app_not_ready", "app must be seeded (provision_status=ready) before deploy");
       }
-      assertDeployAllowed({ id: existing.id, slug: existing.slug, auth_mode: existing.auth_mode, runtime: existing.runtime });
+      assertDeployAllowed({ id: existing.id, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: existing.uses_app_code_domain, auth_mode: existing.auth_mode, runtime: existing.runtime });
       const progress = checkDeployInProgress({
         fc_status: existing.fc_status,
         deploy_started_at: existing.deploy_started_at,
@@ -5010,6 +5013,7 @@ export function createSupabaseBusinessRepository(options) {
           fc_status: "deploy_error",
           provision_error: "previous deploy timed out",
           deploy_token: null,
+          deploy_use_app_code_domain: null,
           deploy_started_at: null,
           updated_at: new Date().toISOString(),
         }).eq("id", appId);
@@ -5035,6 +5039,7 @@ export function createSupabaseBusinessRepository(options) {
             fc_status: "awaiting_build",
             provision_error: null,
             deploy_token: deployToken,
+            deploy_use_app_code_domain: existing.uses_app_code_domain === true || input?.useAppCodeDomain === true,
             deploy_started_at: deployStartedAt,
             ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
             // The column records what this deployment is building, which until
@@ -5066,6 +5071,7 @@ export function createSupabaseBusinessRepository(options) {
             fc_status: "deploy_error",
             provision_error: String(e?.message ?? e),
             deploy_token: null,
+            deploy_use_app_code_domain: null,
             deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
@@ -5085,7 +5091,7 @@ export function createSupabaseBusinessRepository(options) {
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, app_code, uses_app_code_domain, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain")
+        .select("id, slug, app_code, uses_app_code_domain, deploy_use_app_code_domain, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -5095,14 +5101,20 @@ export function createSupabaseBusinessRepository(options) {
       if (!existing.deploy_token || existing.deploy_token !== deployToken) {
         throw new ApiError(409, "deploy_token_mismatch", "deployToken does not match the in-progress deploy");
       }
-      assertDeployAllowed({ id: existing.id, slug: existing.slug, auth_mode: existing.auth_mode, runtime: existing.runtime });
+      assertDeployAllowed({ id: existing.id, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: existing.uses_app_code_domain, auth_mode: existing.auth_mode, runtime: existing.runtime });
       if (!existing.fc_function_name) throw new ApiError(409, "not_deploying", "app has no function; call deploy first");
       if (!isLegalFcTransition(existing.fc_status, "deploying")) {
         throw new ApiError(409, "invalid_deploy_state", `cannot finalize from fc_status ${existing.fc_status}`);
       }
       if (!finalizeDeploy) throw deployUnavailable(deployUnavailableReason);
-      // Mark deploying (RLS-gated UPDATE).
-      await supabase.from("apps").update({ fc_status: "deploying", updated_at: new Date().toISOString() }).eq("id", appId);
+      // The approved choice belongs to this token. Older in-flight attempts
+      // may have no choice recorded; an already active app never reverts.
+      const usesAppCodeDomain = existing.uses_app_code_domain === true || existing.deploy_use_app_code_domain === true;
+      const { data: deploying, error: deployingErr } = await supabase.from("apps")
+        .update({ fc_status: "deploying", updated_at: new Date().toISOString() })
+        .eq("id", appId).eq("deploy_token", deployToken).select("id").maybeSingle();
+      if (deployingErr) throw deployingErr;
+      if (!deploying) throw new ApiError(409, "deploy_token_mismatch", "deployToken no longer owns the in-progress deploy");
       try {
         // Convenience env for the app's own code. The login wall does not
         // depend on it: the proxy gateway enforces the wall before a request
@@ -5110,7 +5122,7 @@ export function createSupabaseBusinessRepository(options) {
         // is still protected the moment auth_mode flips.
         let platformAuthEnv: Record<string, string> | undefined;
         if ((existing.auth_mode ?? "none") === "platform") {
-          platformAuthEnv = buildPlatformAuthEnv({ appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: existing.uses_app_code_domain });
+          platformAuthEnv = buildPlatformAuthEnv({ appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain });
         }
         // Which database this app's data lives in is a fact decided once, at
         // the first successful finalize — not a property re-derived from the
@@ -5152,6 +5164,7 @@ export function createSupabaseBusinessRepository(options) {
           .from("apps")
           .update({
             fc_status: "live",
+            uses_app_code_domain: usesAppCodeDomain,
             fc_endpoint: r.fcEndpoint,
             ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
             // What is now running, as opposed to what the deploy set out to
@@ -5178,14 +5191,16 @@ export function createSupabaseBusinessRepository(options) {
             ...(orgId && needsDatabase(existing.type) ? { org_id: orgId } : {}),
             provision_error: null,
             deploy_token: null,
+            deploy_use_app_code_domain: null,
             deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId)
+          .eq("deploy_token", deployToken)
           .select(APP_COLUMNS)
           .maybeSingle();
         if (updErr) throw updErr;
-        if (!row) return null;
+        if (!row) throw new ApiError(409, "deploy_token_mismatch", "deployToken no longer owns the in-progress deploy");
         // The proxy caches fc_endpoint/fc_status per host.
         invalidateAppHosts({ id: appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: row.uses_app_code_domain, customDomain: existing.custom_domain });
         return mapApp(row);
@@ -5197,10 +5212,12 @@ export function createSupabaseBusinessRepository(options) {
             fc_status: "deploy_error",
             provision_error: String(e?.message ?? e),
             deploy_token: null,
+            deploy_use_app_code_domain: null,
             deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
-          .eq("id", appId);
+          .eq("id", appId)
+          .eq("deploy_token", deployToken);
         throw new ApiError(502, "finalize_failed", String(e?.message ?? e));
       }
     },
