@@ -2,9 +2,9 @@
 
 Date: 2026-10-19
 
-Status: proposed specification; awaiting user review. Existing implementation
-changes are an unapproved draft and must be reconciled with this specification
-after specification and implementation-plan approval.
+Status: approved by the user on 2026-10-19. Existing implementation changes
+remain a draft and must be reconciled with this specification after the user
+reviews the implementation plan and selects its execution method.
 
 ## Purpose and scope
 
