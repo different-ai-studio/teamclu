@@ -80,7 +80,8 @@ vi.mock("sonner", () => ({ toast: { error: mocks.toastError, success: vi.fn() } 
 
 vi.mock("@/lib/apps/app-session", () => ({ bindAppWorkdir: mocks.bindAppWorkdir }));
 
-vi.mock("@/lib/apps/app-deploy-confirm", () => ({
+vi.mock("@/lib/apps/app-deploy-confirm", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/apps/app-deploy-confirm")>(),
   publicDeployConfirm: { run: vi.fn(async () => true) },
   PUBLIC_DEPLOY_CONFIRM_MESSAGE:
     "此应用未启用登录保护，任何拿到链接的人都能访问。\n\n确定继续部署吗？",
@@ -853,7 +854,7 @@ describe("apps-store deploy", () => {
     mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
       workspace_has_active_turn: false,
     });
-    vi.mocked(publicDeployConfirm.run).mockResolvedValue(true);
+    vi.mocked(publicDeployConfirm.run).mockReset().mockResolvedValue(true);
     const mod = await import("./apps-store");
     mod.useAppsStore.setState({
       items: [readyApp()],
@@ -863,6 +864,94 @@ describe("apps-store deploy", () => {
       teamId: "team-1",
       deployingIds: [],
     });
+  });
+
+  const legacyApp = (over = {}) => readyApp({
+    usesAppCodeDomain: false,
+    fcStatus: "live",
+    fcEndpoint: "https://origin.example",
+    appCode: "k7m2q9vx4n8p",
+    publicUrl: "https://old.apps.example",
+    appCodeUrl: "https://a-k7m2q9vx4n8p.apps.example",
+    ...over,
+  });
+
+  it.each([
+    ["platform", false], ["platform", true], ["platform", null],
+    ["none", false], ["none", true], ["none", null],
+  ] as const)("one %s deploy confirmation controls domain migration: %s", async (authMode, choice) => {
+    const legacy = legacyApp({ authMode });
+    const { useAppsStore } = await import("./apps-store");
+    useAppsStore.setState({ items: [legacy] });
+    vi.mocked(publicDeployConfirm.run).mockImplementationOnce(async (_message, options) => {
+      if (choice !== null) options?.onDomainChoice?.(choice);
+      return choice !== null;
+    });
+    if (choice !== null) {
+      mocks.deployApp.mockResolvedValueOnce({ ...legacy, deployToken: "tok-1", presignedPut: "https://oss/put" });
+      mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built"));
+      mocks.finalizeDeploy.mockResolvedValueOnce(legacy);
+    }
+    await useAppsStore.getState().deploy("app-1");
+    expect(publicDeployConfirm.run).toHaveBeenCalledTimes(1);
+    expect(publicDeployConfirm.run).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      domainChoice: { currentUrl: "https://old.apps.example", codeUrl: "https://a-k7m2q9vx4n8p.apps.example" },
+    }));
+    if (choice === null) {
+      expect(mocks.deployApp).not.toHaveBeenCalled();
+      expect(mocks.buildDaemonApp).not.toHaveBeenCalled();
+    } else {
+      expect(mocks.deployApp).toHaveBeenCalledWith("app-1", {
+        gitCommitSha: "abc1234567890", runtime: "node",
+        ...(choice ? { useAppCodeDomain: true } : {}),
+      });
+    }
+  });
+
+  it("keeps the active-agent warning separate from the single domain-aware confirmation", async () => {
+    const legacy = legacyApp({ authMode: "none" });
+    const { useAppsStore } = await import("./apps-store");
+    useAppsStore.setState({ items: [legacy] });
+    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValueOnce({ workspace_has_active_turn: true });
+    vi.mocked(publicDeployConfirm.run)
+      .mockResolvedValueOnce(true)
+      .mockImplementationOnce(async (_message, options) => {
+        options?.onDomainChoice?.(true);
+        return true;
+      });
+    mocks.deployApp.mockResolvedValueOnce({ ...legacy, deployToken: "tok-1", presignedPut: "https://oss/put" });
+    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built"));
+    mocks.finalizeDeploy.mockResolvedValueOnce(legacy);
+
+    await useAppsStore.getState().deploy("app-1");
+    const prompts = vi.mocked(publicDeployConfirm.run).mock.calls;
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toEqual([expect.stringContaining("AI 正在运行")]);
+    expect(prompts[1][0]).toContain("任何拿到链接的人都能访问");
+    expect(prompts.filter(([, options]) => options?.domainChoice)).toHaveLength(1);
+    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", expect.objectContaining({ useAppCodeDomain: true }));
+  });
+
+  it("an accepted attempt with no choice callback keeps legacy mode after a checked attempt", async () => {
+    const legacy = legacyApp();
+    const { useAppsStore } = await import("./apps-store");
+    useAppsStore.setState({ items: [legacy] });
+    mocks.deployApp.mockResolvedValue({ ...legacy, deployToken: "tok-1", presignedPut: "https://oss/put" });
+    mocks.buildDaemonApp.mockResolvedValue(buildResult("built"));
+    mocks.finalizeDeploy.mockResolvedValue(legacy);
+    vi.mocked(publicDeployConfirm.run)
+      .mockImplementationOnce(async (_message, options) => {
+        options?.onDomainChoice?.(true);
+        return true;
+      })
+      .mockResolvedValueOnce(true);
+
+    await useAppsStore.getState().deploy("app-1");
+    await useAppsStore.getState().deploy("app-1");
+    expect(mocks.deployApp.mock.calls.map(([, input]) => input)).toEqual([
+      { gitCommitSha: "abc1234567890", runtime: "node", useAppCodeDomain: true },
+      { gitCommitSha: "abc1234567890", runtime: "node" },
+    ]);
   });
 
   it("a container app pushes an image and finalizes with it", async () => {

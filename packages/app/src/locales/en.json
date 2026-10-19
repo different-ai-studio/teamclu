@@ -1391,6 +1391,9 @@
       "done": "Deploy complete"
     },
     "preview": "Preview",
+    "deployConfirmMessage": "Deploy this app?",
+    "deployDomainSwitch": "Use the app-code domain after deployment succeeds",
+    "deployDomainKeepHint": "Keep the current domain by default. If switched, the old domain remains available.",
     "deployConfirmTitle": "Confirm deploy",
     "deployConfirmContinue": "Deploy anyway",
     "deployFailed": "Deploy failed",

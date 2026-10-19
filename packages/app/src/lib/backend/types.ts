@@ -1522,7 +1522,7 @@ export interface AppsBackend {
    *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
   deployApp(
     appId: string,
-    input: { gitCommitSha?: string; runtime?: string },
+    input: { gitCommitSha?: string; runtime?: string; useAppCodeDomain?: boolean },
   ): Promise<DeployAppResult>;
   /** Finalize FC deploy after the artifact is uploaded: points the function at
    *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */

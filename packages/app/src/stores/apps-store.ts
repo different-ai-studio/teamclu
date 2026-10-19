@@ -4,6 +4,7 @@ import {
   ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE,
   PUBLIC_DEPLOY_CONFIRM_MESSAGE,
   publicDeployConfirm,
+  legacyAppDomainChoice,
 } from "@/lib/apps/app-deploy-confirm";
 import {
   seedDaemonApp,
@@ -906,8 +907,18 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       }
     }
 
-    if (app.authMode === "none") {
-      const accepted = await publicDeployConfirm.run(PUBLIC_DEPLOY_CONFIRM_MESSAGE);
+    let useAppCodeDomain = false;
+    const domainChoice = legacyAppDomainChoice(app);
+    if (app.authMode === "none" || domainChoice) {
+      const accepted = await publicDeployConfirm.run(
+        app.authMode === "none"
+          ? PUBLIC_DEPLOY_CONFIRM_MESSAGE
+          : i18n.t("apps.deployConfirmMessage", "确认部署此应用？"),
+        domainChoice ? {
+          domainChoice,
+          onDomainChoice: (checked) => { useAppCodeDomain = checked; },
+        } : undefined,
+      );
       if (!accepted) return;
     }
 
@@ -937,6 +948,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         throw new Error("amuxd did not return the app declaration");
       }
       const started = await getBackend().apps.deployApp(appId, {
+        ...(useAppCodeDomain ? { useAppCodeDomain: true } : {}),
         ...(gitCommitSha ? { gitCommitSha } : {}),
         runtime: declared.build.kind,
       });
