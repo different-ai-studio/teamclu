@@ -158,10 +158,15 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_UI_Shell",
+    "Win32_UI_Controls",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 # `ServiceExt::oneshot`, so the introspect router can be driven end-to-end in a
 # unit test without binding a port (STR-5/STR-10).
 tower = { version = "0.5", features = ["util"] }

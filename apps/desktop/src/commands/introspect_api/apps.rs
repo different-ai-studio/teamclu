@@ -360,6 +360,9 @@ pub(super) fn app_brief(row: &Value) -> Value {
     json!({
         "id": f("id"),
         "name": f("name"),
+        "app_code": f("appCode"),
+        "app_code_url": f("appCodeUrl"),
+        "uses_app_code_domain": f("usesAppCodeDomain"),
         "type": f("type"),
         "visibility": f("visibility"),
         "url": url,
@@ -642,16 +645,23 @@ pub(super) async fn handle_app_manage(
     // not asked about again — a deploy that fails, is fixed and retried is one
     // publish, and asking per attempt only teaches people to click through. The
     // key is everything the dialog says, so anything it would word differently
-    // still asks. Every other action here asks every time.
-    let deploy_key = (action == "deploy")
+    // still asks. Eligible legacy-domain publishes always ask again, so a
+    // cached approval can never select or skip the native migration checkbox.
+    // Every other action here asks every time.
+    let domain_choice = super::confirm::legacy_app_domain_choice(&row);
+    let deploy_key = (action == "deploy" && domain_choice.is_none())
         .then(|| caller.map(|c| super::confirm::DeployKey::new(&c.host_generation_id, &row)))
         .flatten();
     let approved = deploy_key
         .as_ref()
         .is_some_and(super::confirm::deploy_already_approved);
 
+    let mut use_code_domain = false;
+    if action == "deploy" && domain_choice.is_some() {
+        use_code_domain = super::confirm::confirm_app_deploy_domain(app, zh, &row).await?;
+    }
     let confirmation = match action.as_str() {
-        "deploy" if approved => None,
+        "deploy" if approved || domain_choice.is_some() => None,
         "deploy" => Some(super::confirm::app_deploy(zh, &row)),
         "delete" => Some(super::confirm::app_delete(zh, &row)),
         "update" => super::confirm::app_exposure_change(zh, &row, &update_patch(&v)?),
@@ -684,7 +694,7 @@ pub(super) async fn handle_app_manage(
         "download" => checkout::download_app(app, &api, &row).await?,
         "move_workdir" => checkout::move_app_workdir(app, &api, &row, &v).await?,
         "deploy" => {
-            let deployed = run_app_deploy(&api, &row).await;
+            let deployed = run_app_deploy(&api, &row, use_code_domain).await;
             // Either way the row moved — to live, or to deploy_error.
             notify_app_changed(app, &row);
             if deployed.is_ok() {
@@ -1281,7 +1291,7 @@ async fn finish_app_deploy(
 /// holding both. A failure after `/deploy` must report `deploy_error` back:
 /// nothing server-side can observe that the local build never finished, and a
 /// row left at `awaiting_build` blocks every later deploy for 30 minutes.
-async fn run_app_deploy(api: &AppApi, row: &Value) -> Result<Value, String> {
+async fn run_app_deploy(api: &AppApi, row: &Value, use_code_domain: bool) -> Result<Value, String> {
     let app_id = row_id(row)?;
     let team_id = row_str(row, "teamId").unwrap_or_default().to_string();
     let provision = row_str(row, "provisionStatus").unwrap_or_default();
@@ -1314,7 +1324,7 @@ async fn run_app_deploy(api: &AppApi, row: &Value) -> Result<Value, String> {
     let declaration = daemon_app_declaration(&app_id, &team_id).await?;
     let build_kind = row_str(&declaration["build"], "kind")
         .ok_or("The daemon's app declaration has no build.kind.")?;
-    let mut start_body = json!({ "runtime": build_kind });
+    let mut start_body = json!({ "runtime": build_kind, "useAppCodeDomain": use_code_domain });
     if let Some(sha) = &git_commit_sha {
         start_body["gitCommitSha"] = json!(sha);
     }
@@ -1460,6 +1470,176 @@ mod tests {
     }
 
     use super::*;
+
+    // These tests fake only OS widget presentation/closure. The decision,
+    // timeout and global approval mutex are the same code used in production.
+    #[tokio::test(start_paused = true)]
+    async fn app_domain_native_choices_serialize_and_timeout_cannot_approve_a_retry() {
+        use super::super::confirm::app_domain::{
+            run_checkbox, CheckboxApproval, DialogState, NativeClose,
+        };
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use std::time::Duration;
+        fn request() -> CheckboxApproval {
+            CheckboxApproval {
+                title: "Publish?".into(),
+                message: "old → candidate".into(),
+                accept: "Publish".into(),
+                decline: "Decline".into(),
+                checkbox_label: "Switch on success".into(),
+            }
+        }
+        for outcome in [
+            Ok(false),
+            Ok(true),
+            Err("declined".into()),
+            Err("dismissed".into()),
+            Err("parent closed".into()),
+        ] {
+            let expected = outcome.clone();
+            let result = run_checkbox(request(), Duration::from_secs(120), move |_, state| {
+                assert!(state.is_pending());
+                state.finish(outcome);
+                Ok(Box::new(|| {}) as NativeClose)
+            })
+            .await;
+            assert_eq!(result, expected);
+        }
+        assert!(
+            run_checkbox(request(), Duration::from_secs(120), |_, _| Err(
+                "widget failed".into()
+            ))
+            .await
+            .is_err()
+        );
+
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel::<Arc<DialogState>>();
+        let closed = Arc::new(AtomicBool::new(false));
+        let close_called = closed.clone();
+        let first = tokio::spawn(run_checkbox(
+            request(),
+            Duration::from_secs(120),
+            move |_, state| {
+                first_tx.send(state).unwrap();
+                // Native teardown acknowledgement is deliberately delayed below.
+                Ok(Box::new(move || {
+                    close_called.store(true, Ordering::SeqCst);
+                }) as NativeClose)
+            },
+        ));
+        let old_dialog = first_rx.await.unwrap();
+        let (second_tx, mut second_rx) = tokio::sync::oneshot::channel::<Arc<DialogState>>();
+        let second = tokio::spawn(run_checkbox(
+            request(),
+            Duration::from_secs(120),
+            move |_, state| {
+                second_tx.send(state).unwrap();
+                Ok(Box::new(|| {}) as NativeClose)
+            },
+        ));
+        tokio::task::yield_now().await;
+        assert!(
+            second_rx.try_recv().is_err(),
+            "two requests must not show together"
+        );
+        tokio::time::advance(Duration::from_secs(120)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            closed.load(Ordering::SeqCst),
+            "timeout must request native closure"
+        );
+        assert!(
+            !old_dialog.is_pending(),
+            "timeout owns the terminal rejection"
+        );
+        assert!(
+            second_rx.try_recv().is_err(),
+            "hold mutex until native teardown finishes"
+        );
+        old_dialog.finish(Ok(true)); // Late native acceptance cannot win the timeout.
+        assert!(first.await.unwrap().is_err());
+        let next_dialog = second_rx.await.unwrap();
+        old_dialog.finish(Ok(true)); // Nor can it complete a later attempt.
+        assert!(next_dialog.is_pending());
+        next_dialog.finish(Ok(false));
+        assert_eq!(second.await.unwrap(), Ok(false));
+
+        let (aborted_tx, aborted_rx) = tokio::sync::oneshot::channel::<Arc<DialogState>>();
+        let aborted = tokio::spawn(run_checkbox(
+            request(),
+            Duration::from_secs(120),
+            move |_, state| {
+                aborted_tx.send(state).unwrap();
+                Ok(Box::new(|| {}) as NativeClose)
+            },
+        ));
+        let orphaned_dialog = aborted_rx.await.unwrap();
+        aborted.abort(); // A disconnected HTTP requester must not unlock a visible dialog.
+        let _ = aborted.await;
+        let (later_tx, mut later_rx) = tokio::sync::oneshot::channel::<Arc<DialogState>>();
+        let later = tokio::spawn(run_checkbox(
+            request(),
+            Duration::from_secs(120),
+            move |_, state| {
+                later_tx.send(state).unwrap();
+                Ok(Box::new(|| {}) as NativeClose)
+            },
+        ));
+        tokio::task::yield_now().await;
+        assert!(
+            later_rx.try_recv().is_err(),
+            "request cancellation must not release a visible approval"
+        );
+        orphaned_dialog.finish(Err("dismissed".into()));
+        let later_dialog = later_rx.await.unwrap();
+        later_dialog.finish(Ok(false));
+        assert_eq!(later.await.unwrap(), Ok(false));
+    }
+
+    #[test]
+    fn only_an_old_live_domain_is_offered_the_deploy_checkbox() {
+        use super::super::confirm::legacy_app_domain_choice;
+        let legacy = json!({ "usesAppCodeDomain": false, "fcStatus": "live", "fcEndpoint": "https://origin.example", "publicUrl": "https://old.example", "appCodeUrl": "https://a-k7m2q9vx4n8p.example" });
+        assert!(legacy_app_domain_choice(&legacy).is_some());
+        let mut undeployed = legacy.clone();
+        undeployed["fcStatus"] = serde_json::json!("not_deployed");
+        assert_eq!(legacy_app_domain_choice(&undeployed), None);
+        for field in ["fcEndpoint", "publicUrl", "appCodeUrl"] {
+            for value in [json!(""), json!("  "), Value::Null, json!(42)] {
+                let mut invalid = legacy.clone();
+                invalid[field] = value;
+                assert_eq!(
+                    legacy_app_domain_choice(&invalid),
+                    None,
+                    "{field}: {invalid}"
+                );
+            }
+            let mut missing = legacy.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert_eq!(legacy_app_domain_choice(&missing), None);
+        }
+        assert_eq!(
+            legacy_app_domain_choice(&legacy),
+            Some((
+                "https://old.example".to_string(),
+                "https://a-k7m2q9vx4n8p.example".to_string()
+            ))
+        );
+        for (key, value) in [
+            ("usesAppCodeDomain", json!(true)),
+            ("fcStatus", json!("not_deployed")),
+            ("fcEndpoint", Value::Null),
+            ("appCodeUrl", Value::Null),
+            ("publicUrl", legacy["appCodeUrl"].clone()),
+        ] {
+            let mut row = legacy.clone();
+            row[key] = value;
+            assert_eq!(legacy_app_domain_choice(&row), None);
+        }
+    }
 
     #[test]
     fn app_brief_prefers_the_public_url_over_the_raw_function_host() {

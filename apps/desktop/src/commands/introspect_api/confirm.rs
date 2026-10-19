@@ -21,8 +21,13 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tauri::AppHandle;
 
+pub(super) mod app_domain;
+pub(crate) use app_domain::{confirm_app_deploy_domain, legacy_app_domain_choice};
+
 /// How long a dialog waits before the call is refused.
 pub(crate) const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
+
+static ONE_AT_A_TIME: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 /// One approval dialog: what is asked, and the label of the button that says yes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +48,6 @@ pub(crate) async fn confirm_with_user(
 
     // One dialog at a time: stacked alerts from parallel tool calls are easy to
     // answer for the wrong request.
-    static ONE_AT_A_TIME: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     let _turn = ONE_AT_A_TIME
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
