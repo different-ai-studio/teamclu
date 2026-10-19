@@ -302,6 +302,12 @@ impl SeaTalkGateway {
         *self.config.write().await = config;
     }
 
+    /// App id from config. Status only fills `app_id` after the socket starts,
+    /// and dispatch has to pick a bot before that.
+    pub async fn app_id(&self) -> String {
+        self.config.read().await.app_id.clone()
+    }
+
     pub async fn get_status(&self) -> SeaTalkGatewayStatusResponse {
         let mut status = self.status.read().await.clone();
         let task_dead = self

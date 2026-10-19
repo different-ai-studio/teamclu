@@ -78,6 +78,21 @@ interface DeliveryChannelRegistryEntry {
   getTargetDisplay?: (to: string) => string
 }
 
+const seatalkAppIdField = {
+  key: 'appId',
+  label: 'App ID',
+  placeholder: 'Leave empty when only one bot is connected',
+  hint: 'Required once more than one SeaTalk bot is running. Prefixes the target with bot:<app_id>/.',
+  required: false,
+}
+
+function splitSeatalkBotPrefix(to: string): { appId: string; rest: string } {
+  if (!to.startsWith('bot:')) return { appId: '', rest: to }
+  const slash = to.indexOf('/')
+  if (slash <= 'bot:'.length) return { appId: '', rest: to }
+  return { appId: to.slice('bot:'.length, slash), rest: to.slice(slash + 1) }
+}
+
 export const DELIVERY_CHANNEL_REGISTRY: DeliveryChannelRegistryEntry[] = [
   {
     id: 'discord',
@@ -272,6 +287,7 @@ export const DELIVERY_CHANNEL_REGISTRY: DeliveryChannelRegistryEntry[] = [
     ],
     fields: {
       single: [
+        seatalkAppIdField,
         {
           key: 'employeeCode',
           label: 'Employee Code',
@@ -281,6 +297,7 @@ export const DELIVERY_CHANNEL_REGISTRY: DeliveryChannelRegistryEntry[] = [
         },
       ],
       group: [
+        seatalkAppIdField,
         {
           key: 'groupId',
           label: 'Group ID',
@@ -290,19 +307,29 @@ export const DELIVERY_CHANNEL_REGISTRY: DeliveryChannelRegistryEntry[] = [
         },
       ],
     },
-    buildTarget: (mode, values) =>
-      mode === 'group' ? `group:${values.groupId}` : `single:${values.employeeCode}`,
+    buildTarget: (mode, values) => {
+      const body = mode === 'group' ? `group:${values.groupId}` : `single:${values.employeeCode}`
+      const appId = (values.appId ?? '').trim()
+      return appId ? `bot:${appId}/${body}` : body
+    },
     parseTarget: (to): { mode: string; values: Record<string, string> } => {
-      if (to.startsWith('group:')) {
-        return { mode: 'group', values: { groupId: to.slice('group:'.length) } }
+      const { appId, rest } = splitSeatalkBotPrefix(to)
+      const withApp = (values: Record<string, string>) => {
+        if (appId) values.appId = appId
+        return values
       }
-      const employeeCode = to.startsWith('single:') ? to.slice('single:'.length) : to
-      return { mode: 'single', values: { employeeCode } }
+      if (rest.startsWith('group:')) {
+        return { mode: 'group', values: withApp({ groupId: rest.slice('group:'.length) }) }
+      }
+      const employeeCode = rest.startsWith('single:') ? rest.slice('single:'.length) : rest
+      return { mode: 'single', values: withApp({ employeeCode }) }
     },
     getTargetDisplay: (to) => {
-      if (to.startsWith('group:')) return `Group ${to.slice(6)}`
-      if (to.startsWith('single:')) return `DM @${to.slice(7)}`
-      return `DM @${to}`
+      const { appId, rest } = splitSeatalkBotPrefix(to)
+      const who = appId ? `${appId} · ` : ''
+      if (rest.startsWith('group:')) return `${who}Group ${rest.slice(6)}`
+      if (rest.startsWith('single:')) return `${who}DM @${rest.slice(7)}`
+      return `${who}DM @${rest}`
     },
   },
 ]
