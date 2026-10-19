@@ -4706,3 +4706,59 @@ test(
     assert.ok(!ssh.calls.some((c) => c.table === "app_secrets"));
   }),
 );
+
+function appInsertErrors(errors: { code: string; message: string }[]) {
+  const calls: any[] = [];
+  const base = appsSupabase({ calls });
+  let inserts = 0;
+  const client = { ...base, from(table: string) {
+    const query = base.from(table);
+    if (table !== "apps") return query;
+    const insert = query.insert;
+    query.insert = (row: any) => {
+      const error = errors[inserts++];
+      if (error) return { select: () => ({ single: async () => ({ data: null, error }) }) };
+      return insert(row);
+    };
+    return query;
+  } };
+  return { repo: appsRepo(client), calls, inserts: () => inserts };
+}
+
+const appCodeCollision = () => ({
+  code: "23505", message: 'duplicate key value violates unique constraint "apps_app_code_key"',
+});
+const localApp = { teamId: "team-1", name: "Local", type: "static_web", localOnly: true };
+
+test("apps: code collisions retry app insertion without duplicating the workspace", async () => {
+  const { repo, calls, inserts } = appInsertErrors(Array.from({ length: 4 }, appCodeCollision));
+  const app = await repo.createApp(localApp);
+  assert.ok(app.id);
+  assert.equal(inserts(), 5);
+  assert.equal(calls.filter((c) => c.table === "workspaces" && c.op === "insert").length, 1);
+  const insertedApp = calls.find((c) => c.table === "apps" && c.op === "insert");
+  assert.ok(insertedApp.row.workspace_id);
+});
+
+test("apps: code collision exhaustion never attempts a sixth insert", async () => {
+  const errors = Array.from({ length: 5 }, appCodeCollision);
+  const { repo, calls, inserts } = appInsertErrors(errors);
+  await assert.rejects(() => repo.createApp(localApp), (error) => error === errors[4]);
+  assert.equal(inserts(), 5);
+  assert.equal(calls.filter((c) => c.table === "workspaces" && c.op === "insert").length, 1);
+});
+
+test("apps: slug conflict is not retried", async () => {
+  const conflict = { code: "23505", message: 'duplicate key value violates unique constraint "apps_team_id_slug_key"' };
+  const { repo, calls, inserts } = appInsertErrors([conflict]);
+  await assert.rejects(() => repo.createApp(localApp), (error) => error === conflict);
+  assert.equal(inserts(), 1);
+  assert.equal(calls.filter((c) => c.table === "workspaces" && c.op === "insert").length, 1);
+});
+
+test("apps: code collision constraint with another error code is not retried", async () => {
+  const failure = { code: "42501", message: 'permission denied for "apps_app_code_key"' };
+  const { repo, inserts } = appInsertErrors([failure]);
+  await assert.rejects(() => repo.createApp(localApp), (error) => error === failure);
+  assert.equal(inserts(), 1);
+});

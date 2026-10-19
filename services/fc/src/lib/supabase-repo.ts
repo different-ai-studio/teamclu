@@ -4565,26 +4565,41 @@ export function createSupabaseBusinessRepository(options) {
         .single();
       if (wsErr) throw wsErr;
 
-      const { data: row, error: appErr } = await supabase
-        .from("apps")
-        .insert({
-          team_id: input.teamId,
-          created_by_actor_id: createdByActorId,
-          name: input.name,
-          slug,
-          type: input.type,
-          visibility,
-          workspace_id: ws.id,
-          git_remote_url: importUrl,
-          // A local checkout needs no provisioning at all — the files are
-          // already there. Leaving it `pending` would send the desktop down
-          // the seed path, which writes the starter template over whatever the
-          // user pointed us at.
-          provision_status: localOnly ? "ready" : "pending",
-        })
-        .select(APP_COLUMNS)
-        .single();
-      if (appErr) throw appErr;
+      let row: any;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const result = await supabase
+          .from("apps")
+          .insert({
+            team_id: input.teamId,
+            created_by_actor_id: createdByActorId,
+            name: input.name,
+            slug,
+            type: input.type,
+            visibility,
+            workspace_id: ws.id,
+            git_remote_url: importUrl,
+            // A local checkout needs no provisioning at all — the files are
+            // already there. Leaving it `pending` would send the desktop down
+            // the seed path, which writes the starter template over whatever the
+            // user pointed us at.
+            provision_status: localOnly ? "ready" : "pending",
+          })
+          .select(APP_COLUMNS)
+          .single();
+        if (!result.error) {
+          row = result.data;
+          break;
+        }
+        // Retry only the random-code collision; name/slug and other errors
+        // must still reach the caller. Reuse the workspace already created.
+        if (
+          result.error.code !== "23505" ||
+          !String(result.error.message).includes('"apps_app_code_key"') ||
+          attempt === 4
+        ) {
+          throw result.error;
+        }
+      }
 
       // Both import paths stop here: the app's code lives somewhere we did not
       // provision, so there is no repo of ours to create and no deploy key to
