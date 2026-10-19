@@ -289,6 +289,9 @@ export function PromptInput({
           async (event) => {
             setIsDragging(false)
             const { paths, position } = event.payload
+            // An empty path list is the macOS screenshot thumbnail: wry only
+            // reads filenames, so the shell materializes the promised PNG and
+            // emits a second drag-drop that does carry a path.
             if (!paths?.length) return
             if (!isPointOverElement(position, dropHitTarget())) return
 

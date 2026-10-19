@@ -144,7 +144,28 @@ libc = "0.2"
 cocoa = "0.24"
 objc = "0.2"
 objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSDictionary",
+    "NSError",
+    "NSObject",
+    "NSOperation",
+    "NSString",
+    "NSURL",
+] }
 objc2-web-kit = { version = "0.3", features = ["WKWebViewConfiguration", "WKWebView"] }
+# Screenshot-thumbnail drops are AppKit file promises, which wry does not read.
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "NSDragging",
+    "NSFilePromiseReceiver",
+    "NSPasteboard",
+    "NSResponder",
+    "NSView",
+] }
 block2 = "0.6"
 cpal = "0.17"
 hound = "3.5"
