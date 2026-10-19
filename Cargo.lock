@@ -9672,6 +9672,8 @@ dependencies = [
  "notify-debouncer-mini",
  "objc",
  "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "objc2-web-kit",
  "portable-pty",
  "rand 0.8.6",

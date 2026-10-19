@@ -20,6 +20,8 @@ pub mod mqtt;
 pub mod opencode_paths;
 pub mod process_util;
 pub mod proto;
+#[cfg(target_os = "macos")]
+mod screenshot_drop;
 pub mod sentry_utils;
 mod terminal;
 #[cfg(test)]
@@ -661,6 +663,11 @@ pub fn run() {
             // no longer grants the whole disk, so this has to happen before the
             // frontend's first read — skills are scanned during startup.
             fs_scope::grant_fixed_roots(app.handle());
+
+            // macOS screenshot thumbnails are file promises, not filenames.
+            // Install before the user can drop one on a window created later.
+            #[cfg(target_os = "macos")]
+            screenshot_drop::install(app.handle());
 
             // Capture the .app bundle path before an update can replace it on disk.
             commands::updater::remember_app_bundle_path();
