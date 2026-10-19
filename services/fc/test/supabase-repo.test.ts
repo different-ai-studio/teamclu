@@ -4792,3 +4792,52 @@ test("apps: app responses expose a candidate code URL while publicUrl follows ac
     else process.env.APPS_PUBLIC_DOMAIN = previous;
   }
 });
+
+
+// Task 3: repository read and cache boundaries.
+import { makeVanityLookup, __resetVanityCache } from "../src/lib/apps-vanity.js";
+
+test("apps: saving auth settings invalidates the active code and legacy aliases", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  const id = "18e4ecad-6189-495b-a873-7fe09179a5f5";
+  const calls: any[] = [];
+  const db = appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id, slug: "shop", app_code: "k7m2q9vx4n8p", uses_app_code_domain: true }] } });
+  const repo = appsRepo(db, { createServiceRoleClient: () => db });
+  const lookup = makeVanityLookup({ getServiceRoleClient: () => db });
+  __resetVanityCache();
+  try {
+    const hosts = ["shop-18e4ecad.apps.example.com", "a-k7m2q9vx4n8p.apps.example.com"];
+    for (const host of hosts) assert.equal((await lookup(host))?.authMode, "none");
+    await repo.updateApp(id, { authMode: "platform" });
+    for (const host of hosts) assert.equal((await lookup(host))?.authMode, "platform", "no stale auth settings on either alias");
+    const selected = calls.find(c => c.table === "apps" && c.op === "select" && c.columns.includes("provision_status"));
+    assert.ok(selected.columns.includes("app_code"));
+    assert.ok(selected.columns.includes("uses_app_code_domain"));
+  } finally {
+    __resetVanityCache();
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+  }
+});
+
+test("apps: custom-domain responses propagate the stored code mode into CNAME records", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  try {
+    for (const mode of [undefined, false, true]) {
+      const calls: any[] = [];
+      const db = appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", app_code: "k7m2q9vx4n8p", uses_app_code_domain: mode }] } });
+      const repo = appsRepo(db);
+      const result = await repo.setAppCustomDomain("18e4ecad-6189-495b-a873-7fe09179a5f5", "shop.example.org");
+      assert.equal(result.dns[0].value, mode === true ? "a-k7m2q9vx4n8p.apps.example.com" : "shop-18e4ecad.apps.example.com");
+      for (const call of calls.filter(c => c.table === "apps" && ["select", "update.select"].includes(c.op) && c.columns !== "*")) {
+        assert.ok(call.columns.includes("app_code"));
+        assert.ok(call.columns.includes("uses_app_code_domain"));
+      }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+  }
+});

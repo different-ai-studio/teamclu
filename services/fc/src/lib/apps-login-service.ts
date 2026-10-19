@@ -47,6 +47,8 @@ import { resolveFeatures } from "./routes/config.js";
 export type LoginApp = {
   id: string;
   slug: string;
+  appCode?: string | null;
+  usesAppCodeDomain?: boolean;
   /**
    * `apps.name`. Every page names the app so the visitor can tell what is
    * asking them to sign in; the slug stands in when it is blank.
@@ -77,7 +79,7 @@ export type LookupLoginApp = (appId: string) => Promise<LoginApp | null>;
  * custom domain was refused as "返回地址与该应用不符".
  */
 const LOGIN_APP_COLUMNS =
-  "id, slug, name, team_id, auth_mode, custom_domain, custom_domain_verified_at";
+  "id, slug, app_code, uses_app_code_domain, name, team_id, auth_mode, custom_domain, custom_domain_verified_at";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -106,6 +108,8 @@ export function makeSupabaseLoginAppLookup(
     return {
       id: data.id,
       slug: data.slug,
+      appCode: data.app_code ?? null,
+      usesAppCodeDomain: data.uses_app_code_domain,
       name: data.name ?? null,
       teamName: await readTeamName(client, data.team_id ?? null),
       authMode: data.auth_mode ?? "none",

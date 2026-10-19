@@ -102,6 +102,14 @@ export function appPublicUrl(
   return label && `https://${label}.${domain}`;
 }
 
+/** The current public address; backfilled or absent mode metadata stays legacy. */
+export function appCurrentPublicUrl(
+  app: { id: string; slug: string; appCode?: string | null; usesAppCodeDomain?: boolean },
+  env: Env = process.env,
+): string | null {
+  return appPublicUrl(app.slug, app.id, env, app.usesAppCodeDomain === true ? app.appCode : null);
+}
+
 /**
  * Every origin this app legitimately answers on.
  *
@@ -118,14 +126,18 @@ export function appOrigins(
   app: {
     id: string;
     slug: string;
+    appCode?: string | null;
+    usesAppCodeDomain?: boolean;
     customDomain?: string | null;
     customDomainVerifiedAt?: string | null;
   },
   env: Env = process.env,
 ): string[] {
   const out: string[] = [];
-  const vanity = appPublicUrl(app.slug, app.id, env);
+  const vanity = appCurrentPublicUrl(app, env);
   if (vanity) out.push(vanity);
+  const legacy = appPublicUrl(app.slug, app.id, env);
+  if (legacy && legacy !== vanity) out.push(legacy);
   // An unverified domain is stored but not served, so it is not an origin the
   // login service may return a visitor to either — the same gate that keeps a
   // certificate from being issued for it.

@@ -1,5 +1,5 @@
 import { computeNextRun } from "./app-cron-schedule.js";
-import { appPublicUrl } from "./apps-public-host.js";
+import { appCurrentPublicUrl } from "./apps-public-host.js";
 
 /**
  * The tick: claim every job that is due, send its request, record what happened.
@@ -254,12 +254,12 @@ async function executeJob(
 
   const { data: app, error } = await db
     .from("apps")
-    .select("id, slug")
+    .select("id, slug, app_code, uses_app_code_domain")
     .eq("id", job.app_id)
     .maybeSingle();
   if (error) throw error;
 
-  const base = app ? appPublicUrl(app.slug, app.id, ctx.env) : null;
+  const base = app ? appCurrentPublicUrl({ id: app.id, slug: app.slug, appCode: app.app_code, usesAppCodeDomain: app.uses_app_code_domain }, ctx.env) : null;
   if (!base) {
     return finish(db, job, {
       startedAt,

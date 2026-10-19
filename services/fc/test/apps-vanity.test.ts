@@ -848,3 +848,41 @@ test("code host invalidation tolerates malformed domain and slug values", () => 
   assert.doesNotThrow(() => invalidateAppHosts({ id: APP_ID, slug: "shop", appCode: "invalid.code" }, env));
   assert.doesNotThrow(() => invalidateAppHosts({ id: APP_ID, slug: "shop", appCode: "k7m2q9vx4n8p" }, { APPS_PUBLIC_DOMAIN: "not a domain:99999" }));
 });
+
+
+test("an auth change through one alias immediately gates the other after invalidation", async () => {
+  const previousLogin = process.env.LOGIN_DOMAIN;
+  process.env.LOGIN_DOMAIN = "login.example.com";
+  const previousSecret = process.env.APPS_AUTH_SESSION_SECRET;
+  process.env.APPS_AUTH_SESSION_SECRET = "test-secret-at-least-32-characters-long";
+  const row = { ...CODE_ROW, auth_mode: "none", auth_scope: "all", auth_audience: "any", custom_domain_verified_at: null as string | null };
+  const { client } = codeHostClient([row]);
+  const lookup = makeVanityLookup({ getServiceRoleClient: () => client });
+  const service = createApp(deps(lookup));
+  await withDomain(async () => {
+    __resetVanityCache();
+    try {
+      const legacy = `shop-18e4ecad.${DOMAIN}`;
+      const code = `a-k7m2q9vx4n8p.${DOMAIN}`;
+      assert.equal((await lookup(legacy))?.authMode, "none");
+      assert.equal((await lookup(code))?.authMode, "none");
+      assert.equal(await lookup("shop.example.org"), null, "unverified custom domain stays refused");
+      row.auth_mode = "platform";
+      assert.equal((await lookup(code))?.authMode, "none", "cached settings need invalidation");
+      const changedViaLegacy = await lookup(legacy);
+      invalidateAppHosts(changedViaLegacy!);
+      for (const host of [code, legacy]) {
+        const response = await service.request(`https://${host}/private`, { headers: { host, "x-forwarded-proto": "https" } });
+        assert.equal(response.status, 302);
+        const location = new URL(response.headers.get("location")!);
+        assert.equal(location.host, "login.example.com");
+        assert.equal(location.searchParams.get("r"), `https://${host}`);
+      }
+    } finally { __resetVanityCache(); }
+  }).finally(() => {
+    if (previousLogin === undefined) delete process.env.LOGIN_DOMAIN;
+    else process.env.LOGIN_DOMAIN = previousLogin;
+    if (previousSecret === undefined) delete process.env.APPS_AUTH_SESSION_SECRET;
+    else process.env.APPS_AUTH_SESSION_SECRET = previousSecret;
+  });
+});

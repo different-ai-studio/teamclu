@@ -123,7 +123,7 @@ import {
   verificationTxtName,
   verifyDomainOwnership,
 } from "./apps-custom-domain.js";
-import { invalidateAppHosts, invalidateVanityHost } from "./apps-vanity.js";
+import { invalidateAppHosts } from "./apps-vanity.js";
 
 /**
  * The client-facing shape of an app's custom domain.
@@ -139,7 +139,7 @@ function customDomainView(row: any) {
     verified: Boolean(row.custom_domain_verified_at),
     verifiedAt: row.custom_domain_verified_at ?? null,
     dns: domain
-      ? customDomainRecords({ id: row.id, slug: row.slug }, domain, row.custom_domain_token ?? "")
+      ? customDomainRecords({ id: row.id, slug: row.slug, appCode: row.app_code, usesAppCodeDomain: row.uses_app_code_domain }, domain, row.custom_domain_token ?? "")
       : [],
   };
 }
@@ -4672,7 +4672,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain",
+          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -4736,6 +4736,8 @@ export function createSupabaseBusinessRepository(options) {
               appId,
               name: cur.name,
               slug: cur.slug,
+              appCode: cur.app_code,
+              usesAppCodeDomain: cur.uses_app_code_domain,
               from: fromAuthMode,
               to: nextAuthMode,
               oauthClientId: cur.oauth_client_id ?? null,
@@ -4838,7 +4840,7 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
       if (!data) return null;
       // The proxy caches auth settings per host; without this a saved rule waits out the TTL.
-      invalidateAppHosts({ id: appId, slug: cur.slug, customDomain: cur.custom_domain });
+      invalidateAppHosts({ id: appId, slug: cur.slug, appCode: cur.app_code, usesAppCodeDomain: cur.uses_app_code_domain, customDomain: cur.custom_domain });
       return mapApp(data);
     },
 
@@ -4856,7 +4858,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "id, slug, team_id, created_by_actor_id, custom_domain, custom_domain_token, custom_domain_verified_at",
+          "id, slug, app_code, uses_app_code_domain, team_id, created_by_actor_id, custom_domain, custom_domain_token, custom_domain_verified_at",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -4901,7 +4903,7 @@ export function createSupabaseBusinessRepository(options) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", appId)
-        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .select("id, slug, app_code, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
         .maybeSingle();
       if (error) {
         // 23505 is the unique index on lower(custom_domain): another app has
@@ -4914,8 +4916,8 @@ export function createSupabaseBusinessRepository(options) {
       if (!data) return null;
       // The old name must stop resolving here immediately, and the new one must
       // not be remembered as a miss from before it existed.
-      invalidateVanityHost(gate.cur.custom_domain);
-      invalidateVanityHost(domain);
+      invalidateAppHosts({ id: appId, slug: gate.cur.slug, appCode: gate.cur.app_code, usesAppCodeDomain: gate.cur.uses_app_code_domain, customDomain: gate.cur.custom_domain });
+      invalidateAppHosts({ id: appId, slug: data.slug, appCode: data.app_code, usesAppCodeDomain: data.uses_app_code_domain, customDomain: domain });
       return customDomainView(data);
     },
 
@@ -4943,13 +4945,13 @@ export function createSupabaseBusinessRepository(options) {
         .from("apps")
         .update({ custom_domain_verified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
         .eq("id", appId)
-        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .select("id, slug, app_code, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
       // Until this drops, the hostname is cached as "not an app" from the
       // requests made while it was still unverified.
-      invalidateVanityHost(domain);
+      invalidateAppHosts({ id: appId, slug: data.slug, appCode: data.app_code, usesAppCodeDomain: data.uses_app_code_domain, customDomain: domain });
       return customDomainView(data);
     },
 
@@ -4965,11 +4967,11 @@ export function createSupabaseBusinessRepository(options) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", appId)
-        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .select("id, slug, app_code, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
-      invalidateVanityHost(gate.cur.custom_domain);
+      invalidateAppHosts({ id: appId, slug: gate.cur.slug, appCode: gate.cur.app_code, usesAppCodeDomain: gate.cur.uses_app_code_domain, customDomain: gate.cur.custom_domain });
       return customDomainView(data);
     },
 
@@ -5083,7 +5085,7 @@ export function createSupabaseBusinessRepository(options) {
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain")
+        .select("id, slug, app_code, uses_app_code_domain, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -5108,7 +5110,7 @@ export function createSupabaseBusinessRepository(options) {
         // is still protected the moment auth_mode flips.
         let platformAuthEnv: Record<string, string> | undefined;
         if ((existing.auth_mode ?? "none") === "platform") {
-          platformAuthEnv = buildPlatformAuthEnv({ appId, slug: existing.slug });
+          platformAuthEnv = buildPlatformAuthEnv({ appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: existing.uses_app_code_domain });
         }
         // Which database this app's data lives in is a fact decided once, at
         // the first successful finalize — not a property re-derived from the
@@ -5185,7 +5187,7 @@ export function createSupabaseBusinessRepository(options) {
         if (updErr) throw updErr;
         if (!row) return null;
         // The proxy caches fc_endpoint/fc_status per host.
-        invalidateAppHosts({ id: appId, slug: existing.slug, customDomain: existing.custom_domain });
+        invalidateAppHosts({ id: appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: row.uses_app_code_domain, customDomain: existing.custom_domain });
         return mapApp(row);
       } catch (e: any) {
         if (e instanceof ApiError) throw e;
@@ -6429,7 +6431,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
         .select(
-          "id, team_id, workspace_id, slug, name, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id, custom_domain",
+          "id, team_id, workspace_id, slug, name, app_code, uses_app_code_domain, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id, custom_domain",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -6474,7 +6476,7 @@ export function createSupabaseBusinessRepository(options) {
 
       const { error: delErr } = await admin.from("apps").delete().eq("id", appId);
       if (delErr) throw delErr;
-      invalidateAppHosts({ id: appId, slug: existing.slug, customDomain: existing.custom_domain });
+      invalidateAppHosts({ id: appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: existing.uses_app_code_domain, customDomain: existing.custom_domain });
       return true;
     },
 

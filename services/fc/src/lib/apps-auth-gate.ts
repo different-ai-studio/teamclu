@@ -34,6 +34,8 @@ import type { ProxyIdentity } from "./apps-vanity.js";
 export type GateApp = {
   id: string;
   slug: string;
+  appCode?: string | null;
+  usesAppCodeDomain?: boolean;
   /** `apps.team_id` — the org audience resolves the app's org through it. */
   teamId: string | null;
   /** `apps.auth_mode`; only `platform` has a wall. */
