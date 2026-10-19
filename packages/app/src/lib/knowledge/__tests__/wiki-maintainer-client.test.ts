@@ -93,6 +93,7 @@ describe('wiki-maintainer-client', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     progressListener.current = undefined
+    listKnowledgeAcl.mockResolvedValue([])
     loadDeviceModelOptions.mockResolvedValue({ options: [], reason: 'no-models', defaultBackend: null })
     getMaintainerStatus.mockResolvedValue({
       config: null,
@@ -245,8 +246,12 @@ describe('wiki-maintainer-client', () => {
   })
 
   it('materializes only missing documents under selected folders before prepare', async () => {
-    listKnowledgeAcl.mockResolvedValue([{ pathPrefix: 'documents/restricted/' }])
+    listKnowledgeAcl.mockResolvedValue([
+      { pathPrefix: 'documents/restricted/' },
+      { pathPrefix: 'documents/handbook/secret/' },
+    ])
     listKnownDocuments.mockResolvedValue([
+      { path: 'documents/handbook/secret/pay.pdf', version: 1, size: 9 },
       { path: 'documents/handbook/a.pdf', version: 1, size: 10 },
       { path: 'documents/handbook/present.md', version: 1, size: 11 },
       { path: 'documents/handbook/deleted.md', version: 1, size: 12 },
@@ -278,7 +283,7 @@ describe('wiki-maintainer-client', () => {
     expect(invoke).toHaveBeenCalledWith('kb_maintainer_prepare', {
       request: expect.objectContaining({
         compilerModel: 'glm-4.6',
-        aclPrefixes: ['documents/restricted/'],
+        aclPrefixes: ['documents/restricted/', 'documents/handbook/secret/'],
         known: [
           { path: 'documents/handbook/a.pdf', version: 1, size: 10 },
           { path: 'documents/handbook/present.md', version: 1, size: 11 },
@@ -418,6 +423,81 @@ describe('wiki-maintainer-client', () => {
     expect(completePublish).toHaveBeenCalledWith('team-1', {
       publishToken: 'replacement-token',
       syncStatus: 'synced',
+    })
+  })
+
+  describe('folder permissions changed after compile', () => {
+    const summary = {
+      runId: 'run-1',
+      sourceCount: 1,
+      added: 1,
+      updated: 0,
+      deleted: 0,
+      failed: 0,
+      visionPages: 0,
+      estimatedCost: null,
+      currency: 'CNY',
+      canPublish: true,
+      blockers: [],
+      nodeId: 'node-a',
+      baseTreeHash: null,
+      targetCommit: 'a'.repeat(40),
+      targetTreeHash: 'b'.repeat(64),
+      restrictedPrefixes: ['documents/handbook/secret/'],
+    }
+
+    beforeEach(() => {
+      getMaintainerStatus.mockResolvedValue({
+        config: {
+          version: 1,
+          config: { sourceDirectories: ['documents/handbook/', 'documents/training/'] },
+          updatedAt: '',
+        },
+        generation: 2,
+        stage: 'ready_to_publish',
+        checkpoint: {
+          generation: 2,
+          manifest: {
+            nodeId: 'node-a',
+            baseTreeHash: null,
+            targetCommit: 'a'.repeat(40),
+            targetTreeHash: 'b'.repeat(64),
+          },
+        },
+      })
+      beginPublish.mockResolvedValue({ stage: 'publishing', publishToken: 't', publishing: {} })
+      completePublish.mockResolvedValue({ stage: 'idle', generation: 2 })
+      invoke.mockResolvedValue({ syncStatus: 'synced' })
+    })
+
+    it('publishes when the restricted folders match the compile', async () => {
+      listKnowledgeAcl.mockResolvedValue([
+        { pathPrefix: 'documents/handbook/secret/' },
+        { pathPrefix: 'documents/finance/' },
+      ])
+      await expect(publishWikiMaintenance('team-1', summary, false)).resolves.toEqual({
+        syncStatus: 'synced',
+      })
+      expect(beginPublish).toHaveBeenCalled()
+    })
+
+    it('refuses when a source folder became restricted after the compile', async () => {
+      listKnowledgeAcl.mockResolvedValue([
+        { pathPrefix: 'documents/handbook/secret/' },
+        { pathPrefix: 'documents/training/' },
+      ])
+      await expect(publishWikiMaintenance('team-1', summary, false)).rejects.toThrow(
+        /permissions changed/,
+      )
+      expect(beginPublish).not.toHaveBeenCalled()
+    })
+
+    it('refuses when the permission list cannot be loaded', async () => {
+      listKnowledgeAcl.mockRejectedValue(new Error('network down'))
+      await expect(publishWikiMaintenance('team-1', summary, false)).rejects.toThrow(
+        /Could not confirm folder permissions/,
+      )
+      expect(beginPublish).not.toHaveBeenCalled()
     })
   })
 

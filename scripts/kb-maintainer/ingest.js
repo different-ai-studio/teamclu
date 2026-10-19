@@ -264,6 +264,31 @@ function detachDeletedSource(wikiRoot, sourcePath) {
   }
 }
 
+// A restricted source cannot be detached: the page body may still carry its
+// facts. Drop every page that cites it and hand back the other sources those
+// pages cited, so they can be compiled again from their own text.
+function dropPagesCiting(wikiRoot, sourcePath) {
+  const coSources = new Set();
+  for (const rel of listPageFiles(wikiRoot)) {
+    const parsed = readPage(wikiRoot, rel);
+    if (!parsed) continue;
+    const cited = Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [];
+    if (!cited.some((source) => source && source.path === sourcePath)) continue;
+    for (const source of cited) {
+      if (source && source.path && source.path !== sourcePath) coSources.add(source.path);
+    }
+    fs.rmSync(path.join(wikiRoot, rel));
+  }
+  return [...coSources].sort();
+}
+
+function markForRecompile(state, sourcePaths) {
+  for (const sourcePath of sourcePaths) {
+    const entry = state.sources[sourcePath];
+    if (entry) state.sources[sourcePath] = { ...entry, sourceSha256: null };
+  }
+}
+
 function pagesStillCiting(wikiRoot, sourcePath) {
   const citing = [];
   for (const rel of listPageFiles(wikiRoot)) {
@@ -282,9 +307,10 @@ function pagesStillCiting(wikiRoot, sourcePath) {
   return citing;
 }
 
-async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
+async function retractOne({ item, opts, config, state, wikiRoot, rawRoot, restricted = false }) {
   const previous = state.sources[item.path];
-  if (!previous) return;
+  if (!previous) return [];
+  let coSources = [];
   const beforeCommit = headCommit(wikiRoot);
   state.sources[item.path] = {
     ...previous,
@@ -307,7 +333,7 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
           action: "delete",
           sourcePath: item.path,
           sourceSha256: previous.sourceSha256,
-          rawMarkdown: fs.existsSync(rawAbs) ? fs.readFileSync(rawAbs, "utf8") : "",
+          rawMarkdown: !restricted && fs.existsSync(rawAbs) ? fs.readFileSync(rawAbs, "utf8") : "",
           affectedPages: previous.affectedPages,
           schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
           indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
@@ -326,7 +352,11 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
       if (modelRejected || citingAfter.length > 0 || damaged.length > 0) {
         discardModelOnlyFiles(wikiRoot, beforeCommit, snap);
         restorePages(wikiRoot, snap);
-        detachDeletedSource(wikiRoot, item.path);
+        if (restricted) {
+          coSources = dropPagesCiting(wikiRoot, item.path);
+        } else {
+          detachDeletedSource(wikiRoot, item.path);
+        }
       }
     }
     rebuildIndex(wikiRoot);
@@ -358,9 +388,11 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
     }
     commitAll(wikiRoot, ingestMessage("delete", item.path, previous.sourceSha256));
     delete state.sources[item.path];
+    markForRecompile(state, coSources);
     const rawAbs = path.join(rawRoot, rawRelativePath(item.path));
     if (fs.existsSync(rawAbs)) fs.rmSync(rawAbs);
     saveState(opts.statePath, state);
+    return coSources;
   } catch (error) {
     resetHard(wikiRoot, beforeCommit);
     state.sources[item.path] = previous;
@@ -393,30 +425,60 @@ async function ingestBatch(opts) {
   let imported = 0;
   let rolledBack = 0;
   let retracted = 0;
+  let restrictedRetracted = 0;
   const onProgress =
     typeof opts.onProgress === "function" ? opts.onProgress : () => {};
   const onCheckpoint =
     typeof opts.onCheckpoint === "function" ? opts.onCheckpoint : async () => {};
+  const restrictQueue = (planResult.plan.restrict || []).map((item) => ({ action: "restrict", item }));
+  const updates = [...planResult.plan.update];
   const queue = [
+    ...restrictQueue,
     ...planResult.plan.add.map((item) => ({ action: "add", item })),
-    ...planResult.plan.update.map((item) => ({ action: "update", item })),
+    ...updates.map((item) => ({ action: "update", item })),
     ...planResult.plan.delete.map((item) => ({ action: "delete", item })),
   ];
+  const queued = new Set(queue.map((entry) => entry.item.path));
+  const requeue = (sourcePaths) => {
+    const insertAt = queue.findIndex((entry) => entry.action === "delete");
+    for (const sourcePath of sourcePaths) {
+      if (queued.has(sourcePath)) continue;
+      const unchanged = planResult.plan.unchanged.find((item) => item.path === sourcePath);
+      if (!unchanged) continue;
+      queued.add(sourcePath);
+      const entry = { action: "update", item: { ...unchanged, previousSha256: null } };
+      if (insertAt === -1) queue.push(entry);
+      else queue.splice(insertAt, 0, entry);
+    }
+  };
   let current = 0;
 
-  for (const { action, item } of queue) {
+  for (let index = 0; index < queue.length; index += 1) {
+    const { action, item } = queue[index];
     assertMaintenanceNotCancelled(opts.cancelPath);
     current += 1;
     let succeeded = false;
     onProgress({
       stage: "ingest",
       action,
-      path: item.path,
+      path: action === "restrict" ? null : item.path,
       current,
       total: queue.length,
     });
     try {
-      if (action === "delete") {
+      if (action === "restrict") {
+        const coSources = await retractOne({
+          item,
+          opts: ingestOpts,
+          config,
+          state,
+          wikiRoot,
+          rawRoot,
+          restricted: true,
+        });
+        restrictedRetracted += 1;
+        requeue(coSources);
+      } else if (action === "delete") {
         await retractOne({ item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
         retracted += 1;
       } else {
@@ -431,7 +493,12 @@ async function ingestBatch(opts) {
     if (succeeded) {
       // Deliberately outside the compiler-error catch: a cloud checkpoint CAS
       // conflict must stop the run before another source reaches the model.
-      await onCheckpoint({ action, path: item.path, current, total: queue.length });
+      await onCheckpoint({
+        action,
+        path: action === "restrict" ? null : item.path,
+        current,
+        total: queue.length,
+      });
     }
   }
 
@@ -441,6 +508,7 @@ async function ingestBatch(opts) {
       imported,
       rolled_back: rolledBack,
       retracted,
+      restricted_retracted: restrictedRetracted,
       unchanged: planResult.plan.unchanged.length,
     },
     failures,
@@ -448,4 +516,11 @@ async function ingestBatch(opts) {
   };
 }
 
-module.exports = { ingestBatch, loadState, saveState, assertMaintenanceNotCancelled };
+module.exports = {
+  ingestBatch,
+  loadState,
+  saveState,
+  assertMaintenanceNotCancelled,
+  dropPagesCiting,
+  markForRecompile,
+};

@@ -141,6 +141,12 @@ pub struct PrepareSummary {
     source_count: usize,
     #[serde(default)]
     retract_count: usize,
+    #[serde(default)]
+    restricted_prefixes: Vec<String>,
+    #[serde(default)]
+    restricted_folder_count: usize,
+    #[serde(default)]
+    restricted_retract_count: usize,
     added: usize,
     updated: usize,
     deleted: usize,

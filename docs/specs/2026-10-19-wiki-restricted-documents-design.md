@@ -1,7 +1,7 @@
 # Wiki 编译跳过受限资料
 
 - **Date**: 2026-10-19
-- **Status**: DRAFT — 待评审
+- **Status**: APPROVED — §9 按默认选项实施
 - **Scope**: Wiki 维护器（`scripts/kb-maintainer`）和桌面端触发流程（`packages/app/src/lib/knowledge/wiki-maintainer-client.ts`）如何对待带 Path ACL 的 `documents/` 前缀，包括资料库角色规则和旧的按人规则。
 - **Non-scope**: `knowledge/` 目录的授权方式、按角色分区的 Wiki、清除历史版本、修改资料库角色规则本身、daemon 同步协议
 - **Related**: `docs/specs/2026-10-14-document-library-role-access-design.md`、`docs/specs/2026-09-20-llm-wiki-maintainer-p0-design.md`（D9）、`docs/specs/2026-09-24-wiki-maintainer-compile-flow.md`、`docs/specs/2026-08-31-knowledge-path-acl-design.md`
@@ -202,9 +202,11 @@
 
 ---
 
-## 9. 待评审的问题
+## 9. 评审时的问题与结论
 
 1. **多来源页面改写失败时的策略。** 本稿选「整页删除 + 其它来源重编」。另一种是「本次停下、不发布，直到模型改写成功」：页面不会短暂消失，但模型一直失败时整个 Wiki 无法再发布。
 2. **资料库弹窗要不要提示 Wiki。** 加一句提示能让管理员知道 Wiki 里的内容要等下次编译才去掉；代价是资料库弹窗出现和它无关的维护器概念。
 3. **收紧后要不要自动触发编译。** 本稿不触发，等下一次定时或手动编译。若要缩短 §D8 的时间窗，可以在资料库从全员收紧时，把维护器状态标为「需要重新编译」。
 4. **管理员运行维护器时的摘要。** 管理员看不到角色资料库，团队清单里没有这些路径；受限文件夹数量仍从权限列表算，摘要会显示「1 个文件夹受权限限制」，但他看不到里面有什么。是否接受。
+
+**结论（2026-10-19）：** 1 选整页删除 + 其它来源重编；2 不加提示；3 不自动触发；4 接受只显示数量。

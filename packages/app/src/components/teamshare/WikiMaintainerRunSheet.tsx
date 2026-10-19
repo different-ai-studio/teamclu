@@ -24,6 +24,9 @@ export interface WikiPrepareSummary {
   targetTreeHash?: string
   sourceCount: number
   retractCount?: number
+  restrictedPrefixes?: string[]
+  restrictedFolderCount?: number
+  restrictedRetractCount?: number
   added: number
   updated: number
   deleted: number
@@ -556,6 +559,24 @@ export function WikiMaintainerRunSheet({
                 })}
               />
             )}
+            {(summary.restrictedFolderCount ?? 0) > 0 && (
+              <SummaryItem
+                text={t(
+                  'teamShare.wikiRestrictedFolders',
+                  '{{count}} restricted folders were not compiled.',
+                  { count: summary.restrictedFolderCount },
+                )}
+              />
+            )}
+            {(summary.restrictedRetractCount ?? 0) > 0 && (
+              <SummaryItem
+                text={t(
+                  'teamShare.wikiRestrictedRetracted',
+                  'Removed content from {{count}} restricted sources.',
+                  { count: summary.restrictedRetractCount },
+                )}
+              />
+            )}
             <SummaryItem
               text={t('teamShare.wikiPagesAdded', '{{count}} pages added', {
                 count: summary.added,
@@ -631,6 +652,10 @@ function displayBlocker(
   const retractBlocked = 'A deleted source is still cited. Compile again before publishing.'
   if (blocker.includes(retractBlocked)) {
     return t('teamShare.wikiRetractBlocked', retractBlocked)
+  }
+  const restrictBlocked = 'Restricted content is still in the Wiki. Compile again before publishing.'
+  if (blocker.includes(restrictBlocked)) {
+    return t('teamShare.wikiRestrictBlocked', restrictBlocked)
   }
   const visionSentences: Array<[string, string]> = [
     ['This run did not look at images.', 'teamShare.wikiVisionDeclined'],

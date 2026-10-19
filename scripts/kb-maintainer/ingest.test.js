@@ -599,3 +599,95 @@ test("ingestBatch says the file was read when vision succeeds and the compiler w
     "vision transcribed but compiler produced no wiki pages",
   );
 });
+
+function sharedPageHarness() {
+  const fx = makeHarness();
+  write(path.join(fx.documentsRoot, "handbook", "leave.md"), "# 请假\n\n员工请假需提前申请。\n");
+  write(path.join(fx.documentsRoot, "handbook", "secret", "pay.md"), "# 请假\n\n请假期间工资按八折发放。\n");
+  return fx;
+}
+
+function batchOpts(fx, extra = {}) {
+  return {
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    ...extra,
+  };
+}
+
+test("ingestBatch retracts a newly restricted source from a shared page", async () => {
+  const fx = sharedPageHarness();
+  const added = await ingestBatch(batchOpts(fx));
+  assert.equal(added.ok, true, JSON.stringify(added.failures || added));
+  const pagePath = path.join(fx.workRoot, "wiki", "pages", "请假.md");
+  assert.match(fs.readFileSync(pagePath, "utf8"), /工资按八折/);
+
+  const progress = [];
+  const restricted = await ingestBatch(
+    batchOpts(fx, {
+      aclPrefixes: ["documents/handbook/secret/"],
+      onProgress: (event) => progress.push(event),
+    }),
+  );
+  assert.equal(restricted.ok, true, JSON.stringify(restricted.failures || restricted));
+  assert.equal(restricted.counts.restricted_retracted, 1);
+  const page = fs.readFileSync(pagePath, "utf8");
+  assert.match(page, /员工请假需提前申请/);
+  assert.equal(page.includes("工资按八折"), false);
+  assert.equal(page.includes("documents/handbook/secret/pay.md"), false);
+  const state = JSON.parse(fs.readFileSync(fx.statePath, "utf8"));
+  assert.equal(state.sources["documents/handbook/secret/pay.md"], undefined);
+  assert.equal(
+    fs.readdirSync(path.join(fx.workRoot, "raw"), { recursive: true }).some((name) =>
+      String(name).includes("pay"),
+    ),
+    false,
+  );
+  assert.equal(JSON.stringify(progress).includes("secret"), false);
+});
+
+test("ingestBatch never sends restricted text to the model and drops the page when the rewrite fails", async () => {
+  const fx = sharedPageHarness();
+  const added = await ingestBatch(batchOpts(fx));
+  assert.equal(added.ok, true, JSON.stringify(added.failures || added));
+  const pagePath = path.join(fx.workRoot, "wiki", "pages", "请假.md");
+
+  const prompts = [];
+  const restricted = await ingestBatch(
+    batchOpts(fx, {
+      aclPrefixes: ["documents/handbook/secret/"],
+      runner: "pi",
+      createSession: async () => ({
+        prompt: async (prompt) => {
+          prompts.push(prompt);
+          throw new Error("model unavailable");
+        },
+      }),
+    }),
+  );
+  const restrictPrompt = prompts.find((prompt) => prompt.includes("Compile action: delete"));
+  assert.ok(restrictPrompt, "restricted retract should still ask the model to rewrite");
+  const sourceBlock = restrictPrompt.match(/<source>\n([\s\S]*?)\n<\/source>/);
+  assert.equal(sourceBlock[1].trim(), "");
+  assert.equal(restricted.counts.restricted_retracted, 1);
+  assert.equal(fs.existsSync(pagePath), false);
+  assert.deepEqual(
+    restricted.failures.map((failure) => [failure.action, failure.path]),
+    [["update", "documents/handbook/leave.md"]],
+  );
+  const state = JSON.parse(fs.readFileSync(fx.statePath, "utf8"));
+  assert.equal(state.sources["documents/handbook/secret/pay.md"], undefined);
+  assert.equal(state.sources["documents/handbook/leave.md"].sourceSha256, null);
+
+  const recompiled = await ingestBatch(batchOpts(fx, { aclPrefixes: ["documents/handbook/secret/"] }));
+  assert.equal(recompiled.ok, true, JSON.stringify(recompiled.failures || recompiled));
+  const page = fs.readFileSync(pagePath, "utf8");
+  assert.match(page, /员工请假需提前申请/);
+  assert.equal(page.includes("工资按八折"), false);
+});

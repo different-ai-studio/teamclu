@@ -333,6 +333,48 @@ describe('WikiMaintainerRunSheet', () => {
     expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeDisabled()
   })
 
+  it('reports restricted folders as counts and blocks publish while restricted content remains', async () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
+        initialSelected={['documents/handbook/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        onSaveSelection={vi.fn()}
+        onPrepare={vi.fn().mockResolvedValue({
+          runId: 'run-restricted',
+          sourceCount: 1,
+          retractCount: 0,
+          restrictedPrefixes: ['documents/handbook/secret/'],
+          restrictedFolderCount: 1,
+          restrictedRetractCount: 2,
+          added: 0,
+          updated: 1,
+          deleted: 0,
+          failed: 1,
+          visionPages: 0,
+          estimatedCost: 0,
+          currency: 'CNY',
+          canPublish: false,
+          blockers: ['Restricted content is still in the Wiki. Compile again before publishing.'],
+        })}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+    expect(await screen.findByText('1 restricted folders were not compiled.')).toBeTruthy()
+    expect(screen.getByText('Removed content from 2 restricted sources.')).toBeTruthy()
+    expect(
+      screen.getByText('Restricted content is still in the Wiki. Compile again before publishing.'),
+    ).toBeTruthy()
+    expect(screen.queryByText(/secret/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeDisabled()
+  })
+
   it('shows the compiler model error instead of a skip sentence', async () => {
     render(
       <WikiMaintainerRunSheet
