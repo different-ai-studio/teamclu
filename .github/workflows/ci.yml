@@ -204,17 +204,13 @@ jobs:
       # plain pg_isready health check can go green against the instance that is
       # about to shut down; the wait below looks for the second "ready to accept
       # connections" instead.
-      # `public.ecr.aws` rate-limits anonymous pulls by source IP, and hosted
-      # runners share theirs — so a burst of runs (ours or anyone else's on the
-      # same egress) gets `toomanyrequests: Rate exceeded`. Left to the implicit
-      # pull inside `docker run`, that is an instant exit 125 with no container,
-      # which reads as "the image would not start" and has been filed as an
-      # infrastructure mystery more than once. Pull explicitly, and back off:
-      # the image never changes between attempts, so a retry is only ever
-      # waiting out somebody else's quota.
+      # Use Supabase's official GHCR mirror for PostgreSQL 17.6.1.106, pinned
+      # to the index digest verified against Docker Hub (including linux/amd64).
+      # Repeated anonymous ECR retries cannot replenish its shared data quota.
+      # Pull explicitly so registry failures are clear and happen before startup.
       - name: Pull the Postgres image
         run: |
-          image=public.ecr.aws/supabase/postgres:17.6.1.106
+          image=ghcr.io/supabase/postgres@sha256:21ab971149317ea9cd12a8126fe4ebb34def08c8972956b0958cba0924409dab
           for attempt in 1 2 3 4 5; do
             if docker pull "$image"; then
               exit 0
@@ -230,7 +226,7 @@ jobs:
         run: |
           docker run -d --name pgtap \
             -e POSTGRES_PASSWORD=postgres \
-            public.ecr.aws/supabase/postgres:17.6.1.106
+            ghcr.io/supabase/postgres@sha256:21ab971149317ea9cd12a8126fe4ebb34def08c8972956b0958cba0924409dab
           for i in $(seq 1 120); do
             n=$(docker logs pgtap 2>&1 | grep -c "ready to accept connections" || true)
             if [ "$n" -ge 2 ] && docker exec -e PGPASSWORD=postgres pgtap \
