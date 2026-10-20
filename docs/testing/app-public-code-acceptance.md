@@ -42,8 +42,10 @@ merge, deployment or publication was performed. Local evidence is not rollout au
   run or platform/account acceptance. Review artifacts retain their original
   dated results; their red-suite/pending-review snapshots are historical.
 - Independent review approved evidence commit `18ceba84` within its stated
-  boundaries. The mixed-dialog evidence amendment below awaits scoped review.
-  Documentation changes no product code or tests and reruns no suites.
+  boundaries. Scoped review of the mixed-dialog evidence amendment
+  `18ceba84..60e1f08a` approved spec/evidence compliance and quality with no
+  findings. Remaining release acceptance gates stay open. Documentation changes
+  no product code or tests and reruns no suites.
 
 Direct installed binaries were used because pnpm can attempt automatic
 installation against existing dependency links. No dependency installation was
@@ -336,7 +338,7 @@ visibility could not be inspected, so no stale-notification claim is made.
 | Linux native compile/tests/GTK interaction | BLOCKED: fresh Linux guest exists, but pinned Rust 1.97.1 metadata and official image retrieval fail TLS; GTK dependencies/check/tests/Xvfb interaction NOT RUN |
 | Frontend browser component layout/interaction | PASS EN/ZH, within the harness boundary above |
 | Real deployed auth env/custom-domain/Traefik/cron integration | PENDING: passing automated integration tests do not prove deployment behavior |
-| Current evidence review | `18ceba84` approved; mixed-evidence amendment awaiting scoped review; earlier Task 7/whole-branch reviews completed |
+| Current evidence review | Complete: `18ceba84` evidence and `18ceba84..60e1f08a` mixed-evidence amendment approved within documented boundaries; earlier Task 7/whole-branch reviews completed; release gates remain open |
 
 A fresh separate auth DB and exact PostgREST image were prepared; failed GoTrue
 retrieval prevented actual account acceptance. Do not describe the reduced CI
@@ -362,8 +364,8 @@ cleanup is the other minor follow-up, outside this feature's acceptance scope.
 
 ## Release order (not executed)
 
-1. Complete current evidence review and remaining native platform/manual,
-   real-account and deployed integration gates. Retain the recorded skip and
+1. Complete remaining native platform/manual, real-account and deployed
+   integration gates. Retain the recorded skip and
    harness boundaries; all executed current suites pass, but these missing
    gates are not implied to pass.
 2. Obtain explicit live-schema and later service/client publication
