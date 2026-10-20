@@ -14,8 +14,10 @@ for the production frontend confirmation in English and Chinese.
 macOS native widget/shared-path acceptance passed the nine observed requests,
 including the real 120-second timeout and parent close/hide. Windows and Linux
 native execution, ordinary/checkbox mixed sequences, real-account login and
-deployed integration acceptance remain incomplete. No live migration, push, PR, merge, deployment or publication
-was performed. Local evidence is not rollout authorization.
+deployed integration acceptance remain incomplete. A local mixed-dialog attempt
+was blocked by a concrete CUA safety restriction; ordinary popup teardown is
+unobserved, not a demonstrated defect or pass. No live migration, push, PR,
+merge, deployment or publication was performed. Local evidence is not rollout authorization.
 
 ## Scope, revisions and review status
 
@@ -39,9 +41,9 @@ was performed. Local evidence is not rollout authorization.
   with no Critical/Important findings. It did not claim the later integrated
   run or platform/account acceptance. Review artifacts retain their original
   dated results; their red-suite/pending-review snapshots are historical.
-- This updated evidence document and screenshots await the controller's final
-  independent review. This documentation task changes no product code or tests
-  and reruns no suites.
+- Independent review approved evidence commit `18ceba84` within its stated
+  boundaries. The mixed-dialog evidence amendment below awaits scoped review.
+  Documentation changes no product code or tests and reruns no suites.
 
 Direct installed binaries were used because pnpm can attempt automatic
 installation against existing dependency links. No dependency installation was
@@ -250,10 +252,11 @@ boundary.** A standalone temporary Tauri app imports unchanged production
 `show_checkbox`, shared lifecycle/native presentation, the same 120-second
 timeout, display mutex and parent watcher execute. Build exit 0; the controller
 operated the actual native checkbox/sheet through CUA accessibility/native input.
-No deployment, Cloud API, daemon or network consumer exists. Unused outer
-ordinary-confirmation/deploy helpers panic if reached. This does not exercise
-real `handle_app_manage`, approval-cache bypass, eligibility, localized deployment
-text, API serialization or finalization, nor any ordinary/checkbox mixed sequence.
+No deployment, Cloud API, daemon or network consumer exists. In this original
+nine-case phase, unused outer ordinary-confirmation/deploy helpers panic if
+reached. These nine cases do not exercise real `handle_app_manage`, approval-cache
+bypass, eligibility, localized deployment text, API serialization, finalization
+or ordinary/checkbox mixed sequences. The later mixed attempt is separate below.
 
 All **nine request outcomes matched their observed choices** in
 `/tmp/app-code-native-acceptance/results.jsonl`:
@@ -290,6 +293,35 @@ observations. Harness-only setup corrections (valid temporary app bundle, event
 bindings without changing CSP, tray-close control) changed no tracked product
 code or approval choice. No host security/global trust/proxy setting changed.
 
+### Attempted mixed ordinary/checkbox acceptance: tool blocked
+
+A later harness extension included a byte-exact slice of production
+`confirm_with_user`, its single `ONE_AT_A_TIME` mutex and unchanged 120-second
+timeout, alongside the existing production checkbox module and actual
+`tauri-plugin-dialog` 2.7.0. The ordinary call held that same mutex before the
+checkbox queued. Its installed rfd 0.16.0 unparented macOS path uses
+`CFUserNotificationDisplayAlert`, hosted by system UserNotificationCenter.
+CUA explicitly denied access: **“Computer Use is not allowed to use app
+com.apple.UserNotificationCenter.”** No alternative automation route, system
+helper termination or security-setting change was attempted.
+
+Ordinary request **#10** returned real timeout rejection at **120,005 ms**;
+`ordinary-accept` was only the intended scenario label, not an observed approval.
+Queued checkbox **#11** then appeared unchecked and was manually Declined for
+cleanup, returning rejection at **147,776 ms including queue wait**. Ordinary
+approve/decline could not be exercised, and ordinary popup visibility/disposal
+after timeout remains **UNKNOWN / NOT OBSERVED**. This is an attempted check
+blocked by the tool restriction, neither a mixed GUI pass nor an observed orphan
+or product-defect reproduction. Original checkbox-only requests **1–9 remain
+9/9 passed**, independently of this blocked mixed phase.
+
+Final evidence: `/tmp/app-code-native-acceptance/mixed-report.md`,
+`ordinary-source-provenance.json`, `post-mixed-results.jsonl` and `results.jsonl`.
+The owned harness app was quit after #11 cleanup and its process absence checked;
+UserNotificationCenter remained untouched. A system-hosted acceptance-test
+notification might need the user's own dismissal if still visible; its current
+visibility could not be inspected, so no stale-notification claim is made.
+
 ## Remaining gates and limits
 
 | Gate | Current status / next evidence |
@@ -298,12 +330,13 @@ code or approval choice. No host security/global trust/proxy setting changed.
 | Live migration/read-only schema verification | BLOCKED: no exposed Supabase MCP and no live-change authorization; no psql/REST/CLI fallback attempted |
 | Real-account legacy/code/retained-alias login and inactive-candidate rejection | BLOCKED: exact GoTrue `v2.188.1` image/blob delivery failed TLS after bounded official-registry/proxy attempts; no real GoTrue process/JWT, RLS/account/callback/cookie flow ran |
 | macOS Rust suite/compile | PASS: 436/436, check exit 0; not a release-build claim |
-| macOS checkbox native GUI | PASS for the nine widget/shared-path requests above; full handler/cache and ordinary/checkbox mixed-sequence acceptance not established |
+| macOS checkbox native GUI | PASS for the nine widget/shared-path requests above; full handler/cache acceptance not established |
+| macOS ordinary/checkbox mixed GUI | ATTEMPTED / TOOL BLOCKED: CUA forbids UserNotificationCenter; real ordinary timeout and queued unchecked cleanup observed, ordinary decisions/teardown unknown |
 | Windows native compile/tests/interaction | BLOCKED: Windows host unavailable; source inspection is not validation |
 | Linux native compile/tests/GTK interaction | BLOCKED: fresh Linux guest exists, but pinned Rust 1.97.1 metadata and official image retrieval fail TLS; GTK dependencies/check/tests/Xvfb interaction NOT RUN |
 | Frontend browser component layout/interaction | PASS EN/ZH, within the harness boundary above |
 | Real deployed auth env/custom-domain/Traefik/cron integration | PENDING: passing automated integration tests do not prove deployment behavior |
-| Current evidence review | PENDING controller independent review; earlier Task 7 and whole-branch reviews already completed as recorded above |
+| Current evidence review | `18ceba84` approved; mixed-evidence amendment awaiting scoped review; earlier Task 7/whole-branch reviews completed |
 
 A fresh separate auth DB and exact PostgREST image were prepared; failed GoTrue
 retrieval prevented actual account acceptance. Do not describe the reduced CI
@@ -320,8 +353,9 @@ only a safe stub consumer. The macOS result above cannot stand in for either hos
 The checkbox path retains the display mutex until its own native teardown.
 Pre-existing ordinary approval releases its mutex on timeout/caller drop without
 closing its OS popup. This feature establishes no global teardown guarantee for
-every ordinary/checkbox sequence; mixed-sequence manual acceptance remains
-required. A direct handler-level regression test for deployment suppression and
+every ordinary/checkbox sequence; the mixed attempt above could not establish
+GUI teardown/decision acceptance because system-helper access was denied.
+A direct handler-level regression test for deployment suppression and
 approval-cache bypass remains a minor reviewed follow-up; source inspection and
 shared lifecycle tests are not that handler integration test. Existing warning
 cleanup is the other minor follow-up, outside this feature's acceptance scope.
