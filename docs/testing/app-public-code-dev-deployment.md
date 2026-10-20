@@ -1,7 +1,9 @@
 # App-code dev API deployment preparation
 
-Prepared 2026-10-20 (Asia/Shanghai). **Not executed; no deployable integrated
-revision yet.** This is a rollout checklist, not deployment authorization.
+Prepared 2026-10-20 (Asia/Shanghai). **Deployment not executed.** Source integration
+is now committed as `bf99b359`; independent review and the remaining rollout gates
+are pending. This is a rollout checklist, not deployment authorization. The
+preparation observations below are preserved as a historical snapshot.
 
 ## Target and observed state
 
@@ -37,7 +39,7 @@ revision yet.** This is a rollout checklist, not deployment authorization.
   A zero-row request from running FC to its effective PostgREST returned 200 for
   all three new columns, confirming schema-cache visibility without exposing data.
 
-## Integration blocker
+## Original integration blocker (resolved by the addendum below)
 
 A non-checkout `git merge-tree` preview found 17 content conflicts:
 
@@ -135,3 +137,36 @@ Database and read-only environment preflight passed. Source integration and fres
 verification are required before a deployable SHA can be named. No push, PR,
 merge, workflow dispatch, service restart, image retag, fixture creation or further
 live database change was performed during this preparation.
+
+## Source integration addendum — 2026-10-20
+
+Merge `bf99b359` integrates main `ba604cf9dda7a8f39bd59d576daca19ab91587be`
+with feature parent `a2a8d278a0bc858300d7f5c3dc84f07bf8bc45e6` on
+`codex/app-public-code-implementation`. All 17 conflicts listed above were
+resolved. Current main's preflight revision checks, lifecycle ownership,
+token-and-state claim, unknown-provider-outcome fence, origin authentication,
+organization access rules and uninstall behavior remain in place. The checkbox
+is part of the existing post-preflight confirmation, including its runtime
+preview. Code mode activates only on the matching successful finalization.
+
+Fresh verification on that integrated source:
+
+| Check | Result |
+| --- | --- |
+| Backend full suite | 1,982 passed, 13 skipped, 0 failed; 1,995 tests |
+| Backend test typecheck and production build | Both exit 0 |
+| Frontend full suite | 4,366 passed, 10 skipped, 0 failed; 620 passing files, 1 skipped |
+| Frontend typecheck | Exit 0 |
+| macOS Rust check / library suite | Check exit 0; 465 passed, 0 failed |
+| OpenAPI | Valid; 11 warnings, identical rules and locations when linting pinned main |
+
+The backend skips cover opt-in live handlers and unavailable local Supabase
+fixtures; the Node reporter also prints skipped fixture errors under a
+“failing tests” heading despite its final zero-failure summary and exit 0.
+Frontend has its existing skips and jsdom canvas/navigation diagnostics.
+Rust is analysis/library-test evidence, not a release build or native GUI run.
+No migration source was changed, no live database check was repeated, and no
+remote environment/deployment observation above was refreshed. Windows/Linux,
+real-account auth, native GUI and deployed integration gates remain as recorded
+in the acceptance document. This merge awaits independent review; it does not
+authorize publication or deployment.

@@ -372,6 +372,38 @@ This addendum records direct MCP evidence, not a new independent review or a
 service/client rollout. All remaining platform, real-account and deployed
 integration gates below remain open. The prior local suite results were not rerun.
 
+## Current-main integration addendum — 2026-10-20
+
+Source merge `bf99b359` combines feature parent
+`a2a8d278a0bc858300d7f5c3dc84f07bf8bc45e6` and pinned main
+`ba604cf9dda7a8f39bd59d576daca19ab91587be`. The historical results above
+remain snapshots of their original revisions. The following checks were freshly
+run on the integrated source:
+
+| Check | Fresh result |
+| --- | --- |
+| Full backend | 1,982 passed, 13 skipped, 0 failed (1,995 tests) |
+| Backend test types / production compilation | Exit 0 / exit 0 |
+| Full frontend | 4,366 passed, 10 skipped, 0 failed (620 passed files, 1 skipped) |
+| Frontend types | Exit 0 |
+| macOS Rust check / library tests | Exit 0 / 465 passed, 0 failed, 0 ignored |
+| OpenAPI | Valid with 11 warnings; pinned main produces the same 11 rules/locations |
+
+The merge retains main's preflight and lifecycle protections, current
+organization authorization and protected-origin signing. Frontend and native
+domain choice now share the post-preflight confirmation with the runtime preview.
+Both branches' relevant test families were kept; old app-code fixtures now use
+current declarations, preflight tokens and artifact verification. The retry
+repository double explicitly simulates the existing database failure-cleanup
+trigger; this is not a new database behavioral test.
+
+Backend live/local-database skips, frontend skips, jsdom canvas/navigation
+diagnostics and Rust analysis-build warnings remain explicit limits. No SQL,
+native GUI, Windows/Linux, real-account or deployed integration acceptance was
+rerun in this source integration task. The already-applied migration file is
+unchanged. Independent review of the merge and final feature diff is pending.
+The remaining rollout gates below are not closed by these results.
+
 ## Remaining gates and limits
 
 | Gate | Current status / next evidence |
