@@ -104,6 +104,40 @@ under docs/testing. Avoid unrelated source or dependency refreshes.
   comparison, new dependency inventory and any limits. Do not add ignored process
   reports to Git: .superpowers artifacts stay local, NEVER git add -f them.
 
+### Task 3: Correct organization ownership in the app-code pgTAP fixture
+
+Files: `services/supabase/tests/043_apps_public_code.sql` only.
+
+- [ ] Read the hosted and isolated-local failure: migrations succeed, but the
+  fixture omits required `apps.org_id`. Current main requires a real public org.
+- [ ] Create fixture org UUID `00000000-0000-0000-0043-000000000005`, link team
+  `oid` and initial app `org_id` to it. Supply `org_id` in all three negative
+  INSERT/SELECT cases, so they reach the intended code constraints.
+- [ ] Keep plan(13), all 13 assertions and rollback unchanged. No schema,
+  migration, product, RLS or quarantine changes; no live database operation.
+- [ ] Verify focused 043 and the full migrated pgTAP suite against the isolated
+  exact PostgreSQL17.6.1.106 environment, then require hosted CI confirmation.
+  Record red/green evidence, commit fixture only and report.
+
+### Task 4: Use the runner's installed iOS toolchain and SDK
+
+Files: `.github/workflows/ci.yml` iOS setup only.
+
+- [ ] Read job118680044850: oldest Xcode26.0.1 was chosen and unconditional
+  platform download failed70 before any project build. The exact runner image's
+  default Xcode26.6 has a matching simulator SDK/runtime26.5.
+- [ ] Select `/Applications/Xcode.app/Contents/Developer` and report version.
+  Capture `xcodebuild -showsdks`; download only when the simulator SDK is absent,
+  then recapture and require it. Keep strict exit handling and avoid a grep-q
+  pipeline whose SIGPIPE can cause a false failure under pipefail.
+- [ ] Update setup comment; preserve iOS change gating, project generation,
+  actual simulator build with pipefail/tee,3000ms typecheck budget and unit tests.
+  No skipped build, continue-on-error or ignored download failure.
+- [ ] Verify all four setup branches from the actual workflow snippet: existing
+  SDK avoids download, missing SDK downloads, download failure fails, and absent
+  SDK after successful download fails. Parse YAML/diffcheck, commit bounded
+  workflow change and require real hosted build for final verification.
+
 ## Review and publication
 
 Review each task's diff/evidence independently, then final combined diff. Fix
