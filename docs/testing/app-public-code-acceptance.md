@@ -16,8 +16,10 @@ including the real 120-second timeout and parent close/hide. Windows and Linux
 native execution, ordinary/checkbox mixed sequences, real-account login and
 deployed integration acceptance remain incomplete. A local mixed-dialog attempt
 was blocked by a concrete CUA safety restriction; ordinary popup teardown is
-unobserved, not a demonstrated defect or pass. No live migration, push, PR,
-merge, deployment or publication was performed. Local evidence is not rollout authorization.
+unobserved, not a demonstrated defect or pass. The authorized dev database
+migration was applied and verified through self-hosted MCP on 2026-10-20; see
+the live addendum below. No push, PR, merge, service/client deployment or
+publication was performed. Database readiness is not full rollout acceptance.
 
 ## Scope, revisions and review status
 
@@ -324,12 +326,58 @@ UserNotificationCenter remained untouched. A system-hosted acceptance-test
 notification might need the user's own dismissal if still visible; its current
 visibility could not be inspected, so no stale-notification claim is made.
 
+## Live dev migration addendum — 2026-10-20
+
+Applied and verified at approximately 20:33 Asia/Shanghai, after the user explicitly
+requested review and application. Target: self-hosted dev ECS `47.112.210.217`,
+bundled `postgres` database, `amux.apps`. The running FC uses bundled Kong;
+Studio uses the same API target and pg-meta points to `db` / `postgres`.
+Remote checkout observed during connection setup: `e4525dd780595641bc7591d65e352e9bdfc0e36f`;
+this is a checkout observation, not proof of the FC image's source revision.
+
+- Connection: Codex server `supabase-self-hosted-dev`, through an SSH tunnel
+  bound only to `127.0.0.1:18080`, to the existing internal Studio `/api/mcp`.
+  Native tools were exposed in this chat and a read-only query succeeded.
+  No gateway edits, container restarts, public MCP port or credential disclosure.
+- Applied the unchanged versioned `20261019000000_apps_public_code.sql`, SHA-256
+  `cfc2f7b603dcd6bcd7adef602a8dd04f269b77e36c790f25097909181a43efe7`,
+  using MCP `apply_migration` (`apps_public_code`), which returned success.
+  An operational transaction wrapper used a 5-second lock timeout and 30-second
+  statement timeout, locked `amux.apps`, captured a temporary before-image,
+  asserted every original app field was unchanged and legacy modes stayed false,
+  and recorded the exact filename in `_selfhost.schema_migrations` before commit.
+  The ledger has exactly one entry for this filename; no CLI/SQL fallback was used.
+- Separate post-apply read-only MCP queries confirmed **47 apps, 47 distinct valid
+  12-character codes, 47 false legacy domain modes and 47 null pending choices**.
+  All original fields, including IDs, names, deployment resources/statuses/tokens,
+  endpoints, custom domains and timestamps, have the identical before/after
+  ordered-row fingerprint `f14c40e0119549be84baefe462ed4c8a`. The in-transaction
+  per-row comparison also passed, so this is not merely a count comparison.
+- Verified code NOT NULL/default generator, new-row mode default `true`, nullable
+  pending choice, validated unique/format constraints and enabled immutable-code
+  trigger. Both new functions are security invoker with fixed `pg_catalog`
+  search paths. Existing table grants are unchanged; RLS stays enabled and the
+  policy fingerprint remains `02c91cd1cf372b0a744669b33ee0c166`.
+- A read-only generator sample produced **1,000 valid, distinct codes**. Live
+  fixture inserts or attempted updates of existing apps were not performed;
+  immutable behavior/default insertion tests remain covered by the isolated
+  feature pgTAP 13/13 run, not a new live behavioral test claim.
+- Security advisors returned **123 findings before and 123 after, no new finding
+  keys**. A pre-existing warning says `public.execute_sql(query text)` is security
+  definer and executable by `anon` / `authenticated`; its actual reachability and
+  remediation require a separate review. No unrelated permissions were changed.
+  [Advisor remediation](https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable).
+
+This addendum records direct MCP evidence, not a new independent review or a
+service/client rollout. All remaining platform, real-account and deployed
+integration gates below remain open. The prior local suite results were not rerun.
+
 ## Remaining gates and limits
 
 | Gate | Current status / next evidence |
 | --- | --- |
 | Complete isolated migrated CI-schema/feature SQL | PASS as above; supersedes the old missing-local-pgTAP blocker |
-| Live migration/read-only schema verification | BLOCKED: no exposed Supabase MCP and no live-change authorization; no psql/REST/CLI fallback attempted |
+| Live migration/read-only schema verification | PASS on self-hosted dev, 2026-10-20: authorized migration applied through `supabase-self-hosted-dev`; post-apply read-only MCP verification passed; see live addendum |
 | Real-account legacy/code/retained-alias login and inactive-candidate rejection | BLOCKED: exact GoTrue `v2.188.1` image/blob delivery failed TLS after bounded official-registry/proxy attempts; no real GoTrue process/JWT, RLS/account/callback/cookie flow ran |
 | macOS Rust suite/compile | PASS: 436/436, check exit 0; not a release-build claim |
 | macOS checkbox native GUI | PASS for the nine widget/shared-path requests above; full handler/cache acceptance not established |
@@ -344,7 +392,9 @@ A fresh separate auth DB and exact PostgREST image were prepared; failed GoTrue
 retrieval prevented actual account acceptance. Do not describe the reduced CI
 auth bootstrap, synthetic JWT/SQL fixtures or Host-header simulation as a real
 account pass. The task auth DB was stopped before guest shutdown. No production
-credentials/account writes or live-system connection were used.
+credentials/account writes or live-system connection were used for that isolated
+account attempt. The later authorized dev migration is recorded in the addendum
+above.
 
 Windows/Linux acceptance must include first/repeated unchecked state, both
 approved choices, decline, Escape, popup/parent close or hide-to-tray, unattended
@@ -362,23 +412,23 @@ approval-cache bypass remains a minor reviewed follow-up; source inspection and
 shared lifecycle tests are not that handler integration test. Existing warning
 cleanup is the other minor follow-up, outside this feature's acceptance scope.
 
-## Release order (not executed)
+## Release order (database steps completed; publication not executed)
 
 1. Complete remaining native platform/manual, real-account and deployed
    integration gates. Retain the recorded skip and
    harness boundaries; all executed current suites pass, but these missing
    gates are not implied to pass.
-2. Obtain explicit live-schema and later service/client publication
-   authorization. Configure/authenticate Supabase MCP for the intended target;
-   if unavailable, stop for MCP setup.
-3. Through Supabase MCP apply `20261019000000_apps_public_code.sql` **before**
+2. Live-schema authorization and private self-hosted MCP setup: **completed**
+   for dev. Obtain separate service/client publication authorization.
+3. Dev migration through Supabase MCP: **completed and recorded** before
    releasing the updated Cloud API. Keep matching migration and
    `043_apps_public_code.sql` versioned.
-4. Through read-only MCP queries verify columns/defaults, generator and
+4. Read-only MCP schema and preservation verification: **completed** for dev,
+   as detailed above. Verified columns/defaults, generator and
    immutability functions/trigger, NOT NULL/format/unique constraints, valid
    unique codes on all rows and false legacy mode on pre-existing apps.
-   Compare pre/post UUIDs, resources, deployment/status fields, endpoints and
-   bindings. A controlled new-row default check needs separately authorized
+   Compared pre/post UUIDs, resources, deployment/status fields, endpoints and
+   bindings. A controlled live new-row default check needs separately authorized
    safe setup.
 5. Release the updated Cloud API via the existing process for the intended
    target (self-host and Belayo are distinct). Verify legacy apps preserve
