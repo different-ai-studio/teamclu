@@ -41,6 +41,9 @@ test("summarizePreparedRun hides pipeline details behind a publish summary", () 
     targetTreeHash: "c".repeat(64),
     sourceCount: 3,
     retractCount: 0,
+    restrictedPrefixes: [],
+    restrictedFolderCount: 0,
+    restrictedRetractCount: 0,
     added: 1,
     updated: 1,
     deleted: 0,
@@ -583,4 +586,102 @@ test("prepare emits plan → estimate → ingest → lint → done progress", as
     ],
   );
   assert.equal(checkpoints[1].preparedRun.runId, summary.runId);
+});
+
+test("summarizePreparedRun blocks a failed restricted retract without naming the source", () => {
+  const summary = summarizePreparedRun({
+    runId: "run-restrict-failed",
+    plan: {
+      restrict: [{ path: "documents/finance/pay.md" }],
+      add: [{ path: "documents/handbook/ok.md" }],
+      update: [],
+      delete: [],
+      unchanged: [],
+    },
+    ingest: {
+      counts: { imported: 1, rolled_back: 1, retracted: 0, restricted_retracted: 0, unchanged: 0 },
+      failures: [
+        {
+          path: "documents/finance/pay.md",
+          action: "restrict",
+          error: "delete did not retract pages/pay.md: still cites documents/finance/pay.md",
+        },
+      ],
+    },
+    lint: { ok: true, errors: [], warnings: [] },
+    estimate: { visionPages: 0, estimatedCost: 0, currency: "CNY" },
+    publishPlan: { create: ["pages/ok.md"], update: [], delete: [] },
+    restrictedPrefixes: ["documents/finance/"],
+    sourcePrefixes: ["documents/handbook/", "documents/finance/"],
+  });
+
+  assert.equal(summary.canPublish, false);
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.restrictedFolderCount, 1);
+  assert.deepEqual(summary.restrictedPrefixes, ["documents/finance/"]);
+  assert.deepEqual(summary.blockers, [
+    "Restricted content is still in the Wiki. Compile again before publishing.",
+  ]);
+  assert.equal(JSON.stringify(summary.blockers).includes("pay.md"), false);
+});
+
+test("prepare retracts a restricted source and reports only counts", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { prepare } = require("./desktop-runner");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "kb-restricted-"));
+  const documentsRoot = path.join(root, "documents");
+  const knowledgeRoot = path.join(root, "knowledge");
+  const workRoot = path.join(root, "work");
+  fs.mkdirSync(path.join(documentsRoot, "handbook", "secret"), { recursive: true });
+  fs.mkdirSync(knowledgeRoot, { recursive: true });
+  fs.mkdirSync(path.join(workRoot, "state"), { recursive: true });
+  fs.writeFileSync(path.join(knowledgeRoot, "_schema.md"), "# rules\n");
+  fs.writeFileSync(path.join(documentsRoot, "handbook", "leave.md"), "# 请假\n\n提前申请。\n");
+  fs.writeFileSync(
+    path.join(documentsRoot, "handbook", "secret", "pay.md"),
+    "# 请假\n\n请假期间工资按八折发放。\n",
+  );
+  fs.writeFileSync(
+    path.join(root, "config.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      teamId: "11111111-1111-4111-8111-111111111111",
+      maintainerNodeId: "node-a",
+      sources: [
+        { prefix: "documents/handbook/", class: "policy", priority: 1, allowExtensions: ["md"] },
+      ],
+      deny: { pathPatterns: [] },
+    }),
+  );
+  const statePath = path.join(workRoot, "state", "state.json");
+  fs.writeFileSync(statePath, JSON.stringify({ schemaVersion: 1, sources: {} }));
+  const input = (runId, aclPrefixes) => ({
+    runId,
+    configPath: path.join(root, "config.json"),
+    statePath,
+    documentsRoot,
+    knowledgeRoot,
+    workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes,
+    compilerModel: "default",
+    runner: "fake",
+  });
+
+  const first = await prepare(input("run-open", []));
+  assert.equal(first.canPublish, true, JSON.stringify(first.blockers));
+  assert.equal(first.restrictedFolderCount, 0);
+
+  const second = await prepare(input("run-restricted", ["documents/handbook/secret/"]));
+  assert.equal(second.restrictedRetractCount, 1);
+  assert.equal(second.restrictedFolderCount, 1);
+  assert.deepEqual(second.restrictedPrefixes, ["documents/handbook/secret/"]);
+  assert.equal(second.sourceCount, 1);
+  assert.deepEqual(second.blockers, []);
+  assert.equal(JSON.stringify(second).includes("pay.md"), false);
+  const page = fs.readFileSync(path.join(workRoot, "wiki", "pages", "请假.md"), "utf8");
+  assert.equal(page.includes("工资按八折"), false);
 });

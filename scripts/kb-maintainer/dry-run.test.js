@@ -98,21 +98,103 @@ test("dryRun fails when _schema.md is missing", () => {
   );
 });
 
-test("dryRun fails when a documents ACL intersects the whitelist", () => {
+test("dryRun skips restricted folders instead of failing the run", () => {
   const fx = makeFixture();
-  assert.throws(
-    () =>
-      dryRun({
-        configPath: fx.configPath,
-        statePath: fx.statePath,
-        documentsRoot: fx.documentsRoot,
-        knowledgeRoot: fx.knowledgeRoot,
-        nodeId: "node-a",
-        known: [],
-        aclPrefixes: ["documents/handbook/"],
-      }),
-    /acl|restricted/i,
+  fs.mkdirSync(path.join(fx.documentsRoot, "handbook", "secret"), { recursive: true });
+  fs.writeFileSync(path.join(fx.documentsRoot, "handbook", "secret", "pay.pdf"), "pay");
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [
+      { path: "documents/handbook/secret/bonus.pdf", size: 3 },
+      { path: "documents/training/onboarding.pdf", size: 5 },
+    ],
+    aclPrefixes: ["documents/handbook/secret/", "knowledge/hr/"],
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.restrictedPrefixes, ["documents/handbook/secret/"]);
+  assert.equal(result.counts.restricted, 2);
+  const planned = [
+    ...result.plan.add,
+    ...result.plan.update,
+    ...result.plan.would_fetch,
+    ...result.plan.unchanged,
+  ].map((item) => item.path);
+  assert.deepEqual(planned.sort(), [
+    "documents/handbook/leave.pdf",
+    "documents/training/onboarding.pdf",
+  ]);
+  assert.equal(JSON.stringify(result.plan).includes("secret"), false);
+});
+
+test("dryRun queues imported sources under a restricted folder for retraction, not retention", () => {
+  const fx = makeFixture();
+  fs.mkdirSync(path.join(fx.documentsRoot, "handbook", "secret"), { recursive: true });
+  fs.writeFileSync(path.join(fx.documentsRoot, "handbook", "secret", "pay.pdf"), "pay");
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    teamId: "11111111-1111-4111-8111-111111111111",
+    sources: {
+      "documents/handbook/secret/pay.pdf": {
+        status: "imported",
+        sourceSha256: "ab".repeat(32),
+        affectedPages: ["pages/pay.md"],
+      },
+      "documents/handbook/secret/bonus.pdf": {
+        status: "imported",
+        sourceSha256: "cd".repeat(32),
+        affectedPages: ["pages/bonus.md"],
+      },
+    },
+  });
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    // Still listed by the team: a known path must not keep restricted content alive.
+    known: [{ path: "documents/handbook/secret/bonus.pdf", size: 3 }],
+    aclPrefixes: ["documents/handbook/secret/"],
+  });
+  assert.deepEqual(
+    result.plan.restrict.map((item) => item.path),
+    ["documents/handbook/secret/bonus.pdf", "documents/handbook/secret/pay.pdf"],
   );
+  assert.equal(result.plan.restrict[0].sourceSha256, "cd".repeat(32));
+  assert.deepEqual(result.plan.delete, []);
+  assert.equal(result.counts.restrict, 2);
+});
+
+test("dryRun restricts imported sources even when their folder is no longer selected", () => {
+  const fx = makeFixture();
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    teamId: "11111111-1111-4111-8111-111111111111",
+    sources: {
+      "documents/finance/q1.pdf": {
+        status: "imported",
+        sourceSha256: "ab".repeat(32),
+        affectedPages: ["pages/q1.md"],
+      },
+    },
+  });
+  fs.mkdirSync(path.join(fx.documentsRoot, "finance"), { recursive: true });
+  fs.writeFileSync(path.join(fx.documentsRoot, "finance", "q1.pdf"), "q1");
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: ["documents/finance/"],
+  });
+  assert.deepEqual(result.plan.restrict.map((item) => item.path), ["documents/finance/q1.pdf"]);
+  assert.deepEqual(result.plan.delete, []);
 });
 
 test("dryRun emits a stable add/would_fetch plan and is byte-identical across runs", () => {

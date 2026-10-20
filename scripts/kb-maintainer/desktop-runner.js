@@ -8,7 +8,8 @@ const path = require("node:path");
 
 const { dryRun } = require("./dry-run");
 const { estimateVision } = require("./estimate");
-const { ingestBatch, loadState } = require("./ingest");
+const { ingestBatch, loadState, markForRecompile, saveState } = require("./ingest");
+const { restrictedSourceFolders } = require("./acl-preflight");
 const { lintBatch } = require("./lint");
 const { loadConfig } = require("./config");
 const { buildPublishPlan, publishWiki } = require("./publish");
@@ -125,10 +126,22 @@ function pageChanges(items) {
   return (items || []).filter((item) => String(item).startsWith("pages/")).length;
 }
 
-function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan }) {
-  const failures = (ingest.failures || []).map(
-    (failure) => `${failure.path}: ${explainFailure(failure.error)}`,
-  );
+function summarizePreparedRun({
+  runId,
+  plan,
+  ingest,
+  lint,
+  estimate,
+  publishPlan,
+  restrictedPrefixes = [],
+  sourcePrefixes = [],
+}) {
+  // A restricted source is never named: the person running the maintainer may
+  // not be allowed to see that folder.
+  const failedRestricts = (ingest.failures || []).filter((failure) => failure.action === "restrict");
+  const failures = (ingest.failures || [])
+    .filter((failure) => failure.action !== "restrict")
+    .map((failure) => `${failure.path}: ${explainFailure(failure.error)}`);
   const lintBlockers = [];
   let skippedLint = false;
   for (const error of lint.errors || []) {
@@ -148,11 +161,13 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
   const sourceCount =
     plan.add.length + plan.update.length + plan.unchanged.length + policyBlocks.length;
   const retractCount = Number(ingest.counts?.retracted) || 0;
+  const restrictedRetractCount = Number(ingest.counts?.restricted_retracted) || 0;
   const failedRetracts = (ingest.failures || []).filter((failure) => failure.action === "delete");
   const added = pageChanges(publishPlan.create);
   const updated = pageChanges(publishPlan.update);
   const deleted = pageChanges(publishPlan.delete);
-  const emptySelection = sourceCount === 0 && plan.delete.length === 0;
+  const emptySelection =
+    sourceCount === 0 && plan.delete.length === 0 && (plan.restrict || []).length === 0;
   const lintErrors = lint.errors || [];
   // A failed add or update rolls back on its own, and the pages that passed can
   // still be published. A failed retract leaves the old page in place, so the
@@ -161,6 +176,9 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
     ...(emptySelection ? ["No source files were found in the selected folders."] : []),
     ...(failedRetracts.length > 0
       ? ["A deleted source is still cited. Compile again before publishing."]
+      : []),
+    ...(failedRestricts.length > 0
+      ? ["Restricted content is still in the Wiki. Compile again before publishing."]
       : []),
     ...policyBlocks,
     ...failures,
@@ -173,10 +191,13 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
     targetTreeHash: publishPlan.targetTreeHash,
     sourceCount,
     retractCount,
+    restrictedPrefixes,
+    restrictedFolderCount: restrictedSourceFolders(sourcePrefixes, restrictedPrefixes).length,
+    restrictedRetractCount,
     added,
     updated,
     deleted,
-    failed: failures.length,
+    failed: failures.length + failedRestricts.length,
     visionPages: estimate.visionPages,
     estimatedCost: estimate.estimatedCost,
     currency: estimate.currency,
@@ -184,6 +205,7 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
       !emptySelection &&
       lintErrors.length === 0 &&
       failedRetracts.length === 0 &&
+      failedRestricts.length === 0 &&
       added + updated + deleted > 0,
     blockers,
   };
@@ -263,6 +285,7 @@ async function prepare(input, hooks = {}) {
   };
   onProgress({ stage: "plan" });
   const dry = dryRun(common);
+  const sourcePrefixes = loadConfig(input.configPath).sources.map((source) => source.prefix);
   onProgress({ stage: "estimate" });
   const estimate = await estimateVision(common);
   const visionChoice = input.visionChoice || "ask";
@@ -285,6 +308,9 @@ async function prepare(input, hooks = {}) {
         (dry.plan.denied || []).length +
         (dry.plan.blocked || []).length,
       retractCount: dry.plan.delete.length,
+      restrictedPrefixes: dry.restrictedPrefixes,
+      restrictedFolderCount: restrictedSourceFolders(sourcePrefixes, dry.restrictedPrefixes).length,
+      restrictedRetractCount: 0,
       added: 0,
       updated: 0,
       deleted: 0,
@@ -311,7 +337,11 @@ async function prepare(input, hooks = {}) {
   const state = loadState(input.statePath);
   // Previous failed retracts can leave wiki pages that still cite deleted
   // sources while state no longer tracks them. Drop those orphans before lint.
-  const orphans = gcOrphanPages({ wikiRoot, state });
+  const orphans = gcOrphanPages({ wikiRoot, state, restrictedPrefixes: dry.restrictedPrefixes });
+  if (orphans.recompile.length > 0) {
+    markForRecompile(state, orphans.recompile);
+    saveState(input.statePath, state);
+  }
   const repaired = repairWiki(wikiRoot, {
     state,
     maxBytes: config.limits?.maxIndexChars || 8000,
@@ -337,6 +367,8 @@ async function prepare(input, hooks = {}) {
     lint,
     estimate,
     publishPlan,
+    restrictedPrefixes: dry.restrictedPrefixes,
+    sourcePrefixes,
   });
   summary.nodeId = input.nodeId;
   await checkpoint(summary, summary.canPublish);

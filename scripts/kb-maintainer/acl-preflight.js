@@ -2,23 +2,28 @@
 
 const { prefixesOverlap } = require("./paths");
 
-function assertDocumentsAclAllowsPublish({ whitelistPrefixes, aclPrefixes }) {
+function restrictedDocumentPrefixes(aclPrefixes) {
   if (!Array.isArray(aclPrefixes)) {
-    throw new Error("ACL state unknown; cannot confirm documents prefixes are team-public");
+    throw new Error("ACL state unknown; cannot confirm which documents are restricted");
   }
-  const documentAcls = aclPrefixes.filter((prefix) => typeof prefix === "string" && prefix.startsWith("documents/"));
-  const conflicts = [];
-  for (const allowed of whitelistPrefixes) {
-    for (const restricted of documentAcls) {
-      if (prefixesOverlap(allowed, restricted)) {
-        conflicts.push({ whitelist: allowed, acl: restricted });
-      }
-    }
-  }
-  if (conflicts.length > 0) {
-    const detail = conflicts.map((item) => `${item.whitelist} ∩ ${item.acl}`).join("; ");
-    throw new Error(`whitelist intersects restricted documents ACL: ${detail}`);
-  }
+  const prefixes = aclPrefixes.filter(
+    (prefix) => typeof prefix === "string" && prefix.startsWith("documents/"),
+  );
+  return [...new Set(prefixes)].sort();
 }
 
-module.exports = { assertDocumentsAclAllowsPublish };
+function isRestrictedPath(documentsPath, restrictedPrefixes) {
+  return restrictedPrefixes.some((prefix) => {
+    if (documentsPath === prefix) return true;
+    const folder = prefix.endsWith("/") ? prefix : `${prefix}/`;
+    return documentsPath.startsWith(folder);
+  });
+}
+
+function restrictedSourceFolders(sourcePrefixes, restrictedPrefixes) {
+  return restrictedPrefixes.filter((restricted) =>
+    sourcePrefixes.some((source) => prefixesOverlap(source, restricted)),
+  );
+}
+
+module.exports = { isRestrictedPath, restrictedDocumentPrefixes, restrictedSourceFolders };

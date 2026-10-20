@@ -34,6 +34,50 @@ function isUnderSelected(path: string, selected: string[]): boolean {
   return selected.some((prefix) => path.startsWith(prefix))
 }
 
+function restrictedDocumentPrefixes(acl: Array<{ pathPrefix: string }>): string[] {
+  return [
+    ...new Set(
+      acl.map((rule) => rule.pathPrefix).filter((prefix) => prefix.startsWith('documents/')),
+    ),
+  ].sort()
+}
+
+function isRestrictedDocument(path: string, restricted: string[]): boolean {
+  return restricted.some(
+    (prefix) => path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`),
+  )
+}
+
+function prefixesOverlap(a: string, b: string): boolean {
+  return a.startsWith(b) || b.startsWith(a)
+}
+
+// Permissions can change between compile and publish. A folder restricted
+// after the compile may already be in the target pages, so publishing waits
+// for a recompile.
+async function assertNoNewRestrictedSources(
+  teamId: string,
+  sourceDirectories: string[],
+  compiledWith: string[],
+): Promise<void> {
+  let restricted: string[]
+  try {
+    restricted = restrictedDocumentPrefixes(
+      await getBackend().knowledgeAcl.listKnowledgeAcl(teamId),
+    )
+  } catch {
+    throw new Error('Could not confirm folder permissions. Try publishing again.')
+  }
+  const known = new Set(compiledWith)
+  const added = restricted.filter(
+    (prefix) =>
+      !known.has(prefix) && sourceDirectories.some((folder) => prefixesOverlap(folder, prefix)),
+  )
+  if (added.length > 0) {
+    throw new Error('Folder permissions changed since this compile. Compile again before publishing.')
+  }
+}
+
 /** A Wiki source is one folder inside Documents. The Documents root is not a source. */
 export function wikiSourceFolders(paths: string[]): string[] {
   return paths.filter((path) => {
@@ -334,9 +378,10 @@ export async function prepareWikiMaintenance(
 
   // Live owner/admin ACL list. Any failure stops before local files are touched.
   const acl = await getBackend().knowledgeAcl.listKnowledgeAcl(teamId)
+  const restricted = restrictedDocumentPrefixes(acl)
   const known = await listKnownDocuments(teamId)
-  const selectedKnown = known.filter((item) =>
-    isUnderSelected(item.path, folders),
+  const selectedKnown = known.filter(
+    (item) => isUnderSelected(item.path, folders) && !isRestrictedDocument(item.path, restricted),
   )
   const [localPaths, importedPaths] = await Promise.all([
     invoke<string[]>('kb_maintainer_list_local_documents', {
@@ -477,6 +522,14 @@ export async function publishWikiMaintenance(
     checkpointTarget.nodeId !== summary.nodeId
   ) {
     throw new Error('The Wiki summary is stale. Reopen maintenance to load the latest checkpoint.')
+  }
+  if (status.stage !== 'publishing') {
+    const configured = status.config.config.sourceDirectories
+    await assertNoNewRestrictedSources(
+      teamId,
+      wikiSourceFolders(Array.isArray(configured) ? configured.map(String) : []),
+      summary.restrictedPrefixes ?? [],
+    )
   }
   const claim =
     status.stage === 'publishing'

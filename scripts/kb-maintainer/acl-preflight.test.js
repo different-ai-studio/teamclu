@@ -2,63 +2,52 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { assertDocumentsAclAllowsPublish } = require("./acl-preflight");
+const {
+  isRestrictedPath,
+  restrictedDocumentPrefixes,
+  restrictedSourceFolders,
+} = require("./acl-preflight");
 
 const whitelist = ["documents/handbook/", "documents/training/"];
 
-test("assertDocumentsAclAllowsPublish accepts an empty ACL list", () => {
-  assert.doesNotThrow(() =>
-    assertDocumentsAclAllowsPublish({ whitelistPrefixes: whitelist, aclPrefixes: [] }),
-  );
+test("restrictedDocumentPrefixes fails closed when ACL state is unknown", () => {
+  assert.throws(() => restrictedDocumentPrefixes(null), /unknown|confirm/i);
+  assert.throws(() => restrictedDocumentPrefixes(undefined), /unknown|confirm/i);
 });
 
-test("assertDocumentsAclAllowsPublish ignores knowledge/ ACL prefixes", () => {
-  assert.doesNotThrow(() =>
-    assertDocumentsAclAllowsPublish({
-      whitelistPrefixes: whitelist,
-      aclPrefixes: ["knowledge/hr/"],
-    }),
+test("restrictedDocumentPrefixes keeps only documents/ prefixes, sorted and deduplicated", () => {
+  assert.deepEqual(
+    restrictedDocumentPrefixes([
+      "knowledge/hr/",
+      "documents/hr/",
+      "documents/finance/",
+      "documents/hr/",
+      42,
+    ]),
+    ["documents/finance/", "documents/hr/"],
   );
+  assert.deepEqual(restrictedDocumentPrefixes([]), []);
 });
 
-test("assertDocumentsAclAllowsPublish fails when a documents ACL covers the whitelist", () => {
-  assert.throws(
-    () =>
-      assertDocumentsAclAllowsPublish({
-        whitelistPrefixes: whitelist,
-        aclPrefixes: ["documents/"],
-      }),
-    /documents\/.*acl|restricted/i,
-  );
+test("isRestrictedPath matches paths under a restricted folder", () => {
+  const prefixes = ["documents/finance/", "documents/handbook/secret/"];
+  assert.equal(isRestrictedPath("documents/finance/2026/q1.xlsx", prefixes), true);
+  assert.equal(isRestrictedPath("documents/handbook/secret/pay.md", prefixes), true);
+  assert.equal(isRestrictedPath("documents/handbook/leave.md", prefixes), false);
+  assert.equal(isRestrictedPath("documents/finance-public/a.md", prefixes), false);
 });
 
-test("assertDocumentsAclAllowsPublish fails when a nested documents ACL sits under a whitelist prefix", () => {
-  assert.throws(
-    () =>
-      assertDocumentsAclAllowsPublish({
-        whitelistPrefixes: whitelist,
-        aclPrefixes: ["documents/handbook/secret/"],
-      }),
-    /handbook/i,
-  );
+test("isRestrictedPath treats a prefix without a trailing slash as a folder or exact file", () => {
+  assert.equal(isRestrictedPath("documents/finance/a.md", ["documents/finance"]), true);
+  assert.equal(isRestrictedPath("documents/finance", ["documents/finance"]), true);
+  assert.equal(isRestrictedPath("documents/financeX/a.md", ["documents/finance"]), false);
 });
 
-test("assertDocumentsAclAllowsPublish fails closed when ACL state is unknown", () => {
-  assert.throws(
-    () =>
-      assertDocumentsAclAllowsPublish({
-        whitelistPrefixes: whitelist,
-        aclPrefixes: null,
-      }),
-    /unknown|confirm/i,
-  );
-});
-
-test("assertDocumentsAclAllowsPublish allows a documents ACL on an unrelated prefix", () => {
-  assert.doesNotThrow(() =>
-    assertDocumentsAclAllowsPublish({
-      whitelistPrefixes: whitelist,
-      aclPrefixes: ["documents/personnel/"],
-    }),
-  );
+test("restrictedSourceFolders lists restricted prefixes that touch a source folder", () => {
+  assert.deepEqual(restrictedSourceFolders(whitelist, []), []);
+  assert.deepEqual(restrictedSourceFolders(whitelist, ["documents/personnel/"]), []);
+  assert.deepEqual(restrictedSourceFolders(whitelist, ["documents/handbook/secret/"]), [
+    "documents/handbook/secret/",
+  ]);
+  assert.deepEqual(restrictedSourceFolders(whitelist, ["documents/"]), ["documents/"]);
 });
