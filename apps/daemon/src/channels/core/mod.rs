@@ -301,7 +301,13 @@ impl Core {
             Some(QuotedText::Deferred(_)) => true,
             None => false,
         };
-        if msg.text.trim().is_empty() && msg.attachments.is_empty() && !has_quote {
+        let has_context = msg
+            .context_prefix
+            .as_deref()
+            .is_some_and(|text| !text.trim().is_empty());
+        // A bare @ has no text of its own. Thread history in the prefix is
+        // still something to answer; without it there is nothing to start.
+        if msg.text.trim().is_empty() && msg.attachments.is_empty() && !has_quote && !has_context {
             return Some(Outcome::Empty);
         }
         None
@@ -503,6 +509,9 @@ impl Core {
                 &msg.external_message_id,
             )
             .await?;
+        if let Some(hook) = &msg.after_persisted {
+            hook.persisted().await;
+        }
         // For the agent only: the stored message already names every file,
         // uploaded or not.
         let prompt = match unretrieved_note(&written.failed_uploads) {
@@ -815,9 +824,10 @@ impl Core {
     }
 
     /// Buffered channels get their complete reply at the end. A prepared
-    /// placeholder may present that final text progressively in the driver.
-    /// The turn still streams internally — the session and every other client
-    /// see the deltas; the channel just sees the result.
+    /// placeholder also sees each reply as it arrives, so a channel that
+    /// keeps one stream open (SeaTalk) can show the prose before the turn
+    /// finishes. Channels with no placeholder still see only the result.
+    /// The session and every other client see the deltas either way.
     async fn run_buffered(
         &self,
         driver: &dyn ChannelDriver,
@@ -829,19 +839,46 @@ impl Core {
         prepared: &mut Option<Box<dyn BufferedReply>>,
     ) -> Result<usize, CoreError> {
         let (mut asks, _watch) = self.watch_approvals(session);
+        let (tx, mut updates) = if prepared.is_some() {
+            let (tx, rx) = tokio::sync::mpsc::channel(32);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         let turn = self.turns.run(
             &session.acp_session_id,
             display,
             prompt,
             attachment_urls,
-            None,
+            tx,
         );
         tokio::pin!(turn);
         let reply = loop {
             tokio::select! {
-                reply = &mut turn => break reply?,
+                biased;
+                reply = &mut turn => {
+                    // A reply can land in the same tick the turn returns.
+                    // Show it before the closing snapshot.
+                    if let Some(rx) = updates.as_mut() {
+                        while let Ok(update) = rx.try_recv() {
+                            show_reply_preview(prepared, update).await;
+                        }
+                    }
+                    break reply?;
+                }
                 Some(request) = approvals::next_request(&mut asks) => {
                     self.ask_chat(driver, &msg.conversation, &request).await;
+                }
+                update = async {
+                    match updates.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match update {
+                        Some(update) => show_reply_preview(prepared, update).await,
+                        None => updates = None,
+                    }
                 }
             }
         };
@@ -864,7 +901,26 @@ impl Core {
             .map_err(|e| CoreError::Render(e.to_string()))?;
         Ok(1)
     }
+}
 
+/// Show one cumulative reply on a placeholder that opted into previews.
+/// A channel that cannot show it must not fail the turn.
+async fn show_reply_preview(prepared: &mut Option<Box<dyn BufferedReply>>, update: TurnUpdate) {
+    let TurnUpdate::Reply(text) = update else {
+        return;
+    };
+    if text.trim().is_empty() {
+        return;
+    }
+    let Some(pending) = prepared.as_mut() else {
+        return;
+    };
+    if let Err(error) = pending.preview(&text).await {
+        tracing::warn!(error = %error, "gateway: reply preview not shown");
+    }
+}
+
+impl Core {
     async fn run_streamed(
         &self,
         driver: &dyn ChannelDriver,
@@ -1110,14 +1166,20 @@ fn display_name(sender: &ExternalSender) -> String {
 /// Quoted context is prepended here — one rule for every channel, instead of
 /// each gateway inventing its own marker format.
 fn compose_prompt(msg: &InboundMessage, quoted_text: Option<&str>) -> String {
-    match quoted_text {
-        Some(q) if !q.is_empty() => {
-            format!(
-                "[Quoted message]\n{q}\n[End quoted message]\n\n{}",
-                msg.text
-            )
-        }
-        _ => msg.text.clone(),
+    let mut parts = Vec::new();
+    if let Some(prefix) = msg.context_prefix.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(prefix.to_string());
+    }
+    if let Some(quoted) = quoted_text.filter(|q| !q.is_empty()) {
+        parts.push(format!("[Quoted message]\n{quoted}\n[End quoted message]"));
+    }
+    if !msg.text.is_empty() {
+        parts.push(msg.text.clone());
+    }
+    if parts.is_empty() {
+        msg.text.clone()
+    } else {
+        parts.join("\n\n")
     }
 }
 

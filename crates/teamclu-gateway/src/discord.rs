@@ -874,6 +874,8 @@ fn normalize_message(msg: &Message, bot_id: Option<u64>) -> Option<crate::driver
             .map(|r| r.content.clone())
             .filter(|c| !c.is_empty())
             .map(crate::driver::QuotedText::Ready),
+        context_prefix: None,
+        after_persisted: None,
         reply_context: Some(msg.id.get().to_string()),
     })
 }

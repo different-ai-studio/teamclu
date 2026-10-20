@@ -1071,6 +1071,8 @@ fn normalize_message(
         // path treated every delivered message as addressed, and so does this.
         addressed_to_bot: true,
         quoted_text: None,
+        context_prefix: None,
+        after_persisted: None,
         reply_context: Some(msg.msg_id.clone()),
     })
 }
