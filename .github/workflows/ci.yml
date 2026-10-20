@@ -431,7 +431,7 @@ jobs:
         run: cargo check --manifest-path apps/desktop/Cargo.toml --locked --no-default-features
 
   # Whether this change can affect the iOS app. The job below burns a macOS
-  # runner and downloads the iOS platform, so it should not run for a change
+  # runner, so it should not run for a change
   # to the daemon or the web app.
   ios-touched:
     name: Detect iOS changes
@@ -486,18 +486,20 @@ jobs:
 
       - name: Select Xcode
         run: |
-          XCODE=$(ls -d /Applications/Xcode_26*.app /Applications/Xcode.app 2>/dev/null | head -1)
-          sudo xcode-select -s "$XCODE/Contents/Developer" || sudo xcode-select -s "$XCODE"
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
 
-      # The runner image ships Xcode without the iOS platform, so every
-      # destination is "ineligible" until this runs. testflight.yml does the
-      # same thing.
-      - name: Install the iOS platform
+      # Use the simulator SDK bundled with the runner's default Xcode when
+      # available; download the iOS platform only if that SDK is missing.
+      - name: Check the iOS Simulator SDK
         run: |
           set -euo pipefail
-          xcodebuild -downloadPlatform iOS
-          xcodebuild -showsdks | grep -qi iphonesimulator
+          sdks=$(xcodebuild -showsdks)
+          if ! grep -qi iphonesimulator <<< "$sdks"; then
+            xcodebuild -downloadPlatform iOS
+            sdks=$(xcodebuild -showsdks)
+          fi
+          grep -qi iphonesimulator <<< "$sdks"
 
       - name: Generate the Xcode project
         run: |
