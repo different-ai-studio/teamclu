@@ -1,8 +1,9 @@
 # App-code dev API deployment preparation
 
 Prepared 2026-10-20 (Asia/Shanghai). **Deployment not executed.** Source integration
-is now committed as `bf99b359`; independent review and the remaining rollout gates
-are pending. This is a rollout checklist, not deployment authorization. The
+is committed as `bf99b359`; task-scoped integration and final whole-feature source
+reviews approved implementation quality at `de097203`. Remaining rollout gates
+are open. This is a rollout checklist, not deployment authorization. The
 preparation observations below are preserved as a historical snapshot.
 
 ## Target and observed state
@@ -168,5 +169,7 @@ Rust is analysis/library-test evidence, not a release build or native GUI run.
 No migration source was changed, no live database check was repeated, and no
 remote environment/deployment observation above was refreshed. Windows/Linux,
 real-account auth, native GUI and deployed integration gates remain as recorded
-in the acceptance document. This merge awaits independent review; it does not
-authorize publication or deployment.
+in the acceptance document. Task-scoped integration and final whole-feature
+source reviews approved implementation quality at `de097203`, with no
+Critical/Important source findings. Those reviews do not establish release
+acceptance or authorize publication or deployment.

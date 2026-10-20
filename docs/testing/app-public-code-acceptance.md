@@ -3,30 +3,44 @@
 Updated: 2026-10-20 (Asia/Shanghai). Original acceptance snapshot: 2026-10-19.
 
 **Current outcome: all executed integrated suites pass; release acceptance remains
-blocked by missing platform/account evidence.** Frontend: **4,128 passed / 10
-skipped**. Backend: **1,573 passed / 0 failed / 13 skipped**, plus five separately
-skipped suites. macOS Rust library: **436 passed / 0 failed / 0 ignored**. Both
-TypeScript checks, OpenAPI lint and Rust `check --tests` exit 0. The exact CI
-Supabase image accepted all 130 migrations, feature pgTAP **13/13**, and the full
-SQL runner **50 files / 0 failed / 0 quarantined**. Real Chrome interaction passed
-for the production frontend confirmation in English and Chinese.
+blocked by missing platform/account evidence.** Tested source: **`bf99b359`**.
+Frontend: **4,366 passed / 10 skipped** (620 passed files, one skipped).
+Backend: **1,982 passed / 0 failed / 13 skipped**, plus five separately skipped
+suites. macOS Rust library: **465 passed / 0 failed / 0 ignored**. Backend test
+typecheck and production build, frontend typecheck, OpenAPI lint and Rust
+`check --tests` exit 0. OpenAPI has **11 warnings**, with identical rules and
+locations reproduced on pinned main. Task-scoped integration and final
+whole-feature source reviews approved the implementation at **`de097203`**;
+release acceptance remains open.
 
-macOS native widget/shared-path acceptance passed the nine observed requests,
+Historical acceptance evidence is preserved below: the exact CI Supabase image
+accepted all 130 migrations, feature pgTAP **13/13**, and the full SQL runner
+**50 files / 0 failed / 0 quarantined**. Real Chrome interaction passed for the
+then-current production frontend confirmation in English and Chinese.
+
+Historical macOS native widget/shared-path acceptance passed the nine observed requests,
 including the real 120-second timeout and parent close/hide. Windows and Linux
 native execution, ordinary/checkbox mixed sequences, real-account login and
 deployed integration acceptance remain incomplete. A local mixed-dialog attempt
 was blocked by a concrete CUA safety restriction; ordinary popup teardown is
 unobserved, not a demonstrated defect or pass. The authorized dev database
 migration was applied and verified through self-hosted MCP on 2026-10-20; see
-the live addendum below. No push, PR, merge, service/client deployment or
-publication was performed. Database readiness is not full rollout acceptance.
+the live addendum below. Current main was merged into the feature branch; no
+push, PR, merge to main, service/client deployment or publication was performed.
+Database readiness is not full rollout acceptance.
 
 ## Scope, revisions and review status
 
 - Approved requirements: [Permanent app codes and opt-in domain migration](../specs/2026-10-19-app-public-code-design.md).
 - Managed worktree: `/Users/dengwei/.codex/worktrees/app-public-code/teamclu`;
   authorized branch: `codex/app-public-code-implementation`.
-- Final integrated frontend/backend/Rust checks and frontend/native fixture
+- Current tested source: **`bf99b359ad08c62f09f27549304dd08e61335d0b`**,
+  integrating main `ba604cf9dda7a8f39bd59d576daca19ab91587be`. Task-scoped
+  integration review and final whole-feature source review approved quality at
+  **`de09720301679e34782dea7e5785599b72a7d629`**, with no Critical/Important
+  source findings; minor documentation/coverage follow-ups and release gates
+  remain distinct from that approval.
+- Historical frontend/backend/Rust checks and frontend/native fixture
   sources: **`25381e6849348f5c8cfc655e23b5559844e5bb58`**.
 - Fully migrated database evidence: immutable tracked export of
   **`a7cefd31d227337c57c717d245b3fbe15742bf3e`**. The subsequent `25381e68` changes
@@ -67,7 +81,7 @@ no live, real-account or untested platform acceptance is implied.
 | Permanent 12-character lowercase Crockford Base32 code; 60 secure random bits; global uniqueness, non-nullness, format and immutability | Actual migration executed by `app-code-schema.test.ts`; three tests include exact tail-bit fixtures, format/null/duplicate/reassignment rejection and 1,003 distinct codes | PASS (PGlite and fully migrated isolated Supabase pgTAP) |
 | Existing apps backfilled into legacy mode without changing IDs, deployment endpoints/function/status; new rows default to code mode | PGlite migration preservation/default assertions; deterministic backfill collision retry | PASS (automated); live preservation verification BLOCKED |
 | Creation retries only the code uniqueness conflict, at most five attempts, reusing the workspace; slug/other errors propagate | `supabase-repo.test.ts` collision success/exhaustion, slug conflict and wrong-SQLSTATE tests | PASS (automated) |
-| Read-only API fields and current/candidate URL distinction; no configured domain fallback | OpenAPI App schema/deploy request; `app-code.test.ts`, repository mapping/route tests; frontend/backend typechecks | PASS (automated); OpenAPI has 10 existing warnings |
+| Read-only API fields and current/candidate URL distinction; no configured domain fallback | OpenAPI App schema/deploy request; `app-code.test.ts`, repository mapping/route tests; frontend/backend typechecks | PASS (automated); OpenAPI has 11 pinned-main baseline warnings |
 | Exact indexed code equality; unknown, disabled and ambiguous code hosts fail closed; ASCII/Punycode legacy aliases retained | `apps-vanity.test.ts`, `app-code.test.ts`; exact `app_code` equality plus active-mode query | PASS (automated) |
 | Candidate code URL neither routes nor becomes a login origin before activation | Vanity and login tests for false/missing mode; code-host cache-miss tests | PASS (automated) |
 | Checkbox choice bound to deploy token; only successful finalization activates; omitted/false, failure and unchecked retry preserve legacy; active code mode never reverts | `supabase-repo.test.ts` lifecycle cases, replacement-token fencing, auth env and activation cache invalidation; UI cancellation tests | PASS (automated) |
@@ -80,9 +94,10 @@ no live, real-account or untested platform acceptance is implied.
 | Routing answers and misses invalidated for both aliases after activation/auth/custom-domain changes/deletion | Vanity and repository tests plus cumulative source inspection | PASS (automated within covered paths) |
 | Cloud API remains the client business-data boundary | Existing frontend backend-import guard passes in full suite; all feature operations use the provider/API boundary | PASS (automated/source inspection) |
 
-## Final integrated commands and results
+## Historical commands and results — source `25381e68`
 
-These are the controller-owned final checks after the reviewed failure repairs.
+These are the historical controller-owned checks after the reviewed failure repairs.
+Current integrated-source totals are in the overview and current-main addendum.
 Exit status comes from `/tmp/app-code-followup-final-{frontend,backend,rust}-summary.json`;
 counts below were checked against the referenced logs. Logs under `/tmp` are
 local evidence and may be removed by the operating system; durable results are
@@ -115,7 +130,7 @@ node scripts/rust-cli.js check --tests -p teamclu --locked
 The existing same-version static library was a read-only input. Host: Darwin
 arm64. These are check/test builds, not valid configured release builds.
 
-### Skips and warnings in the current run
+### Skips and warnings in that historical run
 
 - Frontend **10 skipped tests**: nine opt-in live session-binding cases
   (`SESSION_BINDING_LIVE`) and one mid-turn follow-up case
@@ -179,7 +194,7 @@ plan artifact `task-7-followup-failures-report.md`; its independent review
 approved the repairs. The historical `example.com` reachability timeout from
 Task 6 was not an additional failure in the original final run.
 
-## Fully migrated isolated database acceptance
+## Historical fully migrated isolated database acceptance
 
 **PASS: 130/130 migrations; feature `043_apps_public_code.sql` 13/13 assertions;
 full pgTAP runner 50 files / 0 failed / 0 quarantined, exit 0.** No failed SQL
@@ -223,7 +238,7 @@ possible resumption. Existing user VMs were never started or changed. Setup
 TLS/readiness/disk issues and cleanup warnings remain in the local report;
 none is counted as a passing native/account check.
 
-## Frontend browser and native acceptance
+## Historical frontend browser and native acceptance
 
 **Frontend production-component browser acceptance: PASS.** Real Chrome via CUA
 at `http://127.0.0.1:43191` rendered actual worktree
@@ -258,8 +273,8 @@ timeout, display mutex and parent watcher execute. Build exit 0; the controller
 operated the actual native checkbox/sheet through CUA accessibility/native input.
 No deployment, Cloud API, daemon or network consumer exists. In this original
 nine-case phase, unused outer ordinary-confirmation/deploy helpers panic if
-reached. These nine cases do not exercise real `handle_app_manage`, approval-cache
-bypass, eligibility, localized deployment text, API serialization, finalization
+reached. These nine cases do not exercise real `handle_app_manage`, the then-existing
+approval-cache bypass, eligibility, localized deployment text, API serialization, finalization
 or ordinary/checkbox mixed sequences. The later mixed attempt is separate below.
 
 All **nine request outcomes matched their observed choices** in
@@ -401,8 +416,10 @@ Backend live/local-database skips, frontend skips, jsdom canvas/navigation
 diagnostics and Rust analysis-build warnings remain explicit limits. No SQL,
 native GUI, Windows/Linux, real-account or deployed integration acceptance was
 rerun in this source integration task. The already-applied migration file is
-unchanged. Independent review of the merge and final feature diff is pending.
-The remaining rollout gates below are not closed by these results.
+unchanged. Independent task-scoped review of the merge and final whole-feature
+source review approved implementation quality at `de097203`, with no
+Critical/Important source findings. The remaining rollout gates below are not
+closed by these reviews or test results.
 
 ## Remaining gates and limits
 
@@ -411,14 +428,14 @@ The remaining rollout gates below are not closed by these results.
 | Complete isolated migrated CI-schema/feature SQL | PASS as above; supersedes the old missing-local-pgTAP blocker |
 | Live migration/read-only schema verification | PASS on self-hosted dev, 2026-10-20: authorized migration applied through `supabase-self-hosted-dev`; post-apply read-only MCP verification passed; see live addendum |
 | Real-account legacy/code/retained-alias login and inactive-candidate rejection | BLOCKED: exact GoTrue `v2.188.1` image/blob delivery failed TLS after bounded official-registry/proxy attempts; no real GoTrue process/JWT, RLS/account/callback/cookie flow ran |
-| macOS Rust suite/compile | PASS: 436/436, check exit 0; not a release-build claim |
-| macOS checkbox native GUI | PASS for the nine widget/shared-path requests above; full handler/cache acceptance not established |
+| macOS Rust suite/compile | PASS on `bf99b359`: 465/465, check exit 0; not a release-build claim |
+| macOS checkbox native GUI | Historical PASS for the nine widget/shared-path requests above; current preflight-first handler acceptance not established |
 | macOS ordinary/checkbox mixed GUI | ATTEMPTED / TOOL BLOCKED: CUA forbids UserNotificationCenter; real ordinary timeout and queued unchecked cleanup observed, ordinary decisions/teardown unknown |
 | Windows native compile/tests/interaction | BLOCKED: Windows host unavailable; source inspection is not validation |
 | Linux native compile/tests/GTK interaction | BLOCKED: fresh Linux guest exists, but pinned Rust 1.97.1 metadata and official image retrieval fail TLS; GTK dependencies/check/tests/Xvfb interaction NOT RUN |
 | Frontend browser component layout/interaction | PASS EN/ZH, within the harness boundary above |
 | Real deployed auth env/custom-domain/Traefik/cron integration | PENDING: passing automated integration tests do not prove deployment behavior |
-| Current evidence review | Complete: `18ceba84` evidence and `18ceba84..60e1f08a` mixed-evidence amendment approved within documented boundaries; earlier Task 7/whole-branch reviews completed; release gates remain open |
+| Current evidence review | Task-scoped integration and final whole-feature source reviews approved at `de097203`; historical `18ceba84` evidence and `18ceba84..60e1f08a` mixed-evidence amendment remain approved within their documented boundaries; release gates remain open |
 
 A fresh separate auth DB and exact PostgREST image were prepared; failed GoTrue
 retrieval prevented actual account acceptance. Do not describe the reduced CI
@@ -439,9 +456,11 @@ Pre-existing ordinary approval releases its mutex on timeout/caller drop without
 closing its OS popup. This feature establishes no global teardown guarantee for
 every ordinary/checkbox sequence; the mixed attempt above could not establish
 GUI teardown/decision acceptance because system-helper access was denied.
-A direct handler-level regression test for deployment suppression and
-approval-cache bypass remains a minor reviewed follow-up; source inspection and
-shared lifecycle tests are not that handler integration test. Existing warning
+A direct handler-level regression test for rejection/cancellation, request
+serialization and suppression of deployment after the current preflight-first
+confirmation remains a minor reviewed follow-up. The old approval-cache bypass
+is no longer the production mechanism; source inspection and shared lifecycle
+tests are not that handler integration test. Existing warning
 cleanup is the other minor follow-up, outside this feature's acceptance scope.
 
 ## Release order (database steps completed; publication not executed)
