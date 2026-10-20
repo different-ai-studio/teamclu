@@ -257,10 +257,6 @@ attempt, initial focus is Cancel, and the checkbox label includes both URLs and
 hint. Temporary harness CSS scanning was corrected before these observations;
 no tracked component/style was edited.
 
-- [English initial unchecked confirmation](assets/app-public-code-english-unchecked.png)
-- [Chinese reset confirmation](assets/app-public-code-chinese-reset.png)
-- [Observed callback/eligibility results](assets/app-public-code-browser-results.png)
-
 Detailed local evidence: `/tmp/app-code-ui-acceptance/report.md` and
 `results-ax.txt`. This accepts the actual dialog in a browser; full app/store
 flow remains automated evidence, and live login/deployment remains untested.
@@ -296,9 +292,6 @@ parent close were exercised. Late callbacks/requester disconnect are covered by
 the shared automated tests; no physical stale callback was fabricated in GUI
 acceptance. Queue timings include scheduling and interaction, not a shortened
 approval deadline.
-
-- [Actual AppKit unchecked sheet](assets/app-public-code-native-unchecked.png)
-- [Queued sheet appears unchecked after prior timeout](assets/app-public-code-native-after-timeout.png)
 
 Detailed controller observations: `/tmp/app-code-native-acceptance/manual-results.md`;
 full AX proof: `queued-after-timeout-ax.txt`; source hashes, build/runtime logs and
