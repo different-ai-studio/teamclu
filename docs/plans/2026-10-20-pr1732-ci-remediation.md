@@ -51,28 +51,58 @@ Files: `.github/workflows/ci.yml` database job only.
   full database job is its meaningful end-to-end regression gate.
 - [ ] Commit bounded workflow change and report root cause, checks and limits.
 
-### Task 2: Target compatible Rust security updates and establish remaining scope
+### Task 2: Remove all non-ignored Rust audit findings without weakening gates
 
-Files: Cargo.lock, plus an evidence document under docs/testing if useful.
+Files: Cargo.toml/Cargo.lock; daemon/desktop/transport Cargo.toml and minimal
+TLS API call sites; desktop plugin registration/capability and updater wiring
+tests; official-source patched parents under `vendor/`; durable security evidence
+under docs/testing. Avoid unrelated source or dependency refreshes.
 
-- [ ] Read security diagnosis. Reproduce baseline with cargo-audit0.22.2, exact
-  existing ignore list, same frozen1345-advisory snapshot; final runs include
-  yanked checks. The existing22 findings match main exactly.
-- [ ] Target quinn-proto0.11.14 to >=0.11.18 in0.11 and rustls0.23.45 to
-  >=0.23.46 in0.23. Do not refresh unrelated packages. Cargo resolver may add only
-  required compatible dependencies. Record precise resolved versions/diff.
-- [ ] Run same-snapshot audit after changes and report removed/remaining findings
-  and any new finding. Do not claim green if upstream old TLS/archive families
-  remain. Compare a fresh online audit too if network allows.
-- [ ] Verify cargo metadata --locked, relevant wrapper-based desktop/daemon/
-  transport/gateway checks and covering TLS/network tests, no weakened policy.
-  Follow TDD for any actual product behavior change; lock-only updates use audit
-  RED/GREEN for removed findings plus existing compile/test gates.
-- [ ] Commit compatible updates and durable comparison evidence, documenting
-  exact upstream constraints and feasible reviewed migration/backport options.
-  Full dependency migrations or temporary security exceptions need a concrete
-  reviewed scope; do not improvise dependency removals or local patched sources
-  under the guise of a lock-only update. Controller handles that next decision.
+- [ ] Read the updated security diagnosis and temporary probe evidence in
+  /tmp/teamclu-pr1732-security-diagnosis.md and /tmp/teamclu-pr1732-audit.
+  Baseline22 findings exactly match main using the same frozen advisory database
+  and original ignore list; record this RED evidence before fixes.
+- [ ] Target quinn-proto0.11.14 -> >=0.11.18 in0.11 and rustls0.23.45 ->
+  >=0.23.46 in0.23. Upgrade daemon zip5 and desktop zip8 to fixed zip>=9.0.0
+  (9.0.5 observed), preserving requested compression features.
+- [ ] Move rumqttc0.24 ->0.25.1 consistently in daemon/desktop/transport, direct
+  rustls0.22 ->0.23.46+ in daemon/transport, daemon tokio-rustls0.25 ->0.26.
+  Reconcile native-root loader API only as necessary. Preserve certificate and
+  hostname verification, native-root behavior and explicit crypto-provider
+  selection; keep MQTT TCP and websocket semantics.
+- [ ] Verify obsolete tauri-plugin-updater is unused beyond registration,
+  capability, dependency and two static assertions in tests/e2e/auto-update.test.ts.
+  If confirmed, remove that unused plugin/dependency/capability and change those
+  assertions to pin the real custom updater wiring. Preserve custom updater
+  download/minisign checks, Windows MZ installer handling, configured public key,
+  endpoints and createUpdaterArtifacts metadata. No auto-update feature removal.
+- [ ] Backport official Sherpa fix1a9d234ab95567eba8c2e89873a87d70b79633e2:
+  vendor official crates.io sherpa-onnx-sys1.13.7 with licenses/provenance, change
+  only its build-dependency zip2 ->9. Keep original build.rs/native artifact version.
+  Official current1.13.8 release predates the fix. Temporary DOCS_RS compile probe
+  passed the unchanged build.rs against zip9; actual macOS wrapper build remains
+  required, and that probe does not validate iOS binary extraction.
+- [ ] Vendor official crates.io serenity0.12.5 with licenses/provenance; change
+  only tokio-tungstenite0.21 ->0.24 with features=["url"], retaining original
+  transport features. Temporary compile probe passed without Rust source edits;
+  omission of url fails IntoClientRequest and is not a valid patch. Root
+  [patch.crates-io] entries select these two reproducible, reviewed parent patches.
+  Verify vendor Rust sources byte-for-byte against official package archives;
+  document package hashes, manifest diffs and removal criteria. Do not silently
+  use arbitrary forks or pretend local-source findings disappeared.
+- [ ] Resolve lock consistently with targeted versions. Run cargo metadata
+  --locked and same-snapshot full audit with yanked checks and exact ignorelist;
+  expected zero non-ignored vulnerabilities, then fresh online audit too. Any
+  remaining/new finding is a real failure, not a waiver.
+- [ ] For necessary API/product changes follow TDD/regression tests first. Run
+  covering native TLS/MQTT/archive/updater/Discord checks, relevant full Rust
+  suites/builds through repo wrappers, formatting/clippy, updater wiring tests,
+  and license/source consistency checks. Use existing read-only Sherpa libs and
+  task-local target/caches, never mutable original-checkout output. Windows/Linux
+  CI must validate target-specific paths after push; local host is not their pass.
+- [ ] Self-review, commit and report exact commands/results plus before/after
+  comparison, new dependency inventory and any limits. Do not add ignored process
+  reports to Git: .superpowers artifacts stay local, NEVER git add -f them.
 
 ## Review and publication
 
