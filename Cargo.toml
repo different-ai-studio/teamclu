@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor/rust/serenity-0.12.5", "vendor/rust/sherpa-onnx-sys-1.13.7"]
 members = [
   "apps/desktop",
   "apps/desktop/crates/*",
@@ -45,3 +46,7 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 0
+
+[patch.crates-io]
+serenity = { path = "vendor/rust/serenity-0.12.5" }
+sherpa-onnx-sys = { path = "vendor/rust/sherpa-onnx-sys-1.13.7" }

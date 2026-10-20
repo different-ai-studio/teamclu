@@ -41,7 +41,6 @@ tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
-tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-window-state = "2"
@@ -66,7 +65,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 # the one that matters: without it the Rust side ignores the macOS / Windows
 # proxy settings and only reads HTTP(S)_PROXY.
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "stream", "rustls-tls-native-roots", "default-tls", "charset", "http2", "system-proxy"] }
-rumqttc = { version = "0.24", features = ["websocket"] }
+rumqttc = { version = "0.25.1", default-features = false, features = ["use-rustls-no-provider", "websocket"] }
 notify = { version = "8", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.7"
 base64 = "0.22"
@@ -113,7 +112,7 @@ whoami = "1"
 ignore = "0.4"
 
 # ClawHub skill registry
-zip = "8"
+zip = "9"
 urlencoding = "2"
 dirs = "5"
 # Shared with the daemon so the two never disagree about where a CLI lives.

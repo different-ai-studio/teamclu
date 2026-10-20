@@ -629,8 +629,7 @@ fn archive_removed_pack(team_id: &str, dir: &Path, slug: &str) -> Result<(), Str
 /// Unpack a skill archive.
 ///
 /// The entry-name guard comes from `teamclu-skillpack` so it has one definition
-/// shared with the desktop installer; the loop is local because the two crates
-/// are on different major versions of `zip`.
+/// shared with the desktop installer; each crate owns its extraction loop.
 fn extract_zip_to_dir(zip_bytes: &[u8], target_dir: &Path) -> Result<(), String> {
     use std::io::Read;
 
@@ -642,7 +641,10 @@ fn extract_zip_to_dir(zip_bytes: &[u8], target_dir: &Path) -> Result<(), String>
         let mut file = archive
             .by_index(i)
             .map_err(|e| format!("read zip entry {i}: {e}"))?;
-        let Some(safe_path) = sanitize_zip_path(file.name()) else {
+        let name = file
+            .name()
+            .map_err(|e| format!("invalid zip entry name {i}: {e}"))?;
+        let Some(safe_path) = sanitize_zip_path(&name) else {
             continue;
         };
         let out_path = target_dir.join(&safe_path);
@@ -664,6 +666,21 @@ fn extract_zip_to_dir(zip_bytes: &[u8], target_dir: &Path) -> Result<(), String>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn extraction_preserves_legacy_cp437_filenames() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes: Vec<u8> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/archive-cp437.json"
+        )))
+        .unwrap();
+        extract_zip_to_dir(&bytes, temp.path()).unwrap();
+        assert_eq!(
+            std::fs::read(temp.path().join("éad.txt")).unwrap(),
+            b"fixture"
+        );
+    }
+
     use super::*;
 
     fn write(dir: &Path, rel: &str, body: &str) {

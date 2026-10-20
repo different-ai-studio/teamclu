@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rumqttc = "0.24"
-# MQTT root store (src/tls.rs). Must be the rustls that rumqttc 0.24 links
-# through tokio-rustls 0.25 — its `TlsConfiguration::Rustls` carries that exact
+rumqttc = { version = "0.25.1", default-features = false, features = ["use-rustls-no-provider"] }
+# MQTT root store (src/tls.rs). Must be the rustls that rumqttc 0.25 links
+# through tokio-rustls 0.26 — its `TlsConfiguration::Rustls` carries that exact
 # version's `ClientConfig`.
-rustls = "0.22"
-rustls-native-certs = "0.7"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
 webpki-roots = "0.26"
 async-nats = "0.49"
 async-trait = "0.1"
@@ -19,4 +19,5 @@ tokio = { version = "1", features = ["sync", "rt"] }
 tracing = "0.1"
 
 [dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
