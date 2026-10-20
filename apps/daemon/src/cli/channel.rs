@@ -68,8 +68,8 @@ fn list(cfg: &DaemonConfig) {
 
 fn bind(cfg: &mut DaemonConfig, b: ChannelBindArgs) -> anyhow::Result<()> {
     use crate::config::{
-        DiscordChannel, EmailChannel, FeishuChannel, KookChannel, SeaTalkChannel, WeChatChannel,
-        WeComChannel,
+        DiscordChannel, EmailChannel, FeishuChannel, KookChannel, SeaTalkBot, SeaTalkChannel,
+        WeChatChannel, WeComChannel,
     };
     match b.platform {
         ChannelBindPlatform::Discord {
@@ -147,14 +147,20 @@ fn bind(cfg: &mut DaemonConfig, b: ChannelBindArgs) -> anyhow::Result<()> {
         ChannelBindPlatform::Seatalk { app_id, app_secret } => {
             cfg.channels.seatalk = Some(SeaTalkChannel {
                 enabled: true,
-                app_id,
-                app_secret,
+                app_id: String::new(),
+                app_secret: String::new(),
                 mode: "websocket".to_string(),
                 dm_policy: "open".to_string(),
                 allow_from: vec![],
                 group_policy: "open".to_string(),
                 group_allow_from: vec![],
                 system_prompt: None,
+                bots: vec![SeaTalkBot {
+                    enabled: true,
+                    app_id,
+                    app_secret,
+                    system_prompt: None,
+                }],
             });
         }
     }

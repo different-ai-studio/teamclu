@@ -66,6 +66,21 @@ pub async fn list_wecom_bots_status() -> Result<Vec<WeComBotStatus>, String> {
     amuxd_control::request_json_async("wecom-bots-status\n").await
 }
 
+/// Per-app SeaTalk connection status. `appId` is the Open Platform App ID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeaTalkBotStatus {
+    pub app_id: String,
+    pub connected: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn list_seatalk_bots_status() -> Result<Vec<SeaTalkBotStatus>, String> {
+    amuxd_control::request_json_async("seatalk-bots-status\n").await
+}
+
 /// Every conversation the configured WeCom bots can be addressed in.
 ///
 /// Answered by each bot's MCP endpoint, not by the gateway: the long

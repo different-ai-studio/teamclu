@@ -111,5 +111,13 @@ describe('cron-utils seatalk delivery registry', () => {
       mode: 'single',
       values: { employeeCode: 'E1' },
     })
+    expect(entry?.buildTarget('group', { groupId: 'g1', appId: 'app-1' })).toBe(
+      'bot:app-1/group:g1',
+    )
+    expect(entry?.parseTarget('bot:app-1/single:E1')).toEqual({
+      mode: 'single',
+      values: { employeeCode: 'E1', appId: 'app-1' },
+    })
+    expect(entry?.getTargetDisplay('bot:app-1/group:g1')).toBe('app-1 · Group g1')
   })
 })

@@ -381,24 +381,41 @@ fn wecom_cron_target_to_dispatch(target: &str) -> Result<String, String> {
     Ok(format!("user:{target}"))
 }
 
-/// Map SeaTalk cron UI targets (`single:` / `group:` / raw) to amuxd dispatch.
+/// Map SeaTalk cron UI targets (`single:` / `group:` / raw, optional
+/// `bot:<app_id>/` prefix) to amuxd dispatch.
 fn seatalk_cron_target_to_dispatch(target: &str) -> Result<String, String> {
-    if let Some(id) = target.strip_prefix("single:") {
+    let (prefix, body) = match target.strip_prefix("bot:") {
+        Some(rest) => {
+            let (app, rest) = rest.split_once('/').ok_or_else(|| {
+                "SeaTalk target must be bot:<app_id>/single:<id> or bot:<app_id>/group:<id>"
+                    .to_string()
+            })?;
+            if app.trim().is_empty() {
+                return Err("SeaTalk app id is empty".into());
+            }
+            (Some(app), rest)
+        }
+        None => (None, target),
+    };
+    let mapped = if let Some(id) = body.strip_prefix("single:") {
         if id.trim().is_empty() {
             return Err("SeaTalk employee_code is empty".into());
         }
-        return Ok(format!("user:{id}"));
-    }
-    if let Some(id) = target.strip_prefix("group:") {
+        format!("user:{id}")
+    } else if let Some(id) = body.strip_prefix("group:") {
         if id.trim().is_empty() {
             return Err("SeaTalk group_id is empty".into());
         }
-        return Ok(format!("chat:{id}"));
-    }
-    if target.trim().is_empty() {
+        format!("chat:{id}")
+    } else if body.trim().is_empty() {
         return Err("SeaTalk target is empty".into());
-    }
-    Ok(format!("user:{target}"))
+    } else {
+        format!("user:{body}")
+    };
+    Ok(match prefix {
+        Some(app) => format!("bot:{app}/{mapped}"),
+        None => mapped,
+    })
 }
 
 /// Split a message into chunks, respecting UTF-8 character boundaries.
@@ -476,5 +493,13 @@ mod tests {
         );
         assert!(seatalk_cron_target_to_dispatch("group:").is_err());
         assert!(seatalk_cron_target_to_dispatch("").is_err());
+        assert_eq!(
+            seatalk_cron_target_to_dispatch("bot:app-1/single:E001").unwrap(),
+            "bot:app-1/user:E001"
+        );
+        assert_eq!(
+            seatalk_cron_target_to_dispatch("bot:app-1/group:g-abc").unwrap(),
+            "bot:app-1/chat:g-abc"
+        );
     }
 }

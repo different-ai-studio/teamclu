@@ -67,11 +67,18 @@ export interface FeishuGatewayStatusResponse {
   appId?: string
 }
 
-// SeaTalk configuration
-export interface SeaTalkConfig {
+/** One SeaTalk Open Platform app. Each bot has its own socket. */
+export interface SeaTalkBot {
   enabled: boolean
   appId: string
   appSecret: string
+  /** Persona injected into every turn this bot answers. */
+  systemPrompt?: string
+}
+
+// SeaTalk configuration. Group and DM policy are shared by every bot.
+export interface SeaTalkConfig {
+  enabled: boolean
   /** `websocket` (default) or `webhook` */
   mode: string
   /** `open` | `allowlist` */
@@ -80,8 +87,7 @@ export interface SeaTalkConfig {
   /** `disabled` | `allowlist` | `open` — default `open` for @bot */
   groupPolicy: string
   groupAllowFrom: string[]
-  /** Optional persona applied to every reply from this SeaTalk app. */
-  systemPrompt?: string
+  bots: SeaTalkBot[]
 }
 
 export type SeaTalkGatewayStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -306,13 +312,12 @@ export const defaultFeishuConfig: FeishuConfig = {
 
 export const defaultSeaTalkConfig: SeaTalkConfig = {
   enabled: false,
-  appId: '',
-  appSecret: '',
   mode: 'websocket',
   dmPolicy: 'open',
   allowFrom: [],
   groupPolicy: 'open',
   groupAllowFrom: [],
+  bots: [],
 }
 
 export const defaultKookDmConfig: KookDmConfig = {

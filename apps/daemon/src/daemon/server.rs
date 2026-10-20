@@ -297,6 +297,11 @@ pub(crate) enum SockCommand {
     WecomBotsStatus {
         reply_tx: oneshot::Sender<String>,
     },
+    /// Reply with a JSON `[{appId, connected, error}, ...]` snapshot of the
+    /// running SeaTalk apps.
+    SeatalkBotsStatus {
+        reply_tx: oneshot::Sender<String>,
+    },
     /// Reply with `{keys:[...]}` — the dotted paths of credential fields that
     /// already hold a value, so the settings form can show "configured"
     /// instead of an empty box that looks unset.
@@ -2039,6 +2044,10 @@ impl DaemonServer {
                                 let body = self.wecom_bots_status_payload().await;
                                 let _ = reply_tx.send(body);
                             }
+                            Some(SockCommand::SeatalkBotsStatus { reply_tx }) => {
+                                let body = self.seatalk_bots_status_payload().await;
+                                let _ = reply_tx.send(body);
+                            }
                             Some(SockCommand::WecomChatList { reply_tx }) => {
                                 let body = self.wecom_chat_list_payload().await;
                                 let _ = reply_tx.send(body);
@@ -2537,6 +2546,10 @@ impl DaemonServer {
                             }
                             Some(SockCommand::WecomBotsStatus { reply_tx }) => {
                                 let body = self.wecom_bots_status_payload().await;
+                                let _ = reply_tx.send(body);
+                            }
+                            Some(SockCommand::SeatalkBotsStatus { reply_tx }) => {
+                                let body = self.seatalk_bots_status_payload().await;
                                 let _ = reply_tx.send(body);
                             }
                             Some(SockCommand::WecomChatList { reply_tx }) => {
@@ -3151,6 +3164,30 @@ where
                         }
                         Err(_) => {
                             warn!("amuxd.sock: wecom-chat-list reply dropped");
+                        }
+                    }
+                }
+                "seatalk-bots-status" => {
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    if tx
+                        .send(SockCommand::SeatalkBotsStatus { reply_tx })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    match reply_rx.await {
+                        Ok(body) => {
+                            let mut stream = reader.into_inner();
+                            if let Err(e) = stream.write_all(body.as_bytes()).await {
+                                warn!("amuxd.sock: seatalk-bots-status write failed: {e}");
+                                return;
+                            }
+                            let _ = stream.write_all(b"\n").await;
+                            let _ = stream.shutdown().await;
+                        }
+                        Err(_) => {
+                            warn!("amuxd.sock: seatalk-bots-status reply dropped");
                         }
                     }
                 }

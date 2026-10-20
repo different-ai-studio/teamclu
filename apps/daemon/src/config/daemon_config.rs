@@ -679,31 +679,66 @@ pub struct WeChatChannel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SeaTalkChannel {
+pub struct SeaTalkBot {
+    #[serde(default = "default_true")]
     pub enabled: bool,
+    /// SeaTalk Open Platform App ID. Also the secret-store identity
+    /// (`channels.seatalk.bots[<app_id>].app_secret`).
     pub app_id: String,
     /// Stored in the team secret store, not in team.toml (absent = unset).
     #[serde(default)]
     pub app_secret: String,
-    /// `websocket` (default) or `webhook`
+    /// Persona injected into every turn this bot answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeaTalkChannel {
+    pub enabled: bool,
+    /// Legacy single-app id. Read-only fallback when `bots` is empty.
+    #[serde(default)]
+    pub app_id: String,
+    /// Legacy single-app secret. Read-only fallback when `bots` is empty.
+    #[serde(default)]
+    pub app_secret: String,
+    /// `websocket` (default) or `webhook`. Shared by every bot on this channel.
     #[serde(default = "default_seatalk_mode")]
     pub mode: String,
-    /// `open` | `allowlist`
+    /// `open` | `allowlist`. Shared by every bot.
     #[serde(default = "default_seatalk_dm_policy")]
     pub dm_policy: String,
     #[serde(default)]
     pub allow_from: Vec<String>,
-    /// `disabled` | `allowlist` | `open`
+    /// `disabled` | `allowlist` | `open`. Shared by every bot.
     #[serde(default = "default_seatalk_group_policy")]
     pub group_policy: String,
     #[serde(default)]
     pub group_allow_from: Vec<String>,
-    /// Persona for this SeaTalk app. Injected into every gateway turn.
-    ///
-    /// WeCom stores the same idea per bot. SeaTalk has one app, so the prompt
-    /// lives on the channel. Older team.toml files omit it.
+    /// Legacy single-app persona. Copied onto the synthesized bot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub bots: Vec<SeaTalkBot>,
+}
+
+impl SeaTalkChannel {
+    /// Prefer `bots`. An older team.toml with only the top-level app becomes
+    /// one bot so existing installs keep connecting.
+    pub fn resolved_bots(&self) -> Vec<SeaTalkBot> {
+        if !self.bots.is_empty() {
+            return self.bots.clone();
+        }
+        if self.app_id.is_empty() {
+            return vec![];
+        }
+        vec![SeaTalkBot {
+            enabled: true,
+            app_id: self.app_id.clone(),
+            app_secret: self.app_secret.clone(),
+            system_prompt: self.system_prompt.clone(),
+        }]
+    }
 }
 
 fn default_seatalk_mode() -> String {
@@ -1065,7 +1100,10 @@ system_prompt = "只用中文。"
 "#,
         )
         .unwrap();
-        assert_eq!(with_prompt.system_prompt.as_deref(), Some("只用中文。"));
+        let bots = with_prompt.resolved_bots();
+        assert_eq!(bots.len(), 1);
+        assert_eq!(bots[0].app_id, "app001");
+        assert_eq!(bots[0].system_prompt.as_deref(), Some("只用中文。"));
         assert_eq!(with_prompt.mode, "websocket");
         assert_eq!(with_prompt.dm_policy, "open");
         assert_eq!(with_prompt.group_policy, "open");
@@ -1079,6 +1117,33 @@ app_secret = "sec"
         )
         .unwrap();
         assert_eq!(legacy.system_prompt, None);
+        assert_eq!(legacy.resolved_bots()[0].app_secret, "sec");
+    }
+
+    #[test]
+    fn seatalk_bots_array_wins_over_legacy_app() {
+        let channel: SeaTalkChannel = toml::from_str(
+            r#"
+enabled = true
+app_id = "legacy"
+app_secret = "old"
+
+[[bots]]
+app_id = "app-a"
+app_secret = "a"
+system_prompt = "A"
+
+[[bots]]
+enabled = false
+app_id = "app-b"
+"#,
+        )
+        .unwrap();
+        let bots = channel.resolved_bots();
+        assert_eq!(bots.len(), 2);
+        assert_eq!(bots[0].app_id, "app-a");
+        assert_eq!(bots[0].system_prompt.as_deref(), Some("A"));
+        assert!(!bots[1].enabled);
     }
 
     #[test]

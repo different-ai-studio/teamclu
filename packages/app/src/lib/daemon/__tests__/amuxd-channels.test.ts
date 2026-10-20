@@ -111,29 +111,40 @@ describe("amuxd-channels", () => {
 
     await saveChannelConfig("seatalk", {
       enabled: true,
-      appId: "app001",
-      appSecret: "sec",
       mode: "websocket",
       dmPolicy: "open",
       allowFrom: [],
       groupPolicy: "open",
       groupAllowFrom: [],
-      systemPrompt: "  只用中文回答。  ",
+      bots: [
+        {
+          enabled: true,
+          appId: "app001",
+          appSecret: "sec",
+          systemPrompt: "  只用中文回答。  ",
+        },
+      ],
     });
 
     const [, args] = vi.mocked(tauri.invoke).mock.calls[0]!;
     const sent = JSON.parse((args as { configJson: string }).configJson);
-    expect(sent.system_prompt).toBe("只用中文回答。");
+    expect(sent.app_id).toBeUndefined();
+    expect(sent.bots).toEqual([
+      {
+        enabled: true,
+        app_id: "app001",
+        app_secret: "sec",
+        system_prompt: "只用中文回答。",
+      },
+    ]);
 
     await saveChannelConfig("seatalk", {
       enabled: true,
-      appId: "app001",
-      appSecret: "sec",
-      systemPrompt: "   ",
+      bots: [{ enabled: true, appId: "app001", appSecret: "sec", systemPrompt: "   " }],
     });
     const [, clearedArgs] = vi.mocked(tauri.invoke).mock.calls[1]!;
     const cleared = JSON.parse((clearedArgs as { configJson: string }).configJson);
-    expect(cleared.system_prompt).toBeUndefined();
+    expect(cleared.bots[0].system_prompt).toBeUndefined();
 
     vi.mocked(tauri.invoke).mockResolvedValue({
       enabled: true,
@@ -147,8 +158,7 @@ describe("amuxd-channels", () => {
       system_prompt: "只用中文回答。",
     });
     await expect(loadChannelConfig("seatalk")).resolves.toMatchObject({
-      appId: "app001",
-      systemPrompt: "只用中文回答。",
+      bots: [{ appId: "app001", systemPrompt: "只用中文回答。" }],
     });
   });
 

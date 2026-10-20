@@ -31,7 +31,9 @@ struct RunningChannels {
     kook: Option<KookGateway>,
     wechat: Option<WeChatGateway>,
     email: Option<EmailGateway>,
-    seatalk: Option<SeaTalkGateway>,
+    seatalk: Vec<SeaTalkGateway>,
+    /// Bots that were enabled but did not connect. Kept off the send path.
+    seatalk_start_errors: Vec<(String, String)>,
 }
 
 /// A file on its way out to a chat, already uploaded and recorded as a session
@@ -245,13 +247,9 @@ impl ChannelManager {
 
         if let Some(c) = &self.cfg.channels.seatalk {
             if c.enabled {
-                match self.start_seatalk(c).await {
-                    Ok(g) => {
-                        println!("[ChannelManager] seatalk started");
-                        running.seatalk = Some(g);
-                    }
-                    Err(e) => eprintln!("[ChannelManager] seatalk start failed: {e}"),
-                }
+                let (started, errors) = self.start_seatalk_bots(c).await;
+                running.seatalk = started;
+                running.seatalk_start_errors = errors;
             }
         }
 
@@ -286,7 +284,7 @@ impl ChannelManager {
                 if running.wecom.is_empty() {
                     anyhow::bail!("wecom not running");
                 }
-                let (want_bot, target) = select_wecom_target(target);
+                let (want_bot, target) = select_bot_target(target);
                 let g = match want_bot {
                     Some(want) => {
                         let mut found = None;
@@ -311,11 +309,28 @@ impl ChannelManager {
                 result.map_err(|e| anyhow::anyhow!("wecom send: {e}"))
             }
             "seatalk" => {
-                let g = running
-                    .seatalk
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("seatalk not running"))?;
-                let (kind, id) = parse_send_target(target)?;
+                if running.seatalk.is_empty() {
+                    anyhow::bail!("seatalk not running");
+                }
+                let (want_app, rest) = select_bot_target(target);
+                let route = normalize_seatalk_route(rest);
+                let g = match want_app {
+                    Some(want) => {
+                        let mut found = None;
+                        for gw in running.seatalk.iter() {
+                            if gw.app_id().await == want {
+                                found = Some(gw);
+                                break;
+                            }
+                        }
+                        found.ok_or_else(|| anyhow::anyhow!("no running seatalk bot '{want}'"))?
+                    }
+                    None if running.seatalk.len() == 1 => &running.seatalk[0],
+                    None => anyhow::bail!(
+                        "multiple SeaTalk bots are running; target must be bot:<app_id>/user:<id> or bot:<app_id>/chat:<id>"
+                    ),
+                };
+                let (kind, id) = parse_send_target(&route)?;
                 let text = message.unwrap_or("");
                 if media.is_some() {
                     anyhow::bail!("seatalk: file send not supported yet");
@@ -405,15 +420,17 @@ impl ChannelManager {
             }
             None => (false, None),
         };
-        let seatalk = match running.seatalk.as_ref() {
-            Some(g) => {
-                let status = g.get_status().await;
-                (
-                    status.status == SeaTalkGatewayStatus::Connected,
-                    status.error_message,
-                )
+        let seatalk = {
+            let mut connected = false;
+            let mut err = None;
+            for g in running.seatalk.iter() {
+                let s = g.get_status().await;
+                connected |= s.status == SeaTalkGatewayStatus::Connected;
+                if err.is_none() {
+                    err = s.error_message;
+                }
             }
-            None => (false, None),
+            (connected, err)
         };
 
         vec![
@@ -442,6 +459,24 @@ impl ChannelManager {
         out
     }
 
+    /// Per-bot SeaTalk status: `(app_id, connected, last_error)`.
+    pub async fn seatalk_bots_status(&self) -> Vec<(String, bool, Option<String>)> {
+        let running = self.running.lock().await;
+        let mut out = Vec::new();
+        for g in running.seatalk.iter() {
+            let s = g.get_status().await;
+            out.push((
+                g.app_id().await,
+                s.status == SeaTalkGatewayStatus::Connected,
+                s.error_message,
+            ));
+        }
+        for (app_id, error) in &running.seatalk_start_errors {
+            out.push((app_id.clone(), false, Some(error.clone())));
+        }
+        out
+    }
+
     /// Stop every running channel. Takes `self` by value so each gateway's
     /// consuming `shutdown(self)` can be invoked.
     pub async fn shutdown(self) {
@@ -464,7 +499,7 @@ impl ChannelManager {
         if let Some(g) = running.email.take() {
             g.shutdown().await;
         }
-        if let Some(g) = running.seatalk.take() {
+        for g in std::mem::take(&mut running.seatalk) {
             g.shutdown().await;
         }
     }
@@ -663,65 +698,105 @@ impl ChannelManager {
         Ok(gw)
     }
 
-    async fn start_seatalk(&self, c: &SeaTalkChannel) -> anyhow::Result<SeaTalkGateway> {
-        let gw = SeaTalkGateway::new(
-            self.acp.clone(),
-            self.store.clone(),
-            self.team_id.clone(),
-            self.primary_agent_actor_id.clone(),
-            self.agent_owner_actor_ids.clone(),
-        );
-        let cfg = SeaTalkConfig {
-            enabled: true,
-            app_id: c.app_id.clone(),
-            app_secret: c.app_secret.clone(),
-            mode: if c.mode.is_empty() {
-                "websocket".to_string()
-            } else {
-                c.mode.clone()
-            },
-            dm_policy: if c.dm_policy.is_empty() {
-                "open".to_string()
-            } else {
-                c.dm_policy.clone()
-            },
-            allow_from: c.allow_from.clone(),
-            group_policy: if c.group_policy.is_empty() {
-                "open".to_string()
-            } else {
-                c.group_policy.clone()
-            },
-            group_allow_from: c.group_allow_from.clone(),
-            ..Default::default()
-        };
-        let dm_thread = cfg.dm_thread_session;
-        let group_thread = cfg.group_thread_session;
-        gw.set_config(cfg).await;
-        // SeaTalk gains dedup, commands, attachments-as-text and a per-channel
-        // turn timeout from this; it had none of them on the inline path.
-        gw.use_core_pipeline(
-            self.core_sink_for(Arc::new(
-                gw.as_driver()
-                    .await
-                    .with_thread_sessions(dm_thread, group_thread),
-            )),
-        )
-        .await;
-        gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
-        Ok(gw)
+    /// One `SeaTalkGateway` (one app, one socket) per enabled bot. A bot that
+    /// cannot start is logged and skipped so the others still connect.
+    async fn start_seatalk_bots(
+        &self,
+        c: &SeaTalkChannel,
+    ) -> (Vec<SeaTalkGateway>, Vec<(String, String)>) {
+        let mut started = Vec::new();
+        let mut errors = Vec::new();
+        for bot in c.resolved_bots().into_iter().filter(|b| b.enabled) {
+            if bot.app_id.is_empty() || bot.app_secret.is_empty() {
+                let message = "app id and app secret are required".to_string();
+                eprintln!(
+                    "[ChannelManager] seatalk bot {} skipped: {message}",
+                    bot.app_id
+                );
+                errors.push((bot.app_id.clone(), message));
+                continue;
+            }
+            let gw = SeaTalkGateway::new(
+                self.acp.clone(),
+                self.store.clone(),
+                self.team_id.clone(),
+                self.primary_agent_actor_id.clone(),
+                self.agent_owner_actor_ids.clone(),
+            );
+            let cfg = SeaTalkConfig {
+                enabled: true,
+                app_id: bot.app_id.clone(),
+                app_secret: bot.app_secret.clone(),
+                mode: if c.mode.is_empty() {
+                    "websocket".to_string()
+                } else {
+                    c.mode.clone()
+                },
+                dm_policy: if c.dm_policy.is_empty() {
+                    "open".to_string()
+                } else {
+                    c.dm_policy.clone()
+                },
+                allow_from: c.allow_from.clone(),
+                group_policy: if c.group_policy.is_empty() {
+                    "open".to_string()
+                } else {
+                    c.group_policy.clone()
+                },
+                group_allow_from: c.group_allow_from.clone(),
+                ..Default::default()
+            };
+            let dm_thread = cfg.dm_thread_session;
+            let group_thread = cfg.group_thread_session;
+            gw.set_config(cfg).await;
+            gw.use_core_pipeline(
+                self.core_sink_for(Arc::new(
+                    gw.as_driver()
+                        .await
+                        .with_thread_sessions(dm_thread, group_thread),
+                )),
+            )
+            .await;
+            match gw.start().await {
+                Ok(()) => {
+                    println!("[ChannelManager] seatalk bot {} started", bot.app_id);
+                    started.push(gw);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[ChannelManager] seatalk bot {} start failed: {e}",
+                        bot.app_id
+                    );
+                    errors.push((bot.app_id.clone(), e.to_string()));
+                }
+            }
+        }
+        (started, errors)
     }
 }
 
-/// Choose which WeCom bot gateway handles a send. A `bot:<bot_id>/<rest>`
-/// prefix pins a specific bot; otherwise the first running bot is used.
-/// Returns the optional bot id and the remaining target string.
-fn select_wecom_target(target: &str) -> (Option<&str>, &str) {
+/// Choose which bot gateway handles a send. A `bot:<id>/<rest>` prefix pins
+/// a specific bot. WeCom falls back to the first running bot; SeaTalk falls
+/// back only when exactly one bot is running.
+fn select_bot_target(target: &str) -> (Option<&str>, &str) {
     if let Some(rest) = target.strip_prefix("bot:") {
         if let Some((bot_id, rest)) = rest.split_once('/') {
             return (Some(bot_id), rest);
         }
     }
     (None, target)
+}
+
+/// Cron and the settings form say `single:` / `group:`. The send path says
+/// `user:` / `chat:`. Accept both once the bot prefix is peeled off.
+fn normalize_seatalk_route(target: &str) -> String {
+    if let Some(id) = target.strip_prefix("single:") {
+        return format!("user:{id}");
+    }
+    if let Some(id) = target.strip_prefix("group:") {
+        return format!("chat:{id}");
+    }
+    target.to_string()
 }
 
 /// Parse a `user:<id>` / `chat:<id>` target string into `(kind, id)`.
@@ -741,16 +816,28 @@ fn parse_send_target(target: &str) -> anyhow::Result<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_send_target, select_wecom_target};
+    use super::{normalize_seatalk_route, parse_send_target, select_bot_target};
 
     #[test]
-    fn select_wecom_target_strips_bot_prefix() {
-        let (bot, rest) = select_wecom_target("bot:botA/user:alice");
+    fn select_bot_target_strips_bot_prefix() {
+        let (bot, rest) = select_bot_target("bot:botA/user:alice");
         assert_eq!(bot, Some("botA"));
         assert_eq!(parse_send_target(rest).unwrap(), ("user", "alice"));
-        let (bot2, rest2) = select_wecom_target("user:bob");
+        let (bot2, rest2) = select_bot_target("user:bob");
         assert_eq!(bot2, None);
         assert_eq!(rest2, "user:bob");
+    }
+
+    #[test]
+    fn seatalk_route_accepts_cron_single_and_group() {
+        assert_eq!(normalize_seatalk_route("single:E1"), "user:E1");
+        assert_eq!(normalize_seatalk_route("group:g1"), "chat:g1");
+        let (bot, rest) = select_bot_target("bot:app-1/group:g1");
+        assert_eq!(bot, Some("app-1"));
+        assert_eq!(
+            parse_send_target(&normalize_seatalk_route(rest)).unwrap(),
+            ("chat", "g1")
+        );
     }
 
     #[test]

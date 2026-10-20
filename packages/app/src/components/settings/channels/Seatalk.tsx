@@ -1,15 +1,21 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Key, Shield, Loader2, ExternalLink, Bot, Sparkles } from 'lucide-react'
+import { invoke } from '@tauri-apps/api/core'
+import { Key, Shield, Loader2, ExternalLink, Bot, Sparkles, Plus } from 'lucide-react'
 import { openExternalUrl } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useChannelsStore } from '@/stores/channels-store'
-import { type SeaTalkConfig, defaultSeaTalkConfig } from '@/stores/channels-types'
+import { type SeaTalkBot, type SeaTalkConfig, defaultSeaTalkConfig } from '@/stores/channels-types'
 import { GatewayStatusCard } from './GatewayStatusCard'
 import { TestCredentialsButton } from './TestCredentialsButton'
 import { useChannelConfig } from '@/hooks/use-channel-config'
 import { useShallow } from 'zustand/react/shallow'
+import {
+  botSecretPath,
+  channelSecretPath,
+  loadChannelSecretKeys,
+} from '@/lib/team/channel-secret-presence'
 
 function SeaTalkIcon({ className }: { className?: string }) {
   return (
@@ -17,6 +23,18 @@ function SeaTalkIcon({ className }: { className?: string }) {
       <path d="M12 2C6.48 2 2 6.03 2 11c0 2.9 1.46 5.48 3.74 7.1L5 22l3.64-1.86C9.68 20.71 10.81 21 12 21c5.52 0 10-4.03 10-9S17.52 2 12 2zm0 16c-.95 0-1.87-.22-2.7-.63l-.3-.15-2.2 1.12.42-2.41-.2-.31C5.9 14.4 5 12.78 5 11c0-3.87 3.58-7 7-7s7 3.13 7 7-3.58 7-7 7z" />
     </svg>
   )
+}
+
+interface SeaTalkBotStatus {
+  appId: string
+  connected: boolean
+  error?: string | null
+}
+
+function secretIsStored(appId: string, keys: Set<string>, onlyBot: boolean): boolean {
+  const id = appId.trim()
+  if (id && keys.has(botSecretPath('seatalk', id, 'app_secret'))) return true
+  return onlyBot && keys.has(channelSecretPath('seatalk', 'app_secret'))
 }
 
 export function SeaTalkChannel() {
@@ -41,6 +59,9 @@ export function SeaTalkChannel() {
   )
 
   const [expanded, setExpanded] = React.useState(false)
+  const [secretKeys, setSecretKeys] = React.useState<Set<string>>(new Set())
+  const [botStatuses, setBotStatuses] = React.useState<SeaTalkBotStatus[]>([])
+  const [testingAppId, setTestingAppId] = React.useState<string | null>(null)
 
   const {
     localConfig,
@@ -63,10 +84,38 @@ export function SeaTalkChannel() {
     refreshStatus: refreshSeaTalkStatus,
   })
 
-  const handleTestCredentials = async () => {
-    if (!localConfig.appId || !localConfig.appSecret) return
-    await testSeaTalkCredentials(localConfig.appId, localConfig.appSecret)
+  const bots = localConfig.bots ?? []
+  const filledIds = bots.filter((b) => b.appId.trim()).length
+
+  React.useEffect(() => {
+    let cancelled = false
+    void loadChannelSecretKeys().then((keys) => {
+      if (!cancelled) setSecretKeys(keys)
+    })
+    void invoke<SeaTalkBotStatus[]>('list_seatalk_bots_status')
+      .then((rows) => {
+        if (!cancelled) setBotStatuses(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setBotStatuses([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [seatalkIsLoading, seatalkGatewayStatus.status, bots.length])
+
+  const updateBot = (index: number, patch: Partial<SeaTalkBot>) => {
+    updateLocalConfig({
+      bots: bots.map((bot, i) => (i === index ? { ...bot, ...patch } : bot)),
+    })
   }
+
+  const canStart = bots.some(
+    (bot) =>
+      bot.enabled !== false &&
+      Boolean(bot.appId.trim()) &&
+      (Boolean(bot.appSecret.trim()) || secretIsStored(bot.appId, secretKeys, filledIds === 1)),
+  )
 
   if (!seatalk) return null
 
@@ -79,11 +128,6 @@ export function SeaTalkChannel() {
       }
       title={t('settings.channels.seatalk.gateway', 'SeaTalk Gateway')}
       status={seatalkGatewayStatus.status}
-      statusDetail={
-        seatalkGatewayStatus.appId ? (
-          <p className="text-xs text-muted-foreground">App: {seatalkGatewayStatus.appId}</p>
-        ) : undefined
-      }
       errorMessage={seatalkGatewayStatus.errorMessage}
       expanded={expanded}
       onToggleExpanded={() => setExpanded(!expanded)}
@@ -99,9 +143,9 @@ export function SeaTalkChannel() {
       onStart={startSeaTalkGateway}
       onStop={stopSeaTalkGateway}
       onRestart={handleRestart}
-      startDisabled={!localConfig.appId || !localConfig.appSecret}
+      startDisabled={!canStart}
     >
-      {!localConfig.appId && (
+      {filledIds === 0 && (
         <div className="p-4 rounded-lg bg-gradient-to-br from-sky-50 to-blue-50 dark:from-sky-950/30 dark:to-blue-950/30 border border-sky-200 dark:border-sky-800">
           <div className="flex items-start gap-4">
             <Bot className="h-8 w-8 text-sky-600 dark:text-sky-400 flex-shrink-0" />
@@ -129,43 +173,134 @@ export function SeaTalkChannel() {
         </div>
       )}
 
-      <div className="space-y-2">
-        <label className="text-[13px] font-medium flex items-center gap-2">
-          <Key className="h-4 w-4 text-muted-foreground" />
-          {t('settings.channels.seatalk.appCredentials', 'App Credentials')}
-        </label>
-        <div className="space-y-2">
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">{t('settings.channels.seatalk.appId', 'App ID')}</label>
-            <Input
-              value={localConfig.appId}
-              onChange={(e) => updateLocalConfig({ appId: e.target.value })}
-              placeholder="your_app_id"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">{t('settings.channels.seatalk.appSecret', 'App Secret')}</label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Input
-                  type="password"
-                  value={localConfig.appSecret}
-                  onChange={(e) => updateLocalConfig({ appSecret: e.target.value })}
-                  placeholder={t('settings.channels.seatalk.appSecretPlaceholder', 'Your app secret')}
-                  className="pr-10"
-                />
-                <Shield className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              </div>
-              <TestCredentialsButton
-                onTest={handleTestCredentials}
-                isTesting={seatalkIsTesting}
-                testResult={seatalkTestResult}
-                onClearResult={clearSeaTalkTestResult}
-                disabled={!localConfig.appId || !localConfig.appSecret}
-              />
-            </div>
-          </div>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <label className="text-[13px] font-medium flex items-center gap-2">
+            <Key className="h-4 w-4 text-muted-foreground" />
+            {t('settings.channels.seatalk.appCredentials', 'App Credentials')}
+          </label>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1"
+            onClick={() =>
+              updateLocalConfig({
+                bots: [...bots, { enabled: true, appId: '', appSecret: '' }],
+              })
+            }
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t('settings.channels.seatalk.addBot', 'Add bot')}
+          </Button>
         </div>
+        <p className="text-[11px] text-muted-foreground">
+          {t(
+            'settings.channels.seatalk.botsHint',
+            'Each bot is its own SeaTalk app and its own connection. Group rules below apply to every bot.',
+          )}
+        </p>
+
+        {bots.map((bot, index) => {
+          const stored = secretIsStored(bot.appId, secretKeys, filledIds === 1)
+          const status = botStatuses.find((row) => row.appId === bot.appId.trim())
+          return (
+            <div key={index} className="space-y-2 rounded-lg border border-border bg-paper p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[13px] font-medium">
+                  {t('settings.channels.seatalk.botLabel', 'Bot {{index}}', { index: index + 1 })}
+                </span>
+                <div className="flex items-center gap-3">
+                  {status?.error ? (
+                    <span className="max-w-[220px] truncate text-[11px] text-destructive" title={status.error}>
+                      {status.error}
+                    </span>
+                  ) : status ? (
+                    <span className="text-[11px] font-mono text-faint">
+                      {status.connected
+                        ? t('settings.channels.seatalk.botConnected', 'Connected')
+                        : t('settings.channels.seatalk.botDisconnected', 'Not connected')}
+                    </span>
+                  ) : null}
+                  <label className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={bot.enabled !== false}
+                      onChange={(e) => updateBot(index, { enabled: e.target.checked })}
+                    />
+                    {t('settings.channels.seatalk.botEnabled', 'Enabled')}
+                  </label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => updateLocalConfig({ bots: bots.filter((_, i) => i !== index) })}
+                  >
+                    {t('settings.channels.seatalk.removeBot', 'Remove')}
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">{t('settings.channels.seatalk.appId', 'App ID')}</label>
+                <Input
+                  value={bot.appId}
+                  onChange={(e) => updateBot(index, { appId: e.target.value })}
+                  placeholder="your_app_id"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">{t('settings.channels.seatalk.appSecret', 'App Secret')}</label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Input
+                      type="password"
+                      value={bot.appSecret}
+                      onChange={(e) => updateBot(index, { appSecret: e.target.value })}
+                      placeholder={
+                        stored
+                          ? t('settings.channels.seatalk.appSecretStored', 'Configured · leave empty to keep')
+                          : t('settings.channels.seatalk.appSecretPlaceholder', 'Your app secret')
+                      }
+                      className="pr-10"
+                    />
+                    <Shield className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <TestCredentialsButton
+                    onTest={async () => {
+                      setTestingAppId(bot.appId)
+                      await testSeaTalkCredentials(bot.appId, bot.appSecret)
+                    }}
+                    isTesting={seatalkIsTesting && testingAppId === bot.appId}
+                    testResult={testingAppId === bot.appId ? seatalkTestResult : null}
+                    onClearResult={clearSeaTalkTestResult}
+                    disabled={!bot.appId || !bot.appSecret}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[13px] font-medium">
+                  {t('settings.channels.seatalk.systemPrompt', 'System prompt')}
+                </label>
+                <textarea
+                  className="w-full min-h-[72px] rounded-md border border-border bg-paper px-3 py-2 text-[13px]"
+                  value={bot.systemPrompt ?? ''}
+                  onChange={(e) => updateBot(index, { systemPrompt: e.target.value || undefined })}
+                  placeholder={t(
+                    'settings.channels.seatalk.systemPromptPlaceholder',
+                    'Optional instructions this SeaTalk bot follows when it replies',
+                  )}
+                  rows={3}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  {t(
+                    'settings.channels.seatalk.systemPromptHint',
+                    'After you save, every reply from this bot includes this prompt.',
+                  )}
+                </p>
+              </div>
+            </div>
+          )
+        })}
       </div>
 
       <div className="space-y-2">
@@ -207,28 +342,6 @@ export function SeaTalkChannel() {
             />
           </div>
         )}
-      </div>
-
-      <div className="space-y-1">
-        <label className="text-[13px] font-medium">
-          {t('settings.channels.seatalk.systemPrompt', 'System prompt')}
-        </label>
-        <textarea
-          className="w-full min-h-[88px] rounded-md border border-border bg-paper px-3 py-2 text-[13px]"
-          value={localConfig.systemPrompt ?? ''}
-          onChange={(e) => updateLocalConfig({ systemPrompt: e.target.value || undefined })}
-          placeholder={t(
-            'settings.channels.seatalk.systemPromptPlaceholder',
-            'Optional instructions this SeaTalk bot follows when it replies',
-          )}
-          rows={3}
-        />
-        <p className="text-[11px] text-muted-foreground">
-          {t(
-            'settings.channels.seatalk.systemPromptHint',
-            'After you save, every reply from this bot includes this prompt.',
-          )}
-        </p>
       </div>
 
       <div className="p-3 rounded-lg bg-muted/40 text-[13px] space-y-1">

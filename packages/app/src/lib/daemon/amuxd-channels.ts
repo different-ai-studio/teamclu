@@ -122,11 +122,10 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
         app_id: String(config.appId ?? ""),
         app_secret: String(config.appSecret ?? ""),
       };
-    case "seatalk":
+    case "seatalk": {
+      const bots = Array.isArray(config.bots) ? (config.bots as ChannelConfig[]) : [];
       return {
         enabled: Boolean(config.enabled),
-        app_id: String(config.appId ?? ""),
-        app_secret: String(config.appSecret ?? ""),
         mode: String(config.mode ?? "websocket"),
         dm_policy: String(config.dmPolicy ?? "open"),
         allow_from: Array.isArray(config.allowFrom) ? config.allowFrom : [],
@@ -134,8 +133,14 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
         group_allow_from: Array.isArray(config.groupAllowFrom)
           ? config.groupAllowFrom
           : [],
-        system_prompt: String(config.systemPrompt ?? "").trim() || undefined,
+        bots: bots.map((b) => ({
+          enabled: b.enabled !== false,
+          app_id: String(b.appId ?? ""),
+          app_secret: String(b.appSecret ?? ""),
+          system_prompt: String(b.systemPrompt ?? "").trim() || undefined,
+        })),
       };
+    }
     case "kook":
       return {
         enabled: Boolean(config.enabled),
@@ -163,6 +168,33 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
           : [],
       };
   }
+}
+
+function seatalkPrompt(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+/** Prefer `bots`. An older document with only `app_id` becomes one bot. */
+function seatalkBotsFromDaemon(config: ChannelConfig): ChannelConfig[] {
+  const raw = config.bots;
+  if (Array.isArray(raw) && raw.length > 0) {
+    return (raw as ChannelConfig[]).map((b) => ({
+      enabled: b.enabled !== false,
+      appId: String(b.app_id ?? ""),
+      appSecret: String(b.app_secret ?? ""),
+      systemPrompt: seatalkPrompt(b.system_prompt),
+    }));
+  }
+  const appId = String(config.app_id ?? "");
+  if (!appId) return [];
+  return [
+    {
+      enabled: true,
+      appId,
+      appSecret: String(config.app_secret ?? ""),
+      systemPrompt: seatalkPrompt(config.system_prompt),
+    },
+  ];
 }
 
 function fromDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): ChannelConfig {
@@ -215,8 +247,6 @@ function fromDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Cha
     case "seatalk":
       return {
         enabled: Boolean(config.enabled),
-        appId: String(config.app_id ?? ""),
-        appSecret: String(config.app_secret ?? ""),
         mode: String(config.mode ?? "websocket"),
         dmPolicy: String(config.dm_policy ?? "open"),
         allowFrom: Array.isArray(config.allow_from) ? config.allow_from : [],
@@ -224,10 +254,7 @@ function fromDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Cha
         groupAllowFrom: Array.isArray(config.group_allow_from)
           ? config.group_allow_from
           : [],
-        systemPrompt:
-          typeof config.system_prompt === "string" && config.system_prompt.trim()
-            ? config.system_prompt
-            : undefined,
+        bots: seatalkBotsFromDaemon(config),
       };
     case "kook":
       return {

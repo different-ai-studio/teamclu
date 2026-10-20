@@ -474,6 +474,7 @@ pub fn run() {
             commands::filewatcher::unwatch_directory,
             commands::gateway::list_channels,
             commands::gateway::list_wecom_bots_status,
+            commands::gateway::list_seatalk_bots_status,
             commands::gateway::list_wecom_chats,
             commands::gateway::list_channel_secret_keys,
             commands::gateway::load_channel_config,
