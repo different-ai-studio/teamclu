@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { dryRun } = require("./dry-run");
@@ -52,9 +53,11 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
     bytes: fs.readFileSync(abs),
     sourceSha256: item.sourceSha256,
     visionExtract: opts.visionExtract,
-    visionModel: config.models?.vision,
+    visionModel: opts.visionModel || config.models?.vision,
     promptVersion: config.models?.visionPromptVersion || "v1",
+    maxVisionPages: config.limits?.maxVisionPages,
     cache: opts.extractCache,
+    cacheDir: path.join(opts.workRoot, "state", "vision-cache"),
   });
   if (extracted.quality !== "accepted") {
     throw new Error(`extraction ${extracted.quality}`);
@@ -116,7 +119,11 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
       rel.startsWith("pages/"),
     );
     if (pageHits.length === 0) {
-      throw new Error("compiler produced no wiki pages");
+      throw new Error(
+        String(extracted.extractorName || "").includes("vision")
+          ? "vision transcribed but compiler produced no wiki pages"
+          : "compiler produced no wiki pages",
+      );
     }
     const changed = changedRelPaths(wikiRoot, beforeCommit);
     const verdict = validateSourceDiff({
@@ -174,32 +181,112 @@ function normalizeCompiledPages(wikiRoot, beforeCommit, defaults) {
   }
 }
 
-function retractSourceCitations(wikiRoot, sourcePath) {
-  const removed = [];
-  const rewritten = [];
+function readPage(wikiRoot, rel) {
+  const abs = path.join(wikiRoot, rel);
+  if (!fs.existsSync(abs)) return null;
+  try {
+    return parseFrontmatter(fs.readFileSync(abs, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function dropPagesOnlyCiting(wikiRoot, sourcePath) {
   for (const rel of listPageFiles(wikiRoot)) {
+    const parsed = readPage(wikiRoot, rel);
+    if (!parsed) continue;
+    const cited = Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [];
+    if (!cited.some((source) => source && source.path === sourcePath)) continue;
+    const others = cited.filter((source) => source && source.path && source.path !== sourcePath);
+    if (others.length > 0) continue;
+    fs.rmSync(path.join(wikiRoot, rel));
+  }
+}
+
+function snapshotPages(wikiRoot, rels) {
+  const snap = new Map();
+  for (const rel of rels) {
     const abs = path.join(wikiRoot, rel);
-    let parsed;
-    try {
-      parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
-    } catch {
+    snap.set(rel, fs.existsSync(abs) ? fs.readFileSync(abs) : null);
+  }
+  return snap;
+}
+
+function restorePages(wikiRoot, snap) {
+  for (const [rel, bytes] of snap) {
+    const abs = path.join(wikiRoot, rel);
+    if (bytes == null) {
+      if (fs.existsSync(abs)) fs.rmSync(abs);
       continue;
     }
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, bytes);
+  }
+}
+
+function fileExistedAt(wikiRoot, commit, rel) {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${commit}:${rel}`], {
+      cwd: wikiRoot,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function discardModelOnlyFiles(wikiRoot, beforeCommit, keep) {
+  for (const rel of changedRelPaths(wikiRoot, beforeCommit)) {
+    if (keep.has(rel)) continue;
+    const abs = path.join(wikiRoot, rel);
+    if (!fs.existsSync(abs) || fileExistedAt(wikiRoot, beforeCommit, rel)) continue;
+    fs.rmSync(abs, { force: true });
+  }
+}
+
+function detachDeletedSource(wikiRoot, sourcePath) {
+  for (const rel of listPageFiles(wikiRoot)) {
+    const parsed = readPage(wikiRoot, rel);
+    if (!parsed) continue;
     const cited = Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [];
-    const kept = cited.filter((source) => source && source.path !== sourcePath);
-    if (kept.length === cited.length) continue;
+    if (!cited.some((source) => source && source.path === sourcePath)) continue;
+    const kept = cited.filter((source) => source && source.path && source.path !== sourcePath);
+    const abs = path.join(wikiRoot, rel);
     if (kept.length === 0) {
       fs.rmSync(abs);
-      removed.push(rel);
       continue;
     }
     fs.writeFileSync(
       abs,
-      serializeFrontmatter({ ...parsed.frontmatter, sources: kept }, parsed.body),
+      serializeFrontmatter({ ...parsed.frontmatter, sources: kept }, parsed.body || ""),
     );
-    rewritten.push(rel);
   }
-  return { removed, rewritten };
+}
+
+// A restricted source cannot be detached: the page body may still carry its
+// facts. Drop every page that cites it and hand back the other sources those
+// pages cited, so they can be compiled again from their own text.
+function dropPagesCiting(wikiRoot, sourcePath) {
+  const coSources = new Set();
+  for (const rel of listPageFiles(wikiRoot)) {
+    const parsed = readPage(wikiRoot, rel);
+    if (!parsed) continue;
+    const cited = Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [];
+    if (!cited.some((source) => source && source.path === sourcePath)) continue;
+    for (const source of cited) {
+      if (source && source.path && source.path !== sourcePath) coSources.add(source.path);
+    }
+    fs.rmSync(path.join(wikiRoot, rel));
+  }
+  return [...coSources].sort();
+}
+
+function markForRecompile(state, sourcePaths) {
+  for (const sourcePath of sourcePaths) {
+    const entry = state.sources[sourcePath];
+    if (entry) state.sources[sourcePath] = { ...entry, sourceSha256: null };
+  }
 }
 
 function pagesStillCiting(wikiRoot, sourcePath) {
@@ -220,9 +307,10 @@ function pagesStillCiting(wikiRoot, sourcePath) {
   return citing;
 }
 
-async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
+async function retractOne({ item, opts, config, state, wikiRoot, rawRoot, restricted = false }) {
   const previous = state.sources[item.path];
-  if (!previous) return;
+  if (!previous) return [];
+  let coSources = [];
   const beforeCommit = headCommit(wikiRoot);
   state.sources[item.path] = {
     ...previous,
@@ -230,24 +318,49 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
   };
   saveState(opts.statePath, state);
   try {
-    await compile({
-      runner: opts.runner || "fake",
-      workRoot: opts.workRoot,
-      rawRoot,
-      action: "delete",
-      sourcePath: item.path,
-      sourceSha256: previous.sourceSha256,
-      affectedPages: previous.affectedPages,
-      schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
-      indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
-      compilerModel: opts.compilerModel,
-      createSession: opts.createSession,
-    });
+    dropPagesOnlyCiting(wikiRoot, item.path);
+    const citingBeforeModel = pagesStillCiting(wikiRoot, item.path);
+    if (citingBeforeModel.length > 0) {
+      rebuildIndex(wikiRoot);
+      const snap = snapshotPages(wikiRoot, [...citingBeforeModel, "index.md"]);
+      let modelRejected = false;
+      try {
+        const rawAbs = path.join(rawRoot, rawRelativePath(item.path));
+        await compile({
+          runner: opts.runner || "fake",
+          workRoot: opts.workRoot,
+          rawRoot,
+          action: "delete",
+          sourcePath: item.path,
+          sourceSha256: previous.sourceSha256,
+          rawMarkdown: !restricted && fs.existsSync(rawAbs) ? fs.readFileSync(rawAbs, "utf8") : "",
+          affectedPages: previous.affectedPages,
+          schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
+          indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
+          compilerModel: opts.compilerModel,
+          createSession: opts.createSession,
+        });
+      } catch {
+        modelRejected = true;
+        restorePages(wikiRoot, snap);
+      }
+      const citingAfter = pagesStillCiting(wikiRoot, item.path);
+      const damaged = citingBeforeModel.filter((rel) => !readPage(wikiRoot, rel));
+      // A blank page or a page that still lists the deleted source is not a
+      // retract. Put the previous page back and drop only that source line, so
+      // the rest of this run can still be published.
+      if (modelRejected || citingAfter.length > 0 || damaged.length > 0) {
+        discardModelOnlyFiles(wikiRoot, beforeCommit, snap);
+        restorePages(wikiRoot, snap);
+        if (restricted) {
+          coSources = dropPagesCiting(wikiRoot, item.path);
+        } else {
+          detachDeletedSource(wikiRoot, item.path);
+        }
+      }
+    }
     rebuildIndex(wikiRoot);
     normalizeWikiLinks(wikiRoot);
-    if (pagesStillCiting(wikiRoot, item.path).length > 0) {
-      retractSourceCitations(wikiRoot, item.path);
-    }
     dropDeadWikiLinks(wikiRoot);
     rebuildIndex(wikiRoot);
     limitCompileDiff(wikiRoot, beforeCommit, item.path, Number.POSITIVE_INFINITY);
@@ -275,14 +388,22 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
     }
     commitAll(wikiRoot, ingestMessage("delete", item.path, previous.sourceSha256));
     delete state.sources[item.path];
+    markForRecompile(state, coSources);
     const rawAbs = path.join(rawRoot, rawRelativePath(item.path));
     if (fs.existsSync(rawAbs)) fs.rmSync(rawAbs);
     saveState(opts.statePath, state);
+    return coSources;
   } catch (error) {
     resetHard(wikiRoot, beforeCommit);
     state.sources[item.path] = previous;
     saveState(opts.statePath, state);
     throw error;
+  }
+}
+
+function assertMaintenanceNotCancelled(cancelPath) {
+  if (cancelPath && fs.existsSync(cancelPath)) {
+    throw new Error("maintenance cancelled");
   }
 }
 
@@ -304,35 +425,80 @@ async function ingestBatch(opts) {
   let imported = 0;
   let rolledBack = 0;
   let retracted = 0;
+  let restrictedRetracted = 0;
   const onProgress =
     typeof opts.onProgress === "function" ? opts.onProgress : () => {};
+  const onCheckpoint =
+    typeof opts.onCheckpoint === "function" ? opts.onCheckpoint : async () => {};
+  const restrictQueue = (planResult.plan.restrict || []).map((item) => ({ action: "restrict", item }));
+  const updates = [...planResult.plan.update];
   const queue = [
+    ...restrictQueue,
     ...planResult.plan.add.map((item) => ({ action: "add", item })),
-    ...planResult.plan.update.map((item) => ({ action: "update", item })),
+    ...updates.map((item) => ({ action: "update", item })),
     ...planResult.plan.delete.map((item) => ({ action: "delete", item })),
   ];
+  const queued = new Set(queue.map((entry) => entry.item.path));
+  const requeue = (sourcePaths) => {
+    const insertAt = queue.findIndex((entry) => entry.action === "delete");
+    for (const sourcePath of sourcePaths) {
+      if (queued.has(sourcePath)) continue;
+      const unchanged = planResult.plan.unchanged.find((item) => item.path === sourcePath);
+      if (!unchanged) continue;
+      queued.add(sourcePath);
+      const entry = { action: "update", item: { ...unchanged, previousSha256: null } };
+      if (insertAt === -1) queue.push(entry);
+      else queue.splice(insertAt, 0, entry);
+    }
+  };
   let current = 0;
 
-  for (const { action, item } of queue) {
+  for (let index = 0; index < queue.length; index += 1) {
+    const { action, item } = queue[index];
+    assertMaintenanceNotCancelled(opts.cancelPath);
     current += 1;
+    let succeeded = false;
     onProgress({
       stage: "ingest",
       action,
-      path: item.path,
+      path: action === "restrict" ? null : item.path,
       current,
       total: queue.length,
     });
     try {
-      if (action === "delete") {
+      if (action === "restrict") {
+        const coSources = await retractOne({
+          item,
+          opts: ingestOpts,
+          config,
+          state,
+          wikiRoot,
+          rawRoot,
+          restricted: true,
+        });
+        restrictedRetracted += 1;
+        requeue(coSources);
+      } else if (action === "delete") {
         await retractOne({ item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
         retracted += 1;
       } else {
         await ingestOne({ action, item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
         imported += 1;
       }
+      succeeded = true;
     } catch (error) {
       rolledBack += 1;
       failures.push({ path: item.path, action, error: error.message });
+    }
+    if (succeeded) {
+      // Deliberately outside the compiler-error catch: a cloud checkpoint CAS
+      // conflict must stop the run before another source reaches the model.
+      await onCheckpoint({
+        action,
+        path: action === "restrict" ? null : item.path,
+        current,
+        total: queue.length,
+      });
     }
   }
 
@@ -342,6 +508,7 @@ async function ingestBatch(opts) {
       imported,
       rolled_back: rolledBack,
       retracted,
+      restricted_retracted: restrictedRetracted,
       unchanged: planResult.plan.unchanged.length,
     },
     failures,
@@ -349,4 +516,11 @@ async function ingestBatch(opts) {
   };
 }
 
-module.exports = { ingestBatch, loadState, saveState };
+module.exports = {
+  ingestBatch,
+  loadState,
+  saveState,
+  assertMaintenanceNotCancelled,
+  dropPagesCiting,
+  markForRecompile,
+};

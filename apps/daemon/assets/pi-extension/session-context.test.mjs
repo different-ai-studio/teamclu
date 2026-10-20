@@ -139,11 +139,14 @@ function sessionPromptCacheKey(backendSessionId, generationId) {
 }
 
 /** Mirrors pi self-doc strip + session prompt cache + before_agent_start in teamclu.ts */
-const PI_SELF_DOCUMENTATION_BLOCK =
+const PI_SELF_DOCUMENTATION_BLOCK = /\n\n<docs>\nPi documentation[\s\S]*?\n<\/docs>(?=\n|$)/;
+const LEGACY_PI_SELF_DOCUMENTATION_BLOCK =
   /\n\nPi documentation[\s\S]*?(?=\n\n<project_context>|\n\nThe following skills provide|\nCurrent working directory:)/;
 
 function stripPiSelfDocumentation(prompt) {
-  return prompt.replace(PI_SELF_DOCUMENTATION_BLOCK, "");
+  return prompt
+    .replace(PI_SELF_DOCUMENTATION_BLOCK, "")
+    .replace(LEGACY_PI_SELF_DOCUMENTATION_BLOCK, "");
 }
 
 function shouldStripPiSelfDocumentation(ctx) {
@@ -933,6 +936,60 @@ test("before_agent_start strips pi docs but keeps project_context", async () => 
   assert.match(result.systemPrompt, /<project_context>/);
   assert.match(result.systemPrompt, /Use TypeScript strict mode/);
   assert.match(result.systemPrompt, /Current working directory: \/tmp/);
+});
+
+test("before_agent_start strips the tagged <docs> block of pi >= 0.99", async () => {
+  // Shape of pi 1.1.0 `buildSystemPrompt` output (every section tagged).
+  const taggedPrompt = [
+    "You are an expert coding assistant operating inside pi, a coding agent harness.",
+    "",
+    "<tools>",
+    "- read: Read",
+    "</tools>",
+    "",
+    "<rules>",
+    "- Be concise in your responses",
+    "</rules>",
+    "",
+    "<docs>",
+    "Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):",
+    "- Main documentation: /pkg/README.md",
+    "- When asked about: extensions (docs/extensions.md, examples/extensions/)",
+    "</docs>",
+    "",
+    "<project_context>",
+    "Project-specific instructions and guidelines:",
+    "",
+    '<project_instructions path="/w/AGENTS.md">',
+    "Use TypeScript strict mode.",
+    "</project_instructions>",
+    "</project_context>",
+    "",
+    "<skills>",
+    "The following skills provide specialized instructions for specific tasks.",
+    "</skills>",
+    "",
+    "<cwd>",
+    "/w",
+    "</cwd>",
+  ].join("\n");
+
+  const result = await appendSystemPromptForTurn(
+    { systemPrompt: taggedPrompt },
+    { ui: makeUiContext("pi:/tmp/a.json"), model: { provider: "anthropic", id: "claude-sonnet-4-5" } },
+  );
+  assert.ok(result);
+  assert.doesNotMatch(result.systemPrompt, /Pi documentation|<docs>|<\/docs>/);
+  assert.match(result.systemPrompt, /<\/rules>\n\n<project_context>/);
+  assert.match(result.systemPrompt, /Use TypeScript strict mode/);
+  assert.match(result.systemPrompt, /<skills>/);
+  assert.match(result.systemPrompt, /<cwd>\n\/w\n<\/cwd>/);
+});
+
+test("self-doc strip regexes mirror teamclu.ts", () => {
+  const src = fs.readFileSync(fileURLToPath(new URL("./teamclu.ts", import.meta.url)), "utf8");
+  assert.ok(src.includes(String(PI_SELF_DOCUMENTATION_BLOCK)), "tagged regex drifted");
+  assert.ok(src.includes(String(LEGACY_PI_SELF_DOCUMENTATION_BLOCK)), "legacy regex drifted");
 });
 
 /** Mirrors `capToolText` / `toPiContent` in teamclu.ts */

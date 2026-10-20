@@ -5,7 +5,6 @@ import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
-import { useSessionNoticeStore } from "@/stores/session-notice-store";
 import { useAgentModelPickStore } from "@/stores/agent-model-pick-store";
 
 /** Drop in-memory chat UI state when auth identity or active team changes. */
@@ -67,6 +66,5 @@ export function resetClientChatState(): void {
   useEngagedAgentStore.setState({
     bySession: {},
   });
-  useSessionNoticeStore.setState({ bySession: {} });
   useAgentModelPickStore.setState({ bySessionAgent: {} });
 }

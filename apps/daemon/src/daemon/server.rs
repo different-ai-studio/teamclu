@@ -37,8 +37,6 @@ use crate::daemon::session_events::{
     format_idea_prompt, message_attachment_urls, parse_mention_actor_ids, resolve_mention_actor_ids,
 };
 
-#[path = "cloud_token_file.rs"]
-mod cloud_token_file;
 #[path = "collab_runtime_ensure.rs"]
 mod collab_runtime_ensure;
 #[path = "runtime_env.rs"]
@@ -297,6 +295,11 @@ pub(crate) enum SockCommand {
     /// per-bot WeCom gateway slots (one entry per `resolved_bots()`). `reply_tx`
     /// carries the JSON body back to the listener task.
     WecomBotsStatus {
+        reply_tx: oneshot::Sender<String>,
+    },
+    /// Reply with a JSON `[{appId, connected, error}, ...]` snapshot of the
+    /// running SeaTalk apps.
+    SeatalkBotsStatus {
         reply_tx: oneshot::Sender<String>,
     },
     /// Reply with `{keys:[...]}` — the dotted paths of credential fields that
@@ -1317,17 +1320,9 @@ impl DaemonServer {
             });
         }
 
-        // Keep the cloud access-token file fresh for long-running agents. Only
-        // cloud backends have an auth surface to source it from; the env
-        // injection in `assemble_spawn_runtime_env_for_worktree` is gated the
-        // same way, so `TC_ACCESS_TOKEN_FILE` is only advertised when this task
-        // is actually maintaining the file.
-        if self.backend.cloud_auth_health().is_some() {
-            cloud_token_file::spawn(
-                self.backend.clone(),
-                crate::config::DaemonConfig::cloud_token_path(),
-            );
-        }
+        // No cloud access-token file is written for agents any more. A host
+        // that needs the daemon's token asks the runtime-context listener
+        // (`http::runtime_context::cloud_token`) with its own host token.
 
         // Deferred (post-bind) cloud-dependent startup, moved here so the HTTP
         // health endpoint bound promptly above. Channel gateways + shared-dir
@@ -2049,6 +2044,10 @@ impl DaemonServer {
                                 let body = self.wecom_bots_status_payload().await;
                                 let _ = reply_tx.send(body);
                             }
+                            Some(SockCommand::SeatalkBotsStatus { reply_tx }) => {
+                                let body = self.seatalk_bots_status_payload().await;
+                                let _ = reply_tx.send(body);
+                            }
                             Some(SockCommand::WecomChatList { reply_tx }) => {
                                 let body = self.wecom_chat_list_payload().await;
                                 let _ = reply_tx.send(body);
@@ -2547,6 +2546,10 @@ impl DaemonServer {
                             }
                             Some(SockCommand::WecomBotsStatus { reply_tx }) => {
                                 let body = self.wecom_bots_status_payload().await;
+                                let _ = reply_tx.send(body);
+                            }
+                            Some(SockCommand::SeatalkBotsStatus { reply_tx }) => {
+                                let body = self.seatalk_bots_status_payload().await;
                                 let _ = reply_tx.send(body);
                             }
                             Some(SockCommand::WecomChatList { reply_tx }) => {
@@ -3161,6 +3164,30 @@ where
                         }
                         Err(_) => {
                             warn!("amuxd.sock: wecom-chat-list reply dropped");
+                        }
+                    }
+                }
+                "seatalk-bots-status" => {
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    if tx
+                        .send(SockCommand::SeatalkBotsStatus { reply_tx })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    match reply_rx.await {
+                        Ok(body) => {
+                            let mut stream = reader.into_inner();
+                            if let Err(e) = stream.write_all(body.as_bytes()).await {
+                                warn!("amuxd.sock: seatalk-bots-status write failed: {e}");
+                                return;
+                            }
+                            let _ = stream.write_all(b"\n").await;
+                            let _ = stream.shutdown().await;
+                        }
+                        Err(_) => {
+                            warn!("amuxd.sock: seatalk-bots-status reply dropped");
                         }
                     }
                 }
@@ -4369,8 +4396,14 @@ pub(crate) mod tests {
         // Each entry point assembles env from the same workspace root. Pin the
         // amuxd home so concurrent tests cannot move `HOME` mid-run and make
         // two captures disagree — see `daemon::server` race `test_brand_env`.
+        // `HOME` too: the spawns reach `prepare_workspace`, which seeds the
+        // bundled skills into `~/.agents/skills`.
         let amuxd_home = TempDir::new().unwrap();
-        let _home_guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(amuxd_home.path());
+        let user_home = TempDir::new().unwrap();
+        let _home_guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home_with_home(
+            amuxd_home.path(),
+            user_home.path(),
+        );
 
         let workspace = TempDir::new().unwrap();
         let backend = Arc::new(crate::backend::mock::MockBackend::with_identity(
@@ -5180,6 +5213,149 @@ pub(crate) mod tests {
                 .last_processed_message_id
                 .as_deref(),
             Some("msg-user"),
+        );
+    }
+
+    // ── agent inbox ↔ live ↔ catchup share one dedup gate ─────────────────
+    //
+    // FC fans every persisted message out to the agent's inbox. A new
+    // session's first message is persisted before it is published, so its
+    // inbox copy is the first — and, before the runtime subscribes to the
+    // session's live topic, the only — copy the daemon sees. The inbox path
+    // must not claim the message id ahead of routing: routing checks the same
+    // gate and would then refuse the very message it was handed.
+
+    fn agent_inbox_payload(row: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({ "type": "message.created", "message": row }))
+            .unwrap()
+    }
+
+    fn session_live_payload(
+        session_id: &str,
+        message_id: &str,
+        sender_actor_id: &str,
+        mentions: &[&str],
+        content: &str,
+    ) -> Vec<u8> {
+        use prost::Message as _;
+        let envelope = crate::proto::teamclu::SessionMessageEnvelope {
+            message: Some(crate::proto::teamclu::Message {
+                message_id: message_id.to_string(),
+                session_id: session_id.to_string(),
+                sender_actor_id: sender_actor_id.to_string(),
+                content: content.to_string(),
+                ..Default::default()
+            }),
+            mention_actor_ids: mentions.iter().map(|m| m.to_string()).collect(),
+            ..Default::default()
+        };
+        crate::proto::teamclu::LiveEventEnvelope {
+            event_type: "message.created".to_string(),
+            session_id: session_id.to_string(),
+            body: envelope.encode_to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
+    #[tokio::test]
+    pub(crate) async fn agent_inbox_mention_prompts_the_runtime() {
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+
+        fixture
+            .server
+            .ingest_agent_inbox(&agent_inbox_payload(make_message_row(
+                "msg-1",
+                "session-1",
+                "human-1",
+                &["agent-actor"],
+                "route to Huailai?",
+                "2025-05-22T01:00:01Z",
+            )))
+            .await
+            .unwrap();
+
+        let agents = fixture.server.agents.lock().await;
+        assert_eq!(agents.sent_count_to("session-1"), 1);
+        assert_eq!(
+            agents.last_sent_to("session-1").as_deref(),
+            Some("route to Huailai?")
+        );
+    }
+
+    #[tokio::test]
+    pub(crate) async fn agent_inbox_and_live_copies_prompt_once_in_either_order() {
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+        let server = &mut fixture.server;
+        let inbox = |id: &str| {
+            agent_inbox_payload(make_message_row(
+                id,
+                "session-1",
+                "human-1",
+                &["agent-actor"],
+                "hi",
+                "2025-05-22T01:00:01Z",
+            ))
+        };
+        let live =
+            |id: &str| session_live_payload("session-1", id, "human-1", &["agent-actor"], "hi");
+
+        // Inbox first (new session: persisted before published).
+        server.ingest_agent_inbox(&inbox("msg-a")).await.unwrap();
+        server
+            .ingest_session_live("session-1", &live("msg-a"))
+            .await
+            .unwrap();
+        // Live first (established session: published before persisted).
+        server
+            .ingest_session_live("session-1", &live("msg-b"))
+            .await
+            .unwrap();
+        server.ingest_agent_inbox(&inbox("msg-b")).await.unwrap();
+
+        assert_eq!(
+            server.agents.lock().await.sent_count_to("session-1"),
+            2,
+            "each message must start exactly one turn"
+        );
+    }
+
+    #[tokio::test]
+    pub(crate) async fn agent_inbox_before_the_runtime_exists_is_replayed_by_catchup() {
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        let row = make_message_row(
+            "msg-first",
+            "session-2",
+            "human-1",
+            &["agent-actor"],
+            "first question",
+            "2025-05-22T01:00:01Z",
+        );
+        mock_messages_response(&srv, "session-2", serde_json::json!([row.clone()])).await;
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+        let server = &mut fixture.server;
+
+        // Arrives while runtimeStart is still on its way: nothing to route to.
+        server
+            .ingest_agent_inbox(&agent_inbox_payload(row))
+            .await
+            .unwrap();
+        assert_eq!(server.agents.lock().await.sent_count_to("session-2"), 0);
+
+        // runtimeStart spawns the runtime and replays what it missed.
+        server.agents.lock().await.add_test_runtime("session-2");
+        server.catchup_runtime("session-2").await;
+
+        let agents = server.agents.lock().await;
+        assert_eq!(agents.sent_count_to("session-2"), 1);
+        assert_eq!(
+            agents.last_sent_to("session-2").as_deref(),
+            Some("first question")
         );
     }
 

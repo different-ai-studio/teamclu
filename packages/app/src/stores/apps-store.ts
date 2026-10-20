@@ -25,6 +25,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import i18n from "@/lib/i18n";
 import { usesStoredHttpsCredential } from "@/lib/apps/app-list-helpers";
 import { keepRelationship } from "@/lib/apps/app-relationship";
+import { artifactVerificationError } from "@/lib/apps/artifact-verification";
 import type { AppTypeId } from "@/lib/apps/app-types";
 import type {
   AppRow,
@@ -38,6 +39,7 @@ import type {
 
 interface AppsState {
   items: AppRow[];
+  syncApp: (app: AppRow) => void;
   loaded: boolean;
   loading: boolean;
   error: string | null;
@@ -144,6 +146,7 @@ interface AppsState {
   bindCustomDomain: (appId: string, domain: string) => Promise<AppCustomDomain | null>;
   verifyCustomDomain: (appId: string) => Promise<VerifyAppDomainResult>;
   unbindCustomDomain: (appId: string) => Promise<AppCustomDomain | null>;
+  undeployApp: (appId: string) => Promise<boolean>;
   deleteApp: (appId: string) => Promise<boolean>;
 }
 
@@ -216,19 +219,19 @@ async function patchStatus(set: SetState, appId: string, status: string): Promis
 }
 
 /**
- * Report a failed deploy back to the cloud API so `fc_status` lands on
- * `deploy_error` with a reason. The desktop drives the middle of the deploy (it
- * kicks the daemon build), so nothing else can tell the cloud the build never
- * finished — without this the row stays at `awaiting_build` forever and the
- * next finalize is rejected as an illegal transition. Non-fatal: the user is
- * already being toasted about the failure.
+ * Report a local build failure through the normal status update. Approval
+ * cancellation only withdraws its unused preflight reservation.
  */
-async function reportDeployError(set: SetState, appId: string, reason: string): Promise<void> {
+async function finishFailedDeployAttempt(set: SetState, appId: string, deployToken: string, reason?: string): Promise<void> {
   try {
-    const updated = await getBackend().apps.updateAppDeployStatus(appId, "deploy_error", reason);
-    if (updated) mergeRow(set, updated);
+    if (reason) {
+      const updated = await getBackend().apps.updateAppDeployStatus(appId, "deploy_error", reason, deployToken);
+      if (updated) mergeRow(set, updated);
+    } else {
+      await getBackend().apps.cancelAppDeployPreflight(appId, deployToken);
+    }
   } catch (e) {
-    console.warn("deploy error writeback failed (non-fatal)", e);
+    console.warn("deploy attempt writeback failed (non-fatal)", e);
   }
 }
 
@@ -727,6 +730,7 @@ function appsCacheKey(teamId: string): string {
 
 export const useAppsStore = create<AppsState>((set, get) => ({
   items: [],
+  syncApp: (app) => set((state) => ({ items: state.items.map((row) => row.id === app.id ? { ...row, ...app } : row) })),
   loaded: false,
   loading: false,
   error: null,
@@ -909,21 +913,11 @@ export const useAppsStore = create<AppsState>((set, get) => ({
 
     let useAppCodeDomain = false;
     const domainChoice = legacyAppDomainChoice(app);
-    if (app.authMode === "none" || domainChoice) {
-      const accepted = await publicDeployConfirm.run(
-        app.authMode === "none"
-          ? PUBLIC_DEPLOY_CONFIRM_MESSAGE
-          : i18n.t("apps.deployConfirmMessage", "确认部署此应用？"),
-        domainChoice ? {
-          domainChoice,
-          onDomainChoice: (checked) => { useAppCodeDomain = checked; },
-        } : undefined,
-      );
-      if (!accepted) return;
-    }
-
     set((s) => ({ deployingIds: [...s.deployingIds, appId] }));
     setDeployProgress(set, appId, "prepare");
+    let reservationToken: string | undefined;
+    let buildStarted = false;
+    let deployError: string | undefined;
     try {
       // Only a Gitea-managed app deploys a commit off the forge. An imported
       // app has no repo of ours and no credential for the one it came from, so
@@ -947,11 +941,39 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       if (!declared) {
         throw new Error("amuxd did not return the app declaration");
       }
+      if (viaGitea && (!declared.clean || declared.gitCommitSha !== gitCommitSha)) {
+        throw new Error("部署前请提交并推送所有改动，且本地 HEAD 必须与 Gitea HEAD 一致");
+      }
+      const revision = viaGitea ? gitCommitSha! : declared.contentDigest;
+      // The UI presents the exact server preview before using this intent.
+      // Keep the token so every exit can release this attempt's reservation.
+      const preflight = await getBackend().apps.preflightAppDeploy(appId, {
+        revision, declaration: declared.declaration, ...(gitCommitSha ? { gitCommitSha } : {}), migrationIntent: true,
+      });
+      reservationToken = preflight.token;
+      if (app.authMode === "none" || domainChoice || preflight.preview.changes.length > 0) {
+        const fields = preflight.preview.changes.map(c => `${c.field}: ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join("\n");
+        const message = app.authMode === "none"
+          ? PUBLIC_DEPLOY_CONFIRM_MESSAGE
+          : i18n.t("apps.deployConfirmMessage", "确认部署此应用？");
+        const accepted = await publicDeployConfirm.run(
+          `${message}${fields ? `\n\n本次变更：\n${fields}` : ""}`,
+          domainChoice ? {
+            domainChoice,
+            onDomainChoice: (checked) => { useAppCodeDomain = checked; },
+          } : undefined,
+        );
+        if (!accepted) return;
+      }
       const started = await getBackend().apps.deployApp(appId, {
         ...(useAppCodeDomain ? { useAppCodeDomain: true } : {}),
         ...(gitCommitSha ? { gitCommitSha } : {}),
-        runtime: declared.build.kind,
+        revision,
+        declaration: declared.declaration,
+        preflightToken: preflight.token,
       });
+      reservationToken = started.deployToken;
+      buildStarted = true;
       mergeRow(set, started);
 
       setDeployProgress(set, appId, "build");
@@ -971,7 +993,8 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       let build: BuildAppResult;
       try {
         build = await buildDaemonApp(appId, app.teamId, {
-          gitCommitSha,
+        gitCommitSha,
+          revision,
           gitRemoteUrl,
           deployKeyPem,
           // Exactly one of these is set — see the control plane's startDeploy.
@@ -988,13 +1011,18 @@ export const useAppsStore = create<AppsState>((set, get) => ({
           build.outcome === "unreachable"
             ? mapDeployErrorReason("amuxd daemon is not connected")
             : mapDeployErrorReason(build.error ?? "应用构建或上传失败");
-        await reportDeployError(set, appId, reason);
+        deployError = reason;
         await toastError("部署失败：构建未完成", reason);
         return;
       }
       if (!build.declaration) {
         throw new Error("amuxd build response did not include declaration");
       }
+      if (build.revision !== revision || (viaGitea && build.gitCommitSha !== revision)) {
+        throw new Error("构建版本与预检版本不一致，已停止发布");
+      }
+      const verificationError = artifactVerificationError(build.artifactVerification, revision);
+      if (verificationError) throw new Error(verificationError);
 
       // No success toast. It showed `fcEndpoint` — the raw FC function URL —
       // which is not the address the product hands out (that is the app's
@@ -1002,13 +1030,11 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // naming the wrong host on every deploy is worse than no popup: the
       // merged row flips the row to live on its own.
       setDeployProgress(set, appId, "finalize");
-      // What the daemon built, not what we asked for. A deploy publishes work
-      // the agent left uncommitted, and HEAD then sits past the sha read off
-      // Gitea before any of this started; recording that one would name a
-      // commit the running function was not built from.
+      // Finalize the exact revision that passed preflight and was built.
       const builtSha = build.gitCommitSha ?? gitCommitSha;
       const finalized = await getBackend().apps.finalizeDeploy(appId, {
         ...(builtSha ? { gitCommitSha: builtSha } : {}),
+        revision,
         // How the app says it starts. The control plane used to assume one
         // answer for every app; this is the app's own, read off its
         // declaration by the daemon that just built it.
@@ -1023,12 +1049,14 @@ export const useAppsStore = create<AppsState>((set, get) => ({
        // server, so a successful finalize clears the warning on its own — there
        // is no local flag left to reset here.
       mergeRow(set, finalized);
+      reservationToken = undefined;
       setDeployProgress(set, appId, "done");
     } catch (e) {
       const reason = mapCloudDeployError(e);
-      await reportDeployError(set, appId, reason);
+      deployError = reason;
       await toastError(i18n.t("apps.deployFailed", "Deploy failed"), reason);
     } finally {
+      if (reservationToken) await finishFailedDeployAttempt(set, appId, reservationToken, buildStarted ? deployError : undefined);
       set((s) => ({ deployingIds: s.deployingIds.filter((id) => id !== appId) }));
       // Leave `done` visible briefly; footer clears the bar after linger.
       window.setTimeout(() => clearDeployProgress(set, appId), 1200);
@@ -1213,6 +1241,16 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         e instanceof Error ? e.message : String(e),
       );
       return null;
+    }
+  },
+  undeployApp: async (appId) => {
+    try {
+      const result = await getBackend().apps.undeployApp(appId);
+      mergeRow(set, result.app);
+      return true; // Accepted; status polling, not this return value, proves completion.
+    } catch (e) {
+      await toastError(i18n.t('apps.undeploy.failed', '卸载部署失败'), e instanceof Error ? e.message : String(e));
+      return false;
     }
   },
   deleteApp: async (appId) => {

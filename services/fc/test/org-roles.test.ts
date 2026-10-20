@@ -622,8 +622,35 @@ function makeStubHost(opts: {
     },
   };
 
+  function emptyServiceQuery() {
+    const api: any = {
+      select() {
+        return api;
+      },
+      eq() {
+        return api;
+      },
+      like() {
+        return api;
+      },
+      in() {
+        return api;
+      },
+      then(resolve: (v: unknown) => void) {
+        return Promise.resolve({ data: [], error: null }).then(resolve);
+      },
+    };
+    return api;
+  }
+
   return {
     supabase,
+    serviceRoleClient: async () => ({
+      from(table: string) {
+        if (table === "teams" || table === "amuxc_path_acl") return emptyServiceQuery();
+        throw new Error(`unexpected service table ${table}`);
+      },
+    }),
     resolveCallerActorForTeam: async () =>
       opts.member === false ? null : { id: "actor-1" },
     _roles: roles,
@@ -1211,5 +1238,121 @@ describe("makeOrgRolesRepo", () => {
     assert.equal(mirrorTeamMembersRole("member"), "member");
     assert.equal(mirrorTeamMembersRole("auditor"), "member");
     assert.equal(mirrorTeamMembersRole(null), null);
+  });
+});
+
+/**
+ * Service-role stub for the post-change document library refresh. One library,
+ * documents/fin/, granted to CUSTOM_ROLE. Records every awaited query.
+ */
+function recordingServiceRole(calls: string[], opts: { fail?: boolean } = {}) {
+  const rows: Record<string, unknown> = {
+    teams: [{ id: TEAM }],
+    amuxc_path_acl: [{ id: "acl-fin", team_id: TEAM, path_prefix: "documents/fin/" }],
+    amuxc_path_acl_role_grants: [{ acl_id: "acl-fin", role_id: CUSTOM_ROLE }],
+    team_workspace_config: { oss_change_seq: 5 },
+  };
+  return async () => {
+    if (opts.fail) throw new Error("service role unavailable");
+    return {
+      from(table: string) {
+        let op = "select";
+        const api: any = {
+          select: () => api,
+          update() {
+            op = "update";
+            return api;
+          },
+          eq: () => api,
+          like: () => api,
+          in: () => api,
+          maybeSingle: async () => ({ data: rows[table], error: null }),
+          then(resolve: (v: unknown) => void) {
+            calls.push(`${op} ${table}`);
+            return Promise.resolve({ data: op === "update" ? null : rows[table], error: null }).then(resolve);
+          },
+        };
+        return api;
+      },
+    };
+  };
+}
+
+describe("document library refresh after a role change", () => {
+  const binding = (roleId: string) => ({
+    id: `ru-${roleId}`,
+    user_id: USER,
+    role_id: roleId,
+    org_id: ORG,
+    status: "active",
+    store_id: null,
+  });
+
+  test("granting a library role resurfaces that library", async () => {
+    const calls: string[] = [];
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: [...systemCatalog, seededCustom],
+      bindings: [binding(MEMBER_ROLE)],
+    });
+    host.serviceRoleClient = recordingServiceRole(calls);
+    await makeOrgRolesRepo(host).putMemberRoles(TEAM, ACTOR, [MEMBER_ROLE, CUSTOM_ROLE]);
+    assert.ok(calls.includes("update amuxc_files"), calls.join(", "));
+  });
+
+  test("removing a role only reads the org's teams", async () => {
+    const calls: string[] = [];
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: [...systemCatalog, seededCustom],
+      bindings: [binding(MEMBER_ROLE), binding(CUSTOM_ROLE)],
+    });
+    host.serviceRoleClient = recordingServiceRole(calls);
+    await makeOrgRolesRepo(host).putMemberRoles(TEAM, ACTOR, [MEMBER_ROLE]);
+    assert.deepEqual(calls, ["select teams"]);
+  });
+
+  test("a failed refresh does not fail a role change that already committed", async () => {
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: [...systemCatalog, seededCustom],
+      bindings: [binding(MEMBER_ROLE)],
+    });
+    host.serviceRoleClient = recordingServiceRole([], { fail: true });
+    const items = await makeOrgRolesRepo(host).putMemberRoles(TEAM, ACTOR, [MEMBER_ROLE, CUSTOM_ROLE]);
+    assert.deepEqual(items.map((r) => r.code).sort(), ["auditor", "member"]);
+  });
+
+  test("reactivating a role resurfaces the libraries granted to it", async () => {
+    const calls: string[] = [];
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: [...systemCatalog, { ...seededCustom, status: "inactive" }],
+    });
+    host.serviceRoleClient = recordingServiceRole(calls);
+    await makeOrgRolesRepo(host).patchOrgRole(TEAM, CUSTOM_ROLE, { status: "active" });
+    assert.ok(calls.includes("update amuxc_files"), calls.join(", "));
+  });
+
+  test("deactivating a role drops cached views without resurfacing", async () => {
+    const calls: string[] = [];
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: [...systemCatalog, seededCustom],
+    });
+    host.serviceRoleClient = recordingServiceRole(calls);
+    await makeOrgRolesRepo(host).patchOrgRole(TEAM, CUSTOM_ROLE, { status: "inactive" });
+    assert.deepEqual(calls, ["select teams"]);
+  });
+
+  test("renaming a role does not touch document libraries", async () => {
+    const calls: string[] = [];
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: [...systemCatalog, seededCustom],
+    });
+    host.serviceRoleClient = recordingServiceRole(calls);
+    await makeOrgRolesRepo(host).patchOrgRole(TEAM, CUSTOM_ROLE, { name: "审计组" });
+    assert.deepEqual(calls, []);
   });
 });

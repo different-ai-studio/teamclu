@@ -15,8 +15,10 @@ import {
   buildComposerPresentation,
 } from "./session-composer-copy";
 import { useVoiceRecorder } from "./voice-recorder";
+import { ClipboardImagePasteButton, useClipboardHasImage } from "./ClipboardImagePaste";
 import type { UploadedAttachment } from "../attachment-upload";
 import type { SessionDetailConnectionState } from "../session-detail-controller";
+import { impactLight } from "../../../lib/haptics";
 
 type SessionComposerShellProps = {
   composerText: string;
@@ -32,6 +34,8 @@ type SessionComposerShellProps = {
   selectedAgentNames?: ReadonlyArray<string>;
   /** Opens the agents sheet — iOS's row-2 `@` button. */
   onOpenAgents?: () => void;
+  /** A clipboard image to attach; the paste button shows only when given. */
+  onPasteImage?: (data: string) => void;
 };
 
 
@@ -44,6 +48,7 @@ export function SessionComposerShell({
   onRemovePendingAttachment,
   onSend,
   onOpenAgents,
+  onPasteImage,
   pendingAttachments = [],
   selectedAgentNames = [],
   sendErrorMessage,
@@ -57,6 +62,8 @@ export function SessionComposerShell({
     sendErrorMessage,
   });
   const recorder = useVoiceRecorder();
+  const [inputFocused, setInputFocused] = useState(false);
+  const clipboardHasImage = useClipboardHasImage(Boolean(onPasteImage) && inputFocused);
   const [recordError, setRecordError] = useState<string | null>(null);
   const hasPendingAttachments = pendingAttachments.length > 0;
   const rightButton = composerRightButton({
@@ -69,21 +76,25 @@ export function SessionComposerShell({
   const handleMicToggle = async () => {
     setRecordError(null);
     try {
+      impactLight();
       if (recorder.isRecording) {
-        const uri = await recorder.stop();
-        if (uri) {
-          onChangeText(`${composerText}${composerText.length > 0 ? " " : ""}🎙️ ${uri}`);
+        const text = await recorder.stop();
+        if (text) {
+          onChangeText(`${composerText}${composerText.length > 0 ? " " : ""}${text}`);
         }
       } else {
         await recorder.start();
       }
     } catch (err) {
-      setRecordError(err instanceof Error ? err.message : t("Couldn't access microphone."));
+      setRecordError(err instanceof Error ? t(err.message) : t("Couldn't access microphone."));
     }
   };
 
   return (
     <View style={styles.wrapper}>
+      {onPasteImage && clipboardHasImage ? (
+        <ClipboardImagePasteButton onPaste={onPasteImage} />
+      ) : null}
       {hasPendingAttachments ? (
         <ScrollView
           horizontal
@@ -115,7 +126,9 @@ export function SessionComposerShell({
             <TextInput
               editable={!isSending && connectionState !== "disconnected"}
               multiline
+              onBlur={() => setInputFocused(false)}
               onChangeText={onChangeText}
+              onFocus={() => setInputFocused(true)}
               placeholder={presentation.placeholder}
               placeholderTextColor={colors.faint}
               selectionColor={colors.coral}
@@ -175,7 +188,7 @@ export function SessionComposerShell({
           ) : (
             <Pressable
               accessibilityLabel={
-                rightButton === "stopRecording" ? t("Stop recording") : t("Voice memo")
+                rightButton === "stopRecording" ? t("Stop recording") : t("Voice input")
               }
               accessibilityRole="button"
               onPress={handleMicToggle}
@@ -195,8 +208,10 @@ export function SessionComposerShell({
         </View>
       </View>
 
-      {recordError ? (
-        <Text style={styles.helperTextError}>{recordError}</Text>
+      {recordError ?? (recorder.errorMessage ? t(recorder.errorMessage) : null) ? (
+        <Text style={styles.helperTextError}>
+          {recordError ?? t(recorder.errorMessage ?? "")}
+        </Text>
       ) : presentation.helperText ? (
         <Text style={styles.helperText}>{presentation.helperText}</Text>
       ) : null}
@@ -379,8 +394,11 @@ const styles = StyleSheet.create({
   sendButtonDisabled: {
     opacity: 0.35,
   },
+  // Inset from the screen edges like the chip bar above it, so the card reads
+  // as a floating bar rather than a slab glued to both sides.
   wrapper: {
     gap: spacing.sm,
+    paddingHorizontal: spacing.md,
   },
 });
 

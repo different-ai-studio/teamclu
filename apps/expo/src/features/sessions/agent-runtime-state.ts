@@ -169,7 +169,7 @@ export function lifecycleDotKind(
  */
 export function normalizeAgentBackend(
   backendType: string | null | undefined,
-): "claude" | "opencode" | "codex" | null {
+): "pi" | "claude" | "opencode" | "codex" | null {
   switch (backendType) {
     case "claude":
     case "claude_code":
@@ -179,6 +179,8 @@ export function normalizeAgentBackend(
       return "opencode";
     case "codex":
       return "codex";
+    case "pi":
+      return "pi";
     default:
       return null;
   }
@@ -195,6 +197,8 @@ export function agentBackendDisplayName(
       return "OpenCode";
     case "codex":
       return "Codex";
+    case "pi":
+      return "Pi";
     default:
       // Unknown backend: title-case it rather than invent a name. Without the
       // normalisation above this branch also caught `claude_code` and rendered

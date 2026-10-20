@@ -36,10 +36,19 @@ select u.id, u.email, 'authenticated', 'authenticated', '00000000-0000-0000-0000
   ) as u(id, email)
 on conflict do nothing;
 
-insert into amux.teams (id, slug, name)
-select team_id, 'lbc-' || left(team_id::text, 8), 'Leaderboard Contributions' from ctx
+-- Both teams need an org: the apps below carry one, and amux.apps.org_id is
+-- NOT NULL with an FK to public.orgs (20260923200000 / 20260924100000). The id
+-- is derived from the team's so the seed stays deterministic and needs no
+-- extra column on ctx.
+insert into public.orgs (id, name)
+select team_id, 'LBC Org' from ctx
 union all
-select other_team_id, 'lbc-other-' || left(other_team_id::text, 8), 'Somewhere Else' from ctx;
+select other_team_id, 'LBC Other Org' from ctx;
+
+insert into amux.teams (id, slug, name, oid)
+select team_id, 'lbc-' || left(team_id::text, 8), 'Leaderboard Contributions', team_id from ctx
+union all
+select other_team_id, 'lbc-other-' || left(other_team_id::text, 8), 'Somewhere Else', other_team_id from ctx;
 
 insert into amux.actors (id, team_id, actor_type, display_name, user_id)
 select alice, team_id, 'member', 'Alice', alice_uid from ctx
@@ -76,8 +85,11 @@ select team_id, s.slug, 'summary', 'general', 'when', 'when not', s.status, s.cr
 
 -- Apps: Alice one personal; Bob one personal + one team; Bob's daemon one
 -- personal; Eve one in another team.
-insert into amux.apps (team_id, created_by_actor_id, name, slug, type, visibility)
-select a.team_id, a.creator, a.slug, a.slug, 'web', a.visibility
+-- org_id is NOT NULL (20260924100000): the app's tenant, taken from its team
+-- exactly as createApp does.
+insert into amux.apps (team_id, created_by_actor_id, name, slug, type, visibility, org_id)
+select a.team_id, a.creator, a.slug, a.slug, 'web', a.visibility,
+       (select t.oid from amux.teams t where t.id = a.team_id)
   from ctx, lateral (values
     (ctx.team_id,       ctx.alice,         'alice-app',      'personal'),
     (ctx.team_id,       ctx.bob,           'bob-private',    'personal'),

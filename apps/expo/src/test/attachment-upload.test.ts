@@ -5,7 +5,7 @@ const fileSystemMock = vi.hoisted(() => ({
   EncodingType: { Base64: "base64" },
 }));
 
-vi.mock("expo-file-system", () => fileSystemMock);
+vi.mock("expo-file-system/legacy", () => fileSystemMock);
 
 const BASE_URL = "https://fc.example.com";
 
@@ -123,5 +123,33 @@ describe("uploadAttachment", () => {
     const uploadedBody = uploadFetch.mock.calls[0][1]?.body as ArrayBuffer;
     expect(uploadedBody).toBeInstanceOf(ArrayBuffer);
     expect(Array.from(new Uint8Array(uploadedBody))).toEqual([105, 109, 103]);
+  });
+});
+
+describe("uploadPastedImage", () => {
+  it("uploads the pasted bytes under the session's attachment path", async () => {
+    const { uploadPastedImage, decodePastedImage } = await import(
+      "../features/sessions/attachment-upload"
+    );
+    const png = Buffer.from("fake-png").toString("base64");
+    expect(decodePastedImage(`data:image/png;base64,${png}`, "image/jpeg").mime).toBe("image/png");
+    expect(decodePastedImage(png, "image/jpeg").mime).toBe("image/jpeg");
+
+    const uploadFetch = vi.fn().mockResolvedValue(uploadResponse({ url: "https://cdn.example.test/p.png" }));
+    const uploaded = await uploadPastedImage({
+      getAccessToken: async () => "tok",
+      teamId: "team-1",
+      sessionId: "session-1",
+      data: `data:image/png;base64,${png}`,
+      baseUrl: BASE_URL,
+      fetchImpl: uploadFetch as unknown as typeof fetch,
+    });
+
+    expect(uploaded.path).toMatch(/^team-1\/session-1\/[0-9a-f-]+\.png$/);
+    expect(uploaded).toMatchObject({ publicUrl: "https://cdn.example.test/p.png", mime: "image/png", size: 8 });
+    const [url, init] = uploadFetch.mock.calls[0]!;
+    expect(String(url)).toContain("/v1/attachments?path=team-1%2Fsession-1%2F");
+    expect((init as RequestInit).headers).toMatchObject({ "Content-Type": "image/png" });
+    expect(new Uint8Array((init as RequestInit).body as ArrayBuffer).byteLength).toBe(8);
   });
 });

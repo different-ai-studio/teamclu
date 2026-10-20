@@ -332,23 +332,30 @@ pub(super) fn notify_app_changed(app: &AppHandle, row: &Value) {
     );
 }
 
+/// Keep the selected daemon's facts intact, rather than substituting the
+/// desktop process's OS or the Cloud API's target runtime.
+fn selected_host_facts(response: &Value) -> Result<Value, String> {
+    let facts = response.get("hostFacts").filter(|facts| {
+        ["os", "arch", "buildShell"].iter().all(|key| {
+            facts[*key]
+                .as_str()
+                .is_some_and(|value| !value.trim().is_empty())
+        }) && facts["docker"].is_boolean()
+            && ["pnpm", "python3", "go", "java", "docker"]
+                .iter()
+                .all(|key| facts["buildTools"][*key].is_boolean())
+            && facts["buildTools"]["docker"] == facts["docker"]
+    });
+    facts
+        .cloned()
+        .ok_or_else(|| "The selected daemon returned no usable host facts.".to_string())
+}
+
 /// The app-row fields worth an agent's context window.
 ///
 /// `publicUrl` is the address the product hands out; `fcEndpoint` is the raw FC
 /// hostname and is only the app's address on a deployment with no apps domain.
 /// One `url` rather than both, so the agent cannot quote the wrong one.
-/// This machine, for `runtime_info`.
-///
-/// Mirrors the daemon's `host_facts`: whoever deploys is whose tools run, and
-/// the same app is checked out on macOS and Windows machines in one team.
-fn this_machine() -> Value {
-    json!({
-        "os": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
-        "build_shell": "sh -c",
-    })
-}
-
 pub(super) fn app_brief(row: &Value) -> Value {
     let f = |k: &str| row.get(k).cloned().unwrap_or(Value::Null);
     let url = row
@@ -368,6 +375,7 @@ pub(super) fn app_brief(row: &Value) -> Value {
         "url": url,
         "provision_status": f("provisionStatus"),
         "fc_status": f("fcStatus"),
+        "undeploy_operation": f("undeployOperation"),
         "auth_mode": f("authMode"),
         "auth_mode_pending_redeploy": f("authModePendingRedeploy"),
         "git_commit_sha": f("gitCommitSha"),
@@ -581,6 +589,23 @@ async fn app_workdir_on_this_machine(row: &Value) -> Option<(String, Option<Stri
     Some((workdir, row_str(&out, "deviceName").map(str::to_string)))
 }
 
+async fn daemon_selected_host_facts(row: &Value) -> Result<Value, String> {
+    use crate::daemon_client::{self as daemon, RequestSpec, NO_BODY};
+    let app_id = row_str(row, "id").ok_or("App ID is missing.")?;
+    let team_id = row_str(row, "teamId").unwrap_or("");
+    let path = format!("/v1/apps/{}/workdir", urlencoding::encode(app_id));
+    let query = format!("?teamId={}", urlencoding::encode(team_id));
+    let response: Value = daemon::call_discovered(
+        RequestSpec::get(&path, &["workspace:read"])
+            .query(&query)
+            .timeout(Duration::from_secs(10)),
+        NO_BODY,
+    )
+    .await
+    .map_err(|e| format!("Could not read the selected daemon's host facts: {e}"))?;
+    selected_host_facts(&response)
+}
+
 /// Whether a directory exists and has anything in it — the web app's test for
 /// "this machine already holds a checkout" (`localWorkdirHasCheckout`).
 fn dir_has_files(dir: &str) -> bool {
@@ -591,9 +616,10 @@ fn dir_has_files(dir: &str) -> bool {
 
 // ─── manage_app ─────────────────────────────────────────────────────────────
 
-const MANAGE_ACTIONS: [&str; 12] = [
+const MANAGE_ACTIONS: [&str; 14] = [
     "list",
     "status",
+    "auth_info",
     "runtime_info",
     "sessions",
     "create",
@@ -602,6 +628,7 @@ const MANAGE_ACTIONS: [&str; 12] = [
     "download",
     "move_workdir",
     "deploy",
+    "undeploy",
     "logs",
     "delete",
 ];
@@ -611,7 +638,7 @@ const MANAGE_ACTIONS: [&str; 12] = [
 /// delete it.
 pub(super) async fn handle_app_manage(
     app: &AppHandle,
-    caller: Option<&super::caller::AgentCaller>,
+    _caller: Option<&super::caller::AgentCaller>,
     body: &[u8],
 ) -> Result<String, String> {
     let v = parse_body(body)?;
@@ -619,7 +646,7 @@ pub(super) async fn handle_app_manage(
     // Argument mistakes are refused before anything is resolved, so they cost
     // no round trip and read as the mistakes they are.
     match action.as_str() {
-        "delete" => require_named_app(&v, "delete")?,
+        "delete" | "undeploy" => require_named_app(&v, &action)?,
         "update" => {
             update_patch(&v)?;
         }
@@ -641,52 +668,30 @@ pub(super) async fn handle_app_manage(
     let row = resolve_app_row(app, &api, &v).await?;
     let zh = crate::commands::prefers_zh_locale();
 
-    // A publish the user already approved and that has not gone through yet is
-    // not asked about again — a deploy that fails, is fixed and retried is one
-    // publish, and asking per attempt only teaches people to click through. The
-    // key is everything the dialog says, so anything it would word differently
-    // still asks. Eligible legacy-domain publishes always ask again, so a
-    // cached approval can never select or skip the native migration checkbox.
-    // Every other action here asks every time.
-    let domain_choice = super::confirm::legacy_app_domain_choice(&row);
-    let deploy_key = (action == "deploy" && domain_choice.is_none())
-        .then(|| caller.map(|c| super::confirm::DeployKey::new(&c.host_generation_id, &row)))
-        .flatten();
-    let approved = deploy_key
-        .as_ref()
-        .is_some_and(super::confirm::deploy_already_approved);
-
-    let mut use_code_domain = false;
-    if action == "deploy" && domain_choice.is_some() {
-        use_code_domain = super::confirm::confirm_app_deploy_domain(app, zh, &row).await?;
-    }
+    // Deploy approval follows the server preflight in run_app_deploy, so the
+    // dialog names the exact revision's runtime changes before any upload.
     let confirmation = match action.as_str() {
-        "deploy" if approved || domain_choice.is_some() => None,
-        "deploy" => Some(super::confirm::app_deploy(zh, &row)),
+        "deploy" => None,
         "delete" => Some(super::confirm::app_delete(zh, &row)),
+        "undeploy" => Some(super::confirm::app_undeploy(zh, &row)),
         "update" => super::confirm::app_exposure_change(zh, &row, &update_patch(&v)?),
         _ => None,
     };
     if let Some(confirmation) = confirmation {
         super::confirm::confirm_with_user(app, confirmation).await?;
-        if let Some(key) = deploy_key.clone() {
-            super::confirm::remember_deploy_approval(key);
-        }
     }
     let out = match action.as_str() {
+        "auth_info" => read_app_auth_info(&api, &row).await?,
         "status" => json!({ "action": "status", "app": app_status(&api, &row).await }),
-        // What the platform knows about where this app runs, plus what is true
-        // of this machine. The two are separate on purpose: the runtime facts
-        // are the same for every teammate, and the machine facts are not.
         "runtime_info" => json!({
             "action": "runtime_info",
             "runtime": api
                 .get(
-                    &format!("/v1/apps/{}/runtime-info", row_str(&row, "id").unwrap_or_default()),
+                    &runtime_info_path(&row, &v)?,
                     "read the runtime facts",
                 )
                 .await?,
-            "this_machine": this_machine(),
+            "this_machine": daemon_selected_host_facts(&row).await?,
         }),
         "sessions" => app_sessions(&api, &row).await?,
         "update" => update_app(app, &api, &row, &v).await?,
@@ -694,23 +699,35 @@ pub(super) async fn handle_app_manage(
         "download" => checkout::download_app(app, &api, &row).await?,
         "move_workdir" => checkout::move_app_workdir(app, &api, &row, &v).await?,
         "deploy" => {
-            let deployed = run_app_deploy(&api, &row, use_code_domain).await;
-            // Either way the row moved — to live, or to deploy_error.
+            let deployed = run_app_deploy(
+                app,
+                &api,
+                &row,
+                zh,
+                v["migrationIntent"].as_bool() == Some(true),
+            )
+            .await;
+            // Refresh the panel after success or a rejected attempt.
             notify_app_changed(app, &row);
-            if deployed.is_ok() {
-                // Spent. The publish the user approved has happened; a further
-                // one is a fresh intent and asks again.
-                if let Some(key) = deploy_key.as_ref() {
-                    super::confirm::spend_deploy_approval(key);
-                }
-            }
             json!({ "ok": true, "action": "deploy", "app": app_brief(&deployed?) })
         }
         "logs" => read_app_logs(&api, &row, &v).await?,
         "delete" => delete_app(app, &api, &row).await?,
+        "undeploy" => undeploy_app(app, &api, &row).await?,
         other => return Err(format!("Unknown action: {other}")),
     };
     Ok(out.to_string())
+}
+
+fn runtime_info_path(row: &Value, request: &Value) -> Result<String, String> {
+    let mut path = app_path(row_str(row, "id").unwrap_or_default(), "/runtime-info");
+    if let Some(language) = str_body_field(request, "language", "language") {
+        if !matches!(language.as_str(), "node" | "python" | "go" | "php" | "java") {
+            return Err("language must be node, python, go, php, or java".to_string());
+        }
+        path.push_str(&format!("?language={language}"));
+    }
+    Ok(path)
 }
 
 async fn list_apps(app: &AppHandle, api: &AppApi) -> Result<Value, String> {
@@ -790,6 +807,106 @@ fn describe_code_version(row: &Value, head: Option<&Value>) -> String {
     }
 }
 
+/// The Cloud API owns policy resolution. Preserve raw rules, and expose only
+/// the discovery contract (never spread an app row or arbitrary response).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppAuthInfo {
+    app_id: String,
+    team_id: String,
+    organization: Option<AuthOrganization>,
+    role_scope: String,
+    roles: Vec<AuthRole>,
+    auth_mode: String,
+    auth_scope: String,
+    auth_audience: String,
+    auth_rules: Vec<Value>,
+    effective_policies: Vec<EffectiveAuthPolicy>,
+    organization_status: String,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct AuthOrganization {
+    id: String,
+    name: String,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct AuthRole {
+    id: String,
+    code: String,
+    name: String,
+    status: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EffectiveAuthPolicy {
+    path: String,
+    kind: String,
+    role_codes: Option<Vec<String>>,
+    inherited: bool,
+    source: String,
+}
+
+/// Uses the selected row from the common status selector and authenticated API.
+async fn read_app_auth_info(api: &AppApi, row: &Value) -> Result<Value, String> {
+    let response = api
+        .get(
+            &app_path(&row_id(row)?, "/auth-info"),
+            "Reading app organization roles and auth policies",
+        )
+        .await?;
+    let info: AppAuthInfo = serde_json::from_value(response)
+        .map_err(|_| "App auth discovery unavailable: unreadable Cloud API response".to_string())?;
+    let policies: Vec<Value> = info
+        .effective_policies
+        .into_iter()
+        .map(|policy| {
+            json!({
+                "path": policy.path,
+                "kind": policy.kind,
+                "role_codes": policy.role_codes,
+                "inherited": policy.inherited,
+                "source": policy.source,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "action": "auth_info",
+        "app_id": info.app_id,
+        "team_id": info.team_id,
+        "organization": info.organization,
+        "role_scope": info.role_scope,
+        "roles": info.roles,
+        "auth_mode": info.auth_mode,
+        "auth_scope": info.auth_scope,
+        "auth_audience": info.auth_audience,
+        "auth_rules": info.auth_rules,
+        "effective_policies": policies,
+        "organization_status": info.organization_status,
+    }))
+}
+
+/// Only revision facts from the selected daemon's manifest enter status.
+fn add_checkout_snapshot(out: &mut Value, manifest: &Value) {
+    out["checkout_git_commit_sha"] = manifest
+        .get("gitCommitSha")
+        .filter(|value| value.is_string())
+        .cloned()
+        .unwrap_or(Value::Null);
+    out["checkout_clean"] = manifest
+        .get("clean")
+        .filter(|value| value.is_boolean())
+        .cloned()
+        .unwrap_or(Value::Null);
+    out["checkout_content_digest"] = manifest
+        .get("contentDigest")
+        .filter(|value| value.is_string())
+        .cloned()
+        .unwrap_or(Value::Null);
+}
+
 /// `status` — every setting on the row, plus what the control panel's 应用
 /// group shows that the row does not carry: where the checkout is, what it
 /// declares about how it runs, and how far the branch is ahead of what is live.
@@ -814,7 +931,9 @@ async fn app_status(api: &AppApi, row: &Value) -> Value {
         out["workdir"] = json!(workdir);
         out["device_name"] = json!(device);
     }
-    if let Ok(declaration) = daemon_app_declaration(&app_id, &team_id).await {
+    if let Ok(manifest) = daemon_app_manifest(&app_id, &team_id).await {
+        add_checkout_snapshot(&mut out, &manifest);
+        let declaration = &manifest["declaration"];
         out["checkout_declaration"] = json!({
             "build": declaration.get("build").cloned().unwrap_or(Value::Null),
             "start": declaration.get("start").cloned().unwrap_or(Value::Null),
@@ -924,7 +1043,7 @@ fn update_patch(v: &Value) -> Result<Value, String> {
     if let Some(rules) = v.get("auth_rules").or_else(|| v.get("authRules")) {
         let list = rules
             .as_array()
-            .ok_or("auth_rules must be an array of {path, auth, audience?}")?;
+            .ok_or("auth_rules must be an array of {path, auth, audience?, roles?}")?;
         for rule in list {
             let path = rule.get("path").and_then(Value::as_str).unwrap_or("");
             let auth = rule.get("auth").and_then(Value::as_str).unwrap_or("");
@@ -1045,6 +1164,25 @@ async fn update_app(
     }))
 }
 
+async fn undeploy_app(app: &AppHandle, api: &AppApi, row: &Value) -> Result<Value, String> {
+    let app_id = row_id(row)?;
+    let result = api
+        .call(
+            Method::POST,
+            &app_path(&app_id, "/undeploy"),
+            Some(&json!({})),
+            None,
+            "Uninstalling the deployment (needs admin on it)",
+        )
+        .await?;
+    notify_app_changed(app, &result["app"]);
+    let complete = result["operation"]["status"].as_str() == Some("succeeded");
+    Ok(
+        json!({"ok": true, "action": "undeploy", "app": app_brief(&result["app"]), "operation": result["operation"],
+        "complete": complete, "note": if complete {"Deployment uninstalled. App, code, sessions and user data were retained."} else {"Uninstall accepted, not yet complete. Read manage_app status to verify cleanup progress; do not claim success until the operation succeeds."}}),
+    )
+}
+
 async fn delete_app(app: &AppHandle, api: &AppApi, row: &Value) -> Result<Value, String> {
     let app_id = row_id(row)?;
     // Tears down the function, its trigger, the artifact and the login client,
@@ -1101,7 +1239,7 @@ fn redact_deploy_secrets(reason: &str) -> String {
 }
 
 /// The checkout's required build-and-start declaration.
-async fn daemon_app_declaration(app_id: &str, team_id: &str) -> Result<Value, String> {
+async fn daemon_app_manifest(app_id: &str, team_id: &str) -> Result<Value, String> {
     use crate::daemon_client::{self as daemon, RequestSpec, NO_BODY};
     let path = format!("/v1/apps/{}/manifest", urlencoding::encode(app_id));
     let query = format!("?teamId={}", urlencoding::encode(team_id));
@@ -1113,9 +1251,10 @@ async fn daemon_app_declaration(app_id: &str, team_id: &str) -> Result<Value, St
     )
     .await
     .map_err(|e| format!("Could not read the app's build + start declaration: {e}"))?;
-    out.get("declaration")
-        .cloned()
-        .ok_or_else(|| "The daemon returned no build + start declaration.".to_string())
+    if out.get("declaration").is_none() {
+        return Err("The daemon returned no build + start declaration.".to_string());
+    }
+    Ok(out)
 }
 
 /// Kick the local daemon's build-and-upload leg.
@@ -1133,6 +1272,34 @@ async fn daemon_build_app(body: &Value, timeout: Duration) -> Result<Value, Stri
             redact_deploy_secrets(&format!("Daemon build failed: {e}"))
         }
     })
+}
+
+fn require_artifact_verification(build: &Value, revision: &str) -> Result<(), String> {
+    let verification = build.get("artifactVerification");
+    if verification.and_then(|value| row_str(value, "status")) == Some("checked")
+        && verification.and_then(|value| row_str(value, "revision")) == Some(revision)
+        && verification
+            .and_then(|value| value.get("unknownFiles"))
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        return Ok(());
+    }
+    let unknown = verification
+        .and_then(|value| value.get("unknownFiles"))
+        .and_then(Value::as_array)
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|files| !files.is_empty());
+    Err(format!(
+        "artifact_verification_unknown: selected daemon could not verify the Linux/x86_64 artifact{}; run an explicit target-runtime test before publishing",
+        unknown.map(|files| format!(" ({files})")).unwrap_or_default()
+    ))
 }
 
 /// A short-lived Gitea deploy key for the app's repo, as the daemon needs it.
@@ -1202,6 +1369,7 @@ async fn finish_app_deploy(
     team_id: &str,
     via_gitea: bool,
     git_commit_sha: Option<String>,
+    revision: &str,
     deploy_token: &str,
     handle: &DeployHandle,
 ) -> Result<Value, String> {
@@ -1214,6 +1382,7 @@ async fn finish_app_deploy(
     let mut build_body = json!({
         "appId": app_id,
         "teamId": team_id,
+        "revision": revision,
     });
     match handle {
         DeployHandle::Upload(url) => build_body["presignedPut"] = json!(url),
@@ -1249,6 +1418,14 @@ async fn finish_app_deploy(
     let declaration = build
         .get("declaration")
         .ok_or("The daemon build response did not include the build + start declaration.")?;
+    if row_str(&build, "revision") != Some(revision)
+        || (via_gitea && row_str(&build, "gitCommitSha") != Some(revision))
+    {
+        return Err(
+            "daemon built a different revision than preflight; publish stopped".to_string(),
+        );
+    }
+    require_artifact_verification(&build, revision)?;
 
     // What the daemon built, not what we asked for: a deploy publishes work the
     // agent left uncommitted, so HEAD can sit past the sha read off Gitea before
@@ -1257,7 +1434,7 @@ async fn finish_app_deploy(
         .map(str::to_string)
         .or(git_commit_sha);
 
-    let mut finalize_body = json!({ "deployToken": deploy_token });
+    let mut finalize_body = json!({ "deployToken": deploy_token, "revision": revision });
     if let Some(sha) = built_sha {
         finalize_body["gitCommitSha"] = json!(sha);
     }
@@ -1291,7 +1468,13 @@ async fn finish_app_deploy(
 /// holding both. A failure after `/deploy` must report `deploy_error` back:
 /// nothing server-side can observe that the local build never finished, and a
 /// row left at `awaiting_build` blocks every later deploy for 30 minutes.
-async fn run_app_deploy(api: &AppApi, row: &Value, use_code_domain: bool) -> Result<Value, String> {
+async fn run_app_deploy(
+    app: &AppHandle,
+    api: &AppApi,
+    row: &Value,
+    zh: bool,
+    migration_intent: bool,
+) -> Result<Value, String> {
     let app_id = row_id(row)?;
     let team_id = row_str(row, "teamId").unwrap_or_default().to_string();
     let provision = row_str(row, "provisionStatus").unwrap_or_default();
@@ -1321,67 +1504,126 @@ async fn run_app_deploy(api: &AppApi, row: &Value, use_code_domain: bool) -> Res
     // Read before the deploy is minted, not after: a container app is handed a
     // registry to push to and every other app a presigned URL to upload to, and
     // only the machine holding the checkout can say which this is.
-    let declaration = daemon_app_declaration(&app_id, &team_id).await?;
-    let build_kind = row_str(&declaration["build"], "kind")
+    let manifest = daemon_app_manifest(&app_id, &team_id).await?;
+    let declaration = &manifest["declaration"];
+    let _build_kind = row_str(&declaration["build"], "kind")
         .ok_or("The daemon's app declaration has no build.kind.")?;
-    let mut start_body = json!({ "runtime": build_kind, "useAppCodeDomain": use_code_domain });
+    if via_gitea
+        && (manifest["clean"] != true
+            || row_str(&manifest, "gitCommitSha") != git_commit_sha.as_deref())
+    {
+        return Err(
+            "commit and push all changes; checkout HEAD must equal Gitea HEAD before deploy"
+                .to_string(),
+        );
+    }
+    let revision = if via_gitea {
+        git_commit_sha.as_deref()
+    } else {
+        row_str(&manifest, "contentDigest")
+    }
+    .ok_or("The daemon manifest did not include a source revision.")?
+    .to_string();
+    let mut start_body = json!({ "revision": revision, "declaration": declaration, "migrationIntent": migration_intent });
     if let Some(sha) = &git_commit_sha {
         start_body["gitCommitSha"] = json!(sha);
     }
-    let started = api
+    let preflight = api
         .call(
             Method::POST,
-            &app_path(&app_id, "/deploy"),
+            &app_path(&app_id, "/deploy/preflight"),
             Some(&start_body),
             Some(Duration::from_secs(60)),
-            "Starting the deploy (needs admin on the app)",
+            "Checking deployment configuration",
         )
         .await?;
-    let deploy_token = row_str(&started, "deployToken")
-        .unwrap_or_default()
-        .to_string();
-    let handle = match started.get("image").filter(|v| v.is_object()) {
-        Some(image) => DeployHandle::Push(image.clone()),
-        None => {
-            let url = row_str(&started, "presignedPut").unwrap_or_default();
-            if url.is_empty() {
-                return Err("deploy start returned no upload handle".to_string());
+    let preflight_token = row_str(&preflight, "token").ok_or("preflight returned no token")?;
+    let mut build_started = false;
+    let result = async {
+        let use_code_domain = super::confirm::confirm_app_deploy_domain(
+            app,
+            zh,
+            row,
+            super::confirm::app_deploy_with_preview(zh, row, &preflight["preview"]),
+        )
+        .await?;
+        start_body["useAppCodeDomain"] = json!(use_code_domain);
+        start_body["preflightToken"] = json!(preflight_token);
+        let started = api
+            .call(
+                Method::POST,
+                &app_path(&app_id, "/deploy"),
+                Some(&start_body),
+                Some(Duration::from_secs(60)),
+                "Starting the deploy (needs admin on the app)",
+            )
+            .await?;
+        build_started = true;
+        let deploy_token = row_str(&started, "deployToken")
+            .unwrap_or_default()
+            .to_string();
+        let handle = match started.get("image").filter(|v| v.is_object()) {
+            Some(image) => DeployHandle::Push(image.clone()),
+            None => {
+                let url = row_str(&started, "presignedPut").unwrap_or_default();
+                if url.is_empty() {
+                    return Err("deploy start returned no upload handle".to_string());
+                }
+                DeployHandle::Upload(url.to_string())
             }
-            DeployHandle::Upload(url.to_string())
+        };
+        if deploy_token.is_empty() {
+            return Err("deploy start returned no deploy token".to_string());
         }
-    };
-    if deploy_token.is_empty() {
-        return Err("deploy start returned no deploy token".to_string());
-    }
 
-    // From here the server has written `awaiting_build` and this call owns it.
-    match finish_app_deploy(
-        api,
-        &app_id,
-        &team_id,
-        via_gitea,
-        git_commit_sha,
-        &deploy_token,
-        &handle,
-    )
-    .await
-    {
-        Ok(finished) => Ok(finished),
-        Err(reason) => {
-            let reason = redact_deploy_secrets(&reason);
-            let _ = api
-                .send(
-                    Method::PATCH,
-                    &app_path(&app_id, ""),
-                    Some(&json!({
-                        "fcStatus": "deploy_error",
-                        "deployError": reason,
-                    })),
-                    None,
-                )
-                .await;
-            Err(reason)
-        }
+        finish_app_deploy(
+            api,
+            &app_id,
+            &team_id,
+            via_gitea,
+            git_commit_sha,
+            &revision,
+            &deploy_token,
+            &handle,
+        )
+        .await
+    }
+    .await;
+    if let Err(reason) = &result {
+        let reason = redact_deploy_secrets(reason);
+        // Failed builds use the normal status transition. Approval cancellation
+        // only withdraws preflight; a timed-out provider call stays fenced.
+        let (method, path, body) = deploy_failure_request(preflight_token, build_started, &reason);
+        let _ = api
+            .send(
+                method,
+                &app_path(&app_id, path),
+                Some(&body),
+                Some(Duration::from_secs(10)),
+            )
+            .await;
+    }
+    result.map_err(|reason| redact_deploy_secrets(&reason))
+}
+
+fn deploy_failure_request(
+    token: &str,
+    build_started: bool,
+    reason: &str,
+) -> (Method, &'static str, Value) {
+    if build_started {
+        (
+            Method::PATCH,
+            "",
+            json!({ "fcStatus": "deploy_error", "deployToken": token, "deployError": redact_deploy_secrets(reason) }),
+        )
+    } else {
+        // A reused preflight may already belong to another window's build.
+        (
+            Method::DELETE,
+            "/deploy/preflight",
+            json!({ "deployToken": token }),
+        )
     }
 }
 
@@ -1441,6 +1683,199 @@ async fn read_app_logs(api: &AppApi, row: &Value, v: &Value) -> Result<Value, St
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn auth_info_maps_cloud_facts_and_reports_unconfigured_or_forbidden() {
+        use axum::{
+            http::{HeaderMap, StatusCode},
+            routing::get,
+            Json, Router,
+        };
+        let rules = json!([
+            {"path":"/any", "auth":"required", "roles":[], "audience":"org"},
+            {"path":"/staff", "auth":"required", "roles":["custom"]},
+            {"path":"/org", "auth":"required", "audience":"org"}
+        ]);
+        let info = json!({
+            "appId":"app-1", "teamId":"team-1", "organization":{"id":"org-1", "name":"Organization"},
+            "roleScope":"organization", "roles":[{"id":"role-1", "code":"custom", "name":"Custom", "status":"active"}],
+            "authMode":"platform", "authScope":"paths", "authAudience":"org", "authRules":rules,
+            "effectivePolicies":[{"path":"/staff", "kind":"org_roles", "roleCodes":["custom"], "inherited":false, "source":"roles"}],
+            "organizationStatus":"configured"
+        });
+        let mut unconfigured = info.clone();
+        unconfigured["organization"] = Value::Null;
+        unconfigured["organizationStatus"] = json!("unconfigured");
+        unconfigured["roles"] = json!([]);
+        let router = Router::new()
+            .route("/v1/apps/app-1/auth-info", get({let info = info.clone(); move |headers: HeaderMap| {let info = info.clone(); async move {
+                assert_eq!(headers["authorization"], "Bearer test-token");
+                Json(info)
+            }}}))
+            .route("/v1/apps/unconfigured/auth-info", get(move || {let info = unconfigured.clone(); async move {Json(info)}}))
+            .route("/v1/apps/malformed/auth-info", get(|| async {
+                Json(json!({"appId":"malformed", "roles":[]}))
+            }))
+            .route("/v1/apps/forbidden/auth-info", get(|| async {
+                (StatusCode::FORBIDDEN, Json(json!({"error":{"code":"org_roles_forbidden", "message":"organization role directory is not visible"}})))
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let api = AppApi {
+            fc: crate::commands::oss_sync::fc_client::FcClient {
+                client: reqwest::Client::builder().no_proxy().build().unwrap(),
+                base_url: format!("http://{addr}"),
+                jwt: "test-token".into(),
+            },
+        };
+        let result = read_app_auth_info(&api, &json!({"id":"app-1"}))
+            .await
+            .unwrap();
+        let missing = read_app_auth_info(&api, &json!({"id":"unconfigured"}))
+            .await
+            .unwrap();
+        let error = read_app_auth_info(&api, &json!({"id":"forbidden"}))
+            .await
+            .unwrap_err();
+        let malformed = read_app_auth_info(&api, &json!({"id":"malformed"}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            malformed,
+            "App auth discovery unavailable: unreadable Cloud API response"
+        );
+        assert!(!malformed.contains("test-token"));
+        server.abort();
+        assert_eq!(
+            result,
+            json!({
+                "action":"auth_info", "app_id":"app-1", "team_id":"team-1", "organization":{"id":"org-1", "name":"Organization"},
+                "role_scope":"organization", "roles":[{"id":"role-1", "code":"custom", "name":"Custom", "status":"active"}],
+                "auth_mode":"platform", "auth_scope":"paths", "auth_audience":"org", "auth_rules":rules,
+                "effective_policies":[{"path":"/staff", "kind":"org_roles", "role_codes":["custom"], "inherited":false, "source":"roles"}],
+                "organization_status":"configured"
+            })
+        );
+        assert_eq!(missing["organization_status"], "unconfigured");
+        assert!(missing["organization"].is_null());
+        assert!(
+            error.contains("403") && error.contains("organization role directory"),
+            "{error}"
+        );
+        assert!(!error.contains("test-token"));
+    }
+
+    #[test]
+    fn auth_info_action_is_supported() {
+        assert!(super::require_action(
+            &serde_json::json!({"action":"auth_info"}),
+            &super::MANAGE_ACTIONS
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn update_patch_preserves_roles_and_legacy_audience() {
+        let rules = serde_json::json!([
+            {"path":"/api/staff/*", "auth":"required", "roles":["custom"]},
+            {"path":"/login", "auth":"required", "roles":[]},
+            {"path":"/org", "auth":"required", "audience":"org"},
+            {"path":"/both", "auth":"required", "roles":[], "audience":"org"}
+        ]);
+        let patch = super::update_patch(&serde_json::json!({"auth_rules":rules})).unwrap();
+        assert_eq!(patch["authRules"], rules);
+    }
+
+    #[test]
+    fn approval_cancellation_only_withdraws_preflight() {
+        let (method, path, body) =
+            super::deploy_failure_request("shared-token", false, "approval timed out");
+        assert_eq!(method, reqwest::Method::DELETE);
+        assert_eq!(path, "/deploy/preflight");
+        assert_eq!(body, serde_json::json!({"deployToken": "shared-token"}));
+        let (method, path, body) =
+            super::deploy_failure_request("shared-token", true, "build failed");
+        assert_eq!(method, reqwest::Method::PATCH);
+        assert_eq!(path, "");
+        assert_eq!(
+            body,
+            serde_json::json!({"deployToken": "shared-token", "fcStatus": "deploy_error", "deployError": "build failed"})
+        );
+    }
+    #[test]
+    fn status_exposes_selected_checkout_revision_and_cleanliness() {
+        let mut status = serde_json::json!({});
+        super::add_checkout_snapshot(
+            &mut status,
+            &serde_json::json!({
+                "gitCommitSha": "abc123", "clean": false, "contentDigest": "sha256:source"
+            }),
+        );
+        assert_eq!(status["checkout_git_commit_sha"], "abc123");
+        assert_eq!(status["checkout_clean"], false);
+        assert_eq!(status["checkout_content_digest"], "sha256:source");
+    }
+
+    #[test]
+    fn runtime_info_uses_selected_daemon_host_shape() {
+        let response = serde_json::json!({"hostFacts": {
+            "os":"windows", "arch":"x86_64", "docker":true, "buildShell":"sh -c",
+            "buildTools":{"pnpm":true,"python3":false,"go":false,"java":true,"docker":true}
+        }});
+        assert_eq!(
+            super::selected_host_facts(&response).unwrap(),
+            response["hostFacts"]
+        );
+        assert!(super::selected_host_facts(&serde_json::json!({})).is_err());
+    }
+    #[test]
+    fn runtime_info_rejects_malformed_selected_daemon_host_facts() {
+        let valid = serde_json::json!({"hostFacts": {
+            "os":"windows", "arch":"x86_64", "docker":true, "buildShell":"sh -c",
+            "buildTools":{"pnpm":true,"python3":false,"go":false,"java":true,"docker":true}
+        }});
+        for (pointer, replacement) in [
+            ("/hostFacts/os", serde_json::json!("")),
+            ("/hostFacts/arch", serde_json::json!(" ")),
+            ("/hostFacts/buildShell", serde_json::json!("")),
+            ("/hostFacts/buildTools", serde_json::json!({})),
+            ("/hostFacts/buildTools/pnpm", serde_json::json!("yes")),
+            ("/hostFacts/buildTools/docker", serde_json::json!(false)),
+            ("/hostFacts/docker", serde_json::json!("yes")),
+        ] {
+            let mut invalid = valid.clone();
+            *invalid.pointer_mut(pointer).unwrap() = replacement;
+            assert!(super::selected_host_facts(&invalid).is_err(), "{pointer}");
+        }
+    }
+    #[test]
+    fn unknown_or_missing_artifact_verification_cannot_finalize() {
+        for build in [
+            serde_json::json!({"artifactVerification":{"status":"unknown","unknownFiles":["native.so"]}}),
+            serde_json::json!({}),
+        ] {
+            let error = super::require_artifact_verification(&build, "abc").unwrap_err();
+            assert!(
+                error.contains("artifact_verification_unknown") && error.contains("Linux/x86_64"),
+                "{error}"
+            );
+        }
+        assert!(super::require_artifact_verification(&serde_json::json!({"artifactVerification":{"status":"checked", "revision":"abc", "unknownFiles":[]}}), "abc").is_ok());
+        assert!(super::require_artifact_verification(&serde_json::json!({"artifactVerification":{"status":"checked", "revision":"other", "unknownFiles":[]}}), "abc").is_err());
+    }
+    #[test]
+    fn runtime_info_path_forwards_language_and_rejects_unknown() {
+        let row = serde_json::json!({"id": "app-1"});
+        assert_eq!(
+            super::runtime_info_path(&row, &serde_json::json!({"language": "java"})).unwrap(),
+            "/v1/apps/app-1/runtime-info?language=java"
+        );
+        assert_eq!(
+            super::runtime_info_path(&row, &serde_json::json!({})).unwrap(),
+            "/v1/apps/app-1/runtime-info"
+        );
+        assert!(super::runtime_info_path(&row, &serde_json::json!({"language": "ruby"})).is_err());
+    }
     #[tokio::test]
     async fn app_listing_respects_cloud_api_limit() {
         use axum::{extract::Query, http::StatusCode, routing::get, Json, Router};
@@ -1601,7 +2036,7 @@ mod tests {
 
     #[test]
     fn only_an_old_live_domain_is_offered_the_deploy_checkbox() {
-        use super::super::confirm::legacy_app_domain_choice;
+        use super::super::confirm::app_domain::legacy_app_domain_choice;
         let legacy = json!({ "usesAppCodeDomain": false, "fcStatus": "live", "fcEndpoint": "https://origin.example", "publicUrl": "https://old.example", "appCodeUrl": "https://a-k7m2q9vx4n8p.example" });
         assert!(legacy_app_domain_choice(&legacy).is_some());
         let mut undeployed = legacy.clone();

@@ -1,10 +1,11 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { Check, Filter, Loader2, Plus, Search, Sparkles, Star, User as UserIcon, Users } from 'lucide-react'
+import { Check, Filter, Loader2, Monitor, Plus, Search, Sparkles, Star, User as UserIcon, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { InviteActorDialog } from '@/components/sidebar/InviteActorDialog'
+import { AnotherComputerAgentDialog } from '@/components/sidebar/AnotherComputerAgentDialog'
 import { ActorContextMenu } from '@/components/sidebar/ActorContextMenu'
 import {
   AlertDialog,
@@ -95,6 +96,20 @@ export function compareMembersByRoleThenName(a: ActorRow, b: ActorRow): number {
 
 function sortMembersByRoleThenName(list: ActorRow[]): ActorRow[] {
   return [...list].sort(compareMembersByRoleThenName)
+}
+
+function AnotherComputerRow({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation()
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-2.5 border-b border-border-soft px-4 py-2.5 text-left text-[13px] text-muted-foreground hover:bg-selected focus:outline-none focus-visible:bg-selected"
+    >
+      <Monitor className="h-4 w-4 shrink-0" />
+      <span>{t('actors.anotherComputer', 'Run on another computer')}</span>
+    </button>
+  )
 }
 
 function ActorSectionLabel({ label, count }: { label: string; count: number }) {
@@ -468,6 +483,7 @@ export function ActorsView() {
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [filter, setFilter] = React.useState<ActorTypeFilter>('all')
   const [inviteOpen, setInviteOpen] = React.useState(false)
+  const [anotherComputerOpen, setAnotherComputerOpen] = React.useState(false)
   const [removeFor, setRemoveFor] = React.useState<ActorRow | null>(null)
   const [removing, setRemoving] = React.useState(false)
 
@@ -505,6 +521,7 @@ export function ActorsView() {
   )
 
   const showSectionHeaders = filter === 'all'
+  const showAnotherComputer = (filter === 'all' || filter === 'agent') && query.trim() === ''
   const openActorDetail = useActorDetailStore((s) => s.openActor)
   const clearActorDetail = useActorDetailStore((s) => s.clearDetail)
   const selectedActorId = useActorDetailStore((s) => s.actorId)
@@ -555,11 +572,14 @@ export function ActorsView() {
         <div className="flex flex-1 flex-col items-center justify-center py-12 text-center text-sm text-muted-foreground">
           <Users className="mb-2 h-8 w-8 text-muted-foreground" />
           <span>{t('actors.empty', 'No actors in this team yet')}</span>
+          {showAnotherComputer ? (
+            <AnotherComputerRow onClick={() => setAnotherComputerOpen(true)} />
+          ) : null}
         </div>
       )
     }
 
-    if (visibleActors.length === 0) {
+    if (visibleActors.length === 0 && !showAnotherComputer) {
       return (
         <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground">
           {t('actors.noMatches', 'No matching actors')}
@@ -589,7 +609,7 @@ export function ActorsView() {
             ))}
           </>
         )}
-        {visibleSections.agents.length > 0 && (
+        {(visibleSections.agents.length > 0 || showAnotherComputer) && (
           <>
             {showSectionHeaders && (
               <ActorSectionLabel
@@ -607,6 +627,9 @@ export function ActorsView() {
                 onRequestRemove={setRemoveFor}
               />
             ))}
+            {showAnotherComputer ? (
+              <AnotherComputerRow onClick={() => setAnotherComputerOpen(true)} />
+            ) : null}
           </>
         )}
         {visibleSections.externals.length > 0 && (
@@ -703,6 +726,7 @@ export function ActorsView() {
       </div>
       {renderBody()}
       <InviteActorDialog open={inviteOpen} onOpenChange={setInviteOpen} />
+      <AnotherComputerAgentDialog open={anotherComputerOpen} onOpenChange={setAnotherComputerOpen} />
       <AlertDialog open={!!removeFor} onOpenChange={(open) => { if (!open) setRemoveFor(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>

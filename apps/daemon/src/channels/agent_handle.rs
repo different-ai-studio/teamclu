@@ -18,7 +18,8 @@
 //! re-spawns; old conversation history stays in the cloud backend regardless.
 
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -61,6 +62,31 @@ pub struct ResolvedSession {
     /// an outbound send needs it to write the file back into the session.
     remote_session_id: Option<String>,
     was_primed: bool,
+    active_turn: Option<Arc<ActiveGatewayTurn>>,
+}
+
+/// One collector continues to own the gateway reply when Pi receives steer
+/// prompts. The reply-to stamp also distinguishes a queued old Idle from the
+/// settlement after the latest supplement was accepted.
+struct ActiveGatewayTurn {
+    generation: String,
+    closed: AtomicBool,
+    reply_to: Mutex<GatewayTurnReplyState>,
+}
+
+#[derive(Default)]
+struct GatewayTurnReplyState {
+    expected: Option<String>,
+    latest_frame: Option<String>,
+    superseded: HashSet<Option<String>>,
+}
+
+struct ActiveGatewayTurnGuard(Arc<ActiveGatewayTurn>);
+
+impl Drop for ActiveGatewayTurnGuard {
+    fn drop(&mut self) {
+        self.0.closed.store(true, Ordering::Release);
+    }
 }
 
 /// Per-bot runtime defaults, keyed by WeCom `bot_id`. Seeded from
@@ -337,12 +363,6 @@ impl AmuxdAgentHandle {
         } else {
             teamclu_runtime_env::ManagedLlmState::Unknown
         };
-        let cloud_token_file = self
-            .backend
-            .cloud_auth_health()
-            .map(|_| crate::config::DaemonConfig::cloud_token_path())
-            .map(|p| p.to_string_lossy().into_owned());
-
         // Suppress immediately before the sync disk writes, never before the
         // awaits above: the managed-LLM fetch can outlast the suppress window
         // and the `opencode.json` rewrite would leak as a Pending banner.
@@ -375,7 +395,6 @@ impl AmuxdAgentHandle {
             env_team_id,
             &self.spawn_env.actor_id,
             &self.spawn_env.actor_name,
-            cloud_token_file.as_deref(),
             &managed_llm,
             gateway_token.as_deref(),
             ai_proxy_base.as_deref(),
@@ -652,6 +671,7 @@ impl AmuxdAgentHandle {
                 binding: binding.clone(),
                 remote_session_id: remote_session_id.clone(),
                 was_primed: false,
+                active_turn: None,
             });
         let outcome = ResolveOutcome {
             real_acp_sid: entry.real_acp_sid.clone(),
@@ -780,6 +800,65 @@ pub fn bot_id_from_binding(binding: &str) -> Option<&str> {
     rest.split('/').next().filter(|s| !s.is_empty())
 }
 
+/// Registry key for a SeaTalk app's persona. Prefixed so it cannot collide
+/// with a WeCom bot id, and so the WeCom-only `CLAUDE.local.md` write (which
+/// looks up bare bot ids) leaves the shared workspace alone.
+pub fn seatalk_persona_key(app_id: &str) -> String {
+    format!("seatalk:{app_id}")
+}
+
+/// App id from `seatalk://<app_id>/...`.
+pub fn seatalk_app_id_from_binding(binding: &str) -> Option<&str> {
+    let rest = binding.strip_prefix("seatalk://")?;
+    rest.split('/').next().filter(|s| !s.is_empty())
+}
+
+/// Persona configured for this chat, if any.
+///
+/// WeCom keys the registry by bot id. SeaTalk keys it by
+/// [`seatalk_persona_key`]. Whitespace-only prompts are treated as unset.
+pub fn system_prompt_for_binding<'a>(
+    binding: &str,
+    configs: &'a HashMap<String, BotRuntimeConfig>,
+) -> Option<&'a str> {
+    let prompt = if let Some(bot_id) = bot_id_from_binding(binding) {
+        configs.get(bot_id).and_then(|c| c.system_prompt.as_deref())
+    } else if let Some(app_id) = seatalk_app_id_from_binding(binding) {
+        configs
+            .get(&seatalk_persona_key(app_id))
+            .and_then(|c| c.system_prompt.as_deref())
+    } else {
+        None
+    };
+    prompt.map(str::trim).filter(|p| !p.is_empty())
+}
+
+/// User-visible body of one gateway turn.
+///
+/// The first turn of a fresh session gets the send-tool preamble, including
+/// the persona when one is configured. A SeaTalk persona is repeated on later
+/// turns: that channel has no per-bot workspace file to carry it. WeCom's
+/// persona is written to `CLAUDE.local.md` and only rides the first turn.
+pub fn gateway_turn_body(
+    needs_preamble: bool,
+    binding: &str,
+    persona: Option<&str>,
+    sender_display: &str,
+    text: &str,
+) -> String {
+    if needs_preamble {
+        let channel = channel_name_from_binding(binding);
+        return build_first_turn_prompt(channel, persona, sender_display, text);
+    }
+    let persona = persona
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && binding.starts_with("seatalk://"));
+    if let Some(persona) = persona {
+        return format!("[SYSTEM] {persona}\n\n[{sender_display}] {text}");
+    }
+    format!("[{sender_display}] {text}")
+}
+
 /// Build the first-turn prompt for a freshly-spawned gateway session: the
 /// per-bot persona (if any), then the standard send-tool note, then the
 /// user's message. Subsequent turns use `[sender] text` plus the reply-token
@@ -869,18 +948,17 @@ impl AmuxdAgentHandle {
         // caller may have already primed the session — `already_primed`
         // settles the race so we never double-prime.
         let needs_preamble = outcome.spawned && !self.already_primed(session).await;
-        let body = if needs_preamble {
-            let channel = channel_name_from_binding(&outcome.binding);
-            let bot_prompt = {
-                let configs = self.bot_configs.lock().await;
-                bot_id_from_binding(&outcome.binding)
-                    .and_then(|b| configs.get(b))
-                    .and_then(|c| c.system_prompt.clone())
-            };
-            build_first_turn_prompt(channel, bot_prompt.as_deref(), sender_display, text)
-        } else {
-            format!("[{sender_display}] {text}")
+        let persona = {
+            let configs = self.bot_configs.lock().await;
+            system_prompt_for_binding(&outcome.binding, &configs).map(str::to_string)
         };
+        let body = gateway_turn_body(
+            needs_preamble,
+            &outcome.binding,
+            persona.as_deref(),
+            sender_display,
+            text,
+        );
 
         // Registering here rather than at spawn is what makes the send tool
         // survive a reused attachment: this runs on every turn, including the
@@ -960,6 +1038,16 @@ impl AmuxdAgentHandle {
             }
             (turn.agent_id, turn.event_rx)
         };
+
+        let active = Arc::new(ActiveGatewayTurn {
+            generation: uuid::Uuid::new_v4().to_string(),
+            closed: AtomicBool::new(false),
+            reply_to: Mutex::new(GatewayTurnReplyState::default()),
+        });
+        let _active_guard = ActiveGatewayTurnGuard(active.clone());
+        if let Some(resolved) = self.logical_to_acp.lock().await.get_mut(session) {
+            resolved.active_turn = Some(active.clone());
+        }
 
         // A turn is only over on Active -> Idle. The aggregator also emits an
         // `AgentReply` *mid-turn*, every time a tool call interrupts buffered
@@ -1096,6 +1184,37 @@ impl AmuxdAgentHandle {
                 }
             }
 
+            // Serialize accepting a supplement with closing the collector.
+            // An old settlement already in event_rx cannot finish the reply
+            // before Pi has processed the newly accepted prompt.
+            let terminal = matches!(
+                &event.event.event,
+                Some(crate::proto::amux::acp_event::Event::Error(_))
+            ) || matches!(
+                &event.event.event,
+                Some(crate::proto::amux::acp_event::Event::StatusChange(sc))
+                    if sc.old_status == amux::AgentStatus::Active as i32
+                        && sc.new_status == amux::AgentStatus::Idle as i32
+            );
+            let mut state = active.reply_to.lock().await;
+            let current_completion = !state.superseded.contains(&event.turn_reply_to_message_id);
+            if current_completion {
+                state.latest_frame = event.turn_reply_to_message_id.clone();
+            }
+            // A later prompt from the desktop may supersede the SeaTalk
+            // supplement too. Accept its settlement; only known older stamps
+            // are stale, so mixing desktop and channel input cannot hang.
+            let completion = if terminal {
+                Some(state)
+            } else {
+                drop(state);
+                None
+            };
+            if matches!(&event.event.event, Some(amux::acp_event::Event::Error(_)))
+                && !current_completion
+            {
+                continue;
+            }
             if let Some(crate::proto::amux::acp_event::Event::Error(err)) = &event.event.event {
                 match crate::runtime::turn_reply::gateway_error_action(err, &segments, &live) {
                     crate::runtime::turn_reply::GatewayErrorAction::Continue => {
@@ -1145,9 +1264,11 @@ impl AmuxdAgentHandle {
             let flushed =
                 crate::runtime::turn_reply::absorb_emitted(emitted, &mut segments, &mut live);
 
-            if turn_ended {
+            if turn_ended && current_completion {
+                active.closed.store(true, Ordering::Release);
                 break Ok(crate::runtime::turn_reply::compose_reply(&segments, &live));
             }
+            drop(completion);
 
             // Best-effort progress updates: coalesced by interval, skipped
             // when nothing changed, and never allowed to fail the turn.
@@ -1168,6 +1289,7 @@ impl AmuxdAgentHandle {
             }
         };
 
+        active.closed.store(true, Ordering::Release);
         {
             let mut mgr = self.manager.lock().await;
             mgr.checkin_turn(crate::runtime::CheckedOutTurn {
@@ -1206,6 +1328,63 @@ impl AmuxdAgentHandle {
 
 #[async_trait]
 impl AgentHandle for AmuxdAgentHandle {
+    async fn active_turn(&self, binding: &str) -> Option<String> {
+        self.logical_to_acp
+            .lock()
+            .await
+            .values()
+            .filter(|resolved| resolved.binding == binding)
+            .filter_map(|resolved| resolved.active_turn.as_ref())
+            .find(|turn| !turn.closed.load(Ordering::Acquire))
+            .map(|turn| turn.generation.clone())
+    }
+
+    async fn append_to_active_turn(
+        &self,
+        session: &AmuxSessionId,
+        sender_display: &str,
+        text: &str,
+        attachment_urls: &[String],
+        message_id: &str,
+    ) -> Result<bool, AgentError> {
+        let resolved = self.logical_to_acp.lock().await.get(session).cloned();
+        let Some(resolved) = resolved else {
+            return Ok(false);
+        };
+        let Some(active) = resolved.active_turn else {
+            return Ok(false);
+        };
+        let mut state = active.reply_to.lock().await;
+        if active.closed.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let mut manager = self.manager.lock().await;
+        let Some(agent_id) = manager.agent_id_by_acp_session(&resolved.real_acp_sid) else {
+            return Ok(false);
+        };
+        let reply_to = if message_id.is_empty() {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            message_id.to_string()
+        };
+        manager
+            .send_prompt_raw(
+                &agent_id,
+                &format!("[{sender_display}] {text}"),
+                attachment_urls.to_vec(),
+                None,
+                Some(reply_to.clone()),
+            )
+            .await
+            .map_err(|e| AgentError::Send(e.to_string()))?;
+        let previous = state.expected.clone();
+        let latest = state.latest_frame.clone();
+        state.superseded.insert(previous);
+        state.superseded.insert(latest);
+        state.expected = Some(reply_to);
+        Ok(true)
+    }
+
     async fn create_session(
         &self,
         _team_id: &str,
@@ -2617,6 +2796,7 @@ pub(crate) mod tests {
                 binding: "wecom://botA/botA/single/u".to_string(),
                 remote_session_id: None,
                 was_primed: true,
+                active_turn: None,
             },
         );
 
@@ -2656,6 +2836,51 @@ pub(crate) mod tests {
         let p = build_first_turn_prompt("wecom", None, "Bob", "hi");
         assert!(p.contains("amuxd-send"));
         assert!(p.contains("[Bob] hi"));
+    }
+
+    #[test]
+    fn seatalk_persona_is_looked_up_by_app_id_and_repeated_on_later_turns() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            seatalk_persona_key("app001"),
+            BotRuntimeConfig {
+                system_prompt: Some("  只用中文回答。  ".into()),
+                ..BotRuntimeConfig::default()
+            },
+        );
+        let binding = "seatalk://app001/group/g1/thread/t1";
+        assert_eq!(
+            system_prompt_for_binding(binding, &configs),
+            Some("只用中文回答。")
+        );
+        assert_eq!(
+            system_prompt_for_binding("seatalk://other/single/E1", &configs),
+            None
+        );
+        assert_eq!(seatalk_app_id_from_binding("wecom://bot/x"), None);
+
+        let first = gateway_turn_body(true, binding, Some("只用中文回答。"), "Alice", "你好");
+        assert!(first.contains("只用中文回答。"));
+        assert!(first.contains("amuxd-send"));
+        assert!(first.contains("[Alice] 你好"));
+
+        let later = gateway_turn_body(false, binding, Some("只用中文回答。"), "Alice", "再问一次");
+        assert!(later.starts_with("[SYSTEM] 只用中文回答。"));
+        assert!(later.contains("[Alice] 再问一次"));
+        assert!(
+            !later.contains("amuxd-send"),
+            "later turns keep the persona without repeating the send-tool preamble"
+        );
+
+        // WeCom still carries its persona only on the first turn.
+        let wecom_later = gateway_turn_body(
+            false,
+            "wecom://botA/botA/single/u",
+            Some("你是法务助手"),
+            "Bob",
+            "hi",
+        );
+        assert_eq!(wecom_later, "[Bob] hi");
     }
 
     /// Verify `set_model` stores `(provider, model)` as a tuple so the

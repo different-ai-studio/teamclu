@@ -33,9 +33,16 @@
  * - `TEAMCLU_MCP_TOOL_CACHE_DIR` — where each server's `tools/list` result is
  *   cached, so session startup does not wait on a cold connection.
  *
+ * - `TEAMCLU_RUNTIME_CONTEXT_SOCK` (unix) — the socket on which amuxd hands
+ *   this host, and every process it spawns, the daemon's cloud access token
+ *   (`POST /internal/runtime-context/cloud-token`, `Accept: text/plain` for the
+ *   bare token). Nothing is presented on it: the daemon identifies the caller
+ *   by its process ancestry. See the cloud-token section below.
+ *
  * ## MCP
  *
- * pi has no MCP of its own. This extension is the MCP client, built on the
+ * pi's own MCP extension is CLI-only (see the MCP client section), so this
+ * extension is the MCP client, built on the
  * official `@modelcontextprotocol/sdk`, which `amuxd pi install` installs into
  * this file's directory (`pi_install::mcp_sdk`). Local (stdio) and remote
  * (streamable HTTP, falling back to SSE) servers are both supported, matching
@@ -54,6 +61,7 @@
  */
 
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
 
 // Loose ExtensionAPI typing: the real types live in
@@ -95,6 +103,25 @@ type ExtensionContext = {
     ): Promise<unknown>;
   };
 };
+/** What pi hands a `tool_result` handler (`ToolResultEventBase` upstream). */
+type ToolResultEvent = {
+  toolName: string;
+  toolCallId: string;
+  input: Record<string, unknown>;
+  content: PiToolContent[];
+  details?: unknown;
+  structuredContent?: unknown;
+  isError: boolean;
+};
+/** What a `tool_result` handler may return. Omitted fields keep pi's values,
+ *  except `details`, which pi takes from the hook result alone — and
+ *  `structuredContent`, which is dropped when `content` is replaced without it. */
+type ToolResultEventResult = {
+  content?: PiToolContent[];
+  details?: unknown;
+  structuredContent?: unknown;
+  isError?: boolean;
+};
 type ExtensionAPI = {
   on(
     event: "tool_call",
@@ -102,6 +129,13 @@ type ExtensionAPI = {
       event: ToolCallEvent,
       ctx: ExtensionContext,
     ) => Promise<{ block: boolean; reason?: string } | undefined>,
+  ): void;
+  on(
+    event: "tool_result",
+    handler: (
+      event: ToolResultEvent,
+      ctx: ExtensionContext,
+    ) => Promise<ToolResultEventResult | undefined>,
   ): void;
   on(
     event: "before_agent_start",
@@ -135,12 +169,19 @@ type ExtensionAPI = {
 /** pi's default prompt embeds a self-documentation index under "Pi documentation …".
  *  Anthropic's OAuth subscription discriminator rejects that block as non–Claude Code
  *  usage. TeamClu users never need it; strip for the native anthropic provider only.
- *  Stop before project_context, skills (`formatSkillsForPrompt`), or cwd — pi 0.84.2 order. */
-const PI_SELF_DOCUMENTATION_BLOCK =
+ *
+ *  pi ≥ 0.99 wraps every prompt section in a tag, so the index is its own
+ *  `<docs>…</docs>` block. pi 0.84 had untagged sections; that form is still
+ *  matched (stopping before project_context, skills, or cwd) because the legacy
+ *  `--mode rpc` fallback runs whatever pi the user has installed. */
+const PI_SELF_DOCUMENTATION_BLOCK = /\n\n<docs>\nPi documentation[\s\S]*?\n<\/docs>(?=\n|$)/;
+const LEGACY_PI_SELF_DOCUMENTATION_BLOCK =
   /\n\nPi documentation[\s\S]*?(?=\n\n<project_context>|\n\nThe following skills provide|\nCurrent working directory:)/;
 
 function stripPiSelfDocumentation(prompt: string): string {
-  return prompt.replace(PI_SELF_DOCUMENTATION_BLOCK, "");
+  return prompt
+    .replace(PI_SELF_DOCUMENTATION_BLOCK, "")
+    .replace(LEGACY_PI_SELF_DOCUMENTATION_BLOCK, "");
 }
 
 function shouldStripPiSelfDocumentation(ctx?: ExtensionContext): boolean {
@@ -224,6 +265,186 @@ async function resolveTeamcluSessionId(backendSessionId: string): Promise<string
     throw new Error("session_context_unavailable");
   }
   return teamcluSessionId;
+}
+
+// ---------------------------------------------------------------------------
+// Cloud access token: fetched from amuxd on demand, redacted from tool results
+// ---------------------------------------------------------------------------
+//
+// The daemon's cloud JWT used to sit in a `0600` file advertised to every agent
+// as `TC_ACCESS_TOKEN_FILE`. That file was readable by every process of the OS
+// user, not just the hosts amuxd spawned, so it is gone: a skill that needs the
+// token asks `/internal/runtime-context/cloud-token`
+// (docs/architecture/personal-env-and-runtime-env.md §1.1).
+//
+// How the daemon knows who is asking depends on the platform. On unix it is
+// the socket in `TEAMCLU_RUNTIME_CONTEXT_SOCK`, where the kernel reports the
+// caller's pid and the daemon walks its ancestry to a host it spawned — the
+// one thing another process of this OS user cannot fake. A secret in our
+// environment would not do: every same-user process can read it (`sysctl
+// KERN_PROCARGS2` on macOS, `/proc/<pid>/environ` on Linux), and it has to be
+// in the environment for the skills we run to use it. Windows has no such
+// socket and keeps the loopback TCP route with the runtime-context bearer.
+//
+// What comes back is still the daemon's full identity for up to an hour, so
+// the `tool_result` hook keeps it out of transcripts: every token the daemon
+// has issued to this host, and the host's own runtime-context token, are
+// replaced with a placeholder before the model — and the session file, and the
+// cloud transcript — see the tool output.
+
+const REDACTED_CLOUD_TOKEN = "[teamclu:cloud-access-token redacted]";
+/** Three base64url segments, the first starting with `{"` — the shape of any
+ *  JWT the daemon could hand out. Only a trigger to re-ask the daemon what it
+ *  has issued; redaction itself is by exact match, never by shape. */
+const JWT_LIKE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
+
+/** Every cloud token this host has seen the daemon issue, plus the host's own
+ *  runtime-context token. Never evicted: an expired token in a transcript is
+ *  still a credential for the minutes it has left, and the set stays small
+ *  (one new token an hour). */
+const knownCloudTokens = new Set<string>();
+let knownCloudTokensRefresh: Promise<void> | undefined;
+
+function rememberCloudToken(token: string | undefined): void {
+  const trimmed = token?.trim();
+  if (trimmed && trimmed.length >= 16) knownCloudTokens.add(trimmed);
+}
+
+/** How this host reaches amuxd for the cloud access token (see the section
+ *  comment above). `undefined` when this is not an amuxd-spawned host. The
+ *  socket wins whenever it is set: on unix the TCP route issues nothing. */
+type CloudTokenRoute =
+  | { kind: "unix-socket"; socketPath: string }
+  | {
+      kind: "tcp-bearer";
+      baseUrl: string;
+      token: string;
+      generationId: string;
+      backendKind: string;
+    };
+
+function cloudTokenRoute(env: Record<string, string | undefined>): CloudTokenRoute | undefined {
+  const socketPath = env.TEAMCLU_RUNTIME_CONTEXT_SOCK?.trim();
+  if (socketPath) return { kind: "unix-socket", socketPath };
+  const baseUrl = env.TEAMCLU_RUNTIME_CONTEXT_URL?.trim()?.replace(/\/$/, "");
+  const token = env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
+  const generationId = env.TEAMCLU_HOST_GENERATION_ID?.trim();
+  const backendKind = env.TEAMCLU_AGENT_BACKEND?.trim();
+  if (!baseUrl || !token || !generationId || !backendKind) return undefined;
+  return { kind: "tcp-bearer", baseUrl, token, generationId, backendKind };
+}
+
+/** `POST /internal/runtime-context/cloud-token` over the Unix socket, which
+ *  `fetch` cannot address. The body on a 2xx, `undefined` otherwise. */
+function cloudTokenOverUnixSocket(socketPath: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        socketPath,
+        path: "/internal/runtime-context/cloud-token",
+        method: "POST",
+        headers: { Accept: "text/plain", "Content-Length": "0" },
+        timeout: 10_000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          const status = res.statusCode ?? 0;
+          resolve(status >= 200 && status < 300 ? Buffer.concat(chunks).toString("utf8") : undefined);
+        });
+        res.on("error", () => resolve(undefined));
+      },
+    );
+    req.on("timeout", () => req.destroy());
+    req.on("error", () => resolve(undefined));
+    req.end();
+  });
+}
+
+/** Ask amuxd for its current cloud access token. `undefined` when this is not
+ *  an amuxd-spawned host (no runtime-context env) or the daemon refused. */
+async function fetchCloudAccessToken(): Promise<string | undefined> {
+  const route = cloudTokenRoute(process.env);
+  if (!route) return undefined;
+  try {
+    if (route.kind === "unix-socket") {
+      const text = (await cloudTokenOverUnixSocket(route.socketPath))?.trim();
+      return text || undefined;
+    }
+    const resp = await fetch(`${route.baseUrl}/internal/runtime-context/cloud-token`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${route.token}`,
+        "Content-Type": "application/json",
+        Accept: "text/plain",
+      },
+      body: JSON.stringify({ hostGenerationId: route.generationId, backendKind: route.backendKind }),
+    });
+    if (!resp.ok) return undefined;
+    const text = (await resp.text()).trim();
+    return text || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Refresh the known set from the daemon, coalescing concurrent callers. */
+function refreshKnownCloudTokens(): Promise<void> {
+  if (!knownCloudTokensRefresh) {
+    knownCloudTokensRefresh = fetchCloudAccessToken()
+      .then(rememberCloudToken)
+      .finally(() => {
+        knownCloudTokensRefresh = undefined;
+      });
+  }
+  return knownCloudTokensRefresh;
+}
+
+/** Does `text` carry a JWT that is not (yet) in `known`? The daemon rotates
+ *  its token hourly, so a skill may print one issued since we last asked. */
+function unknownJwtIn(text: string, known: Set<string>): boolean {
+  for (const m of text.match(JWT_LIKE) ?? []) {
+    if (!known.has(m)) return true;
+  }
+  return false;
+}
+
+/** Replace every known token in `text`. Exact match only. */
+function redactKnownCloudTokens(text: string, tokens: Iterable<string>): string {
+  let out = text;
+  for (const token of tokens) {
+    if (token && out.includes(token)) out = out.split(token).join(REDACTED_CLOUD_TOKEN);
+  }
+  return out;
+}
+
+/** Redact a tool result's text parts and structured content. `undefined` when
+ *  nothing matched, so pi keeps the original. Images pass through untouched. */
+function redactToolResult(
+  content: PiToolContent[],
+  structuredContent: unknown,
+  tokens: Iterable<string>,
+): { content: PiToolContent[]; structuredContent: unknown } | undefined {
+  let changed = false;
+  const nextContent = content.map((part) => {
+    if (!part || part.type !== "text" || typeof part.text !== "string") return part;
+    const text = redactKnownCloudTokens(part.text, tokens);
+    if (text === part.text) return part;
+    changed = true;
+    return { ...part, text };
+  });
+  let nextStructured = structuredContent;
+  if (structuredContent !== undefined) {
+    const raw = JSON.stringify(structuredContent);
+    const scrubbed = typeof raw === "string" ? redactKnownCloudTokens(raw, tokens) : raw;
+    if (scrubbed !== raw) {
+      changed = true;
+      nextStructured = JSON.parse(scrubbed);
+    }
+  }
+  if (!changed) return undefined;
+  return { content: nextContent, structuredContent: nextStructured };
 }
 
 const sessionPromptAppendByCacheKey = new Map<string, string>();
@@ -437,8 +658,10 @@ function registerTeamProvider(pi: ExtensionAPI): void {
 // ---------------------------------------------------------------------------
 
 /**
- * pi ships no MCP client — "**No MCP.** … or build an extension that adds MCP
- * support" (pi's README). This section is that client: it connects to every
+ * pi ≥ 0.99 bundles an MCP extension, but only the `pi` CLI loads it (it reads
+ * `mcp.json`); the SDK host (`assets/pi-host/host.mjs`) does not, and the
+ * workspace's MCP config is amuxd's, not pi's. This section is the client the
+ * host uses: it connects to every
  * server the workspace configures and republishes their tools as pi tools, so
  * a workspace presents the same tool set on pi as it does on opencode.
  *
@@ -1182,6 +1405,57 @@ async function bridgeMcpServer(
  *  Must match `QUESTION_MARKER` in `pi_rpc/translate.rs`. */
 const QUESTION_MARKER = "teamclu.question=";
 
+/** Trailer on the tool result. Must match `QUESTION_SETTLED_MARKER` in
+ *  `packages/app/src/lib/teamclu/question-settlement.ts`. */
+const QUESTION_SETTLED_MARKER = "teamclu.question.settled=";
+
+type QuestionReply = {
+  answers: string[][];
+  rejected: boolean;
+  trailer: string;
+};
+
+function normalizeAnswerRows(parsed: unknown): string[][] {
+  if (Array.isArray(parsed)) {
+    return parsed.map((row) =>
+      Array.isArray(row)
+        ? row.map(String)
+        : row === undefined || row === null
+          ? []
+          : [String(row)],
+    );
+  }
+  if (parsed === undefined || parsed === null) return [];
+  return [[String(parsed)]];
+}
+
+/** The host replies with `{answers, answeredBy, rejected}` (see
+ *  `question_reply_value`). A bare array is an older daemon, or a TUI select. */
+function parseQuestionReply(value: string): QuestionReply {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      Array.isArray((parsed as { answers?: unknown }).answers)
+    ) {
+      return {
+        answers: normalizeAnswerRows((parsed as { answers: unknown }).answers),
+        rejected: (parsed as { rejected?: unknown }).rejected === true,
+        trailer: `${QUESTION_SETTLED_MARKER}${value}`,
+      };
+    }
+    return { answers: normalizeAnswerRows(parsed), rejected: false, trailer: "" };
+  } catch {
+    return { answers: [[value]], rejected: false, trailer: "" };
+  }
+}
+
+function questionResultText(lines: string[], trailer: string): string {
+  return [lines.filter(Boolean).join("\n"), trailer].filter(Boolean).join("\n");
+}
+
 type QuestionSpec = {
   question?: string;
   header?: string;
@@ -1384,25 +1658,29 @@ function registerQuestionTool(pi: ExtensionAPI, ownTools: Set<string>): void {
           isError: true,
         };
       }
-      // amuxd answers with `[["label", …], …]` (one array per question, in
-      // order); a bare string is a plain select's answer to question 1.
-      let answers: string[][];
-      try {
-        const parsed = JSON.parse(value);
-        answers = Array.isArray(parsed)
-          ? parsed.map((a: unknown) =>
-              Array.isArray(a) ? a.map(String) : a === undefined || a === null ? [] : [String(a)],
-            )
-          : [[String(parsed)]];
-      } catch {
-        answers = [[value]];
+      // amuxd answers with `{answers, answeredBy, rejected}`. A bare array or
+      // string is an older daemon, or a plain select's answer to question 1.
+      const reply = parseQuestionReply(value);
+      if (reply.rejected) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: questionResultText(
+                ["The user dismissed the question without answering."],
+                reply.trailer,
+              ),
+            },
+          ],
+          isError: true,
+        };
       }
       const lines = questions.map((q, i) => {
-        const answer = answers[i] ?? [];
+        const answer = reply.answers[i] ?? [];
         const label = q.header || q.question || `Question ${i + 1}`;
         return `${label}: ${answer.length > 0 ? answer.join(", ") : "(no answer)"}`;
       });
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      return { content: [{ type: "text", text: questionResultText(lines, reply.trailer) }] };
     },
   });
 }
@@ -1789,6 +2067,45 @@ export default async function (pi: ExtensionAPI) {
         return undefined;
       }
       throw e;
+    }
+  });
+
+  // -- Cloud-token redaction --------------------------------------------------
+  // Seed the known set with the host's own runtime-context token and whatever
+  // the daemon is issuing right now, so the first tool call is covered too.
+  rememberCloudToken(process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN);
+  void refreshKnownCloudTokens();
+
+  pi.on("tool_result", async (event) => {
+    try {
+      const content = Array.isArray(event.content) ? event.content : [];
+      const texts: string[] = [];
+      for (const part of content) {
+        if (part && part.type === "text" && typeof part.text === "string") texts.push(part.text);
+      }
+      if (event.structuredContent !== undefined) {
+        const raw = JSON.stringify(event.structuredContent);
+        if (typeof raw === "string") texts.push(raw);
+      }
+      if (texts.length === 0) return undefined;
+      // A JWT we do not know yet may be one the daemon issued since we last
+      // asked: re-ask once before deciding what to redact.
+      if (texts.some((t) => unknownJwtIn(t, knownCloudTokens))) {
+        await refreshKnownCloudTokens();
+      }
+      const redacted = redactToolResult(content, event.structuredContent, knownCloudTokens);
+      if (!redacted) return undefined;
+      console.error(`[teamclu] redacted cloud access token from ${event.toolName} result`);
+      // `details` has to be returned explicitly: pi takes it from the hook
+      // result alone, so omitting it would drop e.g. bash's fullOutputPath.
+      return {
+        content: redacted.content,
+        structuredContent: redacted.structuredContent,
+        details: event.details,
+      };
+    } catch (e) {
+      console.error(`[teamclu] tool_result redaction skipped: ${e}`);
+      return undefined;
     }
   });
 

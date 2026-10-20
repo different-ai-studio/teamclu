@@ -15,6 +15,9 @@ public struct RootTabView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppOnboardingCoordinator.self) private var coordinator: AppOnboardingCoordinator?
     @Environment(NavigationRouter.self) private var navigationRouter: NavigationRouter?
+    /// Deployment feature flags from `/v1/config/bootstrap`. Absent in
+    /// previews and tests, where the defaults (everything on) apply.
+    @Environment(FeatureFlagsStore.self) private var featureFlags: FeatureFlagsStore?
     @State private var viewModel = SessionListViewModel()
     @SceneStorage("rootTab") private var selection: AppTab = .sessions
     @State private var sessionsPath: [String] = []
@@ -79,6 +82,12 @@ public struct RootTabView: View {
 
     private var teamRuntime: TeamRuntimeContext? { coordinator?.teamRuntimeContext }
 
+    /// Whether this deployment ships the team-apps surface. Defaults to on
+    /// when no flags have arrived — the same fail-open the flags themselves
+    /// use, so a slow or unreachable config endpoint does not hide a feature
+    /// the deployment does have.
+    private var appsEnabled: Bool { featureFlags?.flags.apps ?? true }
+
     // Split across three properties rather than one expression. As one, the
     // type-checker took over two seconds on CI to solve it — the same shape
     // that failed the release archive in SessionDetailView, one feature away
@@ -100,6 +109,7 @@ public struct RootTabView: View {
                             actorStore: teamRuntime?.actorStore,
                             agentPresenceStore: teamRuntime?.agentPresenceStore,
                             shortcutsStore: teamRuntime?.shortcutsStore,
+                            teamAppsStore: appsEnabled ? teamRuntime?.teamAppsStore : nil,
                             messagesRepository: teamRuntime?.messagesRepo,
                             workspacesRepository: teamRuntime?.workspacesRepo,
                             sessionsRepository: teamRuntime?.sessionRepo,
@@ -319,6 +329,7 @@ public struct RootTabView: View {
 
     public var body: some View {
         observedTabs
+        .modifier(AppIconBadgeSync(teamID: activeTeam?.id ?? ""))
         .sheet(item: $voiceAgentChoice) {
             // Swipe-dismiss and the picker's own Cancel both land here. A
             // pick has already flipped `isStartingVoiceSession`, so this only
@@ -532,10 +543,45 @@ public struct RootTabView: View {
             if let flags = try? await repo.fetchUnreadFlags(teamID: teamID, limit: 100) {
                 viewModel.applyUnreadFlags(flags, modelContext: modelContext)
             }
+            await refreshSessionContextNames(records: records, runtime: runtime, teamID: teamID)
         } else if let repo = sessionIDsRepoLocal,
                   let ids = try? await repo.listSessionIDs(teamID: teamID) {
             viewModel.validSessionIDs = ids
             viewModel.reloadSessions(modelContext: modelContext)
+        }
+    }
+}
+
+extension RootTabView {
+    /// Fills the names on the session list's third line: the app a session
+    /// was created from, or its idea. Both are cached on the session, so this
+    /// only reaches the network for what the cache can't answer — the apps
+    /// list when any session has an app, the ideas list when an idea has no
+    /// title cached yet.
+    @MainActor
+    fileprivate func refreshSessionContextNames(
+        records: [SessionRecord],
+        runtime: TeamRuntimeContext,
+        teamID: String
+    ) async {
+        if appsEnabled, let appsStore = runtime.teamAppsStore,
+           records.contains(where: { !($0.appID ?? "").isEmpty }) {
+            await appsStore.reload()
+            if appsStore.errorMessage == nil {
+                let names = Dictionary(
+                    appsStore.apps.map { ($0.id, $0.name) },
+                    uniquingKeysWith: { a, _ in a }
+                )
+                viewModel.applyAppNames(names, modelContext: modelContext)
+            }
+        }
+
+        if let ideasRepo = runtime.ideasRepo,
+           !viewModel.ideaIDsMissingTitle(modelContext: modelContext).isEmpty,
+           let ideas = try? await ideasRepo.listIdeas(teamID: teamID) {
+            // Upsert only: the Ideas tab owns pruning its cache.
+            IdeaCacheSynchronizer.upsert(ideas, modelContext: modelContext)
+            viewModel.fillIdeaTitlesFromCache(modelContext: modelContext)
         }
     }
 }

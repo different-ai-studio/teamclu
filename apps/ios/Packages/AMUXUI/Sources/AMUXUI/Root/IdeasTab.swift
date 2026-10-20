@@ -32,7 +32,6 @@ public struct IdeasTab: View {
     @State private var navigationPath: [String] = []
     @State private var ideaStore: IdeaStore?
     @State private var ideaStoreTeamID: String?
-    @State private var ideaSetupError: String?
 
     public init(
         mqtt: MQTTService,
@@ -149,7 +148,12 @@ public struct IdeasTab: View {
                     }
                 }
         }
-        .task(id: activeTeam?.id) {
+        // Keyed on the repository arriving too, not just the team: at a cold
+        // launch this tab can be on screen before the team runtime exists,
+        // and keyed on the team alone the task ran once with no repository
+        // and never again — the tab sat on an error until you switched away
+        // and back.
+        .task(id: IdeaStoreKey(teamID: activeTeam?.id, isConnected: ideasRepository != nil)) {
             await configureIdeaStore()
         }
         // Mirror SessionsTab: drive tab-bar visibility from the stack
@@ -166,12 +170,6 @@ public struct IdeasTab: View {
                 systemImage: "person.3",
                 description: Text("Create or join a team to manage ideas.")
             )
-        } else if let ideaSetupError {
-            ContentUnavailableView(
-                "Couldn’t Set Up Ideas",
-                systemImage: "exclamationmark.triangle",
-                description: Text(ideaSetupError)
-            )
         } else if let ideaStore {
             IdeaListView(
                 ideaStore: ideaStore,
@@ -184,36 +182,30 @@ public struct IdeasTab: View {
         }
     }
 
+    private struct IdeaStoreKey: Equatable {
+        let teamID: String?
+        let isConnected: Bool
+    }
+
     @MainActor
     private func configureIdeaStore() async {
         guard let activeTeam else {
             ideaStore = nil
             ideaStoreTeamID = nil
-            ideaSetupError = nil
             return
         }
 
         if ideaStore == nil || ideaStoreTeamID != activeTeam.id {
-            do {
-                guard let repository = ideasRepository else {
-                    ideaStore = nil
-                    ideaStoreTeamID = nil
-                    ideaSetupError = String(localized: "Cloud API is not configured.")
-                    return
-                }
-                ideaStore = IdeaStore(
-                    teamID: activeTeam.id,
-                    repository: repository,
-                    modelContext: modelContext
-                )
-                ideaStoreTeamID = activeTeam.id
-                ideaSetupError = nil
-            } catch {
-                ideaStore = nil
-                ideaStoreTeamID = nil
-                ideaSetupError = error.localizedDescription
-                return
-            }
+            // Made before the repository is here, so the cached list shows at
+            // once; a missing repository at this point means "not up yet".
+            ideaStore = IdeaStore(
+                teamID: activeTeam.id,
+                repository: ideasRepository,
+                modelContext: modelContext
+            )
+            ideaStoreTeamID = activeTeam.id
+        } else if let repository = ideasRepository, ideaStore?.isConnected == false {
+            ideaStore?.attach(repository: repository)
         }
 
         await ideaStore?.reload()

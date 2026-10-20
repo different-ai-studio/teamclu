@@ -313,6 +313,7 @@ pub struct AppWorkdirResponse {
     pub workdir: String,
     /// Human-friendly label for this machine (from daemon.toml `[actor].name`).
     pub device_name: String,
+    pub host_facts: serde_json::Value,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -342,6 +343,7 @@ pub async fn app_workdir(
     Ok(Json(AppWorkdirResponse {
         workdir: path.to_string_lossy().into_owned(),
         device_name: daemon_device_name(),
+        host_facts: crate::runtime::host_facts::host_facts(),
     }))
 }
 
@@ -356,6 +358,10 @@ pub struct AppManifestResponse {
     pub declaration: crate::sync::app_build::AppDeclaration,
     /// False when this machine holds no checkout for the app.
     pub workdir_exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_commit_sha: Option<String>,
+    pub clean: bool,
+    pub content_digest: String,
 }
 
 /// `GET /v1/apps/:appId/manifest?teamId=…` — what does this app declare?
@@ -374,14 +380,25 @@ pub async fn app_manifest(
     let team_id = query.team_id.as_deref().unwrap_or("");
     let path = resolve_workdir("", &app_id, team_id)?;
     let workdir_exists = path.is_dir();
-    let declaration =
-        tokio::task::spawn_blocking(move || crate::sync::app_build::read_app_declaration(&path))
-            .await
-            .map_err(|e| HttpError::internal(format!("declaration read panicked: {e}")))?
-            .map_err(map_build_error)?;
+    let (declaration, git_commit_sha, clean, content_digest) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let _ = crate::sync::app_git::ensure_runtime_excludes(&path);
+            Ok((
+                crate::sync::app_build::read_app_declaration(&path)?,
+                crate::sync::app_git::head_sha(&path).ok(),
+                !crate::sync::app_git::has_uncommitted_changes(&path)?,
+                crate::sync::app_git::checkout_content_digest(&path)?,
+            ))
+        })
+        .await
+        .map_err(|e| HttpError::internal(format!("declaration read panicked: {e}")))?
+        .map_err(map_build_error)?;
     Ok(Json(AppManifestResponse {
         declaration,
         workdir_exists,
+        git_commit_sha,
+        clean,
+        content_digest,
     }))
 }
 
@@ -570,6 +587,8 @@ pub struct BuildAppBody {
     /// below — supplied for Gitea-managed apps, omitted for imported ones.
     #[serde(default)]
     pub git_commit_sha: String,
+    /// Full git SHA for managed apps, sha256 source digest for imports.
+    pub revision: String,
     /// Git remote for fetch/checkout. See `git_commit_sha`.
     #[serde(default)]
     pub git_remote_url: String,
@@ -619,9 +638,12 @@ pub struct BuildAppResponse {
     pub status: &'static str,
     /// What the app declared about how it is built and run.
     pub declaration: crate::sync::app_build::AppDeclaration,
-    /// The commit that was actually built, when the daemon published work the
-    /// caller did not know about. Absent when it built the sha it was given —
-    /// the caller then finalizes with its own.
+    pub revision: String,
+    /// The selected daemon's archive checks, bound to this pinned revision.
+    /// `unknown` requires an explicit test in the target runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_verification: Option<crate::sync::app_build::ArtifactVerification>,
+    /// The commit actually built for a Gitea-managed app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_commit_sha: Option<String>,
     /// The image this build pushed, for a container app. Absent for an app
@@ -716,7 +738,23 @@ pub async fn build_app(
         )));
     }
 
+    let expected_revision = body.revision.trim().to_string();
+    if expected_revision.is_empty() {
+        return Err(HttpError::validation(
+            "revision from app preflight is required",
+        ));
+    }
+    let response_revision = expected_revision.clone();
+
     let built = tokio::task::spawn_blocking(move || {
+        if use_git {
+            if expected_revision != git_commit_sha {
+                anyhow::bail!("build revision differs from preflight git SHA");
+            }
+        } else if crate::sync::app_git::checkout_content_digest(&workdir_path)? != expected_revision
+        {
+            anyhow::bail!("imported checkout changed after preflight");
+        }
         let git_ctx = use_git.then(|| crate::sync::app_build::BuildGitContext {
             app_id: &app_id,
             commit_sha: &git_commit_sha,
@@ -731,7 +769,21 @@ pub async fn build_app(
                 username: i.username.trim(),
                 password: &i.password,
             });
-        crate::sync::app_build::build_artifact(&workdir_path, git_ctx.as_ref(), push.as_ref())
+        let built = crate::sync::app_build::build_artifact_for_deploy(
+            &workdir_path,
+            git_ctx.as_ref(),
+            push.as_ref(),
+            (!use_git).then_some(expected_revision.as_str()),
+        )?;
+        if let Some(git) = git_ctx.as_ref() {
+            crate::sync::app_build::verify_git_build_revision(&workdir_path, git)?;
+        }
+        if !use_git
+            && crate::sync::app_git::checkout_content_digest(&workdir_path)? != expected_revision
+        {
+            anyhow::bail!("imported checkout changed during build");
+        }
+        Ok::<_, anyhow::Error>(built)
     })
     .await
     .map_err(|e| HttpError::internal(format!("build task panicked: {e}")))?
@@ -740,6 +792,10 @@ pub async fn build_app(
     let pushed = built.product.image().map(str::to_string);
     let git_commit_sha = built.git_commit_sha;
     let declaration = built.declaration;
+    let artifact_verification = built.artifact_verification.map(|mut verification| {
+        verification.revision = Some(response_revision.clone());
+        verification
+    });
 
     // A container build has already put its result where the deployment reads
     // it from; only an archive still has to travel.
@@ -767,6 +823,8 @@ pub async fn build_app(
         status: "built",
         git_commit_sha,
         declaration,
+        revision: response_revision,
+        artifact_verification,
         image: pushed,
     }))
 }
@@ -1188,6 +1246,19 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workdir_response_carries_selected_daemon_host_facts() {
+        let response = super::AppWorkdirResponse {
+            workdir: "/tmp/app".into(),
+            device_name: "selected".into(),
+            host_facts: crate::runtime::host_facts::host_facts(),
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["hostFacts"]["os"], std::env::consts::OS);
+        assert!(value["hostFacts"]["docker"].is_boolean());
+        assert!(value["hostFacts"]["buildTools"]["pnpm"].is_boolean());
+        assert_eq!(value["hostFacts"]["buildShell"], "sh -c");
+    }
     use super::*;
     // `super` here is this module, not `http` — `errors` only resolves from the
     // crate root.
@@ -1508,6 +1579,7 @@ mod tests {
             "appId": "app-1",
             "teamId": "team-1",
             "gitCommitSha": "abc1234567890",
+            "revision": "abc1234567890",
             "gitRemoteUrl": "git@gitea.example.com:org/repo.git",
             "deployKeyPem": "-----BEGIN OPENSSH PRIVATE KEY-----\n",
             "presignedPut": "https://oss/put?sig=x"
@@ -1526,6 +1598,7 @@ mod tests {
         let body: BuildAppBody = serde_json::from_value(serde_json::json!({
             "appId": "app-1",
             "teamId": "team-1",
+            "revision": format!("sha256:{}", "a".repeat(64)),
             "presignedPut": "https://oss/put?sig=x"
         }))
         .unwrap();

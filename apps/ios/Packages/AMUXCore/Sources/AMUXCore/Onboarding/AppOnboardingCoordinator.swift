@@ -30,13 +30,20 @@ public struct AppBootstrap: Equatable, Sendable {
     /// one a freshly-claimed invite landed in) without re-querying the
     /// backend.
     public let memberActorIDByTeam: [String: String]
+    /// Org of the signed-in identity (`homeOrgId` on `GET /v1/teams?scope=all`).
+    /// `teams` spans every identity sharing the caller's phone, so the login
+    /// chooser narrows to this org to honour the account the user picked. Nil
+    /// when the server could not say, or the org is the shared tenant.
+    public let homeOrgID: String?
 
     public init(memberActorID: String?,
                 teams: [TeamSummary],
-                memberActorIDByTeam: [String: String] = [:]) {
+                memberActorIDByTeam: [String: String] = [:],
+                homeOrgID: String? = nil) {
         self.memberActorID = memberActorID
         self.teams = teams
         self.memberActorIDByTeam = memberActorIDByTeam
+        self.homeOrgID = homeOrgID
     }
 }
 
@@ -78,7 +85,7 @@ public struct TeamSwitchResult: Equatable, Sendable {
     }
 }
 
-public struct AppContext: Equatable, Sendable {
+public struct AppContext: Codable, Equatable, Sendable {
     public let team: TeamSummary
     public let memberActorID: String
 
@@ -100,8 +107,28 @@ public enum AppOnboardingRoute: Equatable, Sendable {
     /// — show the org→team picker (`teamChoices`). See
     /// docs/specs/2026-06-17-teamclu-phone-login-and-tenancy.md §6.
     case selectTeam
+    /// The sign-in named a person with identities in more than one org (an
+    /// email user's later identities sit on accounts nobody signs in to
+    /// directly) — pick which org to enter (`identityChoices`). See
+    /// docs/plans/2026-10-08-staff-only-identity-model.md.
+    case selectIdentity
+    /// Signed in, no team, and the user said at onboarding that they are
+    /// joining an existing team — so no team is auto-created for them. The UI
+    /// offers pending invites, pasting an invite, switching account, or
+    /// creating a team after all.
+    case noTeam
     case ready
     case failed
+}
+
+/// What the user said they are here to do on the pre-login choice screen.
+/// Decides whether a signed-in user with no team gets one auto-created
+/// (`create`) or is shown the no-team screen (`join`). Absent for users who
+/// never saw that screen (installs before it shipped), who keep the old
+/// auto-create behaviour.
+public enum OnboardingIntent: String, Sendable {
+    case join
+    case create
 }
 
 public protocol AppOnboardingStore: Sendable {
@@ -121,6 +148,8 @@ public protocol AppOnboardingStore: Sendable {
     /// inviter's team before the auto-create-team branch fires (otherwise they
     /// end up with an orphan team alongside the one they wanted to join).
     func claimInvite(token: String) async throws -> ClaimResult
+    /// Redeem a team join link. Defaulted so test fakes compile.
+    func joinByLink(token: String, cloudAPIURL: URL?) async throws -> JoinByLinkResult
     /// Invites addressed to the caller's verified email/phone
     /// (`GET /v1/invites/pending`). Defaulted so non-cloud stores and test
     /// fakes report none.
@@ -130,6 +159,10 @@ public protocol AppOnboardingStore: Sendable {
     func acceptPendingInvite(inviteID: String) async throws -> ClaimResult
     /// Marks the invite declined (`POST /v1/invites/:id/decline`).
     func declinePendingInvite(inviteID: String) async throws
+    /// The signed-in person's identities, one per org. Defaulted to none.
+    func listMyIdentities() async throws -> [MyIdentity]
+    /// Become one of the caller's own identities (mints and installs its session).
+    func switchIdentity(userID: String) async throws
 
     // Auth sign-in methods
     func signIn(email: String, password: String) async throws
@@ -176,11 +209,57 @@ public protocol AppOnboardingStore: Sendable {
     /// this every authenticated call fails, so the app must return to
     /// sign-in. Defaulted to a stream that never emits.
     nonisolated func sessionRevocations() -> AsyncStream<Void>
+
+    /// A stored session that will stay valid for a while yet — enough to
+    /// open the app on the cached team and check memberships behind it.
+    /// Defaulted to false, which keeps the full bootstrap.
+    func hasFreshSession() async -> Bool
 }
 
 public extension AppOnboardingStore {
     func sessionRevocations() -> AsyncStream<Void> {
         AsyncStream { $0.finish() }
+    }
+
+    func hasFreshSession() async -> Bool { false }
+}
+
+/// One identity of the signed-in person — one per org (`GET /v1/auth/identities`).
+public struct MyIdentity: Identifiable, Equatable, Sendable, Decodable {
+    public let userID: String
+    public let orgID: String?
+    public let orgName: String?
+    public let orgLogo: String?
+    public let adminType: Int
+    /// The identity the current session belongs to.
+    public let isCurrent: Bool
+    public var id: String { userID }
+
+    public init(userID: String, orgID: String?, orgName: String?, orgLogo: String?, adminType: Int, isCurrent: Bool) {
+        self.userID = userID
+        self.orgID = orgID
+        self.orgName = orgName
+        self.orgLogo = orgLogo
+        self.adminType = adminType
+        self.isCurrent = isCurrent
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "userId"
+        case orgID = "orgId"
+        case orgName, orgLogo, adminType, isCurrent
+    }
+}
+
+/// Defaults so non-cloud stores and test fakes have a single identity and no
+/// switch.
+public extension AppOnboardingStore {
+    func listMyIdentities() async throws -> [MyIdentity] { [] }
+    func switchIdentity(userID: String) async throws {
+        throw NSError(
+            domain: "AppOnboardingStore", code: 0,
+            userInfo: [NSLocalizedDescriptionKey: String(localized: "Switching identities is not supported by this backend.")]
+        )
     }
 }
 
@@ -207,6 +286,12 @@ public struct PendingInvite: Identifiable, Equatable, Sendable {
 /// have to know about pending invites: they report none, and accept/decline
 /// fail loudly rather than pretending to succeed.
 public extension AppOnboardingStore {
+    func joinByLink(token: String, cloudAPIURL: URL?) async throws -> JoinByLinkResult {
+        throw NSError(
+            domain: "AppOnboardingStore", code: 0,
+            userInfo: [NSLocalizedDescriptionKey: String(localized: "Join links are not supported by this backend.")]
+        )
+    }
     func listPendingInvites() async throws -> [PendingInvite] { [] }
     func acceptPendingInvite(inviteID: String) async throws -> ClaimResult {
         throw NSError(
@@ -228,6 +313,8 @@ public final class AppOnboardingCoordinator {
     public var route: AppOnboardingRoute = .loading
     /// Teams shown by the org→team picker when `route == .selectTeam`.
     public var teamChoices: [MembershipTeam] = []
+    /// Identities shown by the org picker when `route == .selectIdentity`.
+    public var identityChoices: [MyIdentity] = []
     public var currentContext: AppContext?
     public var pendingCreatedTeam: CreatedTeam?
     public var errorMessage: String?
@@ -239,6 +326,12 @@ public final class AppOnboardingCoordinator {
     /// True iff the current session is an anonymous Supabase user. UI uses
     /// this to surface the "upgrade your account" affordance.
     public var isAnonymous: Bool = false
+    /// True when bootstrap entered the app on the last team this device was
+    /// in (`lastContextKey`) without checking memberships first — because
+    /// the server could not be reached, or, on an ordinary relaunch, so the
+    /// first screen does not wait on two round trips.
+    /// `revalidateAfterOfflineLaunch` does the check.
+    public private(set) var isOfflineLaunch = false
     /// Invite token captured pre-auth (e.g. user pasted a link on the
     /// onboarding screen). Stashed here so it can replay through the
     /// existing `amuxInviteTokenReceived` pipeline after sign-in.
@@ -314,7 +407,26 @@ public final class AppOnboardingCoordinator {
             defaults.set(teamID, forKey: Self.activeTeamIDKey)
         } else {
             defaults.removeObject(forKey: Self.activeTeamIDKey)
+            // Every path that forgets the team (sign-out, dead session) must
+            // also forget the offline fallback built on it.
+            defaults.removeObject(forKey: Self.lastContextKey)
         }
+    }
+
+    /// The whole context of the last team this device entered, so a launch
+    /// without network can still open the app on it. Unlike `activeTeamIDKey`
+    /// this is not a hint for picking among memberships: it is used only when
+    /// memberships cannot be loaded at all.
+    private static let lastContextKey = "teamclu.lastAppContext"
+
+    private var lastContext: AppContext? {
+        guard let data = defaults.data(forKey: Self.lastContextKey) else { return nil }
+        return try? JSONDecoder().decode(AppContext.self, from: data)
+    }
+
+    private func persistLastContext(_ context: AppContext) {
+        guard let data = try? JSONEncoder().encode(context) else { return }
+        defaults.set(data, forKey: Self.lastContextKey)
     }
 
     /// Set the active context and remember the team for next launch. A nil
@@ -322,9 +434,72 @@ public final class AppOnboardingCoordinator {
     /// transient bootstrap failure (cleared explicitly on sign-out).
     private func setCurrentContext(_ context: AppContext?) {
         currentContext = context
+        if let context {
+            persistLastContext(context)
+        }
         if let teamID = context?.team.id {
             persistActiveTeam(teamID)
+            // In a team now: the onboarding choice has done its job.
+            onboardingIntent = nil
         }
+    }
+
+    // MARK: - Onboarding intent
+
+    private static let onboardingIntentKey = "teamclu.onboardingIntent"
+
+    /// Persisted until the user lands in a team, so a joiner who relaunches
+    /// before their invite arrives still isn't handed a fresh team.
+    public var onboardingIntent: OnboardingIntent? {
+        get { defaults.string(forKey: Self.onboardingIntentKey).flatMap(OnboardingIntent.init(rawValue:)) }
+        set {
+            if let newValue {
+                defaults.set(newValue.rawValue, forKey: Self.onboardingIntentKey)
+            } else {
+                defaults.removeObject(forKey: Self.onboardingIntentKey)
+            }
+        }
+    }
+
+    /// No-team screen → "create a team instead": switch the intent and let
+    /// bootstrap auto-create, exactly as for a user who chose create up front.
+    public func createTeamFromNoTeam() async {
+        onboardingIntent = .create
+        await bootstrap()
+    }
+
+    /// No-team screen → paste an invite. Claims as the signed-in user; unlike
+    /// `claimInviteSmart` it must not sign out first. Bootstrap's claim path
+    /// already adopts a returned session and lands on the claimed team; on
+    /// failure it leaves the user on `.noTeam` with the error.
+    public func joinWithInvite(token: String) async {
+        pendingInviteToken = token
+        await bootstrap()
+    }
+
+    /// Redeem a join link, then switch to the returned team. Does not claim
+    /// a named invite and does not start daemon onboarding.
+    public func joinByLink(token: String, cloudAPIURL: URL?) async {
+        guard !isBusy else { return }
+        isBusy = true
+        errorMessage = nil
+        do {
+            let result = try await store.joinByLink(token: token, cloudAPIURL: cloudAPIURL)
+            isBusy = false
+            await selectTeam(teamID: result.teamID)
+        } catch {
+            errorMessage = error.localizedDescription
+            isBusy = false
+        }
+    }
+
+    /// No-team screen refresh (button, return to foreground). Checks quietly
+    /// first so the screen doesn't flash through `.loading` (the splash) on
+    /// every foreground; only a newly-present team runs the full bootstrap.
+    public func refreshNoTeam() async {
+        await refreshPendingInvites()
+        guard let bootstrap = try? await store.loadBootstrap(), !bootstrap.teams.isEmpty else { return }
+        await self.bootstrap()
     }
 
     /// Commit the org→team picker choice: switch the active team (mints a fresh
@@ -353,23 +528,23 @@ public final class AppOnboardingCoordinator {
         }
     }
 
-    /// Entry point for switching teams after login (Settings → Switch Team).
-    /// Loads the full membership list (grouped by org, like the login-time
-    /// picker) and routes to the org→team picker. The current context stays
-    /// live so `cancelTeamSwitch()` can drop straight back to `.ready`.
-    public func beginTeamSwitch() async {
-        guard currentContext != nil else { return }
-        do {
-            teamChoices = try await store.listAllMyTeams()
-            errorMessage = nil
-            route = .selectTeam
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+    /// Settings' team-switch sheet: the full membership list, without leaving
+    /// `.ready` (the sheet sits on top of the live shell).
+    public func loadSwitchableTeams() async throws -> [MembershipTeam] {
+        try await store.listAllMyTeams()
     }
 
-    /// Backs the picker's Cancel button when it was reached from Settings
-    /// rather than login: the previous team context is still intact, so
+    /// Commit a pick made in Settings' team-switch sheet. Seeds `teamChoices`
+    /// first so a failed switch lands on the full-screen picker with the same
+    /// list (and its Cancel button) instead of an empty one.
+    public func switchTeam(to teamID: String, choices: [MembershipTeam]) async {
+        guard currentContext != nil, teamID != currentContext?.team.id else { return }
+        teamChoices = choices
+        await selectTeam(teamID: teamID)
+    }
+
+    /// Backs the picker's Cancel button when it was reached from a failed
+    /// Settings switch rather than login: the previous team context is still intact, so
     /// returning to `.ready` is a pure route flip.
     public func cancelTeamSwitch() {
         guard currentContext != nil else { return }
@@ -526,6 +701,17 @@ public final class AppOnboardingCoordinator {
                 try await store.accessToken()
             }
         }
+        let cloudAPITeamAppsRepo: (any TeamAppRepository)? = cloudAPIConfig.map { config in
+            CloudAPIRepositoryFactory.teamAppsRepository(configuration: config) { [store] in
+                try await store.accessToken()
+            }
+        }
+        // Built here so the list is warm when the drawer first draws its
+        // entry, which needs the count. Not eagerly reloaded: the drawer's
+        // own `.task` does that, and most launches never open it.
+        let teamAppsStore = cloudAPITeamAppsRepo.map {
+            TeamAppsStore(teamID: ctx.team.id, repository: $0)
+        }
 
         // Report ios client version + build (telemetry; fire-and-forget)
         if let versionConfig = cloudAPIConfig {
@@ -558,6 +744,8 @@ public final class AppOnboardingCoordinator {
             teamRepo: cloudAPITeamRepo,
             sessionRepo: cloudAPISessionRepo,
             ideasRepo: cloudAPIIdeasRepo,
+            teamAppsRepo: cloudAPITeamAppsRepo,
+            teamAppsStore: teamAppsStore,
             actorRepo: actorRepo
         )
     }
@@ -584,6 +772,9 @@ public final class AppOnboardingCoordinator {
     /// Delete every cached row and downloaded trace that belongs to the
     /// signed-in account. See `signOutAndWipeCache`.
     public func wipeLocalCache(modelContext: ModelContext) async {
+        SessionDraftStore.shared.removeAll()
+        NotificationReply.forgetActors()
+        SessionReadPositionStore.shared.removeAll()
         do {
             try modelContext.delete(model: AgentAttachment.self)
             try modelContext.delete(model: AgentEvent.self)
@@ -603,10 +794,18 @@ public final class AppOnboardingCoordinator {
     }
 
     public func bootstrap(preferringTeamID: String? = nil) async {
+        await bootstrap(preferringTeamID: preferringTeamID, allowCachedEntry: true)
+    }
+
+    /// `allowCachedEntry` is false when the memberships check behind a
+    /// cached entry found the team gone: entering from the cache again
+    /// would land on that same team and start the check over, forever.
+    private func bootstrap(preferringTeamID: String?, allowCachedEntry: Bool) async {
         guard !isBusy else { return }
         isBusy = true
         route = .loading
         errorMessage = nil
+        isOfflineLaunch = false
         defer { isBusy = false }
 
         let bootStart = Date()
@@ -615,6 +814,20 @@ public final class AppOnboardingCoordinator {
             onboardingSignposter.endInterval("bootstrap", bootInterval)
             let ms = Int(Date().timeIntervalSince(bootStart) * 1000)
             onboardingLogger.info("bootstrap total: \(ms) ms")
+        }
+
+        if allowCachedEntry, await canEnterFromCache(preferring: preferringTeamID), let cached = lastContext {
+            // The common relaunch: same team as last time, a session that is
+            // still good. Show it now; the memberships check runs behind it
+            // and only moves the user if the team is gone.
+            isAnonymous = await store.isAnonymous()
+            currentUserEmail = await store.currentUserEmail()
+            setCurrentContext(cached)
+            isOfflineLaunch = true
+            route = .ready
+            onboardingLogger.info("bootstrap from cache; checking memberships in the background")
+            Task { [weak self] in await self?.revalidateAfterOfflineLaunch() }
+            return
         }
 
         do {
@@ -715,20 +928,29 @@ public final class AppOnboardingCoordinator {
                 }
             }
 
+            // Without a remembered team, only the signed-in account's home org
+            // is on offer: membership comes back phone-wide, so otherwise the
+            // account picked at login (phone picker, admin console) would decide
+            // nothing. The remembered team above is deliberately NOT narrowed —
+            // sign-out clears it, so one that survives is a relaunch after a
+            // cross-org switch the user made in Settings.
+            let candidateTeams = Self.scoped(bootstrap.teams, toOrg: bootstrap.homeOrgID) { $0.orgID }
+
             // No remembered choice but the user belongs to >1 team — let them
             // pick (grouped by org). Load org info; fall back to bootstrap teams
             // (no org grouping) if the scope=all call fails.
-            if bootstrap.teams.count > 1 {
-                teamChoices = (try? await store.listAllMyTeams())
-                    ?? bootstrap.teams.map {
-                        MembershipTeam(id: $0.id, name: $0.name, slug: $0.slug, orgID: nil, orgName: nil)
+            if candidateTeams.count > 1 {
+                let choices = (try? await store.listAllMyTeams())
+                    ?? candidateTeams.map {
+                        MembershipTeam(id: $0.id, name: $0.name, slug: $0.slug, orgID: $0.orgID, orgName: nil)
                     }
+                teamChoices = Self.scoped(choices, toOrg: bootstrap.homeOrgID) { $0.orgID }
                 route = .selectTeam
                 return
             }
 
             // Exactly one team — adopt it directly.
-            if let team = bootstrap.teams.first {
+            if let team = candidateTeams.first {
                 let result = try await store.switchActiveTeam(teamID: team.id)
                 if !result.refreshToken.isEmpty {
                     try await store.setSession(refreshToken: result.refreshToken)
@@ -738,6 +960,14 @@ public final class AppOnboardingCoordinator {
                     route = .ready
                     return
                 }
+            }
+
+            // No team, and the user said they are joining an existing one:
+            // auto-creating would drop them into an empty team that looks
+            // like the right place. Show the no-team screen instead.
+            if onboardingIntent == .join {
+                route = .noTeam
+                return
             }
 
             // No team yet. Auto-create one after invite handling so newly
@@ -777,10 +1007,58 @@ public final class AppOnboardingCoordinator {
                 route = .needsAuth
                 return
             }
+            // No network: open the app on the last team this device was in
+            // rather than dead-ending on Setup Failed. The local session got
+            // us past ensureSession, and the cache holds what the screens
+            // show; memberships are rechecked when the network returns.
+            if NetworkErrorClassifier.isUnreachable(error), let cached = lastContext {
+                onboardingLogger.info("bootstrap offline; entering last team from cache")
+                isAnonymous = await store.isAnonymous()
+                setCurrentContext(cached)
+                isOfflineLaunch = true
+                route = .ready
+                return
+            }
             currentContext = nil
             isAnonymous = false
             route = .failed
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Whether this launch can open on the cached team. Not when anything
+    /// asks for a specific place — a team switch, an invite to claim (it may
+    /// target another team, and the claim must run before any team pick) —
+    /// and not without a session that will outlive the check.
+    private func canEnterFromCache(preferring preferredTeamID: String?) async -> Bool {
+        guard preferredTeamID == nil,
+              (pendingInviteToken ?? "").isEmpty,
+              (defaults.string(forKey: InviteDeepLink.pendingTokenDefaultsKey) ?? "").isEmpty,
+              let cached = lastContext,
+              cached.team.id == persistedActiveTeamID
+        else { return false }
+        return await store.hasFreshSession()
+    }
+
+    /// After an offline launch, check the team is still one of the user's
+    /// memberships. Quiet: no splash, no route change while it still is. Gone
+    /// (removed while offline) → a full bootstrap picks the right place.
+    /// Still offline → stays flagged for the next attempt.
+    public func revalidateAfterOfflineLaunch() async {
+        guard isOfflineLaunch, !isBusy, let context = currentContext else { return }
+        do {
+            let bootstrap = try await store.loadBootstrap()
+            isOfflineLaunch = false
+            if !bootstrap.teams.contains(where: { $0.id == context.team.id }) {
+                await self.bootstrap(preferringTeamID: nil, allowCachedEntry: false)
+            }
+        } catch is AuthRequired {
+            isOfflineLaunch = false
+            await self.bootstrap(preferringTeamID: nil, allowCachedEntry: false)
+        } catch {
+            if !NetworkErrorClassifier.isUnreachable(error) {
+                onboardingLogger.error("offline revalidation failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -1015,6 +1293,15 @@ public final class AppOnboardingCoordinator {
         return SessionStore.jwtSubject(token)
     }
 
+    /// Narrow `items` to one org. Falls back to the whole list when `org` is nil
+    /// or none of the items belong to it, so the scope can only focus the
+    /// choice, never strand the user without a team.
+    nonisolated static func scoped<T>(_ items: [T], toOrg org: String?, orgID: (T) -> String?) -> [T] {
+        guard let org else { return items }
+        let inOrg = items.filter { orgID($0) == org }
+        return inOrg.isEmpty ? items : inOrg
+    }
+
     public func signOut() async {
         guard !isBusy else { return }
         isBusy = true
@@ -1048,6 +1335,8 @@ public final class AppOnboardingCoordinator {
     public func handleSessionRevoked() -> Bool {
         guard route != .needsAuth else { return false }
         currentContext = nil
+        isOfflineLaunch = false
+        defaults.removeObject(forKey: Self.lastContextKey)
         teamRuntimeContext = nil
         pendingCreatedTeam = nil
         pendingEmailOTPEmail = nil
@@ -1076,6 +1365,46 @@ public final class AppOnboardingCoordinator {
 
     // MARK: - Private helpers
 
+    /// After a sign-in that names a person (email, password, Apple, Google):
+    /// several identities → show the org picker and return true; exactly one
+    /// that is not this account → become it. Best effort — a failed lookup
+    /// keeps the signed-in account.
+    private func offerIdentityChoice() async -> Bool {
+        do {
+            let identities = try await store.listMyIdentities()
+            if identities.count > 1 {
+                identityChoices = identities
+                route = .selectIdentity
+                return true
+            }
+            if let only = identities.first, identities.count == 1, !only.isCurrent {
+                try await store.switchIdentity(userID: only.userID)
+            }
+        } catch {
+            onboardingLogger.error("identity lookup failed: \(error.localizedDescription, privacy: .public)")
+        }
+        return false
+    }
+
+    /// The org picker's choice: swap to that identity's session (unless it is
+    /// the current one) and carry on with the normal team bootstrap.
+    public func chooseIdentity(_ identity: MyIdentity) async {
+        guard !isBusy else { return }
+        isBusy = true
+        errorMessage = nil
+        do {
+            if !identity.isCurrent {
+                try await store.switchIdentity(userID: identity.userID)
+            }
+            isBusy = false
+            identityChoices = []
+            await bootstrap()
+        } catch {
+            isBusy = false
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func performAuth(_ action: @escaping () async throws -> Void) async {
         guard !isBusy else { return }
         isBusy = true
@@ -1084,6 +1413,7 @@ public final class AppOnboardingCoordinator {
         do {
             try await action()
             isBusy = false
+            if await offerIdentityChoice() { return }
             await bootstrap()
         } catch let outcome as UpgradeOutcome {
             // Anonymous upgrade hit an email/phone already owned by another

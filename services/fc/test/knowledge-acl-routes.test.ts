@@ -83,3 +83,23 @@ describe("knowledge ACL routes are registered", () => {
     });
   }
 });
+
+describe("document library routes are registered", () => {
+  const routes: [string, string][] = [
+    ["GET", `/v1/teams/${TEAM}/document-libraries`],
+    ["POST", `/v1/teams/${TEAM}/document-libraries/preview`],
+    ["POST", `/v1/teams/${TEAM}/document-libraries`],
+    ["PUT", `/v1/teams/${TEAM}/document-libraries/${ACL}`],
+    ["DELETE", `/v1/teams/${TEAM}/document-libraries/${ACL}`],
+  ];
+
+  for (const [method, path] of routes) {
+    test(`${method} ${path.replace(TEAM, ":teamId").replace(ACL, ":aclId")}`, async () => {
+      const { body } = await call(method, path);
+      assert.ok(
+        !body.includes("Route not found"),
+        `${method} ${path} is not registered — the client would see the same 404 it gets from a deployment without this feature`,
+      );
+    });
+  }
+});

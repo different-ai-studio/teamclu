@@ -29,9 +29,16 @@ public struct SettingsView: View {
     @State private var teamDefaultAgentLoaded = false
     @State private var teamDefaultAgentSaveError: String?
 
+    /// The caller's own default (`members.default_agent_id`). Nil means
+    /// "follow the team default".
+    @State private var memberDefaultAgentID: String? = nil
+    @State private var memberDefaultAgentLoaded = false
+    @State private var memberDefaultAgentSaveError: String?
+
     @State private var showSignOutConfirm = false
     @State private var showPendingInvites = false
     @State private var showEditProfileSheet = false
+    @State private var showTeamSwitchSheet = false
 
     /// Cached actor row for the current member, used to source the
     /// identity-card display name without an extra RPC.
@@ -105,8 +112,9 @@ public struct SettingsView: View {
                 ScrollView {
                     VStack(spacing: 18) {
                         identityCard
+                        currentTeamSection
+                        defaultAgentsSection
                         connectedAgentsSection
-                        teamSection
                         if let store = notificationPrefsStore {
                             notificationsSection(store: store)
                         }
@@ -137,6 +145,22 @@ public struct SettingsView: View {
                         .presentationDetents([.medium, .large])
                 }
             }
+            .sheet(isPresented: $showTeamSwitchSheet) {
+                if let onboarding {
+                    TeamSwitchSheet(
+                        coordinator: onboarding,
+                        currentTeamID: activeTeam?.id
+                    ) { teamID, choices in
+                        // Close both sheets before switching: the switch
+                        // flips the route through the splash and rebuilds
+                        // the whole shell underneath them.
+                        showTeamSwitchSheet = false
+                        dismiss()
+                        Task { await onboarding.switchTeam(to: teamID, choices: choices) }
+                    }
+                    .presentationDetents([.medium, .large])
+                }
+            }
             .task {
                 // Pending invites surface as a Team-card row; refresh when
                 // Settings opens so the row/badge reflects reality.
@@ -161,7 +185,7 @@ public struct SettingsView: View {
             .task {
                 await loadTeam()
                 await connectedAgentsStore?.reload()
-                await loadTeamDefaultAgent()
+                await loadDefaultAgents()
             }
             .refreshable { await connectedAgentsStore?.reload() }
         }
@@ -188,15 +212,6 @@ public struct SettingsView: View {
                         .foregroundStyle(Color.amux.onyx)
                         .lineLimit(1)
 
-                    if let team = activeTeam {
-                        HStack(spacing: 6) {
-                            roleBadge(team.role)
-                            Text("Team · \(team.name)")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(Color.amux.basalt.opacity(0.75))
-                                .lineLimit(1)
-                        }
-                    }
                     if let email = onboarding?.currentUserEmail {
                         Text(email)
                             .font(.system(size: 12))
@@ -334,7 +349,7 @@ public struct SettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Team
+    // MARK: - Current team
 
     /// True when the current member role allows writing the team default agent.
     private var canEditTeamDefaultAgent: Bool {
@@ -347,159 +362,275 @@ public struct SettingsView: View {
         connectedAgentsStore?.agents.filter { $0.visibility == "team" } ?? []
     }
 
+    /// Agents the caller may pick as their own default: every team-visible
+    /// agent plus personal agents they own (mirrors the
+    /// `set_member_default_agent` visibility gate).
+    private var memberDefaultCandidates: [ConnectedAgent] {
+        connectedAgentsStore?.agents.filter { $0.visibility == "team" || $0.isOwner } ?? []
+    }
+
+    /// Resolves an agent id to a display name. The connected list only holds
+    /// agents visible to the caller, so fall back to the actor cache before
+    /// giving up — a stale default must still read as *something*.
+    private func agentName(for id: String) -> String {
+        if let agent = connectedAgentsStore?.agents.first(where: { $0.id == id }) {
+            return agent.displayName
+        }
+        if let cached = cachedActors.first(where: { $0.actorId == id }), !cached.displayName.isEmpty {
+            return cached.displayName
+        }
+        return String(localized: "Unavailable agent")
+    }
+
     @ViewBuilder
-    private var teamSection: some View {
-        if activeTeam == nil {
-            EmptyView()
-        } else {
+    private var currentTeamSection: some View {
+        if let team = activeTeam {
             VStack(alignment: .leading, spacing: 8) {
-                SettingsSectionLabel(String(localized: "Team"))
+                SettingsSectionLabel(String(localized: "Current Team"))
                 VStack(spacing: 0) {
-                    if let details = teamDetails {
-                        if let orgName = details.orgName, !orgName.isEmpty {
-                            SettingsRow(label: String(localized: "Org Name"), value: orgName)
-                            Divider().background(Color.amux.hairline).padding(.leading, 14)
-                        }
-                        SettingsRow(label: String(localized: "Team Name"), value: details.name)
-                        Divider().background(Color.amux.hairline).padding(.leading, 14)
-                        SettingsRow(label: String(localized: "Owner"), value: details.ownerDisplayName ?? "—")
-                        Divider().background(Color.amux.hairline).padding(.leading, 14)
-                        SettingsRow(
-                            label: String(localized: "Created"),
-                            value: details.createdAt.formatted(date: .abbreviated, time: .shortened)
-                        )
-                        Divider().background(Color.amux.hairline).padding(.leading, 14)
-                        SettingsRow(label: "ID", value: details.id, valueIsMonospaced: true)
-                        Divider().background(Color.amux.hairline).padding(.leading, 14)
-                        if let onboarding, !onboarding.pendingInvites.isEmpty {
-                            Button {
-                                showPendingInvites = true
-                            } label: {
-                                HStack {
-                                    Text("Pending Invites")
-                                        .font(.system(size: 14.5, weight: .medium))
-                                        .foregroundStyle(Color.amux.onyx)
-                                    Spacer()
-                                    Text("\(onboarding.pendingInvites.count)")
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundStyle(Color.amux.mist)
-                                        .padding(.horizontal, 7)
-                                        .padding(.vertical, 2)
-                                        .background(Color.amux.cinnabar, in: Capsule())
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(team.name)
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(Color.amux.onyx)
+                                .lineLimit(1)
+                            HStack(spacing: 6) {
+                                roleBadge(team.role)
+                                if let orgName = teamDetails?.orgName, !orgName.isEmpty, orgName != team.name {
+                                    Text(orgName)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(Color.amux.basalt.opacity(0.75))
+                                        .lineLimit(1)
                                 }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 13)
-                                .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("settings.pendingInvitesButton")
-                            Divider().background(Color.amux.hairline).padding(.leading, 14)
                         }
+                        Spacer(minLength: 8)
                         Button {
-                            // Dismiss first: the route flip to the org→team
-                            // picker replaces the whole shell underneath this
-                            // sheet.
-                            let coordinator = onboarding
-                            dismiss()
-                            Task { await coordinator?.beginTeamSwitch() }
+                            showTeamSwitchSheet = true
+                        } label: {
+                            Label("Switch Team", systemImage: "arrow.left.arrow.right")
+                                .font(.system(size: 13.5, weight: .semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Color.amux.cinnabar)
+                        .disabled(onboarding == nil)
+                        .accessibilityIdentifier("settings.switchTeamButton")
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 14)
+
+                    if let onboarding, !onboarding.pendingInvites.isEmpty {
+                        Divider().background(Color.amux.hairline).padding(.leading, 14)
+                        Button {
+                            showPendingInvites = true
                         } label: {
                             HStack {
-                                Text("Switch Team")
+                                Text("Pending Invites")
                                     .font(.system(size: 14.5, weight: .medium))
                                     .foregroundStyle(Color.amux.onyx)
                                 Spacer()
-                                Image(systemName: "arrow.left.arrow.right")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(Color.amux.slate)
+                                Text("\(onboarding.pendingInvites.count)")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.amux.mist)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 2)
+                                    .background(Color.amux.cinnabar, in: Capsule())
                             }
                             .padding(.horizontal, 14)
                             .padding(.vertical, 13)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityIdentifier("settings.switchTeamButton")
-                    } else if let err = teamLoadError {
-                        Text(err)
-                            .font(.footnote)
-                            .foregroundStyle(Color.amux.cinnabarDeep)
-                            .padding(14)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        ProgressView()
-                            .padding(14)
-                            .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("settings.pendingInvitesButton")
                     }
+
+                    Divider().background(Color.amux.hairline).padding(.leading, 14)
+                    NavigationLink {
+                        TeamInfoView(details: teamDetails, loadError: teamLoadError)
+                    } label: {
+                        HStack {
+                            Text("Team Info")
+                                .font(.system(size: 14.5))
+                                .foregroundStyle(Color.amux.onyx)
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Color.amux.slate)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 13)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.teamInfoButton")
+                }
+                .background(SettingsCardBackground())
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    // MARK: - Default agents
+
+    /// Who answers a new session: the member's own default if set, else the
+    /// team default (same resolution as `get_effective_default_agent`).
+    private var effectiveDefaultAgentID: String? {
+        memberDefaultAgentID ?? teamDefaultAgentID
+    }
+
+    @ViewBuilder
+    private var defaultAgentsSection: some View {
+        if activeTeam != nil {
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsSectionLabel(String(localized: "Default Agent"))
+                VStack(spacing: 0) {
+                    memberDefaultAgentRow
+                    Divider().background(Color.amux.hairline).padding(.leading, 14)
+                    teamDefaultAgentRow
                 }
                 .background(SettingsCardBackground())
                 .padding(.horizontal, 16)
 
-                // Team default agent (owner/admin editable; others read-only)
-                if activeTeam != nil && teamDefaultAgentLoaded {
-                    teamDefaultAgentSection
+                if memberDefaultAgentLoaded && teamDefaultAgentLoaded {
+                    defaultAgentsFootnote
                 }
             }
         }
     }
 
+    private var memberDefaultAgentRow: some View {
+        defaultAgentRow(
+            title: String(localized: "Personal Default Agent"),
+            emptyLabel: String(localized: "Follow team default"),
+            selection: memberDefaultAgentID,
+            candidates: memberDefaultCandidates,
+            isLoaded: memberDefaultAgentLoaded,
+            isEditable: actorRepository != nil,
+            isEffective: memberDefaultAgentID != nil,
+            saveError: memberDefaultAgentSaveError,
+            accessibilityID: "settings.memberDefaultAgentPicker"
+        ) { newID in
+            let previousID = memberDefaultAgentID
+            memberDefaultAgentID = newID
+            memberDefaultAgentSaveError = nil
+            Task { await applyMemberDefaultAgent(newID, previousID: previousID) }
+        }
+    }
+
+    private var teamDefaultAgentRow: some View {
+        defaultAgentRow(
+            title: String(localized: "Team Default Agent"),
+            emptyLabel: String(localized: "Not set"),
+            selection: teamDefaultAgentID,
+            candidates: teamAgents,
+            isLoaded: teamDefaultAgentLoaded,
+            isEditable: canEditTeamDefaultAgent && actorRepository != nil,
+            isEffective: memberDefaultAgentID == nil && teamDefaultAgentID != nil,
+            saveError: teamDefaultAgentSaveError,
+            accessibilityID: "settings.teamDefaultAgentPicker"
+        ) { newID in
+            let previousID = teamDefaultAgentID
+            teamDefaultAgentID = newID
+            teamDefaultAgentSaveError = nil
+            Task { await applyTeamDefaultAgent(newID, previousID: previousID) }
+        }
+    }
+
+    /// One default-agent row: a menu picker when editable, plain text
+    /// otherwise. `isEffective` marks the row new sessions actually use.
     @ViewBuilder
-    private var teamDefaultAgentSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SettingsSectionLabel(String(localized: "Team Default Agent"))
-            VStack(spacing: 0) {
-                if canEditTeamDefaultAgent {
-                    // Editable picker for owner/admin
-                    let agents = teamAgents
-                    if agents.isEmpty {
-                        Text("No team agents yet")
-                            .font(.system(size: 14))
-                            .foregroundStyle(Color.amux.basalt)
-                            .padding(14)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        HStack {
-                            Text("Default agent")
-                                .font(.system(size: 14.5))
-                                .foregroundStyle(Color.amux.onyx)
-                            Spacer(minLength: 8)
-                            Picker("Default agent", selection: Binding(
-                                get: { teamDefaultAgentID ?? "" },
-                                set: { newValue in
-                                    let agentID: String? = newValue.isEmpty ? nil : newValue
-                                    let previousID = teamDefaultAgentID
-                                    teamDefaultAgentID = agentID
-                                    teamDefaultAgentSaveError = nil
-                                    Task { await applyTeamDefaultAgent(agentID, previousID: previousID) }
-                                }
-                            )) {
-                                Text("Not set").tag("")
-                                ForEach(agents) { agent in
-                                    Text(agent.displayName).tag(agent.id)
-                                }
+    private func defaultAgentRow(
+        title: String,
+        emptyLabel: String,
+        selection: String?,
+        candidates: [ConnectedAgent],
+        isLoaded: Bool,
+        isEditable: Bool,
+        isEffective: Bool,
+        saveError: String?,
+        accessibilityID: String,
+        onChange: @escaping (String?) -> Void
+    ) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 14.5))
+                    .foregroundStyle(Color.amux.onyx)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                if isEffective {
+                    Circle()
+                        .fill(Color.amux.cinnabar)
+                        .frame(width: 6, height: 6)
+                        .accessibilityLabel(Text("In effect"))
+                }
+                Spacer(minLength: 8)
+                if !isLoaded {
+                    ProgressView().controlSize(.small)
+                } else if isEditable {
+                    Menu {
+                        Picker(title, selection: Binding(
+                            get: { selection ?? "" },
+                            set: { onChange($0.isEmpty ? nil : $0) }
+                        )) {
+                            Text(emptyLabel).tag("")
+                            ForEach(candidates) { agent in
+                                Text(agent.displayName).tag(agent.id)
                             }
-                            .pickerStyle(.menu)
-                            .font(.system(size: 13.5))
-                            .foregroundStyle(Color.amux.basalt)
+                            // Keep a stale selection (agent unshared or no
+                            // longer visible) representable instead of
+                            // silently reading as the empty option.
+                            if let selection, !candidates.contains(where: { $0.id == selection }) {
+                                Text(agentName(for: selection)).tag(selection)
+                            }
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 13)
-                        if let saveErr = teamDefaultAgentSaveError {
-                            Rectangle().fill(Color.amux.hairline).frame(height: 0.5)
-                            Text(saveErr)
-                                .font(.footnote)
-                                .foregroundStyle(Color.amux.cinnabarDeep)
-                                .padding(14)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(selection.map(agentName(for:)) ?? emptyLabel)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
                         }
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(Color.amux.basalt)
                     }
+                    .accessibilityIdentifier(accessibilityID)
                 } else {
-                    // Read-only display for regular members
-                    let agentName = teamAgents.first(where: { $0.id == teamDefaultAgentID })?.displayName
-                    SettingsRow(label: String(localized: "Default agent"), value: agentName ?? String(localized: "Not set"))
+                    Text(selection.map(agentName(for:)) ?? emptyLabel)
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(Color.amux.basalt)
+                        .lineLimit(1)
+                        .accessibilityIdentifier(accessibilityID)
                 }
             }
-            .background(SettingsCardBackground())
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+
+            if let saveError {
+                Text(saveError)
+                    .font(.footnote)
+                    .foregroundStyle(Color.amux.cinnabarDeep)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
+    }
+
+    private var defaultAgentsFootnote: some View {
+        let text: String = {
+            if let id = effectiveDefaultAgentID {
+                return String(localized: "New sessions go to \(agentName(for: id)). Your personal default overrides the team default.")
+            }
+            return String(localized: "No default agent yet. Pick a personal default, or ask a team admin to set one for the team.")
+        }()
+        return Text(text)
+            .font(.system(size: 12))
+            .foregroundStyle(Color.amux.basalt.opacity(0.7))
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 24)
+            .accessibilityIdentifier("settings.defaultAgentFootnote")
     }
 
     // MARK: - Notifications
@@ -617,10 +748,24 @@ public struct SettingsView: View {
         }
     }
 
-    private func loadTeamDefaultAgent() async {
+    private func loadDefaultAgents() async {
         guard let team = activeTeam, let repo = actorRepository else { return }
+        memberDefaultAgentID = try? await repo.getMemberDefaultAgent(teamID: team.id)
         teamDefaultAgentID = try? await repo.getTeamDefaultAgent(teamID: team.id)
+        memberDefaultAgentLoaded = true
         teamDefaultAgentLoaded = true
+    }
+
+    private func applyMemberDefaultAgent(_ agentID: String?, previousID: String?) async {
+        guard let team = activeTeam, let repo = actorRepository else { return }
+        do {
+            let confirmed = try await repo.setMemberDefaultAgent(teamID: team.id, agentID: agentID)
+            memberDefaultAgentID = confirmed
+            memberDefaultAgentSaveError = nil
+        } catch {
+            memberDefaultAgentID = previousID
+            memberDefaultAgentSaveError = error.localizedDescription
+        }
     }
 
     private func applyTeamDefaultAgent(_ agentID: String?, previousID: String?) async {
@@ -633,6 +778,54 @@ public struct SettingsView: View {
             teamDefaultAgentID = previousID
             teamDefaultAgentSaveError = error.localizedDescription
         }
+    }
+}
+
+/// Read-only team metadata, one tap below the Current Team card so the
+/// Settings root stays about what you can act on.
+private struct TeamInfoView: View {
+    let details: TeamDetails?
+    let loadError: String?
+
+    var body: some View {
+        ZStack {
+            Color.amux.mist.ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 0) {
+                    if let details {
+                        if let orgName = details.orgName, !orgName.isEmpty {
+                            SettingsRow(label: String(localized: "Org Name"), value: orgName)
+                            Divider().background(Color.amux.hairline).padding(.leading, 14)
+                        }
+                        SettingsRow(label: String(localized: "Team Name"), value: details.name)
+                        Divider().background(Color.amux.hairline).padding(.leading, 14)
+                        SettingsRow(label: String(localized: "Owner"), value: details.ownerDisplayName ?? "—")
+                        Divider().background(Color.amux.hairline).padding(.leading, 14)
+                        SettingsRow(
+                            label: String(localized: "Created"),
+                            value: details.createdAt.formatted(date: .abbreviated, time: .shortened)
+                        )
+                        Divider().background(Color.amux.hairline).padding(.leading, 14)
+                        SettingsRow(label: "ID", value: details.id, valueIsMonospaced: true)
+                    } else if let loadError {
+                        Text(loadError)
+                            .font(.footnote)
+                            .foregroundStyle(Color.amux.cinnabarDeep)
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        ProgressView()
+                            .padding(14)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .background(SettingsCardBackground())
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+            }
+        }
+        .navigationTitle("Team Info")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

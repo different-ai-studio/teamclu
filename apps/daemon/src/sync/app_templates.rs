@@ -189,38 +189,47 @@ mod tests {
     fn seeded_manifest_passes_read_app_declaration() {
         for t in [AppType::StaticWeb, AppType::Slides, AppType::DataApp] {
             let tmp = seed(t);
-            let declaration =
-                crate::sync::app_build::read_app_declaration(tmp.path()).unwrap_or_else(|e| {
-                    panic!("{t:?}: seeded teamclu.app.json must parse: {e}")
-                });
+            let declaration = crate::sync::app_build::read_app_declaration(tmp.path())
+                .unwrap_or_else(|e| panic!("{t:?}: seeded teamclu.app.json must parse: {e}"));
             assert_eq!(declaration.build.kind, "node");
             assert_eq!(declaration.build.output, ".output");
-            // Templates declare intent. Which Debian image, which interpreter
-            // and which layers are the control plane's to resolve — a template
-            // that named them would be teaching every new app to write the
-            // values that cannot be known from inside the repository.
             assert_eq!(
-                declaration.start.entry,
-                Some("server/index.mjs".to_string()),
-                "{t:?}: template should use the short form"
+                declaration.start.fc_runtime.as_deref(),
+                Some("custom.debian10"),
+                "{t:?}"
             );
-            assert_eq!(declaration.start.fc_runtime, None, "{t:?}");
-            assert_eq!(declaration.start.command, None, "{t:?}");
-            assert_eq!(declaration.start.layers, None, "{t:?}");
+            assert_eq!(
+                declaration.start.command,
+                Some(vec!["/var/fc/lang/nodejs20/bin/node".into()]),
+                "{t:?}"
+            );
+            assert_eq!(
+                declaration.start.args,
+                Some(vec!["server/index.mjs".into()]),
+                "{t:?}"
+            );
+            assert_eq!(declaration.start.layers, Some(vec![]), "{t:?}");
             assert_eq!(declaration.start.port, 9000);
         }
     }
 
     #[test]
-    fn agents_md_warns_that_build_command_runs_on_teammates_machines() {
+    fn agents_md_keeps_artifact_contract_and_points_to_deploy_skill() {
         for t in [AppType::StaticWeb, AppType::Slides, AppType::DataApp] {
             let tmp = seed(t);
             let agents = std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap();
             assert!(
-                agents.contains("队友"),
-                "{t:?}: portability constraint missing"
+                agents.contains(".output/server/index.mjs"),
+                "{t:?}: artifact contract missing"
             );
-            assert!(agents.contains("runtime_info"), "{t:?}: facts pointer missing");
+            assert!(
+                agents.contains("deploy-app"),
+                "{t:?}: skill pointer missing"
+            );
+            assert!(
+                !agents.contains("runtime_info"),
+                "{t:?}: duplicated runtime checklist"
+            );
         }
     }
 

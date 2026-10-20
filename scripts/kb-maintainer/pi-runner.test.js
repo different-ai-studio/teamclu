@@ -13,6 +13,7 @@ const {
   compile,
   parseCompilerModel,
   compilerNeedsTeamGateway,
+  resolveRuntimeModel,
 } = require("./pi-runner");
 
 function makeWork() {
@@ -65,6 +66,100 @@ test("compile with an injected session records wiki pages from git, not the mode
   assert.deepEqual(compiled.affectedPages, ["index.md", "pages/请假.md"]);
 });
 
+test("compile reports the model error instead of an empty page list", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "kb-model-error-"));
+  const wikiRoot = path.join(root, "wiki");
+  fs.mkdirSync(path.join(wikiRoot, "pages"), { recursive: true });
+  fs.writeFileSync(path.join(wikiRoot, "index.md"), "# LLM Wiki\n");
+  await assert.rejects(
+    () =>
+      compile({
+        workRoot: root,
+        action: "add",
+        sourcePath: "documents/handbook/leave.md",
+        sourceSha256: "ab".repeat(32),
+        rawMarkdown: "# 请假\n",
+        createSession: async () => ({
+          prompt: async () => {},
+          messages: [
+            {
+              role: "assistant",
+              stopReason: "error",
+              errorMessage: "429 Too Many Requests",
+            },
+          ],
+        }),
+      }),
+    /Compiler model failed: 429 Too Many Requests/,
+  );
+});
+
+test("compile writes wiki files from the reply and ignores paths outside the wiki", async () => {
+  const { workRoot, wikiRoot } = makeWork();
+  const compiled = await compile({
+    workRoot,
+    action: "add",
+    sourcePath: "documents/samples/notice.md",
+    sourceSha256: "ab".repeat(32),
+    rawMarkdown: "明天放假",
+    createSession: async () => ({
+      messages: [],
+      async prompt() {
+        this.messages.push({
+          role: "assistant",
+          stopReason: "stop",
+          content: [
+            {
+              type: "text",
+              text: [
+                "<<<WIKI_FILE pages/notice.md>>>",
+                "# 放假",
+                "明天放假。",
+                "<<<END_WIKI_FILE>>>",
+                "<<<WIKI_FILE /Users/lingling/secret.md>>>",
+                "nope",
+                "<<<END_WIKI_FILE>>>",
+                "<<<WIKI_FILE ../outside.md>>>",
+                "nope",
+                "<<<END_WIKI_FILE>>>",
+              ].join("\n"),
+            },
+          ],
+        });
+      },
+    }),
+  });
+  assert.deepEqual(compiled.affectedPages, ["pages/notice.md"]);
+  assert.match(fs.readFileSync(path.join(wikiRoot, "pages", "notice.md"), "utf8"), /明天放假/);
+  assert.equal(fs.existsSync(path.join(wikiRoot, "..", "outside.md")), false);
+});
+
+test("resolveRuntimeModel loads a catalog model that is not in the short list", async () => {
+  let lookups = 0;
+  const model = { id: "deepseek-v4-flash-vision-exp", input: ["text", "image"] };
+  const runtime = {
+    getModel(provider, id) {
+      lookups += 1;
+      if (lookups === 1) return undefined;
+      assert.equal(provider, "opencode-go");
+      assert.equal(id, model.id);
+      return model;
+    },
+    async refresh(options) {
+      assert.equal(options.allowNetwork, false);
+      assert.deepEqual(options.providers, ["opencode-go"]);
+    },
+  };
+  assert.equal(
+    await resolveRuntimeModel(runtime, "opencode-go", "deepseek-v4-flash-vision-exp"),
+    model,
+  );
+  assert.equal(lookups, 2);
+});
+
 test("a device compiler model does not require the team gateway", () => {
   assert.deepEqual(parseCompilerModel("anthropic/claude-sonnet"), {
     provider: "anthropic",
@@ -80,28 +175,30 @@ test("a device compiler model does not require the team gateway", () => {
   assert.equal(compilerNeedsTeamGateway("team/glm-4.6"), true);
 });
 
-test("Pi compile fails closed when the team gateway is missing", async () => {
+test("compile fails closed when the local Agent is not running", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
   const { workRoot } = makeWork();
-  delete process.env.TEAMCLU_TEAM_PROVIDER;
-  delete process.env.tc_gateway_token;
-  await assert.rejects(
-    () =>
-      compile({
-        workRoot,
-        action: "add",
-        sourcePath: "documents/handbook/leave.md",
-        sourceSha256: "ab".repeat(32),
-        rawMarkdown: "# 请假\n",
-        locators: [],
-        schemaMarkdown: "",
-        indexMarkdown: "",
-      }),
-    // Either message is a pass. `compile` reaches `createLivePiSession`,
-    // which checks for the managed runtime before it ever looks for the
-    // gateway, so a machine with pi installed fails on the gateway and one
-    // without it fails on the runtime. Neither test can install a runtime,
-    // and pinning only the gateway message is what made this pass on a
-    // developer's Mac and fail on CI.
-    /Team AI gateway|managed Agent runtime/i,
-  );
+  const previous = process.env.AMUXD_HOME;
+  process.env.AMUXD_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "kb-no-agent-"));
+  try {
+    await assert.rejects(
+      () =>
+        compile({
+          workRoot,
+          action: "add",
+          sourcePath: "documents/handbook/leave.md",
+          sourceSha256: "ab".repeat(32),
+          rawMarkdown: "# 请假\n",
+          locators: [],
+          schemaMarkdown: "",
+          indexMarkdown: "",
+        }),
+      /local Agent is not running/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.AMUXD_HOME;
+    else process.env.AMUXD_HOME = previous;
+  }
 });

@@ -6,6 +6,8 @@ import { cloudApiBaseUrl, createCloudApiClient } from "../../lib/cloud-api/clien
  */
 export type SessionMutesApi = {
   isMuted: (sessionId: string) => Promise<boolean>;
+  /** Every session the signed-in user has muted — for the list's bell. */
+  listMuted: () => Promise<Set<string>>;
   setMuted: (sessionId: string, muted: boolean) => Promise<void>;
 };
 
@@ -24,6 +26,10 @@ export function createSessionMutesApi(args: {
       if (!sessionId) return false;
       const result = await client.get<{ items: string[] }>("/v1/sessions/muted");
       return (result.items ?? []).includes(sessionId);
+    },
+    async listMuted() {
+      const result = await client.get<{ items?: string[] }>("/v1/sessions/muted");
+      return new Set(result?.items ?? []);
     },
     async setMuted(sessionId, muted) {
       if (!sessionId) return;

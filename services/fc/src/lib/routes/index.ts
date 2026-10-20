@@ -3,6 +3,7 @@ import { registerTeams } from "./teams.js";
 import { registerSessions } from "./sessions.js";
 import { registerApps } from "./apps.js";
 import { registerMessages } from "./messages.js";
+import { registerSessionAttachments } from "./session-attachments.js";
 import { registerInvites } from "./invites.js";
 import { registerWorkspaces } from "./workspaces.js";
 import { registerSystem } from "./system.js";
@@ -25,8 +26,10 @@ import { registerMarketplace } from "./marketplace.js";
 import { registerTeamMcp } from "./team-mcp.js";
 import { registerTeamEnvSecrets } from "./team-env-secrets.js";
 import { registerKnowledgeAcl } from "./knowledge-acl.js";
+import { registerDocumentLibraries } from "./document-libraries.js";
 import { registerOrgRoles } from "./org-roles.js";
 import { registerAdmin } from "./admin.js";
+import { registerWikiMaintainer } from "./wiki-maintainer.js";
 
 export function registerAllRoutes(router) {
   registerAuth(router);
@@ -35,6 +38,7 @@ export function registerAllRoutes(router) {
   registerSessions(router);
   registerApps(router);
   registerMessages(router);
+  registerSessionAttachments(router);
   registerInvites(router);
   // team-share routes must be registered BEFORE workspaces so the new merged
   // GET /v1/teams/:teamId/workspace-config wins over
@@ -61,6 +65,12 @@ export function registerAllRoutes(router) {
   // Same ordering reason as every other team-scoped module here: this owns
   // /v1/teams/:teamId/knowledge-acl* and must precede workspaces' broader match.
   registerKnowledgeAcl(router);
+  // Same ordering reason as knowledge-acl: this owns
+  // /v1/teams/:teamId/document-libraries* and must precede workspaces' broader match.
+  registerDocumentLibraries(router);
+  // Owns /v1/teams/:teamId/wiki-maintainer* and must precede workspaces'
+  // broader team route.
+  registerWikiMaintainer(router);
   // Org roles own /v1/teams/:teamId/roles* (OpenAPI listOrgRoles). Must register
   // before shortcuts so the old shortcuts listTeamRoles path cannot collide —
   // shortcuts now serve listTeamRoles at /shortcut-roles.

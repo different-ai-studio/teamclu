@@ -12,8 +12,10 @@
 ///   kook://{scope}/{channel_id}
 ///   wechat://{ilink_account}/single/{from_user_id}
 ///   email://{account_key}/thread/{thread_key}
+///   seatalk://{app_id}/group/{group_id}[/thread/{thread_id}]
+///   seatalk://{app_id}/single/{employee_code}[/thread/{thread_id}]
 ///
-/// Only WeCom defaults are wired today; other channels return
+/// WeCom and SeaTalk defaults are wired; other channels return
 /// `Ok((channel, None))` so the agent can still send by providing an explicit
 /// target override even before per-channel dispatch lands.
 pub(crate) fn parse_binding_to_target(
@@ -42,6 +44,22 @@ pub(crate) fn parse_binding_to_target(
         "kook" => Ok(("kook", None)),
         "wechat" => Ok(("wechat", None)),
         "email" => Ok(("email", None)),
+        "seatalk" => {
+            // seatalk://{app}/group|single/{id}[/thread/{tid}]
+            if parts.len() < 3 {
+                anyhow::bail!("seatalk binding malformed: {binding}");
+            }
+            let app_id = parts[0];
+            if app_id.is_empty() {
+                anyhow::bail!("seatalk binding missing app id: {binding}");
+            }
+            let target = match parts[1] {
+                "single" => format!("bot:{app_id}/user:{}", parts[2]),
+                "group" => format!("bot:{app_id}/chat:{}", parts[2]),
+                other => anyhow::bail!("unknown seatalk binding kind: {other}"),
+            };
+            Ok(("seatalk", Some(target)))
+        }
         "cron" => Ok(("cron", None)),
         other => anyhow::bail!("unknown binding scheme: {other}"),
     }
@@ -92,6 +110,7 @@ pub(crate) fn cron_delivery_target(binding: &str) -> anyhow::Result<(String, Str
     let (channel, dispatch) = parse_binding_to_target(binding)?;
     let to = match (channel, dispatch.as_deref()) {
         ("wecom", Some(t)) => wecom_dispatch_to_cron_to(t)?,
+        ("seatalk", Some(t)) => seatalk_dispatch_to_cron_to(t)?,
         ("cron", _) => anyhow::bail!(
             "this reply_token is a cron run, not a chat — pass single:<userid> or group:<chatid>"
         ),
@@ -118,6 +137,29 @@ fn wecom_dispatch_to_cron_to(dispatch: &str) -> anyhow::Result<String> {
         return Ok(format!("group:{id}"));
     }
     anyhow::bail!("unexpected wecom dispatch target: {dispatch}");
+}
+
+fn seatalk_dispatch_to_cron_to(dispatch: &str) -> anyhow::Result<String> {
+    let (app, rest) = dispatch
+        .strip_prefix("bot:")
+        .and_then(|s| s.split_once('/'))
+        .ok_or_else(|| anyhow::anyhow!("unexpected seatalk dispatch target: {dispatch}"))?;
+    if app.is_empty() {
+        anyhow::bail!("seatalk app id is empty");
+    }
+    if let Some(id) = rest.strip_prefix("user:") {
+        if id.is_empty() {
+            anyhow::bail!("seatalk user id is empty");
+        }
+        return Ok(format!("bot:{app}/single:{id}"));
+    }
+    if let Some(id) = rest.strip_prefix("chat:") {
+        if id.is_empty() {
+            anyhow::bail!("seatalk chat id is empty");
+        }
+        return Ok(format!("bot:{app}/group:{id}"));
+    }
+    anyhow::bail!("unexpected seatalk dispatch target: {dispatch}");
 }
 
 fn normalize_dispatch_target(channel: &str, target: &str) -> String {
@@ -236,6 +278,17 @@ mod tests {
         let (channel, to) = cron_delivery_target("wecom://corp/agent/group/chat-1").unwrap();
         assert_eq!(channel, "wecom");
         assert_eq!(to, "group:chat-1");
+    }
+
+    #[test]
+    fn seatalk_group_binding_pins_the_bot_and_chat() {
+        let (channel, target) =
+            parse_binding_to_target("seatalk://app-1/group/g1/thread/t9").unwrap();
+        assert_eq!(channel, "seatalk");
+        assert_eq!(target.as_deref(), Some("bot:app-1/chat:g1"));
+        let (channel, to) = cron_delivery_target("seatalk://app-1/single/E1/thread/t2").unwrap();
+        assert_eq!(channel, "seatalk");
+        assert_eq!(to, "bot:app-1/single:E1");
     }
 
     #[test]

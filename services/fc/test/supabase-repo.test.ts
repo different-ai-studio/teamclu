@@ -1,3 +1,5 @@
+import { ApiError } from "../src/lib/http-utils.js";
+import { installOriginEnv, ORIGIN_ENV } from "./fixtures/apps-origin-auth/config.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SignJWT } from "jose";
@@ -7,6 +9,7 @@ import {
   publishableKeyFromEnv,
 } from "../src/lib/supabase-repo.js";
 import { DEFAULT_MESSAGE_LIST_LIMIT } from "../src/lib/routing-utils.js";
+import { preflightAppDeploy } from "../src/lib/provisioning/app-deploy-preflight.js";
 
 test("createSupabaseBusinessRepository creates caller-scoped Supabase client", async () => {
   const calls = [];
@@ -349,6 +352,51 @@ test("auth repo claimInvite forwards the caller bearer for member claims", async
   assert.ok(insert, "member roles_users must be inserted via service-role");
   assert.equal(insert.row.user_id, "joiner-user-1");
   assert.equal(insert.row.role_id, "role-member");
+});
+
+test("auth repo claimInvite grants the org role to the identity the actor joined as", async () => {
+  // claim_team_invite joins as the caller's identity IN the team's org, minting
+  // a new account when the caller already has one elsewhere. The role belongs
+  // to that identity, not to the account that sent the request.
+  const adminCalls: any[] = [];
+  const admin = fakeSupabase({
+    tableCalls: adminCalls,
+    tableData: {
+      actors: [{ id: "actor-9", user_id: "identity-in-org-9" }],
+      teams: [{ id: "team-9", oid: "org-9" }],
+      roles: [{ id: "role-member", org_id: "org-9", code: "member", is_system: true }],
+      roles_users: [],
+    },
+  });
+  const repo = createSupabaseAuthRepository({
+    supabaseUrl: "https://example.supabase.co",
+    publishableKey: "publishable-key",
+    createServiceRoleClient: () => admin,
+    createClient() {
+      return fakeSupabase({
+        auth: {
+          async getUser() {
+            return { data: { user: { id: "caller-account" } }, error: null };
+          },
+        },
+        rpcData: {
+          claim_team_invite: [{
+            actor_id: "actor-9",
+            team_id: "team-9",
+            actor_type: "member",
+            display_name: "Joiner",
+            refresh_token: "rt-for-identity",
+          }],
+        },
+      });
+    },
+  });
+
+  const result = await repo.claimInvite("invite-token", { accessToken: "member-jwt" });
+  assert.equal(result.refreshToken, "rt-for-identity");
+  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  assert.ok(insert, "member roles_users must be inserted via service-role");
+  assert.equal(insert.row.user_id, "identity-in-org-9");
 });
 
 test("auth repo claimInvite fails loud when member claim has no authenticated user", async () => {
@@ -775,6 +823,7 @@ test("createTeam mints a personal org when the caller carries none — never DEF
 
     assert.equal(rpcCalls.length, 2);
     assert.equal(rpcCalls[0].name, "ensure_personal_org");
+    assert.equal(rpcCalls[0].args.p_name, "My Team", "the team name names the new org too");
     assert.equal(rpcCalls[1].name, "create_team");
     assert.equal(rpcCalls[1].args.p_oid, "org-mine");
     assert.equal(rpcCalls[1].args.p_name, "My Team");
@@ -1821,9 +1870,11 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
     app_env_vars: [...(seed.app_env_vars ?? [])],
     app_secrets: [...(seed.app_secrets ?? [])],
     app_cron_jobs: [...(seed.app_cron_jobs ?? [])],
-    // resolveTeamOrgId reads this; unseeded it yields no row, i.e. "team has
-    // no org", which is what most apps tests want.
-    teams: [...(seed.teams ?? [])],
+    // resolveTeamOrgId reads this. It defaults to a team WITH an org because
+    // createApp now refuses a team without one (409 team_has_no_org) — the
+    // app's tenant is settled at creation so `apps.org_id` can be NOT NULL.
+    // A test that wants the no-org case seeds `teams: []` explicitly.
+    teams: [...(seed.teams ?? [{ id: "team-1", oid: "org-1" }])],
     agents: [...(seed.agents ?? [])],
     session_participants: [...(seed.session_participants ?? [])],
     agent_member_access: [...(seed.agent_member_access ?? [])],
@@ -1831,7 +1882,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
   return {
     auth: appsAuth(),
     from(table: string) {
-      const ctx: any = { table, op: null, filters: {}, isFilters: {}, inFilters: {}, limitCount: null };
+      const ctx: any = { table, op: null, filters: {}, isFilters: {}, neqFilters: {}, inFilters: {}, limitCount: null };
       // `resolveCurrentMemberActor` filters `actor_type = 'member'` and the
       // agent git-credential path filters `'agent'`. A seeded `actorRow` that
       // names its own type must answer only the matching lookup; one that does
@@ -1847,6 +1898,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         for (const [col, val] of Object.entries(ctx.filters)) {
           rows = rows.filter((r) => r[col as string] === val);
         }
+        for (const [col, val] of Object.entries(ctx.neqFilters)) rows = rows.filter(r => r[col] !== val);
         for (const [col, val] of Object.entries(ctx.isFilters)) {
           rows = rows.filter((r) => (val === null ? r[col as string] == null : r[col as string] === val));
         }
@@ -1857,6 +1909,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         return rows;
       };
       const builder: any = {
+        neq(col: string, val: any) { ctx.neqFilters[col] = val; return builder; },
         select(columns: string) {
           calls.push({ table, op: ctx.op ? `${ctx.op}.select` : "select", columns });
           return builder;
@@ -1975,7 +2028,17 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
       };
       return builder;
     },
-    async rpc() { return { data: [], error: null }; },
+    async rpc(name, args) {
+      state.app_lifecycle_operations ??= [];
+      const active=state.app_lifecycle_operations.find(r=>r.app_id===args.p_app_id && r.status!=='succeeded');
+      if (name==='begin_app_lifecycle') {
+        if(active) return {data:null,error:{code:'55000'}};
+        const op={id:'operation-'+(state.app_lifecycle_operations.length+1),app_id:args.p_app_id,kind:args.p_kind,token:args.p_token,status:'pending',in_flight:false,steps:{},snapshot:{}};
+        state.app_lifecycle_operations.push(op);return {data:op,error:null};
+      }
+      if(name==='finish_app_lifecycle') {const op=state.app_lifecycle_operations.find(r=>r.id===args.p_operation_id);if(op)op.status='succeeded';return {data:null,error:null};}
+      return { data: [], error: null };
+    },
   };
 }
 
@@ -2003,7 +2066,9 @@ function appsRepo(supabase: any, extra: any = {}) {
     publishableKey: "publishable-key",
     accessToken: "caller-token",
     createClient: () => supabase,
+    createServiceRoleClient: () => supabase,
     gitea: fakeGitea(),
+    validateAppOrigin: () => ({}),
     ...extra,
   });
 }
@@ -2096,6 +2161,7 @@ test("session roster gives a seated agent a secret-free app workspace snapshot",
   assert.deepEqual(roster.appContext.cronJobs[0].headerNames, ["X-Job-Secret"]);
   const serialized = JSON.stringify(roster.appContext);
   assert.ok(!serialized.includes("must-not-leak"));
+  assert.equal(roster.appContext.runtime, undefined, "detailed runtime facts belong behind runtime_info");
 });
 
 test("session roster does not expose app workspace context to a human participant", async () => {
@@ -2126,6 +2192,111 @@ test("session roster does not expose app workspace context to a human participan
   // createRepo resolves its test admin once during setup; the roster call must
   // not ask for it again for a human caller.
   assert.equal(serviceRoleCalls, 1);
+});
+
+// session_participants has no DELETE policy, so a delete on the caller's token
+// matched nothing and still answered 204 — the swiped-away agent came straight
+// back. These pin the delete to the service role, behind the checks.
+function removeParticipantFixture({
+  callerId = "member-1",
+  createdBy = "member-creator",
+  agentOwner = "member-owner",
+  grants = [] as any[],
+  seats = [
+    { session_id: "session-1", actor_id: "agent-1" },
+    { session_id: "session-1", actor_id: "member-2" },
+  ],
+  sessionVisible = true,
+} = {}) {
+  const callerCalls: any[] = [];
+  const adminCalls: any[] = [];
+  const caller = appsSupabase({
+    actorRow: { id: callerId, actor_type: "member" },
+    calls: callerCalls,
+    seed: {
+      sessions: sessionVisible
+        ? [{ id: "session-1", team_id: "team-1", created_by_actor_id: createdBy }]
+        : [],
+    },
+  });
+  const admin = appsSupabase({
+    calls: adminCalls,
+    seed: {
+      agents: [{ id: "agent-1", owner_member_id: agentOwner }],
+      agent_member_access: grants,
+      session_participants: seats,
+    },
+  });
+  const repo = createRepo(caller, { createServiceRoleClient: () => admin });
+  const deletes = (calls: any[]) =>
+    calls.filter((c) => c.table === "session_participants" && c.op === "delete");
+  return { repo, callerCalls, adminCalls, deletes };
+}
+
+test("removeSessionParticipant deletes through the service role when the session's creator removes an agent", async () => {
+  const f = removeParticipantFixture({ callerId: "member-creator" });
+
+  await f.repo.removeSessionParticipant("session-1", "agent-1");
+
+  assert.equal(f.deletes(f.callerCalls).length, 0, "the caller's token cannot delete: no DELETE policy");
+  assert.equal(f.deletes(f.adminCalls).length, 1);
+  const filters = f.adminCalls
+    .filter((c) => c.table === "session_participants" && c.op === "delete.eq")
+    .map((c) => [c.column, c.value]);
+  assert.deepEqual(filters, [["session_id", "session-1"], ["actor_id", "agent-1"]]);
+});
+
+test("removeSessionParticipant lets the agent's owner or an admin remove it", async () => {
+  const owner = removeParticipantFixture({ callerId: "member-owner" });
+  await owner.repo.removeSessionParticipant("session-1", "agent-1");
+  assert.equal(owner.deletes(owner.adminCalls).length, 1);
+
+  const admin = removeParticipantFixture({
+    callerId: "member-9",
+    grants: [{ agent_id: "agent-1", member_id: "member-9", permission_level: "admin" }],
+  });
+  await admin.repo.removeSessionParticipant("session-1", "agent-1");
+  assert.equal(admin.deletes(admin.adminCalls).length, 1);
+});
+
+test("removeSessionParticipant refuses a member who neither created the session nor speaks for the agent", async () => {
+  const f = removeParticipantFixture({
+    callerId: "member-1",
+    grants: [{ agent_id: "agent-1", member_id: "member-1", permission_level: "use" }],
+  });
+
+  await assert.rejects(
+    () => f.repo.removeSessionParticipant("session-1", "agent-1"),
+    (err: any) => err.statusCode === 403,
+  );
+  assert.equal(f.deletes(f.adminCalls).length, 0);
+});
+
+test("removeSessionParticipant lets any member who sees the session remove a human", async () => {
+  const f = removeParticipantFixture({ callerId: "member-1" });
+
+  await f.repo.removeSessionParticipant("session-1", "member-2");
+
+  assert.equal(f.deletes(f.adminCalls).length, 1);
+});
+
+test("removeSessionParticipant answers 404 for a session the caller cannot see", async () => {
+  const f = removeParticipantFixture({ callerId: "member-creator", sessionVisible: false });
+
+  await assert.rejects(
+    () => f.repo.removeSessionParticipant("session-1", "agent-1"),
+    (err: any) => err.statusCode === 404,
+  );
+  assert.equal(f.deletes(f.adminCalls).length, 0);
+});
+
+test("removeSessionParticipant answers 404 when nothing was deleted", async () => {
+  const f = removeParticipantFixture({ callerId: "member-creator", seats: [] });
+
+  await assert.rejects(
+    () => f.repo.removeSessionParticipant("session-1", "agent-1"),
+    (err: any) => err.statusCode === 404,
+  );
 });
 
 test("apps: mapApp exposes exactly the canonical keys", async () => {
@@ -2696,7 +2867,7 @@ test("apps: a non-creator's authMode change destroys nothing before the 404", as
   assert.deepEqual(disabled, [], "the OAuth client must survive a 404'd PATCH");
 });
 
-test("apps: deleteApp tears down resources, archives workspace, and removes the row", async () => {
+test("apps: deleteApp requires completed uninstall, archives workspace, and removes the row", async () => {
   const deletedKeys: number[] = [];
   const fcDeleted: string[] = [];
   const ossDeleted: string[] = [];
@@ -2710,7 +2881,8 @@ test("apps: deleteApp tears down resources, archives workspace, and removes the 
         ...GITEA_MANAGED_APP,
         workspace_id: "ws-1",
         fc_function_name: "tc-app-app-1",
-        fc_status: "live",
+        fc_status: "uninstalled",
+        undeploy_operation: { status: "succeeded", id: "cleanup-1" },
         auth_mode: "platform",
         oauth_client_id: "oauth-cid",
       }],
@@ -2741,9 +2913,9 @@ test("apps: deleteApp tears down resources, archives workspace, and removes the 
   assert.equal(await repo.deleteApp("app-1"), true);
   assert.deepEqual(deletedKeys, [9]);
   assert.ok(archivedRepo);
-  assert.deepEqual(oauthDisabled, ["oauth-cid"]);
-  assert.ok(fcDeleted.includes("fn:tc-app-app-1"));
-  assert.deepEqual(ossDeleted, ["apps/app-1/code.zip"]);
+  assert.deepEqual(oauthDisabled, []);
+  assert.deepEqual(fcDeleted, []);
+  assert.deepEqual(ossDeleted, []);
   const wsUpdate = calls.find((c) => c.table === "workspaces" && c.op === "update");
   assert.equal(wsUpdate?.row.archived, true);
   assert.equal(wsUpdate?.row.path, "git@gitea.example:teamclaw-apps/deleted-tc-app-app-1.git");
@@ -2871,7 +3043,7 @@ function appAccessRepo(permissionLevel: string, actorId = "member-other", extra:
     created_at: "2026-08-27T00:00:00.000Z",
   }];
   return appsRepo(
-    appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows }, actorRow: { id: actorId } }),
+    appsSupabase({ seed: { apps: [{ ...GITEA_MANAGED_APP, start_spec: null, deploy_token: APP_GIT_TOKEN }], app_member_access: accessRows }, actorRow: { id: actorId } }),
     extra,
   );
 }
@@ -3320,7 +3492,6 @@ test("apps: a type-only PATCH tolerates a stale provisionStatus riding along", a
 });
 
 const APP_SHA = "abc1234";
-const APP_DEPLOY = { gitCommitSha: APP_SHA };
 const APP_DECLARATION = {
   build: { kind: "node", output: ".output" },
   start: {
@@ -3328,10 +3499,145 @@ const APP_DECLARATION = {
     command: ["/opt/nodejs20/bin/node"],
     args: ["server/index.mjs"],
     port: 9000,
+    layers: ["Nodejs20:3"],
   },
 };
+const APP_REVISION = `sha256:${"a".repeat(64)}`;
+const APP_PREFLIGHT_TOKEN = preflightAppDeploy("app-1", APP_REVISION, APP_DECLARATION, null,
+  { region: "cn-hangzhou", capabilities: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" } as any], catalogComplete: true }).token;
+const APP_DEPLOY = { gitCommitSha: APP_SHA, revision: APP_REVISION, declaration: APP_DECLARATION, preflightToken: APP_PREFLIGHT_TOKEN };
+const APP_GIT_SHA = "b".repeat(40);
+const APP_GIT_TOKEN = preflightAppDeploy("app-1", APP_GIT_SHA, APP_DECLARATION, null,
+  { region: "cn-hangzhou", capabilities: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" } as any], catalogComplete: true }).token;
+const APP_GIT_DEPLOY = { gitCommitSha: APP_GIT_SHA, revision: APP_GIT_SHA, declaration: APP_DECLARATION, preflightToken: APP_GIT_TOKEN };
+Object.assign(APP_ROW, { start_spec: null, deploy_token: APP_PREFLIGHT_TOKEN });
+test("preflight cannot overwrite an active deploy token", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "awaiting_build", deploy_started_at: new Date().toISOString(), deploy_token: "active-token" }] } }));
+  await assert.rejects(() => repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION }), (e: any) => e.code === "deploy_in_progress");
+  assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
+});
+
+test("repeated preflight preserves an approved token and rejects a different proposal", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", deploy_token: APP_PREFLIGHT_TOKEN }] } }), {
+    readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+  });
+  const same = await repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION });
+  assert.equal(same?.token, APP_PREFLIGHT_TOKEN);
+  await assert.rejects(() => repo.preflightAppDeploy("app-1", { revision: `sha256:${"b".repeat(64)}`, declaration: APP_DECLARATION }),
+    (e: any) => e.code === "preflight_in_progress");
+  assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
+});
+
+test("deploy_error write is conditional on the attempt token, status and start time", async () => {
+  const calls: any[] = [];
+  const db = appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, fc_status: "awaiting_build", deploy_token: APP_PREFLIGHT_TOKEN, deploy_started_at: "2026-10-18T00:00:00Z" }] } });
+  await appsRepo(db).updateApp("app-1", { fcStatus: "deploy_error", deployToken: APP_PREFLIGHT_TOKEN, deployError: "build failed" });
+  const filters = calls.filter(c => c.table === "apps" && c.op === "update.eq");
+  assert.ok(filters.some(c => c.column === "deploy_token" && c.value === APP_PREFLIGHT_TOKEN));
+  assert.ok(filters.some(c => c.column === "fc_status" && c.value === "awaiting_build"));
+  assert.ok(filters.some(c => c.column === "deploy_started_at" && c.value === "2026-10-18T00:00:00Z"));
+});
+
+test("deploy_error rejects a stale or missing attempt token", async () => {
+  for (const token of ["stale-token", undefined]) {
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_status: "awaiting_build", deploy_token: APP_PREFLIGHT_TOKEN }] } });
+    await assert.rejects(() => appsRepo(db).updateApp("app-1", { fcStatus: "deploy_error", deployToken: token }), (e: any) => e.code === "deploy_token_mismatch");
+    assert.equal((await db.from("apps").select("*").eq("id", "app-1").maybeSingle()).data.deploy_token, APP_PREFLIGHT_TOKEN);
+  }
+});
+
+test("a late build failure cannot overwrite a concurrent finalize or newer token", async () => {
+  for (const change of [{ fc_status: "deploying" }, { deploy_token: "new-attempt" }]) {
+    const app = { ...APP_ROW, fc_status: "awaiting_build", deploy_token: APP_PREFLIGHT_TOKEN };
+    const db = appsSupabase({ seed: { apps: [app] } });
+    const from = db.from.bind(db);
+    db.from = (table: string) => {
+      const builder = from(table);
+      if (table === "apps") {
+        const update = builder.update.bind(builder);
+        builder.update = (row: unknown) => {
+          update(row);
+          const maybeSingle = builder.maybeSingle.bind(builder);
+          builder.maybeSingle = () => { Object.assign(app, change); return maybeSingle(); };
+          return builder;
+        };
+      }
+      return builder;
+    };
+    await assert.rejects(() => appsRepo(db).updateApp("app-1", { fcStatus: "deploy_error", deployToken: APP_PREFLIGHT_TOKEN }), (e: any) => e.code === "deploy_token_mismatch");
+    assert.equal(app.fc_status, change.fc_status ?? "awaiting_build");
+    assert.equal(app.deploy_token, change.deploy_token ?? APP_PREFLIGHT_TOKEN);
+  }
+});
+
+test("a stale provider deployment cannot be reclaimed by a new preflight", async () => {
+  const calls: any[] = [];
+  const db = appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "deploying", deploy_token: APP_PREFLIGHT_TOKEN, deploy_started_at: "2020-01-01T00:00:00Z" }] } });
+  await assert.rejects(() => appsRepo(db).preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION }), (e: any) => e.code === "lifecycle_conflict");
+  assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
+});
+
+test("deploy_error preserves a provider timeout lifecycle fence", async () => {
+  const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_status: "awaiting_build", deploy_token: APP_PREFLIGHT_TOKEN, deploy_started_at: null }] } });
+  const { data: operation } = await db.rpc("begin_app_lifecycle", { p_app_id: "app-1", p_kind: "deploy", p_token: APP_PREFLIGHT_TOKEN });
+  operation.in_flight = true;
+  await assert.rejects(() => appsRepo(db).updateApp("app-1", { fcStatus: "deploy_error", deployToken: APP_PREFLIGHT_TOKEN }), (e: any) => e.code === "lifecycle_conflict");
+  assert.equal(operation.status, "pending");
+});
+
+test("preflight cancellation delegates the matching token to the atomic database operation", async () => {
+  const db = appsSupabase({ seed: { apps: [APP_ROW] } });
+  let seen: unknown;
+  db.rpc = async (name, args) => { seen = { name, args }; return { data: true, error: null }; };
+  assert.deepEqual(await appsRepo(db).cancelAppDeployPreflight("app-1", { deployToken: APP_PREFLIGHT_TOKEN }), { cancelled: true });
+  assert.deepEqual(seen, { name: "cancel_app_deploy_preflight", args: { p_app_id: "app-1", p_token: APP_PREFLIGHT_TOKEN } });
+});
+
+test("preflight cancellation and deploy_error require admin", async () => {
+  const calls: any[] = [];
+  const db = appsSupabase({ calls, actorRow: { id: "viewer" }, seed: { apps: [{ ...APP_ROW, deploy_token: APP_PREFLIGHT_TOKEN }], app_member_access: [{ app_id: "app-1", member_id: "viewer", permission_level: "view" }] } });
+  const repo = appsRepo(db);
+  assert.equal(await repo.cancelAppDeployPreflight("app-1", { deployToken: APP_PREFLIGHT_TOKEN }), null);
+  assert.equal(await repo.updateApp("app-1", { fcStatus: "deploy_error", deployToken: APP_PREFLIGHT_TOKEN }), null);
+  assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
+});
+
+test("a tampered preflight token cannot mint an upload handle", async () => {
+  let minted = 0;
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+    startDeploy: async () => { minted++; throw new Error("must not mint"); },
+  });
+  await assert.rejects(() => repo.deployApp("app-1", { ...APP_DEPLOY, preflightToken: APP_PREFLIGHT_TOKEN + "x" }),
+    (e: any) => e.code === "preflight_mismatch");
+  assert.equal(minted, 0);
+});
+
+test("rejected preflight preserves the live app and never mints a handle", async () => {
+  for (const [name, declaration, migrationIntent, providerArgs, expected] of [
+    ["migration", { ...APP_DECLARATION, start: { ...APP_DECLARATION.start, fcRuntime: "custom.debian11" } }, false, APP_DECLARATION.start.args, "runtime_migration_required"],
+    ["unsupported layer", { ...APP_DECLARATION, start: { ...APP_DECLARATION.start, layers: ["Unknown99:1"] } }, true, APP_DECLARATION.start.args, "unsupported_layer"],
+    ["provider drift", APP_DECLARATION, false, ["different.js"], "live_state_drift"],
+  ] as const) {
+    let minted = 0;
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "live",
+      fc_endpoint: "https://still-live.example", fc_function_name: "live-fn", start_spec: APP_DECLARATION.start }] } }), {
+      startDeploy: async () => { minted++; throw new Error("must not mint"); },
+      readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { officialLayers: { complete: true } } }),
+      readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
+        command: APP_DECLARATION.start.command, args: providerArgs, port: APP_DECLARATION.start.port },
+        layers: ["acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3"] }),
+    });
+    await assert.rejects(() => repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration, migrationIntent }),
+      (e: any) => e.code === expected, name);
+    assert.equal((await repo.getApp("app-1"))?.fcStatus, "live", name);
+    assert.equal(minted, 0, name);
+  }
+});
 const appFinalize = (deployToken: string) => ({
   gitCommitSha: APP_SHA,
+  revision: APP_REVISION,
   deployToken,
   declaration: APP_DECLARATION,
 });
@@ -3393,6 +3699,7 @@ test("apps: deployApp returns null for prompt member", async () => {
 
 test("apps: deployApp succeeds for admin member who is not creator", async () => {
   const repo = appAccessRepo("admin", "admin-member", {
+    gitea: fakeGitea({ getRepoHead: async () => ({ sha: APP_GIT_SHA, branch: "main" }) }),
     startDeploy: async ({ appId }: any) => {
       assert.equal(appId, "app-1");
       return {
@@ -3403,7 +3710,7 @@ test("apps: deployApp succeeds for admin member who is not creator", async () =>
       };
     },
   });
-  const result = await repo.deployApp("app-1", APP_DEPLOY);
+  const result = await repo.deployApp("app-1", APP_GIT_DEPLOY);
   assert.equal(result?.fcStatus, "awaiting_build");
   assert.equal(result?.ossObjectName, "apps/app-1/build.zip");
 });
@@ -3432,7 +3739,53 @@ test("apps: deployApp on ready app returns awaiting_build + ossObjectName", asyn
   assert.equal(result.ossObjectName, "apps/app-1/build.zip");
   assert.equal(result.presignedPut, "https://oss/put?sig=x");
   assert.equal(result.gitCommitSha, APP_SHA);
-  assert.match(result.deployToken, /^[0-9a-f-]{36}$/i);
+  assert.equal(result.deployToken, APP_PREFLIGHT_TOKEN);
+});
+
+test("deploy handle and runtime discovery use APPS_REGION instead of generic REGION", async () => {
+  const previous = { apps: process.env.APPS_REGION, generic: process.env.REGION };
+  process.env.APPS_REGION = "cn-shenzhen";
+  process.env.REGION = "cn-hangzhou";
+  try {
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+      startDeploy: async (input: any) => ({
+        fcFunctionName: "app-my-app", fcRegion: input.region,
+        ossObjectName: "apps/app-1/build.zip", presignedPut: "https://oss/put",
+      }),
+    });
+    const started = await repo.deployApp("app-1", APP_DEPLOY);
+    assert.equal(started.fcRegion, "cn-shenzhen");
+    assert.equal((await repo.getAppRuntimeInfo("app-1"))?.deploymentContract.region, "cn-shenzhen");
+  } finally {
+    if (previous.apps === undefined) delete process.env.APPS_REGION; else process.env.APPS_REGION = previous.apps;
+    if (previous.generic === undefined) delete process.env.REGION; else process.env.REGION = previous.generic;
+  }
+});
+
+test("redeploy retains the legacy function name from preflight through finalize", async () => {
+  const provider = { runtime: "custom.debian10", command: APP_DECLARATION.start.command,
+    args: APP_DECLARATION.start.args, port: APP_DECLARATION.start.port,
+    healthCheckPath: null, layers: ["acs:fc:cn-shenzhen:official:layers/Nodejs20/versions/3"], status: null };
+  const token = preflightAppDeploy("app-1", APP_REVISION, APP_DECLARATION,
+    { runtime: "node", startSpec: APP_DECLARATION.start, provider, drift: false },
+    { region: "cn-shenzhen", capabilities: [] }).token;
+  let preflightName: string | null = null;
+  let finalizedName: string | null = null;
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "live",
+    fc_endpoint: "https://old.fcapp.run", fc_region: "cn-shenzhen", fc_function_name: "legacy-fn",
+    start_spec: APP_DECLARATION.start, deploy_token: token }] } }), {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { officialLayers: { complete: true } } }),
+    readAppFunction: async (name: string) => { preflightName = name; return { runtime: provider.runtime,
+      customRuntimeConfig: { command: provider.command, args: provider.args, port: provider.port }, layers: provider.layers }; },
+    startDeploy: async (input: any) => ({ fcFunctionName: input.fcFunctionName ?? "new-slug-name", fcRegion: input.region,
+      ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put" }),
+    finalizeDeploy: async (input: any) => { finalizedName = input.fcFunctionName; return { fcEndpoint: "https://new.fcapp.run" }; },
+  });
+  const started = await repo.deployApp("app-1", { ...APP_DEPLOY, preflightToken: token });
+  assert.equal(preflightName, "legacy-fn");
+  assert.equal(started.fcFunctionName, "legacy-fn");
+  await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+  assert.equal(finalizedName, "legacy-fn");
 });
 
 test("apps: deployApp wraps startDeploy failure as 502", async () => {
@@ -3542,6 +3895,23 @@ test("apps: finalizeDeploy on awaiting_build app returns live + fcEndpoint", asy
   assert.deepEqual(liveUpdate?.row.start_spec, APP_DECLARATION.start);
 });
 
+test("duplicate finalize claims the token and awaiting_build state only once", async () => {
+  const calls: any[] = [];
+  let fcWrites = 0;
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] }, calls }), {
+    startDeploy: async () => ({ fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put" }),
+    finalizeDeploy: async () => { fcWrites++; return { fcEndpoint: "https://x.fcapp.run" }; },
+  });
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const results = await Promise.allSettled([
+    repo.finalizeDeploy("app-1", appFinalize(started.deployToken)),
+    repo.finalizeDeploy("app-1", appFinalize(started.deployToken)),
+  ]);
+  assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
+  assert.equal(fcWrites, 1);
+  assert.ok(calls.some(c => c.table === "apps" && c.op === "update.eq" && c.column === "deploy_token" && c.value === started.deployToken));
+});
+
 test("apps: finalizeDeploy pins apps.org_id on the first success", async () => {
   const calls: any[] = [];
   const seen: any[] = [];
@@ -3600,9 +3970,19 @@ test("apps: finalizeDeploy deploys to the stored org even after teams.oid change
   assert.equal(seen[0].orgId, "org-old", "provision must target the database the data is already in");
 });
 
-test("apps: finalizeDeploy leaves org_id null for a static app", async () => {
-  // static_web has no schema in any database, so claiming one would be a lie
-  // the data browser would later act on.
+test("apps: finalizeDeploy stamps org_id on a static app too", async () => {
+  // This used to assert the opposite, and the reason it flipped matters.
+  //
+  // `org_id` then meant "the org database this app's schema lives in", and
+  // static_web has a schema nowhere — claiming one would have been a lie the
+  // data browser acted on. It now also carries the app's TENANT, which a
+  // static app has like any other: it sits behind the same login wall, and
+  // the login page narrows its account picker by exactly this column.
+  //
+  // Nothing is misled by the stamp, because every data-plane reader gates on
+  // the app TYPE before it reads org_id — `appDataTarget` throws
+  // `app_has_no_database` above the read, and app-deploy only provisions when
+  // `needsDatabase`. The test below this one pins the half that must NOT move.
   const calls: any[] = [];
   const repo = appsRepo(
     appsSupabase({
@@ -3625,22 +4005,50 @@ test("apps: finalizeDeploy leaves org_id null for a static app", async () => {
 
   const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
   assert.equal(upd.length, 1);
-  assert.equal("org_id" in upd[0].row, false);
+  assert.equal(upd[0].row.org_id, "org-old", "the tenant is stamped, database or not");
+});
+
+test("apps: createApp refuses a team with no org rather than writing a tenantless app", async () => {
+  // `apps.org_id` is NOT NULL, so without this the insert would fail on the
+  // constraint — a 500 at the moment someone is creating an app, naming
+  // neither the cause nor anything they could act on.
+  const repo = appsRepo(appsSupabase({ seed: { teams: [] }, actorRow: { id: "actor-app-1" } }));
+  await assert.rejects(
+    () =>
+      repo.createApp({
+        teamId: "team-1",
+        name: "My App",
+        type: "fullstack_tanstack_postgres",
+        visibility: "team",
+      }),
+    (e: any) => e.statusCode === 409 && e.code === "team_has_no_org",
+  );
 });
 
 test("apps: finalizeDeploy stamps deployed_type with the type it deployed", async () => {
   const calls: any[] = [];
   const seen: any[] = [];
+  const provider = { runtime: "custom.debian10", command: APP_DECLARATION.start.command,
+    args: APP_DECLARATION.start.args, port: APP_DECLARATION.start.port,
+    healthCheckPath: null, layers: ["acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3"], status: null };
+  const token = preflightAppDeploy("app-1", APP_REVISION, APP_DECLARATION,
+    { runtime: "node", startSpec: APP_DECLARATION.start, provider, drift: false },
+    { region: "cn-hangzhou", capabilities: [] }).token;
   const repo = appsRepo(
     appsSupabase({
       // Live as data_app, since switched to slides: pending until this deploy
       // takes the database away.
       seed: {
-        apps: [{ ...APP_ROW, type: "slides", provision_status: "ready", fc_status: "live", deployed_type: "data_app" }],
+        apps: [{ ...APP_ROW, type: "slides", provision_status: "ready", fc_status: "live", deployed_type: "data_app",
+          fc_function_name: "tc-app-1", start_spec: APP_DECLARATION.start, deploy_token: token }],
       },
       calls,
     }),
     {
+      readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { officialLayers: { complete: true } } }),
+      readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
+        command: APP_DECLARATION.start.command, args: APP_DECLARATION.start.args,
+        port: APP_DECLARATION.start.port }, layers: provider.layers }),
       startDeploy: async () => ({
         fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
         ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
@@ -3653,7 +4061,7 @@ test("apps: finalizeDeploy stamps deployed_type with the type it deployed", asyn
   );
   assert.equal((await repo.getApp("app-1"))?.typePendingRedeploy, true);
 
-  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const started = await repo.deployApp("app-1", { ...APP_DEPLOY, preflightToken: token });
   const result = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
 
   assert.equal(seen[0].appType, "slides");
@@ -3756,6 +4164,37 @@ test("apps: createSession forwards app_id when input has appId", async () => {
   const insert = calls.find((c) => c.table === "sessions" && c.op === "insert");
   assert.equal(insert?.row.app_id, "app-1");
 });
+
+for (const [label, field] of [
+  ["contract primaryAgentActorId", "primaryAgentActorId"],
+  ["legacy primaryAgentId", "primaryAgentId"],
+] as const) {
+  test(`createSession sets primary_agent_id from ${label}`, async () => {
+    const calls: any[] = [];
+    const supabase = appsSupabase({
+      seed: {
+        sessions: [{
+          id: "sess-primary", team_id: "team-1", title: "Primary", mode: "collab",
+          idea_id: null, primary_agent_id: "agent-1", created_by_actor_id: "actor-app-1",
+          summary: null, last_message_preview: null, last_message_at: null,
+          acp_session_id: null, binding: null,
+          created_at: "2026-06-13T00:00:00Z", updated_at: "2026-06-13T00:00:00Z",
+        }],
+      },
+      calls,
+    });
+    const repo = appsRepo(supabase);
+    await repo.createSession({
+      id: "sess-primary",
+      teamId: "team-1",
+      title: "Primary",
+      createdByActorId: "actor-app-1",
+      [field]: "agent-1",
+    });
+    const insert = calls.find((c) => c.table === "sessions" && c.op === "insert");
+    assert.equal(insert?.row.primary_agent_id, "agent-1");
+  });
+}
 
 test("apps: createSession omits app_id when no appId given", async () => {
   const calls: any[] = [];
@@ -4403,7 +4842,7 @@ test("app data: a non-member gets nothing", async () => {
 
 // --- App logs ---------------------------------------------------------------
 
-function logsRepo(appRow: any, { level, actorId = "actor-app-1", appLogs, appLogsUnavailableReason }: any = {}) {
+function logsRepo(appRow: any, { level, actorId = "actor-app-1", appLogs, appLogsUnavailableReason, ...extra }: any = {}) {
   const access = level && actorId !== "actor-app-1"
     ? [{ app_id: "app-1", member_id: actorId, permission_level: level, granted_by_member_id: "actor-app-1" }]
     : [];
@@ -4412,11 +4851,180 @@ function logsRepo(appRow: any, { level, actorId = "actor-app-1", appLogs, appLog
       seed: { apps: [appRow], app_member_access: access, teams: [{ id: "team-1", oid: "org-derived" }] },
       actorRow: { id: actorId },
     }),
-    { appLogs, appLogsUnavailableReason },
+    { appLogs, appLogsUnavailableReason, ...extra },
   );
 }
 
 const LIVE_APP = { ...APP_ROW, provision_status: "ready", fc_status: "live", fc_endpoint: "https://x.fcapp.run" };
+
+test("runtime info authorizes before provider discovery and has no deployment for a new app", async () => {
+  let calls = 0;
+  const deps = { readRuntimeCatalog: async () => { calls++; return { candidates: [], sourceStatus: {} }; },
+    readAppFunction: async () => { calls++; return {}; } };
+  const stranger = logsRepo({ ...APP_ROW, created_by_actor_id: "other", visibility: "personal" },
+    { actorId: "uninvited", ...deps });
+  assert.equal(await stranger.getAppRuntimeInfo("app-1"), null);
+  assert.equal(calls, 0);
+  const owner = logsRepo({ ...APP_ROW, start_spec: null }, deps);
+  const result = await owner.getAppRuntimeInfo("app-1", "java");
+  assert.equal(result.currentDeployment, null);
+  assert.equal(calls, 1, "catalog only; no GetFunction for a new app");
+  assert.equal(result.deploymentContract.region.length > 0, true);
+});
+
+test("deploy start does not replace the last successful runtime or commit", async () => {
+  const previous = { ...LIVE_APP, runtime: "node", git_commit_sha: "deadbee", fc_function_name: "live-fn",
+    start_spec: APP_DECLARATION.start };
+  const provider = { runtime: "custom.debian10", command: APP_DECLARATION.start.command,
+    args: APP_DECLARATION.start.args, port: APP_DECLARATION.start.port,
+    healthCheckPath: null, layers: ["acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3"], status: null };
+  const token = preflightAppDeploy("app-1", APP_REVISION, APP_DECLARATION,
+    { runtime: "node", startSpec: APP_DECLARATION.start, provider, drift: false },
+    { region: "cn-hangzhou", capabilities: [] }).token;
+  Object.assign(previous, { deploy_token: token });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [previous] } }), {
+    startDeploy: async () => ({ fcFunctionName: "live-fn", fcRegion: "cn-shenzhen", image: { repository: "example" } }),
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
+      command: APP_DECLARATION.start.command, args: APP_DECLARATION.start.args,
+      port: APP_DECLARATION.start.port }, layers: provider.layers }),
+  });
+  await repo.deployApp("app-1", { ...APP_DEPLOY, preflightToken: token });
+  await repo.updateApp("app-1", { fcStatus: "deploy_error", deployToken: token, deployError: "build failed" });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(info.currentDeployment.runtime, "node");
+  assert.equal(info.currentDeployment.commit, "deadbee");
+  assert.equal(info.deploymentContract.method, "agent_build_to_fc_custom_runtime");
+});
+
+test("a failed first deploy has no successful deployment snapshot", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, start_spec: null, provision_status: "ready" }] } }), {
+    startDeploy: async () => ({ fcFunctionName: "new-fn", fcRegion: "cn-shenzhen", image: { repository: "example" } }),
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => { throw new Error("should not read an unverified function"); },
+  });
+  await repo.deployApp("app-1", APP_DEPLOY);
+  await repo.updateApp("app-1", { fcStatus: "deploy_error", deployToken: APP_PREFLIGHT_TOKEN, deployError: "build failed" });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(info.currentDeployment, null);
+  assert.equal(info.deploymentContract.method, "agent_build_to_fc_custom_runtime");
+});
+
+test("legacy success snapshot survives a failed retry without env_deployed_at", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_status: "deploy_error", env_deployed_at: null,
+    fc_function_name: "old-fn", git_commit_sha: "deadbee", start_spec: {
+      fcRuntime: "custom.debian10", command: ["node"], args: [], port: 3000, layers: [] } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
+      command: ["node"], args: [], port: 3000 }, layers: [] }),
+  });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(info.currentDeployment.commit, "deadbee");
+  assert.equal(info.currentDeployment.drift, false);
+});
+
+test("legacy success with only fc_endpoint survives a failed retry", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_status: "deploy_error", env_deployed_at: null, start_spec: null,
+    fc_endpoint: "https://live.fcapp.run", fc_function_name: "old-fn", git_commit_sha: "deadbee" }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: { port: 3000 }, layers: [] }),
+  });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.ok(info.currentDeployment);
+  assert.equal(info.currentDeployment.commit, "deadbee");
+  assert.equal(info.currentDeployment.functionName, "old-fn");
+});
+
+test("runtime info projects safe provider fields and reports TeamClu drift", async () => {
+  let seen: any;
+  const row = { ...LIVE_APP, fc_function_name: "legacy-function", fc_region: "cn-shenzhen", git_commit_sha: "abc",
+    env_deployed_at: "2026-09-28T00:00:00Z", runtime: "node", start_spec: {
+      fcRuntime: "custom.debian10", command: ["/opt/node/bin/node"], args: ["server.js"], port: 3000,
+      layers: ["Nodejs20:3"],
+    } };
+  const repo = logsRepo(row, {
+    readRuntimeCatalog: async (_region: string, language?: string) => {
+      seen = { ...seen, language };
+      return { candidates: [{ name: "java11", language: "java" }], sourceStatus: { documentation: {}, officialLayers: {} } };
+    },
+    readAppFunction: async (name: string, region: string) => {
+      seen = { ...seen, name, region };
+      return { runtime: "custom.debian11", customRuntimeConfig: { command: ["/opt/node/bin/node"], args: ["server.js"], port: 3000 },
+        layers: ["acs:fc:cn-shenzhen:official:layers/Nodejs20/versions/3"], status: "Active",
+        environmentVariables: { API_KEY: "secret" }, customContainerConfig: { registryAuthConfig: { password: "secret" } } };
+    },
+  });
+  const result = await repo.getAppRuntimeInfo("app-1", "java");
+  assert.deepEqual(seen, { name: "legacy-function", region: "cn-shenzhen", language: "java" });
+  assert.equal(result.currentDeployment.drift, true);
+  assert.deepEqual(result.currentDeployment.driftFields, ["fcRuntime"]);
+  assert.equal(result.currentDeployment.provider.runtime, "custom.debian11");
+  assert.equal(JSON.stringify(result).includes("secret"), false);
+  assert.equal(result.capabilities.length, 1);
+  assert.ok(result.observations.every((o: any) => o.language === "java"));
+});
+
+test("runtime info retains a recorded deployment when FC function is missing", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "old", runtime: "node", start_spec: { fcRuntime: "custom", command: ["node"], args: [], port: 3000, layers: [] } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { documentation: {}, officialLayers: {} } }),
+    readAppFunction: async () => { throw Object.assign(new Error("contains secret"), { code: "FunctionNotFound" }); },
+  });
+  const result = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(result.currentDeployment.drift, true);
+  assert.equal(result.currentDeployment.provider, null);
+  assert.equal(JSON.stringify(result).includes("secret"), false);
+  assert.equal(result.sourceStatus.provider.error, "function_missing");
+});
+
+test("runtime info reports provider read failure without leaking its message", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "old" }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { documentation: {}, officialLayers: {} } }),
+    readAppFunction: async () => { throw new Error("access key leaked by SDK"); },
+  });
+  const result = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(result.currentDeployment.provider, null);
+  assert.equal(result.sourceStatus.provider.error, "provider_unavailable");
+  assert.equal(result.sourceStatus.provider.observedAt, null);
+  assert.deepEqual(result.sourceStatus.provider.errors, ["provider_unavailable"]);
+  assert.equal(result.sourceStatus.provider.stale, false);
+  assert.equal(JSON.stringify(result).includes("access key"), false);
+});
+
+test("runtime info recognizes an SDK HTTP 404 as a missing function", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "gone" }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { documentation: {}, officialLayers: {} } }),
+    readAppFunction: async () => { throw Object.assign(new Error("not found"), { statusCode: 404 }); },
+  });
+  const result = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(result.sourceStatus.provider.error, "function_missing");
+  assert.equal(result.currentDeployment.drift, true);
+});
+
+test("runtime info compares a matching container deployment without drift", async () => {
+  const repo = logsRepo({ ...LIVE_APP, runtime: "container", fc_function_name: "container-fn",
+    start_spec: { command: ["/entrypoint"], args: ["--serve"], port: 8080, healthCheckPath: "/health" } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { documentation: {}, officialLayers: {} } }),
+    readAppFunction: async () => ({ body: { runtime: "custom-container", customContainerConfig: {
+      command: ["/entrypoint"], args: ["--serve"], port: 8080, healthCheckConfig: { httpGetUrl: "/health" },
+      registryConfig: { authConfig: { password: "hidden" } } }, layers: [] } }),
+  });
+  const result = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(result.currentDeployment.drift, false);
+  assert.equal(result.currentDeployment.provider.healthCheckPath, "/health");
+  assert.equal(JSON.stringify(result).includes("hidden"), false);
+});
+
+test("runtime info reports changed provider health check", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "fn", start_spec: {
+    fcRuntime: "custom.debian10", command: ["node"], args: [], port: 3000,
+    layers: [], healthCheckPath: "/health" } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
+      command: ["node"], args: [], port: 3000, healthCheckConfig: { httpGetUrl: "/other" } }, layers: [] }),
+  });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.deepEqual(info.currentDeployment.driftFields, ["healthCheckPath"]);
+});
 
 test("app logs: the function name comes off the row, and the query is clamped", async () => {
   // Clamped here rather than trusted: `limit` decides how much text lands in
@@ -4769,16 +5377,35 @@ test("apps: code collision constraint with another error code is not retried", a
 });
 
 
+function appCodeDeployHarness(overrides: Record<string, unknown> = {}, extra: any = {}) {
+  const app = {
+    ...APP_ROW, provision_status: "ready", fc_status: "live",
+    fc_endpoint: "https://existing.fcapp.run", fc_function_name: "existing-function",
+    start_spec: APP_DECLARATION.start, deploy_token: null,
+    app_code: "k7m2q9vx4n8p", uses_app_code_domain: false, ...overrides,
+  };
+  const db = appsSupabase({ seed: { apps: [app] } });
+  const repo = appsRepo(db, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { officialLayers: { complete: true } } }),
+    readAppFunction: async () => ({
+      runtime: "custom.debian10", customRuntimeConfig: APP_DECLARATION.start,
+      layers: ["acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3"],
+    }),
+    startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: `apps/${app.id}/code.zip` }),
+    finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
+    ...extra,
+  });
+  const start = async (useAppCodeDomain?: boolean) => {
+    const preflight = await repo.preflightAppDeploy(app.id, { revision: APP_REVISION, declaration: APP_DECLARATION });
+    return repo.deployApp(app.id, { ...APP_DEPLOY, preflightToken: preflight.token, useAppCodeDomain });
+  };
+  return { db, repo, start };
+}
+
 test("apps: existing domains change only after an explicitly opted-in successful deploy", async () => {
   for (const optIn of [undefined, false, true]) {
-    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
-      provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
-      fc_endpoint: "https://existing.fcapp.run",
-    }] } }), {
-      startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
-      finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
-    });
-    const started = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: optIn });
+    const { repo, start } = appCodeDeployHarness();
+    const started = await start(optIn);
     assert.equal(started.usesAppCodeDomain, false, "starting a build must keep the current address");
     const finished = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
     assert.equal(finished.usesAppCodeDomain, optIn === true);
@@ -4788,14 +5415,10 @@ test("apps: existing domains change only after an explicitly opted-in successful
 
 
 test("apps: failed opted-in deploy preserves the legacy domain", async () => {
-  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
-    provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
-    fc_endpoint: "https://existing.fcapp.run",
-  }] } }), {
-    startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+  const { repo, start } = appCodeDeployHarness({}, {
     finalizeDeploy: async () => { throw new Error("deployment failed"); },
   });
-  const started = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: true });
+  const started = await start(true);
   await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(started.deployToken)), /deployment failed/);
   const app = await repo.getApp("app-1");
   assert.equal(app.usesAppCodeDomain, false);
@@ -4817,21 +5440,19 @@ test("apps: existing undeployed apps do not silently opt into code domains", asy
 
 test("apps: unchecked retry does not inherit a failed domain switch", async () => {
   let attempts = 0;
-  const db = appsSupabase({ seed: { apps: [{ ...APP_ROW,
-    provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
-    fc_endpoint: "https://existing.fcapp.run",
-  }] } });
-  const repo = appsRepo(db, {
-    startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+  const { repo, db, start } = appCodeDeployHarness({}, {
     finalizeDeploy: async () => {
       if (++attempts === 1) throw new Error("first attempt failed");
       return { fcEndpoint: "https://existing.fcapp.run" };
     },
   });
-  const first = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: true });
+  const first = await start(true);
   assert.equal((await db.from("apps").select("*").eq("id", "app-1").maybeSingle()).data.deploy_use_app_code_domain, true);
   await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(first.deployToken)), /first attempt failed/);
-  const retry = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: false });
+  // The in-memory query double does not run clear_failed_app_deploy. Apply
+  // that database trigger's cleanup before exercising a fresh preflight.
+  await db.from("apps").update({ deploy_token: null, deploy_started_at: null }).eq("id", "app-1");
+  const retry = await start(false);
   await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(first.deployToken)),
     (e: any) => e.code === "deploy_token_mismatch" && e.statusCode === 409);
   const live = await repo.finalizeDeploy("app-1", appFinalize(retry.deployToken));
@@ -4959,7 +5580,7 @@ test("apps: code domain remains active when finalizing an older attempt without 
       let deployedEnv: any;
       const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
         provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: true,
-        deploy_use_app_code_domain: requested, deploy_token: "old-token", fc_status: "awaiting_build",
+        deploy_use_app_code_domain: requested, deploy_token: APP_PREFLIGHT_TOKEN, fc_status: "awaiting_build",
         fc_function_name: "existing-function", auth_mode: "platform",
       }] } }), {
         finalizeDeploy: async ({ platformAuthEnv }: any) => {
@@ -4967,7 +5588,7 @@ test("apps: code domain remains active when finalizing an older attempt without 
           return { fcEndpoint: "https://existing.fcapp.run" };
         },
       });
-      const live = await repo.finalizeDeploy("app-1", appFinalize("old-token"));
+      const live = await repo.finalizeDeploy("app-1", appFinalize(APP_PREFLIGHT_TOKEN));
       assert.equal(live.usesAppCodeDomain, true);
       assert.equal(deployedEnv.APP_PUBLIC_URL, "https://a-k7m2q9vx4n8p.apps.example.com");
     }
@@ -4985,17 +5606,13 @@ test("apps: successful domain activation invalidates both cached host aliases", 
   __resetVanityCache();
   try {
     const id = "18e4ecad-6189-495b-a873-7fe09179a5f5";
-    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, id, slug: "shop", provision_status: "ready",
-      app_code: "k7m2q9vx4n8p", uses_app_code_domain: false, fc_status: "live", fc_endpoint: "https://old.fcapp.run",
-    }] } });
+    const { db, repo, start } = appCodeDeployHarness({ id, slug: "shop", fc_endpoint: "https://old.fcapp.run" }, {
+      finalizeDeploy: async () => ({ fcEndpoint: "https://new.fcapp.run" }),
+    });
     const lookup = makeVanityLookup({ getServiceRoleClient: () => db });
     assert.equal((await lookup("shop-18e4ecad.apps.example.com"))?.fcEndpoint, "https://old.fcapp.run");
     assert.equal(await lookup("a-k7m2q9vx4n8p.apps.example.com"), null);
-    const repo = appsRepo(db, {
-      startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
-      finalizeDeploy: async () => ({ fcEndpoint: "https://new.fcapp.run" }),
-    });
-    const started = await repo.deployApp(id, { ...APP_DEPLOY, useAppCodeDomain: true });
+    const started = await start(true);
     await repo.finalizeDeploy(id, appFinalize(started.deployToken));
     for (const host of ["shop-18e4ecad.apps.example.com", "a-k7m2q9vx4n8p.apps.example.com"]) {
       assert.equal((await lookup(host))?.fcEndpoint, "https://new.fcapp.run");
@@ -5083,4 +5700,305 @@ test("apps: custom-domain responses propagate the stored code mode into CNAME re
     if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
     else process.env.APPS_PUBLIC_DOMAIN = previous;
   }
+});
+// ── getHomeOrgId: the login chooser's narrowing hint ─────────────────────────
+
+function homeOrgRepo(row: any, { uid = "u1", sharedOrg = "org-shared" } = {}) {
+  const seen: any[] = [];
+  const query: any = {
+    select() { return query; },
+    eq(c: string, v: any) { seen.push([c, v]); return query; },
+    is() { return query; },
+    async maybeSingle() { return { data: row, error: null }; },
+  };
+  const admin = { schema: (s: string) => { seen.push(["schema", s]); return { from: () => query }; } };
+  const supabase = { auth: { async getUser() { return { data: { user: uid ? { id: uid } : null }, error: null }; } } };
+  process.env.DEFAULT_ORG_ID = sharedOrg;
+  return { repo: createRepo(supabase, { createServiceRoleClient: () => admin }) as any, seen };
+}
+
+test("getHomeOrgId returns the caller's own org", async () => {
+  const { repo, seen } = homeOrgRepo({ org_id: "org-banana", admin_type: 3 });
+  try {
+    assert.equal(await repo.getHomeOrgId(), "org-banana");
+    assert.deepEqual(seen.filter(([c]) => c === "id" || c === "schema"), [["schema", "public"], ["id", "u1"]]);
+  } finally { delete process.env.DEFAULT_ORG_ID; }
+});
+
+test("getHomeOrgId is null for a non-employee stamped with the shared tenant", async () => {
+  const { repo } = homeOrgRepo({ org_id: "org-shared", admin_type: 1 });
+  try { assert.equal(await repo.getHomeOrgId(), null); } finally { delete process.env.DEFAULT_ORG_ID; }
+});
+
+test("getHomeOrgId keeps the shared tenant for its own employees", async () => {
+  const { repo } = homeOrgRepo({ org_id: "org-shared", admin_type: 4 });
+  try { assert.equal(await repo.getHomeOrgId(), "org-shared"); } finally { delete process.env.DEFAULT_ORG_ID; }
+});
+
+test("getHomeOrgId is null when there is no users row", async () => {
+  const { repo } = homeOrgRepo(null);
+  try { assert.equal(await repo.getHomeOrgId(), null); } finally { delete process.env.DEFAULT_ORG_ID; }
+});
+
+
+function authInfoRepo({appOrg="org-1", teamOrg="org-1", member=true, rolesError=null, appVisible=true, authRules: authRules = [{path:"/staff",auth:"required",audience:"org"}]}={}) {
+ const calls=[];
+ const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
+ return {repo,calls};
+}
+test("auth_info_checks_app_and_catalog_visibility",async()=>{
+ const {repo,calls}=authInfoRepo({member:false});
+ await assert.rejects(repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===403);
+ assert.equal(calls.some(c=>c.table==="roles"),false);
+ const hidden=authInfoRepo({appVisible:false});
+ await assert.rejects(hidden.repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===404);
+ assert.equal(hidden.calls.some(c=>c.table==="roles"),false);
+});
+test("auth info aggregates only the active application organization catalog",async()=>{
+ const {repo,calls}=authInfoRepo();
+ const info=await repo.getAppAuthInfo("app");
+ assert.deepEqual(info.organization,{id:"org-1",name:"Organization"});
+ assert.deepEqual(info.roles,[{id:"review",code:"reviewer",name:"Reviewer",status:"active"}]);
+ assert.deepEqual(info.authRules,[{path:"/staff",auth:"required",audience:"org"}]);
+ assert.equal(calls.some(c=>c.table==="roles_users"),false);
+ assert.ok(calls.some(c=>c.table==="roles" && c.op==="eq" && c.column==="org_id" && c.value==="org-1"));
+});
+test("auth info rejects organization mismatch and propagates directory failures",async()=>{
+ const mismatch=authInfoRepo({appOrg:"other"});
+ await assert.rejects(mismatch.repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===403);
+ assert.equal(mismatch.calls.some(c=>c.table==="roles"),false);
+ const error=Object.assign(new Error("catalog unavailable"),{code:"upstream"});
+ await assert.rejects(authInfoRepo({rolesError:error}).repo.getAppAuthInfo("app"),e=>e===error);
+});
+test("auth info supports legacy team organization fallback and unconfigured teams",async()=>{
+ assert.equal((await authInfoRepo({appOrg:null}).repo.getAppAuthInfo("app")).organization.id,"org-1");
+ const {repo,calls}=authInfoRepo({appOrg:null,teamOrg:null});
+ const info=await repo.getAppAuthInfo("app");
+ assert.equal(info.organization,null);
+ assert.equal(info.organizationStatus,"unconfigured");
+ assert.deepEqual(info.roles,[]);
+ assert.equal(calls.some(c=>c.table==="roles"),false);
+});
+
+test("auth info never normalizes malformed stored rules into an empty rule list",async()=>{
+ const {repo}=authInfoRepo({authRules:{broken:true} as any});
+ await assert.rejects(repo.getAppAuthInfo("app"),(error:any)=>error.statusCode===503);
+});
+
+
+test("origin config failure prevents preflight, deploy and finalize database writes", async () => {
+  for (const phase of ["preflight", "deploy", "finalize"]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: phase === "finalize" ? "awaiting_build" : null, fc_function_name: "fn", deploy_token: APP_PREFLIGHT_TOKEN }] } }), {
+      readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+      validateAppOrigin: () => { throw Object.assign(new Error("origin security unavailable: originAuth"), { statusCode: 503, code: "origin_security_unavailable" }); },
+      startDeploy: async () => { throw new Error("must not mint"); },
+      finalizeDeploy: async () => { throw new Error("must not publish"); },
+    });
+    await assert.rejects(() => phase === "preflight" ? repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION })
+      : phase === "deploy" ? repo.deployApp("app-1", APP_DEPLOY) : repo.finalizeDeploy("app-1", appFinalize(APP_PREFLIGHT_TOKEN)),
+      (error: any) => error.statusCode === 503 && error.code === "origin_security_unavailable");
+    assert.deepEqual(calls.filter(c => c.table === "apps" && c.op === "update"), [], phase);
+  }
+});
+
+test("app status adds readonly origin evidence without exposing auth config", async () => {
+  const calls: any[] = [];
+  const app = { ...APP_ROW, fc_endpoint: "http://old.origins.test", fc_function_name: "legacy-fn" };
+  const repo = appsRepo(appsSupabase({ calls, seed: { apps: [app] } }), {
+    readAppOriginSecurity: async (row: any) => {
+      assert.equal(row.slug, app.slug);
+      return { status: "legacy_unverified", internetUrlDisabled: false, customDomainAuth: "none", httpsOnly: false, driftFields: ["extraHttpTriggers", "SECRET"], privateKey: "SECRET" };
+    },
+  });
+  const status = await repo.getApp("app-1");
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.deepEqual(status.originSecurity, { status: "legacy_unverified", internetUrlDisabled: false, customDomainAuth: "none", httpsOnly: false, driftFields: ["extraHttpTriggers"] });
+  assert.deepEqual(info.originSecurity, status.originSecurity);
+  assert.equal(status.fcEndpoint, app.fc_endpoint);
+  assert.equal(JSON.stringify({ status, info }).includes("SECRET"), false);
+  assert.equal(calls.some(c => c.op === "update"), false);
+  assert.ok(calls.some(c => c.op === "select" && c.table === "apps" && c.columns.includes("fc_endpoint") && c.columns.includes("slug")));
+});
+
+
+test("extra HTTP triggers and unsafe aliases block preflight and deploy without state writes", async () => {
+  for (const field of ["extraHttpTriggers", "customDomainAliases"]) {
+    for (const phase of ["preflight", "deploy"]) {
+      const calls: any[] = [];
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+        readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+        readAppOriginSecurity: async () => ({ status: "legacy_unverified", driftFields: [field] }),
+        startDeploy: async () => { throw new Error("must not mint"); },
+      });
+      await assert.rejects(() => phase === "preflight" ? repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION }) : repo.deployApp("app-1", APP_DEPLOY),
+        (error: any) => error.statusCode === 409 && error.code === "origin_security_drift" && error.message.includes(field));
+      assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
+    }
+  }
+});
+
+test("legacy standard trigger and domain drift remains eligible for a normal redeploy", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+    readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+    readAppOriginSecurity: async () => ({ status: "legacy_unverified", internetUrlDisabled: false, customDomainAuth: "none", httpsOnly: false, driftFields: ["disableURLInternet", "protocol", "authConfig.authType"] }),
+  });
+  const result = await repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION });
+  assert.equal(result.preview.originSecurity.status, "legacy_unverified");
+  assert.equal(result.preview.originSecurity.internetUrlDisabled, false);
+});
+
+test("production config validator prevents token reservation for missing config and invalid target", async () => {
+  const id = "76af539e-5341-4e96-bda7-6c8dacf2b092";
+  for (const failure of [...Object.keys(ORIGIN_ENV), "hostname", "invalidRouteDomain", "keyring", "appId"]) {
+    const restore = installOriginEnv();
+    try {
+      if (failure in ORIGIN_ENV) delete process.env[failure];
+      if (failure === "invalidRouteDomain") process.env.APPS_FC_ROUTE_DOMAIN = "invalid..test";
+      if (failure === "keyring") process.env.APPS_FC_ORIGIN_KEYRING = "SECRET_INVALID_KEYRING";
+      const calls: any[] = [];
+      const appId = failure === "appId" ? "invalid-id" : id;
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id: appId, slug: failure === "hostname" ? "x".repeat(200) : "app-a", provision_status: "ready", deploy_token: null }] } }), { validateAppOrigin: undefined });
+      await assert.rejects(() => repo.preflightAppDeploy(appId, { revision: APP_REVISION, declaration: APP_DECLARATION }),
+        (error: any) => error.statusCode === 503 && error.code === "origin_security_unavailable" && !error.message.includes("SECRET"));
+      assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false, failure);
+    } finally { restore(); }
+  }
+});
+
+test("production deploy and finalize recheck origin configuration removed after successful preflight", async () => {
+  for (const phase of ["deploy", "finalize"]) {
+    const restore = installOriginEnv();
+    try {
+      const id = "76af539e-5341-4e96-bda7-6c8dacf2b092";
+      const calls: any[] = [];
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id, slug: "app-a", provision_status: "ready", deploy_token: null, fc_function_name: "fn" }] } }), {
+        validateAppOrigin: undefined,
+        readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+        startDeploy: async () => ({ fcFunctionName: "fn", fcRegion: "cn-hangzhou" }),
+        finalizeDeploy: async () => { throw new Error("must not publish"); },
+      });
+      const preflight = await repo.preflightAppDeploy(id, { revision: APP_REVISION, declaration: APP_DECLARATION });
+      assert.ok(preflight.token);
+      if (phase === "finalize") await repo.deployApp(id, { ...APP_DEPLOY, preflightToken: preflight.token });
+      const beforeWrites = calls.filter(c => c.table === "apps" && c.op === "update").length;
+      delete process.env.APPS_FC_ORIGIN_KEYRING;
+      await assert.rejects(() => phase === "deploy" ? repo.deployApp(id, { ...APP_DEPLOY, preflightToken: preflight.token })
+        : repo.finalizeDeploy(id, { ...appFinalize(preflight.token) }),
+        (error: any) => error.code === "origin_security_unavailable" && error.statusCode === 503);
+      assert.equal(calls.filter(c => c.table === "apps" && c.op === "update").length, beforeWrites);
+    } finally { restore(); }
+  }
+});
+
+
+test("origin verification failure never commits Live status, endpoint or revision and records a safe retryable error", async () => {
+  for (const code of ["origin_security_drift", "origin_security_unavailable"]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "awaiting_build", fc_function_name: "fn", git_commit_sha: "old-revision" }] } }), {
+      finalizeDeploy: async () => { throw new ApiError(code === "origin_security_drift" ? 409 : 503, code, "origin security: routeConfig"); },
+    });
+    await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(APP_PREFLIGHT_TOKEN)), (error: any) => error.code === code);
+    const writes = calls.filter(c => c.table === "apps" && c.op === "update").map(c => c.row);
+    assert.deepEqual(writes.map(row => row.fc_status), ["deploying", "deploy_error"]);
+    assert.equal(writes.some(row => "fc_endpoint" in row || "git_commit_sha" in row || "start_spec" in row), false);
+    const status = await repo.getApp("app-1");
+    assert.equal(status.gitCommitSha, "old-revision");
+    assert.equal(status.fcStatus, "deploy_error");
+    // Actual token/lifecycle cleanup is enforced by the database trigger;
+    // this repository fixture verifies attribution of the failure write.
+    assert.ok(calls.some(c => c.table === "apps" && c.op === "update.eq" && c.column === "deploy_token" && c.value === APP_PREFLIGHT_TOKEN));
+  }
+});
+
+test('undeploy rejects prompt collaborators before any service mutation', async () => {
+ const calls:any[]=[]; const service=()=>{throw new Error('must not create service client')};
+ const repo=appsRepo(appsSupabase({calls,seed:{apps:[{...APP_ROW,created_by_actor_id:'another',fc_status:'live'}],app_member_access:[{app_id:'app-1',member_id:'actor-app-1',permission_level:'prompt'}]}}),{createServiceRoleClient:service});
+ assert.equal(await repo.undeployApp('app-1'),null);
+ assert.equal(calls.filter(c=>['update','delete','insert'].includes(c.op)).length,0);
+});
+
+test('undeploy only queues lifecycle cleanup and preserves app data and workspace', async () => {
+ const calls:any[]=[];const supabase=appsSupabase({calls,seed:{apps:[{...APP_ROW,fc_status:'live',git_commit_sha:'last-live'}]}});
+ const repo=appsRepo(supabase);const result=await repo.undeployApp('app-1');
+ assert.equal(result.operation.status,'pending');assert.equal(result.app.gitCommitSha,'last-live');
+ assert.equal(result.app.workspaceId,'ws-1');
+ assert.equal(calls.filter(c=>['update','delete','insert'].includes(c.op)).length,0);
+});
+
+for (const fcStatus of ["live", "deploy_error", "uninstalling", "uninstall_failed"]) {
+ test(`apps: delete refuses ${fcStatus} until manual uninstall succeeds`, async () => {
+  const calls:any[]=[];
+  const admin=appsSupabase({calls,seed:{apps:[{...GITEA_MANAGED_APP,fc_status:fcStatus}]}});
+  const repo=appsRepo(admin,{createServiceRoleClient:()=>admin});
+  await assert.rejects(()=>repo.deleteApp("app-1"),(e:any)=>e.code==="app_uninstall_required");
+  assert.equal(calls.some(c=>c.table==="apps"&&c.op==="delete"),false);
+ });
+}
+
+for (const fcStatus of ["uninstalled", "awaiting_build", "building", "deploying", "deploy_error"]) {
+ test(`runtime info preserves completed uninstall evidence while ${fcStatus}`, async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "tc-app-app-1", fc_status: fcStatus, runtime: "node", start_spec: APP_DECLARATION.start,
+    env_deployed_at: "2026-10-05T00:00:00Z",
+    undeploy_operation: { id: "cleanup-1", status: "succeeded", updatedAt: "2026-10-06T00:00:00Z" } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => { throw Object.assign(new Error("removed provider"), { statusCode: 404 }); },
+  });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(info.currentDeployment.uninstallOperationId, "cleanup-1");
+  assert.equal(info.currentDeployment.historical, true);
+  assert.equal(info.currentDeployment.serving, false);
+  assert.equal(info.currentDeployment.drift, false);
+ });
+}
+
+test("apps: delete requires cleanup success evidence even for uninstalled status", async () => {
+ const calls:any[]=[];
+ const admin=appsSupabase({calls,seed:{apps:[{...GITEA_MANAGED_APP,fc_status:"uninstalled"}]}});
+ const repo=appsRepo(admin,{createServiceRoleClient:()=>admin});
+ await assert.rejects(()=>repo.deleteApp("app-1"),(e:any)=>e.code==="app_uninstall_required");
+ assert.equal(calls.some(c=>c.table==="apps"&&c.op==="delete"),false);
+});
+
+test("apps: delete rechecks uninstall state after lifecycle lock acquisition", async () => {
+ const calls:any[]=[];
+ const admin=appsSupabase({calls,seed:{apps:[{...GITEA_MANAGED_APP,fc_status:"uninstalled",undeploy_operation:{status:"succeeded"}}]}});
+ const rpc=admin.rpc.bind(admin);
+ admin.rpc=async (...args:any[])=>{
+  const result=await rpc(...args);
+  if(args[0]==="begin_app_lifecycle") await admin.from("apps").update({fc_status:"live"}).eq("id","app-1");
+  return result;
+ };
+ const repo=appsRepo(admin,{createServiceRoleClient:()=>admin});
+ await assert.rejects(()=>repo.deleteApp("app-1"),(e:any)=>e.code==="app_uninstall_required");
+ assert.equal(calls.some(c=>c.table==="apps"&&c.op==="delete"),false);
+ assert.equal(calls.some(c=>c.table==="workspaces"&&c.op==="update"),false);
+});
+
+test("runtime info reads provider after a deployment supersedes old uninstall evidence", async () => {
+ let reads=0;
+ const repo=logsRepo({...LIVE_APP,fc_function_name:"tc-app-app-1",fc_status:"awaiting_build",runtime:"node",start_spec:APP_DECLARATION.start,
+   env_deployed_at:"2026-10-06T02:00:00Z",undeploy_operation:{id:"cleanup-1",status:"succeeded",updatedAt:"2026-10-06T01:00:00Z"}}, {
+   readRuntimeCatalog:async()=>({candidates:[],sourceStatus:{}}),
+   readAppFunction:async()=>{reads++;return {runtime:"custom.debian10",customRuntimeConfig:APP_DECLARATION.start,layers:[]};},
+ });
+ const info=await repo.getAppRuntimeInfo("app-1");
+ assert.equal(reads,1);
+ assert.equal(info.currentDeployment.uninstallOperationId,undefined);
+ assert.equal(info.currentDeployment.historical,undefined);
+ assert.ok(info.currentDeployment.provider);
+});
+
+test("runtime info does not hide FC recreated by a partially failed restoration", async () => {
+ let reads=0;
+ const repo=logsRepo({...LIVE_APP,fc_function_name:"tc-app-app-1",fc_status:"deploy_error",runtime:"node",start_spec:APP_DECLARATION.start,
+   env_deployed_at:"2026-10-05T00:00:00Z",undeploy_operation:{id:"cleanup-1",status:"succeeded",updatedAt:"2026-10-06T01:00:00Z"}}, {
+   readRuntimeCatalog:async()=>({candidates:[],sourceStatus:{}}),
+   readAppFunction:async()=>{reads++;return {runtime:"custom.debian11",customRuntimeConfig:APP_DECLARATION.start,layers:[]};},
+ });
+ const info=await repo.getAppRuntimeInfo("app-1");
+ assert.equal(reads,1);
+ assert.equal(info.currentDeployment.uninstallOperationId,undefined);
+ assert.equal(info.currentDeployment.historical,undefined);
+ assert.equal(info.currentDeployment.drift,true);
 });

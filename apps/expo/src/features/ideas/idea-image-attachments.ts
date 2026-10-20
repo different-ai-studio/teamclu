@@ -20,6 +20,16 @@ export type IdeaImageSource = "library" | "camera";
 
 const MAX_LIBRARY_SELECTION = 5;
 
+/**
+ * JPEG quality the picker re-encodes at before upload — iOS
+ * `IdeaImagePreparation.uploadQuality`. iOS also caps the long edge at
+ * 1600px; the picker has no resize option and expo-image-manipulator isn't a
+ * dependency, so here the re-encode is the whole downsample. It still keeps a
+ * full-sensor photo from going up untouched, which is what made feed rows
+ * slow to paint.
+ */
+export const IDEA_UPLOAD_QUALITY = 0.8;
+
 export type IdeaImageAttachments = {
   attachments: ComposerAttachment[];
   /** Uploaded, ready-to-post public URLs, in pick order. */
@@ -59,12 +69,15 @@ export function useIdeaImageAttachments(args: {
         }
         const result =
           source === "camera"
-            ? await ImagePicker.launchCameraAsync({ allowsEditing: false, quality: 0.85 })
+            ? await ImagePicker.launchCameraAsync({
+                allowsEditing: false,
+                quality: IDEA_UPLOAD_QUALITY,
+              })
             : await ImagePicker.launchImageLibraryAsync({
                 allowsEditing: false,
                 allowsMultipleSelection: true,
                 mediaTypes: ["images"],
-                quality: 0.85,
+                quality: IDEA_UPLOAD_QUALITY,
                 selectionLimit: MAX_LIBRARY_SELECTION,
               });
         if (result.canceled || result.assets.length === 0) return;

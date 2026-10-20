@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { probeCloudApi } from "@/lib/config/bootstrap";
 import { parseInviteInput } from "@/lib/team/invite-deeplink";
 import { confirmInviteLinkToken } from "@/lib/team/invite-link-confirmation";
+import { parseJoinLink } from "@/lib/team/join-link";
+import { requestJoinLinkConfirmation } from "@/lib/team/join-link-confirmation";
 import {
   displayHost,
   getCloudApiUrlOverride,
@@ -364,6 +366,18 @@ function InviteStep({
     event.preventDefault();
     setParseError(null);
     probe.reset();
+    const join = parseJoinLink(raw);
+    if (join) {
+      requestJoinLinkConfirmation(join);
+      if (join.cloudApiUrl) {
+        if (!(await probe.verifyAndApply(join.cloudApiUrl))) return;
+        onDone();
+        return;
+      }
+      if (getEffectiveServerConfigSync().cloudApiUrl) onDone();
+      else onNeedServer(join.token);
+      return;
+    }
     const parsed = parseInviteInput(raw);
     if (!parsed) {
       setParseError(
@@ -385,6 +399,13 @@ function InviteStep({
   };
 
   const continueUnverified = () => {
+    const join = parseJoinLink(raw);
+    if (join?.cloudApiUrl) {
+      if (!applyServerUrl(join.cloudApiUrl)) return;
+      requestJoinLinkConfirmation(join);
+      onDone();
+      return;
+    }
     const parsed = parseInviteInput(raw);
     if (!parsed?.cloudApiUrl || !applyServerUrl(parsed.cloudApiUrl)) return;
     acceptToken(parsed.token);

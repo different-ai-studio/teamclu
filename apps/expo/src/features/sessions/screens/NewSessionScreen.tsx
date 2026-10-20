@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActionSheetIOS,
@@ -15,6 +15,9 @@ import {
 } from "react-native";
 
 import { isAgentActor, type Actor } from "../../actors/actor-types";
+import { teamAppNeedsDesktopSetup, type TeamApp } from "../../apps/team-app-types";
+import { orderActorsForPicker, type LastContactByActor } from "../actor-picker-ordering";
+import { appSessionBlocker, type AppSessionBlocker } from "../app-session";
 import { Hairline } from "../../../ui/atoms/Hairline";
 import { SectionEyebrow } from "../../../ui/atoms/SectionEyebrow";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../../ui/GlassHeader";
@@ -24,11 +27,15 @@ import {
   type AgentConfigSelection,
   type AgentType,
 } from "../components/AgentConfigSheet";
-import { normalizeStoredAgentType } from "../components/agent-config-helpers";
+import {
+  agentConfigWorkspaceChoices,
+  normalizeStoredAgentType,
+} from "../components/agent-config-helpers";
 import { MemberPickerSheet } from "./MemberPickerSheet";
 import { SheetModal } from "../../../ui/SheetModal";
 
 const AGENT_TYPE_LABELS: Record<AgentType, string> = {
+  pi: "Pi",
   claude: "Claude",
   opencode: "OpenCode",
   codex: "Codex",
@@ -42,28 +49,70 @@ export type AgentWorkspaceChoice = {
 
 export type NewSessionScreenProps = {
   actors?: ReadonlyArray<Actor>;
+  /**
+   * The team's apps for the app picker (iOS #1602, replacing the idea
+   * picker). `null` — the apps feature is off — hides the section.
+   */
+  apps?: ReadonlyArray<TeamApp> | null;
   currentMemberActorId?: string | null;
+  /** The viewer's effective default agent, pinned first in the picker. */
+  defaultAgentId?: string | null;
   errorMessage?: string | null;
-  ideas?: ReadonlyArray<{ ideaId: string; displayTitle: string }>;
   isBusy?: boolean;
+  /** When each actor last sent a message, for the picker's recent-contact order. */
+  lastContactByActorId?: LastContactByActor;
+  /**
+   * One agent's own workspaces, fetched once an app is picked: the team-wide
+   * list is a single capped page and can miss the app's checkout row.
+   */
+  loadAgentWorkspaces?: (agentId: string) => Promise<AgentWorkspaceChoice[]>;
   onClose: () => void;
   onCreate: (payload: {
     firstMessage: string;
     collaboratorActorIds: string[];
     primaryAgentActorId: string | null;
     agentConfig: AgentConfigSelection | null;
+    /** The idea the sheet was opened from; there is no idea picker any more. */
     ideaId: string | null;
+    app: TeamApp | null;
+    /** Every workspace row seen for the picked agents, for resolving checkouts. */
+    agentWorkspaces: AgentWorkspaceChoice[];
   }) => Promise<void> | void;
+  /** Set when opened from an idea: the session is linked to it and its text prefaces the first message. */
   selectedIdeaId?: string | null;
   workspaces?: ReadonlyArray<AgentWorkspaceChoice>;
 };
 
+/** The blocker as a sentence, or null. */
+function appBlockerText(
+  blocker: AppSessionBlocker | null,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string | null {
+  if (!blocker) return null;
+  switch (blocker.kind) {
+    case "needsAgent":
+      return t("An app session needs an agent — add one to collaborate first.");
+    case "checking":
+      return t("Checking whether the agent's computer has this app's code…");
+    case "missingCheckout":
+      return t(
+        "The computer {{names}} runs on doesn't have \"{{app}}\" yet — open the app in the desktop app on that computer first.",
+        { names: blocker.agentNames.join("、"), app: blocker.appName },
+      );
+  }
+}
+
+const NO_CONTACTS: LastContactByActor = new Map();
+
 export function NewSessionScreen({
   actors = [],
+  apps = null,
   currentMemberActorId = null,
+  defaultAgentId = null,
   errorMessage = null,
-  ideas = [],
   isBusy = false,
+  lastContactByActorId = NO_CONTACTS,
+  loadAgentWorkspaces,
   onClose,
   onCreate,
   selectedIdeaId = null,
@@ -73,7 +122,9 @@ export function NewSessionScreen({
   const [firstMessage, setFirstMessage] = useState("");
   const [collaboratorIds, setCollaboratorIds] = useState<string[]>([]);
   const [primaryAgentId, setPrimaryAgentId] = useState<string | null>(null);
-  const [pickedIdeaId, setPickedIdeaId] = useState<string | null>(selectedIdeaId);
+  const [pickedAppId, setPickedAppId] = useState<string | null>(null);
+  const [agentWorkspacesForApp, setAgentWorkspacesForApp] = useState<AgentWorkspaceChoice[]>([]);
+  const [isCheckingAppCheckout, setIsCheckingAppCheckout] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [agentConfigOpen, setAgentConfigOpen] = useState(false);
   const [agentConfig, setAgentConfig] = useState<AgentConfigSelection | null>(null);
@@ -105,6 +156,64 @@ export function NewSessionScreen({
     return pickedAgentIds[0];
   }, [pickedAgentIds, primaryAgentId]);
 
+  const pickedApp = useMemo(
+    () => (pickedAppId ? apps?.find((app) => app.id === pickedAppId) ?? null : null),
+    [apps, pickedAppId],
+  );
+
+  // Once an app is picked, fetch each picked agent's own workspaces so its
+  // checkout row is found even in a team past the one-page workspace list.
+  const appCheckoutQueryKey = pickedApp ? [pickedApp.id, ...[...pickedAgentIds].sort()].join(",") : "";
+  useEffect(() => {
+    if (!appCheckoutQueryKey || !loadAgentWorkspaces) {
+      setAgentWorkspacesForApp([]);
+      setIsCheckingAppCheckout(false);
+      return;
+    }
+    let cancelled = false;
+    setIsCheckingAppCheckout(true);
+    void Promise.all(
+      pickedAgentIds.map((agentId) => loadAgentWorkspaces(agentId).catch(() => [])),
+    ).then((rows) => {
+      if (cancelled) return;
+      setAgentWorkspacesForApp(rows.flat());
+      setIsCheckingAppCheckout(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Keyed on the app and the sorted agent ids, not on the array identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appCheckoutQueryKey, loadAgentWorkspaces]);
+
+  const appWorkspaceRows = useMemo(
+    () =>
+      [...agentWorkspacesForApp, ...workspaces].map((workspace) => ({
+        id: workspace.id,
+        path: workspace.path,
+        agentId: workspace.agentId ?? null,
+      })),
+    [agentWorkspacesForApp, workspaces],
+  );
+
+  const appBlocker = useMemo(
+    () =>
+      appSessionBlocker({
+        app: pickedApp,
+        agents: collaborators.filter(isAgentActor),
+        workspaces: appWorkspaceRows,
+        isChecking: isCheckingAppCheckout,
+      }),
+    [appWorkspaceRows, collaborators, isCheckingAppCheckout, pickedApp],
+  );
+  const appBlockerMessage = appBlockerText(appBlocker, t);
+
+  // Default agent first, then by recent contact, then by name (iOS #1602).
+  const pickerActors = useMemo(
+    () => orderActorsForPicker(actors as Actor[], defaultAgentId, lastContactByActorId),
+    [actors, defaultAgentId, lastContactByActorId],
+  );
+
   const configuredAgent = useMemo(
     () =>
       actors.find((actor) => actor.actorId === effectivePrimaryAgentId) ?? null,
@@ -135,7 +244,10 @@ export function NewSessionScreen({
   }, []);
 
   const canSubmit =
-    firstMessage.trim().length > 0 && collaboratorIds.length > 0 && !isBusy;
+    firstMessage.trim().length > 0 &&
+    collaboratorIds.length > 0 &&
+    !isBusy &&
+    appBlocker === null;
 
   const handleStart = () => {
     if (!canSubmit) return;
@@ -144,33 +256,49 @@ export function NewSessionScreen({
       collaboratorActorIds: collaboratorIds,
       primaryAgentActorId: effectivePrimaryAgentId,
       agentConfig,
-      ideaId: pickedIdeaId,
+      ideaId: selectedIdeaId,
+      app: pickedApp,
+      agentWorkspaces: agentWorkspacesForApp,
     });
   };
 
-  const ideaLabel =
-    pickedIdeaId === null
-      ? t("None")
-      : ideas.find((i) => i.ideaId === pickedIdeaId)?.displayTitle ?? "—";
+  const appChoices = apps ?? [];
+  const appLabel = pickedApp?.name ?? t("None");
 
-  const showIdeaPicker = () => {
-    if (ideas.length === 0) return;
-    const labels = [t("None"), ...ideas.map((i) => i.displayTitle), t("Cancel")];
+  const showAppPicker = () => {
+    // An app with no code yet cannot have a checkout on any agent's machine,
+    // so it is listed but not selectable.
+    const labels = [
+      t("None"),
+      ...appChoices.map((app) =>
+        teamAppNeedsDesktopSetup(app)
+          ? t("{{value}} (not initialized)", { value: app.name })
+          : app.name,
+      ),
+      t("Cancel"),
+    ];
     const dispatch = (index: number) => {
-      if (index === 0) setPickedIdeaId(null);
-      else if (index > 0 && index <= ideas.length) {
-        setPickedIdeaId(ideas[index - 1].ideaId);
+      if (index === 0) setPickedAppId(null);
+      else if (index > 0 && index <= appChoices.length) {
+        const app = appChoices[index - 1];
+        if (!teamAppNeedsDesktopSetup(app)) setPickedAppId(app.id);
       }
     };
     if (Platform.OS === "ios") {
       ActionSheetIOS.showActionSheetWithOptions(
-        { options: labels, cancelButtonIndex: labels.length - 1 },
+        {
+          options: labels,
+          cancelButtonIndex: labels.length - 1,
+          disabledButtonIndices: appChoices
+            .map((app, index) => (teamAppNeedsDesktopSetup(app) ? index + 1 : -1))
+            .filter((index) => index > 0),
+        },
         dispatch,
       );
       return;
     }
     Alert.alert(
-      t("Link to idea"),
+      t("Link to app"),
       undefined,
       labels.map((label, index) => {
         if (index === labels.length - 1) {
@@ -180,6 +308,8 @@ export function NewSessionScreen({
       }),
     );
   };
+
+  const showAppSection = apps !== null;
 
   return (
     <View style={styles.screen}>
@@ -268,38 +398,42 @@ export function NewSessionScreen({
             </Pressable>
           </View>
 
-          {ideas.length > 0 ? (
+          {showAppSection ? (
             <View style={styles.section}>
-              <SectionEyebrow label={`03 · ${t("IDEA")}`} />
+              <SectionEyebrow label={`03 · ${t("APP")}`} />
               <Pressable
                 accessibilityRole="button"
-                onPress={showIdeaPicker}
+                disabled={appChoices.length === 0}
+                onPress={showAppPicker}
                 style={({ pressed }) => [
                   styles.paperCard,
                   styles.ideaRow,
                   pressed ? styles.rowPressed : null,
                 ]}
               >
-                <Text style={styles.cardTitle}>{t("Link to idea")}</Text>
+                <Text style={styles.cardTitle}>{t("Link to app")}</Text>
                 <View style={styles.ideaValue}>
                   <Text
                     numberOfLines={1}
                     style={[
                       styles.cardBody,
-                      pickedIdeaId === null ? styles.ideaValueMuted : null,
+                      pickedApp === null ? styles.ideaValueMuted : null,
                     ]}
                   >
-                    {ideaLabel}
+                    {appLabel}
                   </Text>
                   <Ionicons color={colors.slate} name="chevron-down" size={14} />
                 </View>
               </Pressable>
+              {appBlockerMessage ? (
+                <Text style={styles.appBlocker}>{appBlockerMessage}</Text>
+              ) : null}
             </View>
           ) : null}
 
           <View style={styles.section}>
             <SectionEyebrow
-              label={`${ideas.length > 0 ? "04" : "03"} · ${t("FIRST MESSAGE")}`}
+              label={`${showAppSection ? "04" : "03"} · ${t("FIRST MESSAGE")}`}
             />
             <View style={styles.paperCard}>
               <TextInput
@@ -342,7 +476,7 @@ export function NewSessionScreen({
         visible={pickerOpen}
       >
         <MemberPickerSheet
-          actors={actors as Actor[]}
+          actors={pickerActors}
           excludeActorIds={excludedFromPicker}
           initialSelectedIds={collaboratorIds}
           onCancel={() => setPickerOpen(false)}
@@ -371,14 +505,20 @@ export function NewSessionScreen({
           defaultType={
             agentConfig?.agentType ??
             normalizeStoredAgentType(configuredAgent?.defaultAgentType) ??
-            "claude"
+            "pi"
           }
           onCancel={() => setAgentConfigOpen(false)}
           onConfirm={(selection) => {
             setAgentConfig(selection);
             setAgentConfigOpen(false);
           }}
-          workspaces={workspaces.map((workspace) => ({
+          // The configured agent's own workspaces, its default first — the
+          // seat it gets when the sheet is never opened (iOS #1681).
+          workspaces={agentConfigWorkspaceChoices(
+            configuredAgent?.actorId ?? null,
+            configuredAgent?.defaultWorkspaceId ?? null,
+            workspaces,
+          ).map((workspace) => ({
             id: workspace.id,
             path: workspace.path,
           }))}
@@ -461,6 +601,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 4,
     maxWidth: 200,
+  },
+  appBlocker: {
+    color: colors.cinnabarDeep,
+    paddingHorizontal: 4,
+    ...typography.caption,
   },
   body: {
     flex: 1,

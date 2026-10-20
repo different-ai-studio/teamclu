@@ -39,7 +39,10 @@ public final class TeamcluService {
     /// list by matching our own peer_id. Populated once
     /// PeerList arrives; used as `sender_actor_id` on outgoing RPCs so the
     /// daemon records the creator as a member rather than a device.
-    public private(set) var localMemberId: String = ""
+    public private(set) var localMemberId: String = "" {
+        // Kept for replying from a notification, when none of this is loaded.
+        didSet { NotificationReply.rememberActor(localMemberId, team: teamId) }
+    }
     public private(set) var localDisplayName: String = ""
     private var foregroundSessionIDsSet: Set<String> = []
     /// The session list's dot store, told whenever this device sends a prompt.
@@ -585,7 +588,9 @@ public final class TeamcluService {
         /// stay on the proto for the daemon's prompt builder.
         attachments: [MessageAttachment] = [],
         persistFirst: Bool = false,
-        messageID: String? = nil
+        messageID: String? = nil,
+        /// The persisted message this one quotes, if it is a reply.
+        replyToMessageID: String? = nil
     ) async throws -> String {
         let sidPrefix = String(sessionId.prefix(8))
         guard let mqtt else {
@@ -600,7 +605,9 @@ public final class TeamcluService {
         // Honor caller-provided id (outbox flow) so retries and the
         // daemon's slice-B dedup land on a stable key. Falls back to a
         // fresh UUID when the caller doesn't care (legacy callers).
-        message.messageID = messageID ?? UUID().uuidString
+        // Lowercase, matching how the server stores it (see sendPrompt, #1696).
+        message.messageID = messageID ?? UUID().uuidString.lowercased()
+        if let replyToMessageID { message.replyToMessageID = replyToMessageID }
         message.sessionID = sessionId
         message.senderActorID = actorId
         message.kind = .text
@@ -682,9 +689,11 @@ public final class TeamcluService {
                 content: content,
                 mentionActorIDs: mentionActorIDs,
                 attachments: attachments,
+                replyToMessageID: replyToMessageID,
                 sidPrefix: sidPrefix,
                 msgIdPrefix: msgIdPrefix
             )
+            ChatMetrics.shared.mark(.send, key: message.messageID, "persisted")
         }
 
         do {
@@ -694,6 +703,7 @@ public final class TeamcluService {
             throw SendMessageError.publishFailed(String(describing: error))
         }
         teamcluLogger.notice("sendMessage[\(sidPrefix, privacy: .public)] msgId=\(msgIdPrefix, privacy: .public) publish OK")
+        ChatMetrics.shared.mark(.send, key: message.messageID, "published")
 
         // Standard flow: persist after the MQTT publish has succeeded so
         // perceived latency stays minimal. Fire-and-forget; failures are
@@ -709,6 +719,7 @@ public final class TeamcluService {
                     content: content,
                     mentionActorIDs: mentionActorIDs,
                     attachments: attachments,
+                    replyToMessageID: replyToMessageID,
                     sidPrefix: sidPrefix,
                     msgIdPrefix: msgIdPrefix
                 )
@@ -729,6 +740,7 @@ public final class TeamcluService {
         content: String,
         mentionActorIDs: [String] = [],
         attachments: [MessageAttachment] = [],
+        replyToMessageID: String? = nil,
         sidPrefix: String,
         msgIdPrefix: String
     ) async throws {
@@ -750,7 +762,8 @@ public final class TeamcluService {
                 kind: "text",
                 content: content,
                 mentionActorIDs: mentionActorIDs,
-                attachments: attachments
+                attachments: attachments,
+                replyToMessageID: replyToMessageID
             ))
             teamcluLogger.notice("sendMessage[\(sidPrefix, privacy: .public)] msgId=\(msgIdPrefix, privacy: .public) supabase persist OK")
         } catch {
@@ -771,6 +784,7 @@ public final class TeamcluService {
         content: String,
         mentionActorIDs: [String] = [],
         attachments: [MessageAttachment] = [],
+        replyToMessageID: String? = nil,
         sidPrefix: String,
         msgIdPrefix: String
     ) async {
@@ -791,7 +805,8 @@ public final class TeamcluService {
                 kind: "text",
                 content: content,
                 mentionActorIDs: mentionActorIDs,
-                attachments: attachments
+                attachments: attachments,
+                replyToMessageID: replyToMessageID
             ))
             teamcluLogger.notice("sendMessage[\(sidPrefix, privacy: .public)] msgId=\(msgIdPrefix, privacy: .public) supabase persist OK")
         } catch {
@@ -1460,7 +1475,8 @@ public final class TeamcluService {
         teamId: String,
         peerId: String,
         modelContainer: ModelContainer,
-        connectedAgentsStore: ConnectedAgentsStore? = nil
+        connectedAgentsStore: ConnectedAgentsStore? = nil,
+        messagesRepository: (any MessagesRepository)? = nil
     ) {
         configureRuntime(
             mqtt: mqtt,
@@ -1468,7 +1484,8 @@ public final class TeamcluService {
             teamId: teamId,
             peerId: peerId,
             modelContainer: modelContainer,
-            connectedAgentsStore: connectedAgentsStore
+            connectedAgentsStore: connectedAgentsStore,
+            messagesRepository: messagesRepository
         )
         isTestingForegroundLifecycle = true
     }

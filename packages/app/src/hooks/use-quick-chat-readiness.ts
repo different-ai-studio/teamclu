@@ -4,6 +4,7 @@ import { useCurrentTeamStore } from '@/stores/current-team'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { useMqttReconnectStore } from '@/stores/mqtt-reconnect'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useLocalAgentInstallStore } from '@/stores/local-agent-install'
 
 /** Retry while stuck in no_agent (e.g. API recovered without MQTT/network signal). */
 export const QUICK_CHAT_STUCK_RETRY_MS = 30_000
@@ -55,6 +56,9 @@ export function useQuickChatReadiness(): QuickChatState {
 
   const [target, setTarget] = React.useState<QuickChatTarget | null>(null)
   const [resolving, setResolving] = React.useState(() => Boolean(teamId))
+  const localAgentInstallStatus = useLocalAgentInstallStore((s) =>
+    teamId ? (s.byTeam[teamId]?.status ?? null) : null,
+  )
   const [recoveryPass, setRecoveryPass] = React.useState(0)
   const targetRef = React.useRef(target)
   const resolvingRef = React.useRef(resolving)
@@ -189,6 +193,9 @@ export function useQuickChatReadiness(): QuickChatState {
     effectiveDefaultAgentId,
     effectiveDefaultTeamId,
     recoveryPass,
+    // A finished install reclassifies absent → installed after the daemon is
+    // already up; without this the team default chosen mid-install sticks.
+    localAgentInstallStatus,
   ])
 
   return React.useMemo((): QuickChatState => {

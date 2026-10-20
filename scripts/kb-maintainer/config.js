@@ -12,6 +12,7 @@ const DEFAULT_LIMITS = {
   maxIndexChars: 8000,
   maxSourceSummaryChars: 4000,
   maxSourceSummaryPagesPerSource: 1,
+  maxVisionPages: 30,
 };
 
 const UUID_RE =
@@ -26,9 +27,6 @@ function parseConfig(raw) {
   }
   if (typeof raw.teamId !== "string" || !UUID_RE.test(raw.teamId)) {
     throw new Error("config.teamId is required");
-  }
-  if (typeof raw.maintainerNodeId !== "string" || raw.maintainerNodeId.trim() === "") {
-    throw new Error("config.maintainerNodeId is required");
   }
   if (!Array.isArray(raw.sources) || raw.sources.length === 0) {
     throw new Error("config.sources must be a non-empty array");
@@ -69,7 +67,6 @@ function parseConfig(raw) {
   return {
     schemaVersion: 1,
     teamId: raw.teamId,
-    maintainerNodeId: raw.maintainerNodeId.trim(),
     sources,
     deny: { pathPatterns: denyPatterns },
     limits: { ...DEFAULT_LIMITS, ...(raw.limits || {}) },

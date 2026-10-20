@@ -26,6 +26,7 @@ import {
   isDenied,
   validateAclPrefix,
   aclViewFor,
+  loadCallerRoles,
   deniedPrefixesFor,
   recordAccess,
   auditIfRestricted,
@@ -48,8 +49,10 @@ type Grant = { acl_id: string };
 function fakeSupabase({
   rules = [] as Rule[],
   grants = [] as Grant[],
+  roleGrants = [] as { acl_id: string; role_id: string }[],
   rulesError = null as { message: string } | null,
   grantsError = null as { message: string } | null,
+  roleGrantsError = null as { message: string } | null,
   insertError = null as { message: string } | null,
 } = {}) {
   const calls: any[] = [];
@@ -60,7 +63,7 @@ function fakeSupabase({
     from(table: string) {
       return {
         select(columns: string) {
-          return {
+          const selectObj = {
             eq(column: string, value: unknown) {
               calls.push({ table, columns, column, value });
               if (table === "amuxc_path_acl") {
@@ -71,7 +74,15 @@ function fakeSupabase({
               }
               throw new Error(`unexpected select on ${table}`);
             },
+            in(column: string, value: unknown) {
+              calls.push({ table, columns, op: "in", column, value });
+              if (table === "amuxc_path_acl_role_grants") {
+                return Promise.resolve({ data: roleGrants, error: roleGrantsError });
+              }
+              throw new Error(`unexpected select.in on ${table}`);
+            },
           };
+          return selectObj;
         },
         insert(row: any) {
           calls.push({ table, op: "insert" });
@@ -229,6 +240,176 @@ describe("sync-acl view", () => {
       () => aclViewFor(TEAM, ALICE, { supabase }),
       /acl grants query failed: nope/,
     );
+  });
+
+  test("a role grant allows finance and still denies hr", async () => {
+    const supabase = fakeSupabase({
+      rules: [{ id: "acl-fin", path_prefix: "documents/财务/" }],
+      grants: [],
+      roleGrants: [{ acl_id: "acl-fin", role_id: "role-finance" }],
+    });
+    const roles = async () => ({ ids: ["role-finance"], codes: ["finance"] });
+    const view = await aclViewFor(TEAM, ALICE, { supabase, activeRoleCodes: roles });
+    assert.deepEqual(view.denied, []);
+    assert.deepEqual(view.allPrefixes, ["documents/财务/"]);
+
+    const hr = await aclViewFor(TEAM, "actor-hr", {
+      supabase,
+      activeRoleCodes: async () => ({ ids: ["role-hr"], codes: ["hr"] }),
+    });
+    assert.deepEqual(hr.denied, ["documents/财务/"]);
+  });
+
+  test("owner sees a role library even when activeRoleCodes returns no grant id", async () => {
+    const supabase = fakeSupabase({
+      rules: [{ id: "acl-fin", path_prefix: "documents/财务/" }],
+      roleGrants: [{ acl_id: "acl-fin", role_id: "role-finance" }],
+    });
+    const view = await aclViewFor(TEAM, ALICE, {
+      supabase,
+      activeRoleCodes: async () => ({ ids: ["role-owner"], codes: ["owner"] }),
+    });
+    assert.deepEqual(view.denied, []);
+  });
+
+  test("admin is denied a finance library", async () => {
+    const supabase = fakeSupabase({
+      rules: [{ id: "acl-fin", path_prefix: "documents/财务/" }],
+      roleGrants: [{ acl_id: "acl-fin", role_id: "role-finance" }],
+    });
+    const view = await aclViewFor(TEAM, ALICE, {
+      supabase,
+      activeRoleCodes: async () => ({ ids: ["role-admin"], codes: ["admin"] }),
+    });
+    assert.deepEqual(view.denied, ["documents/财务/"]);
+  });
+
+  test("an actor grant still lifts its own rule and does not ask for roles", async () => {
+    let roleCalls = 0;
+    const supabase = fakeSupabase({
+      rules: [{ id: "acl-1", path_prefix: "knowledge/hr/" }],
+      grants: [{ acl_id: "acl-1" }],
+    });
+    const view = await aclViewFor(TEAM, ALICE, {
+      supabase,
+      activeRoleCodes: async () => {
+        roleCalls += 1;
+        return { ids: [], codes: [] };
+      },
+    });
+    assert.deepEqual(view.denied, []);
+    assert.equal(roleCalls, 0);
+  });
+
+  test("a role-code lookup failure is not cached and not turned into an empty deny list", async () => {
+    const supabase = fakeSupabase({
+      rules: [{ id: "acl-fin", path_prefix: "documents/财务/" }],
+      roleGrants: [{ acl_id: "acl-fin", role_id: "role-finance" }],
+    });
+    await assert.rejects(
+      () => aclViewFor(TEAM, ALICE, {
+        supabase,
+        activeRoleCodes: async () => {
+          throw new Error("roles down");
+        },
+      }),
+      /roles down/,
+    );
+    const later = await aclViewFor(TEAM, ALICE, {
+      supabase,
+      activeRoleCodes: async () => ({ ids: ["role-finance"], codes: ["finance"] }),
+    });
+    assert.deepEqual(later.denied, []);
+  });
+
+  test("a file in the documents root stays visible when a sibling library is denied", async () => {
+    const supabase = fakeSupabase({
+      rules: [{ id: "acl-fin", path_prefix: "documents/财务/" }],
+      roleGrants: [{ acl_id: "acl-fin", role_id: "role-finance" }],
+    });
+    const view = await aclViewFor(TEAM, ALICE, {
+      supabase,
+      activeRoleCodes: async () => ({ ids: [], codes: ["member"] }),
+    });
+    assert.equal(isDenied("documents/报表.pdf", view), false);
+    assert.equal(isDenied("documents/财务/工资.xlsx", view), true);
+  });
+
+  test("loadCallerRoles returns active role ids and fails closed on a role error", async () => {
+    const supabase = {
+      from(table: string) {
+        return {
+          select() {
+            return {
+              eq() {
+                const afterFirstEq = {
+                  eq() {
+                    return {
+                      maybeSingle: async () => {
+                        if (table === "actors") return { data: { user_id: "user-1" }, error: null };
+                        throw new Error(table);
+                      },
+                    };
+                  },
+                  maybeSingle: async () => {
+                    if (table === "teams") return { data: { oid: "org-1" }, error: null };
+                    throw new Error(table);
+                  },
+                };
+                return afterFirstEq;
+              },
+            };
+          },
+        };
+      },
+      schema() {
+        return {
+          from(table: string) {
+            return {
+              select() {
+                return {
+                  eq() {
+                    return {
+                      eq() {
+                        return {
+                          eq() {
+                            return {
+                              is: async () => {
+                                if (table === "roles_users")
+                                  return { data: [{ role_id: "role-finance" }], error: null };
+                                throw new Error(table);
+                              },
+                            };
+                          },
+                        };
+                      },
+                    };
+                  },
+                  in() {
+                    return {
+                      eq() {
+                        return {
+                          eq: async () => {
+                            if (table === "roles")
+                              return {
+                                data: [{ id: "role-finance", code: "finance" }],
+                                error: null,
+                              };
+                            throw new Error(table);
+                          },
+                        };
+                      },
+                    };
+                  },
+                };
+              },
+            };
+          },
+        };
+      },
+    };
+    const roles = await loadCallerRoles(supabase, TEAM, ALICE);
+    assert.deepEqual(roles, { ids: ["role-finance"], codes: ["finance"] });
   });
 });
 

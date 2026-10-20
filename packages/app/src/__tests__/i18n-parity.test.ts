@@ -78,6 +78,7 @@ for (const m of sourceBlob.matchAll(/\b(?:title|desc|label)Key:\s*['"]([\w]+(?:\
 
 // Keys built dynamically as t(`prefix.${x}`) — list the static prefixes here.
 const DYNAMIC_PREFIXES = [
+  "apps.undeploy.", // Resource keys and step statuses are rendered dynamically.
   'actors.role.',
   // Keyed by the gateway an external actor came in through (externalSourceLabel).
   'actors.source.',

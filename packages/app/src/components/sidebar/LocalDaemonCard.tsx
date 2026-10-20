@@ -10,6 +10,8 @@ import { useLocalDaemonTokenUsage } from '@/hooks/use-local-daemon-token-usage'
 import { cn } from '@/lib/utils'
 import { ActorDetailDialog } from '@/components/sidebar/ActorDetailDialog'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 
 /**
  * The local daemon agent, pinned to the BOTTOM of the sidebar (just above the
@@ -22,6 +24,7 @@ import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
  */
 export function LocalDaemonCard() {
   const { t } = useTranslation()
+  const absent = useLocalAgentAbsent()
   const { actors, refetch, teamId } = useActorDirectory()
   const defaultAgentId = useMemberPreferencesStore((s) => s.defaultAgentId)
 
@@ -75,6 +78,7 @@ export function LocalDaemonCard() {
     }
   }
 
+  if (absent) return <LocalAgentRequiredCard />
   if (!localDaemonActor) return null
 
   return (

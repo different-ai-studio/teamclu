@@ -36,8 +36,10 @@ export type GateApp = {
   slug: string;
   appCode?: string | null;
   usesAppCodeDomain?: boolean;
-  /** `apps.team_id` — the org audience resolves the app's org through it. */
+  /** `apps.team_id` — identity of the owning team. Not the org source. */
   teamId: string | null;
+  /** `apps.org_id` — the app's tenant org. Null is a misconfigured app. */
+  orgId: string | null;
   /** `apps.auth_mode`; only `platform` has a wall. */
   authMode: string | null;
   /** `apps.auth_audience`: `any` | `org`. Unset is read as `org` (fail closed). */
@@ -48,30 +50,27 @@ export type GateApp = {
   authRules: unknown;
 };
 
-export type OrgPair = {
-  /** `public.users.org_id` for the signed-in visitor; null when they have none. */
-  visitorOrgId: string | null;
-  /** `teams.oid` for the app's team; null when the team has no org. */
-  appOrgId: string | null;
-};
-
 export type GateDeps = {
   /**
-   * The two org ids the `org` audience / role checks need.
+   * Live `public.users.id` rows for this auth account with active role bindings
+   * in the app org. The row's default `org_id` can differ: team creation and
+   * invite flows assign org roles to the account's primary row without
+   * creating another tenant row. The binding's `org_id` is authoritative.
+   * Returns an empty list when the account has no such binding.
    *
-   * Injected because answering it needs two control-plane reads that this
-   * module has no business owning. It returns both ids rather than a verdict so
-   * the gateway can tell "this visitor has no role in the app org" (their
-   * problem) from "this app's team has no org at all" (an operator's problem) —
-   * and so the app org can be forwarded when the visitor is admitted by role.
+   * Injected because answering it is a control-plane read this module has no
+   * business owning.
    */
-  resolveOrgs: (userId: string, teamId: string | null) => Promise<OrgPair>;
+  resolveRoleIdentities: (userId: string, orgId: string) => Promise<string[]>;
   /**
-   * Active role codes for the visitor in the given org (`roles_users` ∩
-   * active `roles`). Used for non-empty `roles` intersection and for legacy
-   * `audience: org` (any assignment).
+   * Active role codes across the selected public.users rows (`roles_users` ∩ active `roles`).
+   * Used for non-empty `roles` intersection and for legacy `audience: org`
+   * (any assignment).
+   *
+   * `identityIds` are what {@link resolveRoleIdentities} returned — verified
+   * `public.users.id` rows, never an unverified auth user id.
    */
-  resolveVisitorRoles: (userId: string, orgId: string) => Promise<string[]>;
+  resolveVisitorRoles: (identityIds: string[], orgId: string) => Promise<string[]>;
   env?: NodeJS.ProcessEnv;
   /** False only on a plain-http local box. */
   secureCookies?: boolean;
@@ -221,11 +220,14 @@ function handleLogout(app: GateApp, origin: string, env: NodeJS.ProcessEnv, secu
   return redirect(target, [clearSessionCookie(APP_COOKIE, secure)]);
 }
 
-function wrongOrgPage(app: GateApp, origin: string, email: string): Response {
+function accessDeniedPage(email: string, missingRole: boolean): Response {
+  const message = missingRole
+    ? "当前账号没有访问此页面所需的组织角色，请联系管理员。"
+    : "当前账号在应用所属组织中没有有效角色，请联系管理员。";
   return page(
     "无权访问",
     `${statusIcon("lock")}<h1>无权访问</h1>` +
-      `<p class="sub">当前账号 <strong>${esc(email)}</strong> 不属于这个应用所在的组织。</p>` +
+      `<p class="sub">当前账号：<strong>${esc(email)}</strong></p><p class="sub">${message}</p>` +
       `<form method="post" action="${esc(APP_AUTH_LOGOUT_PATH)}">` +
       `<button class="btn btn-primary" type="submit">换一个账号</button></form>`,
     403,
@@ -308,8 +310,8 @@ export async function applyAuthGate(
   if (admission.denial === "no_app_org") {
     return answered(misconfigured("该应用所属团队未关联组织"));
   }
-  if (admission.denial === "wrong_org") {
-    return answered(wrongOrgPage(app, origin, session.email));
+  if (admission.denial === "wrong_org" || admission.denial === "missing_role") {
+    return answered(accessDeniedPage(session.email, admission.denial === "missing_role"));
   }
 
   return {
@@ -321,7 +323,7 @@ export async function applyAuthGate(
 
 type Admission = {
   ok: boolean;
-  denial: "none" | "anonymous" | "wrong_org" | "no_app_org";
+  denial: "none" | "anonymous" | "wrong_org" | "missing_role" | "no_app_org";
   orgId: string | null;
 };
 
@@ -375,23 +377,27 @@ async function admitByRoles(
   deps: GateDeps,
   required: string[] | null,
 ): Promise<Admission> {
-  const orgs = await deps.resolveOrgs(session.sub, app.teamId);
-  // A team with no org cannot admit anyone under a role check — the lookup
-  // has nothing to succeed against. That is a configuration fault (R10), not a
+  // An app with no org cannot admit anyone under a role check — the lookup has
+  // nothing to succeed against. That is a configuration fault (R10), not a
   // rejected visitor, and saying so is what stops an operator from hunting for
   // a permissions bug that is not there.
-  if (!orgs.appOrgId) return { ok: false, denial: "no_app_org", orgId: null };
+  if (!app.orgId) return { ok: false, denial: "no_app_org", orgId: null };
 
-  const codes = await deps.resolveVisitorRoles(session.sub, orgs.appOrgId);
+  // Resolve verified public.users rows with active bindings in this org
+  // before reading its role codes. A role in another org never suffices.
+  const identityIds = await deps.resolveRoleIdentities(session.sub, app.orgId);
+  if (identityIds.length === 0) return { ok: false, denial: "wrong_org", orgId: null };
+
+  const codes = await deps.resolveVisitorRoles(identityIds, app.orgId);
+  if (codes.length === 0) return { ok: false, denial: "wrong_org", orgId: null };
   if (required === null) {
-    if (codes.length === 0) return { ok: false, denial: "wrong_org", orgId: null };
-    return { ok: true, denial: "none", orgId: orgs.appOrgId };
+    return { ok: true, denial: "none", orgId: app.orgId };
   }
   const have = new Set(codes);
   if (!required.some((code) => have.has(code))) {
-    return { ok: false, denial: "wrong_org", orgId: null };
+    return { ok: false, denial: "missing_role", orgId: null };
   }
-  return { ok: true, denial: "none", orgId: orgs.appOrgId };
+  return { ok: true, denial: "none", orgId: app.orgId };
 }
 
 /**

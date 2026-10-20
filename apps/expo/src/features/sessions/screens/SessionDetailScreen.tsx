@@ -1,9 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import * as Clipboard from "expo-clipboard";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
-  FlatList,
+  AppState,
   Image,
   KeyboardAvoidingView,
   NativeScrollEvent,
@@ -16,7 +17,8 @@ import {
   Text,
   View,
 } from "react-native";
-import Markdown from "react-native-markdown-display";
+import { FlashList, type FlashListRef } from "@shopify/flash-list";
+import { initialWindowMetrics, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Hairline } from "../../../ui/atoms/Hairline";
 import { StatusDot } from "../../../ui/atoms/StatusDot";
@@ -30,6 +32,9 @@ import { ConnectionBannerOverlay } from "../components/ConnectionBannerOverlay";
 import { DaySeparator } from "../components/DaySeparator";
 import { buildThinkingPreview } from "../components/agent-thinking-presentation";
 import { dayLabel, isSameCalendarDay } from "../components/day-separator-labels";
+import { buildMarkdownStyles } from "../components/markdown-styles";
+import { TURN_PALETTE } from "../components/markdown-palettes";
+import { MessageMarkdown } from "../components/MessageMarkdown";
 import { MentionsPopup } from "../components/MentionsPopup";
 import {
   applyMention,
@@ -38,7 +43,7 @@ import {
   type MentionTarget,
 } from "../components/mentions";
 import { SessionComposerShell } from "../components/SessionComposerShell";
-import { SessionMessageRow } from "../components/SessionMessageRow";
+import { formatTimestamp, SessionMessageRow } from "../components/SessionMessageRow";
 import { SessionPlansPanel } from "../components/SessionPlansPanel";
 import {
   getOutboxSnapshot,
@@ -62,12 +67,14 @@ import {
   type SlashCommand,
 } from "../components/slash-commands";
 import { TodoDock } from "../components/TodoDock";
+import type { FeedbackKind } from "../cloud-api";
 import type {
   SessionDetailConnectionState,
   SessionDetailControllerState,
 } from "../session-detail-controller";
 import {
   buildSessionFeedSources,
+  feedKeyContainingMessageId,
   type AgentTurnFeedItem,
   type SessionFeedSource,
 } from "../session-feed-items";
@@ -80,7 +87,32 @@ import {
   shouldAutoScrollFeed,
   shouldLoadOlderOnStartReached,
 } from "../session-feed-scroll";
+import {
+  FIRST_UNREAD_THRESHOLD,
+  formatNewMessageCount,
+  getReadPosition,
+  positionOnLeave,
+  saveReadPosition,
+  unreadSince,
+  type ReadPositionRow,
+} from "../session-read-position";
 import type { SessionMessage, SessionSummary } from "../session-types";
+import { impactLight, selectionTick, successTone } from "../../../lib/haptics";
+import { showActionSheet, type SheetAction } from "../../../ui/action-sheet";
+import { showToast } from "../../../ui/Toast";
+import { propsEqualIgnoringFunctions } from "../../../lib/memo-props";
+import { MessageSelectionBar } from "../components/MessageSelectionBar";
+import { SessionSearchBar } from "../components/SessionSearchBar";
+import {
+  canDeleteSelection,
+  composeTranscript,
+  displayText,
+  feedSearchMatches,
+  promptForTurn,
+  selectableMessage,
+  selectedMessages,
+} from "../message-actions";
+import { markChatMetric, measureChatMetric } from "../../../lib/telemetry/chat-metrics";
 import type { PendingAcpQuestion } from "../pending-questions";
 import { AcpQuestionCard } from "../components/AcpQuestionCard";
 import { SheetModal } from "../../../ui/SheetModal";
@@ -103,9 +135,25 @@ type SessionDetailScreenProps = {
   mentionPool?: ReadonlyArray<MentionTarget>;
   onAgentInterrupt?: (agentId: string) => void;
   onAgentRemove?: (agentId: string) => void;
+  /** The member's own feedback on agent replies, by message id. */
+  feedbackByMessageId?: ReadonlyMap<string, FeedbackKind>;
+  onFeedback?: (messageId: string, kind: FeedbackKind) => void;
   onAttach?: () => void;
   onBack: () => void;
   onChangeComposerText: (value: string) => void;
+  /** "Ask again" on an agent reply: resend the turn's prompt to that agent. */
+  onAskAgain?: (input: { content: string; replyToMessageId: string | null; agentId: string }) => void;
+  /** Multi-select "Forward": the route picks the target session. */
+  onForwardText?: (text: string) => void;
+  /** Multi-select "Delete" (own, persisted messages only). */
+  onDeleteMessages?: (messageIds: string[]) => void;
+  /** An image pasted from the clipboard, to attach. */
+  onPasteImage?: (data: string) => void;
+  /**
+   * A message to scroll to and highlight on open — the one a tapped push was
+   * about. Older pages are pulled until it turns up.
+   */
+  focusMessageId?: string;
   isRefreshing?: boolean;
   onClearReply?: () => void;
   onDeleteMessage?: (messageId: string) => void;
@@ -120,11 +168,19 @@ type SessionDetailScreenProps = {
   onOpenMembers?: () => void;
   /** Backfill a turn's daemon-recorded events when its detail is opened. */
   onRequestTurnHistory?: (turnId: string, agentId: string) => void;
+  /**
+   * A finished turn's recorded trace, by daemon turn id (iOS #1499). When
+   * present it replaces what this device streamed: it is the whole turn.
+   */
+  traceEventsByTurnId?: ReadonlyMap<string, SessionMessage[]>;
   onRetryFailed?: (messageId: string) => void;
   onReplyToMessage?: (messageId: string) => void;
   onSend: () => void;
   onShare?: () => void;
   onToggleMute?: () => void;
+  /** Per-session, this device only — grant allow-once requests automatically. */
+  autoApprove?: boolean;
+  onToggleAutoApprove?: () => void;
   /** Oldest unanswered opencode question; replaces the composer while set. */
   pendingQuestion?: PendingAcpQuestion | null;
   isAnsweringQuestion?: boolean;
@@ -189,9 +245,12 @@ function SessionHeader({
   onBack,
   onOpenMembers,
   onShare,
+  onSearch,
   onTogglePlans,
   plansPanelOpen,
   onToggleMute,
+  autoApprove,
+  onToggleAutoApprove,
   session,
 }: {
   connectionState: SessionDetailConnectionState;
@@ -200,9 +259,12 @@ function SessionHeader({
   onBack: () => void;
   onOpenMembers?: () => void;
   onShare?: () => void;
+  onSearch?: () => void;
   onTogglePlans?: () => void;
   plansPanelOpen?: boolean;
   onToggleMute?: () => void;
+  autoApprove?: boolean;
+  onToggleAutoApprove?: () => void;
   session: SessionSummary;
 }) {
   const { t: tHook } = useTranslation();
@@ -263,9 +325,23 @@ function SessionHeader({
             />
           </Pressable>
         ) : null}
-        {onShare ? (
-          <Pressable hitSlop={8} onPress={onShare} style={styles.headerSlot}>
-            <Ionicons color={colors.onyx} name="share-outline" size={20} />
+        {onShare || onSearch ? (
+          // Search and share share one "…" menu, as on iOS, so the header
+          // keeps room for the title.
+          <Pressable
+            accessibilityLabel={tHook("Conversation options")}
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={() => {
+              const actions: SheetAction[] = [];
+              if (onSearch) actions.push({ label: tHook("Search in conversation"), run: onSearch });
+              if (onShare) actions.push({ label: tHook("Share"), run: onShare });
+              showActionSheet(actions, { cancelLabel: tHook("Cancel") });
+            }}
+            style={styles.headerSlot}
+            testID="session.optionsMenu"
+          >
+            <Ionicons color={colors.onyx} name="ellipsis-horizontal" size={20} />
           </Pressable>
         ) : null}
         <Pressable hitSlop={8} onPress={onOpenMembers} style={styles.headerSlot}>
@@ -289,6 +365,24 @@ function SessionHeader({
               size={20}
             />
           </Pressable>
+        ) : null}
+        {onToggleAutoApprove ? (
+          <Pressable
+            accessibilityLabel={
+              autoApprove ? tHook("Stop auto-approving permissions") : tHook("Auto-approve permissions")
+            }
+            accessibilityRole="switch"
+            accessibilityState={{ checked: Boolean(autoApprove) }}
+            hitSlop={8}
+            onPress={onToggleAutoApprove}
+            style={styles.headerSlot}
+          >
+            <Ionicons
+              color={autoApprove ? colors.cinnabar : colors.onyx}
+              name={autoApprove ? "shield-checkmark" : "shield-checkmark-outline"}
+              size={20}
+            />
+          </Pressable>
       ) : null}
     </GlassHeader>
   );
@@ -303,14 +397,7 @@ function streamPreview(text: string): string {
 }
 
 function formatTime(value: string): string {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("en-US", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+  return formatTimestamp(value);
 }
 
 
@@ -333,6 +420,16 @@ function agentTurnPreview(turn: AgentTurnFeedItem): string {
   return t("Working…");
 }
 
+/**
+ * The live card's single line: the reply being written, never thinking or tool
+ * calls (those are on the trace page), as iOS `ActiveStreamRow.lastLine`. Only
+ * the tail of the buffer is touched, so a long reply is not copied per chunk.
+ */
+function liveLine(turn: AgentTurnFeedItem): string {
+  const text = turn.stream?.text ?? "";
+  return text.slice(-240).replace(/\s+/g, " ").trim();
+}
+
 function agentTurnTime(turn: AgentTurnFeedItem): string {
   return formatTime(turn.finalMessage?.createdAt || turn.stream?.startedAt || turn.createdAt);
 }
@@ -352,34 +449,26 @@ function isOwnOutgoingFeedSource(
   );
 }
 
-const turnMarkdown = {
-  body: { color: hai.onyx, ...typography.body, marginBottom: 0, marginTop: 0 },
-  code_inline: {
-    backgroundColor: hai.pebble,
-    borderRadius: 4,
-    color: hai.onyx,
-    paddingHorizontal: 4,
-  },
-  code_block: {
-    backgroundColor: hai.pebble,
-    borderRadius: 6,
-    color: hai.onyx,
-    padding: 8,
-  },
-  link: { color: hai.cinnabar, textDecorationLine: "underline" as const },
-  paragraph: { color: hai.onyx, marginBottom: 0, marginTop: 0 },
-};
+const turnMarkdown = buildMarkdownStyles(TURN_PALETTE);
 
 function AgentTurnCard({
+  onLongPress,
   onOpenDetail,
   onInterrupt,
+  feedbackKind = null,
+  onFeedback,
   senderAvatarGlyph,
   senderAvatarUrl,
   senderName,
   turn,
 }: {
+  /** Copy / reply / ask again / select, for a finished reply. */
+  onLongPress?: () => void;
   onOpenDetail?: (turn: AgentTurnFeedItem) => void;
   onInterrupt?: (agentId: string) => void;
+  /** The member's own 👍/👎 on this turn's final reply. */
+  feedbackKind?: FeedbackKind | null;
+  onFeedback?: (messageId: string, kind: FeedbackKind) => void;
   senderAvatarGlyph?: string | null;
   senderAvatarUrl?: string | null;
   senderName?: string;
@@ -419,6 +508,8 @@ function AgentTurnCard({
       <Pressable
         accessibilityHint={tHook("Open agent turn details")}
         accessibilityRole="button"
+        delayLongPress={350}
+        onLongPress={onLongPress}
         onPress={onOpenDetail ? () => onOpenDetail(turn) : undefined}
         style={({ pressed }) => [
           styles.turnCard,
@@ -456,25 +547,64 @@ function AgentTurnCard({
             </Pressable>
           ) : null}
         </View>
-        {(turn.finalMessage?.model || turn.stream?.model) ? (
+        {turn.finalMessage?.model || turn.stream?.model || !turn.finalMessage ? (
+          // A live card holds the line before the model name arrives, so the
+          // name landing does not push the card taller.
           <Text numberOfLines={1} style={styles.turnModel}>
-            {turn.finalMessage?.model || turn.stream?.model}
+            {turn.finalMessage?.model || turn.stream?.model || " "}
           </Text>
         ) : null}
         {turn.finalMessage ? (
-          <Markdown style={turnMarkdown}>{preview || tHook("(empty message)")}</Markdown>
+          <MessageMarkdown
+            definiteWidth
+            palette={TURN_PALETTE}
+            style={turnMarkdown}
+            text={preview || tHook("(empty message)")}
+          />
         ) : (
-          <Text numberOfLines={4} style={styles.turnPreview}>
-            {preview}
+          // One line, as iOS `ActiveStreamCardView`: up to four lines made the
+          // card grow and shrink with every paragraph the agent wrote. The
+          // newest words stay in view by truncating the front.
+          <Text ellipsizeMode="head" numberOfLines={1} style={styles.turnPreview}>
+            {liveLine(turn) || tHook("Working…")}
             {isWorking && cursorVisible ? " ▌" : ""}
           </Text>
         )}
-        {detailCount > 0 ? (
-          <View style={styles.turnDetailRow}>
+        {detailCount > 0 || !turn.finalMessage ? (
+          <View
+            style={[styles.turnDetailRow, detailCount > 0 ? null : styles.turnDetailRowReserved]}
+          >
             <Ionicons color={colors.slate} name="list-outline" size={13} />
             <Text style={styles.turnDetailText}>
               {tHook("Process · {{count}}", { count: detailCount })}
             </Text>
+          </View>
+        ) : null}
+        {/* Completed agent replies are drawn here, not as message rows, so
+            the thumbs (iOS CompletedTurnBubbleView.onFeedback) live here too. */}
+        {turn.finalMessage && !turn.isActive && onFeedback ? (
+          <View style={styles.turnFeedbackRow}>
+            {(["positive", "negative"] as const).map((kind) => {
+              const active = feedbackKind === kind;
+              const icon = kind === "positive" ? "thumbs-up" : "thumbs-down";
+              const messageId = turn.finalMessage!.messageId;
+              return (
+                <Pressable
+                  accessibilityLabel={kind === "positive" ? tHook("Helpful") : tHook("Not Helpful")}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  hitSlop={8}
+                  key={kind}
+                  onPress={() => onFeedback(messageId, kind)}
+                >
+                  <Ionicons
+                    color={active ? hai.cinnabar : colors.slate}
+                    name={active ? icon : `${icon}-outline`}
+                    size={13}
+                  />
+                </Pressable>
+              );
+            })}
           </View>
         ) : null}
       </Pressable>
@@ -528,6 +658,10 @@ function AgentTurnDetailModal({
 
 export function SessionDetailScreen(props: SessionDetailScreenProps) {
   const { t: tHook } = useTranslation();
+  const safeAreaInsets = useSafeAreaInsets();
+  // The root layout reserves only the top inset; this screen pins the
+  // composer to the bottom, so it owns the home-indicator / nav-bar strip.
+  const bottomInset = safeAreaInsets.bottom;
   const {
     agentChips,
     composerText,
@@ -538,10 +672,17 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     mentionPool,
     onAgentInterrupt,
     onAgentRemove,
+    feedbackByMessageId,
+    onFeedback,
     onAttach,
     onBack,
     onChangeComposerText,
     onChangeRuntimeModel,
+    focusMessageId,
+    onAskAgain,
+    onForwardText,
+    onDeleteMessages,
+    onPasteImage,
     onClearReply,
     onDeleteMessage,
     onEditMessage,
@@ -553,11 +694,14 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     onReconnect,
     onRefresh,
     onRequestTurnHistory,
+    traceEventsByTurnId,
     onRetryFailed,
     onReplyToMessage,
     onSend,
     onShare,
     onToggleMute,
+    autoApprove,
+    onToggleAutoApprove,
     onAnswerQuestion,
     onSkipQuestion,
     pendingQuestion,
@@ -590,6 +734,30 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     [state.messages],
   );
 
+  // A reply's quoted message, by id — each row used to search every message.
+  const messageById = useMemo(
+    () => new Map(state.messages.map((message) => [message.messageId, message])),
+    [state.messages],
+  );
+
+  // Rows are memoized and skip renders, so the callbacks they hold must not
+  // capture a stale render: each one reads the current handlers from here.
+  const latest = useRef<{
+    feedItems: readonly FeedItem[];
+    onDeleteMessage: typeof onDeleteMessage;
+    onEditMessage: typeof onEditMessage;
+    onReplyToMessage: typeof onReplyToMessage;
+    onFeedback: typeof onFeedback;
+    onRetryFailed: typeof onRetryFailed;
+    onGrantPermission: typeof onGrantPermission;
+    onDenyPermission: typeof onDenyPermission;
+    onAgentInterrupt: typeof onAgentInterrupt;
+    showTurnActions: (key: string, turn: AgentTurnFeedItem) => void;
+    openTurn: (key: string) => void;
+    startSelection: (key: string) => void;
+    scrollToIndex: (index: number) => void;
+  } | null>(null);
+
   const feedSources = useMemo(
     () =>
       buildSessionFeedSources(
@@ -602,8 +770,12 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
   const [selectedTurnKey, setSelectedTurnKey] = useState<string | null>(null);
   const selectedTurn = useMemo(() => {
     const source = feedSources.find((item) => item.key === selectedTurnKey);
-    return source?.kind === "agentTurn" ? source.turn : null;
-  }, [feedSources, selectedTurnKey]);
+    if (source?.kind !== "agentTurn") return null;
+    const trace = source.turn.daemonTurnId
+      ? traceEventsByTurnId?.get(source.turn.daemonTurnId)
+      : undefined;
+    return trace && trace.length > 0 ? { ...source.turn, runtimeEvents: trace } : source.turn;
+  }, [feedSources, selectedTurnKey, traceEventsByTurnId]);
 
   // Ask the daemon to replay this turn's thinking / tool-call events when the
   // detail opens. Live streams already receive deltas over MQTT and the
@@ -644,11 +816,71 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
 
   const hasMessages = feedSources.length > 0;
 
-  const messageListRef = useRef<FlatList<FeedItem> | null>(null);
+  const messageListRef = useRef<FlashListRef<FeedItem> | null>(null);
   const feedKeys = feedSources.map((source) => source.key);
   const previousFeedKeys = useRef<string[]>(feedKeys);
   const hasMeasuredFeedLayout = useRef(false);
-  const shouldStickToFeedBottom = useRef(true);
+  // The row to land on when the session opens, instead of the bottom: the
+  // message a push pointed at, else where the reader left off last time
+  // (iOS #1709). Cleared once reached, given up on, or the reader scrolls.
+  const sessionKey = session.sessionId;
+  const [openedReadPosition] = useState(() => getReadPosition(sessionKey));
+  const pendingTarget = useRef<
+    | { mode: "focus"; messageId: string; pagesPulled: number }
+    | { mode: "anchor"; key: string }
+    | null
+  >(
+    focusMessageId
+      ? { mode: "focus", messageId: focusMessageId, pagesPulled: 0 }
+      : openedReadPosition?.anchorKey
+        ? { mode: "anchor", key: openedReadPosition.anchorKey }
+        : null,
+  );
+  const openedOnTarget = useRef(pendingTarget.current !== null);
+  // The feed lays out from its first row and only then scrolls to where it
+  // opens, so it used to show the oldest messages for a moment and jump. It
+  // stays transparent until that first scroll has landed (or a short timeout,
+  // so it can never stay hidden).
+  const [feedRevealed, setFeedRevealed] = useState(false);
+  const revealFeed = () => {
+    // Two frames: FlashList applies a scroll on its next layout pass, and
+    // showing the list in the same frame flashed the pre-scroll position.
+    requestAnimationFrame(() => requestAnimationFrame(() => setFeedRevealed(true)));
+  };
+  // Opening at the bottom, rows keep growing after the first layout: a
+  // native markdown view learns its height a frame after it mounts, so a long
+  // reply starts short and then expands. The one scroll to the end on load
+  // landed above the real end — halfway through the reply, or flashing
+  // between its top and its end. Until the reader touches the list (or
+  // FEED_SETTLE_MS passes), every growth goes back to the end and scroll
+  // events cannot switch following off; the list shows once the height has
+  // held still for FEED_REVEAL_QUIET_MS.
+  const feedSettling = useRef(!openedOnTarget.current);
+  const revealQuietTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleFeedAtEnd = () => {
+    messageListRef.current?.scrollToEnd({ animated: false });
+    if (revealQuietTimer.current) clearTimeout(revealQuietTimer.current);
+    revealQuietTimer.current = setTimeout(revealFeed, FEED_REVEAL_QUIET_MS);
+  };
+  useEffect(() => {
+    if (!feedSettling.current) return;
+    const timer = setTimeout(() => {
+      feedSettling.current = false;
+    }, FEED_SETTLE_MS);
+    return () => {
+      clearTimeout(timer);
+      if (revealQuietTimer.current) clearTimeout(revealQuietTimer.current);
+    };
+  }, []);
+  const shouldStickToFeedBottom = useRef(!openedOnTarget.current);
+  const targetSettleUntil = useRef(0);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [newBelowCount, setNewBelowCount] = useState(0);
+  const [highlightKey, setHighlightKey] = useState<string | null>(null);
+  const [unreadPill, setUnreadPill] = useState<{ count: number; firstKey: string } | null>(null);
+  const unreadPillKeyRef = useRef<string | null>(null);
+  unreadPillKeyRef.current = unreadPill?.firstKey ?? null;
+  const visibleKeysRef = useRef<string[]>([]);
 
   const outboxByMessageId = useSyncExternalStore(
     subscribeOutbox,
@@ -691,13 +923,9 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
 
   const hasFeedHeader =
     state.isLoadingOlder || (state.canLoadOlder && onLoadOlder !== undefined);
-  // VirtualizedList reads stickyHeaderIndices as positions among the scroll
-  // view's children, and a ListHeaderComponent takes the first of those — so a
-  // header shifts every day separator by one.
-  const stickyIndices = useMemo(
-    () => (hasFeedHeader ? separatorIndices.map((index) => index + 1) : separatorIndices),
-    [hasFeedHeader, separatorIndices],
-  );
+  // FlashList counts sticky headers among the data, so the list header does
+  // not shift them (VirtualizedList counted it as the first child).
+  const stickyIndices = separatorIndices;
 
   useEffect(() => {
     // Only growth at the *tail* is a new message to follow. A back-scrolled
@@ -722,6 +950,9 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
       requestAnimationFrame(() => {
         messageListRef.current?.scrollToEnd({ animated: true });
       });
+    } else {
+      // Reading history: count what arrived below for the jump button.
+      setNewBelowCount((count) => count + appended.length);
     }
     // feedKeys is rebuilt every render; the ref comparison above is what makes
     // this idempotent, not the dependency list.
@@ -730,11 +961,299 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
 
   const handleFeedScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    shouldStickToFeedBottom.current = isFeedNearBottom({
+    // While landing on a target the list is still growing and jumping; a
+    // momentary "near the bottom" here would hand control back to the
+    // follow-the-tail logic and snap the feed to the end.
+    if (pendingTarget.current || Date.now() < targetSettleUntil.current) return;
+    if (feedSettling.current) return;
+    const nearBottom = isFeedNearBottom({
       contentHeight: contentSize.height,
       offsetY: contentOffset.y,
       viewportHeight: layoutMeasurement.height,
     });
+    shouldStickToFeedBottom.current = nearBottom;
+    setIsAtBottom(nearBottom);
+    if (nearBottom) setNewBelowCount(0);
+  };
+
+  // FlashList measures its way to a row it has not laid out yet, so one call
+  // lands; VirtualizedList needed a retry loop for that.
+  const scrollToFeedIndex = (index: number, viewPosition: number) => {
+    if (index < 0) return;
+    void messageListRef.current?.scrollToIndex({ animated: false, index, viewPosition });
+  };
+
+  const readRows = useMemo<ReadPositionRow[]>(
+    () =>
+      feedSources.map((source) => ({
+        key: source.key,
+        createdAt: source.createdAt,
+        isOwn: isOwnOutgoingFeedSource(source, ownActorId),
+      })),
+    [feedSources, ownActorId],
+  );
+
+  // Land on the pending target once its row is in the feed. A pushed message
+  // older than the loaded page pulls older pages (bounded); anything still
+  // missing once history settles falls back to the bottom.
+  useEffect(() => {
+    const target = pendingTarget.current;
+    if (!target || !hasMessages) return;
+    const key =
+      target.mode === "focus"
+        ? feedKeyContainingMessageId(feedSources, target.messageId)
+        : feedSources.some((source) => source.key === target.key)
+          ? target.key
+          : null;
+    if (key) {
+      pendingTarget.current = null;
+      targetSettleUntil.current = Date.now() + 1500;
+      // Scroll events are ignored while settling, so say "not at the bottom"
+      // here; the reader's next scroll corrects it if the target was the end.
+      setIsAtBottom(false);
+      const index = feedItems.findIndex((item) => item.key === key);
+      requestAnimationFrame(() => {
+        scrollToFeedIndex(index, target.mode === "focus" ? 0.5 : 0);
+        revealFeed();
+      });
+      if (target.mode === "focus") {
+        setHighlightKey(key);
+        setTimeout(() => setHighlightKey((current) => (current === key ? null : current)), 2000);
+      }
+      return;
+    }
+    if (!state.historySettled || state.isLoadingOlder) return;
+    if (target.mode === "focus" && state.canLoadOlder && onLoadOlder && target.pagesPulled < 10) {
+      target.pagesPulled += 1;
+      onLoadOlder();
+      return;
+    }
+    pendingTarget.current = null;
+    shouldStickToFeedBottom.current = true;
+    requestAnimationFrame(() => {
+      messageListRef.current?.scrollToEnd({ animated: false });
+      revealFeed();
+    });
+    // feedItems is rebuilt from feedSources every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedSources, hasMessages, state.historySettled, state.isLoadingOlder, state.canLoadOlder]);
+
+  useEffect(() => {
+    if (feedRevealed || !hasMessages) return;
+    const timer = setTimeout(() => {
+      setFeedRevealed(true);
+    }, FEED_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [feedRevealed, hasMessages]);
+
+  // "N unread ↑": once the network page is in, count what others posted since
+  // the reader was last here. Shown from FIRST_UNREAD_THRESHOLD rows, until
+  // the first unread row is seen or the pill is tapped.
+  const unreadComputed = useRef(false);
+  useEffect(() => {
+    if (unreadComputed.current || !state.historySettled) return;
+    unreadComputed.current = true;
+    measureChatMetric("chat.open_session", sessionKey, "rows", readRows.length);
+    // An empty session never lays out a feed; its empty state is the frame.
+    if (readRows.length === 0) markChatMetric("chat.open_session", sessionKey, "first_frame");
+    markChatMetric("chat.open_session", sessionKey, "seeded");
+    const { count, firstKey } = unreadSince(readRows, openedReadPosition?.readAt ?? null);
+    if (firstKey && count >= FIRST_UNREAD_THRESHOLD && !visibleKeysRef.current.includes(firstKey)) {
+      setUnreadPill({ count, firstKey });
+    }
+  }, [openedReadPosition, readRows, state.historySettled]);
+
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ReadonlyArray<{ key: string }> }) => {
+      visibleKeysRef.current = viewableItems.map((item) => item.key);
+      const pillKey = unreadPillKeyRef.current;
+      if (pillKey && visibleKeysRef.current.includes(pillKey)) setUnreadPill(null);
+    },
+  ).current;
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
+
+  // Remember where the reader is on the way out (and when backgrounded, in
+  // case the app is killed there).
+  const readRowsRef = useRef(readRows);
+  readRowsRef.current = readRows;
+  useEffect(() => {
+    const persist = () => {
+      if (readRowsRef.current.length === 0) return;
+      const next = positionOnLeave({
+        previous: getReadPosition(sessionKey),
+        rows: readRowsRef.current,
+        visibleKeys: visibleKeysRef.current,
+        isAtBottom: shouldStickToFeedBottom.current,
+      });
+      if (next) void saveReadPosition(sessionKey, next);
+    };
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next !== "active") persist();
+    });
+    return () => {
+      subscription.remove();
+      persist();
+    };
+  }, [sessionKey]);
+
+  const jumpToBottom = () => {
+    selectionTick();
+    shouldStickToFeedBottom.current = true;
+    setNewBelowCount(0);
+    messageListRef.current?.scrollToEnd({ animated: true });
+  };
+  const jumpToFirstUnread = () => {
+    if (!unreadPill) return;
+    selectionTick();
+    const index = feedItems.findIndex((item) => item.key === unreadPill.firstKey);
+    setUnreadPill(null);
+    scrollToFeedIndex(index, 0);
+  };
+
+  const sourceByKey = useMemo(
+    () => new Map(feedSources.map((source) => [source.key, source] as const)),
+    [feedSources],
+  );
+  const scrollToKey = (key: string, viewPosition: number) => {
+    shouldStickToFeedBottom.current = false;
+    scrollToFeedIndex(feedItems.findIndex((item) => item.key === key), viewPosition);
+  };
+
+  // Find in conversation (iOS #1709): matches over what is loaded here, the
+  // current one centred and highlighted, starting from the newest.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchIndex, setSearchIndex] = useState(-1);
+  const searchMatches = useMemo(
+    () => (searchOpen ? feedSearchMatches(feedSources, searchQuery) : []),
+    [feedSources, searchOpen, searchQuery],
+  );
+  const searchMatchCount = searchMatches.length;
+  useEffect(() => {
+    setSearchIndex(searchMatchCount - 1);
+    // A new query starts again from the newest match; new rows arriving
+    // while browsing matches must not move the reader.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchOpen, searchQuery]);
+  const currentMatchKey = searchMatches[searchIndex] ?? null;
+  useEffect(() => {
+    if (!searchOpen) return;
+    setHighlightKey(currentMatchKey);
+    if (currentMatchKey) scrollToKey(currentMatchKey, 0.5);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMatchKey, searchOpen]);
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setHighlightKey(null);
+  };
+
+  // Multi-select: copy, forward or delete several messages at once.
+  const [selection, setSelection] = useState<ReadonlySet<string> | null>(null);
+  const startSelection = (key: string) => {
+    selectionTick();
+    closeSearch();
+    setSelection(new Set([key]));
+  };
+  const toggleSelected = (key: string) => {
+    selectionTick();
+    setSelection((previous) => {
+      const next = new Set(previous ?? []);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const pickedMessages = useMemo(
+    () => (selection ? selectedMessages(feedSources, selection) : []),
+    [feedSources, selection],
+  );
+  const senderLabel = (actorId: string) => senderNames?.get(actorId) ?? tHook("Unknown");
+  const transcriptOf = (header?: string) =>
+    composeTranscript(
+      pickedMessages.map((m) => ({ sender: senderLabel(m.senderActorId), text: displayText(m) })),
+      header,
+    );
+  const selectionCanDelete =
+    Boolean(onDeleteMessages) &&
+    canDeleteSelection(pickedMessages, ownActorId, (id) => {
+      const status = outboxByMessageId.get(id);
+      return status === undefined || status === "sent";
+    });
+
+  const showTurnActions = (key: string, turn: AgentTurnFeedItem) => {
+    const final = turn.finalMessage;
+    if (!final || turn.isActive) return;
+    const actions: SheetAction[] = [
+      {
+        label: tHook("Copy"),
+        run: () => {
+          void Clipboard.setStringAsync(displayText(final));
+          successTone();
+        },
+      },
+    ];
+    if (onReplyToMessage) {
+      actions.push({ label: tHook("Reply"), run: () => onReplyToMessage(final.messageId) });
+    }
+    const prompt = promptForTurn(feedSources, key);
+    if (prompt && onAskAgain) {
+      // Not a true regenerate: the agent sees its earlier answer in context.
+      actions.push({
+        label: tHook("Ask again"),
+        run: () => {
+          impactLight();
+          onAskAgain({
+            content: prompt.content,
+            replyToMessageId: prompt.replyToMessageId || null,
+            agentId: turn.agentId,
+          });
+        },
+      });
+    }
+    actions.push({ label: tHook("Select"), run: () => startSelection(key) });
+    showActionSheet(actions, { cancelLabel: tHook("Cancel") });
+  };
+
+  latest.current = {
+    feedItems,
+    onDeleteMessage,
+    onEditMessage,
+    onReplyToMessage,
+    onFeedback,
+    onRetryFailed,
+    onGrantPermission,
+    onDenyPermission,
+    onAgentInterrupt,
+    showTurnActions,
+    openTurn: setSelectedTurnKey,
+    startSelection,
+    scrollToIndex: (index) =>
+      messageListRef.current?.scrollToIndex({ animated: true, index, viewPosition: 0.3 }),
+  };
+
+  const wrapRow = (key: string, node: React.ReactNode) => {
+    const highlighted = key === highlightKey ? styles.highlightRow : null;
+    const source = sourceByKey.get(key);
+    if (!selection || !source || !selectableMessage(source)) {
+      return <View style={highlighted}>{node}</View>;
+    }
+    const checked = selection.has(key);
+    return (
+      <Pressable
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked }}
+        onPress={() => toggleSelected(key)}
+        style={[styles.selectRow, highlighted]}
+      >
+        <View style={[styles.selectCircle, checked ? styles.selectCircleOn : null]}>
+          {checked ? <Ionicons color={colors.background} name="checkmark" size={13} /> : null}
+        </View>
+        <View pointerEvents="none" style={styles.selectRowBody}>
+          {node}
+        </View>
+      </Pressable>
+    );
   };
 
   return (
@@ -746,6 +1265,10 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
         onBack={onBack}
         onOpenMembers={onOpenMembers}
         onShare={onShare}
+        onSearch={() => {
+          setSelection(null);
+          setSearchOpen(true);
+        }}
         onTogglePlans={
           planSnapshots.length > 0
             ? () => setPlansPanelOpen((value) => !value)
@@ -753,6 +1276,8 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
         }
         plansPanelOpen={plansPanelOpen && planSnapshots.length > 0}
         onToggleMute={onToggleMute}
+        autoApprove={autoApprove}
+        onToggleAutoApprove={onToggleAutoApprove}
         session={session}
       />
       <ConnectionBannerOverlay
@@ -794,9 +1319,20 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
 
       <View style={styles.feed}>
         {hasMessages ? (
-          <FlatList
+          <FlashList
             contentContainerStyle={styles.feedContent}
+            style={feedRevealed ? undefined : styles.feedHidden}
             data={feedItems}
+            getItemType={(item) => item.kind}
+            // First layout is done: land on the newest row (the initial index
+            // aligns its top, not its bottom), and only then show the list.
+            onLoad={() => {
+              if (!openedOnTarget.current) settleFeedAtEnd();
+            }}
+            // Open on the newest row: rendering starts there, not at the top.
+            initialScrollIndex={
+              openedOnTarget.current || feedItems.length === 0 ? undefined : feedItems.length - 1
+            }
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
             keyExtractor={(item) => item.key}
@@ -804,9 +1340,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               // Also the retry path: `onStartReached` fires once per content
               // length, so a page that fails to load leaves the gesture spent
               // until the feed changes underneath it.
-              // Keep this in step with `hasFeedHeader`, which offsets the
-              // sticky separators.
-              state.isLoadingOlder ? (
+              !hasFeedHeader ? null : state.isLoadingOlder ? (
                 <View style={styles.loadOlder}>
                   <ActivityIndicator color={colors.slate} size="small" />
                 </View>
@@ -823,9 +1357,9 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                 </Pressable>
               ) : null
             }
-            // Anchors the scroll to the first row that was already on screen,
-            // so a page arriving above it does not shove the transcript down.
-            maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+            // FlashList keeps the rows on screen in place when a page arrives
+            // above them by default; following new rows below stays ours
+            // (`shouldAutoScrollForNewFeedItem`).
             onStartReached={() => {
               if (
                 !onLoadOlder ||
@@ -841,8 +1375,19 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
             }}
             onStartReachedThreshold={0.3}
             onContentSizeChange={() => {
-              const isInitialLayout = !hasMeasuredFeedLayout.current;
+              // Opening on a target already positioned the feed; the first
+              // layout must not snap it back to the end.
+              if (!hasMeasuredFeedLayout.current) {
+                markChatMetric("chat.open_session", sessionKey, "first_frame");
+              }
+              const isInitialLayout = !hasMeasuredFeedLayout.current && !openedOnTarget.current;
               hasMeasuredFeedLayout.current = true;
+              // Opening on a pushed message or a saved position, not the end.
+              if (pendingTarget.current) return;
+              if (feedSettling.current) {
+                settleFeedAtEnd();
+                return;
+              }
               if (
                 shouldAutoScrollFeed({
                   isInitialLayout,
@@ -853,6 +1398,14 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               }
             }}
             onScroll={handleFeedScroll}
+            onScrollBeginDrag={() => {
+              feedSettling.current = false;
+              // The reader took over; stop steering toward the saved spot.
+              if (pendingTarget.current?.mode === "anchor") pendingTarget.current = null;
+              targetSettleUntil.current = 0;
+            }}
+            onViewableItemsChanged={onViewableItemsChanged}
+            viewabilityConfig={viewabilityConfig}
             refreshControl={
               onRefresh ? (
                 <RefreshControl
@@ -863,56 +1416,76 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               ) : undefined
             }
             ref={messageListRef}
+            extraData={`${highlightKey ?? ""}|${selection ? [...selection].join(",") : "-"}`}
             scrollEventThrottle={80}
             stickyHeaderIndices={stickyIndices}
             renderItem={({ item }) => {
               if (item.kind === "separator") {
                 return <DaySeparator label={item.label} />;
               }
+              const live = () => latest.current!;
               if (item.kind === "agentTurn") {
-                return (
-                  <AgentTurnCard
-                    onOpenDetail={() => setSelectedTurnKey(item.key)}
-                    onInterrupt={onAgentInterrupt}
+                return wrapRow(
+                  item.key,
+                  <MemoAgentTurnCard
+                    onLongPress={
+                      selection ? undefined : () => live().showTurnActions(item.key, item.turn)
+                    }
+                    onOpenDetail={() => live().openTurn(item.key)}
+                    onInterrupt={
+                      onAgentInterrupt ? (agentId) => live().onAgentInterrupt?.(agentId) : undefined
+                    }
+                    feedbackKind={
+                      item.turn.finalMessage
+                        ? feedbackByMessageId?.get(item.turn.finalMessage.messageId) ?? null
+                        : null
+                    }
+                    onFeedback={
+                      onFeedback ? (messageId, kind) => live().onFeedback?.(messageId, kind) : undefined
+                    }
                     senderAvatarGlyph={
                       senderAvatarGlyphs?.get(item.turn.agentId) ?? null
                     }
                     senderAvatarUrl={senderAvatars?.get(item.turn.agentId) ?? null}
                     senderName={senderNames?.get(item.turn.agentId) ?? undefined}
                     turn={item.turn}
-                  />
+                  />,
                 );
               }
               const msg = item.message;
               const isOwn = ownActorId ? msg.senderActorId === ownActorId : false;
               const replyToMessage =
                 msg.replyToMessageId && msg.replyToMessageId.length > 0
-                  ? state.messages.find((m) => m.messageId === msg.replyToMessageId) ??
-                    null
+                  ? messageById.get(msg.replyToMessageId) ?? null
                   : null;
-              return (
-                <SessionMessageRow
+              const rowSource = sourceByKey.get(item.key);
+              return wrapRow(
+                item.key,
+                <MemoMessageRow
                   isOwnMessage={isOwn}
+                  onSelect={
+                    !selection && rowSource && selectableMessage(rowSource)
+                      ? () => live().startSelection(item.key)
+                      : undefined
+                  }
                   message={msg}
-                  onDelete={onDeleteMessage}
+                  onDelete={onDeleteMessage ? (m) => live().onDeleteMessage?.(m) : undefined}
                   onEdit={
                     onEditMessage
-                      ? (m) => onEditMessage(m.messageId, m.content)
+                      ? (m) => live().onEditMessage?.(m.messageId, m.content)
                       : undefined
                   }
                   onJumpToReply={(targetId) => {
-                    const index = feedItems.findIndex(
+                    const index = live().feedItems.findIndex(
                       (entry) => entry.kind === "message" && entry.message.messageId === targetId,
                     );
-                    if (index >= 0) {
-                      messageListRef.current?.scrollToIndex({
-                        animated: true,
-                        index,
-                        viewPosition: 0.3,
-                      });
-                    }
+                    if (index >= 0) live().scrollToIndex(index);
                   }}
-                  onRetryOutbox={onRetryFailed}
+                  onRetryOutbox={onRetryFailed ? (id) => live().onRetryFailed?.(id) : undefined}
+                  feedbackKind={feedbackByMessageId?.get(msg.messageId) ?? null}
+                  onFeedback={
+                    onFeedback ? (kind) => live().onFeedback?.(msg.messageId, kind) : undefined
+                  }
                   toolResult={(() => {
                     if (msg.kind.trim().toLowerCase() !== "agent_tool_call") return undefined;
                     const meta =
@@ -925,7 +1498,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                   })()}
                   onReply={
                     onReplyToMessage
-                      ? (m) => onReplyToMessage(m.messageId)
+                      ? (m) => live().onReplyToMessage?.(m.messageId)
                       : undefined
                   }
                   outboxStatus={
@@ -933,8 +1506,16 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                       ? (outboxByMessageId.get(msg.messageId) as OutboxStatus | undefined)
                       : undefined
                   }
-                  onGrantPermission={onGrantPermission}
-                  onDenyPermission={onDenyPermission}
+                  onGrantPermission={
+                    onGrantPermission
+                      ? (requestId, m) => live().onGrantPermission?.(requestId, m)
+                      : undefined
+                  }
+                  onDenyPermission={
+                    onDenyPermission
+                      ? (requestId, m) => live().onDenyPermission?.(requestId, m)
+                      : undefined
+                  }
                   resolvedPermission={(() => {
                     if (msg.kind.trim().toLowerCase() !== "permission_request")
                       return null;
@@ -954,11 +1535,11 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                   senderName={
                     !isOwn ? senderNames?.get(msg.senderActorId) ?? undefined : undefined
                   }
-                />
+                />,
               );
             }}
           />
-        ) : (
+        ) : !state.historySettled ? null : (
           <View style={styles.empty}>
             <Ionicons
               color={colors.slate}
@@ -971,9 +1552,62 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
             </Text>
           </View>
         )}
+        {searchOpen ? (
+          <View style={styles.searchOverlay}>
+            <SessionSearchBar
+              currentIndex={searchIndex}
+              matchCount={searchMatchCount}
+              onChangeQuery={setSearchQuery}
+              onDone={closeSearch}
+              onNewer={() => {
+                selectionTick();
+                setSearchIndex((index) => Math.min(index + 1, searchMatchCount - 1));
+              }}
+              onOlder={() => {
+                selectionTick();
+                setSearchIndex((index) => Math.max(index - 1, 0));
+              }}
+              query={searchQuery}
+            />
+          </View>
+        ) : null}
+        {hasMessages && unreadPill && !searchOpen ? (
+          <Pressable
+            accessibilityLabel={tHook("{{value}} unread", { value: unreadPill.count })}
+            accessibilityRole="button"
+            onPress={jumpToFirstUnread}
+            style={({ pressed }) => [styles.unreadPill, pressed ? styles.floatingPressed : null]}
+            testID="session.firstUnread"
+          >
+            <Text style={styles.unreadPillText}>
+              {tHook("{{value}} unread", { value: formatNewMessageCount(unreadPill.count) })}
+            </Text>
+            <Ionicons color={hai.cinnabar} name="arrow-up" size={12} />
+          </Pressable>
+        ) : null}
+        {hasMessages && !isAtBottom ? (
+          <Pressable
+            accessibilityLabel={
+              newBelowCount > 0
+                ? tHook("{{value}} new messages", { value: newBelowCount })
+                : tHook("Jump to latest")
+            }
+            accessibilityRole="button"
+            onPress={jumpToBottom}
+            style={({ pressed }) => [styles.jumpToBottom, pressed ? styles.floatingPressed : null]}
+            testID="session.jumpToBottom"
+          >
+            <Ionicons color={hai.onyx} name="chevron-down" size={18} />
+            {newBelowCount > 0 ? (
+              <View style={styles.jumpBadge}>
+                <Text style={styles.jumpBadgeText}>{formatNewMessageCount(newBelowCount)}</Text>
+              </View>
+            ) : null}
+          </Pressable>
+        ) : null}
       </View>
 
-      {replyTarget ? (
+      {replyTarget && !selection ? (
         <View style={styles.replyBar}>
           <View style={styles.replyBarAccent} />
           <View style={styles.replyBarBody}>
@@ -1046,43 +1680,107 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
       ) : null}
 
       <KeyboardAvoidingView
-        behavior={Platform.select({ ios: "padding", android: undefined })}
-        keyboardVerticalOffset={Platform.select({ ios: 8, default: 0 })}
+        // Android too: under the edge-to-edge window SDK 57 enforces,
+        // `adjustResize` no longer shrinks the window, so leaving Android to
+        // the OS put the keyboard straight over the composer.
+        behavior="padding"
+        // The composer carries the bottom safe-area inset below (home
+        // indicator / navigation bar). On iOS the keyboard's height already
+        // covers that strip, so take it back out or the composer floats a
+        // home-indicator's height above the keys. Edge-to-edge Android reports
+        // the keyboard without the navigation bar, which the inset padding
+        // makes up for exactly.
+        // iOS: the view's frame is measured from below the root layout's
+        // top safe-area padding, while the keyboard reports screen
+        // coordinates — add that strip back or the composer's action row sits
+        // behind the keys. It has to be the window's inset: the root
+        // `SafeAreaView` consumes the top edge, so this screen's own context
+        // reports 0 there.
+        keyboardVerticalOffset={Platform.select({
+          ios: (initialWindowMetrics?.insets.top ?? 0) + 8 - bottomInset,
+          default: 0,
+        })}
       >
-        {/* An unanswered question blocks the turn, so it takes the composer's
-            place until it is answered or skipped — same swap iOS does. */}
-        {pendingQuestion && onAnswerQuestion && onSkipQuestion ? (
-          <AcpQuestionCard
-            errorMessage={questionErrorMessage}
-            isSubmitting={isAnsweringQuestion}
-            key={pendingQuestion.id}
-            onSkip={() => onSkipQuestion(pendingQuestion)}
-            onSubmit={(answers) => onAnswerQuestion(pendingQuestion, answers)}
-            pending={pendingQuestion}
-          />
-        ) : (
-          <SessionComposerShell
-            composerText={composerText}
-            connectionState={connectionState}
-            isSending={isSending}
-            onAttach={onAttach}
-            onOpenAgents={onOpenMembers}
-            selectedAgentNames={(agentChips ?? []).map((chip) => chip.displayName)}
-            onChangeText={onChangeComposerText}
-            onRemovePendingAttachment={(path) => {
-              removePendingAttachment(state.session.teamId, state.session.sessionId, path);
-            }}
-            onSend={onSend}
-            pendingAttachments={pendingAttachments}
-            sendErrorMessage={sendErrorMessage}
-          />
-        )}
+        <View style={{ paddingBottom: bottomInset }}>
+          {/* An unanswered question blocks the turn, so it takes the composer's
+              place until it is answered or skipped — same swap iOS does. */}
+          {selection ? (
+            <MessageSelectionBar
+              canDelete={selectionCanDelete}
+              count={pickedMessages.length}
+              onCancel={() => setSelection(null)}
+              onCopy={() => {
+                void Clipboard.setStringAsync(transcriptOf());
+                successTone();
+                showToast("success", tHook("Copied"));
+                setSelection(null);
+              }}
+              onDelete={() => {
+                onDeleteMessages?.(pickedMessages.map((m) => m.messageId));
+                setSelection(null);
+              }}
+              onForward={() => {
+                if (!onForwardText) return;
+                const title = session.title.trim() || tHook("Untitled session");
+                onForwardText(transcriptOf(tHook("Forwarded from “{{value}}”", { value: title })));
+                setSelection(null);
+              }}
+            />
+          ) : pendingQuestion && onAnswerQuestion && onSkipQuestion ? (
+            <AcpQuestionCard
+              errorMessage={questionErrorMessage}
+              isSubmitting={isAnsweringQuestion}
+              key={pendingQuestion.id}
+              onSkip={() => onSkipQuestion(pendingQuestion)}
+              onSubmit={(answers) => onAnswerQuestion(pendingQuestion, answers)}
+              pending={pendingQuestion}
+            />
+          ) : (
+            <SessionComposerShell
+              composerText={composerText}
+              connectionState={connectionState}
+              isSending={isSending}
+              onAttach={onAttach}
+              onOpenAgents={onOpenMembers}
+              onPasteImage={onPasteImage}
+              selectedAgentNames={(agentChips ?? []).map((chip) => chip.displayName)}
+              onChangeText={onChangeComposerText}
+              onRemovePendingAttachment={(path) => {
+                removePendingAttachment(state.session.teamId, state.session.sessionId, path);
+              }}
+              onSend={onSend}
+              pendingAttachments={pendingAttachments}
+              sendErrorMessage={sendErrorMessage}
+            />
+          )}
+        </View>
       </KeyboardAvoidingView>
     </View>
   );
 }
 
+/**
+ * The feed's rows, memoized. Every streamed chunk re-renders the screen; with
+ * plain components that re-rendered every mounted row along with it. The
+ * callbacks passed in read the current handlers through `latest`, which is
+ * what lets the comparator ignore their identity.
+ */
+/** How long an opened feed keeps returning to its end while rows settle. */
+const FEED_SETTLE_MS = 1500;
+/**
+ * How long the feed's height must hold still before it is shown. Measured on
+ * a moto g35: FlashList keeps measuring rows above the end for up to ~0.8s
+ * on a session of long replies, in bursts under ~130ms apart.
+ */
+const FEED_REVEAL_QUIET_MS = 150;
+
+const MemoAgentTurnCard = memo(AgentTurnCard, propsEqualIgnoringFunctions);
+const MemoMessageRow = memo(SessionMessageRow, propsEqualIgnoringFunctions);
+
 const styles = StyleSheet.create({
+  feedHidden: {
+    opacity: 0,
+  },
   empty: {
     alignItems: "center",
     flex: 1,
@@ -1110,6 +1808,94 @@ const styles = StyleSheet.create({
   },
   feed: {
     flex: 1,
+  },
+  floatingPressed: {
+    opacity: 0.7,
+  },
+  searchOverlay: {
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: GLASS_HEADER_HEIGHT,
+  },
+  selectCircle: {
+    alignItems: "center",
+    borderColor: colors.slate,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    height: 22,
+    justifyContent: "center",
+    marginLeft: spacing.md,
+    width: 22,
+  },
+  selectCircleOn: {
+    backgroundColor: hai.cinnabar,
+    borderColor: hai.cinnabar,
+  },
+  selectRow: {
+    alignItems: "center",
+    flexDirection: "row",
+  },
+  selectRowBody: {
+    flex: 1,
+  },
+  highlightRow: {
+    backgroundColor: colors.paper,
+  },
+  jumpBadge: {
+    alignItems: "center",
+    backgroundColor: hai.cinnabar,
+    borderRadius: 9,
+    height: 18,
+    justifyContent: "center",
+    minWidth: 18,
+    paddingHorizontal: 4,
+    position: "absolute",
+    right: -4,
+    top: -6,
+  },
+  jumpBadgeText: {
+    color: colors.background,
+    fontSize: 10,
+    fontWeight: "600",
+  },
+  jumpToBottom: {
+    alignItems: "center",
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    bottom: spacing.md,
+    height: 36,
+    justifyContent: "center",
+    position: "absolute",
+    right: spacing.lg,
+    shadowColor: "#000",
+    shadowOffset: { height: 1, width: 0 },
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+    width: 36,
+    elevation: 3,
+  },
+  unreadPill: {
+    alignItems: "center",
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    gap: 4,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    position: "absolute",
+    right: spacing.lg,
+    top: GLASS_HEADER_HEIGHT + spacing.sm,
+    elevation: 2,
+  },
+  unreadPillText: {
+    color: hai.cinnabar,
+    fontSize: 12,
+    fontWeight: "500",
   },
   feedContent: {
     paddingBottom: spacing.sm,
@@ -1189,6 +1975,15 @@ const styles = StyleSheet.create({
   },
   turnCardPressed: {
     opacity: 0.88,
+  },
+  turnFeedbackRow: {
+    flexDirection: "row",
+    gap: 14,
+    marginTop: 6,
+  },
+  // Holds the row's height on a live card before it has anything to count.
+  turnDetailRowReserved: {
+    opacity: 0,
   },
   turnDetailRow: {
     alignItems: "center",

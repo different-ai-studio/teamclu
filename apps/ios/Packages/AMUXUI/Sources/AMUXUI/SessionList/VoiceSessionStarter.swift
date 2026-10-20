@@ -104,7 +104,18 @@ enum VoiceSessionStarter {
 
         let workspaceStore = WorkspaceStore(teamID: teamID, repository: context.workspacesRepository)
         await workspaceStore.reload(agentID: agent.id)
-        guard let workspace = workspaceStore.workspaces.first else {
+        // The same seat the manual new-session sheet picks. `.first` of the
+        // list is arbitrary and usually not the workspace the daemon keeps a
+        // warm pi host for, which cost a cold spawn on every first take.
+        let agentID = agent.id
+        let cachedAgent = try? modelContext.fetch(
+            FetchDescriptor<CachedActor>(predicate: #Predicate { $0.actorId == agentID })
+        ).first
+        guard let workspace = SessionCreationInput.defaultWorkspace(
+            agentID: agentID,
+            defaultWorkspaceID: cachedAgent?.defaultWorkspaceId,
+            workspaces: workspaceStore.workspaces
+        ) else {
             throw StartError.unavailable(String(localized: "This agent has no workspace. Add one in Agent settings."))
         }
 
@@ -125,6 +136,13 @@ enum VoiceSessionStarter {
             participant(actorID: agent.id, type: .personalAgent,
                         displayName: agent.displayName, joinedAt: createdAt),
         ]
+        let agentSpawns: [SessionCreationInput.AgentSpawn] = [.init(
+            actorID: agent.id,
+            routeActorID: agent.id,
+            workspaceID: workspace.id,
+            workspacePath: workspace.path,
+            agentType: agentType.asAmuxAgentType
+        )]
         let input = SessionCreationInput(
             sessionID: sessionID,
             teamID: MQTTTopics.normalizedTeamID(teamID),
@@ -135,14 +153,11 @@ enum VoiceSessionStarter {
             createdAt: createdAt,
             participants: participants,
             participantInfos: participantInfos,
-            agentSpawns: [.init(
-                actorID: agent.id,
-                routeActorID: agent.id,
-                workspaceID: workspace.id,
-                workspacePath: workspace.path,
-                agentType: agentType.asAmuxAgentType
-            )],
-            mentionAgentActorIDs: [agent.id]
+            agentSpawns: agentSpawns,
+            mentionAgentActorIDs: SessionCreationInput.autoMentionAgentIDs(
+                agentSpawns: agentSpawns,
+                accessibleAgentIDs: Set(context.connectedAgentsStore.agents.map(\.id))
+            )
         )
 
         let outcome = await SessionCreationUseCase(
@@ -152,7 +167,7 @@ enum VoiceSessionStarter {
         ).create(input)
         switch outcome {
         case .created(let createdID, _):
-            viewModel.reloadSessions(modelContext: modelContext)
+            viewModel.adoptCreatedSession(createdID, modelContext: modelContext)
             return createdID
         case .failed(let failure):
             throw StartError.unavailable(failure.userFacingMessage)

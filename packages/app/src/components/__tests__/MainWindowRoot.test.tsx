@@ -41,6 +41,9 @@ vi.mock('@/components/extension/SidePanelHostGateOverlay', () => ({
 vi.mock('@/components/invite/InviteLinkConfirmDialog', () => ({
   InviteLinkConfirmDialog: () => null,
 }))
+vi.mock('@/components/invite/JoinLinkConfirmDialog', () => ({
+  JoinLinkConfirmDialog: () => null,
+}))
 vi.mock('@/components/updater/UpdateDialog', () => ({
   UpdateDialogContainer: () => null,
 }))

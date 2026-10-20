@@ -122,6 +122,37 @@ export function parseLimit(value) {
   return limit;
 }
 
+export function decodeSessionAttachmentCursor(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (!parsed || typeof parsed !== "object") throw new Error("not an object");
+    return {
+      attachedAt: optionalStringOrNull(parsed.attachedAt, "cursor.attachedAt"),
+      storagePath: optionalStringOrNull(parsed.storagePath, "cursor.storagePath"),
+    };
+  } catch (cause) {
+    throw new ApiError(400, "validation_failed", "Invalid cursor", { cause });
+  }
+}
+
+export function encodeSessionAttachmentCursor(cursor) {
+  return encodeCursor({
+    attachedAt: cursor.attachedAt,
+    storagePath: cursor.storagePath,
+  });
+}
+
+export function nextSessionAttachmentCursor(items, limit) {
+  if (!Array.isArray(items) || items.length < limit) return null;
+  const last = items[items.length - 1];
+  if (!last?.attachedAt || !last?.storagePath) return null;
+  return encodeSessionAttachmentCursor({
+    attachedAt: last.attachedAt,
+    storagePath: last.storagePath,
+  });
+}
+
 export function queryParams(event) {
   const params = new URLSearchParams();
   // FC 2.0 uses queryStringParameters; FC 3.0 uses queryParameters. Some events

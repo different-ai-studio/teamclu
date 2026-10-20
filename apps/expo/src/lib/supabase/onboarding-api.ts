@@ -1,9 +1,23 @@
 import type { CloudAuthClient } from "../auth/cloud-auth";
-import type { BootstrapResult, TeamSummary } from "../../features/onboarding/onboarding-types";
+import type {
+  BootstrapResult,
+  MyIdentity,
+  TeamSummary,
+} from "../../features/onboarding/onboarding-types";
+import { createCloudApiClient, supabaseAccessToken } from "../cloud-api/client";
+import {
+  redeemJoinLink,
+  type JoinByLinkResult,
+} from "../../features/onboarding/join-link";
 import {
   parseOAuthCallbackUrl,
   type OAuthProvider,
 } from "../../features/onboarding/onboarding-oauth";
+import {
+  parsePendingInvites,
+  type PendingInvite,
+} from "../../features/onboarding/pending-invites";
+import type { PhoneLoginResult } from "../../features/onboarding/phone-login";
 
 /**
  * Cloud-only onboarding/auth API. Backed by the Cloud API auth facade
@@ -15,17 +29,52 @@ import {
  * imports — kept as an injected dependency so tests can substitute fakes.
  */
 
-type CloudTeamPage = { items?: CloudTeam[] };
+type CloudTeamPage = { items?: CloudTeam[]; homeOrgId?: string | null };
+type InviteClaimBody = {
+  actorId?: string | null;
+  teamId?: string | null;
+  refreshToken?: string | null;
+};
 type CloudTeam = { id: string; name: string; slug?: string | null };
 type MembershipTeam = CloudTeam & { role?: string | null; isMember?: boolean };
 type TeamActivation = { actorId?: string | null; refreshToken: string };
+type WireIdentity = {
+  userId?: string | null;
+  orgId?: string | null;
+  orgName?: string | null;
+  orgLogo?: string | null;
+  adminType?: number | null;
+  isCurrent?: boolean | null;
+};
+
+/** Wire → domain; rows without a user id cannot be switched to and are dropped. */
+export function toMyIdentities(
+  items: ReadonlyArray<WireIdentity | null> | null | undefined,
+): MyIdentity[] {
+  const result: MyIdentity[] = [];
+  for (const item of items ?? []) {
+    if (!item?.userId) continue;
+    result.push({
+      userId: item.userId,
+      orgId: item.orgId ?? null,
+      orgName: item.orgName?.trim() ? item.orgName : null,
+      orgLogo: item.orgLogo ?? null,
+      adminType: typeof item.adminType === "number" ? item.adminType : 1,
+      isCurrent: Boolean(item.isCurrent),
+    });
+  }
+  return result;
+}
 
 import {
   resolveBootstrapDecision,
   type BootstrapTeam,
 } from "../../features/onboarding/bootstrap-route";
 
-export function createOnboardingApi(client: CloudAuthClient) {
+export function createOnboardingApi(
+  client: CloudAuthClient,
+  deps: { fetchImpl?: typeof fetch } = {},
+) {
   return {
     async getCurrentSession() {
       const { data } = await client.auth.getSession();
@@ -45,15 +94,23 @@ export function createOnboardingApi(client: CloudAuthClient) {
       const dto = await client.api.get<CloudTeamPage>("/v1/teams?scope=all");
       const teams: BootstrapTeam[] = ((dto.items as MembershipTeam[] | undefined) ?? [])
         .filter((team) => team.isMember !== false)
-        .map((team) => ({
-          id: team.id,
-          name: team.name ?? "Unnamed team",
-          slug: team.slug ?? "",
-          role: team.role ?? "member",
-          orgName: (team as { orgName?: string | null }).orgName ?? null,
-        }));
+        .map((team) => {
+          const orgId = (team as { orgId?: string | null }).orgId ?? null;
+          return {
+            id: team.id,
+            name: team.name ?? "Unnamed team",
+            slug: team.slug ?? "",
+            role: team.role ?? "member",
+            orgName: (team as { orgName?: string | null }).orgName ?? null,
+            ...(orgId ? { orgId } : {}),
+          };
+        });
 
-      const decision = resolveBootstrapDecision({ teams, rememberedTeamId });
+      const decision = resolveBootstrapDecision({
+        teams,
+        rememberedTeamId,
+        homeOrgId: dto.homeOrgId ?? null,
+      });
       if (decision.kind === "createTeam") {
         return { isAnonymous, team: null, memberActorId: null, teamChoices: [] };
       }
@@ -94,6 +151,16 @@ export function createOnboardingApi(client: CloudAuthClient) {
         if (result.error) throw new Error(result.error.message);
       }
       return activation.actorId ?? null;
+    },
+
+    /**
+     * Adopt a session minted server-side (e.g. by accepting an invite, which
+     * may land the user in another org). Silent, like the activation path, so
+     * it does not race a bootstrap through the auth listener.
+     */
+    async adoptRefreshSession(refreshToken: string): Promise<void> {
+      const result = await client.auth.setRefreshSession(refreshToken);
+      if (result.error) throw new Error(result.error.message);
     },
 
     async sendEmailOTP(email: string) {
@@ -150,8 +217,123 @@ export function createOnboardingApi(client: CloudAuthClient) {
       };
     },
 
+    async sendPhoneOTP(phone: string) {
+      await client.auth.phoneSendCode(phone);
+      return { pendingPhone: phone };
+    },
+
+    /**
+     * Stores the session when there is one. A multi-account answer leaves the
+     * code unconsumed so `loginWithPhoneAccount` can post it again.
+     */
+    async verifyPhoneOTP(phone: string, code: string): Promise<PhoneLoginResult> {
+      return client.auth.phoneLogin({ phone, code });
+    },
+
+    async loginWithPhoneAccount(phone: string, code: string, userId: string) {
+      const result = await client.auth.phoneLogin({ phone, code, userId });
+      if (result.type !== "session") {
+        throw new Error("Phone sign-in returned no session.");
+      }
+    },
+
+    /**
+     * Side-effect-free "has a team appeared?" for the no-team screen's
+     * refresh. `loadBootstrap` would activate the team it finds.
+     */
+    async hasAnyTeam(): Promise<boolean> {
+      const dto = await client.api.get<CloudTeamPage>("/v1/teams?scope=all");
+      return ((dto.items as MembershipTeam[] | undefined) ?? []).some(
+        (team) => team.isMember !== false,
+      );
+    },
+
+    async listPendingInvites(): Promise<PendingInvite[]> {
+      return parsePendingInvites(await client.api.get<unknown>("/v1/invites/pending"));
+    },
+
+    /**
+     * Joins the invite's team as the signed-in user and adopts the session
+     * the server mints for it, if any. Returns the team joined.
+     */
+    async acceptPendingInvite(inviteId: string): Promise<string | null> {
+      const row = await client.api.post<InviteClaimBody>(
+        `/v1/invites/${encodeURIComponent(inviteId)}/accept`,
+        {},
+      );
+      return adoptClaim(row);
+    },
+
+    async declinePendingInvite(inviteId: string): Promise<void> {
+      await client.api.post(`/v1/invites/${encodeURIComponent(inviteId)}/decline`, {});
+    },
+
+    /**
+     * Claims a pasted invite token as the signed-in user. Unlike the
+     * signed-out path this must not sign out first (iOS `joinWithInvite`).
+     */
+    async claimInvite(token: string): Promise<string | null> {
+      const trimmed = token.trim();
+      if (!trimmed) throw new Error("Invite token is empty.");
+      const row = await client.api.post<InviteClaimBody>("/v1/invites/claim", {
+        token: trimmed,
+      });
+      if (!row?.teamId) {
+        throw new Error("Invite claim returned no actor/team — token may be expired.");
+      }
+      return adoptClaim(row);
+    },
+
+    /**
+     * The signed-in person's identities, one per org (#1659). iOS
+     * `listMyIdentities`.
+     */
+    async listMyIdentities(): Promise<MyIdentity[]> {
+      const page = await client.api.get<{ items?: WireIdentity[] } | null>("/v1/auth/identities");
+      return toMyIdentities(page?.items);
+    },
+
+    /**
+     * Become one of the caller's own identities: mint its session and install
+     * it silently (like activation), so no auth-listener bootstrap races the
+     * caller's own.
+     */
+    async switchIdentity(userId: string): Promise<void> {
+      const res = await client.api.post<{ refreshToken?: string | null } | null>(
+        `/v1/auth/identities/${encodeURIComponent(userId)}/session`,
+        {},
+      );
+      if (!res?.refreshToken) throw new Error("Identity switch returned no session.");
+      const result = await client.auth.setRefreshSession(res.refreshToken);
+      if (result.error) throw new Error(result.error.message);
+    },
+
+    /**
+     * Redeem a team join link (#1672) as the signed-in user. A link minted by
+     * another Cloud API is redeemed there with the same bearer, as iOS does.
+     * Never claims a named invite and never touches the daemon.
+     */
+    async joinByLink(token: string, cloudApiUrl: string | null): Promise<JoinByLinkResult> {
+      const target = cloudApiUrl
+        ? createCloudApiClient({
+            baseUrl: cloudApiUrl,
+            getAccessToken: supabaseAccessToken(client),
+            fetchImpl: deps.fetchImpl,
+          })
+        : client.api;
+      return redeemJoinLink(target, token);
+    },
+
     async signOut() {
       await client.auth.signOut();
     },
   };
+
+  async function adoptClaim(row: InviteClaimBody | null | undefined): Promise<string | null> {
+    if (row?.refreshToken) {
+      const result = await client.auth.setRefreshSession(row.refreshToken);
+      if (result.error) throw new Error(result.error.message);
+    }
+    return row?.teamId ?? null;
+  }
 }

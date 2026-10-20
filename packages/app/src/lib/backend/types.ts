@@ -2,6 +2,8 @@ import type { TeamSkillsBackend } from "@/lib/backend/cloud-api/team-skills";
 import type { MarketplaceBackend } from "@/lib/backend/cloud-api/marketplace";
 import type { TeamMcpBackend } from "@/lib/backend/cloud-api/team-mcp";
 import type { KnowledgeAclBackend } from "@/lib/backend/cloud-api/knowledge-acl";
+import type { DocumentLibrariesBackend } from "@/lib/backend/cloud-api/document-libraries";
+import type { WikiMaintainerBackend } from "@/lib/backend/cloud-api/wiki-maintainer";
 import type { TeamEnvSecretsBackend } from "@/lib/backend/cloud-api/team-env-secrets";
 import type { MemberRoleRef, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
 import type { AdminBackend } from "@/lib/backend/cloud-api/admin";
@@ -82,6 +84,17 @@ export interface PendingInvite {
 
 export type Unsubscribe = () => void;
 
+/** One identity of the signed-in person — one per org (GET /v1/auth/identities). */
+export interface MyIdentity {
+  userId: string;
+  orgId: string | null;
+  orgName: string | null;
+  orgLogo: string | null;
+  adminType: number;
+  /** The identity the current session belongs to. */
+  isCurrent: boolean;
+}
+
 export interface AuthBackend {
   getSession(): Promise<AuthSession | null>;
   onAuthStateChange(listener: (session: AuthSession | null) => void): Unsubscribe;
@@ -107,6 +120,10 @@ export interface AuthBackend {
   /** Install a session minted server-side (e.g. by activateTeam) from its
    *  refresh token, so the client adopts a fresh JWT (new org_id). */
   adoptSession(refreshToken: string): Promise<AuthSession | null>;
+  /** The signed-in person's identities, one per org (login-time org picker). */
+  listMyIdentities(): Promise<MyIdentity[]>;
+  /** Become one of the caller's own identities: mints its session and adopts it. */
+  switchIdentity(userId: string): Promise<AuthSession | null>;
 }
 
 export interface SessionListEntry {
@@ -413,6 +430,14 @@ export interface MembershipTeam {
   memberCount?: number | null;
   /** Display name of the team's owner. */
   ownerName?: string | null;
+  /**
+   * True when the team sits in the signed-in identity's home org (FC's
+   * `homeOrgId`). The list itself spans every identity sharing the caller's
+   * phone, so the login chooser narrows to these rows to honour the account
+   * the user just picked. Absent on every row when the server could not say
+   * (or the home org is the shared tenant) — then nothing is narrowed.
+   */
+  inHomeOrg?: boolean;
 }
 
 export interface TeamInviteResult {
@@ -552,6 +577,24 @@ export interface TeamQuotas {
   members: Array<{ actorId: string; limitCredits: number | null }>;
 }
 
+export type TeamJoinLinkTtl = "7d" | "30d" | "never";
+
+export interface TeamJoinLink {
+  token: string;
+  url: string;
+  expiresAt: string | null;
+  maxUses: number | null;
+  useCount: number;
+  status: string;
+  createdAt: string;
+}
+
+export interface TeamJoinLinkInput {
+  ttl: TeamJoinLinkTtl;
+  maxUses: number | null;
+  rotate: boolean;
+}
+
 export interface TeamsBackend {
   listCurrentUserTeams(args?: { limit?: number }): Promise<TeamSummary[]>;
   getTeam(teamId: string): Promise<TeamSummary | null>;
@@ -577,6 +620,9 @@ export interface TeamsBackend {
    */
   upgradeAccount(input: { teamId: string; orgName: string; contact?: string | null }): Promise<{ orgId: string; teamId: string; teamName: string }>;
   createTeamInvite(input: TeamInviteInput): Promise<TeamInviteResult>;
+  getTeamJoinLink(teamId: string): Promise<TeamJoinLink>;
+  putTeamJoinLink(teamId: string, input: TeamJoinLinkInput): Promise<TeamJoinLink>;
+  revokeTeamJoinLink(teamId: string): Promise<void>;
   removeTeamActor(teamId: string, actorId: string): Promise<void>;
   listAllMyTeams(): Promise<MembershipTeam[]>;
   /**
@@ -789,6 +835,17 @@ export interface ActorsBackend {
   findAgentForDevice(input: {
     teamId: string;
     deviceId: string;
+  }): Promise<{ agentId: string | null; displayName: string | null }>;
+  /**
+   * Stamp `deviceId` onto an agent this machine's daemon is already running,
+   * when that row was created before device-scoped binding and still has no
+   * device id. Nulls mean the row was not eligible — do not create a second
+   * agent from this call.
+   */
+  adoptLegacyAgentDevice(input: {
+    teamId: string;
+    deviceId: string;
+    agentId: string;
   }): Promise<{ agentId: string | null; displayName: string | null }>;
   /**
    * The agent actor bound to this machine in this team — created if absent —
@@ -1039,15 +1096,8 @@ export interface AppBuildSpec {
   context?: string;
 }
 
-/**
- * Two mutually exclusive shapes. A checkout may declare intent — `entry` plus
- * an optional `port` — and let the control plane resolve the rest from
- * `build.kind`; what comes back in `startSpec` after a deploy is always the
- * resolved form, with `fcRuntime`, `command` and `layers` filled in.
- */
+/** Explicit startup fields for code apps; container apps use their image. */
 export interface AppStartSpec {
-  /** Short form: the path to run inside the build output directory. */
-  entry?: string;
   fcRuntime?: string;
   command?: string[];
   args?: string[];
@@ -1224,7 +1274,16 @@ export type VerifyAppDomainResult =
   | { status: "pending"; message: string }
   | { status: "not_found" };
 
+export interface AppUndeployOperation {
+  id: string; appId: string; status: 'pending' | 'running' | 'failed' | 'succeeded';
+  startedAt: string; updatedAt: string; error: string | null;
+  steps: Partial<Record<'httpTrigger' | 'originDomain' | 'function' | 'artifact' | 'oauthClient', { status: 'succeeded' | 'failed' | 'skipped'; error?: string }>>;
+}
+export interface AppUndeployResult { app: AppRow; operation: AppUndeployOperation }
+
 export interface AppRow {
+  canManageDeployment?: boolean;
+  undeployOperation?: AppUndeployOperation;
   id: string;
   teamId: string;
   name: string;
@@ -1314,6 +1373,12 @@ export interface DeployAppResult extends AppRow {
   deployToken: string;
   /** Null for an imported app: there is no forge commit to pin the deploy to. */
   gitCommitSha: string | null;
+  revision: string;
+}
+
+export interface AppDeployPreflightResult {
+  token: string;
+  preview: { firstDeploy: boolean; requiresMigrationApproval: boolean; changes: Array<{ field: string; from: unknown; to: unknown }> };
 }
 
 /** A JIT deploy key for a Gitea-managed app's repo. */
@@ -1481,7 +1546,29 @@ export interface AppDataRowsQuery {
   filter?: { column: string; op: AppDataFilterOp; value?: string } | null;
 }
 
+export interface EffectiveAuthPolicy {
+  path: string;
+  kind: "public" | "any_authenticated" | "any_org_role" | "org_roles";
+  roleCodes: string[] | null;
+  inherited: boolean;
+  source: "auth_mode" | "roles" | "rule_audience" | "app_audience" | "scope_baseline";
+}
+export interface AppAuthInfo {
+  appId: string;
+  teamId: string;
+  organization: { id: string; name: string } | null;
+  roleScope: "organization";
+  roles: Array<{ id: string; code: string; name: string; status: string }>;
+  authMode: AppAuthMode;
+  authScope: AppAuthScope;
+  authAudience: AppAuthAudience;
+  authRules: AppAuthRule[];
+  effectivePolicies: EffectiveAuthPolicy[];
+  organizationStatus: "configured" | "unconfigured";
+}
+
 export interface AppsBackend {
+  getAppAuthInfo(appId: string): Promise<AppAuthInfo>;
   listApps(teamId: string): Promise<AppRow[]>;
   createApp(input: {
     teamId: string;
@@ -1497,7 +1584,7 @@ export interface AppsBackend {
   updateAppProvisionStatus(appId: string, provisionStatus: string): Promise<AppRow | null>;
   /** Report a deploy-lifecycle status the client owns (today: `deploy_error`
    *  when the local daemon build never finished). Returns null on 404. */
-  updateAppDeployStatus(appId: string, fcStatus: string, deployError?: string): Promise<AppRow | null>;
+  updateAppDeployStatus(appId: string, fcStatus: string, deployError?: string, deployToken?: string): Promise<AppRow | null>;
   /** Rename an app (PATCH name). Returns null on 404. */
   renameApp(appId: string, name: string): Promise<AppRow | null>;
   /**
@@ -1522,14 +1609,17 @@ export interface AppsBackend {
    *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
   deployApp(
     appId: string,
-    input: { gitCommitSha?: string; runtime?: string; useAppCodeDomain?: boolean },
+    input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; preflightToken: string; useAppCodeDomain?: boolean },
   ): Promise<DeployAppResult>;
+  preflightAppDeploy(appId: string, input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; migrationIntent?: boolean }): Promise<AppDeployPreflightResult>;
+  cancelAppDeployPreflight(appId: string, deployToken: string): Promise<{ cancelled: boolean }>;
   /** Finalize FC deploy after the artifact is uploaded: points the function at
    *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
   finalizeDeploy(
     appId: string,
     input: {
       gitCommitSha?: string;
+      revision: string;
       deployToken: string;
       /** The daemon-validated build and start contract from `teamclu.app.json`. */
       declaration: AppDeployDeclaration;
@@ -1573,6 +1663,7 @@ export interface AppsBackend {
   /** Revoke a member grant (creator or app admin only). False on 404. */
   removeAppAccess(appId: string, memberId: string): Promise<boolean>;
   /** Delete an app (admin required). False on 404. */
+  undeployApp(appId: string): Promise<AppUndeployResult>;
   deleteApp(appId: string): Promise<boolean>;
   /** Change auth mode (creator only). Returns null on 404. */
   /**
@@ -1782,7 +1873,6 @@ export interface TelemetryBackend {
   deleteFeedback(input: TelemetryFeedbackDeleteInput): Promise<void>;
   listFeedbacks(input: { teamId: string; sessionId: string }): Promise<Array<Record<string, unknown>>>;
   listFeedbackSummary(teamId: string): Promise<Array<Record<string, unknown>>>;
-  insertSessionReport(input: Record<string, unknown>): Promise<void>;
   insertSkillUsage(input: Record<string, unknown>): Promise<void>;
   listLeaderboard(teamId: string, period?: "day" | "week" | "month"): Promise<Array<Record<string, unknown>>>;
   reportClientVersion(teamId: string, payload: { clientType: string; version: string; deviceId: string; build: string | null }): Promise<void>;
@@ -1817,6 +1907,8 @@ export interface TeamCluBackend {
   marketplace: MarketplaceBackend;
   teamMcp: TeamMcpBackend;
   knowledgeAcl: KnowledgeAclBackend;
+  documentLibraries: DocumentLibrariesBackend;
+  wikiMaintainer: WikiMaintainerBackend;
   teamEnvSecrets: TeamEnvSecretsBackend;
   orgRoles: OrgRolesBackend;
   /** Platform operators of this deployment — not a team role. */

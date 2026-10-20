@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 const t = (k: string, d?: string) => d ?? k
 
@@ -37,13 +37,16 @@ vi.mock('@/components/editors/CodeEditor', () => ({
   default: ({
     content,
     onChange,
+    readOnly = false,
   }: {
     content: string
+    readOnly?: boolean
     onChange: (v: string) => void
   }) => (
     <textarea
       data-testid="code-editor"
       value={content}
+      readOnly={readOnly}
       onChange={(e) => onChange(e.target.value)}
     />
   ),
@@ -55,6 +58,8 @@ const item = {
   name: 'say-hello',
   dirPath: '/hosted/skills',
   filename: 'say-hello',
+  kind: 'personal',
+  personalSource: 'global-agent',
 }
 
 vi.mock('@/stores/team-share-browser', () => ({
@@ -74,6 +79,7 @@ import { toast } from 'sonner'
 describe('SkillFileEditor save', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    item.personalSource = 'global-agent'
     mockPut.mockResolvedValue({ slug: 'say-hello' })
     mockNotify.mockResolvedValue(undefined)
     mockWrite.mockResolvedValue(undefined)
@@ -131,4 +137,29 @@ describe('SkillFileEditor save', () => {
     )
     expect(toast.error).not.toHaveBeenCalledWith(expect.stringContaining('Save failed'))
   })
+
+  it.each(['SKILL.md', 'scripts/hello.js'])('opens built-in %s read-only without a save action', async (rel) => {
+    item.personalSource = 'builtin'
+    render(<SkillFileEditor slug="say-hello" rel={rel} />)
+    const editor = await screen.findByTestId('code-editor')
+    expect((editor as HTMLTextAreaElement).readOnly).toBe(true)
+    expect((editor as HTMLTextAreaElement).value).toBe('hello-old')
+    expect(screen.queryByRole('button', { name: 'Save to this device' })).toBeNull()
+  })
+
+  it.each(['SKILL.md', 'scripts/hello.js'])('does not save built-in %s through the keyboard shortcut', async (rel) => {
+    item.personalSource = 'builtin'
+    render(<SkillFileEditor slug="say-hello" rel={rel} />)
+    const editor = await screen.findByTestId('code-editor')
+    // Force a stale editor callback: the save boundary must still refuse a write.
+    fireEvent.change(editor, { target: { value: 'hello-new' } })
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 's', metaKey: true })
+      fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+    })
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(mockWrite).not.toHaveBeenCalled()
+    expect(mockNotify).not.toHaveBeenCalled()
+  })
+
 })

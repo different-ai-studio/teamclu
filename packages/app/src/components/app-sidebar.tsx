@@ -37,18 +37,23 @@ import { SIDEBAR_INTERACTIVE_CURSOR } from "@/components/sidebar/sidebar-interac
 import { useMqttConnected } from "@/hooks/use-mqtt-connected"
 import { recoverMqttConnection } from "@/stores/mqtt-reconnect"
 
-/** Sidebar collapse control only (workspace variant sidebar header). */
+/** Sidebar collapse / expand control (sidebar header, and second-column headers while the sidebar is collapsed or a drawer). */
 export function SidebarCollapseToggle({ className }: { className?: string }) {
   const { t } = useTranslation()
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, isMobile, openMobile, open, hasSidebar } = useSidebar()
+  const expanded = isMobile ? openMobile : open
+  const label = expanded
+    ? t("navigation.collapseSidebar", "Collapse sidebar")
+    : t("navigation.expandSidebar", "Expand sidebar")
+  if (!hasSidebar) return null
   return (
     <Button
       variant="ghost"
       size="icon"
       className={cn("h-7 w-7 text-muted-foreground hover:text-foreground", className)}
       onClick={toggleSidebar}
-      title={t("navigation.collapseSidebar", "Collapse sidebar")}
-      aria-label={t("navigation.collapseSidebar", "Collapse sidebar")}
+      title={label}
+      aria-label={label}
     >
       <PanelLeftIcon className="h-4 w-4" />
     </Button>
@@ -379,9 +384,42 @@ function SidebarUserAccountMenu() {
   )
 }
 
-export function AppSidebar({ className, ...props }: React.ComponentProps<typeof Sidebar>) {
+/** As a drawer, the sidebar is a way to get somewhere: once the user has gone
+ * there — picked a section, opened a session, left for another view — it gets
+ * out of the way. Inline it stays put, as before. */
+function useCloseDrawerOnNavigate(onPickSection?: () => void) {
+  const { isMobile, openMobile, setOpenMobile } = useSidebar()
+  const sidebarFilter = useUIStore(s => s.sidebarFilter)
+  const currentView = useUIStore(s => s.currentView)
+  const activeSessionId = useSessionStore(s => s.activeSessionId)
+  const seen = React.useRef({ sidebarFilter, currentView, activeSessionId })
+
+  React.useEffect(() => {
+    const prev = seen.current
+    seen.current = { sidebarFilter, currentView, activeSessionId }
+    if (!isMobile || !openMobile) return
+    const filterChanged = prev.sidebarFilter !== sidebarFilter
+    if (!filterChanged && prev.currentView === currentView && prev.activeSessionId === activeSessionId) return
+    setOpenMobile(false)
+    // 'all' is the session list, which opening a session or a new chat also
+    // resets to; only a section that needs the second column to be seen asks
+    // for it.
+    if (filterChanged && sidebarFilter.kind !== 'all') onPickSection?.()
+  }, [sidebarFilter, currentView, activeSessionId, isMobile, openMobile, setOpenMobile, onPickSection])
+}
+
+export function AppSidebar({
+  className,
+  onPickSection,
+  ...props
+}: React.ComponentProps<typeof Sidebar> & {
+  /** Called when a section is picked from the drawer, for layouts where the
+   * second column it fills is not on screen. */
+  onPickSection?: () => void
+}) {
   const { t } = useTranslation()
   const activeSessionId = useSessionStore(s => s.activeSessionId)
+  useCloseDrawerOnNavigate(onPickSection)
   const sessionActivityMap = useSessionListActivityMap(activeSessionId)
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
 

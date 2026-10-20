@@ -180,6 +180,28 @@ test("GET messages rejects a limit past the maximum", async () => {
   assert.equal(repo.calls.length, 0);
 });
 
+test("GET session attachments forwards limit to repository", async () => {
+  const repo = fakeRepo({ messages: [] });
+
+  const response = await handleBusinessApiRequest({
+    httpMethod: "GET",
+    path: "/v1/sessions/session-1/attachments",
+    headers: { Authorization: "Bearer token" },
+    queryParameters: { limit: "20" },
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(repo.calls[0], {
+    method: "listSessionAttachments",
+    sessionId: "session-1",
+    limit: 20,
+    cursor: null,
+  });
+  const body = JSON.parse(response.body);
+  assert.deepEqual(body.items, []);
+  assert.equal(body.nextCursor, null);
+});
+
 // ── /v1/sync/* pagination ────────────────────────────────────────────────────
 // These were unbounded: a first-time sync of a large team returned every
 // changed row in one response (10k actors measured 3.1MB / 4.4s). They are now
@@ -1389,6 +1411,46 @@ test("PATCH /v1/teams/:teamId returns 400 without name", async () => {
   assert.equal(JSON.parse(response.body).error.code, "validation_failed");
 });
 
+test("PUT /v1/teams/:teamId/join-link creates", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PUT",
+    path: "/v1/teams/team-1/join-link",
+    headers: { Authorization: "Bearer token", Host: "api.example.test" },
+    body: JSON.stringify({ ttl: "7d", maxUses: null, rotate: false }),
+  }, { createRepository: () => repo });
+  assert.equal(response.statusCode, 201);
+  assert.equal(JSON.parse(response.body).token, "join-tok");
+  assert.equal(JSON.parse(response.body).created, undefined);
+  assert.deepEqual(repo.calls[0], {
+    method: "putTeamJoinLink",
+    teamId: "team-1",
+    input: { ttl: "7d", maxUses: null, rotate: false },
+  });
+});
+
+test("PUT /v1/teams/:teamId/join-link rejects a bad ttl", async () => {
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PUT",
+    path: "/v1/teams/team-1/join-link",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ ttl: "1d" }),
+  }, { createRepository: () => fakeRepo() });
+  assert.equal(response.statusCode, 400);
+  assert.equal(JSON.parse(response.body).error.code, "validation_failed");
+});
+
+test("DELETE /v1/teams/:teamId/join-link revokes", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "DELETE",
+    path: "/v1/teams/team-1/join-link",
+    headers: { Authorization: "Bearer token" },
+  }, { createRepository: () => repo });
+  assert.equal(response.statusCode, 204);
+  assert.deepEqual(repo.calls[0], { method: "revokeTeamJoinLink", teamId: "team-1" });
+});
+
 test("POST /v1/teams/:teamId/invites creates invite", async () => {
   const repo = fakeRepo();
   const response = await handleBusinessApiRequest({
@@ -2178,6 +2240,7 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async listSessionsForTeamSince(teamId, since, opts: SyncPageOpts = {}) { calls.push({ method: "listSessionsForTeamSince", teamId, since, limit: opts?.limit ?? null, cursor: opts?.cursor ?? null }); return syncStore.slice(0, opts?.limit ?? syncStore.length); },
     async listMessagesForSessionSince(sessionId, since, opts: SyncPageOpts = {}) { calls.push({ method: "listMessagesForSessionSince", sessionId, since, limit: opts?.limit ?? null, cursor: opts?.cursor ?? null }); return syncStore.slice(0, opts?.limit ?? syncStore.length); },
     async listMessages(sessionId, opts: SyncPageOpts = {}) { calls.push({ method: "listMessages", sessionId, limit: opts?.limit ?? null, cursor: opts?.cursor ?? null }); if (error) throw error; return messageStore.slice(0, opts?.limit ?? messageStore.length); },
+    async listSessionAttachments(sessionId, opts: SyncPageOpts = {}) { calls.push({ method: "listSessionAttachments", sessionId, limit: opts?.limit ?? null, cursor: opts?.cursor ?? null }); if (error) throw error; return { items: [], nextCursor: null }; },
     async insertMessage(sessionId, input) { calls.push({ method: "insertMessage", sessionId, input }); if (error) throw error; return { id: input.id, teamId: input.teamId, sessionId, turnId: null, senderActorId: input.senderActorId, replyToMessageId: null, kind: input.kind ?? "text", content: input.content, metadata: input.metadata ?? null, model: null, createdAt: "2026-05-27T01:00:00Z", updatedAt: null }; },
     async patchMessage(messageId, patch) { calls.push({ method: "patchMessage", messageId, patch }); if (error) throw error; return { id: messageId, teamId: "team-1", sessionId: "session-1", turnId: null, senderActorId: "actor-1", replyToMessageId: null, kind: "text", content: patch.content ?? "hello", metadata: patch.metadata ?? null, model: null, createdAt: "2026-05-27T01:00:00Z", updatedAt: "2026-05-27T02:00:00Z" }; },
     async deleteMessage(messageId) { calls.push({ method: "deleteMessage", messageId }); if (error) throw error; },
@@ -2193,6 +2256,22 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async getTeamDirectory(teamId) { calls.push({ method: "getTeamDirectory", teamId }); if (error) throw error; return { actors: [{ id: "actor-1", teamId: "team-1", kind: "user", displayName: "Alice", avatarUrl: null, metadata: null }], members: [{ actorId: "actor-1", teamId: "team-1", role: "member", joinedAt: "2026-05-27T01:00:00Z" }] }; },
     async renameTeam(teamId, input) { calls.push({ method: "renameTeam", teamId, input }); if (error) throw error; return { id: teamId, name: input.name, slug: null, createdAt: null }; },
     async createTeamInvite(teamId, input) { calls.push({ method: "createTeamInvite", teamId, input }); if (error) throw error; return { token: "invite-token", inviteId: "invite-1", expiresAt: input.expiresAt ?? null }; },
+    // `created` is a repo-only flag so the route can choose 201 vs 200; it is
+    // stripped from the JSON body and is not part of TeamJoinLink.
+    async getTeamJoinLink(teamId) {
+      calls.push({ method: "getTeamJoinLink", teamId });
+      if (error) throw error;
+      return { token: "join-tok", url: "https://api.example.test/join/join-tok", expiresAt: null, maxUses: null, useCount: 0, status: "active", createdAt: "2026-10-10T00:00:00Z" };
+    },
+    async putTeamJoinLink(teamId, input) {
+      calls.push({ method: "putTeamJoinLink", teamId, input });
+      if (error) throw error;
+      return { token: input.rotate ? "join-new" : "join-tok", url: "https://api.example.test/join/join-tok", expiresAt: null, maxUses: input.maxUses ?? null, useCount: 0, status: "active", createdAt: "2026-10-10T00:00:00Z", created: true };
+    },
+    async revokeTeamJoinLink(teamId) {
+      calls.push({ method: "revokeTeamJoinLink", teamId });
+      if (error) throw error;
+    },
     async removeTeamActor(teamId, actorId) { calls.push({ method: "removeTeamActor", teamId, actorId }); if (error) throw error; },
     async getNotificationPrefs() { calls.push({ method: "getNotificationPrefs" }); if (error) throw error; return { userId: null, pushEnabled: true, emailEnabled: false, digestFrequency: "off" }; },
     async putNotificationPrefs(input) { calls.push({ method: "putNotificationPrefs", input }); if (error) throw error; return { userId: input.userId ?? "user-1", pushEnabled: input.pushEnabled ?? true, emailEnabled: input.emailEnabled ?? false, digestFrequency: input.digestFrequency ?? "off" }; },

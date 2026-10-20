@@ -5,6 +5,13 @@ options:
     iOS: "26.0"
   xcodeVersion: "26"
 
+# Shared by the app and its extensions: App Store rejects an extension whose
+# version differs from the app's, and fastlane bumps the build number once.
+settings:
+  base:
+    MARKETING_VERSION: "1.2"
+    CURRENT_PROJECT_VERSION: 27
+
 packages:
   AMUXCore:
     path: Packages/AMUXCore
@@ -15,9 +22,6 @@ packages:
   Sentry:
     url: https://github.com/getsentry/sentry-cocoa
     from: "8.0.0"
-  Aptabase:
-    url: https://github.com/aptabase/aptabase-swift
-    from: "0.3.0"
 
 targets:
   AMUX:
@@ -25,29 +29,68 @@ targets:
     platform: iOS
     sources:
       - path: AMUXApp
+      - path: Shared
     dependencies:
+      - target: AMUXLiveActivity
+      - target: AMUXNotificationService
       - package: AMUXCore
       - package: AMUXUI
       - package: AMUXSharedUI
       - package: Sentry
         product: SentrySwiftUI
-      - package: Aptabase
-        product: Aptabase
     settings:
       base:
         INFOPLIST_FILE: AMUXApp/Info.plist
         CODE_SIGN_ENTITLEMENTS: AMUXApp/AMUX.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.teamclu.mobile
         DEVELOPMENT_TEAM: 43G5A6G9QV
-        MARKETING_VERSION: "1.2"
-        CURRENT_PROJECT_VERSION: 27
         SWIFT_VERSION: "6.0"
+
+  # Live Activity for an agent's turn (lock screen + Dynamic Island).
+  AMUXLiveActivity:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: AMUXLiveActivity
+      - path: Shared
+    dependencies:
+      - package: AMUXSharedUI
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        INFOPLIST_FILE: AMUXLiveActivity/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.teamclu.mobile.LiveActivity
+        DEVELOPMENT_TEAM: 43G5A6G9QV
+        SWIFT_VERSION: "6.0"
+        SKIP_INSTALL: YES
+
+  # Rewrites message pushes before display: readable body, sender avatar.
+  # Links nothing of ours — the two text helpers are compiled in directly.
+  AMUXNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: AMUXNotificationService
+      - path: Packages/AMUXCore/Sources/AMUXCore/Mentions/MentionDisplayText.swift
+      - path: Packages/AMUXCore/Sources/AMUXCore/Notifications/NotificationPreview.swift
+    settings:
+      base:
+        INFOPLIST_FILE: AMUXNotificationService/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.teamclu.mobile.NotificationService
+        DEVELOPMENT_TEAM: 43G5A6G9QV
+        SWIFT_VERSION: "6.0"
+        SKIP_INSTALL: YES
 
   AMUXUITests:
     type: bundle.ui-testing
     platform: iOS
     sources:
       - path: AMUXUITests
+    # Without this the AMUXUITests scheme neither builds nor installs the
+    # app: tests ran against whatever binary the simulator last had.
+    dependencies:
+      - target: AMUX
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.teamclu.mobile.uitests
@@ -66,7 +109,8 @@ schemes:
     test:
       config: Debug
       targets:
-        - AMUXUITests
+        - name: AMUXUITests
+          skippedTests: [AMUXSessionLiveCaptureTest, AMUXSessionLiveDiagTest]
     profile:
       config: Release
     analyze:
@@ -79,7 +123,22 @@ schemes:
         AMUXUITests: test
     test:
       targets:
-        - AMUXUITests
+        # The two Live* classes are opt-in capture / diagnosis scripts, not
+        # regression tests; they live in AMUXUIDiagnostics so the default
+        # suite can be held to zero skips.
+        - name: AMUXUITests
+          skippedTests: [AMUXSessionLiveCaptureTest, AMUXSessionLiveDiagTest]
+      environmentVariables:
+        TEAMCLU_TEST_EMAIL: $(TEAMCLU_TEST_EMAIL)
+        TEAMCLU_TEST_PASSWORD: $(TEAMCLU_TEST_PASSWORD)
+  AMUXUIDiagnostics:
+    build:
+      targets:
+        AMUXUITests: test
+    test:
+      targets:
+        - name: AMUXUITests
+          selectedTests: [AMUXSessionLiveCaptureTest, AMUXSessionLiveDiagTest]
       environmentVariables:
         TEAMCLU_TEST_EMAIL: $(TEAMCLU_TEST_EMAIL)
         TEAMCLU_TEST_PASSWORD: $(TEAMCLU_TEST_PASSWORD)

@@ -106,6 +106,62 @@ describe("amuxd-channels", () => {
     });
   });
 
+  it("round-trips a SeaTalk system prompt and drops a blank one", async () => {
+    vi.mocked(tauri.invoke).mockResolvedValue(undefined);
+
+    await saveChannelConfig("seatalk", {
+      enabled: true,
+      mode: "websocket",
+      dmPolicy: "open",
+      allowFrom: [],
+      groupPolicy: "open",
+      groupAllowFrom: [],
+      bots: [
+        {
+          enabled: true,
+          appId: "app001",
+          appSecret: "sec",
+          systemPrompt: "  只用中文回答。  ",
+        },
+      ],
+    });
+
+    const [, args] = vi.mocked(tauri.invoke).mock.calls[0]!;
+    const sent = JSON.parse((args as { configJson: string }).configJson);
+    expect(sent.app_id).toBeUndefined();
+    expect(sent.bots).toEqual([
+      {
+        enabled: true,
+        app_id: "app001",
+        app_secret: "sec",
+        system_prompt: "只用中文回答。",
+      },
+    ]);
+
+    await saveChannelConfig("seatalk", {
+      enabled: true,
+      bots: [{ enabled: true, appId: "app001", appSecret: "sec", systemPrompt: "   " }],
+    });
+    const [, clearedArgs] = vi.mocked(tauri.invoke).mock.calls[1]!;
+    const cleared = JSON.parse((clearedArgs as { configJson: string }).configJson);
+    expect(cleared.bots[0].system_prompt).toBeUndefined();
+
+    vi.mocked(tauri.invoke).mockResolvedValue({
+      enabled: true,
+      app_id: "app001",
+      app_secret: "sec",
+      mode: "websocket",
+      dm_policy: "open",
+      allow_from: [],
+      group_policy: "open",
+      group_allow_from: [],
+      system_prompt: "只用中文回答。",
+    });
+    await expect(loadChannelConfig("seatalk")).resolves.toMatchObject({
+      bots: [{ appId: "app001", systemPrompt: "只用中文回答。" }],
+    });
+  });
+
   it("maps daemon WeCom multi-bot config back to app field names on load", async () => {
     vi.mocked(tauri.invoke).mockResolvedValue({
       enabled: true,

@@ -1,8 +1,10 @@
+import { originJwks, ORIGIN_VERSION_HEADER, ORIGIN_VERSION_CLAIM_MAPPING, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
 import { imageForPull } from "./apps-registry.js";
 import { ApiError } from "../http-utils.js";
+import { appPublicLabel } from "../apps-public-host.js";
 import {
   isContainerKind,
   resolveLayers,
@@ -36,16 +38,28 @@ export function accountIdFromRoleArn(arn: string | undefined): string | null {
  * Function Compute, which rejects the whole deploy with
  * `InvalidArgument: The environment variable name 'FC_ENDPOINT' is reserved`.
  */
-export function resolveFcEndpoint(): string | null {
+export function resolveFcEndpoint(region = REGION()): string | null {
   const explicit = process.env.APPS_FC_ENDPOINT?.trim();
-  if (explicit) return explicit;
+  if (explicit) {
+    const hostname = new URL(explicit.includes("://") ? explicit : `https://${explicit}`).hostname;
+    // Alibaba endpoints carry their region. A private proxy has no discoverable
+    // region, so it belongs only to the configured apps region, never any region
+    // a catalog caller happens to request.
+    const endpointRegion = /(?:^|\.)([a-z0-9-]+)\.fc(?:-internal)?\.aliyuncs\.com$/.exec(hostname)?.[1] ?? REGION();
+    if (endpointRegion !== region) {
+      throw Object.assign(new Error("FC endpoint does not match the requested region"), {
+        code: "FcEndpointRegionMismatch",
+      });
+    }
+    return explicit;
+  }
   const accountId =
     process.env.ALIYUN_ACCOUNT_ID?.trim() || accountIdFromRoleArn(process.env.ROLE_ARN);
-  return accountId ? `${accountId}.${REGION()}.fc.aliyuncs.com` : null;
+  return accountId ? `${accountId}.${region}.fc.aliyuncs.com` : null;
 }
 
-export function fcEndpoint(): string {
-  const endpoint = resolveFcEndpoint();
+export function fcEndpoint(region = REGION()): string {
+  const endpoint = resolveFcEndpoint(region);
   // Without any of them the composed host used to come out as the literal
   // "undefined.<region>.fc.aliyuncs.com" and every call failed with a DNS
   // error that named no variable at all. Fail with the config problem instead.
@@ -64,7 +78,7 @@ export function fcEndpoint(): string {
  * is MinIO's, those credentials do not authenticate against the FC API at all.
  */
 export function getFcClient(profile?: AppsOssProfile): FcClientInstance {
-  const endpoint = fcEndpoint();
+  const endpoint = fcEndpoint(profile?.region);
   return new FcClient.default(new Config({
     accessKeyId: profile?.accessKeyId ?? process.env.ACCESS_KEY_ID,
     accessKeySecret: profile?.accessKeySecret ?? process.env.ACCESS_KEY_SECRET,
@@ -102,6 +116,8 @@ export function readAppsFcVpcConfig(env: NodeJS.ProcessEnv = process.env): AppsF
 }
 
 export interface FcOpsConfig {
+  /** Server-only origin credentials. Required only for entrypoint operations. */
+  originAuth?: OriginAuthConfig;
   bucket: string;
   role: string | undefined;
   region: string;
@@ -293,6 +309,89 @@ function isAlreadyExists(e: any): boolean {
   return e?.statusCode === 409 || /AlreadyExists/i.test(e?.code ?? e?.data?.Code ?? "");
 }
 
+function isTriggerNotFound(e: any): boolean {
+  return (e?.code ?? e?.data?.Code) === "TriggerNotFound";
+}
+
+async function retryTriggerNotFound<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (e) {
+      if (!isTriggerNotFound(e) || attempt === 3) throw e;
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    }
+  }
+}
+
+// FC removes the prefix verbatim; include the gateway's separating space.
+const ORIGIN_TOKEN_LOOKUP = "header:X-Teamclu-Origin-Authorization:Bearer ";
+const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"];
+class OriginProviderError extends Error {
+  constructor(readonly operation: string, error?: any) {
+    const code = error?.code ?? error?.data?.Code;
+    // An arbitrary provider error message/request can include submitted JWKS or PEM.
+    const known = ["AccessDenied", "Forbidden", "Unauthorized", "TriggerNotFound", "CustomDomainNotFound", "InvalidArgument", "Throttling", "InternalError"];
+    super(`FC origin ${operation}: ${known.includes(code) ? code : "ProviderError"}`);
+  }
+}
+async function originCall<T>(operation: string, call: () => Promise<T>): Promise<T> {
+  try { return await call(); } catch (error) {
+    if (error instanceof OriginSecurityDrift) throw error;
+    throw new OriginProviderError(operation, error);
+  }
+}
+function jsonObject(value: unknown): any {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+  } catch { return undefined; }
+}
+function jwtInfo(config: OriginAuthConfig, target: OriginTarget) {
+  // FC rejects omitted/empty mappings in the deployed region. Forward only
+  // the signed key version into an isolated metadata header, never identity.
+  return { jwks: originJwks(config, target.appId), tokenLookup: ORIGIN_TOKEN_LOOKUP, claimPassBy: ORIGIN_VERSION_CLAIM_MAPPING };
+}
+function jwtDrift(authType: unknown, raw: unknown, config: OriginAuthConfig, target: OriginTarget): string[] {
+  const fields: string[] = [];
+  if (authType !== "jwt") fields.push("authConfig.authType");
+  const info = jsonObject(raw);
+  if (!info) return [...fields, "authConfig.authInfo"];
+  // Header names are case insensitive. Prefix, source count and source type are not.
+  const lookup = typeof info.tokenLookup === "string" ? info.tokenLookup.split(":") : [];
+  if (lookup.length !== 3 || lookup[0] !== "header" || lookup[1].toLowerCase() !== "x-teamclu-origin-authorization" || lookup[2] !== "Bearer ") fields.push("authConfig.TokenLookup");
+  const mapping = typeof info.claimPassBy === "string" ? info.claimPassBy.split(":") : [];
+  if (mapping.length !== 3 || mapping[0] !== "header" || mapping[1] !== "version" || mapping[2].toLowerCase() !== ORIGIN_VERSION_HEADER.toLowerCase()) fields.push("authConfig.ClaimPassBy");
+  const keys = jsonObject(info.jwks)?.keys;
+  const normalize = (items: any[]) => items.map(key => {
+    if (!jsonObject(key)) return "invalid";
+    return JSON.stringify([key.kty, key.alg, key.use, key.kid, key.k]);
+  }).sort();
+  if (!Array.isArray(keys) || JSON.stringify(normalize(keys)) !== JSON.stringify(normalize(originJwks(config, target.appId).keys))) fields.push("authConfig.JWKS");
+  return fields;
+}
+function domainDrift(domain: any, functionName: string, config: OriginAuthConfig, target: OriginTarget, alias = false): string[] {
+  const fields: string[] = [];
+  if (domain?.protocol !== "HTTP") fields.push("protocol");
+  const routes = domain?.routeConfig?.routes;
+  if (!Array.isArray(routes) || !routes.length || routes.some((route: any) => route?.functionName !== functionName || (!alias && (route.path !== "/*" || (route.qualifier ?? "LATEST") !== "LATEST"))) || (!alias && routes.length !== 1)) fields.push("routeConfig");
+  fields.push(...jwtDrift(domain?.authConfig?.authType, domain?.authConfig?.authInfo, config, target));
+  return fields;
+}
+function requireOriginConfig(cfg: FcOpsConfig): OriginAuthConfig {
+  if (!cfg.originAuth) throw new Error("FC origin configuration missing: originAuth");
+  return cfg.originAuth;
+}
+function assertOriginTarget(config: OriginAuthConfig, domainName: string, target: OriginTarget) {
+  const label = target && appPublicLabel(target.slug, target.appId);
+  if (!label || domainName !== `${label}.${config.routeDomain}`) throw new Error("FC origin configuration mismatch: domainName");
+  originJwks(config, target.appId);
+}
+class OriginSecurityDrift extends Error {}
+function driftError(fields: string[]): Error {
+  return new OriginSecurityDrift(`FC origin security drift: ${[...new Set(fields)].join(", ")}`);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function makeFcOps(client: any, cfg: FcOpsConfig) {
   function codeLocation(ossObjectName: string) {
@@ -363,70 +462,101 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         if (!isNotFound(e)) throw e;
       }
     },
-    async ensureHttpTrigger(functionName: string): Promise<string> {
-      // A method missing from this list is refused by the trigger with a 403
-      // that never reaches the app. The original four left OPTIONS out, which
-      // fails every CORS preflight a browser sends, and HEAD out, which is what
-      // link previews and health checks use.
-      const triggerConfig = JSON.stringify({
-        authType: "anonymous",
-        methods: ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"],
-      });
-      try {
-        await client.createTrigger(functionName, new $fc.CreateTriggerRequest({
-          body: new $fc.CreateTriggerInput({
-            triggerName: "http", triggerType: "http", triggerConfig,
-          }),
-        }));
-      } catch (e) {
-        if (!isAlreadyExists(e)) throw e;
-        // Triggers created earlier keep whatever method list they were made
-        // with — creating is a no-op for them, so repair it explicitly rather
-        // than leaving already-deployed apps refusing OPTIONS forever.
-        await client.updateTrigger(functionName, "http", new $fc.UpdateTriggerRequest({
-          body: new $fc.UpdateTriggerInput({ triggerConfig }),
-        }));
-      }
-      const t = await client.getTrigger(functionName, "http");
-      const url = t?.body?.httpTrigger?.urlInternet;
-      if (!url) throw new Error("http trigger has no urlInternet");
-      return url;
+    async ensureHttpTrigger(functionName: string): Promise<{ internetUrlDisabled: true }> {
+      requireOriginConfig(cfg);
+      const triggerConfig = JSON.stringify({ authType: "anonymous", disableURLInternet: true, methods: HTTP_METHODS });
+      // Keep the HTTP trigger for domain routing, but never publish its default URL.
+      await originCall("ensureHttpTrigger", () => retryTriggerNotFound(async () => {
+        try {
+          await client.createTrigger(functionName, new $fc.CreateTriggerRequest({
+            body: new $fc.CreateTriggerInput({ triggerName: "http", triggerType: "http", triggerConfig }),
+          }));
+        } catch (e) {
+          if (!isAlreadyExists(e)) throw e;
+          await client.updateTrigger(functionName, "http", new $fc.UpdateTriggerRequest({ body: new $fc.UpdateTriggerInput({ triggerConfig }) }));
+        }
+        const trigger = await client.getTrigger(functionName, "http");
+        if (jsonObject(trigger?.body?.triggerConfig)?.disableURLInternet !== true) throw driftError(["disableURLInternet"]);
+      }));
+      return { internetUrlDisabled: true };
     },
 
-    /**
-     * Bind `domainName` to `functionName`, so requests carrying that Host reach
-     * this app.
-     *
-     * The default `*.fcapp.run` hostname refuses to forward **any** 3xx with
-     * `ExternalRedirectForbidden` (Alibaba product change, 2025-04-01) and is
-     * documented as test-only. A trailing-slash normalisation or a login
-     * redirect is enough to break an app on it, so every deployed app gets a
-     * custom domain instead.
-     *
-     * `HTTP`, not HTTPS: the only client is our own proxy, reaching FC over
-     * Alibaba's internal network. Serving HTTPS here would mean uploading a
-     * certificate to FC, which is a manual PEM snapshot that CAS never renews.
-     *
-     * Idempotent — a redeploy re-points the same domain at the same function.
-     */
-    async ensureCustomDomain(functionName: string, domainName: string): Promise<string> {
-      const routeConfig = new $fc.RouteConfig({
-        routes: [
-          new $fc.PathConfig({ path: "/*", functionName, qualifier: "LATEST" }),
-        ],
-      });
-      const body = { protocol: "HTTP", routeConfig };
-      try {
-        await client.createCustomDomain(new $fc.CreateCustomDomainRequest({
-          body: new $fc.CreateCustomDomainInput({ domainName, ...body }),
-        }));
-      } catch (e) {
-        if (!isAlreadyExists(e)) throw e;
-        await client.updateCustomDomain(domainName, new $fc.UpdateCustomDomainRequest({
-          body: new $fc.UpdateCustomDomainInput(body),
-        }));
-      }
+    /** Configure only the current app's controlled domain, then verify all target mappings. */
+    async ensureCustomDomain(functionName: string, domainName: string, target: OriginTarget): Promise<string> {
+      const config = requireOriginConfig(cfg);
+      assertOriginTarget(config, domainName, target);
+      const body = {
+        protocol: "HTTP",
+        routeConfig: new $fc.RouteConfig({ routes: [new $fc.PathConfig({ path: "/*", functionName, qualifier: "LATEST" })] }),
+        authConfig: new $fc.AuthConfig({ authType: "jwt", authInfo: JSON.stringify(jwtInfo(config, target)) }),
+      };
+      await originCall("ensureCustomDomain", () => retryTriggerNotFound(async () => {
+        try {
+          await client.createCustomDomain(new $fc.CreateCustomDomainRequest({ body: new $fc.CreateCustomDomainInput({ domainName, ...body }) }));
+        } catch (e) {
+          if (!isAlreadyExists(e)) throw e;
+          await client.updateCustomDomain(domainName, new $fc.UpdateCustomDomainRequest({ body: new $fc.UpdateCustomDomainInput(body) }));
+        }
+      }));
+      const summary = await this.readOriginSecurity(functionName, domainName, target);
+      if (summary.status !== "protected") throw driftError(summary.driftFields);
       return `http://${domainName}`;
+    },
+
+    /** Read-only; never return provider config, symmetric JWKS, request objects or PEM. */
+    async readOriginSecurity(functionName: string, domainName: string, target: OriginTarget): Promise<OriginSecuritySummary> {
+      const summary: OriginSecuritySummary = { status: "unavailable", internetUrlDisabled: null, customDomainAuth: "unknown", httpsOnly: null, driftFields: [] };
+      try {
+        const config = requireOriginConfig(cfg);
+        assertOriginTarget(config, domainName, target);
+        const trigger: any = await originCall("getTrigger", () => client.getTrigger(functionName, "http"));
+        const disabled = jsonObject(trigger?.body?.triggerConfig)?.disableURLInternet;
+        summary.internetUrlDisabled = typeof disabled === "boolean" ? disabled : null;
+        if (disabled !== true) summary.driftFields.push("disableURLInternet");
+        const domain: any = await originCall("getCustomDomain", () => client.getCustomDomain(domainName));
+        const auth = domain?.body?.authConfig?.authType;
+        summary.customDomainAuth = auth === "jwt" ? "jwt" : auth === "anonymous" ? "none" : "unknown";
+        summary.httpsOnly = domain?.body?.protocol ? domain.body.protocol === "HTTPS" : null;
+        summary.driftFields.push(...domainDrift(domain?.body, functionName, config, target));
+
+        // Lists are account scoped: scan every page, match routes, and never mutate aliases.
+        async function pages(operation: string, field: string, request: (token?: string) => Promise<any>, visit: (item: any) => Promise<void>) {
+          let token: string | undefined;
+          const seen = new Set<string>();
+          do {
+            const response = await originCall(operation, () => request(token));
+            const items = response?.body?.[field], next = response?.body?.nextToken;
+            if (!Array.isArray(items) || (next !== undefined && next !== null && typeof next !== "string")) throw new OriginProviderError(operation);
+            for (const item of items) await visit(item);
+            token = next || undefined;
+            if (token && seen.has(token)) throw new OriginProviderError(operation);
+            if (token) seen.add(token);
+          } while (token);
+        }
+        // Temporary workaround for cn-shenzhen signed list timeouts with limit > 1.
+        // Keep full nextToken traversal; see docs/testing/2026-10-05-fc-list-timeout.md.
+        await pages("listTriggers", "triggers", token => client.listTriggers(functionName, new $fc.ListTriggersRequest({ limit: 1, nextToken: token })), async item => {
+          if (!item || typeof item.triggerType !== "string" || typeof item.triggerName !== "string") throw new OriginProviderError("listTriggers");
+          if (item.triggerType !== "http" || item.triggerName === "http") return;
+          // The normal deploy owns only the standard HTTP trigger; every extra
+          // HTTP entrypoint is drift, even when it appears independently protected.
+          summary.driftFields.push("extraHttpTriggers");
+        });
+        await pages("listCustomDomains", "customDomains", token => client.listCustomDomains(new $fc.ListCustomDomainsRequest({ limit: 1, nextToken: token })), async item => {
+          const routes = item?.routeConfig?.routes;
+          if (typeof item?.domainName !== "string" || !Array.isArray(routes) || routes.some((route: any) => typeof route?.functionName !== "string")) throw new OriginProviderError("listCustomDomains");
+          if (item.domainName === domainName || !routes.some((route: any) => route.functionName === functionName)) return;
+          const alias: any = await originCall("getCustomDomain", () => client.getCustomDomain(item.domainName));
+          if (domainDrift(alias?.body, functionName, config, target, true).length) summary.driftFields.push("customDomainAliases");
+        });
+        summary.driftFields = [...new Set(summary.driftFields)];
+        summary.status = summary.driftFields.length ? "drift" : "protected";
+      } catch (error) {
+        summary.status = "unavailable";
+        summary.driftFields.push(error instanceof OriginProviderError ? error.operation : "originAuth");
+        summary.driftFields = [...new Set(summary.driftFields)];
+      }
+      return summary;
     },
 
     /** Drop an app's custom domain. Best-effort: a missing one is done. */

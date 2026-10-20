@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   interpreterFor,
-  shortFormProfile,
   runtimeFacts,
   pathLookup,
   parseLayerRef,
@@ -23,20 +22,6 @@ test("facts: the image's interpreters, by family, with absolute paths", () => {
   assert.equal(interpreterFor("custom.debian10", "java"), null);
 });
 
-test("short form: only node and go have one", () => {
-  assert.equal(shortFormProfile("node")?.interpreter, "/var/fc/lang/nodejs20/bin/node");
-  assert.equal(shortFormProfile("go")?.interpreter, "./main");
-  for (const kind of ["python", "php", "java"] as const) {
-    assert.equal(shortFormProfile(kind), null, kind);
-  }
-});
-
-test("short form: node needs an entry, go does not", () => {
-  assert.equal(shortFormProfile("node")?.entryRequired, true);
-  assert.equal(shortFormProfile("go")?.entryRequired, false);
-  assert.deepEqual(shortFormProfile("node")?.layers, []);
-});
-
 test("pathLookup: node is absent from PATH on debian10, python3 is the wrong one", () => {
   assert.deepEqual(pathLookup("custom.debian10", "node"), { kind: "absent" });
   const py = pathLookup("custom.debian10", "python3");
@@ -44,11 +29,9 @@ test("pathLookup: node is absent from PATH on debian10, python3 is the wrong one
   assert.equal(py.kind === "resolves" && py.path, "/usr/bin/python3");
 });
 
-test("pathLookup: Debian 9 interpreters are present but ancient", () => {
-  const node = pathLookup("custom", "node");
-  assert.equal(node.kind === "resolves" && node.version, "10.16.2");
-  const py = pathLookup("custom", "python3");
-  assert.equal(py.kind === "resolves" && py.version, "3.7.4");
+test("pathLookup: unprobed Debian 9 documentation is not probe evidence", () => {
+  assert.deepEqual(pathLookup("custom", "node"), { kind: "unknown" });
+  assert.deepEqual(pathLookup("custom", "python3"), { kind: "unknown" });
 });
 
 test("pathLookup: an image or name we never probed is unknown, not absent", () => {
@@ -132,4 +115,10 @@ test("facts payload: region is the only thing that varies", () => {
   const b = runtimeFacts("cn-beijing");
   assert.notEqual(a.region, b.region);
   assert.deepEqual(a.images, b.images);
+});
+
+test("unobserved layer versions do not inherit a verified mount", async () => {
+  const { providedMounts } = await import("../../src/lib/provisioning/app-runtime-profiles.js");
+  assert.deepEqual(providedMounts([{ kind: "shorthand", name: "Nodejs20", version: 99 }]), { mounts: [], hasUnknown: true });
+  assert.deepEqual(providedMounts([{ kind: "shorthand", name: "Nodejs20", version: 3 }]), { mounts: ["/opt/nodejs20"], hasUnknown: false });
 });

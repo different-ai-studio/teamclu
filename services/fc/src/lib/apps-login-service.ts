@@ -17,6 +17,8 @@ import {
   verifyLoginState,
   verifySsoSession,
 } from "./apps-auth-session.js";
+import { appAdmitsAnyAudience } from "./apps-auth-paths.js";
+import type { TenantIdentity, TenantVisitor } from "./apps-tenant-identity.js";
 import { isRateLimited, resolveClientIp } from "./rate-limit.js";
 import { resolveFeatures } from "./routes/config.js";
 
@@ -58,6 +60,20 @@ export type LoginApp = {
   teamName?: string | null;
   /** `apps.auth_mode`. Only `platform` has a login wall at all. */
   authMode: string;
+  /**
+   * `apps.org_id` — the tenant this login page belongs to.
+   *
+   * Every identity decision on this page is narrowed to it. Without it the
+   * page had no idea which tenant was asking, so it offered a phone number's
+   * identity in EVERY org and the gateway rejected the wrong pick afterwards.
+   */
+  orgId?: string | null;
+  /** `apps.auth_audience` / `auth_scope` / `auth_rules` — read together, and
+   * only to answer whether this app invites the public
+   * (see {@link appAdmitsAnyAudience}). */
+  authAudience?: string | null;
+  authScope?: string | null;
+  authRules?: unknown;
   /** `apps.custom_domain`. A valid return origin only once verified. */
   customDomain?: string | null;
   /**
@@ -79,7 +95,7 @@ export type LookupLoginApp = (appId: string) => Promise<LoginApp | null>;
  * custom domain was refused as "返回地址与该应用不符".
  */
 const LOGIN_APP_COLUMNS =
-  "id, slug, app_code, uses_app_code_domain, name, team_id, auth_mode, custom_domain, custom_domain_verified_at";
+  "id, slug, app_code, uses_app_code_domain, name, team_id, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -113,6 +129,10 @@ export function makeSupabaseLoginAppLookup(
       name: data.name ?? null,
       teamName: await readTeamName(client, data.team_id ?? null),
       authMode: data.auth_mode ?? "none",
+      orgId: data.org_id ?? null,
+      authAudience: data.auth_audience ?? null,
+      authScope: data.auth_scope ?? null,
+      authRules: data.auth_rules ?? null,
       customDomain: data.custom_domain ?? null,
       customDomainVerifiedAt: data.custom_domain_verified_at ?? null,
     };
@@ -144,6 +164,11 @@ export type LoginServiceDeps = {
   secureCookies?: boolean;
   /** Seam so tests can drive the limiter deterministically. */
   rateLimited?: (key: string, max: number) => boolean;
+  /**
+   * The visitor's identity in an org (apps-tenant-identity.ts). Absent: every
+   * login keeps the account it signed in as, as before.
+   */
+  resolveTenantIdentity?: (visitor: TenantVisitor, orgId: string) => Promise<TenantIdentity>;
 };
 
 /** Verification codes per IP+email per minute. GoTrue also limits sending. */
@@ -163,13 +188,21 @@ type PhoneLoginUser = {
   id: string;
   org_id?: string | null;
   org_name?: string | null;
+  /** `public.users.admin_type`: 1 = member, >= 2 = staff. */
+  admin_type?: number;
   nickname?: string | null;
   email?: string | null;
 };
 
 type PhoneAuthRepository = {
   phoneSendCode: (args: { phone: string; captchaVerify?: string }) => Promise<unknown>;
-  phoneLogin: (args: { phone: string; code: string; userId?: string }) => Promise<unknown>;
+  phoneLogin: (args: {
+    phone: string;
+    code: string;
+    userId?: string;
+    tenantOrgId?: string;
+    allowSignup?: boolean;
+  }) => Promise<unknown>;
 };
 
 // ---------------------------------------------------------------------------
@@ -605,6 +638,20 @@ function phoneCodePage(ctx: LoginContext, phone: string, error = "", status = 20
   );
 }
 
+/**
+ * What `public.users.admin_type` means to the person choosing.
+ *
+ * The column is the partner's, and only the 1 / >=2 split is documented
+ * (`amux.caller_employee_orgs` draws the employee line at 2), so this says no
+ * more than that split supports. An unknown value gets no label at all rather
+ * than a guessed one.
+ */
+function kindLabel(adminType: number | undefined): string {
+  if (adminType === 1) return "会员";
+  if (typeof adminType === "number" && adminType >= 2) return "员工";
+  return "";
+}
+
 function phoneAccountPage(
   ctx: LoginContext,
   phone: string,
@@ -616,7 +663,13 @@ function phoneAccountPage(
   const choices = users
     .map((user) => {
       const label = user.nickname?.trim() || user.email?.trim() || "账号";
-      const detail = user.org_name?.trim() || user.email?.trim() || "";
+      // Every entry now sits in the SAME org, so the org name — which used to
+      // be the whole detail line — is identical on all of them and tells the
+      // visitor nothing. What actually differs is the kind of identity and the
+      // email, so show those; the org name is dropped rather than repeated.
+      const detail = [kindLabel(user.admin_type), user.email?.trim()]
+        .filter((part): part is string => !!part)
+        .join(" · ");
       return (
         `<button class="account" type="submit" name="userId" value="${esc(user.id)}">` +
         `${mark(user.id, label, "mark mark-sm")}` +
@@ -686,6 +739,23 @@ async function authRepository(deps: LoginServiceDeps): Promise<PhoneAuthReposito
   return repository as PhoneAuthRepository;
 }
 
+/**
+ * The visitor as their identity in this app's org — see apps-tenant-identity.
+ * Email / password / OAuth name a person, not a tenant identity; without this
+ * an email user whose identity here sits on a synthetic account would be signed
+ * in as their own account and turned away by the gateway. A failed lookup
+ * keeps the account they signed in as.
+ */
+async function asTenant(ctx: LoginContext, user: TenantVisitor, deps: LoginServiceDeps): Promise<TenantIdentity> {
+  if (!ctx.app.orgId || !deps.resolveTenantIdentity) return { user, inOrg: true };
+  try {
+    return await deps.resolveTenantIdentity(user, ctx.app.orgId);
+  } catch (error) {
+    console.warn("app login: tenant identity lookup failed; keeping the signed-in account", error);
+    return { user, inOrg: true };
+  }
+}
+
 async function bounceWithSso(
   ctx: LoginContext,
   user: { sub: string; email: string },
@@ -747,7 +817,25 @@ async function phoneLoginResult(
   try {
     const repository = await authRepository(deps);
     if (!repository) return phoneCodePage(ctx, phone, "手机号登录尚未配置。", 503);
-    const result = (await repository.phoneLogin({ phone, code, userId })) as any;
+    // An app whose tenant is unknown cannot narrow anything, and widening to
+    // every org is the behaviour this change exists to remove. Refuse instead:
+    // a null org_id is an operator's problem (see the gateway's `no_app_org`),
+    // and it is the same one, said in the same place the visitor is standing.
+    if (!ctx.app.orgId) {
+      return phoneCodePage(ctx, phone, "该应用未关联组织，无法登录。", 503);
+    }
+    const result = (await repository.phoneLogin({
+      phone,
+      code,
+      userId,
+      tenantOrgId: ctx.app.orgId,
+      // App-level, never derived from `next` — see appAdmitsAnyAudience.
+      allowSignup: appAdmitsAnyAudience(
+        ctx.app.authScope,
+        ctx.app.authRules,
+        ctx.app.authAudience,
+      ),
+    })) as any;
     if (result?.multiUser && Array.isArray(result.users)) {
       return phoneAccountPage(ctx, phone, code, result.users as PhoneLoginUser[]);
     }
@@ -822,13 +910,15 @@ async function handleOAuthStart(
     state,
     codeVerifier: verifier,
   });
-  const callback = `${loginOrigin(req, secure, env)}${OAUTH_CALLBACK_PATH}`;
+  // GoTrue owns the provider OAuth state. Carry our cookie-bound correlation
+  // value in redirect_to instead; a top-level state overrides GoTrue's value.
+  const callback = new URL(`${loginOrigin(req, secure, env)}${OAUTH_CALLBACK_PATH}`);
+  callback.searchParams.set("login_state", state);
   const target = new URL(`${base}/auth/v1/authorize`);
   target.searchParams.set("provider", provider);
-  target.searchParams.set("redirect_to", callback);
+  target.searchParams.set("redirect_to", callback.toString());
   target.searchParams.set("code_challenge", pkceChallenge(verifier));
   target.searchParams.set("code_challenge_method", "s256");
-  target.searchParams.set("state", state);
   return redirect(
     target.toString(),
     [serializeSessionCookie(LOGIN_STATE_COOKIE, loginState.token, LOGIN_STATE_TTL_SECONDS, secure)],
@@ -845,7 +935,7 @@ async function handleOAuthCallback(
   const token = readCookie(req.headers.get("cookie"), LOGIN_STATE_COOKIE) ?? "";
   const state = await verifyLoginState(token);
   const clear = () => clearSessionCookie(LOGIN_STATE_COOKIE, secure);
-  if (!state || url.searchParams.get("state") !== state.state || !isOAuthProvider(state.provider)) {
+  if (!state || url.searchParams.get("login_state") !== state.state || !isOAuthProvider(state.provider)) {
     return clearLoginState(noticePage("登录状态已失效，请重新开始。", 400), secure);
   }
   const ctx = await contextFromLoginState(state, deps, env);
@@ -871,7 +961,7 @@ async function handleOAuthCallback(
   }
   const user = userFromAuthBody(result.body);
   if (!user) return clearLoginState(retryPage(ctx, "登录服务没有返回有效账号。", 503), secure);
-  return bounceWithSso(ctx, user, secure, [clear()]);
+  return bounceWithSso(ctx, (await asTenant(ctx, user, deps)).user, secure, [clear()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -924,7 +1014,16 @@ async function handleRoot(
   // service: the second app a visitor opens costs them two redirects and no
   // typing.
   const session = await verifySsoSession(readCookie(req.headers.get("cookie"), SSO_COOKIE) ?? "");
-  if (session) return bounceWithCode(ctx, session);
+  if (session) {
+    // The previous app may have been another org's, where this person is a
+    // different account. Carry them over as their identity here; if they have
+    // none and this app requires one, let them sign in as someone who does
+    // instead of bouncing them into the gateway's refusal.
+    const tenant = await asTenant(ctx, session, deps);
+    if (tenant.inOrg || appAdmitsAnyAudience(ctx.app.authScope, ctx.app.authRules, ctx.app.authAudience)) {
+      return bounceWithCode(ctx, tenant.user);
+    }
+  }
 
   const method = url.searchParams.get("method");
   if (method === "phone" && authMethodEnabled("phone", env)) return phonePage(ctx, env);
@@ -1005,7 +1104,7 @@ async function handleVerify(
     return codePage(ctx, email, "登录服务暂时不可用，请稍后再试。", 503);
   }
 
-  return bounceWithSso(ctx, user, secure);
+  return bounceWithSso(ctx, (await asTenant(ctx, user, deps)).user, secure);
 }
 
 /**
@@ -1059,7 +1158,7 @@ async function handlePassword(
 
   const user = userFromAuthBody(result.body, email);
   if (!user) return passwordPage(ctx, env, email, "登录服务暂时不可用，请稍后再试。", 503);
-  return bounceWithSso(ctx, user, secure);
+  return bounceWithSso(ctx, (await asTenant(ctx, user, deps)).user, secure);
 }
 
 function handleLogout(secure: boolean): Response {

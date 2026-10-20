@@ -67,6 +67,27 @@ test("reconcile recompiles an imported source that left no wiki pages", () => {
   assert.deepEqual(plan.unchanged, []);
 });
 
+test("reconcile keeps an imported source that is outside this folder selection", () => {
+  const plan = reconcile({
+    current: [{ path: "documents/logs/new.txt", sourceSha256: "abc", priority: 1 }],
+    retain: ["documents/features/shell.md"],
+    state: {
+      sources: {
+        "documents/features/shell.md": {
+          sourceSha256: "old",
+          status: "imported",
+          affectedPages: ["pages/3col-shell.md"],
+        },
+      },
+    },
+  });
+  assert.deepEqual(plan.delete, []);
+  assert.deepEqual(
+    plan.add.map((item) => item.path),
+    ["documents/logs/new.txt"],
+  );
+});
+
 test("reconcile treats a hashed path absent from state as add", () => {
   const plan = reconcile({
     current: [{ path: "documents/handbook/new.pdf", sourceSha256: "abc", priority: 10 }],

@@ -523,3 +523,10 @@ test("cron selects the current app address from explicitly activated code metada
     assert.equal(seen, (mode === true ? "https://a-k7m2q9vx4n8p.apps.example.com" : "https://report-11111111.apps.example.com") + "/api/daily");
   }
 });
+
+for (const fc_status of ['uninstalling','uninstall_failed','uninstalled']) test(`cron skips ${fc_status} apps and advances schedule without fetching`,async()=>{
+ const db=makeDb({app_cron_jobs:[job()],apps:[{...apps()[0],fc_status}],app_cron_runs:[]});
+ let called=false;
+ const result=await runDueAppCronJobs({client:db,env:ENV as any,now:new Date('2026-09-10T09:00:30.000Z'),fetchImpl:(async()=>{called=true;return new Response('data')}) as any});
+ assert.equal(called,false);assert.equal(result.outcomes[0].status,'failed');
+});

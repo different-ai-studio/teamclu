@@ -8,8 +8,10 @@
 use crate::backend::StoredMessage;
 use crate::daemon::session_events::is_mentioned_to;
 
+/// Message ids are UUIDs and compare case-insensitively: a cursor taken from
+/// an upper-case MQTT id must still find its lower-case persisted row (#1696).
 pub(crate) fn message_index(messages: &[StoredMessage], id: &str) -> Option<usize> {
-    messages.iter().position(|m| m.id == id)
+    messages.iter().position(|m| m.id.eq_ignore_ascii_case(id))
 }
 
 /// Later of two cursor ids by position in `messages` (API sort order).
@@ -179,6 +181,23 @@ mod tests {
         assert_eq!(tail.len(), 2);
         assert_eq!(tail[0].id, "a1");
         assert_eq!(tail[1].id, "u2");
+    }
+
+    #[test]
+    fn messages_after_cursor_matches_cursor_case_insensitively() {
+        let msgs = vec![
+            row(
+                "76f88f18-cb4c-49f0-a4a1-b08c9f81b583",
+                "human",
+                &["agent"],
+                1,
+            ),
+            row("a1", "agent", &[], 2),
+        ];
+        let tail =
+            messages_strictly_after_cursor(&msgs, Some("76F88F18-CB4C-49F0-A4A1-B08C9F81B583"));
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].id, "a1");
     }
 
     #[test]

@@ -30,6 +30,15 @@ vi.mock('@/lib/knowledge/wiki-maintainer-client', () => ({
     Promise.resolve([{ path: 'documents/handbook/', label: 'handbook' }]),
   loadWikiCompilerModels: () =>
     Promise.resolve([{ id: 'glm-4.6', name: '标准' }]),
+  adoptExistingWiki: vi.fn(),
+  loadWikiMaintenanceBootstrap: () =>
+    Promise.resolve({
+      sourceDirectories: [],
+      compilerModel: '',
+      checkpointModel: '',
+      needsAdopt: false,
+      recoveredSummary: null,
+    }),
   pickSavedCompilerModel: (saved: string, models: { id: string }[]) =>
     (saved && models.some((model) => model.id === saved) ? saved : models[0]?.id) ?? '',
   prepareWikiMaintenance: vi.fn(),

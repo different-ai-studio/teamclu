@@ -4,7 +4,7 @@
 - **Status**: DESIGN — 待评审后分期实现
 - **Scope**: `services/ai-gateway/`（新建）、`services/fc/`（业务 API + 充值/限额管理面）、`apps/daemon/`（本地转发）、`crates/teamclu-runtime-env/`、`apps/desktop/`（`sk-tc-` 派生逻辑）、`packages/app/`（设置页）、`services/supabase/migrations/`、`deploy/self-host/`、`docs/openapi/teamclu-api.v1.yaml`
 - **Replaces**: LiteLLM 容器、`/v1/teams/:id/litellm/*`、`_litellm` 数据库、`sk-tc-*` virtual key 体系
-- **Related**: `docs/architecture/personal-env-and-runtime-env.md`（`TC_ACCESS_TOKEN_FILE`）、`docs/adr/0007-amuxd-holds-model-capability-not-preference.md`
+- **Related**: `docs/architecture/personal-env-and-runtime-env.md`（`/internal/runtime-context/cloud-token`）、`docs/adr/0007-amuxd-holds-model-capability-not-preference.md`
 
 ---
 

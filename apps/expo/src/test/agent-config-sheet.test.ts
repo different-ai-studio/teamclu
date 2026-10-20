@@ -16,7 +16,7 @@ describe("AgentConfigSheet helpers", () => {
     expect(canConfirmSelection("w1")).toBe(true);
     expect(canConfirmSelection("")).toBe(false);
   });
-  it("AGENT_TYPE_ORDER lists claude → opencode → codex", () => {
-    expect(AGENT_TYPE_ORDER).toEqual(["claude", "opencode", "codex"]);
+  it("AGENT_TYPE_ORDER lists pi first, then the legacy backends", () => {
+    expect(AGENT_TYPE_ORDER).toEqual(["pi", "claude", "opencode", "codex"]);
   });
 });

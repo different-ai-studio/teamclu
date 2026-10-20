@@ -40,12 +40,10 @@ final class AMUXAuthUITests: XCTestCase {
     @MainActor
     func testPasswordSignInFormIsReachable() throws {
         // If already logged in the welcome screen won't appear — that's fine.
-        let getStarted = app.buttons["welcome.getStartedButton"]
-        guard getStarted.waitForExistence(timeout: 6) else {
+        guard app.openLoginFromOnboarding() else {
             // Already authenticated; registration screen is not shown.
             return
         }
-        getStarted.tap()
 
         let emailField = app.textFields["login.emailField"]
         XCTAssertTrue(emailField.waitForExistence(timeout: 5), "Email field should appear on LoginView")
@@ -72,6 +70,31 @@ final class AMUXAuthUITests: XCTestCase {
         XCTAssertTrue(submitButton.isEnabled, "Submit should be enabled once both fields are filled")
     }
 
+    // MARK: - Onboarding: start a new team
+
+    /// Choice → "Start a new team" → desktop-download guide → sign-in.
+    @MainActor
+    func testStartNewTeamPathReachesDesktopGuideThenLogin() throws {
+        let getStarted = app.buttons["welcome.getStartedButton"]
+        let create = app.buttons["onboarding.createButton"]
+        if getStarted.waitForExistence(timeout: 6) {
+            getStarted.tap()
+        }
+        guard create.waitForExistence(timeout: 3) else {
+            // Already authenticated; onboarding is not shown.
+            return
+        }
+        create.tap()
+
+        XCTAssertTrue(app.buttons["desktopGuide.shareButton"].waitForExistence(timeout: 5),
+                      "Desktop guide should offer to share the download link")
+        XCTAssertTrue(app.buttons["desktopGuide.copyButton"].exists)
+
+        app.buttons["desktopGuide.continueButton"].tap()
+        XCTAssertTrue(app.textFields["login.emailField"].waitForExistence(timeout: 5),
+                      "Continuing from the desktop guide should reach LoginView")
+    }
+
     // MARK: - Sign-in + MQTT connection
 
     /// Full E2E test: signs in with the pre-created test account, then verifies the Sessions
@@ -91,9 +114,7 @@ final class AMUXAuthUITests: XCTestCase {
         }
 
         // Not authenticated — go through the login flow.
-        let getStarted = app.buttons["welcome.getStartedButton"]
-        XCTAssertTrue(getStarted.waitForExistence(timeout: 6), "WelcomeView should appear when not authenticated")
-        getStarted.tap()
+        XCTAssertTrue(app.openLoginFromOnboarding(), "Onboarding should appear when not authenticated")
 
         let methodPicker = app.segmentedControls["login.methodPicker"]
         XCTAssertTrue(methodPicker.waitForExistence(timeout: 3))
@@ -123,89 +144,51 @@ final class AMUXAuthUITests: XCTestCase {
 
     // MARK: - Daemon invite link
 
-    /// Verifies the full daemon-invite flow: Actors tab → Invite sheet → Agent kind →
-    /// backend creates the invite → deeplink is displayed and copyable.
-    /// Requires auth credentials (same as testSignInAndMQTTConnects).
+    /// Actors tab → Invite → name an agent → the backend mints an invite and
+    /// the sheet shows its deeplink. The sheet only invites agents now.
     @MainActor
     func testDaemonInviteLinkGenerated() throws {
-        try XCTSkipIf(testEmail.isEmpty || testPassword.isEmpty,
-                      "Set TEAMCLU_TEST_EMAIL and TEAMCLU_TEST_PASSWORD to run this test")
+        XCTAssertTrue(app.signInIfNeeded(), "Not signed in and no E2E account configured")
 
-        // Reach the main UI (sign in if needed).
-        if !app.tabBars.buttons["Actors"].waitForExistence(timeout: 6) {
-            let getStarted = app.buttons["welcome.getStartedButton"]
-            XCTAssertTrue(getStarted.waitForExistence(timeout: 6))
-            getStarted.tap()
-
-            let methodPicker = app.segmentedControls["login.methodPicker"]
-            XCTAssertTrue(methodPicker.waitForExistence(timeout: 3))
-            methodPicker.buttons["Password"].tap()
-            let emailField = app.textFields["login.emailField"]
-            XCTAssertTrue(emailField.waitForExistence(timeout: 5))
-            emailField.tap()
-            emailField.typeText(testEmail)
-
-            let passwordField = app.secureTextFields["login.passwordField"]
-            passwordField.tap()
-            passwordField.typeText(testPassword)
-
-            app.buttons["login.submitButton"].tap()
-
-            XCTAssertTrue(app.tabBars.buttons["Actors"].waitForExistence(timeout: 20),
-                          "Actors tab should appear after sign-in")
-        }
-
-        // Navigate to Actors tab.
-        app.tabBars.buttons["Actors"].tap()
-
-        // Open the invite sheet. In iOS 26, ToolbarItem buttons use the SF Symbol name as
-        // their XCUITest identifier regardless of .accessibilityIdentifier modifiers.
-        let inviteButton = app.navigationBars["Actors"].buttons["person.badge.plus"]
-        XCTAssertTrue(inviteButton.waitForExistence(timeout: 15),
+        let inviteButton = app.buttons["members.inviteButton"]
+        XCTAssertTrue(app.tap(app.tabBars.buttons["Actors"], until: inviteButton),
                       "Invite button not found\n\(app.debugDescription)")
         inviteButton.tap()
 
-        // Switch kind to "Agent". Picker(.segmented) doesn't propagate identifiers in iOS 26,
-        // so find the segmented control by type and tap the "Agent" segment by label.
-        let kindPicker = app.segmentedControls.firstMatch
-        XCTAssertTrue(kindPicker.waitForExistence(timeout: 5),
-                      "Kind picker should appear in invite sheet\n\(app.debugDescription)")
-        kindPicker.buttons["Agent"].tap()
-
-        // Enter a name for the daemon. TextField identifiers don't propagate in Form
-        // sections on iOS 26, so find by type (there is only one text field in the sheet).
-        let nameField = app.textFields.firstMatch
-        XCTAssertTrue(nameField.waitForExistence(timeout: 3))
+        let nameField = app.textFields["invite.nameField"]
+        XCTAssertTrue(nameField.waitForExistence(timeout: 5))
         nameField.tap()
         nameField.typeText("TestDaemon")
 
-        // Tap Invite — toolbar button accessible via nav bar label.
-        let inviteNavBar = app.navigationBars["Invite"]
-        let submitButton = inviteNavBar.buttons["Invite"]
-        XCTAssertTrue(submitButton.waitForExistence(timeout: 3))
-        XCTAssertTrue(submitButton.isEnabled, "Invite button should be enabled after entering a name")
-        submitButton.tap()
+        let submit = app.buttons["invite.submitButton"]
+        XCTAssertTrue(submit.waitForExistence(timeout: 3))
+        XCTAssertTrue(submit.isEnabled, "Invite should be enabled once named")
+        submit.tap()
 
-        // Wait for the deeplink to appear (backend round-trip).
-        // staticText identifier doesn't propagate through Form/SwiftUI in iOS 26,
-        // so match by label prefix instead.
-        let deeplinkPredicate = NSPredicate(format: "label BEGINSWITH 'teamclu://'")
-        let deeplinkText = app.staticTexts.matching(deeplinkPredicate).firstMatch
-        XCTAssertTrue(deeplinkText.waitForExistence(timeout: 15),
-                      "Deeplink should appear after invite is created\n\(app.debugDescription)")
+        // Backend round-trip: Invite turns into Done once the invite exists.
+        let done = app.buttons["invite.doneButton"]
+        XCTAssertTrue(done.waitForExistence(timeout: 15),
+                      "Invite was not created\n\(app.debugDescription)")
 
-        XCTAssertTrue(deeplinkText.label.hasPrefix("teamclu://"),
-                      "Deeplink should use teamclu:// scheme, got: \(deeplinkText.label)")
+        // The sheet opens at half height and its Form is lazy: the share
+        // section sits below the fold and is not in the tree until scrolled
+        // to. The scheme is whatever the deployment issues, so check the
+        // invite's shape rather than a fixed scheme.
+        let deeplink = app.staticTexts["invite.deeplinkText"]
+        for _ in 0..<4 where !deeplink.exists {
+            app.swipeUp()
+        }
+        XCTAssertTrue(deeplink.waitForExistence(timeout: 5),
+                      "Deeplink not shown for the new invite\n\(app.debugDescription)")
+        XCTAssertTrue(deeplink.label.contains("invite?token="),
+                      "Unexpected invite link: \(deeplink.label)")
 
-        // Tap Copy link (no assertion — pasteboard is not readable in UI tests).
-        let copyButton = app.buttons["Copy link"]
-        XCTAssertTrue(copyButton.waitForExistence(timeout: 3))
-        copyButton.tap()
+        let copy = app.buttons["invite.copyLinkButton"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 3))
+        copy.tap()
 
-        // Dismiss via Done button.
-        let doneButton = inviteNavBar.buttons["Done"]
-        XCTAssertTrue(doneButton.waitForExistence(timeout: 3))
-        doneButton.tap()
+        XCTAssertTrue(done.waitForExistence(timeout: 3))
+        done.tap()
     }
 
     // MARK: - Helpers

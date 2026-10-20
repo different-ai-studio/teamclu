@@ -151,3 +151,104 @@ describe("resolveMqttUrl", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe("bootstrap feature flags", () => {
+  it("parses a present block, treating a missing key as off", async () => {
+    const { parseBootstrapFeatures } = await import("../lib/mqtt/config");
+    expect(parseBootstrapFeatures({ features: { apps: true } })).toEqual({ apps: true });
+    expect(parseBootstrapFeatures({ features: { apps: false } })).toEqual({ apps: false });
+    expect(parseBootstrapFeatures({ features: {} })).toEqual({ apps: false });
+    // Absent block means "keep the client's defaults", not "all off".
+    expect(parseBootstrapFeatures({ mqtt: {} })).toBeNull();
+    expect(parseBootstrapFeatures({ features: null })).toBeNull();
+    expect(parseBootstrapFeatures(null)).toBeNull();
+  });
+
+  it("fails open before the server answers", async () => {
+    vi.resetModules();
+    const { getKnownFeatureFlags } = await import("../lib/mqtt/config");
+    expect(getKnownFeatureFlags()).toEqual({ apps: true });
+  });
+
+  it("applies and caches the flags from the same bootstrap call, notifying listeners", async () => {
+    vi.stubEnv("EXPO_PUBLIC_MQTT_URL", "");
+    vi.resetModules();
+    const { resolveMqttUrl, getKnownFeatureFlags, subscribeFeatureFlags } = await import(
+      "../lib/mqtt/config"
+    );
+    const storage = memoryStorage();
+    const listener = vi.fn();
+    const unsubscribe = subscribeFeatureFlags(listener);
+
+    const url = await resolveMqttUrl({
+      ...auth,
+      baseUrl: "https://fc.example.com",
+      fetchImpl: jsonFetch({
+        mqtt: { tcpUrl: "mqtts://mqtt.example.com:8883" },
+        features: { apps: false },
+      }),
+      storage,
+    });
+    unsubscribe();
+
+    // Broker behaviour is unchanged.
+    expect(url).toBe("mqtts://mqtt.example.com:8883");
+    expect(getKnownFeatureFlags()).toEqual({ apps: false });
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(storage.items.get("teamclu.bootstrap.features") ?? "null")).toEqual({
+      apps: false,
+    });
+  });
+
+  it("applies flags even when the deployment ships no broker block", async () => {
+    vi.stubEnv("EXPO_PUBLIC_MQTT_URL", "");
+    vi.resetModules();
+    const { resolveMqttUrl, getKnownFeatureFlags } = await import("../lib/mqtt/config");
+
+    const url = await resolveMqttUrl({
+      ...auth,
+      baseUrl: "https://fc.example.com",
+      fetchImpl: jsonFetch({ features: { apps: false } }),
+      storage: memoryStorage(),
+    });
+
+    expect(url).toBeNull();
+    expect(getKnownFeatureFlags()).toEqual({ apps: false });
+  });
+
+  it("falls back to cached flags when offline", async () => {
+    vi.stubEnv("EXPO_PUBLIC_MQTT_URL", "");
+    vi.resetModules();
+    const { resolveMqttUrl, getKnownFeatureFlags } = await import("../lib/mqtt/config");
+
+    await resolveMqttUrl({
+      ...auth,
+      baseUrl: "https://fc.example.com",
+      fetchImpl: (async () => {
+        throw new Error("offline");
+      }) as unknown as typeof fetch,
+      storage: memoryStorage({ "teamclu.bootstrap.features": '{"apps":false}' }),
+    });
+
+    expect(getKnownFeatureFlags()).toEqual({ apps: false });
+  });
+
+  it("clearCachedMqttUrl also forgets the flags", async () => {
+    vi.stubEnv("EXPO_PUBLIC_MQTT_URL", "");
+    vi.resetModules();
+    const { resolveMqttUrl, clearCachedMqttUrl, getKnownFeatureFlags, getCachedFeatureFlags } =
+      await import("../lib/mqtt/config");
+    const storage = memoryStorage();
+
+    await resolveMqttUrl({
+      ...auth,
+      baseUrl: "https://fc.example.com",
+      fetchImpl: jsonFetch({ features: { apps: false } }),
+      storage,
+    });
+    await clearCachedMqttUrl(storage);
+
+    expect(getKnownFeatureFlags()).toEqual({ apps: true });
+    expect(await getCachedFeatureFlags(storage)).toBeNull();
+  });
+});

@@ -26,6 +26,8 @@ const authMock = {
   acceptPendingInvite: vi.fn(),
   declinePendingInvite: vi.fn(),
   adoptSession: vi.fn(),
+  listMyIdentities: vi.fn(),
+  switchIdentity: vi.fn(),
 };
 const backendMock = {
   auth: authMock,
@@ -80,7 +82,9 @@ beforeEach(() => {
     otpEmail: null,
     otpPhone: null,
     pendingInviteToken: null,
+    identityChoices: null,
   });
+  authMock.listMyIdentities.mockResolvedValue([]);
 });
 
 // `isAnonymous` — camelCase — is what mapSession actually produces. This fixture
@@ -188,6 +192,68 @@ describe("auth-store", () => {
     expect(authMock.verifyOtp).toHaveBeenCalledWith("a@b.com", "123456");
     expect(useAuthStore.getState().session?.user.id).toBe("u2");
     expect(useAuthStore.getState().otpEmail).toBeNull();
+  });
+
+  it("verifyOtp offers the org picker when the person has several identities", async () => {
+    useAuthStore.setState({ otpEmail: "a@b.com" });
+    authMock.verifyOtp.mockResolvedValueOnce({ user: { id: "u-own" } });
+    const identities = [
+      { userId: "u-own", orgId: "o1", orgName: "Own", orgLogo: null, adminType: 3, isCurrent: true },
+      { userId: "u-co", orgId: "o2", orgName: "Co", orgLogo: null, adminType: 2, isCurrent: false },
+    ];
+    authMock.listMyIdentities.mockResolvedValueOnce(identities);
+    await useAuthStore.getState().verifyOtp("123456");
+    expect(useAuthStore.getState().session?.user.id).toBe("u-own");
+    expect(useAuthStore.getState().identityChoices).toEqual(identities);
+  });
+
+  it("chooseIdentity switches to the picked identity's session", async () => {
+    useAuthStore.setState({
+      session: storeSessionLike("u-own"),
+      identityChoices: [
+        { userId: "u-own", orgId: "o1", orgName: "Own", orgLogo: null, adminType: 3, isCurrent: true },
+        { userId: "u-co", orgId: "o2", orgName: "Co", orgLogo: null, adminType: 2, isCurrent: false },
+      ],
+    });
+    authMock.switchIdentity.mockResolvedValueOnce({ user: { id: "u-co" } });
+    await useAuthStore.getState().chooseIdentity("u-co");
+    expect(authMock.switchIdentity).toHaveBeenCalledWith("u-co");
+    expect(useAuthStore.getState().session?.user.id).toBe("u-co");
+    expect(useAuthStore.getState().identityChoices).toBeNull();
+  });
+
+  it("chooseIdentity on the current identity just closes the picker", async () => {
+    useAuthStore.setState({
+      session: storeSessionLike("u-own"),
+      identityChoices: [
+        { userId: "u-own", orgId: "o1", orgName: "Own", orgLogo: null, adminType: 3, isCurrent: true },
+        { userId: "u-co", orgId: "o2", orgName: "Co", orgLogo: null, adminType: 2, isCurrent: false },
+      ],
+    });
+    await useAuthStore.getState().chooseIdentity("u-own");
+    expect(authMock.switchIdentity).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().identityChoices).toBeNull();
+  });
+
+  it("verifyOtp becomes the only identity when it is not the signed-in account", async () => {
+    useAuthStore.setState({ otpEmail: "a@b.com" });
+    authMock.verifyOtp.mockResolvedValueOnce({ user: { id: "u-real" } });
+    authMock.listMyIdentities.mockResolvedValueOnce([
+      { userId: "u-co", orgId: "o2", orgName: "Co", orgLogo: null, adminType: 2, isCurrent: false },
+    ]);
+    authMock.switchIdentity.mockResolvedValueOnce({ user: { id: "u-co" } });
+    await useAuthStore.getState().verifyOtp("123456");
+    expect(useAuthStore.getState().session?.user.id).toBe("u-co");
+    expect(useAuthStore.getState().identityChoices).toBeNull();
+  });
+
+  it("a failed identity lookup keeps the signed-in session", async () => {
+    useAuthStore.setState({ otpEmail: "a@b.com" });
+    authMock.verifyOtp.mockResolvedValueOnce({ user: { id: "u2" } });
+    authMock.listMyIdentities.mockRejectedValueOnce(new Error("boom"));
+    await useAuthStore.getState().verifyOtp("123456");
+    expect(useAuthStore.getState().session?.user.id).toBe("u2");
+    expect(useAuthStore.getState().identityChoices).toBeNull();
   });
 
   it("verifyOtp captures error message on failure", async () => {

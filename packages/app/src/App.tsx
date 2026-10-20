@@ -26,7 +26,6 @@ import { useWorkspaceRuntimeRefreshPoll } from "@/hooks/use-workspace-runtime-re
 import { useOpenCodePreload } from "@/hooks/use-opencode-preload";
 import { useExternalLinkHandler } from "@/hooks/use-external-link-handler";
 import { useTauriBodyClass } from "@/hooks/use-tauri-body-class";
-import { useTelemetryConsent } from "@/hooks/use-telemetry-consent";
 import { useMemberPresenceHeartbeat } from "@/hooks/use-member-presence-heartbeat";
 import { useExtensionSessionCleanup } from "@/hooks/use-extension-session-cleanup";
 import { useFileTabSync } from "@/hooks/use-file-editor-state";
@@ -37,6 +36,7 @@ import { NarrowChatHeader } from "@/components/responsive/NarrowChatHeader";
 import { useLayoutBreakpoint } from "@/hooks/use-layout-breakpoint";
 import { SessionThreadsHeaderButton } from "@/components/chat/SessionThreadsHeaderButton";
 import { NewSessionDialog } from "@/components/chat/NewSessionDialog";
+import { LocalAgentInstallWizardHost } from "@/components/daemon/LocalAgentInstallWizardHost";
 import { MqttLiveWiring } from "@/components/MqttLiveWiring";
 import { TeamSkillAutoFollow } from "@/components/TeamSkillAutoFollow";
 import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
@@ -47,7 +47,6 @@ import { lazyNamed } from "@/lib/lazy-component";
 import { useEverTrue } from "@/hooks/use-ever-true";
 import { PaneLoading } from "@/components/ui/pane-loading";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { TelemetryConsentDialog } from "@/components/telemetry/TelemetryConsentDialog";
 import { RuntimeRefreshWorkspaceBanner } from "@/components/workspace/RuntimeRefreshBanner";
 import { AgentsSkillsAccessBanner } from "@/components/skills/AgentsSkillsAccessBanner";
 import { useAgentsSkillsAccessInit } from "@/hooks/use-agents-skills-access-init";
@@ -74,8 +73,11 @@ import { Button } from "@/components/ui/button";
 import { onOpenUrl, getCurrent } from "@tauri-apps/plugin-deep-link";
 import { parseInviteDeeplink } from "@/lib/team/invite-deeplink";
 import { requestInviteLinkConfirmation, whenDocumentFocused } from "@/lib/team/invite-link-confirmation";
+import { parseJoinLink } from "@/lib/team/join-link";
+import { requestJoinLinkConfirmation } from "@/lib/team/join-link-confirmation";
 import { completePendingSessionDeeplink, openSessionFromDeeplink, readPendingSessionDeeplink, stashPendingSessionDeeplink } from "@/lib/session/open-session-deeplink";
 import { useCurrentTeamStore } from "@/stores/current-team";
+import { useLocalAgentInstallStore } from "@/stores/local-agent-install";
 import { useAppsStore } from "@/stores/apps-store";
 import { E2E_BUILD, isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
 import { TrafficLights } from "@/components/ui/traffic-lights";
@@ -172,6 +174,14 @@ function AppContent() {
 
   // UI store - individual selectors
   const embedMode = useUIStore((s) => s.embedMode);
+  // Below the wide breakpoint the sidebar is a drawer (SidebarProvider's
+  // `overlay`). The narrow layout only offers it where there is a nav to reach:
+  // solo builds and the extension's embed mode have their own single-column UI.
+  const showSidebar = breakpoint !== 'narrow' || (!isSoloBuild() && !embedMode);
+  const openNarrowListSheet = React.useCallback(
+    () => useUIStore.getState().setNarrowListSheetOpen(true),
+    [],
+  );
   const currentView = useUIStore((s) => s.currentView);
   const closeSettings = useUIStore((s) => s.closeSettings);
   const sidebarFilter = useUIStore((s) => s.sidebarFilter);
@@ -255,13 +265,19 @@ function AppContent() {
   // Extracted hooks — initialization, panel state, keyboard shortcuts
   const { initialWorkspaceResolved, openCodeError } = useWorkspaceInit();
   const daemonHttpReady = useWorkspaceStore((s) => s.daemonHttpReady);
+  const installTeamId = useCurrentTeamStore((s) => s.team?.id ?? null);
+  const localAgentInstallStatus = useLocalAgentInstallStore((s) =>
+    installTeamId ? s.byTeam[installTeamId]?.status : undefined,
+  );
 
   // Surface a local amuxd daemon connection failure as a persistent toast
   // instead of taking over the whole window. The rest of the UI stays usable;
   // the toast auto-dismisses once the daemon becomes reachable.
   useEffect(() => {
     const DAEMON_TOAST_ID = "amuxd-daemon-unavailable";
-    if (isTauri() && workspacePath && !daemonHttpReady && openCodeError) {
+    const suppressDaemonToast =
+      localAgentInstallStatus === "absent" || localAgentInstallStatus === "pending";
+    if (isTauri() && workspacePath && !daemonHttpReady && openCodeError && !suppressDaemonToast) {
       toast.error(openCodeError, {
         id: DAEMON_TOAST_ID,
         duration: Infinity,
@@ -278,7 +294,7 @@ function AppContent() {
     } else {
       toast.dismiss(DAEMON_TOAST_ID);
     }
-  }, [workspacePath, daemonHttpReady, openCodeError, t]);
+  }, [workspacePath, daemonHttpReady, openCodeError, localAgentInstallStatus, t]);
 
   useChannelGatewayInit();
   useGitReposInit();
@@ -547,7 +563,12 @@ function AppContent() {
   return (
     <>
       {appWiring}
-      {breakpoint === 'wide' && <AppSidebar />}
+      {/* Inline when wide, a drawer below that. Medium used to drop it
+          outright, which left the second column's expand button with nothing
+          to expand — clicking it only made the button itself disappear. */}
+      {showSidebar && (
+        <AppSidebar onPickSection={breakpoint === 'narrow' ? openNarrowListSheet : undefined} />
+      )}
       {breakpoint !== 'narrow' && (
         <div className={cn('w-(--session-list-width) shrink-0 h-svh overflow-hidden', SIDEBAR_INTERACTIVE_CURSOR)}>
           <SidebarSecondColumn showNewSessionActions={breakpoint === 'medium'} />
@@ -765,6 +786,7 @@ function AppContent() {
       </SidebarInset>
       {settingsModal}
       {automationPanelDialog}
+      <LocalAgentInstallWizardHost />
     </>
   );
 }
@@ -779,6 +801,8 @@ function App() {
       void import("@/lib/e2e/v2-control").then((m) => m.installV2E2EControl());
     }
   }, []);
+
+  const breakpoint = useLayoutBreakpoint()
 
   // ── Global webview shortcuts (find, zoom, context menu) ──
   useWebviewShortcuts()
@@ -826,6 +850,12 @@ function App() {
     // user did not see appear is one they cannot judge.
     function handle(urls: string[]) {
       for (const raw of urls) {
+        const join = parseJoinLink(raw);
+        if (join) {
+          cancelFocusWait?.();
+          cancelFocusWait = whenDocumentFocused(() => requestJoinLinkConfirmation(join));
+          continue;
+        }
         const token = parseInviteDeeplink(raw);
         if (!token) continue;
         cancelFocusWait?.();
@@ -888,10 +918,9 @@ function App() {
     void openSessionFromDeeplink(pending.sessionId);
   }, [authSession]);
 
-  // Extracted hooks — initialization, telemetry consent
+  // Extracted hooks — initialization
   useTauriBodyClass();
   useOpenCodePreload();
-  const { showConsentDialog, setShowConsentDialog } = useTelemetryConsent();
 
   // First-run onboarding (welcome, dependency setup, role, model) all lives in
   // AuthGate now, ahead of this component — see #881. By the time App renders,
@@ -899,6 +928,7 @@ function App() {
   const mainContent = (
     <>
       <SidebarProvider
+        overlay={breakpoint !== 'wide'}
         style={
           {
             "--sidebar-width": "220px",
@@ -918,10 +948,6 @@ function App() {
       />
       <AppDeployConfirmDialog />
       <NewSessionDialog />
-      <TelemetryConsentDialog
-        open={showConsentDialog}
-        onComplete={() => setShowConsentDialog(false)}
-      />
     </>
   )
 

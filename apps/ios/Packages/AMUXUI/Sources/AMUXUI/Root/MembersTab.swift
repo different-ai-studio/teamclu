@@ -105,7 +105,7 @@ public struct MembersTab: View {
                     }
                 }
                 .sheet(isPresented: $showInvite) {
-                    MemberInviteSheet(store: store)
+                    MemberInviteSheet(store: store, canManage: canManageTeam)
                 }
                 .sheet(isPresented: $showTeamStats) {
                     TeamStatsSheet(actors: actors, teamID: activeTeam?.id)
@@ -147,5 +147,16 @@ public struct MembersTab: View {
             MembersTabPresentation.isTabBarVisible(navigationPath: navigationPath) ? .visible : .hidden,
             for: .tabBar
         )
+    }
+
+    private var canManageTeam: Bool {
+        guard let id = currentActorID else { return false }
+        if let actor = store.actors.first(where: { $0.id == id }) {
+            return actor.isOwner || actor.isAdmin
+        }
+        if let cached = actors.first(where: { $0.actorId == id }) {
+            return cached.isOwner || cached.isAdmin
+        }
+        return false
     }
 }

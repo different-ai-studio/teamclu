@@ -43,6 +43,7 @@ export function SkillDetail({ slug }: { slug: string }) {
   const item = useTeamShareBrowserStore(
     (s) => s.skills.items.find((x) => x.id === slug) ?? s.skills.items.find((x) => x.slug === slug),
   )
+  const isBuiltin = item?.kind === 'personal' && item.personalSource === 'builtin'
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
   const installSkill = useTeamShareBrowserStore((s) => s.installSkill)
   const uninstallSkill = useTeamShareBrowserStore((s) => s.uninstallSkill)
@@ -174,7 +175,7 @@ export function SkillDetail({ slug }: { slug: string }) {
   const dirty = content !== baseline
 
   const handleSave = React.useCallback(async () => {
-    if (!item || !workspacePath || saving) return
+    if (!item || isBuiltin || !workspacePath || saving) return
     setSaving(true)
     try {
       const saved = await putDaemonSkill(encodeWorkspaceId(workspacePath), item.slug, {
@@ -196,7 +197,7 @@ export function SkillDetail({ slug }: { slug: string }) {
     } finally {
       setSaving(false)
     }
-  }, [item, workspacePath, saving, content, loadSection, reconcileSkills, t])
+  }, [item, isBuiltin, workspacePath, saving, content, loadSection, reconcileSkills, t])
 
   const runInstall = React.useCallback(async () => {
     if (!item || busy) return
@@ -703,13 +704,13 @@ export function SkillDetail({ slug }: { slug: string }) {
     localState?.state === 'dirty' || localState?.state === 'stale_dirty'
   const isRegistry = item.origin === 'registry'
   const isPersonal = item.kind === 'personal'
-  const isBuiltin = isPersonal && item.personalSource === 'builtin'
   // `dirPath` is only ever populated when the selected Agent is this machine
   // (see `localSkillFiles` in the store): a remote Agent's files live on another
   // disk and the RPC inventory carries neither path nor content. So these two
   // read as "this Agent is local AND the pack is here", which is exactly the
   // precondition for editing it and for packing it up to publish.
-  const canEdit = Boolean(item.dirPath && item.filename && (item.kind === 'personal' || item.installed))
+  const hasLocalCopy = Boolean(item.dirPath && item.filename && (item.kind === 'personal' || item.installed))
+  const canEdit = hasLocalCopy && !isBuiltin
   const canShare = isPersonal && Boolean(item.dirPath && item.filename)
   const latestChangelog = [...versions].sort((a, b) => b.version - a.version)[0]?.changelog
   const baseVersion = localState?.installedVersion
@@ -1135,7 +1136,7 @@ export function SkillDetail({ slug }: { slug: string }) {
       )}
 
       <div className="min-h-0 flex-1">
-        {canEdit ? (
+        {hasLocalCopy ? (
           <Suspense
             fallback={
               <div className="p-6 text-[13px] text-muted-foreground">{t('common.loading', 'Loading…')}</div>
@@ -1146,6 +1147,7 @@ export function SkillDetail({ slug }: { slug: string }) {
               filename="SKILL.md"
               filePath={`${item.dirPath}/${item.filename}/SKILL.md`}
               onChange={setContent}
+              readOnly={isBuiltin}
               isDark={isDark}
             />
           </Suspense>

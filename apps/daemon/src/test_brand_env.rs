@@ -52,6 +52,19 @@ impl BrandEnvGuard {
         guard
     }
 
+    /// [`set_amuxd_home`], plus a temporary `HOME`.
+    ///
+    /// For tests that pin the amuxd home and also reach `~/.agents/skills`
+    /// (any runtime spawn does, through `prepare_workspace`): without it they
+    /// seed the bundled skills into the developer's real home.
+    pub fn set_amuxd_home_with_home(amuxd_home: &Path, home: &Path) -> Self {
+        let mut guard = Self::set_amuxd_home(amuxd_home);
+        guard.previous_user_home = Some(std::env::var("HOME").unwrap_or_default());
+        // SAFETY: serialized by TEST_HOME_LOCK, held by `guard`.
+        std::env::set_var("HOME", home);
+        guard
+    }
+
     /// Set an explicit `AMUXD_HOME` override (brand env left unchanged).
     pub fn set_amuxd_home(home: &Path) -> Self {
         let lock = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());

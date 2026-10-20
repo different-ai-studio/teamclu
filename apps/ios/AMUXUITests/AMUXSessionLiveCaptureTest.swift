@@ -92,9 +92,7 @@ final class AMUXSessionLiveCaptureTest: XCTestCase {
         let sessionsTab = app.tabBars.buttons["Sessions"]
         if sessionsTab.waitForExistence(timeout: 6) { return }
 
-        let getStarted = app.buttons["welcome.getStartedButton"]
-        XCTAssertTrue(getStarted.waitForExistence(timeout: 8))
-        getStarted.tap()
+        XCTAssertTrue(app.openLoginFromOnboarding(timeout: 8))
 
         let methodPicker = app.segmentedControls["login.methodPicker"]
         XCTAssertTrue(methodPicker.waitForExistence(timeout: 3))

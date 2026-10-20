@@ -1,10 +1,14 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
-const { git, gitShow, headCommit } = require("./git-store");
-const { isAllowedWikiPath } = require("./validator");
+const { git, gitShow, headCommit, commitAll } = require("./git-store");
+const { parseFrontmatter } = require("./frontmatter");
+const { normalizeDocumentsPath } = require("./paths");
+const { isAllowedWikiPath, rebuildIndex } = require("./validator");
 const { loadState, saveState } = require("./ingest");
 
 const SYNC_OPTIONS = Object.freeze({
@@ -136,6 +140,7 @@ function buildPublishPlan({ wikiRoot, fromCommit, toCommit }) {
   del.sort();
   return {
     fromCommit: fromCommit || null,
+    baseTreeHash: fromCommit ? treeHashFromCommit(wikiRoot, fromCommit) : null,
     toCommit,
     create,
     update,
@@ -171,6 +176,164 @@ function clearMarker(workRoot) {
   if (fs.existsSync(file)) fs.rmSync(file);
 }
 
+function documentsRootFor(opts) {
+  if (opts.documentsRoot) return opts.documentsRoot;
+  if (!opts.knowledgeRoot) return null;
+  return path.join(path.dirname(opts.knowledgeRoot), "documents");
+}
+
+function sourceStillOnDisk(documentsRoot, sourcePath) {
+  if (!documentsRoot || typeof sourcePath !== "string" || !sourcePath.startsWith("documents/")) {
+    return false;
+  }
+  const rel = sourcePath.slice("documents/".length);
+  if (!rel || rel.split("/").includes("..")) return false;
+  return fs.existsSync(path.join(documentsRoot, rel));
+}
+
+function knownPathSet(known) {
+  const set = new Set();
+  for (const item of known || []) {
+    if (!item || typeof item.path !== "string") continue;
+    try {
+      set.add(normalizeDocumentsPath(item.path));
+    } catch {
+      continue;
+    }
+  }
+  return set;
+}
+
+function sourceStillExists(documentsRoot, sourcePath, knownPaths) {
+  if (sourceStillOnDisk(documentsRoot, sourcePath)) return true;
+  return knownPaths.has(sourcePath);
+}
+
+function pageStillHasSource(bytes, documentsRoot, knownPaths) {
+  let parsed;
+  try {
+    parsed = parseFrontmatter(bytes.toString("utf8"));
+  } catch {
+    return false;
+  }
+  const sources = parsed.frontmatter?.sources;
+  if (!Array.isArray(sources)) return false;
+  return sources.some((source) =>
+    sourceStillExists(documentsRoot, source && source.path, knownPaths),
+  );
+}
+
+function writeTreeFromDirectory(wikiRoot, dir, rels) {
+  const indexFile = path.join(
+    os.tmpdir(),
+    `kb-vault-${process.pid}-${crypto.randomBytes(4).toString("hex")}`,
+  );
+  const run = (args) =>
+    execFileSync("git", ["-C", wikiRoot, "-c", "core.quotepath=false", ...args], {
+      env: { ...process.env, GIT_INDEX_FILE: indexFile },
+      encoding: "utf8",
+    }).trim();
+  try {
+    run(["read-tree", "--empty"]);
+    for (const rel of rels) {
+      const blob = run(["hash-object", "-w", path.join(dir, rel)]);
+      run(["update-index", "--add", "--cacheinfo", `100644,${blob},${rel}`]);
+    }
+    return run(["write-tree"]);
+  } finally {
+    fs.rmSync(indexFile, { force: true });
+  }
+}
+
+function rememberVaultSources(wikiRoot, state) {
+  if (!state.sources || typeof state.sources !== "object") state.sources = {};
+  const cited = new Map();
+  for (const rel of listWikiRelFromDir(wikiRoot)) {
+    if (!rel.startsWith("pages/") || !rel.endsWith(".md")) continue;
+    let parsed;
+    try {
+      parsed = parseFrontmatter(fs.readFileSync(path.join(wikiRoot, rel), "utf8"));
+    } catch {
+      continue;
+    }
+    const sources = parsed.frontmatter?.sources;
+    if (!Array.isArray(sources)) continue;
+    for (const source of sources) {
+      if (!source || typeof source.path !== "string" || !source.sha256) continue;
+      const prior = cited.get(source.path) || {
+        sourceSha256: source.sha256,
+        affectedPages: [],
+      };
+      if (!prior.affectedPages.includes(rel)) prior.affectedPages.push(rel);
+      cited.set(source.path, prior);
+    }
+  }
+  for (const [sourcePath, record] of cited) {
+    if (state.sources[sourcePath]) continue;
+    state.sources[sourcePath] = {
+      sourceSha256: record.sourceSha256,
+      affectedPages: record.affectedPages.sort(),
+      status: "imported",
+    };
+  }
+}
+
+function compiledPagesPreserved(wikiRoot, nextCommit, compiledCommit) {
+  for (const rel of listWikiFilesAtCommit(wikiRoot, compiledCommit)) {
+    if (rel === "index.md") continue;
+    if (!listWikiFilesAtCommit(wikiRoot, nextCommit).includes(rel)) return false;
+    const next = fileAtCommit(wikiRoot, nextCommit, rel);
+    const compiled = fileAtCommit(wikiRoot, compiledCommit, rel);
+    if (!next.equals(compiled)) return false;
+  }
+  return true;
+}
+
+/** Pages already in the team vault stay when this compile did not include them
+ * and their source files are still on disk. The vault snapshot becomes the
+ * publish baseline so the new pages are added beside them. */
+function absorbPublishedVault(opts) {
+  const wikiRoot = opts.wikiRoot;
+  const knowledgeRoot = opts.knowledgeRoot;
+  const statePath = opts.statePath;
+  if (!wikiRoot || !knowledgeRoot || !statePath) return null;
+  if (readMarker(opts.workRoot)) return null;
+  const state = loadState(statePath);
+  if (state.publishedCommit) return null;
+  const vault = vaultWikiRoot(knowledgeRoot);
+  const documentsRoot = documentsRootFor(opts);
+  const knownPaths = knownPathSet(opts.known);
+  const head = headCommit(wikiRoot);
+  const inHead = new Set(listWikiFilesAtCommit(wikiRoot, head));
+  const vaultRels = listWikiRelFromDir(vault);
+  const missing = [];
+  for (const rel of vaultRels) {
+    if (rel === "index.md" || inHead.has(rel)) continue;
+    const bytes = fs.readFileSync(path.join(vault, rel));
+    if (!pageStillHasSource(bytes, documentsRoot, knownPaths)) continue;
+    missing.push(rel);
+  }
+  if (missing.length === 0) return null;
+  const baselineTree = writeTreeFromDirectory(wikiRoot, vault, vaultRels);
+  const baseline = git(wikiRoot, [
+    "commit-tree",
+    baselineTree,
+    "-m",
+    "wiki: baseline from the published team vault",
+  ]);
+  for (const rel of missing) {
+    const dest = path.join(wikiRoot, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(path.join(vault, rel), dest);
+  }
+  rebuildIndex(wikiRoot);
+  const next = commitAll(wikiRoot, "wiki: keep pages already published in the team vault");
+  state.publishedCommit = baseline;
+  rememberVaultSources(wikiRoot, state);
+  saveState(statePath, state);
+  return { baseline, next };
+}
+
 function assertNoConflicts(knowledgeRoot) {
   const sidecar = path.join(knowledgeRoot, "wiki", ".conflicts");
   if (fs.existsSync(sidecar)) {
@@ -178,18 +341,61 @@ function assertNoConflicts(knowledgeRoot) {
   }
 }
 
-function assertVaultBaseline({ knowledgeRoot, wikiRoot, publishedCommit, replaying }) {
+function assertVaultBaseline({
+  knowledgeRoot,
+  wikiRoot,
+  publishedCommit,
+  targetCommit,
+  replaying,
+}) {
   if (replaying) return;
   const vault = vaultWikiRoot(knowledgeRoot);
   if (!publishedCommit) {
-    // First publish takes over knowledge/wiki/. Leftover pages from earlier
-    // experiments are replaced by applyPlan pruning — do not block the run.
-    return;
+    const files = listWikiRelFromDir(vault);
+    if (files.length === 0 || treeHashFromDir(vault) === treeHashFromCommit(wikiRoot, targetCommit)) {
+      return;
+    }
+    throw new Error("knowledge/wiki has unexplained content; refuse the first publish");
   }
   const expected = treeHashFromCommit(wikiRoot, publishedCommit);
   const actual = treeHashFromDir(vault);
-  if (actual !== expected) {
-    throw new Error("knowledge/wiki was modified externally; refuse to overwrite");
+  if (actual === expected) return;
+  // A previous publish already wrote this target, or this compile absorbed the
+  // vault, while the recorded baseline still points at an older commit.
+  if (targetCommit && actual === treeHashFromCommit(wikiRoot, targetCommit)) return;
+  throw new Error("knowledge/wiki was modified externally; refuse to overwrite");
+}
+
+function assertReplayableVault({ knowledgeRoot, wikiRoot, plan }) {
+  const vault = vaultWikiRoot(knowledgeRoot);
+  const base = new Set(
+    plan.fromCommit ? listWikiFilesAtCommit(wikiRoot, plan.fromCommit) : [],
+  );
+  const target = new Set(listWikiFilesAtCommit(wikiRoot, plan.toCommit));
+  const all = new Set([...base, ...target]);
+  for (const rel of listWikiRelFromDir(vault)) {
+    if (!all.has(rel)) {
+      throw new Error(`knowledge/wiki contains an unexplained file during recovery: ${rel}`);
+    }
+  }
+  for (const rel of all) {
+    const dest = resolveInside(vault, rel);
+    if (!fs.existsSync(dest)) {
+      if (base.has(rel) && target.has(rel)) {
+        throw new Error(`knowledge/wiki is missing an unexplained file during recovery: ${rel}`);
+      }
+      continue;
+    }
+    const current = fs.readFileSync(dest);
+    const matchesBase =
+      plan.fromCommit &&
+      base.has(rel) &&
+      current.equals(fileAtCommit(wikiRoot, plan.fromCommit, rel));
+    const matchesTarget =
+      target.has(rel) && current.equals(fileAtCommit(wikiRoot, plan.toCommit, rel));
+    if (!matchesBase && !matchesTarget) {
+      throw new Error(`knowledge/wiki has unexplained content during recovery: ${rel}`);
+    }
   }
 }
 
@@ -241,20 +447,14 @@ async function publishWiki(opts) {
   const wikiRoot = opts.wikiRoot;
   const knowledgeRoot = opts.knowledgeRoot;
   const workRoot = opts.workRoot;
+  const absorbed = absorbPublishedVault(opts);
   const state = loadState(opts.statePath);
   const toCommit = headCommit(wikiRoot);
   const marker = readMarker(workRoot);
-  const replaying = Boolean(marker);
+  const replaying = Boolean(marker || opts.forceReplay);
   if (marker && marker.toCommit !== toCommit) {
     throw new Error(`incomplete publish for ${marker.toCommit} must be replayed before publishing ${toCommit}`);
   }
-  assertNoConflicts(knowledgeRoot);
-  assertVaultBaseline({
-    knowledgeRoot,
-    wikiRoot,
-    publishedCommit: state.publishedCommit,
-    replaying,
-  });
   const plan =
     opts.planOverride ||
     buildPublishPlan({
@@ -262,6 +462,30 @@ async function publishWiki(opts) {
       fromCommit: state.publishedCommit || null,
       toCommit,
     });
+  assertNoConflicts(knowledgeRoot);
+  assertVaultBaseline({
+    knowledgeRoot,
+    wikiRoot,
+    publishedCommit: state.publishedCommit,
+    targetCommit: plan.toCommit,
+    replaying,
+  });
+  if (
+    opts.expectedTargetCommit &&
+    (plan.toCommit !== opts.expectedTargetCommit ||
+      plan.targetTreeHash !== opts.expectedTargetTreeHash ||
+      (plan.baseTreeHash ?? null) !== (opts.expectedBaseTreeHash ?? null))
+  ) {
+    const keptCompiledPages =
+      absorbed &&
+      compiledPagesPreserved(wikiRoot, plan.toCommit, opts.expectedTargetCommit);
+    if (!keptCompiledPages) {
+      throw new Error("local Wiki publish target does not match the cloud checkpoint");
+    }
+  }
+  if (replaying) {
+    assertReplayableVault({ knowledgeRoot, wikiRoot, plan });
+  }
   for (const rel of [...plan.create, ...plan.update, ...plan.delete]) {
     assertSafeRel(rel);
   }

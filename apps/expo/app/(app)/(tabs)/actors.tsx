@@ -14,7 +14,7 @@ import { createActorsCache } from "../../../src/lib/db/team-cache";
 const noopSubscribe = () => () => {};
 const EMPTY_AGENTS_STATE: ConnectedAgentsStoreState = {
   agents: [],
-  runtimeInfoByAgentId: new Map(),
+  presenceByAgentId: new Map(),
   isLoading: false,
   errorMessage: null,
 };

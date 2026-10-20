@@ -204,7 +204,141 @@ test("ingestBatch fails when the compiler produces no wiki pages", async () => {
   assert.equal(state.sources["documents/handbook/leave.md"], undefined);
 });
 
-test("ingestBatch retracts a deleted source even when the compiler leaves its pages in place", async () => {
+test("ingestBatch detaches a shared page when the compiler does not retract", async () => {
+  const fx = makeHarness();
+  write(path.join(fx.documentsRoot, "handbook", "leave.md"), "# 请假\n\n员工请假需提前申请。\n");
+  const added = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+  });
+  assert.equal(added.ok, true, JSON.stringify(added.failures || added));
+  const pagePath = path.join(fx.workRoot, "wiki", "pages", "请假.md");
+  const { parseFrontmatter, serializeFrontmatter } = require("./frontmatter");
+  const { commitAll } = require("./git-store");
+  const parsed = parseFrontmatter(fs.readFileSync(pagePath, "utf8"));
+  const before = serializeFrontmatter(
+    {
+      ...parsed.frontmatter,
+      sources: [
+        ...parsed.frontmatter.sources,
+        {
+          path: "documents/handbook/other.md",
+          sha256: "cd".repeat(32),
+          locators: ["heading=其他"],
+        },
+      ],
+    },
+    parsed.body,
+  );
+  fs.writeFileSync(pagePath, before);
+  commitAll(path.join(fx.workRoot, "wiki"), "test: shared page cites two sources");
+  fs.rmSync(path.join(fx.documentsRoot, "handbook", "leave.md"));
+  const prompts = [];
+  const deleted = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    runner: "pi",
+    createSession: async () => ({
+      prompt: async (prompt) => {
+        prompts.push(prompt);
+      },
+    }),
+  });
+  const sourceBlock = prompts.join("\n").match(/<source>\n([\s\S]*?)\n<\/source>/);
+  assert.ok(sourceBlock, "delete prompt should include a source block");
+  assert.match(sourceBlock[1], /员工请假需提前申请/);
+  assert.equal(deleted.ok, true, JSON.stringify(deleted.failures || deleted));
+  assert.equal(deleted.counts.retracted, 1);
+  const kept = fs.readFileSync(pagePath, "utf8");
+  assert.match(kept, /员工请假需提前申请/);
+  assert.equal(kept.includes("documents/handbook/leave.md"), false);
+  assert.match(kept, /documents\/handbook\/other\.md/);
+  const state = JSON.parse(fs.readFileSync(fx.statePath, "utf8"));
+  assert.equal(state.sources["documents/handbook/leave.md"], undefined);
+});
+
+test("ingestBatch keeps a shared page when the compiler blanks it on delete", async () => {
+  const fx = makeHarness();
+  write(path.join(fx.documentsRoot, "handbook", "leave.md"), "# 请假\n\n员工请假需提前申请。\n");
+  const added = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+  });
+  assert.equal(added.ok, true, JSON.stringify(added.failures || added));
+  const pagePath = path.join(fx.workRoot, "wiki", "pages", "请假.md");
+  const { parseFrontmatter, serializeFrontmatter } = require("./frontmatter");
+  const { commitAll } = require("./git-store");
+  const parsed = parseFrontmatter(fs.readFileSync(pagePath, "utf8"));
+  const before = serializeFrontmatter(
+    {
+      ...parsed.frontmatter,
+      sources: [
+        ...parsed.frontmatter.sources,
+        {
+          path: "documents/handbook/other.md",
+          sha256: "cd".repeat(32),
+          locators: ["heading=其他"],
+        },
+      ],
+    },
+    parsed.body,
+  );
+  fs.writeFileSync(pagePath, before);
+  commitAll(path.join(fx.workRoot, "wiki"), "test: shared page cites two sources");
+  fs.rmSync(path.join(fx.documentsRoot, "handbook", "leave.md"));
+  const deleted = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    runner: "pi",
+    createSession: async () => ({
+      messages: [],
+      async prompt() {
+        this.messages.push({
+          role: "assistant",
+          stopReason: "stop",
+          content: [
+            {
+              type: "text",
+              text: "<<<WIKI_FILE pages/请假.md>>>\n<<<END_WIKI_FILE>>>",
+            },
+          ],
+        });
+      },
+    }),
+  });
+  assert.equal(deleted.ok, true, JSON.stringify(deleted.failures || deleted));
+  assert.equal(deleted.counts.retracted, 1);
+  const kept = fs.readFileSync(pagePath, "utf8");
+  assert.match(kept, /员工请假需提前申请/);
+  assert.equal(kept.includes("documents/handbook/leave.md"), false);
+  assert.match(kept, /documents\/handbook\/other\.md/);
+});
+
+test("ingestBatch deletes a page that only cites the removed source without calling the model", async () => {
   const fx = makeHarness();
   write(path.join(fx.documentsRoot, "handbook", "leave.md"), "# 请假\n\n员工请假需提前申请。\n");
   const added = await ingestBatch({
@@ -229,11 +363,9 @@ test("ingestBatch retracts a deleted source even when the compiler leaves its pa
     known: [],
     aclPrefixes: [],
     runner: "pi",
-    createSession: async () => ({
-      prompt: async () => {
-        // Pretend the model ignored the delete request.
-      },
-    }),
+    createSession: async () => {
+      throw new Error("model should not run when the page only cites the deleted source");
+    },
   });
   assert.equal(deleted.ok, true, JSON.stringify(deleted.failures || deleted));
   assert.equal(deleted.counts.retracted, 1);
@@ -432,4 +564,130 @@ test("ingestBatch rewrites short wiki links before the source gate", async () =>
   );
   assert.match(home, /\[\[pages\/amuxd-device-id\]\]/);
   assert.match(device, /\[\[pages\/amuxd-home-directory\]\]/);
+});
+
+test("ingestBatch says the file was read when vision succeeds and the compiler writes no page", async () => {
+  const fx = makeHarness();
+  const config = JSON.parse(fs.readFileSync(fx.configPath, "utf8"));
+  config.sources[0].allowExtensions = ["png"];
+  fs.writeFileSync(fx.configPath, JSON.stringify(config));
+  write(
+    path.join(fx.documentsRoot, "handbook", "notice.png"),
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]),
+  );
+  const result = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    runner: "pi",
+    acceptVisionEstimate: true,
+    visionModel: "team/glm-4.6",
+    visionExtract: async () => "# 放假通知\n\n明天放假。",
+    createSession: async () => ({
+      prompt: async () => {},
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "ok" }] }],
+    }),
+  });
+  assert.equal(result.ok, false);
+  assert.equal(
+    result.failures[0].error,
+    "vision transcribed but compiler produced no wiki pages",
+  );
+});
+
+function sharedPageHarness() {
+  const fx = makeHarness();
+  write(path.join(fx.documentsRoot, "handbook", "leave.md"), "# 请假\n\n员工请假需提前申请。\n");
+  write(path.join(fx.documentsRoot, "handbook", "secret", "pay.md"), "# 请假\n\n请假期间工资按八折发放。\n");
+  return fx;
+}
+
+function batchOpts(fx, extra = {}) {
+  return {
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    ...extra,
+  };
+}
+
+test("ingestBatch retracts a newly restricted source from a shared page", async () => {
+  const fx = sharedPageHarness();
+  const added = await ingestBatch(batchOpts(fx));
+  assert.equal(added.ok, true, JSON.stringify(added.failures || added));
+  const pagePath = path.join(fx.workRoot, "wiki", "pages", "请假.md");
+  assert.match(fs.readFileSync(pagePath, "utf8"), /工资按八折/);
+
+  const progress = [];
+  const restricted = await ingestBatch(
+    batchOpts(fx, {
+      aclPrefixes: ["documents/handbook/secret/"],
+      onProgress: (event) => progress.push(event),
+    }),
+  );
+  assert.equal(restricted.ok, true, JSON.stringify(restricted.failures || restricted));
+  assert.equal(restricted.counts.restricted_retracted, 1);
+  const page = fs.readFileSync(pagePath, "utf8");
+  assert.match(page, /员工请假需提前申请/);
+  assert.equal(page.includes("工资按八折"), false);
+  assert.equal(page.includes("documents/handbook/secret/pay.md"), false);
+  const state = JSON.parse(fs.readFileSync(fx.statePath, "utf8"));
+  assert.equal(state.sources["documents/handbook/secret/pay.md"], undefined);
+  assert.equal(
+    fs.readdirSync(path.join(fx.workRoot, "raw"), { recursive: true }).some((name) =>
+      String(name).includes("pay"),
+    ),
+    false,
+  );
+  assert.equal(JSON.stringify(progress).includes("secret"), false);
+});
+
+test("ingestBatch never sends restricted text to the model and drops the page when the rewrite fails", async () => {
+  const fx = sharedPageHarness();
+  const added = await ingestBatch(batchOpts(fx));
+  assert.equal(added.ok, true, JSON.stringify(added.failures || added));
+  const pagePath = path.join(fx.workRoot, "wiki", "pages", "请假.md");
+
+  const prompts = [];
+  const restricted = await ingestBatch(
+    batchOpts(fx, {
+      aclPrefixes: ["documents/handbook/secret/"],
+      runner: "pi",
+      createSession: async () => ({
+        prompt: async (prompt) => {
+          prompts.push(prompt);
+          throw new Error("model unavailable");
+        },
+      }),
+    }),
+  );
+  const restrictPrompt = prompts.find((prompt) => prompt.includes("Compile action: delete"));
+  assert.ok(restrictPrompt, "restricted retract should still ask the model to rewrite");
+  const sourceBlock = restrictPrompt.match(/<source>\n([\s\S]*?)\n<\/source>/);
+  assert.equal(sourceBlock[1].trim(), "");
+  assert.equal(restricted.counts.restricted_retracted, 1);
+  assert.equal(fs.existsSync(pagePath), false);
+  assert.deepEqual(
+    restricted.failures.map((failure) => [failure.action, failure.path]),
+    [["update", "documents/handbook/leave.md"]],
+  );
+  const state = JSON.parse(fs.readFileSync(fx.statePath, "utf8"));
+  assert.equal(state.sources["documents/handbook/secret/pay.md"], undefined);
+  assert.equal(state.sources["documents/handbook/leave.md"].sourceSha256, null);
+
+  const recompiled = await ingestBatch(batchOpts(fx, { aclPrefixes: ["documents/handbook/secret/"] }));
+  assert.equal(recompiled.ok, true, JSON.stringify(recompiled.failures || recompiled));
+  const page = fs.readFileSync(pagePath, "utf8");
+  assert.match(page, /员工请假需提前申请/);
+  assert.equal(page.includes("工资按八折"), false);
 });

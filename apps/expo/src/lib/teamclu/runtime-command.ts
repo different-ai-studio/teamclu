@@ -1,6 +1,7 @@
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create } from "@bufbuild/protobuf";
 import {
   AcpAnswerQuestionSchema,
+  AcpCancelSchema,
   AcpCommandSchema,
   AcpDenyPermissionSchema,
   AcpGrantPermissionSchema,
@@ -9,66 +10,75 @@ import {
 } from "@teamclu/app/proto/amux_pb";
 import type { AcpCommand } from "@teamclu/app/proto/amux_pb";
 
-import type { ConnectedAgent, RuntimeInfo } from "../../features/actors/connected-agent-types";
-import type { TeamMqttClient } from "../mqtt/team-mqtt";
+import type { ConnectedAgent } from "../../features/actors/connected-agent-types";
 import { uuidV4 } from "../uuid";
+import type { RuntimeRpcClient } from "./runtime-rpc";
 
-export type RuntimeCommandMqtt = Pick<TeamMqttClient, "publish">;
-
+/**
+ * ACP commands to an agent, addressed by (actor, session) over the
+ * `runtime_command` RPC — the daemon resolves the session to whichever
+ * attachment serves it. Mirrors iOS `TeamcluService.runtimeCommandRpc`.
+ *
+ * These used to be published to `{actor}/runtime/{runtime_id}/commands`, which
+ * needed a runtime id the daemon no longer publishes (ADR-0004) and never
+ * answered, so a dropped command looked like a sent one.
+ */
 type RuntimeCommandSenderDeps = {
-  mqtt: RuntimeCommandMqtt;
-  teamId: string;
+  rpc: Pick<RuntimeRpcClient, "runtimeCommand">;
   peerId: string;
   senderActorId?: string | null;
   commandId?: () => string;
   nowSeconds?: () => number;
 };
 
-export type RuntimePermissionResponseInput = {
+type Target = {
   targetActorId: string;
-  runtimeId: string;
+  sessionId: string;
+};
+
+export type RuntimePermissionResponseInput = Target & {
   requestId: string;
   granted: boolean;
   optionId?: string;
 };
 
-export type RuntimeAnswerQuestionInput = {
-  targetActorId: string;
-  runtimeId: string;
+export type RuntimeAnswerQuestionInput = Target & {
   requestId: string;
   /** One array of selected labels per question, in order. Ignored when rejecting. */
   answers: ReadonlyArray<ReadonlyArray<string>>;
   reject?: boolean;
 };
 
-export type RuntimeRequestTurnHistoryInput = {
-  targetActorId: string;
-  runtimeId: string;
+export type RuntimeRequestTurnHistoryInput = Target & {
   turnId: string;
   requestId?: string;
 };
 
 export type RuntimeCommandSender = {
   sendPermissionResponse: (input: RuntimePermissionResponseInput) => Promise<void>;
-  /** Answer (or reject) an opencode `question` tool request. */
+  /** Answer (or reject) an agent `question` tool request. */
   sendAnswerQuestion: (input: RuntimeAnswerQuestionInput) => Promise<void>;
   /**
    * Ask the daemon to replay a turn's history so an expanded turn shows the
    * full event list rather than only what this device happened to stream.
    */
   sendRequestTurnHistory: (input: RuntimeRequestTurnHistoryInput) => Promise<void>;
+  /** Interrupt the agent's current turn in this session (iOS `interruptAgent`). */
+  sendCancel: (input: Target) => Promise<void>;
 };
+
+/** Thrown when the daemon answered but holds no attachment for the session. */
+export class NotDispatchedError extends Error {
+  constructor() {
+    super("The agent isn't running in this session.");
+    this.name = "NotDispatchedError";
+  }
+}
 
 export type PermissionRuntimeTarget = {
   agentId: string;
   actorId: string;
-  runtimeId: string;
 };
-
-export type PermissionRuntimeFallback = {
-  agentId?: string | null;
-  runtimeId?: string | null;
-} | null;
 
 function required(value: string | null | undefined, label: string): string {
   const trimmed = value?.trim() ?? "";
@@ -76,52 +86,37 @@ function required(value: string | null | undefined, label: string): string {
   return trimmed;
 }
 
-export function runtimeCommandsTopic(teamId: string, actorId: string, runtimeId: string): string {
-  return `amux/${teamId}/${actorId}/runtime/${runtimeId}/commands`;
-}
-
 export function createRuntimeCommandSender(
   deps: RuntimeCommandSenderDeps,
 ): RuntimeCommandSender {
-  /** Wrap an ACP command in a routing envelope and publish it to the daemon. */
-  async function publish(
-    targetActorIdRaw: string,
-    runtimeIdRaw: string,
-    acpCommand: AcpCommand,
-  ): Promise<void> {
-    const teamId = required(deps.teamId, "team id");
-    const targetActorId = required(targetActorIdRaw, "target actor id");
-    const runtimeId = required(runtimeIdRaw, "runtime id");
+  async function send(target: Target, acpCommand: AcpCommand): Promise<void> {
+    const targetActorId = required(target.targetActorId, "target actor id");
+    const sessionId = required(target.sessionId, "session id");
     const peerId = required(deps.peerId, "peer id");
-    const senderActorId = deps.senderActorId?.trim() ?? "";
     const envelope = create(RuntimeCommandEnvelopeSchema, {
-      runtimeId,
+      // Logging only — the daemon routes by (actor, session), not by this.
+      runtimeId: `${targetActorId}::${sessionId}`,
       actorId: targetActorId,
       peerId,
       commandId: deps.commandId?.() ?? uuidV4(),
       timestamp: BigInt(Math.floor(deps.nowSeconds?.() ?? Date.now() / 1000)),
-      senderActorId,
+      senderActorId: deps.senderActorId?.trim() ?? "",
       acpCommand,
     });
-
-    await deps.mqtt.publish(
-      runtimeCommandsTopic(teamId, targetActorId, runtimeId),
-      toBinary(RuntimeCommandEnvelopeSchema, envelope),
-      false,
-    );
+    const { dispatched } = await deps.rpc.runtimeCommand({ targetActorId, sessionId, envelope });
+    if (!dispatched) throw new NotDispatchedError();
   }
 
   return {
     async sendPermissionResponse(input) {
       const requestId = required(input.requestId, "request id");
-      const grantOptionId = input.optionId?.trim() ?? "";
       const acpCommand = input.granted
         ? create(AcpCommandSchema, {
             command: {
               case: "grantPermission",
               value: create(AcpGrantPermissionSchema, {
                 requestId,
-                optionId: grantOptionId,
+                optionId: input.optionId?.trim() ?? "",
               }),
             },
           })
@@ -131,39 +126,52 @@ export function createRuntimeCommandSender(
               value: create(AcpDenyPermissionSchema, { requestId }),
             },
           });
-      await publish(input.targetActorId, input.runtimeId, acpCommand);
+      await send(input, acpCommand);
     },
 
     async sendAnswerQuestion(input) {
       const requestId = required(input.requestId, "request id");
       const reject = input.reject === true;
-      const acpCommand = create(AcpCommandSchema, {
-        command: {
-          case: "answerQuestion",
-          value: create(AcpAnswerQuestionSchema, {
-            requestId,
-            // The daemon ignores answers when rejecting; send an empty list
-            // rather than a half-filled one so the payload can't mislead.
-            answersJson: JSON.stringify(reject ? [] : input.answers),
-            reject,
-          }),
-        },
-      });
-      await publish(input.targetActorId, input.runtimeId, acpCommand);
+      await send(
+        input,
+        create(AcpCommandSchema, {
+          command: {
+            case: "answerQuestion",
+            value: create(AcpAnswerQuestionSchema, {
+              requestId,
+              // The daemon ignores answers when rejecting; send an empty list
+              // rather than a half-filled one so the payload can't mislead.
+              answersJson: JSON.stringify(reject ? [] : input.answers),
+              reject,
+            }),
+          },
+        }),
+      );
     },
 
     async sendRequestTurnHistory(input) {
       const turnId = required(input.turnId, "turn id");
-      const acpCommand = create(AcpCommandSchema, {
-        command: {
-          case: "requestTurnHistory",
-          value: create(AcpRequestTurnHistorySchema, {
-            turnId,
-            requestId: input.requestId?.trim() || uuidV4(),
-          }),
-        },
-      });
-      await publish(input.targetActorId, input.runtimeId, acpCommand);
+      await send(
+        input,
+        create(AcpCommandSchema, {
+          command: {
+            case: "requestTurnHistory",
+            value: create(AcpRequestTurnHistorySchema, {
+              turnId,
+              requestId: input.requestId?.trim() || uuidV4(),
+            }),
+          },
+        }),
+      );
+    },
+
+    async sendCancel(input) {
+      await send(
+        input,
+        create(AcpCommandSchema, {
+          command: { case: "cancel", value: create(AcpCancelSchema, {}) },
+        }),
+      );
     },
   };
 }
@@ -179,24 +187,15 @@ function unique(values: string[]): string[] {
   return out;
 }
 
-function fallbackRuntimeForAgent(
-  fallbackRuntime: PermissionRuntimeFallback,
-  agentId: string,
-  agentParticipantCount: number,
-): string {
-  const runtimeId = fallbackRuntime?.runtimeId?.trim() ?? "";
-  if (!runtimeId) return "";
-  const fallbackAgentId = fallbackRuntime?.agentId?.trim() ?? "";
-  if (fallbackAgentId === agentId) return runtimeId;
-  return agentParticipantCount === 1 ? runtimeId : "";
-}
-
+/**
+ * Which agent a permission reply / answer / history request goes to: the agent
+ * that asked if it's a connected participant, else the first connected agent
+ * participant. No runtime lookup — the daemon resolves the session itself.
+ */
 export function resolvePermissionRuntimeTarget(args: {
   requestingActorId?: string | null;
   agentParticipantIds: ReadonlyArray<string>;
   connectedAgents: ReadonlyArray<Pick<ConnectedAgent, "agentId">>;
-  runtimeInfoByAgentId: ReadonlyMap<string, Pick<RuntimeInfo, "runtimeId">>;
-  fallbackRuntime: PermissionRuntimeFallback;
 }): PermissionRuntimeTarget | null {
   const agentParticipantIds = unique(
     args.agentParticipantIds.map((id) => id.trim()).filter(Boolean),
@@ -204,31 +203,17 @@ export function resolvePermissionRuntimeTarget(args: {
   if (agentParticipantIds.length === 0) return null;
 
   const participantSet = new Set(agentParticipantIds);
-  const fallbackAgentId = args.fallbackRuntime?.agentId?.trim() ?? "";
-  const candidates = unique([
-    args.requestingActorId?.trim() ?? "",
-    fallbackAgentId,
-    ...agentParticipantIds,
-  ].filter((id) => id && participantSet.has(id)));
+  const candidates = unique(
+    [args.requestingActorId?.trim() ?? "", ...agentParticipantIds].filter(
+      (id) => id && participantSet.has(id),
+    ),
+  );
 
-  // An agent's routing actor id IS its agentId (== actor_id); the directory no
-  // longer carries a separate deviceId. Only consider agents we know are
-  // connected so we don't route to an offline daemon.
-  const connectedAgentIds = new Set<string>();
-  for (const agent of args.connectedAgents) {
-    if (agent.agentId) connectedAgentIds.add(agent.agentId);
-  }
-
-  for (const agentId of candidates) {
-    if (!connectedAgentIds.has(agentId)) continue;
-
-    const runtimeId =
-      args.runtimeInfoByAgentId.get(agentId)?.runtimeId?.trim() ||
-      fallbackRuntimeForAgent(args.fallbackRuntime, agentId, agentParticipantIds.length);
-    if (!runtimeId) continue;
-
-    return { agentId, actorId: agentId, runtimeId };
-  }
-
-  return null;
+  // Only route to agents we know are connected, so a reply doesn't wait out
+  // the RPC timeout against an offline daemon.
+  const connectedAgentIds = new Set(
+    args.connectedAgents.map((a) => a.agentId).filter(Boolean),
+  );
+  const agentId = candidates.find((id) => connectedAgentIds.has(id));
+  return agentId ? { agentId, actorId: agentId } : null;
 }

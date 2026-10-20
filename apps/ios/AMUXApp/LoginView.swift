@@ -172,7 +172,7 @@ struct LoginView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var headerSubtitle: String {
+    private var headerSubtitle: LocalizedStringKey {
         if coordinator.pendingPhoneOTPPhone != nil {
             return "Check your messages for a 6-digit code."
         }
@@ -317,7 +317,7 @@ struct LoginView: View {
 
     // MARK: - Shared widgets
 
-    private func primaryButton(title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+    private func primaryButton(title: LocalizedStringKey, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
                 if coordinator.isBusy {
@@ -356,13 +356,11 @@ struct LoginView: View {
     private var socialButtons: some View {
         VStack(spacing: 10) {
             socialButton(title: "Sign in with Apple", icon: "applelogo") {
-                Analytics.track("sign_in_started", ["method": "apple"])
                 Task { await coordinator.signInWithApple() }
             }
 
             if authFlags.google {
                 socialButton(title: "Sign in with Google", icon: "globe") {
-                    Analytics.track("sign_in_started", ["method": "google"])
                     Task { await signInWithGoogleOAuth() }
                 }
             }
@@ -442,7 +440,7 @@ struct LoginView: View {
         await coordinator.handleAuthCallback(url: callbackURL)
     }
 
-    private func socialButton(title: String, icon: String, action: @escaping () -> Void) -> some View {
+    private func socialButton(title: LocalizedStringKey, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: icon)

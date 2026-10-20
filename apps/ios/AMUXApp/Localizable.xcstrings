@@ -1,6 +1,46 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "%@ (not set up yet)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（还没初始化）"
+          }
+        }
+      }
+    },
+    "%lld new messages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 条新消息"
+          }
+        }
+      }
+    },
+    "%lld selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 %lld 条"
+          }
+        }
+      }
+    },
+    "%lld unread": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 条未读"
+          }
+        }
+      }
+    },
     "\"%@\" is currently responding. Stopping will interrupt the reply mid-stream.": {
       "localizations": {
         "zh-Hans": {
@@ -523,12 +563,32 @@
         }
       }
     },
+    "An app session needs an agent. Add an agent as a collaborator first.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用会话需要一个 agent，请先添加协作的 agent。"
+          }
+        }
+      }
+    },
     "Answer each question before submitting.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "请回答所有问题后再提交。"
+          }
+        }
+      }
+    },
+    "App": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用"
           }
         }
       }
@@ -589,6 +649,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "归档的想法会显示在这里。"
+          }
+        }
+      }
+    },
+    "Ask Again": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再问一次"
           }
         }
       }
@@ -689,6 +759,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "取消"
+          }
+        }
+      }
+    },
+    "Cancel reply": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消回复"
           }
         }
       }
@@ -963,6 +1043,16 @@
         }
       }
     },
+    "Couldn't forward": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发失败"
+          }
+        }
+      }
+    },
     "Couldn't read a token from that link.": {
       "localizations": {
         "zh-Hans": {
@@ -1079,6 +1169,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "自定义服务器"
+          }
+        }
+      }
+    },
+    "Delete %lld messages?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除 %lld 条消息？"
           }
         }
       }
@@ -1280,6 +1380,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "完成排序"
+          }
+        }
+      }
+    },
+    "Draft: ": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿："
           }
         }
       }
@@ -1510,6 +1620,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "财务"
+          }
+        }
+      }
+    },
+    "Forward": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发"
+          }
+        }
+      }
+    },
+    "Forward to": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发到"
+          }
+        }
+      }
+    },
+    "Forwarded from %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发自「%@」"
+          }
+        }
+      }
+    },
+    "Forwarded messages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发的消息"
           }
         }
       }
@@ -1885,6 +2035,16 @@
         }
       }
     },
+    "Jump to latest": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回到最新"
+          }
+        }
+      }
+    },
     "Just you": {
       "localizations": {
         "zh-Hans": {
@@ -2002,6 +2162,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "稍后再说"
+          }
+        }
+      }
+    },
+    "Me": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "我"
           }
         }
       }
@@ -2176,6 +2346,16 @@
         }
       }
     },
+    "Next match": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一个"
+          }
+        }
+      }
+    },
     "No Actors Yet": {
       "localizations": {
         "zh-Hans": {
@@ -2242,6 +2422,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "还没有人回复"
+          }
+        }
+      }
+    },
+    "No results": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无结果"
           }
         }
       }
@@ -2512,6 +2702,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "未连接——请检查网络后重试。"
+          }
+        }
+      }
+    },
+    "Not selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未选中"
           }
         }
       }
@@ -2926,6 +3126,16 @@
         }
       }
     },
+    "Previous match": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一个"
+          }
+        }
+      }
+    },
     "Process": {
       "localizations": {
         "zh-Hans": {
@@ -3166,6 +3376,36 @@
         }
       }
     },
+    "Reply": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复"
+          }
+        }
+      }
+    },
+    "Reply not sent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复未发出"
+          }
+        }
+      }
+    },
+    "Replying to %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复 %@"
+          }
+        }
+      }
+    },
     "Restart": {
       "localizations": {
         "zh-Hans": {
@@ -3256,6 +3496,66 @@
         }
       }
     },
+    "Saved as a draft. Open the conversation to send it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已存为草稿，打开会话即可发送。"
+          }
+        }
+      }
+    },
+    "Search in Conversation": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在会话中搜索"
+          }
+        }
+      }
+    },
+    "Search loaded messages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索已加载的消息"
+          }
+        }
+      }
+    },
+    "Select": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择"
+          }
+        }
+      }
+    },
+    "Selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选中"
+          }
+        }
+      }
+    },
+    "Send": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送"
+          }
+        }
+      }
+    },
     "SESSIONS": {
       "localizations": {
         "zh-Hans": {
@@ -3292,6 +3592,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "保存"
+          }
+        }
+      }
+    },
+    "Save to Files": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储到文件"
           }
         }
       }
@@ -3866,6 +4176,16 @@
         }
       }
     },
+    "Still connecting. Try again in a moment.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接，请稍后再试。"
+          }
+        }
+      }
+    },
     "Stop": {
       "localizations": {
         "zh-Hans": {
@@ -3972,6 +4292,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "切换当前模型"
+          }
+        }
+      }
+    },
+    "The messages are removed for everyone in this session.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这些消息会对会话中的所有人删除。"
           }
         }
       }
@@ -4427,6 +4757,16 @@
         }
       }
     },
+    "Untitled": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未命名"
+          }
+        }
+      }
+    },
     "Untitled Session": {
       "localizations": {
         "zh-Hans": {
@@ -4677,16 +5017,6 @@
         }
       }
     },
-    "Working": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "运行中"
-          }
-        }
-      }
-    },
     "Working…": {
       "localizations": {
         "zh-Hans": {
@@ -4733,6 +5063,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "工作目录"
+          }
+        }
+      }
+    },
+    "Yesterday": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "昨天"
           }
         }
       }
@@ -4823,36 +5163,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Agent"
-          }
-        }
-      }
-    },
-    "daemon connecting": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "daemon 连接中"
-          }
-        }
-      }
-    },
-    "daemon offline": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "daemon 离线"
-          }
-        }
-      }
-    },
-    "daemon online": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "daemon 在线"
           }
         }
       }
@@ -5007,12 +5317,552 @@
         }
       }
     },
+    "yourself": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自己"
+          }
+        }
+      }
+    },
+    "Zoom": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缩放"
+          }
+        }
+      }
+    },
     "… %lld more lines": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "… 还有 %lld 行"
+          }
+        }
+      }
+    },
+    "Work alongside your AI allies": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "和 AI 搭档一起干活"
+          }
+        }
+      }
+    },
+    "Teammates and AI allies share one conversation — discuss, split the work, ship it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "团队成员和 AI 搭档在同一个会话里讨论、分工、交付。"
+          }
+        }
+      }
+    },
+    "Team knowledge stays in sync": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "团队知识自动同步"
+          }
+        }
+      }
+    },
+    "The docs and know-how your team builds up are there for every member and every agent.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "团队沉淀的文档和经验，每个成员、每个 agent 都能随时用上。"
+          }
+        }
+      }
+    },
+    "Your computer works, your phone follows": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑干活，手机跟进"
+          }
+        }
+      }
+    },
+    "Agents do the work on your computer. Follow along and make the call from your phone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 在电脑上替你干活，你在手机上随时跟进、拍板。"
+          }
+        }
+      }
+    },
+    "You've got a team invite. Sign in and you'll join the team automatically.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你收到了一个团队邀请，登录后会自动加入。"
+          }
+        }
+      }
+    },
+    "How are you starting?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你打算怎么开始？"
+          }
+        }
+      }
+    },
+    "%@ works best when your whole team is on it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "整个团队一起用 %@，效果最好。"
+          }
+        }
+      }
+    },
+    "Join my team": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加入我的团队"
+          }
+        }
+      }
+    },
+    "My team already uses %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "我的团队已经在用 %@。"
+          }
+        }
+      }
+    },
+    "Start a new team": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建新团队"
+          }
+        }
+      }
+    },
+    "Set up %@ for my team.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为我的团队开始使用 %@。"
+          }
+        }
+      }
+    },
+    "Have an invite link?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有邀请链接？"
+          }
+        }
+      }
+    },
+    "No invite yet? Ask your team admin to invite you.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没收到邀请？让团队管理员邀请你。"
+          }
+        }
+      }
+    },
+    "Get the desktop app": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先装桌面端"
+          }
+        }
+      }
+    },
+    "Your team's agents run on a computer. Install %@ for Mac or Windows there — that's where you create the team and invite people.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "团队的 agent 跑在电脑上。请在电脑上安装 %@（Mac 或 Windows），在那里创建团队、邀请成员。"
+          }
+        }
+      }
+    },
+    "Share download link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分享下载链接"
+          }
+        }
+      }
+    },
+    "Sign in on this phone first": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先在手机上登录"
+          }
+        }
+      }
+    },
+    "Create my team now": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "现在创建我的团队"
+          }
+        }
+      }
+    },
+    "Copied": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已复制"
+          }
+        }
+      }
+    },
+    "Paste the link your teammate shared to join their team with this account.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴同事发给你的链接，用当前账号加入团队。"
+          }
+        }
+      }
+    },
+    "Not in a team yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没加入任何团队"
+          }
+        }
+      }
+    },
+    "%@ isn't in any team yet. Ask your team admin to invite this account, then refresh.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 还没有加入任何团队。请让团队管理员邀请这个账号，然后刷新。"
+          }
+        }
+      }
+    },
+    "This account isn't in any team yet. Ask your team admin to invite it, then refresh.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个账号还没有加入任何团队。请让团队管理员邀请它，然后刷新。"
+          }
+        }
+      }
+    },
+    "INVITES FOR YOU": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你收到的邀请"
+          }
+        }
+      }
+    },
+    "A team": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一个团队"
+          }
+        }
+      }
+    },
+    "Checking…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查…"
+          }
+        }
+      }
+    },
+    "Refresh": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新"
+          }
+        }
+      }
+    },
+    "Check again after your admin sends the invite.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "管理员发出邀请后，再检查一次。"
+          }
+        }
+      }
+    },
+    "Paste an invite link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴邀请链接"
+          }
+        }
+      }
+    },
+    "A teammate sent you a link.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同事给你发了链接。"
+          }
+        }
+      }
+    },
+    "Use another account": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "换个账号"
+          }
+        }
+      }
+    },
+    "The invite went to a different email or phone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "邀请发到了别的邮箱或手机号。"
+          }
+        }
+      }
+    },
+    "Start a new team instead": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "改为创建新团队"
+          }
+        }
+      }
+    },
+    "Set up %@ for your own team.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为你自己的团队开始使用 %@。"
+          }
+        }
+      }
+    },
+    "Choose an organization": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择要进入的组织"
+          }
+        }
+      }
+    },
+    "You belong to more than one organization. Pick the one to enter this time.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你在多个组织中都有身份，选择这次要进入哪一个。"
+          }
+        }
+      }
+    },
+    "Current account": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前账号"
+          }
+        }
+      }
+    },
+    "Unnamed organization": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未命名组织"
+          }
+        }
+      }
+    },
+    "Super admin": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "超级管理员"
+          }
+        }
+      }
+    },
+    "Switching identities is not supported by this backend.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前后端不支持切换身份。"
+          }
+        }
+      }
+    },
+    "Current Team": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前团队"
+          }
+        }
+      }
+    },
+    "Team Info": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "团队信息"
+          }
+        }
+      }
+    },
+    "Default Agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认 Agent"
+          }
+        }
+      }
+    },
+    "Personal Default Agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "个人默认 Agent"
+          }
+        }
+      }
+    },
+    "Follow team default": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跟随团队默认"
+          }
+        }
+      }
+    },
+    "In effect": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "生效中"
+          }
+        }
+      }
+    },
+    "Unavailable agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不可用的 Agent"
+          }
+        }
+      }
+    },
+    "New sessions go to %@. Your personal default overrides the team default.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新会话将交给 %@。个人默认 Agent 优先于团队默认 Agent。"
+          }
+        }
+      }
+    },
+    "No default agent yet. Pick a personal default, or ask a team admin to set one for the team.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没有默认 Agent。请设置个人默认 Agent，或联系团队管理员设置团队默认 Agent。"
+          }
+        }
+      }
+    },
+    "Current": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前"
           }
         }
       }

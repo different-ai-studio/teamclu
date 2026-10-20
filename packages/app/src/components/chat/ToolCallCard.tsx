@@ -159,6 +159,7 @@ export const ToolCallCard = React.memo(function ToolCallCard({
         toolCallId={toolCall.id}
         questions={questions}
         isCompleted={toolCall.status === "completed"}
+        result={toolCall.result}
       />
     );
   }

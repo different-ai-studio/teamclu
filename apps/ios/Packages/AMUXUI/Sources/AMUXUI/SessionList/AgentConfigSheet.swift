@@ -8,11 +8,15 @@ public struct AgentConfigSheet: View {
     }
 
     public enum AgentType: String, CaseIterable, Identifiable, Sendable {
+        /// pi is the only runtime the daemon runs (#1247); the legacy cases
+        /// stay so old stored values still parse, and the daemon reroutes them.
+        case pi
         case claude = "claude"
         case opencode, codex
         public var id: String { rawValue }
         public var label: String {
             switch self {
+            case .pi: "Pi"
             case .claude: "Claude"
             case .opencode: "OpenCode"
             case .codex: "Codex"
@@ -24,7 +28,7 @@ public struct AgentConfigSheet: View {
             case "claude", "claude_code", "claude-code": .claude
             case "opencode": .opencode
             case "codex": .codex
-            default: .claude
+            default: .pi
             }
         }
 
@@ -42,22 +46,22 @@ public struct AgentConfigSheet: View {
     let onCancel: () -> Void
 
     @State private var selectedWorkspaceID: String
-    @State private var selectedType: AgentType = .claude
+    @State private var selectedType: AgentType = .pi
 
     public init(actorDisplayName: String,
                 workspaces: [WorkspaceRef],
-                defaultType: AgentType = .claude,
-                allowedTypes: [AgentType] = AgentType.allCases,
+                defaultType: AgentType = .pi,
+                allowedTypes: [AgentType] = [.pi],
                 onConfirm: @escaping (Selection) -> Void,
                 onCancel: @escaping () -> Void) {
         self.actorDisplayName = actorDisplayName
         self.workspaces = workspaces
-        let usableTypes = allowedTypes.isEmpty ? AgentType.allCases : allowedTypes
+        let usableTypes = allowedTypes.isEmpty ? [.pi] : allowedTypes
         self.allowedTypes = usableTypes
         self.onConfirm = onConfirm
         self.onCancel = onCancel
         _selectedWorkspaceID = State(initialValue: workspaces.first?.id ?? "")
-        _selectedType = State(initialValue: usableTypes.contains(defaultType) ? defaultType : (usableTypes.first ?? .claude))
+        _selectedType = State(initialValue: usableTypes.contains(defaultType) ? defaultType : (usableTypes.first ?? .pi))
     }
 
     public var body: some View {
@@ -112,6 +116,7 @@ extension AgentConfigSheet.AgentType {
     /// NewSessionSheet and AddAgentSheet share one mapping.
     var asAmuxAgentType: Amux_AgentType {
         switch self {
+        case .pi:        return .pi
         case .claude:    return .claudeCode
         case .opencode:  return .opencode
         case .codex:     return .codex

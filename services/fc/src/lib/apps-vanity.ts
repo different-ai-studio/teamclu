@@ -1,3 +1,4 @@
+import { classifyOriginEndpoint, signOriginToken, ORIGIN_VERSION_HEADER, type OriginAuthConfig, type OriginTarget } from "./apps-origin-auth.js";
 import { appPublicUrl, parseAppPublicHost } from "./apps-public-host.js";
 
 /**
@@ -25,8 +26,17 @@ export interface VanityApp {
   usesAppCodeDomain?: boolean;
   fcEndpoint: string | null;
   fcStatus: string | null;
-  /** `apps.team_id`. The org gate resolves the app's org through it. */
+  /** `apps.team_id`. Identity of the owning team; no longer the org source. */
   teamId: string | null;
+  /**
+   * `apps.org_id` — the app's tenant org, read straight off the row.
+   *
+   * Was resolved through `teamId → teams.oid` until 20260923200000 made this
+   * column the live tenant pointer. One read instead of two, and the same
+   * value the login page narrows its account picker by — the gate and the
+   * login page disagreeing about an app's tenant is the bug that change fixed.
+   */
+  orgId: string | null;
   /** `apps.auth_mode`. `platform` is the only value with a login wall. */
   authMode: string | null;
   /** `apps.auth_audience`: `any` | `org`. Only read when authMode is platform. */
@@ -81,7 +91,7 @@ export function selectByIdPrefix(rows: VanityApp[], idPrefix: string): VanityApp
  * result. At most one row per team shares a slug, so the list is tiny.
  */
 const LOOKUP_COLUMNS =
-  "id, slug, app_code, uses_app_code_domain, fc_endpoint, fc_status, team_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
+  "id, slug, app_code, uses_app_code_domain, fc_endpoint, fc_status, team_id, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
 
 function mapVanityRow(r: any): VanityApp {
   return {
@@ -92,6 +102,7 @@ function mapVanityRow(r: any): VanityApp {
     fcEndpoint: r.fc_endpoint ?? null,
     fcStatus: r.fc_status ?? null,
     teamId: r.team_id ?? null,
+    orgId: r.org_id ?? null,
     authMode: r.auth_mode ?? null,
     authAudience: r.auth_audience ?? null,
     authScope: r.auth_scope ?? null,
@@ -202,7 +213,9 @@ export function makeVanityLookup(deps: {
     if (!key) return null;
     const now = Date.now();
     const hit = hostCache.get(key);
-    if (hit && hit.expiresAt > now) return hit.app;
+    if (hit && hit.expiresAt > now && !hit.app) return null;
+    // Positive answers contain authorization and lifecycle state. Never serve
+    // a cached live row after another worker starts an uninstall.
 
     const app = await lookup(host);
     if (hostCache.size >= CACHE_MAX) {
@@ -214,9 +227,9 @@ export function makeVanityLookup(deps: {
   };
 }
 
-/** A deployed app is servable only once it has a live endpoint to serve from. */
+/** A successful endpoint remains servable while a replacement builds or fails. */
 export function isServable(app: VanityApp | null): app is VanityApp & { fcEndpoint: string } {
-  return !!app && app.fcStatus === "live" && !!app.fcEndpoint;
+  return !!app && !!app.fcEndpoint && ["live", "awaiting_build", "building", "deploying", "deploy_error"].includes(app.fcStatus ?? "");
 }
 
 // Hop-by-hop headers are connection-scoped: forwarding them corrupts the next
@@ -393,14 +406,25 @@ export async function proxyToApp(
   endpoint: string,
   fetchImpl: typeof fetch = fetch,
   identity: ProxyIdentity | null = null,
+  origin?: { target: OriginTarget; config: OriginAuthConfig },
 ): Promise<Response> {
+  let protectedOrigin = false;
+  let upstream: URL;
+  try {
+    if (origin) protectedOrigin = classifyOriginEndpoint(endpoint, origin.target, origin.config.routeDomain) === "protected";
+    upstream = new URL(endpoint);
+  } catch {
+    return new Response("app origin is unavailable", { status: 503 });
+  }
   const incoming = new URL(request.url);
-  const upstream = new URL(endpoint);
   upstream.pathname = incoming.pathname;
   upstream.search = incoming.search;
 
   const headers = strip(request.headers);
   headers.delete("host");
+  headers.delete("x-teamclu-origin-authorization");
+  // Reserve this for FC's fixed signed-version mapping, including legacy apps.
+  headers.delete(ORIGIN_VERSION_HEADER);
   // Drop any client-supplied identity BEFORE writing our own, and drop it
   // unconditionally — including on apps with no login wall, where `identity`
   // is null and nothing is written back. Skipping the delete in that branch
@@ -418,18 +442,37 @@ export async function proxyToApp(
   headers.set("x-forwarded-proto", incoming.protocol.replace(":", ""));
   fillFetchMetadata(headers, incoming);
 
-  const hasBody = request.method !== "GET" && request.method !== "HEAD";
-  const res = await fetchImpl(upstream, {
-    method: request.method,
-    headers,
-    body: hasBody ? request.body : undefined,
-    // Node's fetch refuses a streamed body without it, and buffering instead
-    // would hold whole uploads in the API's memory.
-    ...(hasBody ? { duplex: "half" } : {}),
-    // A 302 belongs to the app; following it here would silently rewrite the
-    // app's own navigation into a response from a different URL.
-    redirect: "manual",
-  } as RequestInit);
+  if (protectedOrigin) {
+    try {
+      const token = await signOriginToken(origin!.config, origin!.target, upstream.hostname);
+      headers.set("x-teamclu-origin-authorization", `Bearer ${token}`);
+    } catch {
+      return new Response("app origin is unavailable", { status: 503 });
+    }
+  }
 
-  return new Response(res.body, { status: res.status, headers: stripForcedDownload(strip(res.headers)) });
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  let res: Response;
+  try {
+    res = await fetchImpl(upstream, {
+      method: request.method,
+      headers,
+      body: hasBody ? request.body : undefined,
+      // Node's fetch refuses a streamed body without it, and buffering instead
+      // would hold whole uploads in the API's memory.
+      ...(hasBody ? { duplex: "half" } : {}),
+      // A 302 belongs to the app; following it here would silently rewrite the
+      // app's own navigation into a response from a different URL.
+      redirect: "manual",
+    } as RequestInit);
+  } catch (error) {
+    // A transport error can include outbound headers; do not expose or log a JWT.
+    if (protectedOrigin) return new Response("app origin is unavailable", { status: 502 });
+    throw error;
+  }
+
+  const responseHeaders = stripForcedDownload(strip(res.headers));
+  responseHeaders.delete("x-teamclu-origin-authorization");
+  responseHeaders.delete(ORIGIN_VERSION_HEADER);
+  return new Response(res.body, { status: res.status, headers: responseHeaders });
 }

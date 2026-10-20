@@ -13,6 +13,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { openKnowledgeConflict } from '@/lib/tabs/knowledge-tabs'
 import { formatRelativeTime, formatDateTime } from '@/lib/ui/date-format'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 
 /** How long a sync has to run before the bar is worth showing. */
 const SHOW_AFTER_MS = 300
@@ -52,6 +54,7 @@ export function KnowledgeSyncFooter() {
   const refreshSyncStatus = useTeamSyncStatusStore((s) => s.refresh)
   const loadConflicts = useTeamConflictsStore((s) => s.load)
   const { available, syncNow } = useTeamCloudSync()
+  const absent = useLocalAgentAbsent()
 
   React.useEffect(() => {
     void refresh()
@@ -192,6 +195,8 @@ export function KnowledgeSyncFooter() {
   }, [conflicts, stuckBySyncKey, localBySyncKey, remoteBySyncKey, absPathFor, selectFile, t])
 
   const hasList = groups.length > 0
+
+  if (absent) return <LocalAgentRequiredCard />
 
   const bar = (
     <button

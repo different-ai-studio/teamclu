@@ -25,8 +25,8 @@
 //     SPA needs seeded.
 //  3. Entry: only a tab opened through `openAdminConsoleTab()` — a first-party
 //     UI action. A link inside content (agent markdown, a teammate's message,
-//     a file in the editor) that happens to point at the admin host is opened
-//     as a plain webview tab with no session.
+//     a file in the editor) that happens to point at the admin host opens in
+//     the system browser and never receives the session.
 
 import { getSession } from "@/lib/auth/session-store"
 import { adminConsoleTarget } from "@/lib/auth/web-sso"

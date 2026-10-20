@@ -500,8 +500,8 @@ describe('AppSettingsPanel', () => {
     })
   })
 
-  it('opens delete confirmation and calls deleteApp', async () => {
-    render(<AppSettingsPanel app={baseApp} />)
+  it('opens delete confirmation after successful manual uninstall', async () => {
+    render(<AppSettingsPanel app={{ ...baseApp, fcStatus: 'uninstalled', undeployOperation: { id: 'cleanup-1', status: 'succeeded', steps: {} } } as AppRow} />)
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Delete' }))
     expect(screen.getByText('删除应用？')).toBeTruthy()
@@ -509,6 +509,20 @@ describe('AppSettingsPanel', () => {
     await waitFor(() => {
       expect(storeMocks.deleteApp).toHaveBeenCalledWith('app-1')
     })
+  })
+
+  it.each(['live', 'uninstalling', 'uninstall_failed', 'deploy_error'] as const)('blocks delete while %s', async (fcStatus) => {
+    render(<AppSettingsPanel app={{ ...baseApp, fcStatus }} />)
+    const button = screen.getByRole('button', { name: 'Delete' })
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText('请先手动卸载线上部署，清理成功后才能删除应用。')).toBeTruthy()
+    await userEvent.setup().click(button)
+    expect(storeMocks.deleteApp).not.toHaveBeenCalled()
+  })
+
+  it('allows deleting an app that was never deployed', async () => {
+    render(<AppSettingsPanel app={{ ...baseApp, fcStatus: null, fcEndpoint: null, startSpec: null }} />)
+    expect((screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   describe('visibilityChangeNeedsConfirm', () => {

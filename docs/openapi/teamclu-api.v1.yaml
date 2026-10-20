@@ -105,6 +105,18 @@ paths:
                     type:
                       - string
                       - "null"
+                  homeOrgId:
+                    description: |
+                      Only with `scope=all`. The org of the signed-in identity,
+                      for narrowing a login-time team chooser to the account
+                      the user picked (`items` resolves membership across every
+                      identity sharing the caller's phone). Null when that org
+                      is the shared tenant every phone sign-up is stamped with
+                      and the caller is not an employee there, or when it could
+                      not be resolved; clients then show every item.
+                    type:
+                      - string
+                      - "null"
         "401":
           $ref: "#/components/responses/Error"
     post:
@@ -394,6 +406,123 @@ paths:
         # `upgrade_required`: the team is still in the shared default org, which is
         # solo-only. Member invites need the account upgraded into its own org.
         "403":
+          $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/join-link:
+    get:
+      operationId: getTeamJoinLink
+      summary: Get the team's unrevoked join link
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: The unrevoked link, including expired or exhausted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamJoinLink"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: putTeamJoinLink
+      summary: Create, update, or rotate the team join link
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ttl]
+              properties:
+                ttl:
+                  type: string
+                  enum: ["7d", "30d", "never"]
+                maxUses:
+                  type: [integer, "null"]
+                  minimum: 1
+                rotate:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: Existing link updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamJoinLink"
+        "201":
+          description: Link created or rotated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamJoinLink"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: revokeTeamJoinLink
+      summary: Revoke the team's unrevoked join link
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "204":
+          description: Revoked
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/join-links/{token}:
+    get:
+      operationId: previewTeamJoinLink
+      summary: Preview a join link without authentication
+      tags: [Teams]
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Preview. Non-active links still return 200 with status.
+          headers:
+            Cache-Control:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamJoinLinkPreview"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/join-links/{token}/join:
+    post:
+      operationId: joinTeamByLink
+      summary: Join the team named by a join link
+      tags: [Teams]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Joined, or already a member.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamJoinLinkJoinResult"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "410":
           $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/members/{actorId}:
     delete:
@@ -1517,6 +1646,45 @@ paths:
         "400":
           $ref: "#/components/responses/Error"
         "409":
+          $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/attachments:
+    get:
+      operationId: listSessionAttachments
+      summary: List session attachments for composer # picker
+      description: |
+        Aggregates attachment references from message **metadata** in this session.
+        Human messages contribute `metadata.attachment_urls`; agent replies
+        contribute `metadata.attachments` (and optional `attachment_urls` for
+        public URLs). Duplicate storage paths keep the newest reference.
+        Does not scan message body tokens or the `messages.attachments` column.
+      tags: [Messages]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          description: From a previous response's `nextCursor`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session attachment references, newest first.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionAttachmentListResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
   /v1/sessions/{sessionId}/turns/{turnId}/trace:
     get:
@@ -3252,6 +3420,174 @@ paths:
       responses:
         "204": { description: Uninstalled. }
         "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer:
+    get:
+      operationId: getWikiMaintainerStatus
+      summary: Get the team's portable Wiki compiler state
+      description: Team members may read the current generation and state; only owner/admin callers may mutate it or download checkpoint contents.
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: Current Wiki maintainer state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WikiMaintainerStatus" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/config:
+    put:
+      operationId: putWikiMaintainerConfig
+      summary: Replace the team Wiki compiler configuration using version CAS
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedVersion, config]
+              properties:
+                expectedVersion: { type: integer, minimum: 0 }
+                config: { type: object, additionalProperties: true }
+      responses:
+        "200": { description: Updated configuration. }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/checkpoints/prepare:
+    post:
+      operationId: prepareWikiMaintainerCheckpoint
+      summary: Authorize an immutable checkpoint upload
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WikiCheckpointWrite" }
+      responses:
+        "200":
+          description: Content-addressed object key and optional presigned PUT URL.
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/checkpoints/complete:
+    post:
+      operationId: completeWikiMaintainerCheckpoint
+      summary: Verify an uploaded checkpoint and advance generation with CAS
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/WikiCheckpointWrite"
+                - type: object
+                  required: [objectKey, manifest]
+                  properties:
+                    objectKey: { type: string }
+                    manifest: { type: object, additionalProperties: true }
+      responses:
+        "200": { description: New checkpoint generation. }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/checkpoints/latest/download:
+    get:
+      operationId: downloadLatestWikiMaintainerCheckpoint
+      summary: Get the latest checkpoint metadata and a short-lived download URL
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200": { description: Latest checkpoint and presigned download URL. }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/checkpoints/{generation}/download:
+    get:
+      operationId: downloadWikiMaintainerCheckpoint
+      summary: Download one retained checkpoint generation
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: generation
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200": { description: Checkpoint metadata and presigned download URL. }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/publish/begin:
+    post:
+      operationId: beginWikiMaintainerPublish
+      summary: Claim one checkpoint generation for an idempotent publish
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [generation, configVersion, targetCommit, targetTreeHash, nodeId]
+              properties:
+                generation: { type: integer, minimum: 1 }
+                configVersion: { type: integer, minimum: 1 }
+                targetCommit: { type: string, pattern: "^[0-9a-f]{40}$" }
+                targetTreeHash: { type: string, pattern: "^[0-9a-f]{64}$" }
+                baseTreeHash: { type: [string, "null"], pattern: "^[0-9a-f]{64}$" }
+                nodeId: { type: string, minLength: 1 }
+      responses:
+        "200": { description: Publishing state and one-time publish token. }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/publish/complete:
+    post:
+      operationId: completeWikiMaintainerPublish
+      summary: Finish the claimed publish
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [publishToken, syncStatus]
+              properties:
+                publishToken: { type: string, minLength: 1 }
+                syncStatus:
+                  type: string
+                  enum: [synced, published_local_sync_pending]
+      responses:
+        "200": { description: Published generation and sync status. }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/publish/recover:
+    post:
+      operationId: recoverWikiMaintainerPublish
+      summary: Obtain a new token for an interrupted idempotent publish
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200": { description: Existing publish target and a replacement token. }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /v1/teams/{teamId}/knowledge-acl:
     get:
       operationId: listKnowledgeAcl
@@ -3399,6 +3735,165 @@ paths:
         Owner/admin only. The prefix reopens to the whole team and its files are
         re-surfaced so every member receives them on the next sync.
       tags: [KnowledgeAcl]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: aclId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Removed. }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/document-libraries:
+    get:
+      operationId: listDocumentLibraries
+      summary: List document-library folder rules
+      description: >
+        Owner/admin only. Returns every role- or actor-granted top-level folder
+        under `documents/` in the team.
+
+
+        Ordinary members never receive this list — folder names may be sensitive,
+        and restricted folders are absent from their sync tree rather than shown
+        as locked.
+      tags: [DocumentLibraries]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: Folder rules with grants.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/DocumentLibrary" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createDocumentLibrary
+      summary: Restrict a document-library folder by role
+      description: >
+        Owner/admin only. Whitelist semantics — once a top-level `documents/<folder>/`
+        prefix has a rule it is closed to every member who lacks one of the listed
+        roles (plus the org `owner` role, always merged server-side).
+
+
+        Restricting a folder that already holds files removes those files from
+        every member who loses access on their next sync. Because that is not
+        reversible for copies already taken, the call returns 409
+        `confirmation_required` (with the affected counts in `details`) unless
+        `confirmRevokeExisting` is true. Use the `preview` endpoint to obtain
+        those counts before asking the user to confirm.
+
+
+        Can convert an existing actor-grant rule on the same prefix to a role
+        rule. Revocation stops distribution; it does not recall content that was
+        already synced.
+      tags: [DocumentLibraries]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/DocumentLibraryWrite"
+                - type: object
+                  required: [pathPrefix]
+      responses:
+        "201":
+          description: Created or converted, with impact counts when applicable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentLibrary" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Overlap, confirmation required, or actor-grant conflict.
+          $ref: "#/components/responses/Error"
+        "500": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/document-libraries/preview:
+    post:
+      operationId: previewDocumentLibrary
+      summary: Preview the impact of restricting a document-library folder
+      description: >
+        Owner/admin only. Dry run — writes nothing. Answers how many live files
+        and how many members a proposed role restriction would cut off.
+
+
+        `affectedMembers` counts member actors only. Agents inherit the
+        permissions of the device owner they run for, so they are not counted.
+      tags: [DocumentLibraries]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pathPrefix, roleIds]
+              properties:
+                pathPrefix: { type: string, example: "documents/财务/" }
+                roleIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Impact of the proposed rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pathPrefix, affectedFiles, affectedMembers]
+                properties:
+                  pathPrefix: { type: string }
+                  affectedFiles: { type: integer }
+                  affectedMembers: { type: integer }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/document-libraries/{aclId}:
+    put:
+      operationId: putDocumentLibrary
+      summary: Replace roles on a document-library folder rule
+      description: >
+        Owner/admin only. Replaces the role set on an existing folder rule.
+        The org `owner` role is always merged server-side.
+      tags: [DocumentLibraries]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: aclId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentLibraryWrite" }
+      responses:
+        "200":
+          description: Updated rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentLibrary" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteDocumentLibrary
+      summary: Remove a document-library folder restriction
+      description: >
+        Owner/admin only. The folder reopens to the whole team and its files are
+        re-surfaced so every member receives them on the next sync.
+      tags: [DocumentLibraries]
       parameters:
         - $ref: "#/components/parameters/TeamId"
         - name: aclId
@@ -4129,6 +4624,68 @@ paths:
                     description: >-
                       True when the agent was just created, false when an
                       existing one was re-bound. Drives the progress copy only.
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/agents/adopt-device:
+    post:
+      operationId: adoptLegacyAgentDevice
+      summary: Stamp this machine onto the agent it is already running
+      tags: [Actors]
+      description: >-
+        Upgrade path for an agent created before device-scoped binding, whose
+        `device_id` is still null. The desktop sends the actor id its local
+        daemon is already running as. The row is stamped with `deviceId` and
+        then `find-agent-for-device` finds it. An agent that is already bound,
+        or a device this caller already holds on another agent, is left alone
+        and the response carries nulls — the desktop then treats the machine
+        as not installed. Does not mint an invite and does not create an agent.
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, agentId]
+              properties:
+                deviceId:
+                  type: string
+                  minLength: 1
+                  description: This machine's `~/.amuxd/device-id`.
+                agentId:
+                  type: string
+                  format: uuid
+                  description: >-
+                    Actor id from this team's `backend.toml` — the agent the
+                    daemon is already running as, not a guess among the
+                    caller's other agents.
+      responses:
+        "200":
+          description: >-
+            The stamped agent, or nulls when the row was not eligible.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agentId, displayName]
+                properties:
+                  agentId:
+                    type:
+                      - string
+                      - "null"
+                    format: uuid
+                  displayName:
+                    type:
+                      - string
+                      - "null"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -6420,6 +6977,68 @@ paths:
               schema: { type: object }
         "401":
           $ref: "#/components/responses/Error"
+  /v1/auth/identities:
+    get:
+      operationId: listMyIdentities
+      summary: The signed-in person's identities, one per org
+      description: |
+        Every identity of the caller's person (same phone, or linked through
+        public.email_users_links) that has its own account. Where the
+        deployment admits staff only, only identities with admin_type >= 2.
+        The signed-in identity comes first with isCurrent = true. Used for the
+        login-time org picker of an email user.
+      tags: [Auth]
+      responses:
+        "200":
+          description: Identities
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [userId, orgId, adminType, isCurrent]
+                      properties:
+                        userId: { type: string, format: uuid }
+                        orgId: { type: [string, "null"], format: uuid }
+                        orgName: { type: [string, "null"] }
+                        orgLogo: { type: [string, "null"] }
+                        adminType: { type: integer }
+                        isCurrent: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/auth/identities/{userId}/session:
+    post:
+      operationId: mintIdentitySession
+      summary: A session for one of the caller's own identities
+      description: |
+        Returns a refresh token for the picked identity; exchange it with
+        POST /v1/auth/refresh. 403 when the id is not one of the caller's
+        identities (or is not admitted where the deployment admits staff only).
+      tags: [Auth]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Refresh token for the picked identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [refreshToken]
+                properties:
+                  refreshToken: { type: string }
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
   /v1/auth/signin-idtoken:
     post:
       operationId: signInWithIdToken
@@ -6678,7 +7297,10 @@ paths:
                 fcStatus: { $ref: "#/components/schemas/AppFcStatus" }
                 deployError:
                   type: string
-                  description: "Reason stored alongside `fcStatus: deploy_error`."
+                  description: "Reason stored alongside `fcStatus: deploy_error`. This transition atomically clears the attempt token and start time and finishes its matching non-in-flight deploy lifecycle."
+                deployToken:
+                  type: string
+                  description: "Required when reporting deploy_error; must match the current local build attempt. Active provider finalization cannot be failed by a client."
                 authMode:
                   $ref: "#/components/schemas/AppAuthMode"
                   description: >-
@@ -6731,9 +7353,11 @@ paths:
       operationId: deleteApp
       summary: Delete an app (admin required)
       description: |
-        Requires `admin` permission (the creator is treated as admin). Tears down
-        the FC function, HTTP trigger, OSS artifact, and GoTrue OAuth client;
-        revokes Gitea deploy keys and archives the repo under a `deleted-` prefix.
+        Requires `admin` permission (the creator is treated as admin). A deployed app
+        must be manually uninstalled successfully first; otherwise returns 409
+        `app_uninstall_required`. Never-deployed apps can be deleted directly.
+        Deletion does not initiate deployment cleanup. It revokes Gitea deploy
+        keys and archives the repo under a `deleted-` prefix.
         Postgres schema, local workdirs, and linked sessions (app_id nulled) are
         kept. The orphaned workspace row is archived with the archived repo URL.
       tags: [Apps]
@@ -6749,8 +7373,135 @@ paths:
                 required: [ok]
                 properties:
                   ok: { type: boolean, enum: [true] }
+        "409":
+          $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/undeploy:
+    post:
+      operationId: undeployApp
+      summary: Uninstall deployment while retaining the app and its data
+      description: >-
+        App administrator only. Stops new gateway requests and durably schedules
+        cleanup of deployment resources. Retains code, sessions, files, database,
+        login policy and scheduled-job definitions. A 202 is acceptance, not completion.
+        Repeat requests return the same operation; failed cleanup may be retried.
+        An active deployment or deletion returns 409.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Deployment already uninstalled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppUndeployResult" }
+        "202":
+          description: Cleanup accepted or already in progress
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppUndeployResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Conflicting lifecycle operation or unresolved provider outcome
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/apps/{appId}/deploy/preflight:
+    post:
+      operationId: preflightAppDeploy
+      summary: Validate a pinned app declaration before approval, upload, or build
+      description: >-
+        Admin only. Compares the proposed declaration with the last successful
+        deployment and current provider function. For a Gitea app the revision
+        must be the exact remote HEAD; for an import it is a sha256 content
+        digest. The returned token is stored on this app and must be passed to
+        deploy and finalize. A new preflight cannot replace an active deploy.
+        Validates origin keys and target Host before reserving
+        a token (503 origin_security_unavailable on invalid configuration).
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, declaration]
+              properties:
+                revision: { type: string }
+                gitCommitSha: { type: string, pattern: "^[0-9a-f]{40}$" }
+                declaration:
+                  type: object
+                  required: [build, start]
+                  properties:
+                    build: { $ref: "#/components/schemas/AppBuildSpec" }
+                    start: { $ref: "#/components/schemas/AppStartSpec" }
+                migrationIntent:
+                  type: boolean
+                  description: Explicit intent to migrate the exact changed runtime fields shown in the preview; native approval remains required.
+      responses:
+        "200":
+          description: The revision-bound preview and opaque token.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, preview]
+                properties:
+                  token: { type: string }
+                  preview:
+                    type: object
+                    required: [firstDeploy, changes, requiresMigrationApproval, originSecurity]
+                    properties:
+                      originSecurity: { $ref: "#/components/schemas/OriginSecuritySummary" }
+                      firstDeploy: { type: boolean }
+                      requiresMigrationApproval: { type: boolean }
+                      changes:
+                        type: array
+                        items:
+                          type: object
+                          required: [field, from, to]
+                          properties:
+                            field: { type: string }
+                            from: {}
+                            to: {}
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: cancelAppDeployPreflight
+      summary: Withdraw an unused deployment preflight reservation
+      description: >-
+        Admin only. Atomically cancels the matching token only before a deployment
+        lifecycle has started. Preserves deployment status and all lifecycle records.
+        Stale tokens or an active deployment return cancelled false.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deployToken]
+              properties:
+                deployToken: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Whether the unused reservation was cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled]
+                properties:
+                  cancelled: { type: boolean }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/apps/{appId}/deploy:
     post:
       operationId: deployApp
@@ -6771,14 +7522,23 @@ paths:
           application/json:
             schema:
               type: object
+              required: [revision, declaration, preflightToken]
               properties:
                 useAppCodeDomain:
                   type: boolean
                   default: false
                   description: Opt an existing app into its code domain after this deploy succeeds. Omitted or false preserves its current mode. Existing domains remain aliases.
+                revision: { type: string }
+                preflightToken: { type: string }
+                declaration:
+                  type: object
+                  required: [build, start]
+                  properties:
+                    build: { $ref: "#/components/schemas/AppBuildSpec" }
+                    start: { $ref: "#/components/schemas/AppStartSpec" }
                 gitCommitSha:
                   type: string
-                  pattern: "^[0-9a-f]{7,40}$"
+                  pattern: "^[0-9a-f]{40}$"
                   description: >-
                     Git commit SHA (7–40 hex) being deployed. Required for an
                     app whose `gitAuthKind` is `gitea_deploy_key`; omitted for
@@ -6802,8 +7562,8 @@ paths:
                         description: Short-lived presigned PUT URL for the build artifact. Secret — never log it.
                       deployToken:
                         type: string
-                        format: uuid
                         description: Short-lived bearer required by `/deploy/finalize`. Secret — never log it.
+                      revision: { type: string }
                       gitCommitSha:
                         type: [string, "null"]
                         description: >-
@@ -6826,7 +7586,10 @@ paths:
         admin); members with `prompt` or `view` receive 404. Provisions
         (idempotently) the app's Postgres schema and scoped role, points the
         FC function at the uploaded artifact with a matching `DATABASE_URL`,
-        ensures the HTTP trigger, and stores `fcEndpoint` with `fcStatus: live`.
+        disables the default public URL and verifies HTTP JWT origin routing
+        before storing the HTTP `fcEndpoint` with `fcStatus: live`.
+        Missing origin configuration returns 503 `origin_security_unavailable`;
+        provider entrypoint drift returns 409 `origin_security_drift`.
         Failures land on `deploy_error` with the reason in `provisionError`;
         retry by calling `/deploy` again.
       tags: [Apps]
@@ -6838,17 +7601,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [deployToken, declaration]
+              required: [deployToken, revision, declaration]
               properties:
+                revision: { type: string }
                 gitCommitSha:
                   type: string
-                  pattern: "^[0-9a-f]{7,40}$"
+                  pattern: "^[0-9a-f]{40}$"
                   description: >-
                     Git commit SHA of the uploaded artifact. Omitted for an app
                     with no forge repo — see the same field on `/deploy`.
                 deployToken:
                   type: string
-                  format: uuid
                   description: Bearer returned by `/deploy` for this attempt. Secret — never log it.
                 declaration:
                   type: object
@@ -7119,36 +7882,124 @@ paths:
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
-  /v1/apps/{appId}/runtime-info:
+  /v1/apps/{appId}/auth-info:
     get:
-      operationId: readAppRuntimeInfo
-      summary: What the platform knows about where this app runs
+      operationId: readAppAuthInfo
+      summary: Read application organization role catalog and effective auth policies
       description: |
-        The deploy region, the target platform, which interpreters each custom
-        runtime image ships and at what absolute path, what a bare interpreter
-        name resolves to on that image's PATH, and which official layers exist
-        with their mount points.
-
-        None of this is reachable from inside an app repository: the region
-        lives in the control plane's own environment and the image contents are
-        documented nowhere the author can see. Publishing it is what replaces
-        guessing.
-
-        Facts are hand-verified constants, not live introspection. Entries
-        carry their provenance — an unverified layer mount is reported as
-        `verified: false` rather than omitted or guessed.
-
-        The app id gates visibility only; the facts do not differ per app. Any
-        caller who can see the app, including `view`, may read them.
+        Checks app visibility and existing organization catalog authorization.
+        Returns configuration and active role catalog only, never users or secrets.
+        The application organization is authoritative; mismatched team organizations
+        are rejected. A legacy app without an organization may derive it from its team.
+        An unconfigured organization returns null and is not a configurable catalog.
+        Catalog authorization or upstream failures fail the entire request.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
       responses:
         "200":
-          description: Runtime facts for this deployment.
+          description: Raw auth configuration and effective organization policy information.
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                $ref: "#/components/schemas/AppAuthInfo"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          description: Unclassified upstream query failure; no partial catalog is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "502":
+          description: Upstream catalog query failed; no partial catalog is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Application organization metadata is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/apps/{appId}/runtime-info:
+    get:
+      operationId: readAppRuntimeInfo
+      summary: Read deployment contract, last successful state, and regional runtime evidence
+      description: |
+        Authorizes app visibility before provider discovery. `currentDeployment`
+        is null only when no successful TeamClu deployment is recorded. Provider
+        configuration is projected to runtime, command, args, port, layers, and
+        status; environment variables and registry credentials are excluded.
+        `sourceStatus` reports unavailable or stale provider evidence. Runtime
+        candidates distinguish documentation from paginated regional official
+        layers; observations are historical probes, not live image inspection.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - name: language
+          in: query
+          required: false
+          description: Filter capabilities and observations; does not change app authorization.
+          schema: { type: string, enum: [node, python, go, php, java] }
+      responses:
+        "200":
+          description: App-scoped runtime information and source provenance.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deploymentContract, currentDeployment, capabilities, observations, sourceStatus, originSecurity]
+                properties:
+                  originSecurity: { $ref: "#/components/schemas/OriginSecuritySummary" }
+                  deploymentContract:
+                    type: object
+                    required: [method, target, region, artifact, requiredDeclarationFields]
+                    properties:
+                      method: { type: string, enum: [agent_build_to_fc_custom_runtime, container] }
+                      target:
+                        type: object
+                        properties:
+                          os: { type: string, enum: [linux] }
+                          arch: { type: string, enum: [x86_64] }
+                      region: { type: string }
+                      artifact: { type: string }
+                      requiredDeclarationFields: { type: array, items: { type: string } }
+                  currentDeployment:
+                    type: [object, "null"]
+                    properties:
+                      runtime: { type: [string, "null"] }
+                      startSpec: { type: [object, "null"], additionalProperties: true }
+                      commit: { type: [string, "null"] }
+                      deployedAt: { type: [string, "null"], format: date-time }
+                      historical: { type: boolean }
+                      serving: { type: boolean }
+                      uninstallOperationId:
+                        type: [string, "null"]
+                        description: Server-confirmed cleanup evidence for restoring an intentionally removed FC function.
+                      functionName: { type: [string, "null"] }
+                      provider:
+                        type: [object, "null"]
+                        properties:
+                          runtime: { type: [string, "null"] }
+                          command: { type: [array, "null"], items: { type: string } }
+                          args: { type: [array, "null"], items: { type: string } }
+                          port: { type: [integer, "null"] }
+                          healthCheckPath: { type: [string, "null"] }
+                          layers: { type: array, items: { type: string } }
+                          status: { type: [string, "null"] }
+                      drift: { type: boolean }
+                      driftFields: { type: array, items: { type: string } }
+                  capabilities: { type: array, items: { type: object, additionalProperties: true } }
+                  observations: { type: array, items: { type: object, additionalProperties: true } }
+                  sourceStatus: { type: object, additionalProperties: true }
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
         "404":
@@ -8936,6 +9787,51 @@ components:
         size: { type: integer }
         ownerActorId: { type: string, format: uuid }
         status: { type: string, enum: [draft, published, deprecated] }
+    WikiMaintainerStatus:
+      type: object
+      required: [generation, stage]
+      properties:
+        config:
+          type: [object, "null"]
+          additionalProperties: true
+        generation: { type: integer, minimum: 0 }
+        stage:
+          type: string
+          enum: [idle, ready_to_publish, publishing, sync_pending, needs_attention]
+        publishedCommit:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{40}$"
+          description: Last Wiki commit successfully published into the team vault.
+        checkpoint:
+          oneOf:
+            - $ref: "#/components/schemas/WikiCheckpoint"
+            - type: "null"
+        publishing:
+          type: [object, "null"]
+          additionalProperties: true
+        syncStatus: { type: [string, "null"] }
+        updatedAt: { type: [string, "null"], format: date-time }
+    WikiCheckpoint:
+      type: object
+      required: [id, generation, parentGeneration, objectKey, sha256, size, manifest]
+      properties:
+        id: { type: string, format: uuid }
+        generation: { type: integer, minimum: 1 }
+        parentGeneration: { type: integer, minimum: 0 }
+        objectKey: { type: string }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        size: { type: integer, minimum: 1, maximum: 67108864 }
+        manifest: { type: object, additionalProperties: true }
+        createdBy: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+    WikiCheckpointWrite:
+      type: object
+      required: [expectedGeneration, configVersion, sha256, size]
+      properties:
+        expectedGeneration: { type: integer, minimum: 0 }
+        configVersion: { type: integer, minimum: 1 }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        size: { type: integer, minimum: 1, maximum: 67108864 }
     KnowledgeAclRule:
       type: object
       description: >
@@ -8990,6 +9886,38 @@ components:
         affectedMembers:
           type: integer
           description: Member actors that would lose access. Agents are not counted — they inherit their device owner.
+    DocumentLibraryRole:
+      type: object
+      required: [id, code, name, status]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [active, inactive] }
+    DocumentLibrary:
+      type: object
+      required: [id, pathPrefix, audience]
+      properties:
+        id: { type: string, format: uuid }
+        pathPrefix: { type: string, example: "documents/财务/" }
+        audience: { type: string, enum: [roles, actors] }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/DocumentLibraryRole" }
+        actorIds:
+          type: array
+          items: { type: string, format: uuid }
+        affectedFiles: { type: integer }
+        affectedMembers: { type: integer }
+    DocumentLibraryWrite:
+      type: object
+      required: [roleIds]
+      properties:
+        pathPrefix: { type: string }
+        roleIds:
+          type: array
+          items: { type: string, format: uuid }
+        confirmRevokeExisting: { type: boolean, default: false }
     TeamMcpServer:
       type: object
       description: >
@@ -9092,7 +10020,7 @@ components:
       description: |
         Deploy lifecycle, orthogonal to `provisionStatus` (which tracks the repo
         and its seeding). `null` means the app has never been deployed.
-      enum: [not_deployed, awaiting_build, building, deploying, live, deploy_error]
+      enum: [not_deployed, awaiting_build, building, deploying, live, deploy_error, uninstalling, uninstall_failed, uninstalled]
     AppBuildKind:
       type: string
       description: |
@@ -9168,10 +10096,55 @@ components:
         this row (secret in `app_secrets`, never returned here).
       enum: [none, platform, third]
       default: none
+    OriginSecuritySummary:
+      type: object
+      additionalProperties: false
+      required: [status, internetUrlDisabled, customDomainAuth, httpsOnly, driftFields]
+      description: >-
+        Read-only safe entrypoint evidence; no keys, JWTs or JWKS. `httpsOnly` is false for protected HTTP
+        origins. Legacy endpoints remain legacy_unverified until a normal redeploy.
+      properties:
+        status: { type: string, enum: [protected, legacy_unverified, drift, unavailable] }
+        internetUrlDisabled: { type: [boolean, "null"] }
+        customDomainAuth: { type: string, enum: [jwt, none, unknown] }
+        httpsOnly: { type: [boolean, "null"] }
+        driftFields: { type: array, items: { type: string } }
+    AppUndeployOperation:
+      type: object
+      required: [id, appId, status, startedAt, updatedAt, steps, error]
+      properties:
+        id: { type: string, format: uuid }
+        appId: { type: string, format: uuid }
+        status: { type: string, enum: [pending, running, failed, succeeded] }
+        startedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        error: { type: [string, "null"] }
+        steps:
+          type: object
+          additionalProperties:
+            type: object
+            required: [status]
+            properties:
+              status: { type: string, enum: [succeeded, failed, skipped] }
+              error: { type: string }
+    AppUndeployResult:
+      type: object
+      required: [app, operation]
+      properties:
+        app: { $ref: "#/components/schemas/App" }
+        operation: { $ref: "#/components/schemas/AppUndeployOperation" }
     App:
       type: object
       required: [id, teamId, name, slug, appCode, usesAppCodeDomain, appCodeUrl, publicUrl, type, visibility, provisionStatus, createdAt, updatedAt]
       properties:
+        canManageDeployment:
+          type: boolean
+          description: Whether the current caller has app administrator permission.
+        undeployOperation:
+          $ref: "#/components/schemas/AppUndeployOperation"
+        originSecurity:
+          $ref: "#/components/schemas/OriginSecuritySummary"
+          description: Returned by app status reads; legacy endpoints are not migrated by a read.
         id: { type: string, format: uuid }
         teamId: { type: string, format: uuid }
         createdByActorId:
@@ -9473,6 +10446,57 @@ components:
         The baseline for which paths sit behind the login wall, applied when no
         rule in `authRules` matches. `all` — the whole site. `paths` — only
         what the rules protect. Defaults to `all`.
+    AppAuthInfo:
+      type: object
+      required: [appId, teamId, organization, roleScope, roles, authMode, authScope, authAudience, authRules, effectivePolicies, organizationStatus]
+      properties:
+        appId: { type: string }
+        teamId: { type: string }
+        organization:
+          type: [object, "null"]
+          required: [id, name]
+          properties:
+            id: { type: string }
+            name: { type: string }
+        roleScope: { type: string, enum: [organization] }
+        organizationStatus: { type: string, enum: [configured, unconfigured] }
+        roles:
+          type: array
+          items:
+            type: object
+            required: [id, code, name, status]
+            properties:
+              id: { type: string }
+              code: { type: string }
+              name: { type: string }
+              status: { type: string }
+        authMode:
+          $ref: "#/components/schemas/AppAuthMode"
+        authScope:
+          $ref: "#/components/schemas/AppAuthScope"
+        authAudience:
+          $ref: "#/components/schemas/AppAuthAudience"
+        authRules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppAuthRule"
+        effectivePolicies:
+          type: array
+          description: Baseline at / (root rule when present), then each non-root raw rule in order.
+          items:
+            $ref: "#/components/schemas/EffectiveAuthPolicy"
+    EffectiveAuthPolicy:
+      type: object
+      required: [path, kind, roleCodes, inherited, source]
+      properties:
+        path: { type: string }
+        kind: { type: string, enum: [public, any_authenticated, any_org_role, org_roles] }
+        roleCodes:
+          type: [array, "null"]
+          items: { type: string }
+          description: Empty for public or any_authenticated; null for any_org_role; fixed codes for org_roles.
+        inherited: { type: boolean }
+        source: { type: string, enum: [auth_mode, roles, rule_audience, app_audience, scope_baseline] }
     AppAuthRule:
       type: object
       required: [path, auth]
@@ -9497,19 +10521,16 @@ components:
           items: { type: string }
           description: >-
             Role codes that may access this path when auth=required.
-            Empty or omitted = any authenticated user. Ignored when auth=public.
-            Prefer this over audience; audience is legacy-read only.
+            Empty = any authenticated user. Non-empty = one matching active role in the app organization.
+            Explicit roles takes precedence over rule audience, then app authAudience.
+            Omitted roles inherits rule audience or the app default. Ignored when auth=public.
         audience:
           type: string
           enum: [any, org]
-          deprecated: true
           description: >-
-            Legacy read-only. Who satisfied the login on this path before
-            `roles` existed. Only meaningful with `auth: required`, and
-            OPTIONAL: an absent `audience` means "use the app's own
-            `authAudience`", never a default of its own. New writes should emit
-            `roles` instead. `audience: any` maps to `roles: []`; `audience:
-            org` maps to any active org role assignment.
+            Only meaningful with auth=required and absent roles. any admits any
+            authenticated user; org dynamically admits any active organization role,
+            including future roles. If omitted, inherit app authAudience.
     AppEnvVar:
       type: object
       required: [key, isSecret, value, updatedAt]
@@ -9839,8 +10860,19 @@ components:
       type: object
       description: >-
         Unauthenticated pre-sign-in configuration. Same "absent means fall back
-        to the build config" rule as BootstrapConfig.
+        to the build config" rule as BootstrapConfig, except
+        `desktopDownloadUrl`, which is always present.
+      required: [desktopDownloadUrl]
       properties:
+        desktopDownloadUrl:
+          type: string
+          format: uri
+          description: >-
+            Where to download the desktop app, shown by clients that send the
+            user to a computer (iOS onboarding). Set by FC's
+            `DESKTOP_DOWNLOAD_URL`; unset, blank, or non-http(s) values fall
+            back to `https://github.com/different-ai-studio/teamclu/releases`.
+          example: https://github.com/different-ai-studio/teamclu/releases
         webSso:
           $ref: "#/components/schemas/WebSsoConfig"
         features:
@@ -9955,7 +10987,11 @@ components:
                 - forbidden
                 - not_found
                 - conflict
+                - link_expired
+                - link_exhausted
+                - link_revoked
                 - rate_limited
+                - upgrade_required
                 - upstream_unavailable
                 - internal
             message:
@@ -10216,6 +11252,46 @@ components:
             - string
             - "null"
         createdAt:
+          type:
+            - string
+            - "null"
+    SessionAttachmentItem:
+      type: object
+      required: [filename, storagePath, url, messageId, attachedAt]
+      properties:
+        filename:
+          type: string
+        mime:
+          type:
+            - string
+            - "null"
+        size:
+          type:
+            - integer
+            - "null"
+        storagePath:
+          type: string
+          description: Object key when known; otherwise the normalized public URL.
+        url:
+          type: string
+        messageId:
+          type: string
+        senderActorId:
+          type:
+            - string
+            - "null"
+        attachedAt:
+          type: string
+          format: date-time
+    SessionAttachmentListResponse:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionAttachmentItem"
+        nextCursor:
           type:
             - string
             - "null"
@@ -10665,11 +11741,24 @@ components:
             - string
             - "null"
           format: uuid
+        appId:
+          type:
+            - string
+            - "null"
+          format: uuid
+          description: >-
+            The app this session belongs to (`sessions.app_id`). Only settable
+            at create. It links the session to the app and does not seat any
+            agent on the app's checkout: pass that workspace in
+            `workspaceByActorId`.
         primaryAgentActorId:
           type:
             - string
             - "null"
           format: uuid
+          description: >-
+            The session's primary agent (`sessions.primary_agent_id`). The
+            older name `primaryAgentId` is still accepted.
         participantActorIds:
           type: array
           items:
@@ -10994,6 +12083,42 @@ components:
               type: [string, "null"]
             verified:
               type: boolean
+    TeamJoinLink:
+      type: object
+      required: [token, url, maxUses, useCount, status, createdAt]
+      properties:
+        token: { type: string }
+        url: { type: string, format: uri }
+        expiresAt:
+          type: [string, "null"]
+          format: date-time
+        maxUses:
+          type: [integer, "null"]
+        useCount: { type: integer }
+        status:
+          type: string
+          enum: [active, expired, exhausted]
+        createdAt: { type: string, format: date-time }
+    TeamJoinLinkPreview:
+      type: object
+      required: [teamName, inviterDisplayName, status]
+      properties:
+        teamName: { type: string }
+        inviterDisplayName: { type: string }
+        expiresAt:
+          type: [string, "null"]
+          format: date-time
+        status:
+          type: string
+          enum: [active, revoked, expired, exhausted]
+    TeamJoinLinkJoinResult:
+      type: object
+      required: [teamId, actorId, displayName, alreadyMember]
+      properties:
+        teamId: { type: string, format: uuid }
+        actorId: { type: string, format: uuid }
+        displayName: { type: string }
+        alreadyMember: { type: boolean }
     TeamMember:
       type: object
       required: [actorId, teamId, role]

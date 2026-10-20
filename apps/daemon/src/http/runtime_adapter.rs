@@ -631,7 +631,9 @@ impl RuntimeManagerAdapter {
                 // daemon main loop's `poll_events()` → `forward_agent_event`
                 // → `session/live` publish. Draining them here would silently
                 // discard them in `process_runtime_event` (no HTTP session →
-                // early return), starving the desktop of agent replies.
+                // early return), starving the desktop of agent replies. The
+                // reverse holds too: spawn marks our runtimes HTTP-owned so the
+                // main loop leaves their events to us.
                 let owned: std::collections::HashSet<String> = adapter
                     .sessions
                     .read()
@@ -706,6 +708,7 @@ impl RuntimeManagerAdapter {
             let runtime_id = session_id.to_string();
             let mut manager = self.manager.lock().await;
             manager.add_test_runtime(&runtime_id);
+            manager.mark_http_owned(&runtime_id);
             let startup_prompt = initial_prompt.clone();
             let event_tx = if let Some(handle) = manager.get_handle_mut(&runtime_id) {
                 handle.agent_type = agent_type;
@@ -849,7 +852,7 @@ impl RuntimeManagerAdapter {
                 .map_err(map_skills_attach_barrier_error)?;
         }
         let mut manager = self.manager.lock().await;
-        manager
+        let runtime_id = manager
             .start_runtime_with_model(
                 agent_type,
                 initial_prompt.as_deref().unwrap_or(""),
@@ -863,7 +866,9 @@ impl RuntimeManagerAdapter {
                 context,
             )
             .await
-            .map_err(|e| HttpError::internal(format!("spawn runtime: {e}")))
+            .map_err(|e| HttpError::internal(format!("spawn runtime: {e}")))?;
+        manager.mark_http_owned(&runtime_id);
+        Ok(runtime_id)
     }
 
     fn emit(&self, session_id: Uuid, event: SessionEvent) {
@@ -1584,6 +1589,28 @@ mod tests {
         }
     }
 
+    /// A spawn reaches `prepare_workspace`, which seeds `~/.agents/skills`
+    /// through `dirs::home_dir()` — the process-wide `HOME`. A test that does
+    /// not own `HOME` writes into the developer's own skills directory, and
+    /// races every test that moves `HOME` under `TEST_HOME_LOCK`: when such a
+    /// neighbour drops its temporary home between this test's `NamedTempFile`
+    /// and its `persist`, the spawn fails with "failed to persist temporary
+    /// file: No such file or directory". Holding the guard for the whole test
+    /// takes it out of that race, so the guard is dropped before the directory.
+    struct OwnedHome {
+        _env: crate::test_brand_env::BrandEnvGuard,
+        _dir: tempfile::TempDir,
+    }
+
+    fn own_home() -> OwnedHome {
+        let dir = tempfile::tempdir().unwrap();
+        let env = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", dir.path());
+        OwnedHome {
+            _env: env,
+            _dir: dir,
+        }
+    }
+
     fn test_manager_adapter(backlog_cap: usize) -> Arc<RuntimeManagerAdapter> {
         Arc::new(RuntimeManagerAdapter {
             manager: Arc::new(tokio::sync::Mutex::new(RuntimeManager::new(
@@ -1644,6 +1671,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_adapter_spawn_propagates_workspace_attach_context() {
+        let _home = own_home();
         let captures = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut manager = RuntimeManager::new(RuntimeManager::default_launch_configs(), None);
         let attach_captures = crate::runtime::test_support::install_capturing_backend(&mut manager);
@@ -1684,6 +1712,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_runtime_attaches_when_skills_refresh_is_deferred_by_active_turn() {
+        let _home = own_home();
         let workspace = tempfile::tempdir().unwrap();
         let workspace_id =
             crate::runtime::refresh::refresh_watch::workspace_runtime_id(workspace.path());
@@ -1744,6 +1773,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_cloud_workspace_uuid_spawns_in_resolved_on_disk_path() {
+        let _home = own_home();
         let workspace = tempfile::tempdir().unwrap();
         let assembler_captures = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut manager = RuntimeManager::new(RuntimeManager::default_launch_configs(), None);
@@ -1786,6 +1816,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_without_workspace_id_spawns_in_cloud_default_workspace_path() {
+        let _home = own_home();
         let workspace = tempfile::tempdir().unwrap();
         let assembler_captures = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut manager = RuntimeManager::new(RuntimeManager::default_launch_configs(), None);

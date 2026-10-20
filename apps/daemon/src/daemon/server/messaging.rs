@@ -81,6 +81,26 @@ pub(crate) fn agent_inbox_row_to_message(row: AgentInboxRow) -> crate::proto::te
     }
 }
 
+/// A history row replayed by catch-up → the proto `Message` the router takes.
+///
+/// Keeps `metadata_json`: the router reads a message's files from it
+/// (`message_attachment_urls`), and a cold session's first prompt always
+/// arrives this way — dropping it sent the agent text without the images.
+pub(crate) fn catchup_message_to_proto(
+    m: &crate::backend::StoredMessage,
+) -> crate::proto::teamclu::Message {
+    crate::proto::teamclu::Message {
+        message_id: m.id.clone(),
+        session_id: m.session_id.clone(),
+        sender_actor_id: m.sender_actor_id.clone(),
+        kind: 0,
+        content: m.content.clone(),
+        created_at: m.created_at,
+        metadata_json: m.metadata_json.clone(),
+        ..Default::default()
+    }
+}
+
 /// `amux.messages.kind` → proto enum. An unknown kind routes as text rather
 /// than being dropped: a message the agent cannot classify is still a message
 /// it was sent.
@@ -957,17 +977,13 @@ impl DaemonServer {
             return Err("agent inbox row without session_id or id".into());
         }
 
-        // The same gate the live path uses. An inbox copy and a live copy of
-        // one message must not both start a turn while both paths are wired.
-        if !self
-            .teamclu
-            .as_ref()
-            .map(|tc| tc.message_dedup().claim_message(&row.session_id, &row.id))
-            .unwrap_or(true)
-        {
-            return Ok(());
-        }
-
+        // No dedup claim here. An inbox copy and a live copy of one message
+        // must not both start a turn, but `route_session_message_to_runtimes`
+        // already gates on this id — claiming it first made that gate refuse
+        // the inbox copy itself. Worse, a copy that arrives before its runtime
+        // exists (a new session's first message: persisted, so fanned out,
+        // before runtimeStart) is dropped unrouted, and a claim would also
+        // make the post-spawn catchup skip it.
         let session_id = row.session_id.clone();
         let message = agent_inbox_row_to_message(row);
         let mentions = resolve_mention_actor_ids(&[], &message.metadata_json);
@@ -1227,6 +1243,11 @@ impl DaemonServer {
         if message_id.is_empty() {
             return;
         }
+        // Store the canonical (lower-case) UUID form the backend returns, so
+        // an upper-case id off MQTT does not leave a cursor in a second
+        // spelling (#1696).
+        let message_id = message_id.to_ascii_lowercase();
+        let message_id = message_id.as_str();
         {
             let mut agents = self.agents.lock().await;
             agents.advance_message_cursor(runtime_id, message_id);
@@ -1372,15 +1393,7 @@ impl DaemonServer {
                 return false;
             }
             let mention_ids = parse_mention_actor_ids(&m.metadata_json);
-            let proto = crate::proto::teamclu::Message {
-                message_id: m.id.clone(),
-                session_id: m.session_id.clone(),
-                sender_actor_id: m.sender_actor_id.clone(),
-                kind: 0,
-                content: m.content.clone(),
-                created_at: m.created_at,
-                ..Default::default()
-            };
+            let proto = catchup_message_to_proto(m);
             let effective_mentions: &[String] = if Some(idx) == last_mention_idx {
                 &mention_ids
             } else {
@@ -1977,5 +1990,28 @@ mod agent_inbox_tests {
         let message = agent_inbox_row_to_message(env.message);
         assert_eq!(message.message_id, "m");
         assert_eq!(message.session_id, "s");
+    }
+}
+
+#[cfg(test)]
+mod catchup_message_tests {
+    use super::{catchup_message_to_proto, message_attachment_urls};
+
+    #[test]
+    fn keeps_the_files_on_a_replayed_message() {
+        let row = crate::backend::StoredMessage {
+            id: "m1".into(),
+            session_id: "s1".into(),
+            sender_actor_id: "a1".into(),
+            kind: "text".into(),
+            content: "what is in this picture?".into(),
+            metadata_json: r#"{"mention_actor_ids":["agent"],"attachment_urls":["https://storage.test/attachments/t/s/a.jpg"]}"#.into(),
+            created_at: 1,
+        };
+        let proto = catchup_message_to_proto(&row);
+        assert_eq!(
+            message_attachment_urls(&proto),
+            vec!["https://storage.test/attachments/t/s/a.jpg".to_string()]
+        );
     }
 }

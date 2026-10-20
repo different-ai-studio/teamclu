@@ -18,6 +18,18 @@ export default function AppLayout() {
           }}
         />
         <Stack.Screen
+          name="voice-capture"
+          options={{
+            // Full-bleed like iOS's capture surface; the screen owns its own
+            // Cancel, and a swipe-down mid-take would be easy to trigger by
+            // accident.
+            presentation: "fullScreenModal",
+            animation: "slide_from_bottom",
+            gestureEnabled: false,
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
           name="settings"
           options={{
             presentation: "modal",
@@ -64,6 +76,32 @@ export default function AppLayout() {
           options={{
             presentation: "card",
             animation: "slide_from_right",
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
+          name="actor-ideas"
+          options={{
+            presentation: "card",
+            animation: "slide_from_right",
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
+          name="pending-invites"
+          options={{
+            presentation: "formSheet",
+            animation: "slide_from_bottom",
+            contentStyle: { backgroundColor: colors.mist },
+            sheetAllowedDetents: [0.6, 1],
+            sheetGrabberVisible: true,
+          }}
+        />
+        <Stack.Screen
+          name="switch-team"
+          options={{
+            presentation: "modal",
+            animation: "slide_from_bottom",
             contentStyle: { backgroundColor: colors.mist },
           }}
         />
@@ -153,6 +191,30 @@ export default function AppLayout() {
         />
         <Stack.Screen
           name="upgrade-account"
+          options={{
+            presentation: "modal",
+            animation: "slide_from_bottom",
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
+          name="team-apps"
+          options={{
+            presentation: "modal",
+            animation: "slide_from_bottom",
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
+          name="new-team-app"
+          options={{
+            presentation: "modal",
+            animation: "slide_from_bottom",
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
+          name="team-app-detail"
           options={{
             presentation: "modal",
             animation: "slide_from_bottom",

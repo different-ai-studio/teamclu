@@ -1,3 +1,4 @@
+import { runtimeInfoForSession, type ActorPresenceSnapshot } from "../actors/actor-presence";
 import type { RuntimeInfo } from "../actors/connected-agent-types";
 import type { SessionRowRuntime } from "./components/SessionRow";
 import type { SessionSummary } from "./session-types";
@@ -53,7 +54,7 @@ export function runtimeWorkspaceName(
 
 export function buildSessionRuntimeMaps(args: {
   sessions: ReadonlyArray<SessionSummary>;
-  runtimeInfoByAgentId: ReadonlyMap<string, RuntimeInfo>;
+  presenceByAgentId: ReadonlyMap<string, ActorPresenceSnapshot>;
   agentActorIds: ReadonlySet<string>;
   workspaceNamesById?: ReadonlyMap<string, string>;
 }): {
@@ -66,7 +67,9 @@ export function buildSessionRuntimeMaps(args: {
   for (const session of args.sessions) {
     for (const actorId of session.participantActorIds) {
       if (!args.agentActorIds.has(actorId)) continue;
-      const runtime = args.runtimeInfoByAgentId.get(actorId);
+      // This session's own attachment — not "the agent's runtime", which
+      // painted every session an agent was in with one session's status.
+      const runtime = runtimeInfoForSession(args.presenceByAgentId.get(actorId), session.sessionId);
       if (!runtime) continue;
       runtimeBySessionId.set(session.sessionId, {
         status: runtime.status,

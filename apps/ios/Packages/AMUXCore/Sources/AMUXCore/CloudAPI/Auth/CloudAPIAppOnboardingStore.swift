@@ -66,6 +66,12 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
         }
     }
 
+    public func hasFreshSession() async -> Bool {
+        await ensureStarted()
+        guard let session = await sessionStore.currentSession() else { return false }
+        return session.expiresAt.timeIntervalSinceNow > 120
+    }
+
     public func isAnonymous() async -> Bool {
         await ensureStarted()
         return await sessionStore.currentSession()?.isAnonymous ?? false
@@ -296,7 +302,8 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
                     orgID: $0.orgId
                 )
             },
-            memberActorIDByTeam: [:]
+            memberActorIDByTeam: [:],
+            homeOrgID: page.homeOrgId
         )
     }
 
@@ -320,6 +327,21 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
                 invitedByDisplayName: $0.invitedByDisplayName
             )
         }
+    }
+
+    public func listMyIdentities() async throws -> [MyIdentity] {
+        await ensureStarted()
+        let page: CloudListPage<MyIdentity> = try await api.get("/v1/auth/identities")
+        return page.items
+    }
+
+    public func switchIdentity(userID: String) async throws {
+        await ensureStarted()
+        let encoded = userID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? userID
+        let res: CloudIdentitySession = try await api.post(
+            "/v1/auth/identities/\(encoded)/session", body: EmptyBody()
+        )
+        try await setSession(refreshToken: res.refreshToken)
     }
 
     public func acceptPendingInvite(inviteID: String) async throws -> ClaimResult {
@@ -411,6 +433,16 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
             displayName: row.displayName,
             refreshToken: row.refreshToken
         )
+    }
+
+    public func joinByLink(token: String, cloudAPIURL: URL?) async throws -> JoinByLinkResult {
+        await ensureStarted()
+        let target = cloudAPIURL.map { api.withBaseURL($0) } ?? api
+        let encoded = token.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? token
+        let row: CloudJoinByLinkResult = try await target.post(
+            "/v1/join-links/\(encoded)/join"
+        )
+        return JoinByLinkResult(teamID: row.teamId)
     }
 
     // MARK: - Private
@@ -585,6 +617,8 @@ private struct BindPhoneResponse: Decodable, Sendable {
 // org→team login picker DTOs.
 private struct CloudListPage<Item: Decodable & Sendable>: Decodable, Sendable {
     let items: [Item]
+    /// Only on `GET /v1/teams?scope=all`: the signed-in identity's home org.
+    let homeOrgId: String?
 }
 
 private struct CloudMembershipTeam: Decodable, Sendable {
@@ -603,6 +637,10 @@ private struct CloudPendingInvite: Decodable, Sendable {
     let teamName: String?
     let teamRole: String?
     let invitedByDisplayName: String?
+}
+
+private struct CloudIdentitySession: Decodable, Sendable {
+    let refreshToken: String
 }
 
 private struct CloudSwitchTeamResult: Decodable, Sendable {
@@ -651,4 +689,8 @@ private struct CloudClaimInviteResult: Decodable, Sendable {
     let actorType: String
     let displayName: String
     let refreshToken: String?
+}
+
+private struct CloudJoinByLinkResult: Decodable, Sendable {
+    let teamId: String
 }

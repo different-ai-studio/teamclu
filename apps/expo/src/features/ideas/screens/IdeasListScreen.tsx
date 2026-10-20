@@ -2,9 +2,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ActionSheetIOS,
-  Alert,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -29,6 +26,7 @@ import { SwipeableRow } from "../../../ui/SwipeableRow";
 import { impactLight, selectionTick } from "../../../lib/haptics";
 import { colors, radii, spacing, typography } from "../../../ui/theme";
 import { IdeaRow } from "../components/IdeaRow";
+import { showActionSheet } from "../../../ui/action-sheet";
 import {
   isDoneIdea,
   isMineIdea,
@@ -52,6 +50,8 @@ export type IdeasListScreenProps = {
   /** Move `ideaId` to `destinationIndex` in the team's stored idea order. */
   onReorder?: (ideaId: string, destinationIndex: number) => void;
   onSelectIdea?: (ideaId: string) => void;
+  /** Like/unlike from the feed card's heart; `liked` is the desired state. */
+  onToggleLike?: (ideaId: string, liked: boolean) => void;
   state: IdeasListState;
 };
 
@@ -127,6 +127,7 @@ export function IdeasListScreen({
   onRefresh,
   onReorder,
   onSelectIdea,
+  onToggleLike,
   state,
 }: IdeasListScreenProps) {
   const { t } = useTranslation();
@@ -197,29 +198,15 @@ export function IdeasListScreen({
         });
       }
 
-      const labels = [...entries.map((entry) => entry.label), t("Cancel")];
-      const dispatch = (index: number) => {
-        entries[index]?.run();
-      };
-      if (Platform.OS === "ios") {
-        ActionSheetIOS.showActionSheetWithOptions(
-          {
-            options: labels,
-            cancelButtonIndex: entries.length,
-            destructiveButtonIndex: 0,
-          },
-          dispatch,
-        );
-        return;
-      }
-      Alert.alert(t("Idea actions"), undefined, [
-        ...entries.map((entry, index) => ({
-          text: entry.label,
-          style: entry.destructive ? ("destructive" as const) : undefined,
-          onPress: () => dispatch(index),
+      // Up to five entries: an Android alert showed three of them.
+      showActionSheet(
+        entries.map((entry) => ({
+          label: entry.label,
+          style: entry.destructive ? ("destructive" as const) : ("default" as const),
+          run: entry.run,
         })),
-        { text: t("Cancel"), style: "cancel" as const },
-      ]);
+        { cancelLabel: t("Cancel") },
+      );
     },
     [isFiltered, onArchiveBatch, onReorder, state.ideas, t],
   );
@@ -286,42 +273,47 @@ export function IdeasListScreen({
 
   if (state.status === "loading" || (state.status === "idle" && state.ideas.length === 0)) {
     return (
-      <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
-        refreshControl={
-          <RefreshControl
-            onRefresh={onRefresh}
-            refreshing={state.isRefreshing}
-            tintColor={colors.slate}
-          />
-        }
-        style={styles.screen}
-      >
+      <View style={styles.screen}>
         {headerBar}
-        <View>
-          <SkeletonRow avatar={false} />
-          <SkeletonRow avatar={false} />
-          <SkeletonRow avatar={false} />
-        </View>
-      </ScrollView>
+        <ScrollView
+          contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
+          refreshControl={
+            <RefreshControl
+              onRefresh={onRefresh}
+              refreshing={state.isRefreshing}
+              tintColor={colors.slate}
+            />
+          }
+          style={styles.scroll}
+        >
+          <View>
+            <SkeletonRow avatar={false} />
+            <SkeletonRow avatar={false} />
+            <SkeletonRow avatar={false} />
+          </View>
+        </ScrollView>
+      </View>
     );
   }
 
   if (state.status === "error" && state.ideas.length === 0) {
     return (
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]} style={styles.screen}>
+      <View style={styles.screen}>
         {headerBar}
-        <View style={styles.stateBlock}>
-          <Text style={styles.stateTitle}>{t("Couldn't load ideas")}</Text>
-          <Text style={styles.stateBody}>{state.errorMessage ?? t("Try again in a moment.")}</Text>
-          <PrimaryButton fullWidth={false} label={t("Retry")} onPress={onLoad} />
-        </View>
-      </ScrollView>
+        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]} style={styles.scroll}>
+          <View style={styles.stateBlock}>
+            <Text style={styles.stateTitle}>{t("Couldn't load ideas")}</Text>
+            <Text style={styles.stateBody}>{state.errorMessage ?? t("Try again in a moment.")}</Text>
+            <PrimaryButton fullWidth={false} label={t("Retry")} onPress={onLoad} />
+          </View>
+        </ScrollView>
+      </View>
     );
   }
 
   return (
     <View style={styles.screen}>
+      {headerBar}
       <ScrollView
       contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
       keyboardDismissMode="interactive"
@@ -333,10 +325,8 @@ export function IdeasListScreen({
           tintColor={colors.slate}
         />
       }
-      style={{ flex: 1 }}
+      style={styles.scroll}
     >
-      {headerBar}
-
       <View style={styles.searchField}>
         <Ionicons color={colors.slate} name="search" size={16} />
         <TextInput
@@ -493,7 +483,18 @@ export function IdeasListScreen({
                             ? actorNames?.get(idea.createdByActorId) ?? null
                             : null
                         }
+                        feed
                         idea={idea}
+                        onOpenComments={
+                          !selectionMode && onSelectIdea
+                            ? () => onSelectIdea(idea.ideaId)
+                            : undefined
+                        }
+                        onToggleLike={
+                          !selectionMode && onToggleLike
+                            ? (liked) => onToggleLike(idea.ideaId, liked)
+                            : undefined
+                        }
                       />
                     </View>
                   </Pressable>
@@ -545,6 +546,9 @@ const styles = StyleSheet.create({
   content: {
     gap: spacing.md,
     paddingBottom: spacing.xxxl,
+    // The header sits above the scroll view, fixed; this is the gap it used to
+    // put between itself and the first scrolled row.
+    paddingTop: spacing.md,
   },
   emptyFilterBody: {
     color: colors.slate,
@@ -632,6 +636,9 @@ const styles = StyleSheet.create({
   },
   screen: {
     backgroundColor: colors.mist,
+    flex: 1,
+  },
+  scroll: {
     flex: 1,
   },
   workspaceChip: {

@@ -370,10 +370,3 @@ public struct CompactToolLine: View {
     }
 }
 
-
-// MARK: - Event Grouping
-
-// GroupedEvent and groupEvents live in AMUXCore so SessionDetailViewModel
-// can maintain a cached grouping that updates only when events change,
-// avoiding an O(n) regroup on every body recompute (streaming deltas
-// previously forced a regroup on every frame).

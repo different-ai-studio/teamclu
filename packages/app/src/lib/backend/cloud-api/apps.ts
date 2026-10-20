@@ -1,5 +1,7 @@
 import type {
   AppsBackend,
+  AppUndeployResult,
+  AppAuthInfo,
   AppFilesPage,
   AppFilesQuery,
   AppStorageUsage,
@@ -24,6 +26,7 @@ import type {
   AppCronRun,
   AppCronRunOutcome,
   DeployAppResult,
+  AppDeployPreflightResult,
 } from "@/lib/backend/types";
 import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
 
@@ -31,6 +34,10 @@ type Page<T> = { items: T[] };
 
 export function createAppsModule(client: CloudApiClient): AppsBackend {
   return {
+    async getAppAuthInfo(appId) {
+      return client.get<AppAuthInfo>(`/v1/apps/${encodeURIComponent(appId)}/auth-info`);
+    },
+
     async listApps(teamId) {
       const params = new URLSearchParams({ teamId, limit: "100" });
       const page = await client.get<Page<AppRow>>(`/v1/apps?${params}`);
@@ -59,9 +66,9 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         throw e;
       }
     },
-    async updateAppDeployStatus(appId, fcStatus, deployError) {
+    async updateAppDeployStatus(appId, fcStatus, deployError, deployToken) {
       try {
-        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { fcStatus, deployError });
+        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { fcStatus, deployError, deployToken });
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;
@@ -97,6 +104,12 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
     },
     async deployApp(appId, input) {
       return client.post<DeployAppResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy`, input);
+    },
+    async preflightAppDeploy(appId, input) {
+      return client.post<AppDeployPreflightResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy/preflight`, input);
+    },
+    async cancelAppDeployPreflight(appId, deployToken) {
+      return client.delete<{ cancelled: boolean }>(`/v1/apps/${encodeURIComponent(appId)}/deploy/preflight`, { body: { deployToken } });
     },
     async finalizeDeploy(appId, input) {
       return client.post<AppRow>(`/v1/apps/${encodeURIComponent(appId)}/deploy/finalize`, input);
@@ -183,6 +196,9 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         if (e instanceof CloudApiError && e.status === 404) return false;
         throw e;
       }
+    },
+    async undeployApp(appId) {
+      return client.post<AppUndeployResult>(`/v1/apps/${encodeURIComponent(appId)}/undeploy`, {});
     },
     async deleteApp(appId) {
       try {

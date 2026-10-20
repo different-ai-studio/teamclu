@@ -12,6 +12,9 @@ struct AMUXApp: App {
     let modelContainer: ModelContainer
 
     init() {
+        // M4 runs from process start to the session list's first rows.
+        ChatMetrics.shared.begin(.coldStart, at: ProcessLaunch.startDate())
+        ChatMetrics.shared.tag(.coldStart, "prewarmed", ProcessLaunch.isPrewarmed ? "true" : "false")
         SentrySDK.start { options in
             options.dsn = "https://7551f3236520b84b27ec473a1d7c1480@o60909.ingest.us.sentry.io/4511233545011200"
             options.tracesSampleRate = 0.2
@@ -24,6 +27,9 @@ struct AMUXApp: App {
             options.enableCoreDataTracing = false
             options.attachScreenshot = true
             options.attachViewHierarchy = true
+            // Hang / crash / CPU diagnostics from MetricKit; the daily metric
+            // payloads go through MetricKitReporter.
+            options.enableMetricKit = true
             #if DEBUG
             options.debug = true
             options.environment = "development"
@@ -32,18 +38,17 @@ struct AMUXApp: App {
             #endif
         }
 
-        // Product analytics (Aptabase). Anonymous, privacy-first — shares the
-        // same app key as desktop. See Analytics.swift. The AMUXCore seam lets
-        // domain-layer code emit events without depending on the vendor SDK.
-        Analytics.start()
-        AnalyticsSink.handler = { event, props in Analytics.track(event, props) }
-        Analytics.track("app_started")
+        ChatMetrics.shared.setSink(SentryChatMetricsSink())
+        MetricKitReporter.shared.start()
+        ChatMetrics.shared.mark(.coldStart, "app_init")
 
         // Explicit VersionedSchema + migration plan so SwiftData never falls
         // back to destructive migration on a field-shape change. See
         // AMUXSchema.swift for the upgrade checklist when models evolve.
         do {
             modelContainer = try AMUXModelContainerFactory.make()
+            NotificationReplySender.modelContainer = modelContainer
+            TurnActivityCenter.sink = AgentTurnActivityController.shared
         } catch {
             fatalError("Failed to initialise ModelContainer: \(error)")
         }
@@ -82,13 +87,11 @@ struct AMUXApp: App {
                 // toggle accents, and other system tinted surfaces to the Hai
                 // Cinnabar accent without disturbing liquid-glass behaviour.
                 .tint(Color.amux.cinnabar)
-                .task { _ = await PushPermissionManager.requestIfUndetermined() }
         }
         .modelContainer(modelContainer)
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
             case .active:
-                Analytics.track("app_active")
                 PushBootstrap.shared.heartbeat?.enterForeground()
             case .background: PushBootstrap.shared.heartbeat?.enterBackground()
             default: break

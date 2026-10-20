@@ -8,6 +8,7 @@ import {
 
 import type { TeamMqttClient } from "../../lib/mqtt/team-mqtt";
 import { uuidV4 } from "../../lib/uuid";
+import { attachmentUrlsForAgent } from "./message-attachments";
 import type { OutboxRow } from "./outbox-db";
 
 export async function publishOutboxRowViaMqtt(
@@ -22,6 +23,11 @@ export async function publishOutboxRowViaMqtt(
     kind: MessageKind.TEXT,
     content: row.content,
     createdAt: createdAtSeconds,
+    // Live receivers render the quote from this; without it a reply only
+    // showed its quote after the next history load.
+    replyToMessageId: row.replyToMessageId ?? "",
+    // The agent reads a message's files from here, not from the stored row.
+    attachmentUrls: attachmentUrlsForAgent(row.attachments),
   });
   const sessionMessage = create(SessionMessageEnvelopeSchema, {
     message: protoMessage,

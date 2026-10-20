@@ -14,8 +14,6 @@ struct SessionListContent: View {
     @Binding var isEditing: Bool
     @Binding var selectedIDs: Set<String>
     let teamcluService: TeamcluService?
-    let pairing: PairingManager
-    let mqtt: MQTTService
     let actorId: String
     /// Signed-in user's actor id (Supabase `actors.id`). Drives the "you = Cinnabar"
     /// chip in the participant cluster. Distinct from `actorId` above, which
@@ -45,6 +43,13 @@ struct SessionListContent: View {
     @State private var renameTarget: Session?
     @State private var renameText = ""
 
+    /// Search field focus, hoisted so the list can drop the keyboard on
+    /// scroll and on any tap outside the field.
+    @FocusState private var searchFocused: Bool
+    /// The field's global frame; taps inside it (typing, the clear button)
+    /// must not resign focus.
+    @State private var searchFieldFrame: CGRect = .zero
+
     /// Locally-cached team directory keyed by actor id. Drives initials,
     /// display name, and agent-vs-human shaping for the participant cluster.
     @Query private var allActors: [CachedActor]
@@ -68,13 +73,24 @@ struct SessionListContent: View {
         viewModel.groupedSessions.flatMap(\.items)
     }
 
-    private var actorByID: [String: CachedActor] {
-        Dictionary(allActors.map { ($0.actorId, $0) }, uniquingKeysWith: { a, _ in a })
+    /// What every row's participant cluster reads, built once per body.
+    /// These used to be computed properties read from inside the per-row
+    /// call, so each visible row rebuilt both maps — every actor, the last
+    /// 500 messages — and re-read all their model properties.
+    private struct ParticipantLookup {
+        let directory: [String: CachedActor]
+        let sendersBySession: [String: [String]]
+    }
+
+    private func makeParticipantLookup() -> ParticipantLookup {
+        ParticipantLookup(
+            directory: Dictionary(allActors.map { ($0.actorId, $0) }, uniquingKeysWith: { a, _ in a }),
+            sendersBySession: sendersBySession
+        )
     }
 
     /// Distinct senderActorIds per session, ordered by most-recent message
-    /// first. Built once per body evaluation so each row gets a synchronous
-    /// lookup instead of a per-row SwiftData fetch.
+    /// first.
     private var sendersBySession: [String: [String]] {
         var ordered: [String: [String]] = [:]
         var seen: [String: Set<String>] = [:]
@@ -89,9 +105,9 @@ struct SessionListContent: View {
         return ordered
     }
 
-    private func participantPreviews(for session: Session) -> [ParticipantPreview] {
-        let directory = actorByID
-        let senders = sendersBySession[session.sessionId] ?? []
+    private func participantPreviews(for session: Session, lookup: ParticipantLookup) -> [ParticipantPreview] {
+        let directory = lookup.directory
+        let senders = lookup.sendersBySession[session.sessionId] ?? []
 
         var ids: [String] = []
         var seen = Set<String>()
@@ -126,7 +142,7 @@ struct SessionListContent: View {
     }
 
     var body: some View {
-        // Single List for everything so the daemon banner + search field
+        // Single List for everything so the search field
         // scroll out of view alongside the session rows, freeing vertical
         // real estate on long lists. The header lives as a normal, non-
         // sticky row at the top; loading / empty states sit in their own
@@ -143,14 +159,31 @@ struct SessionListContent: View {
                 // sessions-list.jsx, which uses only hairline separators
                 // inset under the title (handled by AgentRowView's
                 // alignmentGuide(.listRowSeparatorLeading)).
+                let lookup = makeParticipantLookup()
                 ForEach(flatSessions, id: \.sessionId) { session in
-                    sessionRow(session)
+                    sessionRow(session, lookup: lookup)
                 }
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Color.amux.mist)
+        // Same keyboard rules as the chat transcript (SessionDetailView):
+        // scrolling the list or tapping anywhere but the search field drops
+        // the keyboard. Simultaneous so row taps, swipe actions and context
+        // menus still fire.
+        .scrollDismissesKeyboard(.immediately)
+        .onScrollPhaseChange { _, phase in
+            guard searchFocused, phase == .tracking || phase == .interacting else { return }
+            searchFocused = false
+        }
+        .simultaneousGesture(
+            SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
+                guard searchFocused, !searchFieldFrame.contains(tap.location) else { return }
+                searchFocused = false
+            }
+        )
+        .onDisappear { searchFocused = false }
         .refreshable {
             await refreshSessionsFromBackend()
         }
@@ -183,9 +216,18 @@ struct SessionListContent: View {
     @ViewBuilder
     private var headerRow: some View {
         VStack(spacing: 8) {
-            DaemonStatusBanner(pairing: pairing, mqtt: mqtt)
             HStack(spacing: 8) {
-                SessionListSearchField(text: $viewModel.searchText)
+                SessionListSearchField(text: $viewModel.searchText, isFocused: $searchFocused)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                        searchFieldFrame = $0
+                    }
+                    // Search message text too, once typing pauses: the scan
+                    // walks every cached message.
+                    .task(id: viewModel.searchText) {
+                        try? await Task.sleep(for: .milliseconds(250))
+                        guard !Task.isCancelled else { return }
+                        viewModel.updateContentSearch(modelContext: modelContext)
+                    }
                 // Clock view: show ONLY scheduled (cron) sessions — they are
                 // hidden from the default list, mirroring the desktop.
                 Button {
@@ -270,7 +312,7 @@ struct SessionListContent: View {
     }
 
     @ViewBuilder
-    private func sessionRow(_ session: Session) -> some View {
+    private func sessionRow(_ session: Session, lookup: ParticipantLookup) -> some View {
         let runtime = liveAttachment(for: session)
         HStack(spacing: 10) {
             if isEditing {
@@ -282,8 +324,7 @@ struct SessionListContent: View {
             AgentRowView(
                 session: session,
                 runtime: runtime,
-                workspaceName: workspaceName(runtime: runtime),
-                participants: participantPreviews(for: session),
+                participants: participantPreviews(for: session, lookup: lookup),
                 isMuted: notificationPrefsStore?.isMuted(session.sessionId) ?? false,
                 activity: liveActivityStore?.activity(for: session.sessionId) ?? .quiet
             )
@@ -382,14 +423,6 @@ struct SessionListContent: View {
             .max(by: { ($0.lastEventTime ?? .distantPast) < ($1.lastEventTime ?? .distantPast) })
     }
 
-    /// Prefers the live runtime's workspace: it comes from the attachment the
-    /// daemon currently holds, where the cached row may describe a spawn that
-    /// has since been replaced.
-    private func workspaceName(runtime: AgentAttachment?) -> String {
-        guard let id = runtime?.workspaceID, !id.isEmpty else { return "" }
-        return viewModel.workspaces.first(where: { $0.workspaceId == id })?.displayName ?? ""
-    }
-
     private func toggleSelection(_ id: String) {
         if selectedIDs.contains(id) { selectedIDs.remove(id) }
         else { selectedIDs.insert(id) }
@@ -421,7 +454,6 @@ struct SessionListContent: View {
 struct AgentRowView: View {
     let session: Session
     let runtime: AgentAttachment?
-    let workspaceName: String
     let participants: [ParticipantPreview]
     let isMuted: Bool
     /// What the leading dot says, reduced from `session/{id}/live` by
@@ -433,14 +465,12 @@ struct AgentRowView: View {
     init(
         session: Session,
         runtime: AgentAttachment? = nil,
-        workspaceName: String = "",
         participants: [ParticipantPreview] = [],
         isMuted: Bool = false,
         activity: SessionLiveActivity = .quiet
     ) {
         self.session = session
         self.runtime = runtime
-        self.workspaceName = workspaceName
         self.participants = participants
         self.isMuted = isMuted
         self.activity = activity
@@ -450,7 +480,17 @@ struct AgentRowView: View {
         session.title.isEmpty ? "Untitled Session" : session.title
     }
 
-    private var lastMessage: String { session.lastMessagePreview }
+    /// Mention/skill tokens rewritten (`[Mentioned: X|instruction: …]` → `@X`),
+    /// same as the bubble — the raw scaffolding would fill the one line.
+    private var lastMessage: String { MentionDisplayText.plainText(session.lastMessagePreview) }
+
+    /// This device's unsent composer text for the session, on one line.
+    private var draft: String? {
+        let text = SessionDraftStore.shared.draft(for: session.sessionId)
+        guard !text.isEmpty else { return nil }
+        return text.split(whereSeparator: \.isNewline).joined(separator: " ")
+    }
+
     // Server-computed: `list_current_actor_sessions` derives it from
     // session_read_markers + sessions.last_message_at. The old client-side
     // signal rode on `lastOutputSummary`/`toolUseCount` deltas, which the
@@ -462,21 +502,25 @@ struct AgentRowView: View {
     /// is republished on attach/detach only, so it cannot see a turn.
     private var isStopped: Bool { runtime?.status == 5 }
 
-    /// The word beside the workspace name. Driven by the dot's signal, not by
-    /// `runtime.statusLabel`: the actor retain is only republished on
-    /// attach/detach, so its Active/Idle would contradict the dot for most of
-    /// a turn. Quiet sessions say nothing rather than "Idle" — the row's
-    /// timestamp already covers "nothing is happening".
-    private var statusLabel: String {
-        switch activity {
-        case .needsAttention: String(localized: "Waiting for you")
-        case .running:        String(localized: "Working")
-        case .quiet:          ""
+    /// What the session belongs to: its app, else its idea. Workspace and
+    /// status used to sit here; the leading dot already says the status, and
+    /// the workspace is a path detail nobody reads on a list.
+    private var context: (icon: String, name: String)? {
+        if !session.appName.isEmpty {
+            return ("square.grid.2x2", session.appName)
         }
+        if !session.ideaTitle.isEmpty {
+            return (IdeaUIPresentation.systemImage, session.ideaTitle)
+        }
+        return nil
     }
 
-    private var statusForeground: Color {
-        activity == .needsAttention ? Color.amux.cinnabar : Color.amux.sage
+    /// Long enough for a name, short enough to leave the participant cluster
+    /// its room; `lineLimit` alone would let one long name take the line.
+    private static let contextMaxLength = 16
+
+    private static func clipped(_ name: String) -> String {
+        name.count > contextMaxLength ? String(name.prefix(contextMaxLength)) + "…" : name
     }
 
     private var rowTimestamp: Date {
@@ -522,7 +566,15 @@ struct AgentRowView: View {
                     .foregroundStyle(Color.amux.slate)
             }
 
-            if !lastMessage.isEmpty {
+            if let draft {
+                // An unsent draft outranks the last message, as in IM apps:
+                // it is what the user was in the middle of.
+                (Text("Draft: ").foregroundStyle(Color.amux.cinnabar)
+                    + Text(draft).foregroundStyle(Color.amux.basalt))
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .padding(.leading, badgeIndent)
+            } else if !lastMessage.isEmpty {
                 Text(lastMessage)
                     .font(.subheadline)
                     .foregroundStyle(Color.amux.basalt)
@@ -576,25 +628,15 @@ struct AgentRowView: View {
     @ViewBuilder
     private var metaStrip: some View {
         HStack(spacing: 8) {
-            if !workspaceName.isEmpty {
-                Text(workspaceName)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(Color.amux.slate)
-                    .lineLimit(1)
-            }
-
-            if !workspaceName.isEmpty && !statusLabel.isEmpty {
-                Circle()
-                    .fill(Color.amux.slate.opacity(0.5))
-                    .frame(width: 3, height: 3)
-            }
-
-            if !statusLabel.isEmpty {
-                Text(statusLabel)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundStyle(statusForeground)
-                    .lineLimit(1)
+            if let context {
+                HStack(spacing: 4) {
+                    Image(systemName: context.icon)
+                        .font(.system(size: 10))
+                    Text(Self.clipped(context.name))
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Color.amux.slate)
             }
 
             Spacer(minLength: 0)

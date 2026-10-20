@@ -6,6 +6,7 @@ import {
   createShortcutRowsCache,
   createShortcutsCache,
   createWorkspacesCache,
+  toCachedIdea,
 } from "../lib/db/team-cache";
 import { clearTeamCache } from "../lib/db/local-cache";
 import type { Actor } from "../features/actors/actor-types";
@@ -26,6 +27,10 @@ function idea(partial: Partial<Idea> = {}): Idea {
     sortOrder: 0,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
+    attachmentUrls: [],
+    commentCount: 0,
+    likeCount: 0,
+    likedByMe: false,
     ...partial,
   };
 }
@@ -86,6 +91,31 @@ describe("ideas cache", () => {
       idea({ ideaId: "c", sortOrder: 2, updatedAt: "2026-06-01T00:00:00Z" }),
     ]);
     expect((await cache().load("t1"))?.map((i) => i.ideaId)).toEqual(["a", "c", "b"]);
+  });
+
+  it("never persists feed counts or likedByMe", async () => {
+    // A stale count shown offline is worse than none (iOS parity): the
+    // round-trip drops them and they fill in when the refresh lands.
+    await cache().save("t1", [
+      idea({ commentCount: 4, likeCount: 7, likedByMe: true, attachmentUrls: ["https://x/a.png"] }),
+    ]);
+    const raw = await db.getAllAsync("SELECT * FROM cached_ideas WHERE team_id = ?", "t1");
+    expect(raw).toHaveLength(1);
+    const columns = Object.keys(raw[0] as Record<string, unknown>);
+    expect(columns.some((c) => /like|comment/i.test(c))).toBe(false);
+    const loaded = await cache().load("t1");
+    expect(loaded?.[0]).toMatchObject({ commentCount: 0, likeCount: 0, likedByMe: false });
+  });
+
+  it("toCachedIdea strips the feed-only fields", () => {
+    const cached = toCachedIdea(
+      idea({ commentCount: 2, likeCount: 3, likedByMe: true, attachmentUrls: ["u"] }),
+    );
+    expect(cached).not.toHaveProperty("commentCount");
+    expect(cached).not.toHaveProperty("likeCount");
+    expect(cached).not.toHaveProperty("likedByMe");
+    expect(cached).not.toHaveProperty("attachmentUrls");
+    expect(cached.ideaId).toBe("i1");
   });
 
   it("keeps teams apart", async () => {

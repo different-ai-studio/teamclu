@@ -13,11 +13,18 @@ import { mergeKnownDocuments } from "@/lib/knowledge/known-documents-tree";
 import { useTeamPermissions } from "@/lib/team/team-permissions";
 import { lazyNamed } from "@/lib/lazy-component";
 
-// Team-share subtree; loads the first time a folder's ACL dialog is opened.
+// 资料库顶层文件夹「谁可以看」；首次打开时才加载。
+const DocumentLibraryDialog = lazyNamed(
+  () => import("@/components/teamshare/DocumentLibraryDialog"),
+  "DocumentLibraryDialog",
+);
+// Per-member rules on nested documents/ folders that predate role-based
+// libraries. They can still be edited or removed, not created.
 const KnowledgeAclDialog = lazyNamed(
   () => import("@/components/teamshare/KnowledgeAclDialog"),
   "KnowledgeAclDialog",
 );
+import { isDocumentLibraryPrefix } from "@/lib/backend/cloud-api/document-libraries";
 import { getBackend } from "@/lib/backend";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { isIgnoredSyncKey } from "@/lib/knowledge/knowledge-ignored";
@@ -26,7 +33,8 @@ import { useOssSyncStore } from "@/stores/oss-sync";
 import { buildBadgeMap, badgeForDirectory } from "@/lib/team/team-sync-badges";
 import { teamSyncKeyForPath } from "@/lib/team/team-skill-paths";
 import { isLlmWikiSyncKey } from "@/lib/knowledge/wiki-vault";
-import { basenameOf, isPathAtOrUnder, isPathUnder, isSamePath } from "@/lib/fs-path";
+import { basenameOf, dirnameOf, isPathAtOrUnder, isPathUnder, isSamePath, joinPathLike } from "@/lib/fs-path";
+import { fileNameError } from "@/lib/file-name";
 import { proposeDocumentToKnowledge } from "@/lib/knowledge/propose-from-document";
 import {
   hasSystemClipboardFiles,
@@ -199,6 +207,12 @@ export function FileTree({
     // and in the client matcher alike.
     if (syncKey) setAclPrefix(`${syncKey}/`);
   }, [syncRoot, workspacePath]);
+  const handleAclDialogOpenChange = useCallback((open: boolean) => {
+    if (open) return;
+    setAclPrefix(null);
+    // The dialog may have added or dropped a rule.
+    void refreshRestricted();
+  }, [refreshRestricted]);
   const focusedPath = useWorkspaceStore(s => s.focusedPath);
   const selectFile = useWorkspaceStore(s => s.selectFile);
   const selectFileRange = useWorkspaceStore(s => s.selectFileRange);
@@ -393,6 +407,12 @@ export function FileTree({
         type === "file" && defaultFileExtension
           ? withDefaultExtension(rawName, defaultFileExtension)
           : rawName;
+      const nameError = fileNameError(t, name);
+      if (nameError) {
+        toast.error(nameError);
+        setCreatingIn(null);
+        return;
+      }
       const success =
         type === "file"
           ? await createNewFile(dirPath, name)
@@ -402,12 +422,14 @@ export function FileTree({
         await refreshFileTree();
         await expandDirectory(dirPath);
         if (type === "file") {
-          selectFile(`${dirPath}/${name}`);
+          selectFile(joinPathLike(dirPath, name));
         }
+      } else {
+        toast.error(t('fileExplorer.createFailed', { name, defaultValue: 'Could not create "{{name}}"' }));
       }
       setCreatingIn(null);
     },
-    [creatingIn, refreshFileTree, expandDirectory, selectFile, defaultFileExtension],
+    [creatingIn, refreshFileTree, expandDirectory, selectFile, defaultFileExtension, t],
   );
 
   const handleRename = useCallback((path: string) => {
@@ -416,15 +438,23 @@ export function FileTree({
 
   const handleRenameConfirm = useCallback(
     async (oldPath: string, newName: string) => {
-      const parentDir = oldPath.substring(0, oldPath.lastIndexOf("/"));
-      const newPath = `${parentDir}/${newName}`;
+      const nameError = fileNameError(t, newName);
+      if (nameError) {
+        toast.error(nameError);
+        setRenamingPath(null);
+        return;
+      }
+      const parentDir = dirnameOf(oldPath);
+      const newPath = joinPathLike(parentDir, newName);
 
       if (newPath !== oldPath) {
         const success = await renameItem(oldPath, newPath);
-        if (success) {
+        if (!success) {
+          toast.error(t('fileExplorer.renameFailed', 'Rename failed'));
+        } else {
           pushUndo({
             type: 'rename',
-            description: `Rename ${oldPath.substring(oldPath.lastIndexOf("/") + 1)} → ${newName}`,
+            description: `Rename ${basenameOf(oldPath)} → ${newName}`,
             originalPath: oldPath,
             newPath,
             isDirectory: false, // approximate, fine for undo
@@ -435,7 +465,7 @@ export function FileTree({
       }
       setRenamingPath(null);
     },
-    [refreshFileTree, expandDirectory, pushUndo],
+    [refreshFileTree, expandDirectory, pushUndo, t],
   );
 
   const handleRenameCancel = useCallback(() => {
@@ -461,7 +491,7 @@ export function FileTree({
           count: currentSelectedFiles.length,
         });
       } else {
-        const name = path.substring(path.lastIndexOf("/") + 1);
+        const name = basenameOf(path);
         setDeleteConfirm({
           path,
           name,
@@ -503,7 +533,7 @@ export function FileTree({
           if (content !== undefined) {
             pushUndo({
               type: 'delete',
-              description: `Delete ${filePath.substring(filePath.lastIndexOf("/") + 1)}`,
+              description: `Delete ${basenameOf(filePath)}`,
               originalPath: filePath,
               isDirectory: false,
               content,
@@ -925,12 +955,12 @@ export function FileTree({
           await expandDirectory(targetDirPath);
         }
       } else {
-        const newPath = `${targetDirPath}/${fileName}`;
+        const newPath = joinPathLike(targetDirPath, fileName);
         const success = await moveItem(sourcePath, targetDirPath);
         if (success) {
           pushUndo({
             type: 'move',
-            description: `Move ${fileName} to ${targetDirPath.substring(targetDirPath.lastIndexOf("/") + 1)}`,
+            description: `Move ${fileName} to ${basenameOf(targetDirPath)}`,
             originalPath: sourcePath,
             newPath,
             isDirectory: false,
@@ -1223,13 +1253,18 @@ export function FileTree({
         false)
         ? handleImportLocal
         : undefined,
-    onManagePermissions:
-      canManageTeam &&
-      node.type === 'directory' &&
-      (teamSyncKeyForPath(node.path, { syncRoot, workspacePath })?.startsWith('documents/') ??
-        false)
+    onManagePermissions: (() => {
+      if (!canManageTeam || node.type !== 'directory') return undefined
+      const syncKey = teamSyncKeyForPath(node.path, { syncRoot, workspacePath })
+      if (syncKey === null) return undefined
+      const prefix = `${syncKey}/`
+      // A top-level folder is a role library; a nested one only when it
+      // already carries a legacy rule to edit or remove.
+      if (isDocumentLibraryPrefix(prefix)) return handleManagePermissions
+      return prefix.startsWith('documents/') && restrictedPrefixes.has(prefix)
         ? handleManagePermissions
-        : undefined,
+        : undefined
+    })(),
     // Its OWN rule, not one inherited from an ancestor: descendants are drawn
     // nested under the folder that is already marked.
     isPermissionRestricted:
@@ -1363,16 +1398,19 @@ export function FileTree({
       */}
       {aclPrefix && (
         <React.Suspense fallback={null}>
-          <KnowledgeAclDialog
-            prefix={aclPrefix}
-            open={aclPrefix !== null}
-            onOpenChange={(open) => {
-              if (open) return;
-              setAclPrefix(null);
-              // The dialog may have added or dropped a rule.
-              void refreshRestricted();
-            }}
-          />
+          {isDocumentLibraryPrefix(aclPrefix) ? (
+            <DocumentLibraryDialog
+              prefix={aclPrefix}
+              open={aclPrefix !== null}
+              onOpenChange={handleAclDialogOpenChange}
+            />
+          ) : (
+            <KnowledgeAclDialog
+              prefix={aclPrefix}
+              open={aclPrefix !== null}
+              onOpenChange={handleAclDialogOpenChange}
+            />
+          )}
         </React.Suspense>
       )}
 

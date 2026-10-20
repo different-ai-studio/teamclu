@@ -5,6 +5,11 @@ import {
   createCloudApiClient,
   type CloudApiClient,
 } from "../cloud-api/client";
+import {
+  parsePhoneLoginResponse,
+  PHONE_CAPTCHA_PLACEHOLDER,
+  type PhoneLoginResult,
+} from "../../features/onboarding/phone-login";
 import { codeChallengeFromVerifier, generateCodeVerifier } from "./pkce";
 import { createSessionStore, type SessionStore, type StoredSession } from "./session-store";
 
@@ -48,6 +53,8 @@ type RefreshedSessionBody = {
 type SupabaseShapedSession = {
   access_token: string;
   refresh_token: string;
+  /** Epoch seconds. Launch checks it before entering on the cached team. */
+  expires_at: number;
   user: { id: string | null; is_anonymous: boolean; email: string | null };
 };
 
@@ -192,6 +199,7 @@ function toSupabaseSession(s: StoredSession | null): SupabaseShapedSession | nul
   return {
     access_token: s.accessToken,
     refresh_token: s.refreshToken,
+    expires_at: s.expiresAt,
     user: { id: s.userId, is_anonymous: s.isAnonymous, email: s.email },
   };
 }
@@ -229,6 +237,17 @@ export type CloudAuthClient = {
     }) => Promise<{ data: unknown; error: { message: string } | null }>;
     oauthAuthorize: (provider: string, redirectTo: string) => Promise<string>;
     exchangeOAuthCode: (code: string) => Promise<unknown>;
+    /** `POST /v1/auth/phone/send-code`. Throws on failure. */
+    phoneSendCode: (phone: string) => Promise<void>;
+    /**
+     * `POST /v1/auth/phone/login`. Stores the session when one comes back;
+     * a multi-account answer stores nothing and returns the accounts.
+     */
+    phoneLogin: (input: {
+      phone: string;
+      code: string;
+      userId?: string;
+    }) => Promise<PhoneLoginResult>;
   };
   api: CloudApiClient;
 };
@@ -452,6 +471,29 @@ export const cloudAuth: CloudAuthClient = {
       });
       await storeGoTrue(body);
       return body;
+    },
+
+    async phoneSendCode(phone) {
+      await store().start();
+      await authRequest("/v1/auth/phone/send-code", {
+        method: "POST",
+        body: { phone, captchaVerify: PHONE_CAPTCHA_PLACEHOLDER },
+      });
+    },
+
+    async phoneLogin({ phone, code, userId }) {
+      await store().start();
+      // FC accepts camelCase `userId` (and snake_case `user_id`); the desktop
+      // auth client sends camelCase too.
+      const body = await authRequest<unknown>("/v1/auth/phone/login", {
+        method: "POST",
+        body: userId ? { phone, code, userId } : { phone, code },
+      });
+      const result = parsePhoneLoginResponse(body);
+      if (result.type === "session") {
+        await storeGoTrue(result.session);
+      }
+      return result;
     },
   },
 

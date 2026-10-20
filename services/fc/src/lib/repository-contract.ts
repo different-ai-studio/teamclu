@@ -5,6 +5,19 @@
  * test/repository-contract.test.ts against a stub client.
  */
 export function runBusinessRepositoryContract({ test, assert, createRepository }) {
+  test("repository contract: auth-info returns raw config and active org catalog", async () => {
+    const info = await createRepository().getAppAuthInfo("app-1");
+    assert.equal(info.appId, "app-1");
+    assert.equal(info.roleScope, "organization");
+    assert.equal(info.organizationStatus, "configured");
+    assert.ok(info.roles.some(role => role.code === "reviewer"));
+    assert.ok(info.roles.every(role => role.status === "active"));
+    assert.deepEqual(info.authRules, [{path:"/staff",auth:"required",audience:"org"}]);
+    assert.equal(info.effectivePolicies.find(policy => policy.path === "/staff").kind, "any_org_role");
+    await assert.rejects(createRepository().getAppAuthInfo("missing"), error => error.statusCode === 404);
+    await assert.rejects(createRepository().getAppAuthInfo("catalog-denied"), error => error.statusCode === 403);
+  });
+
   test("repository contract: sessions keep canonical fields and ordering", async () => {
     const repo = createRepository();
     // teamId is what the list resolves the caller's actor from — a user has one
@@ -379,6 +392,28 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     });
     const after = await repo.findAgentForDevice("team-1", { deviceId: "device-contract-lookup" });
     assert.equal(after.agentId, created.agentId);
+  });
+
+  test("repository contract: adoptLegacyAgentDevice stamps a device onto an existing agent", async () => {
+    const repo = createRepository();
+    const before = await repo.findAgentForDevice("team-1", { deviceId: "device-legacy" });
+    assert.equal(before.agentId, null);
+
+    const adopted = await repo.adoptLegacyAgentDevice("team-1", {
+      deviceId: "device-legacy",
+      agentId: "agent-legacy",
+    });
+    assert.equal(adopted.agentId, "agent-legacy");
+
+    const after = await repo.findAgentForDevice("team-1", { deviceId: "device-legacy" });
+    assert.equal(after.agentId, "agent-legacy");
+
+    // A device already held is not given to a second agent.
+    const refused = await repo.adoptLegacyAgentDevice("team-1", {
+      deviceId: "device-legacy",
+      agentId: "agent-other",
+    });
+    assert.equal(refused.agentId, null);
   });
 
   test("repository contract: ensureAgentForDevice is idempotent per device", async () => {
@@ -1021,6 +1056,23 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     assert.equal(out.llm.enabled, true);
     assert.equal(out.llm.baseUrl, "https://proxy.example.com/v1");
     assert.deepEqual(out.llm.models, [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude", name: "Claude" }]);
+  });
+
+  test("repository contract: Wiki maintainer config and status round-trip", async () => {
+    const repo = createRepository();
+    const initial = await repo.getWikiMaintainerStatus("team-wiki-contract");
+    assert.equal(initial.generation, 0);
+    assert.equal(initial.stage, "idle");
+
+    const saved = await repo.putWikiMaintainerConfig("team-wiki-contract", {
+      expectedVersion: 0,
+      config: { sourceDirectories: ["documents/handbook/"], compilerModel: "team/default" },
+    });
+    assert.equal(saved.version, 1);
+
+    const after = await repo.getWikiMaintainerStatus("team-wiki-contract");
+    assert.equal(after.config.version, 1);
+    assert.deepEqual(after.config.config.sourceDirectories, ["documents/handbook/"]);
   });
 }
 

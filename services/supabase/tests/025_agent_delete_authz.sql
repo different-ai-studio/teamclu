@@ -54,6 +54,7 @@ declare
   v_team_agent     uuid := gen_random_uuid();
   v_idea_id        uuid := gen_random_uuid();
   v_apps_agent     uuid := gen_random_uuid();
+  v_org            uuid := gen_random_uuid();
 begin
   insert into auth.users (id, email, aud, role, instance_id, is_anonymous)
   values
@@ -65,8 +66,13 @@ begin
      '00000000-0000-0000-0000-000000000000', false)
   on conflict do nothing;
 
-  insert into amux.teams (id, slug, name)
-  values (v_team, 'del-auth-' || left(v_team::text, 8), 'Agent Delete Authz');
+  -- The team needs an org because the app below carries one: amux.apps.org_id
+  -- is NOT NULL with an FK to public.orgs (20260923200000 / 20260924100000).
+  insert into public.orgs (id, name)
+  values (v_org, 'Agent Delete Authz Org');
+
+  insert into amux.teams (id, slug, name, oid)
+  values (v_team, 'del-auth-' || left(v_team::text, 8), 'Agent Delete Authz', v_org);
 
   insert into amux.actors (id, team_id, actor_type, display_name, user_id)
   values
@@ -179,8 +185,10 @@ begin
   insert into amux.agents (id, status, visibility, owner_member_id)
   values (v_apps_agent, 'active', 'team', v_member_mem);
 
-  insert into amux.apps (team_id, created_by_actor_id, name, slug, type)
-  values (v_team, v_apps_agent, 'Blocked App', 'blocked-app', 'static_web');
+  -- org_id is NOT NULL (20260924100000): it is the app's tenant, and every
+  -- app has one. Taken from the team, which is what createApp does.
+  insert into amux.apps (team_id, created_by_actor_id, name, slug, type, org_id)
+  values (v_team, v_apps_agent, 'Blocked App', 'blocked-app', 'static_web', v_org);
 
   perform pg_temp.as_member(v_admin_uid);
   begin

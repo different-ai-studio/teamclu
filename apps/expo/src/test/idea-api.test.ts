@@ -61,6 +61,10 @@ describe("createIdeasApi", () => {
         sortOrder: 0,
         createdAt: "2026-05-01T00:00:00Z",
         updatedAt: "2026-05-02T00:00:00Z",
+        attachmentUrls: [],
+        commentCount: 0,
+        likeCount: 0,
+        likedByMe: false,
       },
     ]);
   });
@@ -211,5 +215,71 @@ describe("createIdeasApi", () => {
       teamId: "t1",
       ideaIds: ["i2", "i1"],
     });
+  });
+
+  it("listIdeas maps the feed fields: pictures, comment/like counts, likedByMe", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      json({
+        items: [
+          {
+            id: "i1",
+            teamId: "t1",
+            title: "Pic post",
+            attachmentUrls: ["https://cdn.test/a.jpg", "", "https://cdn.test/b.jpg"],
+            commentCount: 3,
+            likeCount: 5,
+            likedByMe: true,
+          },
+          { id: "i2", teamId: "t1", title: "Bare", likeCount: -1, likedByMe: null },
+        ],
+        nextCursor: null,
+      }),
+    );
+
+    const [first, second] = await api(fetchImpl).listIdeas("t1");
+
+    expect(first).toMatchObject({
+      ideaId: "i1",
+      attachmentUrls: ["https://cdn.test/a.jpg", "https://cdn.test/b.jpg"],
+      commentCount: 3,
+      likeCount: 5,
+      likedByMe: true,
+    });
+    // Absent or nonsense counts read as zero, never negative.
+    expect(second).toMatchObject({
+      ideaId: "i2",
+      attachmentUrls: [],
+      commentCount: 0,
+      likeCount: 0,
+      likedByMe: false,
+    });
+  });
+
+  it("setLike PUTs the desired state (not a toggle) and returns the server's answer", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({ likeCount: 4, likedByMe: true }));
+
+    const state = await api(fetchImpl).setLike("i 1", true);
+
+    expect(fetchImpl.mock.calls[0][0]).toBe("https://cloud.test/v1/ideas/i%201/like");
+    expect(fetchImpl.mock.calls[0][1].method).toBe("PUT");
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ liked: true });
+    expect(state).toEqual({ likeCount: 4, likedByMe: true });
+  });
+
+  it("createIdea posts the pictures with the idea and maps them back", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      json({ id: "i1", teamId: "t1", title: "T", attachmentUrls: ["https://cdn.test/a.jpg"] }),
+    );
+
+    const idea = await api(fetchImpl).createIdea({
+      teamId: "t1",
+      title: "T",
+      attachmentUrls: ["https://cdn.test/a.jpg"],
+    });
+
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
+      attachmentUrls: ["https://cdn.test/a.jpg"],
+    });
+    expect(idea.attachmentUrls).toEqual(["https://cdn.test/a.jpg"]);
   });
 });

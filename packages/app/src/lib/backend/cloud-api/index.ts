@@ -23,9 +23,11 @@ import { createTeamSkillsModule } from "@/lib/backend/cloud-api/team-skills";
 import { createMarketplaceModule } from "@/lib/backend/cloud-api/marketplace";
 import { createTeamMcpModule } from "@/lib/backend/cloud-api/team-mcp";
 import { createKnowledgeAclModule } from "@/lib/backend/cloud-api/knowledge-acl";
+import { createDocumentLibrariesModule } from "@/lib/backend/cloud-api/document-libraries";
 import { createTeamEnvSecretsModule } from "@/lib/backend/cloud-api/team-env-secrets";
 import { createOrgRolesModule } from "@/lib/backend/cloud-api/org-roles";
 import { createAdminModule } from "@/lib/backend/cloud-api/admin";
+import { createWikiMaintainerModule } from "@/lib/backend/cloud-api/wiki-maintainer";
 
 export function hasCloudApiBackendConfig(config: ServerConfig): boolean {
   return Boolean(config.cloudApiUrl);
@@ -67,6 +69,8 @@ export function createCloudApiBackend(
     marketplace: createMarketplaceModule(client),
     teamMcp: createTeamMcpModule(client),
     knowledgeAcl: createKnowledgeAclModule(client),
+    documentLibraries: createDocumentLibrariesModule(client),
+    wikiMaintainer: createWikiMaintainerModule(client),
     teamEnvSecrets: createTeamEnvSecretsModule(client),
     orgRoles: createOrgRolesModule(client),
     admin: createAdminModule(client),

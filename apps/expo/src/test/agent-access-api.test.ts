@@ -119,4 +119,16 @@ describe("createAgentAccessApi", () => {
     );
     await expect(api(adminFetch).canManageAgent("agent-1", "m1")).resolves.toBe(false);
   });
+
+  it("agentAccessRole returns the role only when access is allowed", async () => {
+    const adminFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ allowed: true, role: "admin" }), { status: 200 }),
+    );
+    await expect(api(adminFetch).agentAccessRole("agent-1", "m1")).resolves.toBe("admin");
+
+    const deniedFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ allowed: false, role: "admin" }), { status: 200 }),
+    );
+    await expect(api(deniedFetch).agentAccessRole("agent-1", "m1")).resolves.toBeNull();
+  });
 });

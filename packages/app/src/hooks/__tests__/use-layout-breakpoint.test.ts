@@ -14,9 +14,11 @@ import {
 } from "../use-layout-breakpoint";
 
 describe("getLayoutBreakpointForWidth", () => {
-  it("keeps the session list hidden until the message pane has more room", () => {
-    expect(getLayoutBreakpointForWidth(899)).toBe("narrow");
-    expect(getLayoutBreakpointForWidth(900)).toBe("medium");
+  it("keeps the session list at every desktop window width", () => {
+    // The desktop window cannot go below 800px wide (tauri.conf.json minWidth).
+    expect(getLayoutBreakpointForWidth(767)).toBe("narrow");
+    expect(getLayoutBreakpointForWidth(768)).toBe("medium");
+    expect(getLayoutBreakpointForWidth(800)).toBe("medium");
     expect(getLayoutBreakpointForWidth(1023)).toBe("medium");
     expect(getLayoutBreakpointForWidth(1024)).toBe("wide");
   });

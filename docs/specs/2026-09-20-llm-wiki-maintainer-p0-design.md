@@ -7,6 +7,7 @@
 - **Non-scope**: Desktop 设置页、维护设备租约、Cloud API / 数据库新接口、向量检索、跨团队知识目录、导入会话 UI、逐份人工审稿、iOS / Expo 写入
 - **Depends on**: `docs/specs/2026-09-01-lazy-documents-design.md`、`docs/specs/2026-09-17-knowledge-retrieval-p0-design.md`、`docs/specs/2026-09-11-session-knowledge-review-design.md`、`docs/specs/2026-08-31-knowledge-path-acl-design.md`
 - **Supersedes for this subtree only**: `docs/plans/2026-08-31-team-knowledge-base-program.md` §2.2 中“目录页人工维护”的约定；只对 `knowledge/wiki/` 生效
+- **Current flow**: 编译主路径和报错处理见 [2026-09-24-wiki-maintainer-compile-flow.md](./2026-09-24-wiki-maintainer-compile-flow.md)
 
 ---
 

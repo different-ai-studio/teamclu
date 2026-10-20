@@ -1,5 +1,10 @@
 //! The one way this sidecar talks to the desktop's loopback introspect API
-//! (`127.0.0.1:<api_port>`, see `commands::introspect_api` in the desktop crate).
+//! (`127.0.0.1:<port>`, see `commands::introspect_api` in the desktop crate).
+//! The port is the one the desktop published in
+//! `<amuxd home>/run/introspect.http.port`; `--api-port` is only the fallback
+//! for a desktop too old to publish it. Every brand's app asks for the same
+//! port, so with two brands running one of them gets another, and only this
+//! file says which.
 //!
 //! Every call carries the per-launch bearer the desktop writes to
 //! `<amuxd home>/run/introspect.http.token` (0600, same directory as the
@@ -18,6 +23,28 @@ use std::path::{Path, PathBuf};
 
 /// Must match `INTROSPECT_TOKEN_FILE` in the desktop crate.
 pub const TOKEN_FILE: &str = "introspect.http.token";
+
+/// Must match `INTROSPECT_PORT_FILE` in the desktop crate.
+pub const PORT_FILE: &str = "introspect.http.port";
+
+/// `<amuxd home>/run/introspect.http.port`, next to the token.
+pub fn port_path() -> PathBuf {
+    teamclu_runtime_env::amuxd_layout::run_dir(&teamclu_runtime_env::amuxd_home_from_env())
+        .join(PORT_FILE)
+}
+
+/// The port published at `path`, or `None` when the file is missing or does
+/// not hold a usable port.
+pub fn read_port_from(path: &Path) -> Option<u16> {
+    let port: u16 = std::fs::read_to_string(path).ok()?.trim().parse().ok()?;
+    (port != 0).then_some(port)
+}
+
+/// The desktop's port for this brand, read on every call: the app may have
+/// restarted onto a different one since this sidecar started.
+fn resolve_port(fallback: u16) -> u16 {
+    read_port_from(&port_path()).unwrap_or(fallback)
+}
 
 /// `<amuxd home>/run/introspect.http.token`, resolved the same way the daemon
 /// socket and `amuxd.http.token` are — from `AMUXD_HOME` / the brand, never a
@@ -88,7 +115,7 @@ fn caller_headers(env: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, St
 /// For callers that word their own error around the status code.
 pub async fn send(api_port: u16, path: &str, body: &Value) -> Result<reqwest::Response, String> {
     let token = read_token()?;
-    let url = format!("http://127.0.0.1:{api_port}{path}");
+    let url = format!("http://127.0.0.1:{}{path}", resolve_port(api_port));
     let mut request = reqwest::Client::new().post(&url).bearer_auth(token);
     for (header, value) in caller_headers(|var| std::env::var(var).ok()) {
         request = request.header(header, value);
@@ -125,6 +152,31 @@ mod tests {
             "got {}",
             path.display()
         );
+    }
+
+    #[test]
+    fn port_path_sits_beside_the_token() {
+        assert_eq!(port_path().parent(), token_path().parent());
+        assert!(port_path().ends_with(PORT_FILE));
+    }
+
+    #[test]
+    fn read_port_accepts_a_published_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PORT_FILE);
+        std::fs::write(&path, "51234\n").unwrap();
+        assert_eq!(read_port_from(&path), Some(51234));
+    }
+
+    #[test]
+    fn read_port_ignores_a_missing_or_unusable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PORT_FILE);
+        assert_eq!(read_port_from(&path), None);
+        for junk in ["", "0", "abc", "70000"] {
+            std::fs::write(&path, junk).unwrap();
+            assert_eq!(read_port_from(&path), None, "{junk:?}");
+        }
     }
 
     #[test]

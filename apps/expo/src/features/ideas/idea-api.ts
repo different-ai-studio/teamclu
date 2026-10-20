@@ -1,4 +1,5 @@
 import { cloudApiBaseUrl, createCloudApiClient } from "../../lib/cloud-api/client";
+import type { IdeaLikeState } from "./idea-likes";
 import { compareIdeas, type Idea, type IdeaActivity, type IdeaStatus } from "./idea-types";
 
 /**
@@ -22,7 +23,16 @@ type CloudIdea = {
   sortOrder?: number | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  attachmentUrls?: string[] | null;
+  // Only the list aggregates these; a single-idea read omits them.
+  commentCount?: number | null;
+  likeCount?: number | null;
+  likedByMe?: boolean | null;
 };
+
+function toCount(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
 
 function toStatus(value: string | null | undefined): IdeaStatus {
   switch (value) {
@@ -49,6 +59,12 @@ function toIdea(row: CloudIdea, workspaceName: string | null): Idea {
     sortOrder: typeof row.sortOrder === "number" ? row.sortOrder : 0,
     createdAt: row.createdAt ?? "",
     updatedAt: row.updatedAt ?? row.createdAt ?? "",
+    attachmentUrls: (row.attachmentUrls ?? []).filter(
+      (url): url is string => typeof url === "string" && url.length > 0,
+    ),
+    commentCount: toCount(row.commentCount),
+    likeCount: toCount(row.likeCount),
+    likedByMe: row.likedByMe === true,
   };
 }
 
@@ -108,6 +124,8 @@ export type IdeasApi = {
     title: string;
     description?: string;
     workspaceId?: string | null;
+    /** Already-uploaded pictures to post with the idea itself. */
+    attachmentUrls?: string[];
   }) => Promise<Idea>;
   updateStatus: (ideaId: string, status: IdeaStatus) => Promise<void>;
   updateContent: (
@@ -120,6 +138,11 @@ export type IdeasApi = {
   listActivities: (ideaId: string) => Promise<IdeaActivity[]>;
   createActivity: (ideaId: string, input: IdeaActivityCreateInput) => Promise<IdeaActivity>;
   reorderIdeas: (teamId: string, ideaIds: string[]) => Promise<void>;
+  /**
+   * `PUT /v1/ideas/{id}/like` with the desired state — not a toggle, so a
+   * retried or doubled request settles on the same answer.
+   */
+  setLike: (ideaId: string, liked: boolean) => Promise<IdeaLikeState>;
 };
 
 export function createIdeasApi(args: {
@@ -154,6 +177,9 @@ export function createIdeasApi(args: {
         description: input.description ?? "",
       };
       if (input.workspaceId != null) body.workspaceId = input.workspaceId;
+      if (input.attachmentUrls && input.attachmentUrls.length > 0) {
+        body.attachmentUrls = input.attachmentUrls;
+      }
       const row = await client.post<CloudIdea>("/v1/ideas", body);
       return toIdea(row, null);
     },
@@ -229,6 +255,14 @@ export function createIdeasApi(args: {
     async reorderIdeas(teamId, ideaIds) {
       if (!teamId || ideaIds.length === 0) return;
       await client.post("/v1/ideas/reorder", { teamId, ideaIds });
+    },
+
+    async setLike(ideaId, liked) {
+      const row = await client.put<{ likeCount?: number | null; likedByMe?: boolean | null }>(
+        `/v1/ideas/${encodeURIComponent(ideaId)}/like`,
+        { liked },
+      );
+      return { likeCount: toCount(row?.likeCount), likedByMe: row?.likedByMe === true };
     },
   };
 }

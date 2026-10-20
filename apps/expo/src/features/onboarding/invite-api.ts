@@ -12,9 +12,77 @@ export type InviteClaimResult = {
   refreshToken: string | null;
 };
 
+/**
+ * An invite addressed to the caller's own verified email/phone, still pending
+ * (`GET /v1/invites/pending`). Mirrors iOS `PendingInvite`: `inviteId` is the
+ * accept/decline routing key.
+ */
+export type PendingInvite = {
+  inviteId: string;
+  teamId: string;
+  teamName: string | null;
+  teamRole: string | null;
+  invitedByDisplayName: string | null;
+};
+
 export type InviteApi = {
   claim: (token: string) => Promise<InviteClaimResult>;
+  /** Invites addressed to the signed-in user's verified contact. */
+  listPending: () => Promise<PendingInvite[]>;
+  /** Joins the invite's team — equivalent to claiming its token. */
+  acceptPending: (inviteId: string) => Promise<InviteClaimResult>;
+  /** Marks the invite declined; the row stays for the inviter to see. */
+  declinePending: (inviteId: string) => Promise<void>;
 };
+
+type WirePendingInvite = {
+  inviteId?: string | null;
+  teamId?: string | null;
+  teamName?: string | null;
+  teamRole?: string | null;
+  invitedByDisplayName?: string | null;
+};
+
+function nonEmpty(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * Wire → domain. Rows missing either routing key are dropped rather than
+ * rendered with a Join button that can only 404.
+ */
+export function toPendingInvites(
+  items: ReadonlyArray<WirePendingInvite | null> | null | undefined,
+): PendingInvite[] {
+  const result: PendingInvite[] = [];
+  for (const item of items ?? []) {
+    if (!item?.inviteId || !item.teamId) continue;
+    result.push({
+      inviteId: item.inviteId,
+      teamId: item.teamId,
+      teamName: nonEmpty(item.teamName),
+      teamRole: nonEmpty(item.teamRole),
+      invitedByDisplayName: nonEmpty(item.invitedByDisplayName),
+    });
+  }
+  return result;
+}
+
+function toClaimResult(
+  result: Partial<InviteClaimResult> | null | undefined,
+): InviteClaimResult {
+  if (!result?.actorId || !result?.teamId) {
+    throw new Error("Invite claim returned no actor/team — token may be expired.");
+  }
+  return {
+    actorId: result.actorId,
+    teamId: result.teamId,
+    actorType: result.actorType ?? "member",
+    displayName: result.displayName ?? "",
+    refreshToken: result.refreshToken ?? null,
+  };
+}
 
 /**
  * Cloud-only invite claimer. Redeems a token via `POST /v1/invites/claim`,
@@ -42,16 +110,25 @@ export function createInviteApi(args: {
       const result = await client.post<InviteClaimResult>("/v1/invites/claim", {
         token: trimmed,
       });
-      if (!result?.actorId || !result?.teamId) {
-        throw new Error("Invite claim returned no actor/team — token may be expired.");
-      }
-      return {
-        actorId: result.actorId,
-        teamId: result.teamId,
-        actorType: result.actorType ?? "member",
-        displayName: result.displayName ?? "",
-        refreshToken: result.refreshToken ?? null,
-      };
+      return toClaimResult(result);
+    },
+
+    async listPending() {
+      const page = await client.get<{ items?: WirePendingInvite[] } | null>(
+        "/v1/invites/pending",
+      );
+      return toPendingInvites(page?.items);
+    },
+
+    async acceptPending(inviteId) {
+      const result = await client.post<InviteClaimResult>(
+        `/v1/invites/${encodeURIComponent(inviteId)}/accept`,
+      );
+      return toClaimResult(result);
+    },
+
+    async declinePending(inviteId) {
+      await client.post<unknown>(`/v1/invites/${encodeURIComponent(inviteId)}/decline`);
     },
   };
 }
@@ -80,6 +157,19 @@ const INVITE_SCHEMES: ReadonlySet<string> = new Set([
   "teamclaw:",
   "amux:",
 ]);
+
+/**
+ * What the user typed into the invite sheet: an invite link, or a bare token.
+ * Any other URL is rejected rather than posted as a token (iOS
+ * `InviteJoinSheet.parseToken`).
+ */
+export function parseInviteInput(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim() ?? "";
+  if (!trimmed) return null;
+  const fromLink = parseInviteToken(trimmed);
+  if (fromLink) return fromLink;
+  return trimmed.includes("://") ? null : trimmed;
+}
 
 export function parseInviteToken(url: string | null | undefined): string | null {
   if (!url) return null;

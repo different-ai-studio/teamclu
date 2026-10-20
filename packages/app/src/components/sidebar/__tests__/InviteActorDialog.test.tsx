@@ -15,26 +15,66 @@ vi.mock('@/lib/config/server-config', () => ({
   getEffectiveServerConfigSync: () => ({ cloudApiUrl: 'https://api.example.test' }),
 }))
 
-const createTeamInvite = vi.fn(async () => ({ token: 'tok', expiresAt: '2026-09-24T00:00:00Z' }))
+const perms = vi.hoisted(() => ({ canManageTeam: false }))
+vi.mock('@/lib/team/team-permissions', () => ({
+  useTeamPermissions: () => ({
+    role: perms.canManageTeam ? 'admin' : 'member',
+    isOwner: false,
+    canManageTeam: perms.canManageTeam,
+    canEditFiles: true,
+  }),
+}))
+
+const { createTeamInvite, getTeamJoinLink, putTeamJoinLink, revokeTeamJoinLink } = vi.hoisted(() => ({
+  createTeamInvite: vi.fn(async () => ({ token: 'tok', expiresAt: '2026-09-24T00:00:00Z' })),
+  getTeamJoinLink: vi.fn(async () => {
+    throw Object.assign(new Error('missing'), { status: 404 })
+  }),
+  putTeamJoinLink: vi.fn(),
+  revokeTeamJoinLink: vi.fn(),
+}))
 vi.mock('@/lib/backend', () => ({
-  getBackend: () => ({ teams: { createTeamInvite } }),
+  getBackend: () => ({ teams: { createTeamInvite, getTeamJoinLink, putTeamJoinLink, revokeTeamJoinLink } }),
 }))
 
 const { InviteActorDialog } = await import('../InviteActorDialog')
+const { AnotherComputerAgentDialog } = await import('../AnotherComputerAgentDialog')
 
 describe('InviteActorDialog', () => {
-  it('offers no role choice and invites members as member', async () => {
+  it('hides the section from a member', () => {
+    perms.canManageTeam = false
     render(<InviteActorDialog open onOpenChange={() => {}} />)
+    expect(screen.queryByRole('button', { name: '生成链接' })).toBeNull()
+  })
 
-    expect(screen.queryByText('Role')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Admin' })).toBeNull()
+  it('shows the join-link section to an admin', async () => {
+    perms.canManageTeam = true
+    render(<InviteActorDialog open onOpenChange={() => {}} />)
+    expect(await screen.findByRole('button', { name: '生成链接' })).toBeInTheDocument()
+  })
 
-    fireEvent.change(screen.getByPlaceholderText('Display name'), { target: { value: 'Alice' } })
+  it('does not offer a one-time member or agent invite', () => {
+    perms.canManageTeam = true
+    render(<InviteActorDialog open onOpenChange={() => {}} />)
+    expect(screen.queryByPlaceholderText('Display name')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Create invite' })).toBeNull()
+    expect(screen.queryByText('Only a team owner or admin can invite people.')).toBeNull()
+  })
+})
+
+describe('AnotherComputerAgentDialog', () => {
+  it('creates a one-time agent invite', async () => {
+    createTeamInvite.mockClear()
+    render(<AnotherComputerAgentDialog open onOpenChange={() => {}} />)
+    fireEvent.change(screen.getByPlaceholderText('Display name'), { target: { value: 'Desk' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create invite' }))
-
-    await waitFor(() => expect(createTeamInvite).toHaveBeenCalledTimes(1))
-    expect(createTeamInvite).toHaveBeenCalledWith(
-      expect.objectContaining({ teamId: 'team-1', kind: 'member', teamRole: 'member' }),
-    )
+    await waitFor(() => expect(createTeamInvite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        teamId: 'team-1',
+        kind: 'agent',
+        displayName: 'Desk',
+        agentKind: 'daemon',
+      }),
+    ))
   })
 })

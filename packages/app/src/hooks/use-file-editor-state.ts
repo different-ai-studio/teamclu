@@ -27,7 +27,7 @@ export function useFileTabSync() {
   // Open a tab whenever a file is selected in the standard task layout.
   useEffect(() => {
     if (selectedFile) {
-      const filename = selectedFile.split("/").pop() || selectedFile;
+      const filename = basenameOf(selectedFile) || selectedFile;
       useTabsStore.getState().openTab({
         type: "file",
         target: selectedFile,
@@ -46,6 +46,7 @@ export function useFileTabSync() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState } from "react";
+import { basenameOf } from "@/lib/fs-path";
 
 const RIGHT_PANEL_MIN = 280;
 const RIGHT_PANEL_MAX = 600;

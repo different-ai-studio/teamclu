@@ -69,7 +69,8 @@ test("parseConfig requires a trailing slash on source prefixes", () => {
   );
 });
 
-test("parseConfig requires teamId and maintainerNodeId", () => {
+test("parseConfig requires teamId but no longer binds config to one node", () => {
   assert.throws(() => parseConfig(valid({ teamId: "" })), /teamId/i);
-  assert.throws(() => parseConfig(valid({ maintainerNodeId: "" })), /maintainerNodeId/i);
+  const cfg = parseConfig(valid({ maintainerNodeId: undefined }));
+  assert.equal("maintainerNodeId" in cfg, false);
 });

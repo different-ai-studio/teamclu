@@ -105,7 +105,10 @@ public struct PermissionBannerView: View {
     private func optionButton(_ option: PermissionOptionItem,
                               action: @escaping (PermissionOptionItem) -> Void) -> some View {
         let tint = option.isReject ? Color.amux.cinnabarDeep : Color.amux.sage
-        Button { action(option) } label: {
+        Button {
+            if option.isReject { Haptics.warning() } else { Haptics.success() }
+            action(option)
+        } label: {
             Text(option.name.isEmpty ? option.id : option.name)
                 .font(.subheadline).fontWeight(.medium)
                 .frame(maxWidth: .infinity)

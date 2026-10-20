@@ -1,16 +1,69 @@
-# pi agent host 沙箱 profile
+# pi agent host 沙箱
 
-`pi-host.sb` 是给 pi agent host 用的 macOS Seatbelt profile。**目前没有接线**
-——它先进仓库，是因为里面两条放行规则花了 14 轮盲试才找到，而失败现场
-没有任何线索指向它们。设计与排期见 issue #1571。
+`pi-host.sb` 是 pi agent host 的 macOS Seatbelt profile。**已接线，默认关闭。**
 
-## 怎么接
+## 怎么开
 
-在 `apps/daemon/src/runtime/pi_rpc/process.rs` 的 spawn 前加前缀。**同一个
-match 里有两处**：`LaunchMode::Host`（主路径）和 `LaunchMode::LegacyRpc`
-（回退路径）。只包前者，回退路径就是绕过通道。
+```bash
+amuxd config set agents.pi.sandbox '"on"'
+```
+
+下次 spawn 生效（配置在 spawn 时读），不需要重启 daemon。
+
+| 值 | 行为 |
+|---|---|
+| 不设 / `"off"` / `"false"` | 裸跑（**默认**） |
+| `"on"` / `"true"` | 用本目录的 profile，释放到 `~/.amuxd/cache/pi/pi-host.sb` |
+| 其他 | 当作 profile 文件路径——改规则不必重新编译 |
+
+非 macOS 上配了也只记一条 warn 然后裸跑：`sandbox-exec` 是 Seatbelt 的前端，
+别处没有。profile 释放失败或路径不存在同理——沙箱是加固，不该把加固失败
+变成启动失败。
+
+## 怎么确认它真的开着
+
+**不要用 `ps`。** `sandbox-exec` 会 exec 成目标进程，进程表里留下的是 node
+自己的命令行，沙箱内外看起来一模一样。看日志：
+
+```bash
+grep "sandboxed=true" ~/.amuxd/logs/amuxd.log     # 每次 spawn 一行
+grep "pi host sandbox enabled" ~/.amuxd/logs/amuxd.log
+```
+
+## 开了之后会失去什么
+
+| 能力 | 状态 |
+|---|---|
+| 工作区读写 | ✅ |
+| TeamClu 自己的 MCP 工具（`teamclu-introspect`） | ✅ |
+| `npx` 类 MCP（chrome-control / autoui / playwright） | ❌ `spawn EPERM` |
+| `git push` / 部署 | ❌ `~/.ssh` 被拒 |
+| cargo / pnpm 构建 | ❌ 缓存目录在工作区之外 |
+
+所以它**还不适合日常开着**。当下合适的场景是：跑一个只在工作区内读写、
+不需要构建也不需要推送的 agent。三项缺口在 #1577 跟踪。
+
+## 改 profile 之后
+
+profile 是随二进制嵌入、首次 spawn 时释放的，**内容变了才会重写**。本地改完
+要让它重新释放：
+
+```bash
+rm -f ~/.amuxd/cache/pi/pi-host.sb
+```
+
+## 接在哪
+
+`apps/daemon/src/runtime/pi_rpc/process.rs` 的 `host_base_command`。**同一个
+match 里的两处 spawn 都走它**：`LaunchMode::Host`（主路径）和
+`LaunchMode::LegacyRpc`（`session_host = "rpc"` 仍能选到的回退路径）。只包前者
+等于留一条绕过沙箱的通道。
 
 包在这一层，host 拉起的一切都继承——工具、子进程、MCP sidecar 都在内。
+
+---
+
+以下是写这份 profile 时踩过的坑，改规则前值得先看。
 
 ## 两条极难查的规则
 

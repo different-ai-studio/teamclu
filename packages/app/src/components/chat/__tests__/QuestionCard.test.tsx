@@ -6,7 +6,11 @@ import { QuestionCard } from '../QuestionCard';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, fallback?: string) => fallback ?? key,
+    t: (key: string, opts?: string | { defaultValue?: string; [k: string]: unknown }) => {
+      const template = typeof opts === 'string' ? opts : (opts?.defaultValue ?? key);
+      if (!opts || typeof opts === 'string') return template;
+      return template.replace(/\{\{(\w+)\}\}/g, (_, name) => String(opts[name] ?? ''));
+    },
   }),
 }));
 
@@ -135,5 +139,41 @@ describe('QuestionCard', () => {
 
     expect(screen.getByText('What would you like to do?')).toBeTruthy();
     expect(screen.getByText('Option A')).toBeTruthy();
+  });
+
+  it('shows who answered and hides the form once a peer has settled it', () => {
+    const question = makeQuestion();
+    mockSessionState.answeredQuestionsByToolCallId = {
+      'tc-1': {
+        questions: [question],
+        answers: { 'q-1': 'Option A' },
+        answeredBy: '张三',
+      },
+    };
+
+    render(<QuestionCard toolCallId="tc-1" questions={[question as never]} />);
+
+    expect(screen.getByText('张三 chose Option A')).toBeTruthy();
+    expect(screen.queryByText('Submit Answer')).toBeNull();
+    expect(screen.queryByText('Option B')).toBeNull();
+  });
+
+  it('reads a late joiner settlement from the tool result', () => {
+    const question = makeQuestion();
+    render(
+      <QuestionCard
+        toolCallId="tc-1"
+        questions={[question as never]}
+        isCompleted
+        result={[
+          'Choose an option: Option A',
+          'teamclu.question.settled=' +
+            JSON.stringify({ answeredBy: '张三', answers: [['Option A']], rejected: false }),
+        ].join('\n')}
+      />,
+    );
+
+    expect(screen.getByText('张三 chose Option A')).toBeTruthy();
+    expect(screen.queryByText('Submit Answer')).toBeNull();
   });
 });

@@ -69,29 +69,11 @@ async function storageCredentials() {
 
 ## 部署声明（`teamclu.app.json`）
 
-仓根 `teamclu.app.json` 声明**怎么构建、怎么启动**，平台按其中的 `build` + `start` 部署到 FC Custom Runtime：
+仓根 `teamclu.app.json` 声明本模板的 `build` 和 `start`。构建必须产出 `.output/server/index.mjs`，服务器监听平台提供的 `$PORT`。修改启动声明或上线时，读取内置 `deploy-app` skill；运行环境、版本、迁移与发布步骤以该 skill 和实时控制面信息为准。
 
-- 启动方式就是「一个解释器加一个文件」时（`node` 和 `go`），只写 `build.kind` / `start.entry` / `start.port` 就够了，运行环境、解释器绝对路径和 layer 由平台补齐——这几个值只有平台知道。本模板是 node：`entry` 指构建产物目录里的文件，即 `.output` 下的 `server/index.mjs`。
-- 其余情况——要跑模块（`python3 -m uvicorn ...`）、要设 `PYTHONPATH`、要加参数，以及 `python` / `php` / `java` 这几种 kind——都写 FC 直通格式（`fcRuntime` + `command` + `args` + `layers`）。这是常态，不是降级。两种格式不能混用，同时出现会被拒绝。官方层写成 `"Nodejs20:3"` 这种「名字:版本」形式，区域由平台补齐；写完整 ARN 时区域必须和部署区域一致。
-- **不要用**旧字段 `runtime` / `entry` —— 缺 `build` + `start` 或仍带 legacy 字段时部署会被拒。
-- 不确定运行环境里有什么，就调用 `manage_app` 的 `runtime_info`：它会告诉你部署区域、目标平台、镜像自带哪些解释器（绝对路径和版本）、PATH 上的裸名字实际指向谁、以及有哪些层可用。这些值在仓库里无从得知，不要猜——十二个修复 commit 就是猜出来的。标着未验证的条目就是没验证过，别当成事实用。
-- `build.command` 会随仓库提交，**在队友的机器上也会跑**（这个团队里就有 Windows），而且是用 `sh -c` 跑的。所以要写「指定目标」而不是「依赖本机」的命令：Python 装依赖用 `pip install --platform manylinux2014_x86_64 --implementation cp --python-version 3.10 --only-binary=:all: -t lib/`，这在哪台机器上跑结果都一样；`rm -rf`、`brew`、反斜杠路径则不行。
-- 构建在你这台机器上跑，函数在 linux/x86_64 上跑。构建期编译出来的东西必须是给那个目标编的——为本机编的原生依赖到了函数里加载不了。
-- 改完 **commit + push**；用户明确要求上线后，再通过控制面或 `manage_app deploy` 部署。
+本地预览：`pnpm dev`，打开 `http://localhost:9000`。
 
-## 怎么上线
-
-部署按 **Gitea 远端 commit** 构建，不是本机未保存的文件。改完代码后：
-
-1. **commit**（含 `pnpm-lock.yaml` 若有依赖变更）
-2. **push** 到 Gitea —— 工作树有未提交或未 push 的变更时 daemon **拒绝构建**
-3. 用户明确要求上线时，可以让用户在 TeamClu 应用列表里点「部署」，或调用
-   `manage_app` 的 `deploy` action；它会按当前登录用户的应用权限执行
-
-部署会发布到公网。除非用户明确要求上线，否则不要自行触发部署。
-
-本地：`DATABASE_URL=postgres://… pnpm dev`（线上连接串由平台注入，本地常跑不通
-DB，属正常）。
+涉及平台登录、角色权限或受保护接口时，使用内置 `app-auth` skill。
 
 ## 登录（`auth_mode`）
 
@@ -120,8 +102,7 @@ X-Teamclu-User-Email  邮箱
 X-Teamclu-Org-Id      所属组织（有的话）
 ```
 
-只有当访客**满足进入这个 app 的全部条件**时才会带上，所以在任何地方看到它们都只有一个
-含义：这个人被允许进来。代理在写入前会先删掉客户端自带的同名请求头，伪造不了。
+身份头表示网关验证过的访客身份，不表示拥有全部员工权限。只有当前请求路径配置了相应员工角色规则，才能依赖网关的员工准入检查。代理删除客户端自带的同名头再注入身份；未经网关的源站请求必须被拒绝。
 
 ### 一个必须知道的边界
 

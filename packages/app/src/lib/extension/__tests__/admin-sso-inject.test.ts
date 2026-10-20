@@ -46,7 +46,7 @@ beforeEach(() => {
 describe('adminSsoInjectionFor (SEC-5)', () => {
   it('never injects for a URL that was not opened through the explicit entry', () => {
     // A link in agent markdown or a teammate's message pointing at the admin
-    // host — even the login page itself — opens as a plain webview.
+    // host — even the login page itself — does not receive the session.
     expect(adminSsoInjectionFor('https://admin.example.test/sign-in')).toBeNull()
     expect(adminSsoInjectionFor('https://admin.example.test/anything?x=1')).toBeNull()
     expect(adminSsoInjectionFor('admin.example.test')).toBeNull()

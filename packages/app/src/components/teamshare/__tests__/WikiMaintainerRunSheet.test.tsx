@@ -25,6 +25,40 @@ vi.mock('react-i18next', () => ({
 }))
 
 describe('WikiMaintainerRunSheet', () => {
+  it('opens directly on a recovered cross-device publish summary', () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[]}
+        initialSelected={[]}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        initialSummary={{
+          runId: 'run-recovered',
+          sourceCount: 2,
+          added: 1,
+          updated: 0,
+          deleted: 0,
+          failed: 0,
+          visionPages: 0,
+          estimatedCost: null,
+          currency: 'CNY',
+          canPublish: true,
+          blockers: [],
+        }}
+        onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
+        onPrepare={vi.fn()}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('2 source files checked')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeEnabled()
+  })
+
   it('does not compile until the user clicks Check and compile', async () => {
     const prepare = vi.fn()
     render(
@@ -154,7 +188,13 @@ describe('WikiMaintainerRunSheet', () => {
     expect(screen.getByText('1 source failed')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm publish' }))
-    await waitFor(() => expect(publish).toHaveBeenCalledWith('run-1', false))
+    await waitFor(() =>
+      expect(publish).toHaveBeenCalledWith(
+        'team-1',
+        expect.objectContaining({ runId: 'run-1' }),
+        true,
+      ),
+    )
     expect(await screen.findByText('Published and synced')).toBeTruthy()
   })
 
@@ -191,7 +231,186 @@ describe('WikiMaintainerRunSheet', () => {
     expect(await screen.findByText('documents/features/bad.md: quality gate')).toBeTruthy()
     expect(screen.getByText(/Pages that passed are saved/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Confirm publish' }))
-    await waitFor(() => expect(publish).toHaveBeenCalledWith('run-partial', false))
+    await waitFor(() =>
+      expect(publish).toHaveBeenCalledWith(
+        'team-1',
+        expect.objectContaining({ runId: 'run-partial' }),
+        true,
+      ),
+    )
+  })
+
+  it('collapses a wall of identical compiler skips into one notice', async () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/seahelm-log/', label: 'seahelm-log' }]}
+        initialSelected={['documents/seahelm-log/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        onSaveSelection={vi.fn()}
+        onPrepare={vi.fn().mockResolvedValue({
+          runId: 'run-skip-wall',
+          sourceCount: 3,
+          added: 0,
+          updated: 0,
+          deleted: 0,
+          failed: 3,
+          visionPages: 0,
+          estimatedCost: 0,
+          currency: 'CNY',
+          canPublish: false,
+          blockers: [
+            'documents/seahelm-log/a.txt: The compiler did not write a Wiki page for this source.',
+            'documents/seahelm-log/b.txt: The compiler did not write a Wiki page for this source.',
+            'documents/features/09-apps-platform.md: The compiler did not write a Wiki page for this source.',
+          ],
+        })}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+    expect(
+      await screen.findByText(
+        'The compiler finished without writing Wiki pages for 3 sources. Try another compiler model, then compile again.',
+      ),
+    ).toBeTruthy()
+    expect(screen.getByText('documents/seahelm-log/a.txt')).toBeTruthy()
+    expect(screen.getByText('documents/features/09-apps-platform.md')).toBeTruthy()
+    expect(
+      screen.queryByText(/This source was skipped this run and will be compiled again next time/),
+    ).toBeNull()
+    expect(
+      screen.getByText(
+        'Review the result, then confirm publish. Nothing is written to the knowledge base until you confirm.',
+      ),
+    ).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeDisabled()
+  })
+
+  it('blocks publish when a deleted source is still cited', async () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
+        initialSelected={['documents/handbook/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        onSaveSelection={vi.fn()}
+        onPrepare={vi.fn().mockResolvedValue({
+          runId: 'run-retract-failed',
+          sourceCount: 1,
+          retractCount: 0,
+          added: 1,
+          updated: 0,
+          deleted: 0,
+          failed: 1,
+          visionPages: 0,
+          estimatedCost: 0,
+          currency: 'CNY',
+          canPublish: false,
+          blockers: [
+            'A deleted source is still cited. Compile again before publishing.',
+            'documents/handbook/gone.md: This source was skipped this run and will be compiled again next time.',
+          ],
+        })}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+    expect(
+      await screen.findByText(
+        'A deleted source is still cited. Compile again before publishing.',
+      ),
+    ).toBeTruthy()
+    expect(screen.queryByText(/deleted sources retracted/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeDisabled()
+  })
+
+  it('reports restricted folders as counts and blocks publish while restricted content remains', async () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
+        initialSelected={['documents/handbook/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        onSaveSelection={vi.fn()}
+        onPrepare={vi.fn().mockResolvedValue({
+          runId: 'run-restricted',
+          sourceCount: 1,
+          retractCount: 0,
+          restrictedPrefixes: ['documents/handbook/secret/'],
+          restrictedFolderCount: 1,
+          restrictedRetractCount: 2,
+          added: 0,
+          updated: 1,
+          deleted: 0,
+          failed: 1,
+          visionPages: 0,
+          estimatedCost: 0,
+          currency: 'CNY',
+          canPublish: false,
+          blockers: ['Restricted content is still in the Wiki. Compile again before publishing.'],
+        })}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+    expect(await screen.findByText('1 restricted folders were not compiled.')).toBeTruthy()
+    expect(screen.getByText('Removed content from 2 restricted sources.')).toBeTruthy()
+    expect(
+      screen.getByText('Restricted content is still in the Wiki. Compile again before publishing.'),
+    ).toBeTruthy()
+    expect(screen.queryByText(/secret/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeDisabled()
+  })
+
+  it('shows the compiler model error instead of a skip sentence', async () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/seahelm-log/', label: 'seahelm-log' }]}
+        initialSelected={['documents/seahelm-log/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        onSaveSelection={vi.fn()}
+        onPrepare={vi.fn().mockResolvedValue({
+          runId: 'run-model-error',
+          sourceCount: 1,
+          added: 0,
+          updated: 0,
+          deleted: 0,
+          failed: 1,
+          visionPages: 0,
+          estimatedCost: 0,
+          currency: 'CNY',
+          canPublish: false,
+          blockers: [
+            'documents/seahelm-log/a.txt: Compiler model failed: 429 Too Many Requests',
+          ],
+        })}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+    expect(
+      await screen.findByText(
+        'documents/seahelm-log/a.txt: Compiler model failed: 429 Too Many Requests',
+      ),
+    ).toBeTruthy()
   })
 
   it('blocks publishing when quality checks fail', async () => {
@@ -235,46 +454,68 @@ describe('WikiMaintainerRunSheet', () => {
     expect(cancel).not.toHaveBeenCalled()
   })
 
-  it('requires explicit cost confirmation before publish', async () => {
+  it('asks for the vision cost before compiling', async () => {
     const publish = vi.fn().mockResolvedValue({ syncStatus: 'synced' })
+    const prepare = vi
+      .fn()
+      .mockResolvedValueOnce({
+        runId: 'run-quote',
+        sourceCount: 1,
+        added: 0,
+        updated: 0,
+        deleted: 0,
+        failed: 0,
+        visionPages: 1,
+        estimatedCost: 0.12,
+        currency: 'CNY',
+        canPublish: false,
+        blockers: [],
+        needsVisionAcceptance: true,
+      })
+      .mockResolvedValueOnce({
+        runId: 'run-done',
+        sourceCount: 1,
+        added: 1,
+        updated: 0,
+        deleted: 0,
+        failed: 0,
+        visionPages: 1,
+        estimatedCost: 0.12,
+        currency: 'CNY',
+        canPublish: true,
+        blockers: [],
+      })
     render(
       <WikiMaintainerRunSheet
         open
         teamId="team-1"
         sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
-        initialSelected={[]}
+        initialSelected={['documents/handbook/']}
         compilerModels={MODELS}
         initialCompilerModel="glm-4.6"
         onSaveSelection={vi.fn()}
         onSaveCompilerModel={vi.fn()}
-        onPrepare={vi.fn().mockResolvedValue({
-          runId: 'run-cost',
-          sourceCount: 1,
-          added: 1,
-          updated: 0,
-          deleted: 0,
-          failed: 0,
-          visionPages: 2,
-          estimatedCost: 0.24,
-          currency: 'CNY',
-          canPublish: true,
-          blockers: [],
-        })}
+        onPrepare={prepare}
         onPublish={publish}
         onClose={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('checkbox', { name: 'handbook' }))
     fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
-
-    const publishButton = await screen.findByRole('button', { name: 'Confirm publish' })
-    expect(publishButton).toBeDisabled()
-    fireEvent.click(
-      screen.getByRole('checkbox', { name: 'Accept estimated vision cost' }),
+    expect(
+      await screen.findByText(
+        '1 pages need visual recognition, estimated 0.12 CNY. Agree to send them to the current model. If it cannot read images, those files fail and the rest still compile.',
+      ),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Confirm publish' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Agree and compile' }))
+    expect(await screen.findByRole('button', { name: 'Confirm publish' })).toBeEnabled()
+    expect(prepare).toHaveBeenLastCalledWith(
+      'team-1',
+      ['documents/handbook/'],
+      'glm-4.6',
+      'accept',
     )
-    expect(publishButton).toBeEnabled()
-    fireEvent.click(publishButton)
-    await waitFor(() => expect(publish).toHaveBeenCalledWith('run-cost', true))
+    expect(screen.queryByRole('checkbox', { name: 'Accept estimated vision cost' })).toBeNull()
   })
 
   it('compiles with the model the user picked', async () => {
@@ -336,5 +577,67 @@ describe('WikiMaintainerRunSheet', () => {
     )
     expect(screen.getByRole('button', { name: 'Check and compile' })).toBeDisabled()
     expect(prepare).not.toHaveBeenCalled()
+  })
+
+  it('waits for an explicit model when the checkpoint compiler is missing', () => {
+    const prepare = vi.fn()
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
+        initialSelected={['documents/handbook/']}
+        compilerModels={MODELS}
+        initialCompilerModel=""
+        checkpointModel="missing-model"
+        onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
+        onPrepare={prepare}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/does not have the model/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Check and compile' })).toBeDisabled()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Compiler model' }), {
+      target: { value: 'glm-4.6' },
+    })
+    expect(screen.getByRole('button', { name: 'Check and compile' })).toBeEnabled()
+    expect(prepare).not.toHaveBeenCalled()
+  })
+
+  it('keeps a finished result publishable when the compiler model is missing', () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[]}
+        initialSelected={[]}
+        compilerModels={MODELS}
+        initialCompilerModel=""
+        checkpointModel="missing-model"
+        initialSummary={{
+          runId: 'run-recovered',
+          sourceCount: 1,
+          added: 1,
+          updated: 0,
+          deleted: 0,
+          failed: 0,
+          visionPages: 0,
+          estimatedCost: null,
+          currency: 'CNY',
+          canPublish: true,
+          blockers: [],
+        }}
+        onSaveSelection={vi.fn()}
+        onPrepare={vi.fn()}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText(/does not have the model/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeEnabled()
   })
 })

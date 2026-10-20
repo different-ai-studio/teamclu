@@ -12,6 +12,7 @@ import type { PageContext } from "@/lib/embed/embed-page-context";
 import { openOrDownloadRemoteAttachment } from "@/lib/attachments/download-remote-attachment";
 import { getCachedAttachmentPath, normalizeAttachmentUrlKey } from "@/lib/attachments/attachment-download-index";
 import { isTauri } from "@/lib/utils";
+import { linkifyHttpUrls } from "@/lib/messages/linkify-http";
 
 /** Max pixel height before the message is collapsed */
 const COLLAPSED_HEIGHT = 200;
@@ -19,6 +20,32 @@ const COLLAPSED_HEIGHT = 200;
 /** Compact square thumbnail for images embedded in user message bubbles */
 const USER_MESSAGE_IMAGE_THUMB_CLASS =
   "size-12 shrink-0 rounded object-cover border border-white/20";
+
+const CHAT_LINK_CLASS =
+  "rounded-[2px] text-foreground underline decoration-foreground/30 underline-offset-2 hover:bg-foreground/[0.06] dark:decoration-white/30 dark:hover:bg-white/[0.08]";
+
+function LinkifiedText({ text }: { text: string }) {
+  const segments = linkifyHttpUrls(text);
+  return (
+    <>
+      {segments.map((segment, index) =>
+        segment.type === "link" ? (
+          <a
+            key={index}
+            href={segment.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={CHAT_LINK_CLASS}
+          >
+            {segment.text}
+          </a>
+        ) : (
+          <React.Fragment key={index}>{segment.text}</React.Fragment>
+        ),
+      )}
+    </>
+  );
+}
 
 function splitMentionLabels(body: string): string[] {
   return body.split(",").map((p) => p.trim()).filter(Boolean);
@@ -558,7 +585,11 @@ export function UserMessageWithMentions({
 
       const { part, index } = segment;
       if (part.type === "text") {
-        return <span key={index}>{part.content}</span>;
+        return (
+          <span key={index}>
+            <LinkifiedText text={part.content} />
+          </span>
+        );
       }
 
       if (part.type === "actorMention") {
@@ -689,7 +720,9 @@ export function UserMessageWithMentions({
 
   // Build the inner content - render parts in order
   const innerContent = isSimpleText ? (
-    <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{displayContent}</div>
+    <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+      <LinkifiedText text={displayContent} />
+    </div>
   ) : (
     <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
       {hasAgentHeader ? <AgentMentionHeader names={agentMentionNames} /> : null}

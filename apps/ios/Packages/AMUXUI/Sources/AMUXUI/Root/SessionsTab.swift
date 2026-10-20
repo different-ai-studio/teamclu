@@ -19,6 +19,9 @@ public struct SessionsTab: View {
     /// Broker-backed agent presence for the dots drawn further down.
     let agentPresenceStore: AgentPresenceStore?
     let shortcutsStore: ShortcutsStore?
+    /// nil when the deployment has the apps feature off, or no Cloud API
+    /// config was available to build a repository from.
+    let teamAppsStore: TeamAppsStore?
     let messagesRepository: (any MessagesRepository)?
     let workspacesRepository: (any WorkspaceRepository)?
     let sessionsRepository: (any SessionRepository)?
@@ -40,6 +43,7 @@ public struct SessionsTab: View {
 
     @State private var showShortcuts = false
     @State private var showSettings = false
+    @State private var showApps = false
     @State private var showNewSession = false
     @State private var showInvite = false
     @Binding var navigationPath: [String]
@@ -62,6 +66,7 @@ public struct SessionsTab: View {
                 actorStore: ActorStore? = nil,
                 agentPresenceStore: AgentPresenceStore? = nil,
                 shortcutsStore: ShortcutsStore? = nil,
+                teamAppsStore: TeamAppsStore? = nil,
                 messagesRepository: (any MessagesRepository)? = nil,
                 workspacesRepository: (any WorkspaceRepository)? = nil,
                 sessionsRepository: (any SessionRepository)? = nil,
@@ -86,6 +91,7 @@ public struct SessionsTab: View {
         self.actorStore = actorStore
         self.agentPresenceStore = agentPresenceStore
         self.shortcutsStore = shortcutsStore
+        self.teamAppsStore = teamAppsStore
         self.messagesRepository = messagesRepository
         self.workspacesRepository = workspacesRepository
         self.sessionsRepository = sessionsRepository
@@ -109,8 +115,6 @@ public struct SessionsTab: View {
                     isEditing: $isEditing,
                     selectedIDs: $selectedIDs,
                     teamcluService: teamcluService,
-                    pairing: pairing,
-                    mqtt: mqtt,
                     actorId: "ios-\(pairing.authToken.prefix(6))",
                     currentActorID: currentActorID,
                     noAccessibleAgent: connectedAgentsStore?.agents.isEmpty == true,
@@ -121,6 +125,13 @@ public struct SessionsTab: View {
                 )
                 .navigationTitle("Sessions")
                 .navigationBarTitleDisplayMode(.large)
+                .onChange(of: viewModel.sessions.isEmpty, initial: true) { _, isEmpty in
+                    // M4 ends when the list first shows rows. No-op once
+                    // ended, and on every later launch-less change.
+                    guard !isEmpty else { return }
+                    ChatMetrics.shared.set(.coldStart, "sessions", Double(viewModel.sessions.count))
+                    ChatMetrics.shared.end(.coldStart)
+                }
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button { showShortcuts = true } label: {
@@ -175,6 +186,19 @@ public struct SessionsTab: View {
                                  teamRepository: teamRepository,
                                  actorRepository: actorRepository)
                 }
+                .sheet(isPresented: $showApps) {
+                    if let teamAppsStore {
+                        TeamAppsView(store: teamAppsStore) { sessionID in
+                            // Close the sheet first, then push: presenting and
+                            // pushing in the same transaction leaves the stack
+                            // animating behind a sheet that is still up.
+                            showApps = false
+                            DispatchQueue.main.async {
+                                navigationPath.append("session:\(sessionID)")
+                            }
+                        }
+                    }
+                }
                 .sheet(isPresented: $showNewSession) {
                     NewSessionSheet(mqtt: mqtt,
                                    peerId: "ios-\(pairing.authToken.prefix(6))",
@@ -187,6 +211,7 @@ public struct SessionsTab: View {
                                    agentPresenceStore: agentPresenceStore,
                                    workspacesRepository: workspacesRepository,
                                    sessionsRepository: sessionsRepository,
+                                   teamAppsStore: teamAppsStore,
                                    viewModel: viewModel) { agentId in
                         navigationPath = [agentId]
                         // Pull the freshly-created Supabase rows (sessions +
@@ -199,7 +224,7 @@ public struct SessionsTab: View {
                 }
                 .sheet(isPresented: $showInvite) {
                     if let actorStore {
-                        MemberInviteSheet(store: actorStore)
+                        MemberInviteSheet(store: actorStore, canManage: canManageTeam)
                     }
                 }
                 .task {
@@ -223,7 +248,9 @@ public struct SessionsTab: View {
                                 store: shortcutsStore,
                                 currentActorID: currentActorID,
                                 activeTeam: activeTeam,
-                                onOpenSettings: { showSettings = true })
+                                onOpenSettings: { showSettings = true },
+                                appsStore: teamAppsStore,
+                                onOpenApps: { showApps = true })
             }
         }
         // Hoisted from the destination view: when the modifier lives on
@@ -238,6 +265,13 @@ public struct SessionsTab: View {
         // ~86% width + full height; the tab bar peeking out underneath
         // competes with the drawer's right-side rounded corner and
         // adds nothing the user can act on in that state.
+        .onChange(of: navigationPath) { old, new in
+            // M1 starts at the push itself — list tap, push notification
+            // and new session all land here — so it includes building the
+            // destination, not just what the view model does.
+            guard new.count > old.count, let pushed = new.last, pushed.hasPrefix("session:") else { return }
+            ChatMetrics.shared.begin(.openSession, key: String(pushed.dropFirst("session:".count)), restart: true)
+        }
         .toolbarVisibility(
             (navigationPath.isEmpty && !showShortcuts) ? .visible : .hidden,
             for: .tabBar
@@ -255,6 +289,12 @@ public struct SessionsTab: View {
                 ConnectionBannerOverlay(mqtt: mqtt, onReconnect: onReconnect)
             }
         }
+    }
+
+    private var canManageTeam: Bool {
+        guard let id = currentActorID else { return false }
+        guard let actor = actorStore?.actors.first(where: { $0.id == id }) else { return false }
+        return actor.isOwner || actor.isAdmin
     }
 
 }

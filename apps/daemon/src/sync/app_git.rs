@@ -5,6 +5,7 @@
 //! permissions and passed via `GIT_SSH_COMMAND`.
 
 use crate::process_util::CommandNoWindow;
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -746,6 +747,112 @@ pub fn has_uncommitted_changes(dir: &Path) -> anyhow::Result<bool> {
     let out = run_git(dir, None, &["status", "--porcelain"])?;
     ensure_success(&out, "git status")?;
     Ok(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
+}
+
+/// The exact commit currently selected by origin's default HEAD.
+pub fn remote_head_sha(dir: &Path, ssh: Option<&SshEnv>) -> anyhow::Result<String> {
+    let out = run_git(dir, ssh, &["ls-remote", "origin", "HEAD"])?;
+    ensure_success(&out, "git ls-remote origin HEAD")?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let sha = text
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("origin has no HEAD"))?;
+    validate_commit_sha(sha)
+}
+
+/// A Gitea deploy never commits or pushes the agent's pending edits. The
+/// preflight described one clean remote revision; this gate holds that promise.
+pub fn ensure_exact_remote_head(
+    dir: &Path,
+    expected: &str,
+    ssh: Option<&SshEnv>,
+) -> anyhow::Result<()> {
+    let expected = validate_commit_sha(expected)?;
+    if has_uncommitted_changes(dir)? {
+        anyhow::bail!("{ERR_DIRTY}");
+    }
+    if head_sha(dir)? != expected {
+        anyhow::bail!("checkout HEAD differs from preflight revision");
+    }
+    if remote_head_sha(dir, ssh)? != expected {
+        anyhow::bail!("origin HEAD changed after preflight");
+    }
+    Ok(())
+}
+
+/// Digest the source files git would stage, including untracked files. A build
+/// can create its declared output and local dependency trees even when the app
+/// has not added them to .gitignore; those are not source revisions.
+pub fn checkout_content_digest(dir: &Path) -> anyhow::Result<String> {
+    let declaration = crate::sync::app_build::read_app_declaration(dir).ok();
+    let output = declaration.as_ref().map(|declaration| {
+        declaration
+            .build
+            .output
+            .replace('\\', "/")
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect::<Vec<_>>()
+            .join("/")
+    });
+    let kind = declaration
+        .as_ref()
+        .map(|declaration| declaration.build.kind.as_str());
+    let tracked = run_git(dir, None, &["ls-files", "--cached", "-z"])?;
+    ensure_success(&tracked, "git ls-files")?;
+    let others = run_git(
+        dir,
+        None,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
+    ensure_success(&others, "git ls-files")?;
+    let mut paths: Vec<(&[u8], bool)> = tracked
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|path| (path, true))
+        .chain(
+            others
+                .stdout
+                .split(|b| *b == 0)
+                .filter(|p| !p.is_empty())
+                .map(|path| (path, false)),
+        )
+        .collect();
+    paths.sort_by(|left, right| left.0.cmp(right.0));
+    let mut hash = Sha256::new();
+    for (raw, tracked) in paths {
+        let path = std::str::from_utf8(raw)?;
+        let generated_output = output.as_deref().is_some_and(|output| {
+            !output.is_empty()
+                && output != "."
+                && (path == output || path.starts_with(&format!("{output}/")))
+        });
+        let dependency_output = path.split('/').next().is_some_and(|root| match kind {
+            Some("node") => root == "node_modules",
+            Some("python") => [".venv", "venv", "__pycache__", ".pytest_cache"].contains(&root),
+            Some("java") => [".gradle", "target", "build"].contains(&root),
+            _ => false,
+        });
+        if !tracked && (generated_output || dependency_output) {
+            continue;
+        }
+        let full = dir.join(path);
+        let bytes = if full.is_symlink() {
+            std::fs::read_link(&full)?
+                .to_string_lossy()
+                .as_bytes()
+                .to_vec()
+        } else {
+            std::fs::read(&full)?
+        };
+        hash.update((raw.len() as u64).to_be_bytes());
+        hash.update(raw);
+        hash.update((bytes.len() as u64).to_be_bytes());
+        hash.update(bytes);
+    }
+    Ok(format!("sha256:{:x}", hash.finalize()))
 }
 
 /// Local branch is ahead of its upstream (unpushed commits).
@@ -1727,6 +1834,119 @@ mod tests {
         assert_ne!(published, seeded, "HEAD must have moved");
         assert_eq!(published, head_sha(&work).unwrap());
         ensure_clean_and_pushed(&work).expect("published work is clean and pushed");
+    }
+
+    #[test]
+    fn deploy_revision_rejects_dirty_checkout_and_remote_head_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(bare) = local_origin(tmp.path()) else {
+            return;
+        };
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("README.md"), b"seed").unwrap();
+        init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
+        set_remote_test(&work, &bare.to_string_lossy()).unwrap();
+        add_all(&work).unwrap();
+        commit_if_needed(&work, "seed").unwrap();
+        push_origin_head(&work, None).unwrap();
+        let sha = head_sha(&work).unwrap();
+        assert!(ensure_exact_remote_head(&work, &sha, None).is_ok());
+        std::fs::write(work.join("README.md"), b"dirty").unwrap();
+        assert!(ensure_exact_remote_head(&work, &sha, None).is_err());
+        std::fs::write(work.join("README.md"), b"seed").unwrap();
+        assert!(ensure_exact_remote_head(&work, &"b".repeat(40), None).is_err());
+
+        // A second checkout can advance origin while the first builds.
+        let other = tmp.path().join("other");
+        let cloned = run_git(
+            tmp.path(),
+            None,
+            &["clone", &bare.to_string_lossy(), &other.to_string_lossy()],
+        )
+        .unwrap();
+        ensure_success(&cloned, "git clone").unwrap();
+        ensure_test_identity(&other);
+        std::fs::write(other.join("README.md"), b"new remote commit").unwrap();
+        add_all(&other).unwrap();
+        commit_if_needed(&other, "advance").unwrap();
+        push_origin_head(&other, None).unwrap();
+        assert!(ensure_exact_remote_head(&work, &sha, None).is_err());
+    }
+
+    #[test]
+    fn imported_content_digest_covers_untracked_source_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        init_if_needed(work).unwrap();
+        std::fs::write(work.join("a.txt"), b"one").unwrap();
+        let first = checkout_content_digest(work).unwrap();
+        assert!(first.starts_with("sha256:"));
+        std::fs::write(work.join("a.txt"), b"two").unwrap();
+        assert_ne!(checkout_content_digest(work).unwrap(), first);
+    }
+
+    #[test]
+    fn imported_digest_excludes_declared_output_but_detects_source_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        init_if_needed(work).unwrap();
+        std::fs::write(work.join("teamclu.app.json"), r#"{"build":{"kind":"node","output":"dist"},"start":{"fcRuntime":"custom.debian12","command":["node"],"args":["server.mjs"],"layers":[],"port":9000}}"#).unwrap();
+        std::fs::write(work.join("server.mjs"), "source").unwrap();
+        let first = checkout_content_digest(work).unwrap();
+        std::fs::create_dir(work.join("dist")).unwrap();
+        std::fs::write(work.join("dist/server.mjs"), "built").unwrap();
+        std::fs::create_dir(work.join("node_modules")).unwrap();
+        std::fs::write(work.join("node_modules/dependency.js"), "installed").unwrap();
+        assert_eq!(checkout_content_digest(work).unwrap(), first);
+        std::fs::write(work.join("server.mjs"), "changed while building").unwrap();
+        assert_ne!(checkout_content_digest(work).unwrap(), first);
+    }
+
+    #[test]
+    fn imported_digest_keeps_tracked_files_even_under_declared_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        init_if_needed(work).unwrap();
+        std::fs::write(work.join("teamclu.app.json"), r#"{"build":{"kind":"node","output":"dist"},"start":{"fcRuntime":"custom.debian12","command":["node"],"args":["server.mjs"],"layers":[],"port":9000}}"#).unwrap();
+        std::fs::create_dir(work.join("dist")).unwrap();
+        std::fs::write(work.join("dist/tracked.txt"), "source").unwrap();
+        let staged = run_git(work, None, &["add", "dist/tracked.txt"]).unwrap();
+        ensure_success(&staged, "git add").unwrap();
+        let first = checkout_content_digest(work).unwrap();
+        std::fs::write(work.join("dist/tracked.txt"), "changed").unwrap();
+        assert_ne!(checkout_content_digest(work).unwrap(), first);
+    }
+
+    #[test]
+    fn imported_digest_normalizes_declared_output_components() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        init_if_needed(work).unwrap();
+        std::fs::write(work.join("teamclu.app.json"), r#"{"build":{"kind":"node","output":"foo/./dist"},"start":{"fcRuntime":"custom.debian12","command":["node"],"args":["server.mjs"],"layers":[],"port":9000}}"#).unwrap();
+        std::fs::write(work.join("server.mjs"), "source").unwrap();
+        let revision = checkout_content_digest(work).unwrap();
+        std::fs::create_dir_all(work.join("foo/dist")).unwrap();
+        std::fs::write(work.join("foo/dist/server.mjs"), "built").unwrap();
+        assert_eq!(checkout_content_digest(work).unwrap(), revision);
+    }
+
+    #[test]
+    fn imported_digest_includes_untracked_source_under_nested_build_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        init_if_needed(work).unwrap();
+        std::fs::write(work.join("teamclu.app.json"), r#"{"build":{"kind":"java","output":"target"},"start":{"fcRuntime":"custom.debian12","command":["java"],"args":["Feature"],"layers":[],"port":9000}}"#).unwrap();
+        std::fs::create_dir_all(work.join("src/build")).unwrap();
+        std::fs::write(work.join("src/build/Feature.java"), "class Feature {}").unwrap();
+        let revision = checkout_content_digest(work).unwrap();
+        std::fs::write(
+            work.join("src/build/Feature.java"),
+            "class Feature { int changed; }",
+        )
+        .unwrap();
+        assert_ne!(checkout_content_digest(work).unwrap(), revision);
     }
 
     #[test]

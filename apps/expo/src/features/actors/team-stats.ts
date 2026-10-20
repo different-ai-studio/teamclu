@@ -1,18 +1,30 @@
-import type { StatsPeriod } from "../ideas/idea-stats";
 import type { Actor } from "./actor-types";
+import type { LeaderboardEntry, LeaderboardPeriod } from "./leaderboard-api";
 
 /**
- * Team statistics, ported 1:1 from the iOS `TeamStatsSheet`.
- *
- * The numbers are placeholders, exactly as they are on iOS: token counts are
- * derived from a hash of the actor id, and the session / skill totals are
- * per-period constants. They are stable per actor so the sheet doesn't churn
- * between renders. Real per-actor telemetry does not exist yet; when it lands,
- * both clients should switch together.
- *
- * Everything here is kept byte-for-byte equivalent to the Swift source so the
- * two apps show the same figures for the same team.
+ * Team statistics, ported from the iOS `TeamStatsSheet`: every figure is
+ * aggregated from `GET /v1/teams/:id/leaderboard` — the same rows the desktop
+ * leaderboard reads. Nothing is fabricated: a team with no telemetry shows
+ * zeros and empty sections.
  */
+
+/** The sheet's period picker. The server has no lifetime window. */
+export type TeamStatsPeriod = "today" | "week" | "month";
+
+export const TEAM_STATS_PERIODS: ReadonlyArray<{
+  value: TeamStatsPeriod;
+  /** i18n key — translated where it is rendered. */
+  labelKey: string;
+}> = [
+  { value: "today", labelKey: "Today" },
+  { value: "week", labelKey: "Week" },
+  { value: "month", labelKey: "Month" },
+];
+
+/** iOS `Period.apiValue`: the picker says Today, the wire says `day`. */
+export function leaderboardPeriodFor(period: TeamStatsPeriod): LeaderboardPeriod {
+  return period === "today" ? "day" : period;
+}
 
 export type ActorTokenStat = {
   actorId: string;
@@ -35,11 +47,12 @@ export type TeamStats = {
   skills: SkillStat[];
 };
 
+/** How many skills the usage section lists (iOS `topSkills.prefix(5)`). */
+export const TOP_SKILL_LIMIT = 5;
+
 /**
  * Swift's `actorId.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }`, then
- * `abs`. Iterating with `for…of` yields code points, not UTF-16 units, which is
- * what `unicodeScalars` gives — the two only differ outside the BMP, but actor
- * ids are uuids so this is exact either way.
+ * `abs`. Used to pick a stable avatar colour per actor.
  */
 export function actorIdHash(actorId: string): number {
   let sum = 0;
@@ -47,80 +60,59 @@ export function actorIdHash(actorId: string): number {
   return Math.abs(sum);
 }
 
-/** Scales the per-period constants; `week` is the baseline of 7. */
-function periodMultiplier(period: StatsPeriod): number {
-  switch (period) {
-    case "today":
-      return 1;
-    case "week":
-      return 7;
-    case "month":
-      return 30;
-    case "all":
-      return 90;
-  }
-}
-
-const TOKEN_BASES = [8_200, 14_400, 22_100, 31_500, 47_800, 68_000, 112_300];
-
-const SESSION_TOTALS: Record<StatsPeriod, number> = {
-  today: 6,
-  week: 42,
-  month: 178,
-  all: 534,
-};
-
-const SKILL_TOTALS: Record<StatsPeriod, number> = {
-  today: 38,
-  week: 386,
-  month: 1_642,
-  all: 4_920,
-};
-
-const SKILL_BASES: ReadonlyArray<readonly [string, number]> = [
-  ["Read", 142],
-  ["Edit", 88],
-  ["Bash", 54],
-  ["Write", 32],
-  ["Grep", 24],
-];
-
+/**
+ * Aggregates leaderboard rows into the sheet's figures.
+ *
+ * Names come from the team directory when the actor is still in it, then the
+ * row's own `displayName`, then the id prefix — the leaderboard keeps rows for
+ * actors that have since left. Swift `Int(tokensUsed)` truncates, so this does.
+ */
 export function buildTeamStats(args: {
+  entries: ReadonlyArray<LeaderboardEntry>;
   actors: ReadonlyArray<Actor>;
-  period: StatsPeriod;
 }): TeamStats {
-  const multiplier = periodMultiplier(args.period);
+  const actorsById = new Map<string, Actor>();
+  for (const actor of args.actors) {
+    if (!actorsById.has(actor.actorId)) actorsById.set(actor.actorId, actor);
+  }
 
-  const actors = args.actors
-    .filter((actor) => actor.actorType === "member" || actor.actorType === "agent")
-    .map<ActorTokenStat>((actor) => {
-      const base = TOKEN_BASES[actorIdHash(actor.actorId) % TOKEN_BASES.length];
+  const actors = args.entries
+    .map<ActorTokenStat>((entry) => {
+      const known = actorsById.get(entry.actorId);
       return {
-        actorId: actor.actorId,
-        name: actor.displayName,
-        isAgent: actor.actorType === "agent",
-        agentType: actor.defaultAgentType,
-        // Swift integer division truncates.
-        tokens: Math.trunc((base * multiplier) / 7),
+        actorId: entry.actorId,
+        name: known?.displayName ?? entry.displayName ?? entry.actorId.slice(0, 8),
+        isAgent: known?.actorType === "agent",
+        agentType: known?.defaultAgentType ?? null,
+        tokens: Math.trunc(entry.tokensUsed),
       };
     })
     .sort((a, b) => b.tokens - a.tokens);
 
-  const skills = SKILL_BASES.map<SkillStat>(([name, base]) => ({
-    name,
-    count: Math.trunc((base * multiplier) / 7),
-  }));
+  const merged = new Map<string, number>();
+  for (const entry of args.entries) {
+    for (const [skill, count] of Object.entries(entry.skillUsage)) {
+      merged.set(skill, (merged.get(skill) ?? 0) + count);
+    }
+  }
+  const allSkills = [...merged.entries()].map<SkillStat>(([name, count]) => ({ name, count }));
+  const skills = [...allSkills]
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, TOP_SKILL_LIMIT);
 
   return {
     totalTokens: actors.reduce((sum, actor) => sum + actor.tokens, 0),
-    totalSessions: SESSION_TOTALS[args.period],
-    totalSkills: SKILL_TOTALS[args.period],
+    totalSessions: args.entries.reduce((sum, entry) => sum + entry.sessionCount, 0),
+    totalSkills: allSkills.reduce((sum, skill) => sum + skill.count, 0),
     actors,
     skills,
   };
 }
 
-/** `112300 → "112.3K"`, `1_200_000 → "1.2M"`. Mirrors iOS `formattedTokens`. */
+/**
+ * `112300 → "112.3K"`, `1_200_000 → "1.2M"`. Mirrors iOS `formattedTokenCount`,
+ * including its `999_999 → "1000.0K"` edge.
+ */
 export function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;

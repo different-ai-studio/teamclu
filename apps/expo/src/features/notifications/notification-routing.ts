@@ -11,10 +11,25 @@ export function sessionIdFromNotificationData(data: unknown): string | null {
   return null;
 }
 
+export function messageIdFromNotificationData(data: unknown): string | null {
+  if (!isRecord(data)) return null;
+  const direct = normalizeSessionId(data.message_id) ?? normalizeSessionId(data.messageId);
+  if (direct) return direct;
+  if (isRecord(data.data)) return messageIdFromNotificationData(data.data);
+  return null;
+}
+
+/**
+ * The session the push is about, plus the message in it: the session screen
+ * scrolls to and highlights that message (iOS #1709 `focusMessageID`).
+ */
 export function notificationResponseToSessionHref(response: unknown): string | null {
   const data = notificationResponseData(response);
   const sessionId = sessionIdFromNotificationData(data);
-  return sessionId ? `/(app)/sessions/${encodeURIComponent(sessionId)}` : null;
+  if (!sessionId) return null;
+  const href = `/(app)/sessions/${encodeURIComponent(sessionId)}`;
+  const messageId = messageIdFromNotificationData(data);
+  return messageId ? `${href}?focusMessageId=${encodeURIComponent(messageId)}` : href;
 }
 
 export function notificationResponseDedupeKey(response: unknown): string | null {

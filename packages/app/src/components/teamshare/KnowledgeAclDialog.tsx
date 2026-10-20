@@ -81,7 +81,7 @@ export function KnowledgeAclDialog({
   open,
   onOpenChange,
 }: {
-  /** Always `knowledge/…/`, with the trailing slash. */
+  /** `knowledge/…/`, or a nested `documents/…/` that already has a rule; trailing slash included. */
   prefix: string
   open: boolean
   onOpenChange: (open: boolean) => void

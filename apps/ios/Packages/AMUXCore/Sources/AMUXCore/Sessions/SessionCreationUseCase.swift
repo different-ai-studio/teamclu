@@ -11,6 +11,11 @@ public struct SessionCreationInput: Sendable {
     public let teamID: String
     public let currentActorID: String
     public let ideaID: String?
+    /// The app the session belongs to. When set, every agent's spawn must
+    /// already point at that agent's checkout of the app (see
+    /// `appCheckoutWorkspace`) — the seats are bound to those workspaces at
+    /// create, since `app_id` alone never moves an agent into the app's code.
+    public let appID: String?
     public let title: String
     public let summary: String
     public let createdAt: Date
@@ -25,8 +30,10 @@ public struct SessionCreationInput: Sendable {
     /// only sessions (which take the simpler local-only path elsewhere
     /// and don't reach this use case).
     public let agentSpawns: [AgentSpawn]
-    /// Mention list stamped onto the first message. Today: auto-mention
-    /// when there's exactly one agent, empty otherwise.
+    /// Mention list stamped onto the first message. Build it with
+    /// `autoMentionAgentIDs(agentSpawns:accessibleAgentIDs:)` so every
+    /// entry point applies the same rule. Also seeds the session's lit
+    /// agent chips, so follow-up sends keep engaging the same agents.
     public let mentionAgentActorIDs: [String]
 
     public struct AgentSpawn: Sendable {
@@ -47,7 +54,8 @@ public struct SessionCreationInput: Sendable {
     }
 
     public init(sessionID: String, teamID: String, currentActorID: String,
-                ideaID: String?, title: String, summary: String, createdAt: Date,
+                ideaID: String?, appID: String? = nil,
+                title: String, summary: String, createdAt: Date,
                 participants: [SessionParticipantInput],
                 participantInfos: [Teamclu_Participant],
                 agentSpawns: [AgentSpawn],
@@ -56,6 +64,7 @@ public struct SessionCreationInput: Sendable {
         self.teamID = teamID
         self.currentActorID = currentActorID
         self.ideaID = ideaID
+        self.appID = appID
         self.title = title
         self.summary = summary
         self.createdAt = createdAt
@@ -63,6 +72,83 @@ public struct SessionCreationInput: Sendable {
         self.participantInfos = participantInfos
         self.agentSpawns = agentSpawns
         self.mentionAgentActorIDs = mentionAgentActorIDs
+    }
+
+    /// Who the first message mentions. Exactly one agent that the viewer can
+    /// reach (`accessibleAgentIDs` — the ConnectedAgentsStore roster) is
+    /// mentioned automatically; several agents, or one the viewer has no
+    /// grant on, mention nobody and the user picks with @ in the session.
+    ///
+    /// Without a mention the daemon silent-queues the message, so a spawned
+    /// runtime would show "starting" and then never reply.
+    public static func autoMentionAgentIDs(agentSpawns: [AgentSpawn],
+                                           accessibleAgentIDs: Set<String>) -> [String] {
+        guard agentSpawns.count == 1, let only = agentSpawns.first,
+              accessibleAgentIDs.contains(only.actorID)
+        else { return [] }
+        return [only.actorID]
+    }
+
+    /// First-message body: `@<displayName> ` prepended for each mentioned
+    /// agent not already named inline — the same shape the in-session
+    /// composer sends (`SessionDetailViewModel.composeBodyWithMentions`), so
+    /// the chat history shows who the message was addressed to.
+    public var firstMessageContent: String {
+        var body = summary
+        for agentID in mentionAgentActorIDs {
+            guard let name = participantInfos.first(where: { $0.actorID == agentID })?.displayName,
+                  !name.isEmpty
+            else { continue }
+            let token = "@\(name)"
+            if !body.localizedCaseInsensitiveContains(token) {
+                body = body.isEmpty ? token : "\(token) \(body)"
+            }
+        }
+        return body
+    }
+
+    /// Seat bindings sent with the create. Only app sessions bind seats
+    /// explicitly; plain sessions keep each agent on its default workspace,
+    /// which the server fills in itself (and which may have no path, which an
+    /// explicit binding would be refused for).
+    public var seatWorkspaceByActorID: [String: String] {
+        guard appID != nil else { return [:] }
+        return Dictionary(agentSpawns.map { ($0.actorID, $0.workspaceID) },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The workspace that is `agentID`'s checkout of `app`, or nil when that
+    /// agent's machine has none iOS can see.
+    ///
+    /// Only the app's own row (`apps.workspace_id`) is trusted, and only when
+    /// it belongs to this agent and has a path. A second machine's checkout is
+    /// a separate row with nothing linking it to the app (the daemon's workdir
+    /// is user-movable, so its path proves nothing either); guessing would seat
+    /// the agent on a directory that is not on its machine.
+    public static func appCheckoutWorkspace(app: TeamAppRecord, agentID: String,
+                                            workspaces: [WorkspaceRecord]) -> WorkspaceRecord? {
+        guard let workspaceID = app.workspaceID, !workspaceID.isEmpty else { return nil }
+        return workspaces.first {
+            $0.id == workspaceID && $0.agentID == agentID
+                && !$0.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// The workspace a new session seats `agentID` on: the agent's
+    /// `default_workspace_id` when it is in `workspaces`, otherwise the
+    /// first workspace the agent owns. Never another agent's workspace.
+    ///
+    /// Every entry point must use this. The daemon keeps one pi host per
+    /// worktree and only prewarms the default workspace's, so seating a
+    /// session anywhere else pays a cold host spawn (~12s on a small ARM
+    /// box) before the agent sees the first prompt.
+    public static func defaultWorkspace(agentID: String, defaultWorkspaceID: String?,
+                                        workspaces: [WorkspaceRecord]) -> WorkspaceRecord? {
+        if let defaultWorkspaceID,
+           let workspace = workspaces.first(where: { $0.id == defaultWorkspaceID }) {
+            return workspace
+        }
+        return workspaces.first { $0.agentID == agentID }
     }
 }
 
@@ -162,11 +248,13 @@ public final class SessionCreationUseCase {
                     id: input.sessionID,
                     teamID: input.teamID,
                     ideaID: input.ideaID,
+                    appID: input.appID,
                     createdByActorID: input.currentActorID,
                     primaryAgentID: nil,
                     title: input.title,
                     summary: input.summary,
-                    participants: input.participants
+                    participants: input.participants,
+                    workspaceByActorID: input.seatWorkspaceByActorID
                 )
             )
         } catch {
@@ -200,7 +288,7 @@ public final class SessionCreationUseCase {
         do {
             _ = try await teamcluService.sendMessage(
                 sessionId: input.sessionID,
-                content: input.summary,
+                content: input.firstMessageContent,
                 mentionActorIDs: input.mentionAgentActorIDs,
                 persistFirst: true
             )
@@ -252,7 +340,9 @@ public final class SessionCreationUseCase {
         session.lastMessagePreview = input.summary
         session.lastMessageAt = nil
         session.ideaId = input.ideaID ?? ""
+        session.appId = input.appID ?? ""
         session.primaryAgentId = nil
+        session.selectedAgentIds = input.mentionAgentActorIDs.sorted()
         try modelContext.save()
     }
 

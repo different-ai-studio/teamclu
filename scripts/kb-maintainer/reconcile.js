@@ -11,7 +11,7 @@ function extractorChanged(current, previous) {
   return current.extractorCacheKey !== previous.extractorCacheKey;
 }
 
-function reconcile({ current, state }) {
+function reconcile({ current, state, retain }) {
   const queues = {
     add: [],
     update: [],
@@ -21,6 +21,7 @@ function reconcile({ current, state }) {
   };
   const previous = state?.sources && typeof state.sources === "object" ? state.sources : {};
   const seen = new Set();
+  const retained = new Set(retain || []);
 
   for (const item of current) {
     seen.add(item.path);
@@ -46,7 +47,7 @@ function reconcile({ current, state }) {
   }
 
   for (const path of Object.keys(previous).sort()) {
-    if (!seen.has(path)) {
+    if (!seen.has(path) && !retained.has(path)) {
       queues.delete.push({ path, sourceSha256: previous[path].sourceSha256 });
     }
   }

@@ -6,7 +6,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { ensureWikiRepo, changedRelPaths, headCommit } = require("./git-store");
 const { buildCompilePrompt } = require("./compile-prompt");
-const { jailedWikiOperations } = require("./wiki-jail");
+const { createDaemonSession } = require("./daemon-session");
 
 const ALLOWED_PI_TOOLS = ["read", "write", "edit", "find"];
 const EXCLUDED_PI_TOOLS = ["bash", "grep", "ls"];
@@ -57,7 +57,7 @@ function compilerNeedsTeamGateway(compilerModel) {
   return parseCompilerModel(compilerModel).source === "team";
 }
 
-function writePiAuth(agentDir, provider, token) {
+function writePiAuth(agentDir, provider, token, opts = {}) {
   const models = Array.isArray(provider.models) && provider.models.length > 0
     ? provider.models
     : [{ id: "default", name: "标准" }];
@@ -76,7 +76,7 @@ function writePiAuth(agentDir, provider, token) {
               id: model.id,
               name: model.name || model.id,
               reasoning: false,
-              input: ["text"],
+              input: opts.allowImages ? ["text", "image"] : ["text"],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               contextWindow: 256000,
               maxTokens: 16000,
@@ -101,6 +101,14 @@ function piPackageRoot() {
   );
 }
 
+async function resolveRuntimeModel(runtime, provider, modelId) {
+  const found = runtime.getModel(provider, modelId);
+  if (found || typeof runtime.refresh !== "function") return found;
+  await runtime.refresh({ allowNetwork: false, providers: [provider] });
+  return runtime.getModel(provider, modelId);
+}
+
+// Live maintenance prompts go through the daemon session in daemon-session.js.
 async function createLivePiSession(ctx) {
   const selection = parseCompilerModel(ctx.compilerModel);
   const piRoot = piPackageRoot();
@@ -126,20 +134,19 @@ async function createLivePiSession(ctx) {
       modelsPath: path.join(agentDir, "models.json"),
       refreshOnCreate: false,
     });
-    model = modelRuntime.getModel(selection.provider, selection.modelId);
+    model = await resolveRuntimeModel(modelRuntime, selection.provider, selection.modelId);
   } else {
     const { provider, token } = loadTeamGateway(ctx);
     agentDir = path.join(ctx.workRoot, "state", "pi-agent");
-    writePiAuth(agentDir, provider, token);
+    writePiAuth(agentDir, provider, token, { allowImages: ctx.purpose === "vision" });
     modelRuntime = await sdk.ModelRuntime.create({
       authPath: path.join(agentDir, "auth.json"),
       modelsPath: path.join(agentDir, "models.json"),
       refreshOnCreate: false,
     });
     const wanted = selection.modelId || provider.models?.[0]?.id;
-    model =
-      (wanted && modelRuntime.getModel("team", wanted)) ||
-      (!selection.modelId ? modelRuntime.getModels("team")[0] : undefined);
+    model = wanted ? await resolveRuntimeModel(modelRuntime, "team", wanted) : undefined;
+    if (!model && !selection.modelId) model = modelRuntime.getModels("team")[0];
   }
   if (!model) {
     const label = selection.modelId
@@ -148,7 +155,16 @@ async function createLivePiSession(ctx) {
     throw new Error(`Compiler model is not available: ${label}`);
   }
   const ops = jailedWikiOperations(ctx.workRoot);
-  const policy = piSessionPolicy();
+  const policy = ctx.purpose === "vision" ? { tools: [], excludeTools: [] } : piSessionPolicy();
+  const customTools =
+    ctx.purpose === "vision"
+      ? []
+      : [
+          sdk.createReadToolDefinition(wikiRoot, { operations: ops }),
+          sdk.createWriteToolDefinition(wikiRoot, { operations: ops }),
+          sdk.createEditToolDefinition(wikiRoot, { operations: ops }),
+          sdk.createFindToolDefinition(wikiRoot, { operations: ops }),
+        ];
   const { session } = await sdk.createAgentSession({
     cwd: wikiRoot,
     agentDir,
@@ -156,16 +172,51 @@ async function createLivePiSession(ctx) {
     model,
     tools: policy.tools,
     excludeTools: policy.excludeTools,
-    customTools: [
-      sdk.createReadToolDefinition(wikiRoot, { operations: ops }),
-      sdk.createWriteToolDefinition(wikiRoot, { operations: ops }),
-      sdk.createEditToolDefinition(wikiRoot, { operations: ops }),
-      sdk.createFindToolDefinition(wikiRoot, { operations: ops }),
-    ],
+    customTools,
     sessionManager: sdk.SessionManager.inMemory(wikiRoot),
     settingsManager: sdk.SettingsManager.inMemory({ compaction: { enabled: false } }),
   });
   return session;
+}
+
+function isWikiOutputPath(rel) {
+  if (!rel || rel.startsWith("/") || rel.includes("..")) return false;
+  if (rel === "index.md") return true;
+  if (rel.startsWith("index/") && rel.endsWith(".md")) return true;
+  if (rel.startsWith("pages/") && rel.endsWith(".md")) return true;
+  return false;
+}
+
+function applyWikiFileBlocks(wikiRoot, text) {
+  const re = /<<<WIKI_FILE ([^>\r\n]+)>>>([\s\S]*?)<<<END_WIKI_FILE>>>/g;
+  let match;
+  while ((match = re.exec(String(text || "")))) {
+    const rel = match[1].trim().replace(/\\/g, "/");
+    if (!isWikiOutputPath(rel)) continue;
+    const dest = path.resolve(wikiRoot, rel);
+    const root = path.resolve(wikiRoot);
+    if (dest !== root && !dest.startsWith(`${root}${path.sep}`)) continue;
+    const body = match[2].replace(/^\r?\n/, "").replace(/\s*$/, "");
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, `${body}\n`);
+  }
+}
+
+function lastAssistantText(session) {
+  const messages = session && Array.isArray(session.messages) ? session.messages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== "assistant") continue;
+    if (typeof message.content === "string") return message.content;
+    if (Array.isArray(message.content)) {
+      return message.content
+        .filter((part) => part && part.type === "text")
+        .map((part) => String(part.text || ""))
+        .join("");
+    }
+    return "";
+  }
+  return "";
 }
 
 function affectedWikiPages(wikiRoot, fromCommit) {
@@ -188,15 +239,33 @@ async function compile(ctx) {
   });
   const session = ctx.createSession
     ? await ctx.createSession(ctx)
-    : await createLivePiSession(ctx);
+    : await createDaemonSession(ctx);
   await session.prompt(prompt);
   if (typeof session.waitForIdle === "function") {
     await session.waitForIdle();
   }
+  assertModelFinished(session);
+  applyWikiFileBlocks(wikiRoot, lastAssistantText(session));
   if (typeof session.dispose === "function") {
     await session.dispose();
   }
   return { affectedPages: affectedWikiPages(wikiRoot, before) };
+}
+
+function assertModelFinished(session) {
+  const messages = session && Array.isArray(session.messages) ? session.messages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== "assistant") continue;
+    if (message.stopReason === "error") {
+      const detail = String(message.errorMessage || "unknown model error")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 500);
+      throw new Error(`Compiler model failed: ${detail}`);
+    }
+    return;
+  }
 }
 
 module.exports = {
@@ -207,5 +276,6 @@ module.exports = {
   loadTeamGateway,
   parseCompilerModel,
   compilerNeedsTeamGateway,
+  resolveRuntimeModel,
   createLivePiSession,
 };

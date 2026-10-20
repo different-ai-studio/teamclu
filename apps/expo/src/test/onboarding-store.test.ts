@@ -42,6 +42,7 @@ function createApiMock(overrides: Partial<OnboardingApi> = {}): OnboardingApi {
   return {
     getCurrentSession: vi.fn().mockResolvedValue(null),
     activateTeam: vi.fn().mockResolvedValue("actor-1"),
+    adoptRefreshSession: vi.fn().mockResolvedValue(undefined),
     loadBootstrap: vi.fn().mockResolvedValue({
       isAnonymous: false,
       team: null,
@@ -63,8 +64,18 @@ function createApiMock(overrides: Partial<OnboardingApi> = {}): OnboardingApi {
       role: "owner",
     }),
     signOut: vi.fn().mockResolvedValue(undefined),
+    sendPhoneOTP: vi.fn().mockImplementation(async (phone: string) => ({
+      pendingPhone: phone,
+    })),
+    verifyPhoneOTP: vi.fn().mockResolvedValue({ type: "session", session: {} }),
+    loginWithPhoneAccount: vi.fn().mockResolvedValue(undefined),
+    hasAnyTeam: vi.fn().mockResolvedValue(false),
+    listPendingInvites: vi.fn().mockResolvedValue([]),
+    acceptPendingInvite: vi.fn().mockResolvedValue(null),
+    declinePendingInvite: vi.fn().mockResolvedValue(undefined),
+    claimInvite: vi.fn().mockResolvedValue(null),
     ...overrides,
-  };
+  } as OnboardingApi;
 }
 
 async function loadController() {
@@ -621,6 +632,113 @@ describe("createOnboardingController", () => {
       errorMessage: "We couldn't load your account right now. Please try again.",
       currentTeam: null,
       currentMemberActorId: null,
+    });
+  });
+
+  describe("switching team after login", () => {
+    function memoryRememberedTeam(initial: string | null) {
+      let value = initial;
+      return {
+        load: vi.fn(async () => value),
+        save: vi.fn(async (teamId: string) => {
+          value = teamId;
+        }),
+        clear: vi.fn(async () => {
+          value = null;
+        }),
+      };
+    }
+
+    function bootstrapInto(teamId: string, actorId: string): BootstrapResult {
+      return {
+        isAnonymous: false,
+        team: { id: teamId, name: teamId, slug: teamId, role: "member" },
+        memberActorId: actorId,
+        teamChoices: [],
+      };
+    }
+
+    async function readyOn(
+      teamId: string,
+      overrides: Partial<OnboardingApi> = {},
+    ) {
+      const { createOnboardingController } = await loadController();
+      const remembered = memoryRememberedTeam(teamId);
+      const api = createApiMock({
+        getCurrentSession: vi.fn().mockResolvedValue({ user: { id: "user-1" } }),
+        // Bootstrap adopts whichever team is remembered, as the real one does.
+        loadBootstrap: vi.fn(async (rememberedTeamId?: string | null) =>
+          bootstrapInto(rememberedTeamId ?? teamId, `actor-in-${rememberedTeamId ?? teamId}`),
+        ),
+        ...overrides,
+      });
+      const controller = createOnboardingController(api, remembered);
+      await controller.bootstrap();
+      return { api, controller, remembered };
+    }
+
+    it("switchTeam activates, remembers, and re-bootstraps into the new team", async () => {
+      const { api, controller, remembered } = await readyOn("team-a");
+
+      await controller.switchTeam("team-b");
+
+      expect(api.activateTeam).toHaveBeenCalledWith("team-b");
+      expect(remembered.save).toHaveBeenCalledWith("team-b");
+      expect(controller.getState()).toMatchObject<Partial<OnboardingState>>({
+        route: "ready",
+        isBusy: false,
+        currentTeam: { id: "team-b", name: "team-b", slug: "team-b", role: "member" },
+        // The actor id is team-contextual and flips with the team.
+        currentMemberActorId: "actor-in-team-b",
+      });
+    });
+
+    it("a failed activation keeps the current team and rethrows", async () => {
+      const { controller, remembered } = await readyOn("team-a", {
+        activateTeam: vi.fn().mockRejectedValue(new Error("not a member")),
+      });
+
+      await expect(controller.switchTeam("team-b")).rejects.toThrow("not a member");
+
+      // Unlike the login picker, there is a working team to stay in — the
+      // route must not drop to selectTeam with no choices.
+      expect(remembered.save).not.toHaveBeenCalled();
+      expect(controller.getState()).toMatchObject<Partial<OnboardingState>>({
+        route: "ready",
+        isBusy: false,
+        currentTeam: { id: "team-a", name: "team-a", slug: "team-a", role: "member" },
+        currentMemberActorId: "actor-in-team-a",
+      });
+    });
+
+    it("joinedTeam adopts the minted session before landing on the joined team", async () => {
+      const calls: string[] = [];
+      const { api, controller } = await readyOn("team-a", {
+        adoptRefreshSession: vi.fn(async () => {
+          calls.push("adopt");
+        }),
+      });
+      (api.loadBootstrap as ReturnType<typeof vi.fn>).mockImplementation(
+        async (rememberedTeamId?: string | null) => {
+          calls.push(`bootstrap:${rememberedTeamId}`);
+          return bootstrapInto(rememberedTeamId ?? "team-a", "joined-actor");
+        },
+      );
+
+      await controller.joinedTeam("team-new", "refresh-1");
+
+      expect(api.adoptRefreshSession).toHaveBeenCalledWith("refresh-1");
+      expect(calls).toEqual(["adopt", "bootstrap:team-new"]);
+      expect(controller.getState().currentTeam?.id).toBe("team-new");
+    });
+
+    it("joinedTeam without a minted session skips adoption", async () => {
+      const { api, controller } = await readyOn("team-a");
+
+      await controller.joinedTeam("team-new", null);
+
+      expect(api.adoptRefreshSession).not.toHaveBeenCalled();
+      expect(controller.getState().currentTeam?.id).toBe("team-new");
     });
   });
 

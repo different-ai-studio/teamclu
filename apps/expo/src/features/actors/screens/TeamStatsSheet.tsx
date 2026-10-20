@@ -1,32 +1,39 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { Hairline } from "../../../ui/atoms/Hairline";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../../ui/GlassHeader";
 import { colors, hai, radii, spacing, typography } from "../../../ui/theme";
-import { STATS_PERIODS, type StatsPeriod } from "../../ideas/idea-stats";
 import type { Actor } from "../actor-types";
+import type { LeaderboardEntry } from "../leaderboard-api";
 import {
   actorIdHash,
   buildTeamStats,
   formatTokens,
   statInitials,
+  TEAM_STATS_PERIODS,
   type ActorTokenStat,
   type SkillStat,
+  type TeamStatsPeriod,
 } from "../team-stats";
 
 /**
- * Team statistics, ported 1:1 from the iOS `TeamStatsSheet`: period picker,
+ * Team statistics, ported from the iOS `TeamStatsSheet`: period picker,
  * tokens / sessions / skills summary cards, a token ranking, and a skills-usage
- * breakdown. The figures are the same placeholders iOS shows — see
- * `team-stats.ts`.
+ * breakdown — all aggregated from the team leaderboard (see `team-stats.ts`).
+ * While loading it shows a spinner; a team with no telemetry shows zeros.
  */
 
 export type TeamStatsSheetProps = {
   actors: ReadonlyArray<Actor>;
+  entries: ReadonlyArray<LeaderboardEntry>;
+  period: TeamStatsPeriod;
+  isLoading: boolean;
+  errorMessage: string | null;
+  onChangePeriod: (period: TeamStatsPeriod) => void;
   onClose: () => void;
 };
 
@@ -48,10 +55,17 @@ function agentGlyphColor(agentType: string | null): string {
   }
 }
 
-export function TeamStatsSheet({ actors, onClose }: TeamStatsSheetProps) {
+export function TeamStatsSheet({
+  actors,
+  entries,
+  errorMessage,
+  isLoading,
+  onChangePeriod,
+  onClose,
+  period,
+}: TeamStatsSheetProps) {
   const { t } = useTranslation();
-  const [period, setPeriod] = useState<StatsPeriod>("week");
-  const stats = useMemo(() => buildTeamStats({ actors, period }), [actors, period]);
+  const stats = useMemo(() => buildTeamStats({ entries, actors }), [entries, actors]);
   const maxSkillCount = Math.max(1, ...stats.skills.map((skill) => skill.count));
 
   return (
@@ -66,67 +80,89 @@ export function TeamStatsSheet({ actors, onClose }: TeamStatsSheetProps) {
 
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.periodPicker}>
-          {STATS_PERIODS.map((option) => {
+          {TEAM_STATS_PERIODS.map((option) => {
             const selected = option.value === period;
             return (
               <Pressable
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
                 key={option.value}
-                onPress={() => setPeriod(option.value)}
+                onPress={() => onChangePeriod(option.value)}
                 style={[styles.periodOption, selected ? styles.periodOptionSelected : null]}
               >
                 <Text
                   style={[styles.periodLabel, selected ? styles.periodLabelSelected : null]}
                 >
-                  {option.label}
+                  {t(option.labelKey)}
                 </Text>
               </Pressable>
             );
           })}
         </View>
 
-        <View style={styles.summaryRow}>
-          <SummaryCard
-            icon="sparkles-outline"
-            label={t("TOKENS")}
-            value={formatTokens(stats.totalTokens)}
-          />
-          <SummaryCard
-            icon="chatbubbles-outline"
-            label={t("SESSIONS")}
-            value={`${stats.totalSessions}`}
-          />
-          <SummaryCard icon="hammer-outline" label={t("SKILLS")} value={`${stats.totalSkills}`} />
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionEyebrow}>{t("TOKEN RANKING")}</Text>
-          <View style={styles.card}>
-            {stats.actors.map((stat, index) => (
-              <View key={stat.actorId}>
-                <TokenRankRow rank={index + 1} stat={stat} />
-                {index < stats.actors.length - 1 ? (
-                  <Hairline style={styles.rankDivider} />
-                ) : null}
-              </View>
-            ))}
+        {isLoading && entries.length === 0 ? (
+          <View style={styles.stateBlock}>
+            <ActivityIndicator color={colors.slate} />
           </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionEyebrow}>{t("SKILLS USAGE")}</Text>
-          <View style={styles.card}>
-            {stats.skills.map((skill, index) => (
-              <View key={skill.name}>
-                <SkillRow max={maxSkillCount} skill={skill} />
-                {index < stats.skills.length - 1 ? (
-                  <Hairline style={styles.skillDivider} />
-                ) : null}
-              </View>
-            ))}
+        ) : errorMessage ? (
+          <View style={styles.stateBlock}>
+            <Ionicons color={colors.slate} name="bar-chart-outline" size={28} />
+            <Text style={styles.stateTitle}>{t("Stats Unavailable")}</Text>
+            <Text style={styles.stateBody}>{errorMessage}</Text>
           </View>
-        </View>
+        ) : (
+          <>
+            <View style={styles.summaryRow}>
+              <SummaryCard
+                icon="sparkles-outline"
+                label={t("TOKENS")}
+                value={formatTokens(stats.totalTokens)}
+              />
+              <SummaryCard
+                icon="chatbubbles-outline"
+                label={t("SESSIONS")}
+                value={`${stats.totalSessions}`}
+              />
+              <SummaryCard
+                icon="hammer-outline"
+                label={t("SKILLS")}
+                value={`${stats.totalSkills}`}
+              />
+            </View>
+
+            {stats.actors.length > 0 ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionEyebrow}>{t("TOKEN RANKING")}</Text>
+                <View style={styles.card}>
+                  {stats.actors.map((stat, index) => (
+                    <View key={stat.actorId}>
+                      <TokenRankRow rank={index + 1} stat={stat} />
+                      {index < stats.actors.length - 1 ? (
+                        <Hairline style={styles.rankDivider} />
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
+            {stats.skills.length > 0 ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionEyebrow}>{t("SKILLS USAGE")}</Text>
+                <View style={styles.card}>
+                  {stats.skills.map((skill, index) => (
+                    <View key={skill.name}>
+                      <SkillRow max={maxSkillCount} skill={skill} />
+                      {index < stats.skills.length - 1 ? (
+                        <Hairline style={styles.skillDivider} />
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+          </>
+        )}
       </ScrollView>
     </View>
   );
@@ -343,6 +379,22 @@ const styles = StyleSheet.create({
   skillCount: {
     color: colors.basalt,
     ...typography.monoMeta,
+  },
+  stateBlock: {
+    alignItems: "center",
+    gap: spacing.sm,
+    justifyContent: "center",
+    minHeight: 180,
+    paddingHorizontal: spacing.lg,
+  },
+  stateBody: {
+    color: colors.slate,
+    textAlign: "center",
+    ...typography.caption,
+  },
+  stateTitle: {
+    color: colors.onyx,
+    ...typography.cardTitle,
   },
   skillDivider: {
     marginLeft: 14,

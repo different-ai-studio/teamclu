@@ -157,12 +157,21 @@ pub struct RuntimeManager {
     /// Set on every mutation of `agents`; drained by the main loop, which
     /// republishes the actor snapshot. See `mark_actor_state_dirty`.
     actor_state_dirty: bool,
+    /// Runtimes whose events belong to the HTTP/SSE adapter. The main loop's
+    /// `poll_events` must not drain them: both consumers read the same queue,
+    /// so a frame the main loop takes (a delta, the final Idle) never reaches
+    /// the HTTP session, which then waits for a turn end that already passed.
+    http_owned: std::collections::HashSet<String>,
     refresh_coordinator: Option<Arc<RuntimeRefreshCoordinator>>,
     /// Maps backend session ids to TeamClu cloud sessions for MCP adapters.
     context_service: Option<Arc<super::context_service::RuntimeContextService>>,
     /// Test-only: records the last body sent per agent_id via send_prompt_raw.
     #[cfg(test)]
     last_sent: HashMap<String, String>,
+    /// Test-only: how many prompts each agent_id was sent, so a test can tell
+    /// "prompted once" from "prompted twice with the same body".
+    #[cfg(test)]
+    sent_counts: HashMap<String, usize>,
     #[cfg(test)]
     send_failures: HashMap<String, String>,
     #[cfg(test)]
@@ -246,8 +255,11 @@ impl RuntimeManager {
             evicted_session_detachments: Vec::new(),
             idle_evict_pending: Vec::new(),
             actor_state_dirty: false,
+            http_owned: std::collections::HashSet::new(),
             #[cfg(test)]
             last_sent: HashMap::new(),
+            #[cfg(test)]
+            sent_counts: HashMap::new(),
             #[cfg(test)]
             send_failures: HashMap::new(),
             #[cfg(test)]
@@ -952,6 +964,7 @@ impl RuntimeManager {
     }
 
     pub async fn stop_runtime(&mut self, agent_id: &str) -> Option<RuntimeHandle> {
+        self.http_owned.remove(agent_id);
         if let Some(mut handle) = self.agents.remove(agent_id) {
             if !handle.session_id.is_empty() {
                 self.evicted_session_detachments
@@ -1336,6 +1349,7 @@ impl RuntimeManager {
             };
             self.last_sent
                 .insert(agent_id.to_string(), text.to_string());
+            *self.sent_counts.entry(agent_id.to_string()).or_default() += 1;
             if let Some(event_tx) = event_tx {
                 let text = text.to_string();
                 let reply_to = reply_to_message_id.clone();
@@ -1978,6 +1992,11 @@ impl RuntimeManager {
     /// Return the last body sent to the given runtime via send_prompt_raw.
     pub fn last_sent_to(&self, runtime_id: &str) -> Option<String> {
         self.last_sent.get(runtime_id).cloned()
+    }
+
+    /// Number of prompts sent to the given runtime.
+    pub fn sent_count_to(&self, runtime_id: &str) -> usize {
+        self.sent_counts.get(runtime_id).copied().unwrap_or(0)
     }
 
     pub fn fail_next_send_for(&mut self, runtime_id: &str, message: &str) {
@@ -3447,6 +3466,47 @@ mod tests {
         assert_eq!(
             main_drained[0].0, "sess-mqtt",
             "main loop drains exactly rt-mqtt's event, not rt-http's (already taken)"
+        );
+    }
+
+    #[tokio::test]
+    async fn main_loop_poll_leaves_http_owned_runtimes_to_the_http_pump() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-http");
+        mgr.add_test_runtime("sess-mqtt");
+        mgr.mark_http_owned("rt-http");
+
+        let mk = || {
+            AcpEventFrame::new(
+                "acp-test",
+                amux::AcpEvent {
+                    model: String::new(),
+                    event: None,
+                },
+            )
+        };
+        let http_tx = mgr.get_handle_mut("rt-http").unwrap().event_tx.clone();
+        let mqtt_tx = mgr.get_handle_mut("sess-mqtt").unwrap().event_tx.clone();
+        http_tx.try_send(mk()).expect("http channel ready");
+        mqtt_tx.try_send(mk()).expect("mqtt channel ready");
+
+        let main_drained = mgr.poll_events();
+        assert_eq!(main_drained.len(), 1);
+        assert_eq!(main_drained[0].0, "sess-mqtt");
+
+        let owned: std::collections::HashSet<String> =
+            std::iter::once("rt-http".to_string()).collect();
+        let http_drained = mgr.poll_events_for(&owned);
+        assert_eq!(http_drained.len(), 1, "the HTTP pump still gets its event");
+        assert_eq!(http_drained[0].0, "rt-http");
+
+        mgr.stop_runtime("rt-http").await;
+        mgr.add_test_runtime("rt-http");
+        let http_tx = mgr.get_handle_mut("rt-http").unwrap().event_tx.clone();
+        http_tx.try_send(mk()).expect("http channel ready");
+        assert_eq!(
+            mgr.poll_events().len(),
+            1,
+            "stop_runtime clears the mark, so a reused id is the main loop's again"
         );
     }
 

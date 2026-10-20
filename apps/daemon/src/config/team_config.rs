@@ -10,9 +10,12 @@
 //! [`super::edit::is_secret_key`] recognises (bot_token, secret, app_secret,
 //! imap_pass, …) is moved into the team's encrypted secret store
 //! (`secrets.enc`, `TeamSecrets::channel_secrets`) under a stable dotted path;
-//! on load it is injected back. Array elements are keyed by their `bot_id`
-//! (`channels.wecom.bots[b-1].secret`), not their index — deleting bot 0 must
-//! not silently hand bot 1 someone else's secret.
+//! on load it is injected back. Array elements are keyed by `bot_id`, or by
+//! `app_id` when that is the identity (`channels.wecom.bots[b-1].secret`,
+//! `channels.seatalk.bots[<app_id>].app_secret`), not their index — deleting
+//! bot 0 must not silently hand bot 1 someone else's secret. A legacy
+//! `channels.seatalk.app_secret` is rewritten onto the matching bot the first
+//! time the document gains a `bots` array.
 //!
 //! An **empty string** in a secret position on save means "keep what is
 //! stored": the desktop form can render placeholders instead of plaintext and
@@ -138,6 +141,7 @@ pub fn save_value(team_id: &str, mut root: Value) -> anyhow::Result<()> {
     // entries whose path no longer exists in the document are dropped (their
     // channel or bot was deleted). A store read *failure* aborts the save —
     // running the GC against an unreadable store would wipe every credential.
+    let previous_doc = load_value(team_id).unwrap_or(Value::Table(toml::map::Map::new()));
     let previous = load_secret_map(team_id)?;
     let mut merged = fresh;
     for (key, secret) in previous {
@@ -145,6 +149,7 @@ pub fn save_value(team_id: &str, mut root: Value) -> anyhow::Result<()> {
             merged.insert(key, secret);
         }
     }
+    migrate_seatalk_app_secret(&previous_doc, &root, &mut merged);
     store_secret_map(team_id, merged)?;
 
     let path = path_for(team_id);
@@ -176,15 +181,15 @@ fn validate_bot_ids(root: &Value) -> anyhow::Result<()> {
         };
         let mut seen = std::collections::BTreeSet::new();
         for bot in bots {
-            let Some(id) = bot.get("bot_id").and_then(Value::as_str) else {
+            let Some(id) = element_identity(bot) else {
                 continue;
             };
             if id.contains('[') || id.contains(']') {
-                anyhow::bail!("channels.{channel}: bot_id {id:?} must not contain brackets");
+                anyhow::bail!("channels.{channel}: bot id {id:?} must not contain brackets");
             }
             if !seen.insert(id) {
                 anyhow::bail!(
-                    "channels.{channel}: duplicate bot_id {id:?} — each bot needs its own id"
+                    "channels.{channel}: duplicate bot id {id:?} — each bot needs its own id"
                 );
             }
         }
@@ -250,11 +255,81 @@ fn strip_secrets(prefix: &str, node: &mut Value, out: &mut BTreeMap<String, Stri
 /// `#<index>` (only id-less arrays keep the positional fragility — and the
 /// `#` prefix keeps a purely numeric bot_id from aliasing a position).
 fn element_id(item: &Value, index: usize) -> String {
-    item.get("bot_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
+    element_identity(item)
         .map(str::to_string)
         .unwrap_or_else(|| format!("#{index}"))
+}
+
+/// Array identity for secret paths. WeCom bots use `bot_id`; SeaTalk bots
+/// use `app_id`. A document that sets both keys the secret on `bot_id`.
+fn element_identity(item: &Value) -> Option<&str> {
+    for key in ["bot_id", "app_id"] {
+        if let Some(id) = item
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// A save that moves the single-app secret onto `bots[]` must not leave it
+/// at `channels.seatalk.app_secret`. That path still "resolves" after the
+/// leaf is gone, because only the parent table is checked — so the next
+/// start would see an empty secret on the bot and refuse to connect.
+fn migrate_seatalk_app_secret(
+    previous: &Value,
+    root: &Value,
+    secrets: &mut BTreeMap<String, String>,
+) {
+    let Some(legacy) = secrets.get("channels.seatalk.app_secret").cloned() else {
+        return;
+    };
+    let Some(bots) = root
+        .get("channels")
+        .and_then(|c| c.get("seatalk"))
+        .and_then(|s| s.get("bots"))
+        .and_then(|b| b.as_array())
+    else {
+        return;
+    };
+    if bots.is_empty() {
+        return;
+    }
+    let previous_app = previous
+        .get("channels")
+        .and_then(|c| c.get("seatalk"))
+        .and_then(|s| s.get("app_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let matched = if previous_app.is_empty() {
+        None
+    } else {
+        bots.iter().find_map(|bot| {
+            let id = bot.get("app_id")?.as_str()?;
+            (id == previous_app).then_some(id.to_string())
+        })
+    };
+    // A rename of the only bot still belongs to that bot. Several bots and
+    // no match is a guess we refuse to make — the legacy key stays put.
+    let target_id = matched.or_else(|| {
+        if bots.len() != 1 {
+            return None;
+        }
+        bots.first()
+            .and_then(|bot| bot.get("app_id"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    });
+    let Some(app_id) = target_id else {
+        return;
+    };
+    let new_key = format!("channels.seatalk.bots[{app_id}].app_secret");
+    secrets.entry(new_key).or_insert(legacy);
+    secrets.remove("channels.seatalk.app_secret");
 }
 
 /// Split `channels.wecom.bots[b-1].secret` into segments; brackets bind to the
@@ -322,7 +397,7 @@ fn descend_index<'s>(node: &Value, seg: &'s str) -> Option<Descend<'s>> {
         pos.parse::<usize>().ok().filter(|i| *i < arr.len())?
     } else {
         arr.iter()
-            .position(|item| item.get("bot_id").and_then(|v| v.as_str()) == Some(id))?
+            .position(|item| element_identity(item) == Some(id))?
     };
     Some(Descend::Element(name, index))
 }
@@ -682,5 +757,100 @@ secret = ""
         ] {
             assert!(!is_team_key(key), "{key}");
         }
+    }
+
+    #[test]
+    fn seatalk_secrets_key_on_app_id_and_legacy_secret_moves_onto_the_bot() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::write(
+            home.path().join("daemon.toml"),
+            "active_team = \"team-1\"\n",
+        )
+        .unwrap();
+
+        save_value(
+            "team-1",
+            doc(r#"
+[channels.seatalk]
+enabled = true
+app_id = "app-old"
+app_secret = "sec-old"
+system_prompt = "只用中文"
+"#),
+        )
+        .unwrap();
+        assert_eq!(
+            load_secret_map("team-1")
+                .unwrap()
+                .get("channels.seatalk.app_secret")
+                .map(String::as_str),
+            Some("sec-old")
+        );
+
+        // Same save adds a second bot and leaves the original secret empty.
+        // The stored secret must follow the previous app id, not the new bot.
+        save_value(
+            "team-1",
+            doc(r#"
+[channels.seatalk]
+enabled = true
+mode = "websocket"
+
+[[channels.seatalk.bots]]
+app_id = "app-old"
+app_secret = ""
+system_prompt = "只用中文"
+
+[[channels.seatalk.bots]]
+app_id = "app-new"
+app_secret = "sec-new"
+"#),
+        )
+        .unwrap();
+
+        let map = load_secret_map("team-1").unwrap();
+        assert_eq!(
+            map.get("channels.seatalk.bots[app-old].app_secret")
+                .map(String::as_str),
+            Some("sec-old")
+        );
+        assert_eq!(
+            map.get("channels.seatalk.bots[app-new].app_secret")
+                .map(String::as_str),
+            Some("sec-new")
+        );
+        assert!(
+            !map.contains_key("channels.seatalk.app_secret"),
+            "the legacy key must not linger once bots[] exists"
+        );
+
+        let bots = load_typed("team-1")
+            .unwrap()
+            .channels
+            .seatalk
+            .unwrap()
+            .resolved_bots();
+        assert_eq!(bots[0].app_secret, "sec-old");
+        assert_eq!(bots[0].system_prompt.as_deref(), Some("只用中文"));
+        assert_eq!(bots[1].app_secret, "sec-new");
+    }
+
+    #[test]
+    fn duplicate_seatalk_app_ids_are_rejected() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::write(
+            home.path().join("daemon.toml"),
+            "active_team = \"team-1\"\n",
+        )
+        .unwrap();
+        let dup = doc(
+            "[channels.seatalk]\nenabled = true\n[[channels.seatalk.bots]]\napp_id = \"a\"\napp_secret = \"1\"\n[[channels.seatalk.bots]]\napp_id = \"a\"\napp_secret = \"2\"\n",
+        );
+        assert!(save_value("team-1", dup)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate"));
     }
 }

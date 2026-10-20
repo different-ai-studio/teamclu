@@ -129,9 +129,6 @@ vi.mock('@/hooks/use-workspace-runtime-refresh-poll', () => ({
 }))
 vi.mock('@/hooks/use-external-link-handler', () => ({ useExternalLinkHandler: vi.fn() }))
 vi.mock('@/hooks/use-tauri-body-class', () => ({ useTauriBodyClass: vi.fn() }))
-vi.mock('@/hooks/use-telemetry-consent', () => ({
-  useTelemetryConsent: () => ({ showConsentDialog: false, setShowConsentDialog: vi.fn() }),
-}))
 vi.mock('@/hooks/useMCPFileWatcher', () => ({ useMCPFileWatcher: vi.fn() }))
 vi.mock('@/hooks/use-file-editor-state', () => ({
   usePanelAutoOpen: vi.fn(),
@@ -165,7 +162,6 @@ vi.mock('@/components/panel/RightPanel', () => ({
 }))
 vi.mock('@/components/settings', () => ({ Settings: () => <div>settings</div> }))
 vi.mock('@/components/settings/FeedbackDialog', () => ({ FeedbackDialog: () => null }))
-vi.mock('@/components/telemetry/TelemetryConsentDialog', () => ({ TelemetryConsentDialog: () => null }))
 vi.mock('@/stores/session-store', () => ({
   useSessionStore: vi.fn((sel: (s: any) => any) => {
     const state = {

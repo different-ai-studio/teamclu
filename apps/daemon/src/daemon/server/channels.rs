@@ -142,6 +142,31 @@ impl DaemonServer {
                     );
                 }
             }
+            // Keyed apart from WeCom bot ids so the persona is found from
+            // `seatalk://<app_id>/...` and is not written into the shared
+            // workspace's CLAUDE.local.md. One entry per bot.
+            if let Some(seatalk) = &cfg.channels.seatalk {
+                for bot in seatalk.resolved_bots() {
+                    if !bot.enabled || bot.app_id.is_empty() {
+                        continue;
+                    }
+                    let Some(prompt) = bot
+                        .system_prompt
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|p| !p.is_empty())
+                    else {
+                        continue;
+                    };
+                    m.insert(
+                        crate::channels::agent_handle::seatalk_persona_key(&bot.app_id),
+                        BotRuntimeConfig {
+                            system_prompt: Some(prompt.to_string()),
+                            ..BotRuntimeConfig::default()
+                        },
+                    );
+                }
+            }
             m
         };
 
@@ -292,7 +317,13 @@ impl DaemonServer {
                     .agents
                     .lock()
                     .await
-                    .answer_question_for_topic(&agent_id, &request_id, answers_json, *reject)
+                    .answer_question_for_topic(
+                        &agent_id,
+                        &request_id,
+                        answers_json,
+                        *reject,
+                        &approver,
+                    )
                     .await
                     .inspect_err(|e| {
                         warn!(
@@ -432,6 +463,21 @@ impl DaemonServer {
             .into_iter()
             .map(|(bot_id, connected, error)| {
                 serde_json::json!({ "botId": bot_id, "connected": connected, "error": error })
+            })
+            .collect();
+        serde_json::to_string(&json).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// `[{appId, connected, error}, ...]` for `seatalk-bots-status`.
+    pub(crate) async fn seatalk_bots_status_payload(&self) -> String {
+        let rows = match self.channel_mgr.as_ref() {
+            Some(mgr) => mgr.seatalk_bots_status().await,
+            None => vec![],
+        };
+        let json: Vec<serde_json::Value> = rows
+            .into_iter()
+            .map(|(app_id, connected, error)| {
+                serde_json::json!({ "appId": app_id, "connected": connected, "error": error })
             })
             .collect();
         serde_json::to_string(&json).unwrap_or_else(|_| "[]".to_string())

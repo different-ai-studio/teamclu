@@ -141,6 +141,11 @@ actor_id = {actor_id}
         // never leave a partially written backend.toml.
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, text)?;
+        // `refresh_token` is a long-lived credential: it mints the daemon's
+        // access tokens for as long as it is not rotated. Owner-only, like
+        // `secret.key` beside it; set on the temp file so the rename never
+        // exposes a world-readable instant.
+        set_owner_only(&tmp)?;
         std::fs::rename(&tmp, path)?;
         Ok(())
     }
@@ -207,9 +212,51 @@ pub enum ProviderConfigError {
     MissingCloudApiUrl,
 }
 
+#[cfg(unix)]
+fn set_owner_only(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_owner_only(_path: &Path) -> std::io::Result<()> {
+    // Per-user profile directory is the boundary on Windows; no POSIX mode.
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn backend_toml_is_written_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let backend_path = dir.path().join("backend.toml");
+        let cfg = CloudApiConfig {
+            url: "https://fc.example.com".into(),
+            refresh_token: "refresh".into(),
+            team_id: "team-1".into(),
+            actor_id: "agent-1".into(),
+        };
+        ProviderConfig::save_cloud_api(&backend_path, &cfg).unwrap();
+        let mode = std::fs::metadata(&backend_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+
+        // Rewriting (what a rotated refresh token does) tightens a file an
+        // older daemon left world-readable.
+        std::fs::set_permissions(&backend_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        ProviderConfig::save_cloud_api(&backend_path, &cfg).unwrap();
+        let mode = std::fs::metadata(&backend_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 
     #[test]
     fn loads_cloud_api_backend_toml() {

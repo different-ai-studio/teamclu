@@ -264,6 +264,30 @@ pub struct AgentTurns {
 
 #[async_trait]
 impl TurnRunner for AgentTurns {
+    async fn active_turn(&self, binding: &str) -> Option<String> {
+        self.agent.active_turn(binding).await
+    }
+
+    async fn append_to_active_turn(
+        &self,
+        acp_session_id: &str,
+        sender_display: &str,
+        prompt: &str,
+        attachment_urls: &[String],
+        message_id: &str,
+    ) -> Result<bool, CoreError> {
+        self.agent
+            .append_to_active_turn(
+                &acp_session_id.to_string(),
+                sender_display,
+                prompt,
+                attachment_urls,
+                message_id,
+            )
+            .await
+            .map_err(|e| CoreError::Turn(e.to_string()))
+    }
+
     async fn run(
         &self,
         acp_session_id: &str,

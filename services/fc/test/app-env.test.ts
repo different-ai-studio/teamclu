@@ -1,3 +1,4 @@
+import { ORIGIN_CONFIG } from "./fixtures/apps-origin-auth/config.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -88,25 +89,28 @@ test("a secret cannot be replayed under another variable's name", () => {
 function finalizeHarness() {
   let seen: Record<string, string> | null = null;
   const deps: any = {
+    readOriginAuth: () => ORIGIN_CONFIG,
     fcOps: {
       ensureFunction: async (_name: string, args: any) => {
         seen = args.env;
       },
-      ensureHttpTrigger: async () => ({ url: "https://x.fcapp.run" }),
+      ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+      ensureCustomDomain: async (_name: string, domain: string) => `http://${domain}`,
     },
   };
   return { deps, env: () => seen! };
 }
 
 const staticInput = {
-  appId: "app-1",
+  appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
   slug: "demo",
   appType: "static_web", // no database, so no APPS_DB_ADMIN_URL needed
   fcFunctionName: "tc-app-1",
   ossObjectName: "apps/app-1/code.zip",
+  // Finalization receives a parsed declaration; PORT comes from its start spec.
   declaration: parseAppDeployDeclaration({
     build: { kind: "node", output: ".output" },
-    start: { entry: "server/index.mjs", port: 9000 },
+    start: { fcRuntime: "custom.debian10", command: ["/var/fc/lang/nodejs20/bin/node"], args: ["server/index.mjs"], layers: [], port: 9000 },
   }),
 };
 

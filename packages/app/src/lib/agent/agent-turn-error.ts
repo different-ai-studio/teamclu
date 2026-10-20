@@ -3,6 +3,24 @@ import type { TFunction } from 'i18next'
 /** User-initiated turn cancel (opencode abort) — not a fault. */
 export const TURN_INTERRUPTED_ERROR_NAME = 'TurnInterrupted'
 
+/**
+ * pi `extension_error` whose text is the stale-context guard.
+ *
+ * Closing one session in a shared pi host used to invalidate the runtime
+ * every other session still holds. The daemon keeps that turn running;
+ * the desktop must not paint it as a service-notice banner.
+ */
+export function isStalePiExtensionCtxError(
+  message: string | undefined,
+  detail?: string | undefined,
+): boolean {
+  const blob = `${message ?? ''}\n${detail ?? ''}`.toLowerCase()
+  return (
+    blob.includes('stale after session replacement') ||
+    blob.includes('extension ctx is stale')
+  )
+}
+
 /** True when an ACP turn error is an intentional interrupt / abort. */
 export function isAgentTurnAbortError(
   message: string | undefined,

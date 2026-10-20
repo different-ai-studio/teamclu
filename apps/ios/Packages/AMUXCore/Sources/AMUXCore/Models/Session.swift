@@ -47,6 +47,15 @@ public final class Session {
     /// sessions unless the scheduled-sessions view is toggled on,
     /// mirroring the desktop's clock view.
     public var source: String = ""
+    /// The app this session was created from (`sessions.app_id`); empty for
+    /// ordinary sessions.
+    public var appId: String = ""
+    /// Cached names for the session list's third line. Written on refresh
+    /// (`SessionListViewModel.applyAppNames` / `applyIdeaTitles`) and kept
+    /// across launches, so the row names its app or idea before the network
+    /// answers. May lag a rename until the next refresh.
+    public var appName: String = ""
+    public var ideaTitle: String = ""
 
     public init(
         sessionId: String,

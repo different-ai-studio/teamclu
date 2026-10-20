@@ -261,3 +261,54 @@ describe("runtime rpc client", () => {
     await expect(promise).rejects.toThrow("workspace missing");
   });
 });
+
+describe("runtime rpc client · remove_participant", () => {
+  function client(mqtt: ReturnType<typeof createFakeMqtt>) {
+    return createRuntimeRpcClient({
+      mqtt,
+      teamId: "team-1",
+      requesterActorId: "member-1",
+      requestId: () => "request-rp",
+      requesterClientId: () => "client-1",
+    });
+  }
+
+  it("publishes remove_participant to the agent's daemon and resolves on success", async () => {
+    const mqtt = createFakeMqtt();
+    const promise = client(mqtt).removeParticipant({
+      targetActorId: "agent-1",
+      sessionId: "session-1",
+      actorId: "agent-1",
+    });
+
+    const [topic, bytes] = mqtt.publish.mock.calls[0] as [string, Uint8Array, boolean];
+    expect(topic).toBe("amux/team-1/agent-1/rpc/req");
+    const request = fromBinary(RpcRequestSchema, bytes);
+    expect(request.method.case).toBe("removeParticipant");
+    if (request.method.case !== "removeParticipant") throw new Error("wrong method");
+    expect(request.method.value).toMatchObject({ sessionId: "session-1", actorId: "agent-1" });
+
+    mqtt.emit(
+      "amux/team-1/member-1/rpc/res",
+      toBinary(RpcResponseSchema, create(RpcResponseSchema, { requestId: "request-rp", success: true })),
+    );
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it("rejects with the daemon's error", async () => {
+    const mqtt = createFakeMqtt();
+    const promise = client(mqtt).removeParticipant({
+      targetActorId: "agent-1",
+      sessionId: "session-1",
+      actorId: "agent-1",
+    });
+    mqtt.emit(
+      "amux/team-1/member-1/rpc/res",
+      toBinary(
+        RpcResponseSchema,
+        create(RpcResponseSchema, { requestId: "request-rp", success: false, error: "not a participant" }),
+      ),
+    );
+    await expect(promise).rejects.toThrow("not a participant");
+  });
+});

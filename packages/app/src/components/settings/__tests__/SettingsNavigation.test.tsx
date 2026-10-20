@@ -208,14 +208,49 @@ describe('Settings navigation', () => {
     const clientLabels = within(clientSubnav).getAllByRole('button').map((b) => b.textContent)
     expect(clientLabels).not.toContain('Billing')
     expect(clientLabels).not.toContain('Token Usage')
-    expect(clientLabels).not.toContain('团队角色')
+    expect(clientLabels).not.toContain('组织角色')
 
     fireEvent.click(teamMgmtButton)
     const teamSubnav = screen.getByTestId('team-management-subnav')
     expect(
       within(teamSubnav).getAllByRole('button').map((button) => button.textContent),
-    ).toEqual(['Billing', 'Token Usage', 'Leaderboard', '团队角色'])
+    ).toEqual(['Billing', 'Token Usage', 'Leaderboard', '组织角色'])
 
     vi.doUnmock('@/stores/ui')
+  })
+
+  it('hides Daemon and Local Agent and puts the install card in the menu when no local agent is installed', async () => {
+    vi.resetModules()
+    vi.doMock('@/stores/ui', () => ({
+      useUIStore: (selector: (state: unknown) => unknown) =>
+        selector({ settingsInitialSection: 'daemonGeneral' }),
+    }))
+    const { useCurrentTeamStore } = await import('@/stores/current-team')
+    const { useLocalAgentInstallStore } = await import('@/stores/local-agent-install')
+    useCurrentTeamStore.setState({
+      team: { id: 'team-absent', name: 'Team', slug: 'team' },
+    })
+    useLocalAgentInstallStore.setState({
+      byTeam: {
+        'team-absent': { status: 'absent', agentId: null, displayName: null },
+      },
+    })
+
+    try {
+      const { Settings } = await import('../Settings')
+      render(<Settings />)
+
+      expect(screen.queryByRole('button', { name: 'Daemon' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Local Agent' })).toBeNull()
+      expect(screen.getByRole('button', { name: 'Desktop' })).toBeInTheDocument()
+      expect(screen.getByText('Local agent is not installed')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Install' })).toBeInTheDocument()
+      expect(screen.getByTestId('settings-section')).toHaveTextContent('general')
+      expect(screen.getByTestId('settings-section')).not.toHaveTextContent('daemonGeneral')
+    } finally {
+      useCurrentTeamStore.setState({ team: null })
+      useLocalAgentInstallStore.setState({ byTeam: {} })
+      vi.doUnmock('@/stores/ui')
+    }
   })
 })

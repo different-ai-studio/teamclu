@@ -18,9 +18,34 @@ public struct MarkdownRenderer: View {
     }
 
     public var body: some View {
-        Markdown(Self.sanitizedContent(content))
+        Markdown(Self.parsedContent(content))
             .markdownTheme(Theme.chatBubble)
             .textSelection(.enabled)
+    }
+
+    /// `Markdown(String)` runs the cmark parse in its initializer, so every
+    /// rebuild of a bubble — each one scrolled back into the lazy transcript,
+    /// every parent re-render — re-parsed the whole reply on the main thread
+    /// and dropped frames mid-scroll. Parse once per distinct text instead.
+    @MainActor
+    private static let parseCache: NSCache<NSString, ParsedBox> = {
+        let cache = NSCache<NSString, ParsedBox>()
+        cache.countLimit = 256
+        return cache
+    }()
+
+    @MainActor
+    static func parsedContent(_ content: String) -> MarkdownContent {
+        let key = content as NSString
+        if let hit = parseCache.object(forKey: key) { return hit.content }
+        let parsed = MarkdownContent(sanitizedContent(content))
+        parseCache.setObject(ParsedBox(parsed), forKey: key)
+        return parsed
+    }
+
+    private final class ParsedBox {
+        let content: MarkdownContent
+        init(_ content: MarkdownContent) { self.content = content }
     }
 
     static func sanitizedContent(_ content: String) -> String {
@@ -80,8 +105,9 @@ private extension Theme {
     ///
     /// `@MainActor` because `Theme` is non-Sendable; SwiftUI body
     /// already runs on the main actor so accessing this from a chat
-    /// view is free.
-    static var chatBubble: Theme {
+    /// view is free. A stored `let` so the theme is built once rather than
+    /// on every bubble render.
+    static let chatBubble: Theme =
         Theme()
         // Match the user-bubble's `.subheadline` (15pt) so the two
         // sides of the conversation read at the same visual weight.
@@ -137,5 +163,4 @@ private extension Theme {
                     .padding(.vertical, 2)
             }
         }
-    }
 }

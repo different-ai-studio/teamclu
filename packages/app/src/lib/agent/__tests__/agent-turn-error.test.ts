@@ -3,6 +3,7 @@ import {
   classifyAgentTurnErrorName,
   formatAgentTurnErrorDisplayMessage,
   isAgentTurnAbortError,
+  isStalePiExtensionCtxError,
   isPersistentSessionTurnError,
   isQuotaLikeAgentMessage,
   localizeAgentTurnErrorMessage,
@@ -32,6 +33,21 @@ describe('isAgentTurnAbortError', () => {
 
   it('does not match unrelated failures', () => {
     expect(isAgentTurnAbortError('model stalled', 'No output')).toBe(false)
+  })
+})
+
+describe('isStalePiExtensionCtxError', () => {
+  it('matches the pi stale-context banner', () => {
+    expect(
+      isStalePiExtensionCtxError(
+        'pi extension error',
+        'This extension ctx is stale after session replacement or reload.',
+      ),
+    ).toBe(true)
+  })
+
+  it('leaves a real extension failure visible', () => {
+    expect(isStalePiExtensionCtxError('pi extension error', 'boom in extension')).toBe(false)
   })
 })
 

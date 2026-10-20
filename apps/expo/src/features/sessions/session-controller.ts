@@ -1,5 +1,6 @@
 import type { SessionsCache } from "./session-cache";
 import { groupSessionsByRecency, type SessionGroup, type SessionSummary } from "./session-types";
+import { unreadBadgeCount } from "../notifications/app-icon-badge";
 import { setUnreadSessionCount } from "./unread-store";
 
 type SessionsApi = ReturnType<(typeof import("./cloud-api"))["createCloudSessionsApi"]>;
@@ -91,26 +92,34 @@ export function createSessionsController(
     notify();
   };
 
-  const beginRequest = (mode: "load" | "refresh") => {
+  const beginRequest = (mode: "load" | "refresh", quiet = false) => {
     requestId += 1;
     const currentRequestId = requestId;
     const preserveRows = mode === "refresh" && state.sessions.length > 0;
-    setState(buildLoadingState(state, preserveRows, mode === "refresh" && preserveRows));
+    // A quiet refresh over rows already on screen changes nothing until the
+    // answer lands: no "refreshing" state, so no pull-to-refresh spinner.
+    if (!(quiet && preserveRows)) {
+      setState(buildLoadingState(state, preserveRows, mode === "refresh" && preserveRows));
+    }
     return { currentRequestId, preserveRows };
   };
 
   const isCurrentRequest = (id: number) => id === requestId;
 
-  const hydrateFromCache = async (currentRequestId: number) => {
+  const hydrateFromCache = async () => {
     if (!cache || hydratedFromCache || !teamId) return;
     hydratedFromCache = true;
     try {
       const cached = await cache.load(teamId);
-      if (!cached || !isCurrentRequest(currentRequestId)) return;
-      // Don't clobber rows that arrived from the network while disk I/O
-      // was in flight — the network is authoritative.
+      // Not gated on the request id: launch fires `load` and the focus
+      // effect's quiet `refresh` together, and the refresh made this result
+      // "stale" — so the cached rows were dropped and the list sat on its
+      // skeleton until the network answered. The controller serves one team,
+      // so cached rows are never another team's; the one thing to avoid is
+      // clobbering rows the network already delivered.
+      if (!cached || cached.length === 0) return;
       if (state.sessions.length > 0) return;
-      setUnreadSessionCount(cached.filter((s) => s.hasUnread).length);
+      setUnreadSessionCount(unreadBadgeCount(cached, teamId), teamId);
       setState(buildDerivedState(cached));
     } catch {
       // best-effort
@@ -122,7 +131,7 @@ export function createSessionsController(
 
     // Kick off the cache hydration in parallel — first paint comes from
     // disk while the network fetch is still pending.
-    void hydrateFromCache(currentRequestId);
+    void hydrateFromCache();
 
     try {
       const sessions = await api.listSessions(teamId, currentActorId ?? undefined);
@@ -130,7 +139,7 @@ export function createSessionsController(
         return;
       }
 
-      setUnreadSessionCount(sessions.filter((s) => s.hasUnread).length);
+      setUnreadSessionCount(unreadBadgeCount(sessions, teamId), teamId);
       setState(buildDerivedState(sessions));
       void cache?.save(teamId, sessions);
     } catch (error) {
@@ -145,8 +154,14 @@ export function createSessionsController(
     }
   };
 
-  const refresh = async () => {
-    const { currentRequestId, preserveRows } = beginRequest("refresh");
+  /**
+   * `quiet`: a background refresh (the list regained focus, a message
+   * arrived). It must not drive the pull-to-refresh control — set while the
+   * screen is mid-transition, iOS shows the spinner and never takes it down.
+   * Only a pull by hand shows it.
+   */
+  const refresh = async (options?: { quiet?: boolean }) => {
+    const { currentRequestId, preserveRows } = beginRequest("refresh", options?.quiet === true);
 
     try {
       const sessions = await api.listSessions(teamId, currentActorId ?? undefined);
@@ -154,7 +169,7 @@ export function createSessionsController(
         return;
       }
 
-      setUnreadSessionCount(sessions.filter((s) => s.hasUnread).length);
+      setUnreadSessionCount(unreadBadgeCount(sessions, teamId), teamId);
       setState(buildDerivedState(sessions));
       void cache?.save(teamId, sessions);
     } catch (error) {

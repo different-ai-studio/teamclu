@@ -9,7 +9,8 @@ import { MainWindowRoot } from './components/MainWindowRoot'
 import './styles/globals.css'
 import './stores/dev-expose'
 import { i18nReady } from './lib/i18n'; // Initialize i18n
-import { appStoragePrefix, buildConfig } from '@/lib/config/build-config'
+import { appShortName, appStoragePrefix, buildConfig } from '@/lib/config/build-config'
+import { getDesktopDeviceId } from '@/lib/backend/cloud-api/device-id'
 import { fetchPublicConfig } from '@/lib/config/bootstrap'
 
 import { ensureBundledAmuxdCurrent } from '@/lib/daemon/daemon-version-upgrade'
@@ -40,7 +41,11 @@ void ensureBundledAmuxdCurrent()
 // before it settles are queued rather than dropped.
 void initSentry({
   dsn: 'https://87ad99c36806946fe743be71ed87fffe@o60909.ingest.us.sentry.io/4511110370295808',
-  release: `teamclu-web@${import.meta.env.PACKAGE_VERSION ?? '0.0.0'}`,
+  // Sentry Release Health is our DAU and version-adoption source (Aptabase
+  // was dropped: it never received events from users on mainland networks).
+  // Sessions can only be split by release and environment, not by tag, so the
+  // brand goes into the release name — every brand reports to this one DSN.
+  release: `${appShortName}-web@${import.meta.env.PACKAGE_VERSION ?? '0.0.0'}`,
   environment: import.meta.env.DEV ? 'development' : 'production',
   // Dev builds report into the same Sentry project as shipped ones, and the
   // org is on the free tier: 5,000 errors per *month*, no on-demand budget.
@@ -61,6 +66,11 @@ void initSentry({
   // arguments, fetch URLs) goes through the same redaction the Diagnostics
   // viewer uses. The Rust process applies the same policy in main.rs.
   sendDefaultPii: false,
+  // The random per-install id the client-version report already uses — no
+  // account, email or IP. Set as the initial scope so the session opened at
+  // init carries it: Release Health counts users from the session's id, and
+  // without one every session counted as zero users.
+  initialScope: { user: { id: getDesktopDeviceId() } },
   beforeBreadcrumb: redactSentryBreadcrumb,
 })
 

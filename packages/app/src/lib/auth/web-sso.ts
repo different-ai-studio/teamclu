@@ -177,6 +177,17 @@ export async function runWebSso(opts: RunWebSsoOptions = {}): Promise<string> {
       // the shared webview store, whose refresh token may already be consumed.
       clearStorageKey: cfg.storageKey,
     });
+    // webview_create parks every new webview off-window until someone calls
+    // webview_show. The tab view waits for the page to commit before showing;
+    // here the React frame already surrounds the panel, so a white panel while
+    // the sign-in page loads is fine — show it straight away.
+    await invoke("webview_show", {
+      label: WEBSSO_LABEL,
+      x: layout.webviewX,
+      y: layout.webviewY,
+      width: layout.webviewW,
+      height: layout.webviewH,
+    });
 
     for (;;) {
       if (signal.aborted) throw new AuthError("Sign-in was cancelled.", 0, "websso_cancelled");

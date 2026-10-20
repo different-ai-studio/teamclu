@@ -81,6 +81,26 @@ function buildWebSsoConfig() {
   return webSso;
 }
 
+// Where users download the desktop app — shown by clients (the iOS onboarding
+// screen) that cannot do the work themselves and must send the user to a
+// computer. Always answered, so every client has one URL to show: an unset,
+// blank, or non-http(s) DESKTOP_DOWNLOAD_URL falls back to the public releases
+// page instead of leaving the field out.
+export const DEFAULT_DESKTOP_DOWNLOAD_URL = "https://github.com/different-ai-studio/teamclu/releases";
+
+function resolveDesktopDownloadUrl(): string {
+  const raw = envValue("DESKTOP_DOWNLOAD_URL");
+  if (!raw) return DEFAULT_DESKTOP_DOWNLOAD_URL;
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "https:" || url.protocol === "http:") return raw;
+  } catch {
+    // fall through
+  }
+  console.warn(`[config] DESKTOP_DOWNLOAD_URL is not an http(s) URL, using default: ${raw}`);
+  return DEFAULT_DESKTOP_DOWNLOAD_URL;
+}
+
 // ---------------------------------------------------------------------------
 // Feature flags
 // ---------------------------------------------------------------------------
@@ -223,12 +243,12 @@ export function buildBootstrapConfig() {
   return config;
 }
 
-// Non-sensitive config that clients need BEFORE they have a session — currently
-// just the Web SSO 快捷登录 target, which is a login method (the authed bootstrap
-// above runs only post-sign-in, too late for the login screen). No bearer; never
-// includes the MQTT broker credentials.
+// Non-sensitive config that clients need BEFORE they have a session — the Web
+// SSO 快捷登录 target and login-method flags (the authed bootstrap above runs
+// only post-sign-in, too late for the login screen), plus the desktop download
+// URL for onboarding. No bearer; never includes the MQTT broker credentials.
 export function buildPublicConfig() {
-  const config: any = {};
+  const config: any = { desktopDownloadUrl: resolveDesktopDownloadUrl() };
   const webSso = buildWebSsoConfig();
   if (webSso) config.webSso = webSso;
   const features = buildPublicFeatures();

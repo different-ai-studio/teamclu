@@ -1,4 +1,5 @@
 import { requireString } from "../routing-utils.js";
+import { ApiError } from "../http-utils.js";
 
 export function registerAccount(router) {
   // Graduate the caller out of the shared DEFAULT_ORG into their own org:
@@ -17,14 +18,11 @@ export function registerAccount(router) {
     return { body: result };
   });
 
-  // Phone identity upgrade (partner-aligned): bind a phone to the caller's account
-  // using a code from /v1/auth/phone/send-code, writing a public.users row in
-  // the default org. Authenticated (caller bearer forwarded to the RPC).
-  router.post("/v1/account/bind-phone", async (ctx) => {
-    const body = ctx.json ?? {};
-    requireString(body.phone, "phone");
-    requireString(body.code, "code");
-    const result = await ctx.repository.bindPhone({ phone: body.phone, code: body.code });
-    return { body: result };
+  // Phone binding belonged to the anonymous-account upgrade, which is gone, and
+  // it wrote the identity into DEFAULT_ORG, which TeamClu no longer does
+  // (docs/plans/2026-10-08-staff-only-identity-model.md). No client calls it;
+  // kept as an explicit 410 so a stray caller gets a legible answer.
+  router.post("/v1/account/bind-phone", async () => {
+    throw new ApiError(410, "phone_binding_removed", "phone binding is no longer supported");
   });
 }

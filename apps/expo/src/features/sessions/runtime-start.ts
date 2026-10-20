@@ -1,6 +1,6 @@
 import { AgentType } from "@teamclu/app/proto/amux_pb";
 
-export type ExpoAgentType = "claude" | "opencode" | "codex";
+export type ExpoAgentType = "pi" | "claude" | "opencode" | "codex";
 
 export type RuntimeStartAgent = {
   actorId: string;
@@ -74,11 +74,17 @@ export function resolveExpoAgentType(
       return AgentType.OPENCODE;
     case "codex":
       return AgentType.CODEX;
+    case "cursor":
+      return AgentType.CURSOR;
     case "claude-code":
     case "claude_code":
     case "claude":
-    default:
       return AgentType.CLAUDE_CODE;
+    case "pi":
+    default:
+      // The daemon runs pi only (ADR-0014). Defaulting to Claude Code sent a
+      // `runtime_start` every current daemon refuses.
+      return AgentType.PI;
   }
 }
 
@@ -88,12 +94,39 @@ function pickAgentType(
 ): AgentType {
   if (explicitSelection) return resolveExpoAgentType(explicitSelection.agentType);
 
-  const supported = agent.agentTypes.filter((type) =>
-    type === "claude" || type === "claude-code" || type === "claude_code" ||
-    type === "opencode" || type === "codex",
-  );
-  const preferred = agent.defaultAgentType ?? supported[0] ?? "claude";
+  const known = new Set(["pi", "claude", "claude-code", "claude_code", "opencode", "codex", "cursor"]);
+  const supported = agent.agentTypes.filter((type) => known.has(type));
+  // The default only counts if the agent still lists it — a stale default is
+  // exactly the `agent_type must be in agent_types` rejection.
+  const preferred =
+    agent.defaultAgentType &&
+    (supported.length === 0 || supported.includes(agent.defaultAgentType))
+      ? agent.defaultAgentType
+      : supported[0] ?? "pi";
   return resolveExpoAgentType(preferred);
+}
+
+/**
+ * The workspace a new session seats `agentId` on — iOS
+ * `SessionCreationInput.defaultWorkspace` (#1681): the agent's
+ * `default_workspace_id` when it is in `workspaces`, otherwise the first
+ * workspace the agent owns. Never another agent's workspace.
+ *
+ * Every entry point (New Session, voice, add agent, the config sheet's initial
+ * pick) must use this. The daemon keeps one pi host per worktree and only
+ * prewarms the default workspace's, so seating a session anywhere else pays a
+ * cold host spawn (~12s on a small ARM box) before the agent sees the prompt.
+ */
+export function defaultWorkspaceFor<W extends { id: string; agentId?: string | null }>(
+  agentId: string,
+  defaultWorkspaceId: string | null | undefined,
+  workspaces: ReadonlyArray<W>,
+): W | null {
+  if (defaultWorkspaceId) {
+    const preferred = workspaces.find((workspace) => workspace.id === defaultWorkspaceId);
+    if (preferred) return preferred;
+  }
+  return workspaces.find((workspace) => workspace.agentId === agentId) ?? null;
 }
 
 function pickWorkspace(
@@ -109,13 +142,8 @@ function pickWorkspace(
     return selected;
   }
 
-  if (agent.defaultWorkspaceId) {
-    const defaultWorkspace = workspaces.find((workspace) => workspace.id === agent.defaultWorkspaceId);
-    if (defaultWorkspace) return defaultWorkspace;
-  }
-
-  const ownedWorkspace = workspaces.find((workspace) => workspace.agentId === agent.actorId);
-  if (ownedWorkspace) return ownedWorkspace;
+  const workspace = defaultWorkspaceFor(agent.actorId, agent.defaultWorkspaceId, workspaces);
+  if (workspace) return workspace;
 
   throw new Error(
     `No workspace bound to ${agent.displayName || "agent"} — register one on the daemon first.`,

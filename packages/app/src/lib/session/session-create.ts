@@ -15,7 +15,6 @@ import { resolveAgentSessionModel } from '@/lib/agent/resolve-agent-session-mode
 import { useAgentModelPickStore } from '@/stores/agent-model-pick-store'
 import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { trackEvent } from '@/lib/telemetry/analytics'
 import { mqttPublish } from '@/lib/mqtt/mqtt-bridge'
 import {
   LiveEventEnvelopeSchema,
@@ -138,11 +137,6 @@ export async function createSessionShell(
     teamId: args.teamId,
     participantCount: participantActorIds.length,
   })
-  void trackEvent('session_created', {
-    participantCount: participantActorIds.length,
-    hasIdea: !!args.ideaId,
-  })
-
   // Mirror into local libsql immediately so the session-list-store + Actors
   // panel see the new session without waiting for a Supabase refetch.
   if (isTauri()) {
@@ -227,6 +221,35 @@ function workspaceByActorIdFromLocal(
  * Used by composer quick-create. The new-session dialog can pass an explicit
  * folder instead; both bind the same `localWorkspace` shape.
  */
+/**
+ * This daemon's own workspace: its configured default, else the one it owns.
+ *
+ * Mirrors the `defaultWorkspaceId → ownedWorkspaceId` tail of
+ * `resolveAgentRuntimeWorkspaceId`, which is the established order for "where
+ * does this agent run". Only rows carrying a path qualify — a row without one
+ * cannot seat a local runtime, and passing it would put us back where the
+ * window folder did.
+ */
+async function localDaemonOwnWorkspace(
+  teamId: string,
+  agentActorId: string,
+): Promise<{ workspaceId: string; path: string } | null> {
+  try {
+    const lookups = await loadAgentWorkspaceLookups(teamId, '', [agentActorId])
+    const lookup = lookups.get(agentActorId)
+    const preferred = lookup?.defaultWorkspaceId?.trim() || lookup?.ownedWorkspaceId?.trim() || ''
+    if (!preferred) return null
+
+    const rows = await getBackend().workspaces.listDaemonWorkspaces(teamId, agentActorId)
+    const row = rows.find((r) => r.id?.trim() === preferred && !r.archived)
+    const path = row?.path?.trim() || ''
+    if (!path) return null
+    return { workspaceId: preferred, path }
+  } catch {
+    return null
+  }
+}
+
 export async function resolveLocalDaemonWorkspaceBinding(
   teamId: string,
   agentActorIds: readonly string[],
@@ -244,6 +267,29 @@ export async function resolveLocalDaemonWorkspaceBinding(
   }
   if (!localDaemonActorId) return null
   if (!agentActorIds.some((id) => id.trim() === localDaemonActorId)) return null
+
+  // The agent's own workspace outranks the window folder.
+  //
+  // The folder is ambient UI state, and `teamclu-workspace-path` survives
+  // restarts, so a path that arrived from another machine sticks. Resolving it
+  // matches on the path string alone — it happily returns the workspace row
+  // another member created for the same-looking path — and the seat written
+  // from it names a directory this daemon does not have. The start is then
+  // refused with WORKSPACE_PATH_UNAVAILABLE and the outbox retries forever,
+  // which surfaces as "the agent is offline".
+  //
+  // Observed 2026-09-23: `/Users/liziliu/TeamClu` in this client's stored
+  // folder, a valid cloud workspace row behind it, and every new session with
+  // this daemon stuck retrying. The agent's own default pointed at a real
+  // local path the whole time.
+  const ownWorkspace = await localDaemonOwnWorkspace(trimmedTeam, localDaemonActorId)
+  if (ownWorkspace) {
+    return {
+      agentId: localDaemonActorId,
+      workspaceId: ownWorkspace.workspaceId,
+      path: ownWorkspace.path,
+    }
+  }
 
   const path = useWorkspaceStore.getState().workspacePath?.trim() || ''
   if (!path) return null
@@ -915,11 +961,6 @@ export async function startAgentRuntimesAsync(
     teamId: args.teamId,
     agentActorIds: args.agentActorIds,
     modelId: args.modelId,
-    failureCount: failures.length,
-  })
-  void trackEvent('agent_started', {
-    agentCount: args.agentActorIds.length,
-    agentType: args.agentType,
     failureCount: failures.length,
   })
   return { failures, runtimeIdsByAgent }

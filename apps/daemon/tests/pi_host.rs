@@ -346,6 +346,39 @@ async fn ui_requests_are_tagged_with_their_session() {
     );
 }
 
+/// Closing session A must not invalidate the extension runtime session B still
+/// uses. pi's `dispose()` does that by default; the host scopes invalidation
+/// to A's runner so B's next prompt does not emit `extension_error`.
+#[tokio::test]
+async fn closing_one_session_leaves_the_other_extension_runtime_usable() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let mut host = Host::spawn().await;
+    let a = host.new_session().await;
+    let b = host.new_session().await;
+
+    let id = host
+        .send(serde_json::json!({"type": "close_session", "sessionId": a}))
+        .await;
+    host.response(&id).await;
+
+    let prompt = host
+        .send(serde_json::json!({
+            "type": "prompt",
+            "sessionId": b,
+            "message": "still here"
+        }))
+        .await;
+    let _ = host.response(&prompt).await;
+    let (_end, skipped) = host.wait_for(|l| is_agent_end(l, &b)).await;
+    assert!(
+        skipped.iter().all(|l| l["type"] != "extension_error"),
+        "closing A poisoned B's extension runtime: {skipped:?}"
+    );
+}
+
 /// Session lifecycle plumbing: reopen-is-idempotent, state and commands are
 /// per-session, close works, and a missing session file fails an open.
 #[tokio::test]

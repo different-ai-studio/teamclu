@@ -13,6 +13,7 @@ import { useSessionMessageStore } from "./session-message-store";
 import { useSessionListStore, type SessionListEntry } from "./session-list-store";
 import { useSessionSelectionStore } from "./session-selection-store";
 import { useCurrentTeamStore } from "./current-team";
+import { answersRecordFromOrdered } from "@/lib/teamclu/question-settlement";
 
 // ────────────────────────────────────────────────────────────────────
 // Session store.
@@ -32,6 +33,18 @@ import { useCurrentTeamStore } from "./current-team";
 export interface AnsweredQuestionSnapshot {
   questions: Question[];
   answers: Record<string, string>;
+  /** Actor id, or a display name when the answer came from a chat channel. */
+  answeredBy?: string;
+  rejected?: boolean;
+}
+
+export interface QuestionPeerSettlement {
+  questionId: string;
+  toolCallId: string;
+  /** One array of selected labels per question, in order. */
+  answers: string[][];
+  answeredBy: string;
+  rejected: boolean;
 }
 
 export interface SessionState {
@@ -106,8 +119,32 @@ export interface SessionState {
   ) => Promise<import("@/lib/teamclu/reply-acp-permission").PermissionReplyResult>;
   addPendingQuestion: (question: PendingQuestionState) => void;
   resolveQuestion: (questionId: string) => void;
+  /**
+   * Apply a `question_replied` / `question_rejected` event. The daemon
+   * broadcasts it after the first answer wins, so every client drops the
+   * card and shows the same result.
+   */
+  settleQuestionFromPeer: (settlement: QuestionPeerSettlement) => void;
   answerQuestion: (answers: Record<string, string>, questionId?: string) => Promise<void>;
   skipQuestion: (questionId?: string) => Promise<void>;
+}
+
+function localAnsweredBy(): string {
+  return useCurrentTeamStore.getState().currentMember?.id?.trim() ?? "";
+}
+
+function snapshotFromLocal(
+  questions: Question[],
+  answers: Record<string, string>,
+  rejected: boolean,
+): AnsweredQuestionSnapshot {
+  const answeredBy = localAnsweredBy();
+  return {
+    questions,
+    answers,
+    ...(answeredBy ? { answeredBy } : {}),
+    ...(rejected ? { rejected: true } : {}),
+  };
 }
 
 /** `Record<questionId|index, label>` → `[[label], ...]` in question order. */
@@ -225,6 +262,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => ({
       pendingQuestions: s.pendingQuestions.filter((q) => q.questionId !== questionId),
     })),
+  settleQuestionFromPeer: (settlement) => {
+    if (!settlement.questionId) return;
+    const pending = get().pendingQuestions.find((q) => q.questionId === settlement.questionId);
+    const toolCallId = settlement.toolCallId || pending?.toolCallId || "";
+    if (toolCallId) {
+      const existing = get().answeredQuestionsByToolCallId[toolCallId];
+      const questions =
+        pending?.questions?.length ? pending.questions : (existing?.questions ?? []);
+      const incoming = settlement.answers.some((row) => row.some((label) => label.trim()));
+      const answers = settlement.rejected
+        ? {}
+        : incoming
+          ? answersRecordFromOrdered(questions, settlement.answers)
+          : (existing?.answers ?? {});
+      set((s) => ({
+        answeredQuestionsByToolCallId: {
+          ...s.answeredQuestionsByToolCallId,
+          [toolCallId]: {
+            questions,
+            answers,
+            ...(settlement.answeredBy ? { answeredBy: settlement.answeredBy } : {}),
+            ...(settlement.rejected ? { rejected: true } : {}),
+          },
+        },
+      }));
+    }
+    get().resolveQuestion(settlement.questionId);
+  },
   answerQuestion: async (answers, questionId) => {
     const pending = get().pendingQuestions.find(
       (q) => !questionId || q.questionId === questionId,
@@ -241,14 +306,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       requestId: pending.questionId,
       answers: orderAnswers(list, answers),
     });
+    // A peer (or our own echo) may have settled this while the command was
+    // in flight. Their snapshot is the one the daemon accepted.
+    if (!get().pendingQuestions.some((q) => q.questionId === pending.questionId)) return;
     set((s) => ({
       answeredQuestionsByToolCallId: {
         ...s.answeredQuestionsByToolCallId,
-        [pending.toolCallId]: { questions: list, answers },
+        [pending.toolCallId]: snapshotFromLocal(list, answers, false),
       },
     }));
-    // Pi (and some backends) never emit question_replied — dismiss locally once
-    // the command succeeds, same as skipQuestion.
     get().resolveQuestion(pending.questionId);
   },
   skipQuestion: async (questionId) => {
@@ -265,10 +331,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       answers: [],
       reject: true,
     });
+    if (!get().pendingQuestions.some((q) => q.questionId === pending.questionId)) return;
     set((s) => ({
       answeredQuestionsByToolCallId: {
         ...s.answeredQuestionsByToolCallId,
-        [pending.toolCallId]: { questions: list, answers: {} },
+        [pending.toolCallId]: snapshotFromLocal(list, {}, true),
       },
     }));
     get().resolveQuestion(pending.questionId);

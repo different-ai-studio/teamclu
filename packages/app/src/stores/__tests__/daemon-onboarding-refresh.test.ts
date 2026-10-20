@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import i18n from '@/lib/i18n'
 
+vi.mock('@/lib/daemon/local-agent-install', () => ({
+  refreshAfterLocalAgentInstall: vi.fn(async () => {}),
+}))
+
 // Hoisted, mutable test state shared with the module mocks below.
 const h = vi.hoisted(() => ({
   isTauriVal: true,

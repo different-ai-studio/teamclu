@@ -117,4 +117,43 @@ describe("session-store", () => {
     });
     expect(useSessionStore.getState().pendingQuestions).toHaveLength(0);
   });
+
+  it("keeps a peer settlement that landed while this client's answer was in flight", async () => {
+    useSessionStore.setState({
+      pendingQuestions: [
+        {
+          questionId: "q1",
+          toolCallId: "tc1",
+          messageId: "m1",
+          sessionId: "s1",
+          agentActorId: "a1",
+          questions: [
+            {
+              id: "q-1",
+              header: "Pick",
+              question: "Which?",
+              options: [{ label: "A", value: "a" }],
+            },
+          ],
+        },
+      ],
+    });
+    mockAnswerAcpQuestion.mockImplementation(async () => {
+      useSessionStore.getState().settleQuestionFromPeer({
+        questionId: "q1",
+        toolCallId: "tc1",
+        answers: [["B"]],
+        answeredBy: "member-2",
+        rejected: false,
+      });
+    });
+
+    await useSessionStore.getState().answerQuestion({ "q-1": "A" }, "q1");
+
+    expect(useSessionStore.getState().answeredQuestionsByToolCallId.tc1).toMatchObject({
+      answers: { "q-1": "B", "0": "B" },
+      answeredBy: "member-2",
+    });
+    expect(useSessionStore.getState().pendingQuestions).toHaveLength(0);
+  });
 });

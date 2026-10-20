@@ -86,6 +86,7 @@ describe("onboardingReducer", () => {
   it("sets failed when bootstrapFailed and clears stale session context", () => {
     const state = onboardingReducer(
       {
+        ...initialOnboardingState,
         route: "ready",
     teamChoices: [],
         isBusy: true,
@@ -118,6 +119,7 @@ describe("onboardingReducer", () => {
   it("resets to auth state when signedOut", () => {
     const state = onboardingReducer(
       {
+        ...initialOnboardingState,
         route: "ready",
     teamChoices: [],
         isBusy: true,

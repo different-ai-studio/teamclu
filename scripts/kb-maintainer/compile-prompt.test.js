@@ -25,7 +25,9 @@ test("buildCompilePrompt treats the model as a compiler and wraps the source as 
   assert.match(prompt, /documents\/handbook\/leave.md/);
   assert.match(prompt, /heading=请假/);
   assert.match(prompt, /pages\/\*\.md/);
-  assert.match(prompt, /working directory is the wiki root/i);
+  assert.match(prompt, /Do not use tools/);
+  assert.match(prompt, /<<<WIKI_FILE/);
+  assert.doesNotMatch(prompt, /working directory is the wiki root/i);
   assert.match(prompt, /Wiki Link/);
   assert.match(prompt, /at least one page/);
   assert.match(prompt, /one-line string summary/);

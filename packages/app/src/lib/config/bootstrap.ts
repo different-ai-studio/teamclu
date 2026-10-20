@@ -261,5 +261,12 @@ export async function fetchAndApplyBootstrap(args: {
   }
 
   await saveServerConfig({ ...saved, ...mqttPatch, ...webSsoPatch });
+  // The desktop client connects as soon as the shell is up. On a machine with
+  // no local agent that attempt often runs before this address exists, and the
+  // wiring does not watch the config. Ask it to read the address and connect.
+  // An installed agent keeps the daemon's connection; this helper no-ops there.
+  await import("@/stores/mqtt-reconnect")
+    .then((m) => m.reconnectDesktopMqttWhenLocalAgentAbsent())
+    .catch(() => undefined);
   return "applied";
 }

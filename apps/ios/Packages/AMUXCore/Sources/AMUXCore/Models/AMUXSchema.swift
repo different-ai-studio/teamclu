@@ -10,6 +10,18 @@ import SwiftData
 /// 2. Introduce a new schema version that points at the live models.
 /// 3. Register a migration stage for the transition.
 public enum AMUXSchemaV1: VersionedSchema {
+    // 1.22.0: AgentEvent and OutboxMessage grew `replyToMessageID` — quoted
+    // replies composed on iOS. Additive and optional, so lightweight
+    // migration covers it; older rows read as "not a reply".
+    // 1.21.0: Session grew `appId`, `appName` and `ideaTitle` — what the
+    // session list's third line names. Additive with defaults, so lightweight
+    // migration covers it; old rows read as "no context" until the next list
+    // refresh fills them.
+    // 1.20.0: SessionIdea grew `teamId`, `updatedAt` and `attachmentURLsJSON`
+    // so the Ideas tab can draw its list from cache before the network (and,
+    // at cold launch, the team runtime) is up. Additive with defaults, so
+    // lightweight migration covers it; pre-1.20 rows have no team and are
+    // skipped until the next list fetch rewrites them.
     // 1.19.0: CachedActor grew `roles` — the member's org role assignments
     // (`roles_users`), which replace `teamRole` as the source of truth for role
     // display. Additive with a default, so lightweight migration covers it and
@@ -21,7 +33,7 @@ public enum AMUXSchemaV1: VersionedSchema {
     // what the server already holds.
     // 1.17.0: AgentEvent grew diffPath/diffOldText/diffNewText and Session
     // grew autoApprovePermissions + source (additive, lightweight migration).
-    public static var versionIdentifier: Schema.Version { Schema.Version(1, 19, 0) }
+    public static var versionIdentifier: Schema.Version { Schema.Version(1, 22, 0) }
 
     public static var models: [any PersistentModel.Type] {
         [

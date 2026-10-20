@@ -20,6 +20,7 @@ import type { Actor } from "../actors/actor-types";
 import { setOutboxStatus, syncOutboxFromDao } from "./outbox-store";
 import type { OutboxDao } from "./outbox-db";
 import type { OutboxSender } from "./outbox-sender";
+import { attachmentMetadata, attachmentUrlsForAgent } from "./message-attachments";
 import { peekPendingAttachments, takePendingAttachments } from "./pending-attachments";
 import {
   decodePendingQuestion,
@@ -33,6 +34,7 @@ import type { SessionDetailCache } from "./session-detail-cache";
 import type { StreamingSnapshotStore } from "./streaming-snapshot";
 import {
   buildSessionDetailState,
+  type MessageAttachment,
   type SessionDetailState,
   type SessionMessage,
   type SessionSummary,
@@ -46,6 +48,8 @@ import {
   type TimelineState,
 } from "./timeline-reducer";
 import type { createCloudSessionsApi } from "./cloud-api";
+import { endChatMetric, markChatMetric, startChatMetric } from "../../lib/telemetry/chat-metrics";
+import { publishOutboxRowViaMqtt } from "./session-outbox-publish";
 
 export type SessionDetailConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -73,11 +77,30 @@ export type SessionDetailControllerState = {
   canLoadOlder: boolean;
   /** A back-scroll fetch is in flight. */
   isLoadingOlder: boolean;
+  /**
+   * The newest page from the network has been folded in (or failed). Until
+   * then the feed may be cache-only, so a row the screen is looking for —
+   * a restored read position, a message a push pointed at — may still arrive.
+   */
+  historySettled: boolean;
 };
 
 type SessionsApi = ReturnType<typeof createCloudSessionsApi>;
 
+export type OutgoingOverride = {
+  content: string;
+  mentionActorIds: string[];
+  replyToMessageId: string | null;
+};
+
+/** iOS `runWatchdog`: a stream silent this long is treated as over. */
+export const STALE_STREAM_TIMEOUT_MS = 90_000;
+
 type SessionDetailControllerDeps = {
+  /** Test seam for the stale-stream watchdog. */
+  staleStreamTimeoutMs?: number;
+  /** How often a growing stream is published; 0 publishes every chunk. */
+  streamEmitIntervalMs?: number;
   api: Pick<
     SessionsApi,
     | "getSession"
@@ -113,7 +136,18 @@ type SessionDetailController = {
   loadOlderMessages: () => Promise<void>;
   setComposerText: (value: string) => void;
   setReplyTarget: (target: { messageId: string; content: string } | null) => void;
-  sendMessage: () => Promise<void>;
+  /**
+   * Sends the composer. With `outgoing`, sends that text instead — "ask
+   * again" — leaving the composer, its reply target and attachments alone.
+   */
+  sendMessage: (outgoing?: OutgoingOverride) => Promise<void>;
+  /**
+   * Posts `text` into another session of this team as an ordinary message,
+   * mentioning no one, so agents there take it in as context without
+   * answering (iOS multi-select forward). Written to the server before it is
+   * published: that session is not open here, so nothing would retry it.
+   */
+  forwardText: (targetSessionId: string, text: string) => Promise<void>;
   /**
    * Drop a question locally once its answer has been published. The daemon also
    * emits `question_replied`/`question_rejected`, but a slow broker echo would
@@ -150,6 +184,7 @@ const initialState: SessionDetailControllerState = {
   pendingQuestions: [],
   canLoadOlder: false,
   isLoadingOlder: false,
+  historySettled: false,
 };
 
 function toIsoFromSeconds(value: bigint): string {
@@ -339,6 +374,13 @@ function runtimeMessageFromAcpEvent(
           request_id: event.value.requestId,
           tool_id: event.value.requestId,
           tool_name: event.value.toolName,
+          // The agent's own choices (allow once / always / reject). Dropped
+          // before, so a reply could never name the option it picked.
+          options: event.value.options.map((option) => ({
+            id: option.optionId,
+            kind: option.kind,
+            name: option.name,
+          })),
         },
         teamId,
       });
@@ -426,9 +468,86 @@ export function createSessionDetailController(
     }
   }
 
+  // Stale-run watchdog — iOS `SessionActivityState.expireStaleRun`. An agent
+  // killed mid-turn (daemon crash, machine asleep, the idle status lost while
+  // the phone was backgrounded) sends nothing more, and without this its card
+  // said "replying" for the rest of the screen's life. Any change to a stream
+  // re-arms its timer; silence for the whole window closes it, exactly as an
+  // idle status would.
+  const staleStreamTimers = new Map<string, { buffer: unknown; timer: ReturnType<typeof setTimeout> }>();
+  function armStaleStreamWatchdog(next: TimelineState) {
+    for (const [agentId, entry] of staleStreamTimers) {
+      const buffer = next.streamingByAgent.get(agentId);
+      if (!buffer || buffer.isComplete) {
+        clearTimeout(entry.timer);
+        staleStreamTimers.delete(agentId);
+      }
+    }
+    for (const [agentId, buffer] of next.streamingByAgent) {
+      if (buffer.isComplete) continue;
+      const existing = staleStreamTimers.get(agentId);
+      if (existing?.buffer === buffer) continue;
+      if (existing) clearTimeout(existing.timer);
+      const timer = setTimeout(() => {
+        staleStreamTimers.delete(agentId);
+        if (disposed) return;
+        const current = timeline.streamingByAgent.get(agentId);
+        if (current !== buffer || current.isComplete) return;
+        publishTimelineState(
+          reduceTimeline(timeline, {
+            kind: "streamingDelta",
+            agentId,
+            messageId: current.messageId,
+            messageKind: current.kind,
+            deltaText: "",
+            createdAt: new Date().toISOString(),
+            isComplete: true,
+            model: current.model,
+          }),
+        );
+      }, deps.staleStreamTimeoutMs ?? STALE_STREAM_TIMEOUT_MS);
+      staleStreamTimers.set(agentId, { buffer, timer });
+    }
+  }
+
   function setState(nextState: SessionDetailControllerState) {
     state = nextState;
+    // Every path that shows a stream goes through here — including restored
+    // background snapshots, which never pass `publishTimelineState` — so the
+    // stale-stream watchdog is armed here rather than there.
+    armStaleStreamWatchdog(timeline);
+    cancelDeferredEmit();
     emit();
+  }
+
+  /**
+   * Streamed text arrives one network chunk at a time — often dozens a second
+   * — and every emit is a synchronous render of the whole session screen. A
+   * change that only grows a stream's text is published at most once per
+   * interval instead; `getState` still returns it at once, and any other
+   * change emits immediately and takes the pending text with it.
+   */
+  const STREAM_EMIT_INTERVAL_MS = deps.streamEmitIntervalMs ?? 50;
+  let deferredEmitTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function cancelDeferredEmit() {
+    if (!deferredEmitTimer) return;
+    clearTimeout(deferredEmitTimer);
+    deferredEmitTimer = null;
+  }
+
+  function setStreamingState(nextState: SessionDetailControllerState) {
+    state = nextState;
+    armStaleStreamWatchdog(timeline);
+    if (STREAM_EMIT_INTERVAL_MS <= 0) {
+      emit();
+      return;
+    }
+    if (deferredEmitTimer) return;
+    deferredEmitTimer = setTimeout(() => {
+      deferredEmitTimer = null;
+      emit();
+    }, STREAM_EMIT_INTERVAL_MS);
   }
 
   function disconnectRealtime() {
@@ -500,14 +619,21 @@ export function createSessionDetailController(
   }
 
   function publishTimelineState(next: TimelineState) {
+    const messagesChanged = next.messages !== timeline.messages;
     timeline = next;
-    setState({
+    const nextState = {
       ...state,
       messages: next.messages,
       streamingByAgent: next.streamingByAgent,
       status: nextStatusForMessages(state.session, next.messages, state.status),
-    });
-    scheduleTimelinePersist();
+    };
+    if (messagesChanged) {
+      setState(nextState);
+      // Streamed text is not a row yet; it is persisted when it commits.
+      scheduleTimelinePersist();
+    } else {
+      setStreamingState(nextState);
+    }
   }
 
   /**
@@ -624,6 +750,12 @@ export function createSessionDetailController(
     }
 
     try {
+      // `onConnectionState` replays the current state synchronously on
+      // registration. That replay is not a reconnect: `load()` sets
+      // "connecting" before it gets here, so counting the replayed "connected"
+      // as one re-ran `load()`, which set "connecting" and registered again —
+      // a loop that left the screen on "Reconnecting…" after any drop.
+      let replaying = true;
       cleanupConnectionStateListener = deps.mqtt.onConnectionState((connectionState) => {
         if (disposed || currentToken !== loadToken) {
           return;
@@ -640,7 +772,8 @@ export function createSessionDetailController(
         // already fetching.
         const wasDropped =
           state.connectionState === "disconnected" || state.connectionState === "connecting";
-        const reconnected = connectionState === "connected" && wasDropped && hasConnectedOnce;
+        const reconnected =
+          !replaying && connectionState === "connected" && wasDropped && hasConnectedOnce;
         if (connectionState === "connected") hasConnectedOnce = true;
 
         setState({
@@ -652,6 +785,7 @@ export function createSessionDetailController(
           void controller.load({ preserveExisting: true });
         }
       });
+      replaying = false;
 
       const topic = `amux/${deps.teamId}/session/${deps.sessionId}/live`;
       unsubscribeSession = deps.mqtt.subscribe(topic, (payload) => {
@@ -782,6 +916,7 @@ export function createSessionDetailController(
           streamingByAgent: timeline.streamingByAgent,
           canLoadOlder: false,
           isLoadingOlder: false,
+          historySettled: false,
         });
       }
 
@@ -855,13 +990,19 @@ export function createSessionDetailController(
             status: "error",
             errorMessage: toErrorMessage(sessionResult.reason, "加载会话失败。"),
             isRefreshing: false,
+            historySettled: true,
           });
+          // `load()` dropped the realtime listener on entry; returning without
+          // putting it back left a refresh that failed (flaky network right
+          // after a reconnect) stuck on "connecting" with nothing to recover it.
+          await connectRealtime(state.session, currentToken);
         } else {
           setState({
             ...state,
             status: "error",
             errorMessage: toErrorMessage(sessionResult.reason, "加载会话失败。"),
             isRefreshing: false,
+            historySettled: true,
           });
         }
         return;
@@ -877,6 +1018,7 @@ export function createSessionDetailController(
           messages: [],
           isRefreshing: false,
           streamingByAgent: timeline.streamingByAgent,
+          historySettled: true,
         });
         return;
       }
@@ -889,6 +1031,7 @@ export function createSessionDetailController(
           messages: state.messages,
           errorMessage: toErrorMessage(messagesResult.reason, "加载消息失败。"),
           isRefreshing: false,
+          historySettled: true,
         });
         await connectRealtime(session, currentToken);
         return;
@@ -914,6 +1057,7 @@ export function createSessionDetailController(
         isRefreshing: preserveExisting,
         streamingByAgent: timeline.streamingByAgent,
         canLoadOlder: olderCursor !== null,
+        historySettled: true,
       });
 
       // Persist authoritative network state for the next cold start.
@@ -1010,8 +1154,8 @@ export function createSessionDetailController(
         replyTarget: target,
       });
     },
-    async sendMessage() {
-      const content = state.composerText.trim();
+    async sendMessage(outgoing) {
+      const content = (outgoing ? outgoing.content : state.composerText).trim();
       const session = state.session;
 
       if (!session) {
@@ -1019,7 +1163,7 @@ export function createSessionDetailController(
       }
 
       const hasPendingAttachments =
-        peekPendingAttachments(deps.teamId, deps.sessionId).length > 0;
+        !outgoing && peekPendingAttachments(deps.teamId, deps.sessionId).length > 0;
       if (!content && !hasPendingAttachments) {
         return;
       }
@@ -1053,10 +1197,22 @@ export function createSessionDetailController(
         const createdAtSeconds = BigInt(Math.floor(Date.parse(createdAt) / 1000));
         const messageId = uuidV4();
         outboxMessageId = messageId;
+        // M3: ends when the outbox has published it (see the route's send).
+        startChatMetric("chat.send", messageId);
         setOutboxStatus(messageId, "sending");
 
-        const pendingAttachments = takePendingAttachments(deps.teamId, deps.sessionId);
-        const attachmentsPayload = pendingAttachments.length > 0
+        const pendingAttachments = outgoing ? [] : takePendingAttachments(deps.teamId, deps.sessionId);
+
+        const replyTo = outgoing ? outgoing.replyToMessageId : state.replyTarget?.messageId ?? null;
+        const mentionActorIds = outgoing
+          ? outgoing.mentionActorIds
+          : resolveMentionActorIdsForComposer({
+              content,
+              session,
+              teamActors: deps.getTeamActors?.() ?? [],
+            });
+
+        const attachmentsPayload: MessageAttachment[] | undefined = pendingAttachments.length > 0
           ? pendingAttachments.map((row) => ({
               url: row.publicUrl || row.path,
               path: row.path,
@@ -1064,13 +1220,12 @@ export function createSessionDetailController(
               size: row.size,
             }))
           : undefined;
-
-        const replyTo = state.replyTarget?.messageId ?? null;
-        const mentionActorIds = resolveMentionActorIdsForComposer({
-          content,
-          session,
-          teamActors: deps.getTeamActors?.() ?? [],
-        });
+        // Files ride in `metadata` (iOS + desktop keys) — FC drops a top-level
+        // `attachments`, which left every Expo upload off the stored row.
+        const outgoingMetadata = {
+          mention_actor_ids: mentionActorIds,
+          ...attachmentMetadata(attachmentsPayload),
+        };
 
         await deps.api.insertOutgoingMessage({
           id: messageId,
@@ -1079,17 +1234,17 @@ export function createSessionDetailController(
           senderActorId: actorId,
           content,
           createdAt,
-          metadata: { mention_actor_ids: mentionActorIds },
-          attachments: attachmentsPayload,
+          metadata: outgoingMetadata,
           replyToMessageId: replyTo,
         });
+        markChatMetric("chat.send", messageId, "persisted");
 
         const optimisticMessage: SessionMessage = {
           content,
           createdAt,
           kind: "text",
           messageId,
-          metadata: { mention_actor_ids: mentionActorIds },
+          metadata: outgoingMetadata,
           model: "",
           replyToMessageId: replyTo ?? "",
           senderActorId: actorId,
@@ -1104,10 +1259,10 @@ export function createSessionDetailController(
         const mergedMessages = optimisticNext.messages;
         setState({
           ...state,
-          composerText: "",
+          composerText: outgoing ? state.composerText : "",
           messages: mergedMessages,
           streamingByAgent: optimisticNext.streamingByAgent,
-          replyTarget: null,
+          replyTarget: outgoing ? state.replyTarget : null,
           status: nextStatusForMessages(session, mergedMessages, state.status),
         });
 
@@ -1120,14 +1275,10 @@ export function createSessionDetailController(
             content,
             mentionActorIds,
             replyToMessageId: replyTo,
-            attachments: pendingAttachments.map((row) => ({
-              url: row.publicUrl || row.path,
-              path: row.path,
-              mime: row.mime,
-              size: row.size,
-            })),
+            attachments: attachmentsPayload ?? [],
             createdAt: Date.parse(createdAt),
           });
+          markChatMetric("chat.send", messageId, "enqueued");
           await syncOutboxFromDao(deps.outbox.dao, [messageId]);
         } else {
           // Fallback path (existing inline publish)
@@ -1138,6 +1289,8 @@ export function createSessionDetailController(
             kind: MessageKind.TEXT,
             content,
             createdAt: createdAtSeconds,
+            replyToMessageId: replyTo ?? "",
+            attachmentUrls: attachmentUrlsForAgent(attachmentsPayload),
           });
           const sessionMessage = create(SessionMessageEnvelopeSchema, {
             message: protoMessage,
@@ -1158,14 +1311,17 @@ export function createSessionDetailController(
               toBinary(LiveEventEnvelopeSchema, envelope),
               false,
             );
+            markChatMetric("chat.send", messageId, "published");
+            endChatMetric("chat.send", messageId);
           } catch {
             setOutboxStatus(messageId, "failed");
+            endChatMetric("chat.send", messageId, "failed");
             setState({
               ...state,
               messages: mergedMessages,
               streamingByAgent: optimisticNext.streamingByAgent,
               status: nextStatusForMessages(session, mergedMessages, state.status),
-              composerText: "",
+              composerText: outgoing ? state.composerText : "",
               isSending: false,
               sendErrorMessage: "消息已写入，但实时分发失败，请稍后刷新确认。",
             });
@@ -1179,13 +1335,14 @@ export function createSessionDetailController(
           messages: mergedMessages,
           streamingByAgent: optimisticNext.streamingByAgent,
           status: nextStatusForMessages(session, mergedMessages, state.status),
-          composerText: "",
+          composerText: outgoing ? state.composerText : "",
           isSending: false,
           sendErrorMessage: null,
         });
       } catch (error) {
         if (outboxMessageId) {
           setOutboxStatus(outboxMessageId, "failed");
+          endChatMetric("chat.send", outboxMessageId, "failed");
         }
         setState({
           ...state,
@@ -1194,8 +1351,48 @@ export function createSessionDetailController(
         });
       }
     },
+    async forwardText(targetSessionId, text) {
+      const content = text.trim();
+      if (!content || targetSessionId === deps.sessionId) return;
+      const actorId = await resolveSenderActorId();
+      const messageId = uuidV4();
+      const createdAt = Date.now();
+      await deps.api.insertOutgoingMessage({
+        id: messageId,
+        teamId: deps.teamId,
+        sessionId: targetSessionId,
+        senderActorId: actorId,
+        content,
+        createdAt: new Date(createdAt).toISOString(),
+        metadata: { mention_actor_ids: [] },
+        replyToMessageId: null,
+      });
+      // Best effort: the row is written, and open clients pick it up on
+      // their next load if the live publish is lost.
+      await publishOutboxRowViaMqtt(
+        {
+          messageId,
+          sessionId: targetSessionId,
+          teamId: deps.teamId,
+          senderActorId: actorId,
+          content,
+          mentionActorIds: [],
+          replyToMessageId: null,
+          attachments: [],
+          state: "pending",
+          attemptCount: 0,
+          lastError: null,
+          lastAttemptAt: null,
+          nextAttemptAt: null,
+          createdAt,
+        },
+        deps.mqtt,
+      ).catch(() => {});
+    },
     async dispose() {
       disposed = true;
+      for (const entry of staleStreamTimers.values()) clearTimeout(entry.timer);
+      staleStreamTimers.clear();
       // Last chance to keep whatever the coalescing window still holds.
       flushTimelinePersist();
       deps.outbox?.sender.stop();

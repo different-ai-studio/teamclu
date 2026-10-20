@@ -26,9 +26,14 @@ import { AppState, Platform, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ToastHost, showToast } from "../src/ui/Toast";
+import { ActionSheetHost } from "../src/ui/ActionSheetHost";
+import { MarkdownWarmup } from "../src/features/sessions/components/MarkdownWarmup";
 import { createConfiguredInviteApi, parseInviteToken } from "../src/features/onboarding/invite-api";
+import { formatJoinLink, parseJoinLink } from "../src/features/onboarding/join-link";
+import { t } from "../src/lib/i18n";
 import { isOAuthCallbackUrl } from "../src/features/onboarding/onboarding-oauth";
 import { createOnboardingController } from "../src/features/onboarding/onboarding-store";
+import { createIntroFlagStore } from "../src/features/onboarding/onboarding-intent";
 import type {
   OnboardingRoute,
   OnboardingState,
@@ -66,9 +71,36 @@ import { tearDownCloudAuthForServerSwitch } from "../src/lib/auth/cloud-auth";
 import { createPushTokenApi } from "../src/features/notifications/push-token-api";
 import { registerNativePushToken } from "../src/features/notifications/push-registration";
 import { getDb } from "../src/lib/db/sqlite";
-import { decodeRuntimeInfo } from "../src/lib/teamclu/runtime-info";
+import { decodeActorPresence } from "../src/features/actors/actor-presence";
+import { setActiveUnreadTeam } from "../src/features/sessions/unread-store";
+import {
+  endChatMetric,
+  markChatMetric,
+  startChatMetric,
+  tagChatMetric,
+} from "../src/lib/telemetry/chat-metrics";
+import {
+  replyRequestFromResponse,
+  sendNotificationReply,
+  SESSION_MESSAGE_CATEGORY,
+  SESSION_REPLY_ACTION,
+} from "../src/features/notifications/notification-reply";
+import { saveComposerDraft } from "../src/features/sessions/composer-drafts";
+import { createConfiguredSessionsApi } from "../src/features/sessions/api-provider";
+import { useAppIconBadgeSync } from "../src/features/notifications/app-icon-badge-sync";
+import { AndroidUpdatePrompt } from "../src/features/updates/AndroidUpdatePrompt";
+import { useOfflineLaunchRevalidation } from "../src/features/onboarding/use-offline-launch-revalidation";
+
+// M4: from the JS bundle starting to the session list's first rows (the
+// list marks the end). The native process start before JS is not counted.
+startChatMetric("app.cold_start", "", { startedAt: Date.now() });
 
 const onboardingApi = createOnboardingApi(supabase);
+const introFlagStore = createIntroFlagStore();
+
+function isSignedInRoute(route: OnboardingRoute): boolean {
+  return route === "ready" || route === "noTeam" || route === "createTeam";
+}
 
 type OnboardingController = ReturnType<typeof createOnboardingController>;
 
@@ -116,6 +148,10 @@ export function routeToHref(route: OnboardingRoute): string | null {
       return "/create-team";
     case "selectTeam":
       return "/select-team";
+    case "selectIdentity":
+      return "/select-identity";
+    case "noTeam":
+      return "/no-team";
     case "ready":
       return "/(app)/sessions";
     case "loading":
@@ -158,7 +194,8 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
-    void controller.bootstrap().catch(() => {
+    // Opens on the cached team when it can, checking memberships behind it.
+    void controller.launch().catch(() => {
       // Error state is stored inside the controller for the routes to render.
     });
   }, [controller, hydrated]);
@@ -194,7 +231,10 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const token = parseInviteToken(url);
+      // A team join link (#1672) rides the same pending slot in its
+      // `teamclu://join?…` form; the replay below tells the two apart.
+      const joinLink = parseJoinLink(url);
+      const token = joinLink ? formatJoinLink(joinLink) : parseInviteToken(url);
       if (!token) return;
       void savePendingInviteToken(token).then(() => {
         void controller.bootstrap();
@@ -209,14 +249,42 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
     };
   }, [controller]);
 
+  // Anyone who has reached the app skips the first-install intro later (after
+  // a sign-out), including people upgrading from a build without it — iOS
+  // sets the same flag from ContentView.
   useEffect(() => {
     if (state.route !== "ready") return;
+    void introFlagStore.markSeen();
+  }, [state.route]);
+
+  // Redeem a stashed invite once signed in. Not only on `ready`: a joiner
+  // with no team yet sits on `noTeam` (or, without a recorded intent, on
+  // `createTeam`), and the invite is exactly what gets them out of there.
+  useEffect(() => {
+    if (!isSignedInRoute(state.route)) return;
     let cancelled = false;
     void (async () => {
       const token = await loadPendingInviteToken();
       if (!token || cancelled) return;
       if (token === lastClaimedTokenRef.current) return;
       lastClaimedTokenRef.current = token;
+      const joinLink = parseJoinLink(token);
+      if (joinLink) {
+        // Redeemed through the controller, which lands on the joined team —
+        // and so changes the route, cancelling this effect; report regardless.
+        try {
+          await controller.joinByLink(joinLink.token, joinLink.cloudApiUrl);
+          showToast("success", t("Joined team via link"));
+        } catch (err) {
+          showToast(
+            "error",
+            err instanceof Error ? err.message : t("Couldn't redeem invite link."),
+          );
+        } finally {
+          await clearPendingInviteToken();
+        }
+        return;
+      }
       try {
         const result = await createConfiguredInviteApi(supabase).claim(token);
         if (cancelled) return;
@@ -245,7 +313,50 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (state.route !== "ready") return;
 
+    // The reply field on message notifications (FC sends the category).
+    void Notifications.setNotificationCategoryAsync(SESSION_MESSAGE_CATEGORY, [
+      {
+        identifier: SESSION_REPLY_ACTION,
+        buttonTitle: t("Reply"),
+        textInput: { submitButtonTitle: t("Send"), placeholder: t("Reply…") },
+        options: { opensAppToForeground: false },
+      },
+    ]).catch(() => {
+      // No reply field; the notification still opens the session.
+    });
+
+    const handledReplies = new Set<string>();
+    const sendReplyFromResponse = (response: unknown): boolean => {
+      const reply = replyRequestFromResponse(response);
+      if (!reply) return false;
+      // The same response can arrive from the listener and from the
+      // last-response replay on launch; send it once.
+      const key = `${notificationResponseDedupeKey(response) ?? reply.sessionId}:${reply.text}`;
+      if (handledReplies.has(key)) return true;
+      handledReplies.add(key);
+      const api = createConfiguredSessionsApi(supabase);
+      void sendNotificationReply(reply, {
+        getUserId: async () => (await supabase.auth.getSession()).data?.session?.user.id ?? null,
+        resolveMemberActorId: (teamId, userId) => api.resolveMemberActorId(teamId, userId),
+        insertOutgoingMessage: (input) => api.insertOutgoingMessage(input),
+        saveDraft: saveComposerDraft,
+        notifyFailure: async (sessionId) => {
+          await Notifications.scheduleNotificationAsync({
+            content: {
+              title: t("Reply not sent"),
+              body: t("Saved as a draft in the session."),
+              data: { session_id: sessionId },
+            },
+            trigger: null,
+          });
+        },
+      });
+      return true;
+    };
+
     const openSessionFromResponse = (response: unknown) => {
+      // A reply typed into the notification stays where it was typed.
+      if (sendReplyFromResponse(response)) return;
       const href = notificationResponseToSessionHref(response);
       if (!href) return;
       const dedupeKey = notificationResponseDedupeKey(response) ?? href;
@@ -346,6 +457,23 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
     };
   }, [state.route]);
 
+  // The Sessions badge belongs to one team. Switching (or signing out) zeroes
+  // it, and a late answer from the previous team's list is dropped.
+  useEffect(() => {
+    if (state.route === "ready") markChatMetric("app.cold_start", "", "route_ready");
+    // Signed out / onboarding: no list to reach, not a cold-start sample.
+    else if (state.route !== "loading") endChatMetric("app.cold_start", "", "cancelled");
+  }, [state.route]);
+
+  const activeTeamId = state.currentTeam?.id ?? null;
+  useEffect(() => {
+    setActiveUnreadTeam(activeTeamId);
+  }, [activeTeamId]);
+  // App icon badge = unread sessions; cleared on the sign-in screen (iOS #1608).
+  useAppIconBadgeSync(state.route === "needsAuth");
+  // Entered on the cached team without network: recheck once it is back (iOS #1606).
+  useOfflineLaunchRevalidation(controller, state.route);
+
   // Wire up team-scoped MQTT + ConnectedAgentsStore when the user is ready.
   // Tears down and recreates automatically when the team or actor changes.
   useEffect(() => {
@@ -353,6 +481,40 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
     if (!state.currentTeam || !state.currentMemberActorId) return;
 
     let disposed = false;
+    // Back in the foreground: a client dropped while backgrounded reconnects
+    // now rather than at the end of its backoff wait.
+    let stopResumeMetric: (() => void) | null = null;
+    const foregroundSubscription = AppState.addEventListener("change", (next) => {
+      if (next !== "active") return;
+      const client = teamMqttRef.current;
+      if (!client) return;
+      // M5: back in the foreground → MQTT usable again (at once if it stayed up).
+      stopResumeMetric?.();
+      startChatMetric("app.foreground_resume");
+      let done = false;
+      let unsubscribe: (() => void) | null = null;
+      const timeout = setTimeout(() => finish("failed"), 60_000);
+      const finish = (outcome: "ok" | "failed" | "cancelled") => {
+        if (done) return;
+        done = true;
+        clearTimeout(timeout);
+        unsubscribe?.();
+        stopResumeMetric = null;
+        endChatMetric("app.foreground_resume", "", outcome);
+      };
+      stopResumeMetric = () => finish("cancelled");
+      let wasConnected: boolean | null = null;
+      unsubscribe = client.onConnectionState((connection) => {
+        // The first call replays the current state.
+        if (wasConnected === null) {
+          wasConnected = connection === "connected";
+          tagChatMetric("app.foreground_resume", "", "path", wasConnected ? "alive" : "reconnect");
+        }
+        if (connection === "connected") finish("ok");
+      });
+      if (done) unsubscribe();
+      client.resume();
+    });
 
     void (async () => {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -370,12 +532,21 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
         url: mqttUrl,
         username: state.currentMemberActorId!,
         password: accessToken,
-        clientId: `teamclu-expo-${state.currentMemberActorId!.slice(0, 8)}`,
+        // One id per connection, like the native app. A fixed per-actor id made
+        // the same person's phone and tablet take the broker session from each
+        // other: each connect kicked the other device offline.
+        clientId: `teamclu-expo-${state.currentMemberActorId!.slice(0, 8)}-${Math.random()
+          .toString(16)
+          .slice(2, 10)}`,
+        refreshPassword: async () =>
+          (await supabase.auth.getSession()).data?.session?.access_token ?? null,
       });
       try {
         await mqtt.start();
+        markChatMetric("app.cold_start", "", "mqtt_connected");
       } catch {
-        return;
+        // Keep the client: it retries with backoff (and on foreground), so a
+        // launch without network comes online once the network does.
       }
       if (disposed) {
         void mqtt.dispose();
@@ -389,9 +560,9 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
       const subscriber = createRuntimeStateSubscriber({
         mqtt,
         teamId: state.currentTeam!.id,
-        decode: decodeRuntimeInfo,
-        onRuntimeInfo: (actorId, runtimeId, info) =>
-          connectedAgentsStoreRef.current?.handleRuntimeInfo(actorId, runtimeId, info),
+        decode: decodeActorPresence,
+        onPresence: (actorId, presence) =>
+          connectedAgentsStoreRef.current?.handlePresence(actorId, presence),
       });
       const store = createConnectedAgentsStore({
         teamId: state.currentTeam!.id,
@@ -413,6 +584,8 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
 
     return () => {
       disposed = true;
+      foregroundSubscription.remove();
+      stopResumeMetric?.();
       void connectedAgentsStoreRef.current?.dispose();
       void teamMqttRef.current?.dispose();
       connectedAgentsStoreRef.current = null;
@@ -488,6 +661,9 @@ function RootLayout() {
           <View style={styles.layout}>
             <Slot />
             <ToastHost />
+            <ActionSheetHost />
+            <MarkdownWarmup />
+            <AndroidUpdatePrompt />
           </View>
         </SafeAreaView>
       </OnboardingProvider>

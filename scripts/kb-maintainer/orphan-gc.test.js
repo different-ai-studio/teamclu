@@ -103,3 +103,38 @@ test("gcOrphanPages strips a missing source and keeps the page when others remai
   assert.match(text, /documents\/handbook\/b\.md/);
   assert.doesNotMatch(text, /documents\/handbook\/a\.md/);
 });
+
+test("gcOrphanPages deletes a page citing a restricted source instead of detaching it", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "kb-orphan-"));
+  const wikiRoot = path.join(root, "wiki");
+  writePage(
+    wikiRoot,
+    "leave.md",
+    [
+      { path: "documents/handbook/leave.md", sha256: "aa".repeat(32), locators: ["heading=请假"] },
+      { path: "documents/finance/pay.md", sha256: "bb".repeat(32), locators: ["heading=工资"] },
+    ],
+    "# 请假\n\n请假期间工资按八折发放。\n",
+  );
+  writePage(wikiRoot, "other.md", [
+    { path: "documents/handbook/other.md", sha256: "cc".repeat(32), locators: ["heading=其他"] },
+  ]);
+  const state = {
+    sources: {
+      "documents/handbook/leave.md": { status: "imported" },
+      "documents/handbook/other.md": { status: "imported" },
+    },
+  };
+
+  const result = gcOrphanPages({
+    wikiRoot,
+    state,
+    restrictedPrefixes: ["documents/finance/"],
+  });
+
+  assert.deepEqual(result.removed, ["pages/leave.md"]);
+  assert.deepEqual(result.rewritten, []);
+  assert.deepEqual(result.recompile, ["documents/handbook/leave.md"]);
+  assert.equal(fs.existsSync(path.join(wikiRoot, "pages", "leave.md")), false);
+  assert.equal(fs.existsSync(path.join(wikiRoot, "pages", "other.md")), true);
+});

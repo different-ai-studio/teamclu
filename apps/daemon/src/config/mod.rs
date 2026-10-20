@@ -24,8 +24,8 @@ mod workspace_resolver;
 pub use daemon_config::{
     daemon_host_label, daemon_machine_hostname, ChannelsConfig, ClaudeAgentConfig,
     CursorAgentConfig, DaemonConfig, DiscordChannel, EmailChannel, FeishuChannel, HttpConfig,
-    KookChannel, SeaTalkChannel, TeamShareConfig, TransportKind, WeChatChannel, WeComChannel,
-    BOOTSTRAP_ACTOR_NAME,
+    KookChannel, SeaTalkBot, SeaTalkChannel, TeamShareConfig, TransportKind, WeChatChannel,
+    WeComChannel, BOOTSTRAP_ACTOR_NAME,
 };
 // Only test fixtures build a `DaemonConfig` field by field.
 #[cfg(test)]

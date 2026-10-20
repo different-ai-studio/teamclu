@@ -12,6 +12,8 @@ import {
   X,
   Send,
 } from 'lucide-react'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentSectionGate } from '@/hooks/use-local-agent-install'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -188,6 +190,13 @@ function JobCard({
 // ==================== Main CronSection ====================
 
 export function CronSection() {
+  const gate = useLocalAgentSectionGate()
+  if (gate === 'wait') return null
+  if (gate === 'card') return <LocalAgentRequiredCard />
+  return <CronSectionBody />
+}
+
+function CronSectionBody() {
   const { t } = useTranslation()
   const {
     jobs,

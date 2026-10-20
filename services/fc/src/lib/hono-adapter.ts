@@ -110,7 +110,11 @@ function toResponse(c: Context, result: any, requestId: string): Response {
   const nullBody = status === 204 || status === 205 || status === 304;
   return new Response(nullBody ? null : JSON.stringify(result?.body), {
     status,
-    headers: { "Content-Type": "application/json", "X-Request-Id": requestId },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Request-Id": requestId,
+      ...(result?.headers ?? {}),
+    },
   });
 }
 

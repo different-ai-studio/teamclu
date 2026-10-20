@@ -12,7 +12,6 @@ import {
   Clock,
   Coins,
   Wallet,
-  Shield,
   SlidersHorizontal,
   Bookmark,
   ChevronDown,
@@ -37,8 +36,11 @@ import { useUpdaterStore } from '@/stores/updater'
 import { hasAnyChannel } from '@/lib/config/build-config'
 import { getFeatures, useFeatures } from '@/lib/config/remote-features'
 import { useUIStore, type SettingsSection } from '@/stores/ui'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 import { usePlatformOperator } from '@/lib/admin/platform-operator'
 import { SettingsSectionBody } from './section-registry'
+
 interface SettingsProps {
   onClose?: () => void
 }
@@ -54,7 +56,6 @@ interface Section {
 const primarySections: Section[] = [
   { id: 'general', label: 'General', labelKey: 'settings.nav.general', icon: Settings2 },
   { id: 'shortcuts', label: 'Shortcuts', labelKey: 'settings.nav.shortcuts', icon: Bookmark },
-  { id: 'privacy', label: 'Privacy & Telemetry', labelKey: 'settings.nav.privacy', icon: Shield },
   { id: 'cache', label: 'Local Cache', labelKey: 'settings.nav.cache', icon: Database },
   { id: 'diagnostics', label: 'Diagnostics', labelKey: 'settings.nav.diagnostics', icon: LifeBuoy },
 ]
@@ -64,7 +65,7 @@ const teamManagementSections: Section[] = [
   { id: 'billing', label: 'Billing', labelKey: 'settings.nav.billing', icon: Wallet },
   { id: 'tokenUsage', label: 'Token Usage', labelKey: 'settings.nav.tokenUsage', icon: Coins },
   { id: 'leaderboard', label: 'Leaderboard', labelKey: 'settings.nav.leaderboard', icon: Trophy },
-  { id: 'teamRoles', label: '团队角色', labelKey: 'settings.nav.teamRoles', icon: Users },
+  { id: 'teamRoles', label: '组织角色', labelKey: 'settings.nav.teamRoles', icon: Users },
 ]
 
 // Platform operator sections. Shown only to an operator of this deployment,
@@ -181,6 +182,7 @@ export function Settings(_props?: SettingsProps) {
   )
 
   const { operator } = usePlatformOperator()
+  const localAgentAbsent = useLocalAgentAbsent()
 
   type AccordionGroup = 'client' | 'teamManagement' | 'daemon' | 'localAgent' | 'operator'
   const groupForSection = (id: SettingsSection): AccordionGroup => {
@@ -227,6 +229,15 @@ export function Settings(_props?: SettingsProps) {
   const navGroups = operator
     ? [clientGroup, teamManagementGroup, daemonGroup, localAgentGroup, operatorGroup]
     : [clientGroup, teamManagementGroup, daemonGroup, localAgentGroup]
+  const visibleNavGroups = localAgentAbsent
+    ? navGroups.filter((group) => group.id !== 'daemon' && group.id !== 'localAgent')
+    : navGroups
+  const sectionsHiddenWithoutLocalAgent = React.useMemo(() => {
+    const ids = new Set<SettingsSection>()
+    for (const section of filteredDaemonSections) ids.add(section.id)
+    for (const section of filteredLocalAgentSections) ids.add(section.id)
+    return ids
+  }, [filteredDaemonSections, filteredLocalAgentSections])
   const [expandedGroup, setExpandedGroup] = React.useState<AccordionGroup | null>(() => groupForSection(activeView))
   const toggleGroup = (group: AccordionGroup) => {
     setExpandedGroup(prev => (prev === group ? null : group))
@@ -238,13 +249,20 @@ export function Settings(_props?: SettingsProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView])
 
+  React.useEffect(() => {
+    if (!localAgentAbsent) return
+    if (sectionsHiddenWithoutLocalAgent.has(activeView)) {
+      setActiveView('general')
+    }
+  }, [localAgentAbsent, activeView, sectionsHiddenWithoutLocalAgent])
+
   return (
     <div className="flex h-full bg-background text-foreground">
       {/* Sidebar navigation */}
       <div className="flex w-60 flex-col border-r border-border bg-background">
         <ScrollArea className="flex-1 overflow-hidden py-3">
           <div className="space-y-0.5 px-2">
-            {navGroups.map((group) => {
+            {visibleNavGroups.map((group) => {
               const GroupIcon = group.icon
               const isExpanded = expandedGroup === group.id
               return (
@@ -305,6 +323,7 @@ export function Settings(_props?: SettingsProps) {
                 </React.Fragment>
               )
             })}
+            {localAgentAbsent ? <LocalAgentRequiredCard className="mt-1" /> : null}
           </div>
         </ScrollArea>
 

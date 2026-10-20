@@ -36,6 +36,12 @@ describe('shortenScanPath', () => {
     )
   })
 
+  it('shortens Windows roots spelled with backslashes', () => {
+    const opts = { home: 'C:\\Users\\me', workspacePath: 'C:\\ws' }
+    expect(shortenScanPath('C:\\ws\\.claude\\skills', opts)).toBe('.claude/skills')
+    expect(shortenScanPath('C:\\Users\\me\\.agents\\skills', opts)).toBe('~/.agents/skills')
+  })
+
   it('does not treat a sibling directory as being inside the workspace', () => {
     // `/ws-other` starts with `/ws` as a string but is a different directory.
     expect(shortenScanPath('/ws-other/.claude/skills', { workspacePath: '/ws' })).toBe(

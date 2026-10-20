@@ -18,7 +18,7 @@ import html
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import oss2
 
@@ -39,6 +39,28 @@ def human(n):
 
 def short_sha(h):
     return (h[:16] + "…" + h[-8:]) if len(h) > 26 else h
+
+
+def release_time(iso):
+    """'2026-10-15 16:54 (UTC+8)' — the team ships from UTC+8, so the page does
+    too, and says so. The page script mirrors this for a re-fetched APK."""
+    try:
+        t = datetime.fromisoformat(iso).astimezone(timezone(timedelta(hours=8)))
+    except (TypeError, ValueError):
+        return ""
+    return t.strftime("%Y-%m-%d %H:%M") + " (UTC+8)"
+
+
+def read_android_manifest(bucket, prefix):
+    """The current android/latest.json, or None for a brand with no APK."""
+    try:
+        m = json.loads(bucket.get_object(f"{prefix}/android/latest.json").read())
+    except oss2.exceptions.NoSuchKey:
+        return None
+    except Exception as e:  # never fail the desktop release over the APK pointer
+        print(f"::warning::could not read android/latest.json: {e}")
+        return None
+    return m if isinstance(m, dict) and m.get("url") else None
 
 
 def hex_to_rgb(value):
@@ -125,10 +147,11 @@ def build_css(accent, accent2):
         "footer{margin-top:30px;font-size:12px;color:var(--tx4);line-height:1.7}"
         "footer code{display:inline-block;margin-top:6px;background:var(--bg-tertiary);border:1px solid var(--bd);color:var(--tx3);padding:6px 10px;border-radius:8px;font:11.5px/1.5 ui-monospace,Menlo,monospace}"
         # segmented desktop / amuxd toggle
-        ".seg{display:inline-flex;gap:4px;margin:22px 0 30px;padding:4px;background:var(--bg-tertiary);border:1px solid var(--bd);border-radius:12px}"
+        ".seg{display:inline-flex;flex-wrap:wrap;justify-content:center;max-width:100%;gap:4px;margin:22px 0 30px;padding:4px;background:var(--bg-tertiary);border:1px solid var(--bd);border-radius:12px}"
         ".seg button{cursor:pointer;border:0;background:transparent;color:var(--tx3);font-size:13.5px;font-weight:600;padding:8px 18px;border-radius:9px;transition:color .15s,background .15s}"
         ".seg button.on{color:#1a0e0b;background:var(--grad);box-shadow:0 2px 12px var(--glow)}"
-        ".panel{display:none}.panel.on{display:block}"
+        ".panel{display:none}.panel.on{display:block}.seg button[hidden]{display:none}"
+        "@media(max-width:420px){.seg button{padding:8px 10px;font-size:12.5px}}"
         ".intro{color:var(--tx3);font-size:13px;line-height:1.6;margin:-8px 0 24px;text-align:left}"
     )
     r, g, b = hex_to_rgb(accent)
@@ -142,6 +165,8 @@ def build_css(accent, accent2):
 APPLE_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.4 12.6c0-2 1.6-3 1.7-3-.9-1.3-2.3-1.5-2.8-1.5-1.2-.1-2.3.7-2.9.7s-1.5-.7-2.5-.7c-1.3 0-2.5.7-3.1 1.9-1.3 2.3-.3 5.7 1 7.5.6.9 1.3 1.9 2.3 1.9.9 0 1.2-.6 2.3-.6s1.4.6 2.4.6 1.6-.9 2.2-1.8c.7-1 1-2 1-2-.1 0-1.9-.7-1.9-2.6zM14.6 5.3c.5-.6.9-1.5.8-2.3-.8 0-1.7.5-2.2 1.1-.5.5-.9 1.4-.8 2.2.9.1 1.7-.4 2.2-1z"/></svg>'
 WIN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5 10.5 4.4v7.1H3V5.5zm0 13L10.5 19.6v-7H3v6.5zM11.5 4.3 21 3v8.5h-9.5V4.3zm0 8.2H21V21l-9.5-1.3v-7.2z"/></svg>'
 LINUX_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-2 0-3.2 1.7-3.2 4 0 1.4.3 2.2.3 3.2 0 1-.9 1.8-1.7 3.2-.8 1.4-1.7 2.9-1.7 4.6 0 .9.3 1.5.8 1.9-.1.5 0 1 .3 1.4.5.6 1.4.7 2.3.7.8 0 1.5-.3 2-.3.5 0 1.2.3 2 .3.9 0 1.8-.1 2.3-.7.3-.4.4-.9.3-1.4.5-.4.8-1 .8-1.9 0-1.7-.9-3.2-1.7-4.6-.8-1.4-1.7-2.2-1.7-3.2 0-1 .3-1.8.3-3.2C15.2 3.7 14 2 12 2zm-1.2 4.1c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9zm2.4 0c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9z"/></svg>'
+
+ANDROID_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.6 9.48 19.44 6.3a.38.38 0 0 0-.66-.38l-1.86 3.22a11.4 11.4 0 0 0-9.84 0L5.22 5.92a.38.38 0 0 0-.66.38L6.4 9.48A10.8 10.8 0 0 0 1 18h22a10.8 10.8 0 0 0-5.4-8.52zM7 15.25a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5zm10 0a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5z"/></svg>'
 
 
 # One template serves every brand, so the page copy has to follow the brand's
@@ -170,6 +195,12 @@ STRINGS = {
             "手动安装：放到 <code>~/.amuxd/bin/amuxd</code> 后依次执行 "
             "<code>amuxd init</code> 与 <code>amuxd install-service</code>。"
         ),
+        "tab_android": "Android",
+        "android_intro": (
+            "手机端 App：查看会话、和 Agent 对话、语音发起任务。"
+            "用手机浏览器打开本页即可直接下载安装。"
+        ),
+        "android_footer": "首次安装需在系统设置中允许浏览器「安装未知应用」。",
     },
     "en": {
         "released_on": "Released {date}",
@@ -191,6 +222,15 @@ STRINGS = {
         "amuxd_footer": (
             "Manual install: place it at <code>~/.amuxd/bin/amuxd</code>, then run "
             "<code>amuxd init</code> followed by <code>amuxd install-service</code>."
+        ),
+        "tab_android": "Android",
+        "android_intro": (
+            "The mobile app: follow sessions, chat with agents and start tasks by "
+            "voice. Open this page in your phone's browser to download and install."
+        ),
+        "android_footer": (
+            "On first install, allow your browser to install unknown apps in "
+            "system settings."
         ),
     },
 }
@@ -461,6 +501,12 @@ if (-not $claimed) {
 Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
 '''.replace("__WIN_X64__", amuxd_url("windows", "x86_64")).replace("__SCHEME__", scheme)
 
+    auth = oss2.Auth(os.environ["OSS_ACCESS_KEY_ID"], os.environ["OSS_ACCESS_KEY_SECRET"])
+    endpoint = os.environ["OSS_ENDPOINT"]
+    if not endpoint.startswith("http"):
+        endpoint = "https://" + endpoint
+    bucket = oss2.Bucket(auth, endpoint, os.environ["OSS_BUCKET"])
+
     # --- release page (logo + size + truncated sha + copy + one-liners) ---
     accent, accent2 = resolve_accent(build_config)
     css = build_css(accent, accent2)
@@ -472,6 +518,20 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
 
     lang = page_cfg.get("lang") or "zh-CN"
     s = strings(lang)
+
+    # The APK ships on its own cadence (scripts/publish-android-apk.py). Bake the
+    # current one into the page so the Android tab never depends on a single
+    # client-side fetch succeeding; the page script still re-fetches to pick up
+    # an APK published after this page.
+    android = read_android_manifest(bucket, prefix)
+    ad = android or {}
+    ad_url = ad.get("url") or "#"
+    ad_label = f'Android {ad["version"]}' if ad.get("version") else "Android"
+    ad_sub = " · ".join(filter(None, [
+        f'APK · {int(ad["size"]) / 1048576:.1f} MB' if ad.get("size") else "",
+        s["released_on"].format(date=release_time(ad["pub_date"])) if ad.get("pub_date") else "",
+    ]))
+    ad_h = ad.get("sha256") or ""
 
     cards = "\n".join(_card(d, s) for d in downloads)
     amuxd_cards = "\n".join(_card(d, s) for d in amuxd_downloads)
@@ -500,19 +560,27 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
         + ('<meta name="robots" content="noindex">' if noindex else "")
         + '<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
-        '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
+        # media=print + onload: Google Fonts is often unreachable or stalls from
+        # mainland networks, and a render-blocking stylesheet also holds back the
+        # inline <script> at the end of <body>. The system font stack is fine.
+        '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" '
+        'rel="stylesheet" media="print" onload="this.media=&#39;all&#39;">'
         f"<title>{html.escape(title)}</title><style>{css}</style></head><body>"
         '<div class="card">'
         f'<img class="logo" src="{logo_url}" alt="{html.escape(app_name)}">'
         f"{badge_html}"
         f"<h1>{html.escape(app_name)} {html.escape(version)}</h1>"
         f'<div class="meta"><b>{html.escape(version)}</b> · '
-        f'{s["released_on"].format(date=pub_date[:10])}</div>'
+        f'{s["released_on"].format(date=release_time(pub_date))}</div>'
         # --- desktop / amuxd toggle ---
         '<div class="seg" role="tablist">'
         f'<button class="on" data-p="desktop" onclick="pick(this)">'
         f'{s["tab_desktop"].format(app=html.escape(app_name))}</button>'
-        f'<button data-p="amuxd" onclick="pick(this)">{s["tab_amuxd"]}</button></div>'
+        f'<button data-p="amuxd" onclick="pick(this)">{s["tab_amuxd"]}</button>'
+        # Hidden only when no APK existed at publish time; the script below still
+        # reveals it if one appears later. A brand with no Android build never
+        # shows the tab.
+        f'<button data-p="android" onclick="pick(this)"{"" if android else " hidden"}>{s["tab_android"]}</button></div>'
         # --- panel: desktop app ---
         '<div class="panel on" data-panel="desktop">'
         f'<div class="lbl"><span class="os-ico">{APPLE_SVG}</span><span class="os">macOS</span> {s["install_terminal"]}</div>'
@@ -537,21 +605,56 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
         f"{amuxd_cards}"
         f'<footer>{s["amuxd_footer"]}</footer>'
         "</div>"
+        # --- panel: Android app (baked from android/latest.json, refreshed client-side) ---
+        '<div class="panel" data-panel="android">'
+        f'<p class="intro">{s["android_intro"]}</p>'
+        f'<div class="dl"><a class="dl-main" id="ad-a" href="{html.escape(ad_url)}">'
+        f'<span class="dl-ico">{ANDROID_SVG}</span>'
+        f'<span class="dlc"><span class="dl-label" id="ad-l">{html.escape(ad_label)}</span>'
+        f'<span class="dl-sub" id="ad-s">{html.escape(ad_sub)}</span></span>'
+        '<span class="arr">↓</span></a>'
+        '<div class="sha-row"><span class="sha-k">SHA256</span>'
+        f'<code class="sha" id="ad-h">{html.escape(short_sha(ad_h))}</code>'
+        f'<button class="sha-copy" id="ad-c" data-sha="{html.escape(ad_h)}" '
+        f"onclick=\"navigator.clipboard.writeText(this.dataset.sha);this.textContent=&#39;{s['copied']}&#39;;"
+        f'setTimeout(()=>this.textContent=&#39;{s["copy"]}&#39;,1200)">{s["copy"]}</button></div></div>'
+        f'<footer>{s["android_footer"]}</footer>'
+        "</div>"
         f"{footer_html}"
         "</div>"
         '<script>function pick(b){'
         'document.querySelectorAll(".seg button").forEach(x=>x.classList.toggle("on",x===b));'
         "var p=b.dataset.p;"
+        # The page footer is the macOS quarantine hint — meaningless on a phone.
+        'document.querySelectorAll(".card>footer").forEach(x=>x.hidden=p==="android");'
         'document.querySelectorAll(".panel").forEach(x=>x.classList.toggle("on",x.dataset.panel===p));}'
+        # Relative URL: the manifest sits next to this page under the same prefix.
+        # Retried: one dropped request used to leave the tab hidden until a reload.
+        'function ad(n){fetch("android/latest.json",{cache:"no-store"}).then(r=>{if(r.ok)return r.json();if(r.status!==404)throw 0;return null;}).then(m=>{'
+        'if(!m||!m.url)return;'
+        'var b=document.querySelector(\'.seg button[data-p="android"]\'),w=b.hidden;'
+        'var mb=(m.size/1048576).toFixed(1)+" MB",d=new Date(m.pub_date);'
+        # Same shape as release_time() in this script.
+        f'if(!isNaN(d))mb+=" · "+{json.dumps(s["released_on"])}.replace("{{date}}",'
+        'new Date(d.getTime()+288e5).toISOString().slice(0,16).replace("T"," ")+" (UTC+8)");'
+        'document.getElementById("ad-a").href=m.url;'
+        'document.getElementById("ad-l").textContent="Android "+m.version;'
+        'document.getElementById("ad-s").textContent="APK · "+mb;'
+        'var h=m.sha256||"";'
+        'document.getElementById("ad-h").textContent=h.length>26?h.slice(0,16)+"…"+h.slice(-8):h;'
+        'document.getElementById("ad-c").dataset.sha=h;'
+        'b.hidden=false;'
+        # Only when the fetch is what revealed the tab; a baked-in tab was
+        # already auto-selected below, and the visitor may have moved on.
+        'if(w&&/Android/i.test(navigator.userAgent))pick(b);'
+        '}).catch(()=>{if(n<3)setTimeout(()=>ad(n+1),1500*(n+1));});}'
+        'ad(0);'
+        # Baked-in tab: auto-select it on phones without waiting for the fetch.
+        'var ab=document.querySelector(\'.seg button[data-p="android"]\');'
+        'if(!ab.hidden&&/Android/i.test(navigator.userAgent))pick(ab);'
         "</script>"
         "</body></html>"
     )
-
-    auth = oss2.Auth(os.environ["OSS_ACCESS_KEY_ID"], os.environ["OSS_ACCESS_KEY_SECRET"])
-    endpoint = os.environ["OSS_ENDPOINT"]
-    if not endpoint.startswith("http"):
-        endpoint = "https://" + endpoint
-    bucket = oss2.Bucket(auth, endpoint, os.environ["OSS_BUCKET"])
 
     short_cache = {"Cache-Control": "max-age=60, must-revalidate"}
     json_ct = {"Content-Type": "application/json; charset=utf-8"}

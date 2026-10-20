@@ -32,8 +32,8 @@ export type AgentConfigSheetProps = {
   workspaces: { id: string; path: string }[];
   defaultType?: AgentType;
   /**
-   * Backends this agent reports it can run (`actor.agentTypes`). Omitted means
-   * "unknown", which shows all of them.
+   * Backends this agent reports it can run (`actor.agentTypes`). Omitted or
+   * unrecognised means pi only — the one backend the daemon runs (iOS #1681).
    */
   agentTypes?: ReadonlyArray<string>;
   onConfirm: (selection: AgentConfigSelection) => void;
@@ -41,6 +41,7 @@ export type AgentConfigSheetProps = {
 };
 
 const AGENT_TYPE_LABELS: Record<AgentType, string> = {
+  pi: "Pi",
   claude: "Claude",
   opencode: "OpenCode",
   codex: "Codex",
@@ -49,7 +50,7 @@ const AGENT_TYPE_LABELS: Record<AgentType, string> = {
 export function AgentConfigSheet({
   actorDisplayName,
   workspaces,
-  defaultType = "claude",
+  defaultType = "pi",
   agentTypes,
   onConfirm,
   onCancel,

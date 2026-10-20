@@ -196,6 +196,10 @@ public final class SessionLiveActivityStore {
             // which @Observable reports as a change — check first.
             if litSessions[sessionID] != nil {
                 litSessions.removeValue(forKey: sessionID)
+                // The open session view finishes its Live Activity with the
+                // final answer; this covers the turn that ends while the
+                // user is elsewhere in the app (no-op when none is up).
+                TurnActivityCenter.sink?.finish(sessionID: sessionID, finalLine: nil)
             }
         } else if litSessions[sessionID] != next {
             litSessions[sessionID] = next

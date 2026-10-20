@@ -42,7 +42,8 @@ public actor CloudAPISessionsRepository: SessionsRepository {
                 lastMessagePreview: row.lastMessagePreview ?? "",
                 lastMessageAt: parseCloudDate(row.lastMessageAt),
                 createdAt: parseCloudDate(row.createdAt) ?? .distantPast,
-                source: row.source
+                source: row.source,
+                appID: row.appId
             )
         }
     }
@@ -188,17 +189,15 @@ public actor CloudAPISessionRepository: SessionRepository {
             title: title,
             mode: input.mode,
             ideaId: Self.normalized(input.ideaID),
+            appId: Self.normalized(input.appID),
             primaryAgentActorId: Self.normalized(input.primaryAgentID),
-            participantActorIds: input.participants.map(\.actorID)
+            participantActorIds: input.participants.map(\.actorID),
+            workspaceByActorId: input.workspaceByActorID.isEmpty ? nil : input.workspaceByActorID
         )
         // FC derives created_by from the bearer actor; per-participant roles
         // are not expressed by SessionCreate (participantActorIds is a flat
         // uuid[]) and are intentionally dropped.
         try await client.postVoid("/v1/sessions", body: body, idempotencyKey: input.id)
-        AnalyticsSink.track("session_created", [
-            "mode": input.mode,
-            "participantCount": String(input.participants.count),
-        ])
     }
 
     public func addParticipants(sessionID: String, actorIDs: [String]) async throws {
@@ -369,7 +368,7 @@ public actor CloudAPIMessagesRepository: MessagesRepository {
             kind: input.kind,
             metadata: metadata,
             turnId: nil,
-            replyToMessageId: nil,
+            replyToMessageId: input.replyToMessageID,
             model: nil,
             createdAt: nil
         )
@@ -507,6 +506,55 @@ public actor CloudAPIActorRepository: ActorRepository {
         }
         return InviteCreated(token: row.token, expiresAt: expiresAt, deeplink: row.deeplink ?? "",
                              cloudAPIURL: client.baseURL)
+    }
+
+    public func getJoinLink(teamID: String) async throws -> TeamJoinLink? {
+        do {
+            let row: CloudTeamJoinLink = try await client.get("/v1/teams/\(Self.enc(teamID))/join-link")
+            return try Self.teamJoinLink(row)
+        } catch CloudAPIError.requestFailed(status: 404, code: _, message: _) {
+            return nil
+        }
+    }
+
+    public func putJoinLink(teamID: String, input: TeamJoinLinkInput) async throws -> TeamJoinLink {
+        let body = CloudTeamJoinLinkRequest(
+            ttl: input.ttl.rawValue,
+            maxUses: input.maxUses,
+            rotate: input.rotate
+        )
+        let row: CloudTeamJoinLink = try await client.put(
+            "/v1/teams/\(Self.enc(teamID))/join-link",
+            body: body
+        )
+        return try Self.teamJoinLink(row)
+    }
+
+    public func revokeJoinLink(teamID: String) async throws {
+        try await client.deleteVoid("/v1/teams/\(Self.enc(teamID))/join-link")
+    }
+
+    public func joinByLink(token: String, cloudAPIURL: URL?) async throws -> JoinByLinkResult {
+        let target = cloudAPIURL.map { client.withBaseURL($0) } ?? client
+        let row: CloudJoinByLinkResult = try await target.post(
+            "/v1/join-links/\(Self.enc(token))/join"
+        )
+        return JoinByLinkResult(teamID: row.teamId)
+    }
+
+    private static func teamJoinLink(_ row: CloudTeamJoinLink) throws -> TeamJoinLink {
+        guard let createdAt = parseCloudDate(row.createdAt) else {
+            throw ActorRepositoryError.emptyResponse("team_join_link")
+        }
+        return TeamJoinLink(
+            token: row.token,
+            url: row.url,
+            expiresAt: parseCloudDate(row.expiresAt),
+            maxUses: row.maxUses,
+            useCount: row.useCount,
+            status: row.status,
+            createdAt: createdAt
+        )
     }
 
     public func upgradeAccount(teamID: String, orgName: String, contact: String?) async throws -> OrgUpgradeResult {
@@ -959,6 +1007,13 @@ public enum CloudAPIRepositoryFactory {
         CloudAPINotificationsRepository(client: client(configuration: configuration, accessToken: accessToken))
     }
 
+    public static func teamAppsRepository(
+        configuration: CloudAPIConfiguration,
+        accessToken: @escaping @Sendable () async throws -> String
+    ) -> any TeamAppRepository {
+        CloudAPITeamAppRepository(client: client(configuration: configuration, accessToken: accessToken))
+    }
+
     public static func clientVersion(client: CloudAPIClient) -> CloudAPIClientVersionRepository {
         CloudAPIClientVersionRepository(client: client)
     }
@@ -1048,6 +1103,8 @@ private struct CloudSessionFull: Decodable, Sendable {
     let updatedAt: String?
     /// `user` | `cron` | `gateway`; absent on older servers.
     let source: String?
+    /// The app the session belongs to; absent on older servers.
+    let appId: String?
 }
 
 private struct CloudSessionCreateRequest: Encodable, Sendable {
@@ -1056,8 +1113,10 @@ private struct CloudSessionCreateRequest: Encodable, Sendable {
     let title: String
     let mode: String
     let ideaId: String?
+    let appId: String?
     let primaryAgentActorId: String?
     let participantActorIds: [String]
+    let workspaceByActorId: [String: String]?
 }
 
 private struct CloudUpsertParticipantRequest: Encodable, Sendable {
@@ -1142,6 +1201,26 @@ private struct CloudInviteCreated: Decodable, Sendable {
 private struct CloudAttachmentUpload: Decodable, Sendable {
     let path: String
     let url: String
+}
+
+private struct CloudTeamJoinLink: Decodable, Sendable {
+    let token: String
+    let url: String
+    let expiresAt: String?
+    let maxUses: Int?
+    let useCount: Int
+    let status: String
+    let createdAt: String
+}
+
+private struct CloudTeamJoinLinkRequest: Encodable, Sendable {
+    let ttl: String
+    let maxUses: Int?
+    let rotate: Bool
+}
+
+private struct CloudJoinByLinkResult: Decodable, Sendable {
+    let teamId: String
 }
 
 private struct CloudCreateInviteRequest: Encodable, Sendable {

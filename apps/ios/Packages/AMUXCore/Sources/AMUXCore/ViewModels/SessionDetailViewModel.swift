@@ -69,21 +69,37 @@ public final class SessionDetailViewModel {
         SlashCommand(name: "model", description: String(localized: "Switch the active model"), inputHint: ""),
         SlashCommand(name: "cost", description: String(localized: "Show session token cost"), inputHint: ""),
     ]
-    /// Memoised tool-run grouping over `events`. Views should iterate this
-    /// instead of calling `groupEvents(vm.events)` in body, which previously
-    /// made grouping O(n) on every streaming delta frame. Recomputed by
-    /// `recomputeGroups()` at each mutation site.
-    public private(set) var groupedEvents: [GroupedEvent] = []
     /// Higher-level feed grouping that hides per-turn runtime detail
     /// (thinking / tool_use / tool_result) behind active-stream cards or
     /// completed-turn bubbles. Source for the main chat list. Detail view
     /// reads `runtimeEvents` off each item to render the full turn.
-    public private(set) var feedItems: [FeedItem] = []
+    public private(set) var feedItems: [FeedItem] = [] {
+        didSet {
+            rebuildFeedLookups()
+            reportTurnActivity()
+        }
+    }
+    /// Per-row questions a bubble asks while it renders — "what prompt
+    /// started this turn", "what does this reply quote" — answered from
+    /// tables built once per feed change. Scanning the feed from a row's
+    /// body instead read hundreds of `@Model` properties per row and made
+    /// every row observe all of them.
+    @ObservationIgnored private var promptByTurnItemID: [String: AgentEvent] = [:]
+    @ObservationIgnored private var feedEventBySupabaseID: [String: AgentEvent] = [:]
+    /// Day / time labels to draw above feed rows, by row id. Rebuilt with
+    /// `feedItems`, so the view does no date math while scrolling.
+    public private(set) var feedTimeMarkers: [String: FeedTimeMarker] = [:]
     /// True after `start(modelContext:)` has loaded the initial local event
     /// snapshot and projected it into `feedItems`. The detail view uses this
     /// to reveal the scroll view only after the first real layout pass can
     /// anchor against actual content.
     public private(set) var hasLoadedInitialFeed: Bool = false
+    /// True once the first Cloud API history fetch after `start` has
+    /// returned — with rows, with none, or with an error. Until then an
+    /// empty feed means "not loaded yet", not "no messages": a session never
+    /// opened on this device has no local cache, and its history is still on
+    /// the way.
+    public private(set) var hasFinishedInitialSeed: Bool = false
     /// Per-agent streaming output buffer. Keyed by the agent actor id. An
     /// entry exists only between the first delta of an `output` stream and
     /// its `isComplete` event (or an idle status flush). Concurrent agents
@@ -91,7 +107,9 @@ public final class SessionDetailViewModel {
     /// buffer. Read for the active-stream card's last-line preview and the
     /// streaming detail view's full text. Empty string for "no active
     /// stream for this agent."
-    public private(set) var streamingTextByAgent: [String: String] = [:]
+    public private(set) var streamingTextByAgent: [String: String] = [:] {
+        didSet { reportTurnActivity() }
+    }
     /// Per-agent model id stamped by the daemon on the most recent streaming
     /// `output` delta. Used so the synthesized event in stop()/idle flush
     /// carries the model that produced the partial text.
@@ -99,7 +117,17 @@ public final class SessionDetailViewModel {
     /// Set of agents whose `output` stream is in flight (first delta seen,
     /// no `isComplete` yet). Drives the active-stream-card visibility and
     /// the legacy `isStreaming` / `streamingText` shims.
-    public private(set) var streamingAgentSet: Set<String> = []
+    public private(set) var streamingAgentSet: Set<String> = [] {
+        // Every path that ends a turn (reducer completion, final reply,
+        // interrupt, timeout, seed settle) lands here; M2 closes on it.
+        didSet {
+            if streamingAgentSet.isEmpty, !oldValue.isEmpty {
+                closeTurnRenderInterval()
+            } else if !streamingAgentSet.isEmpty, oldValue.isEmpty, let key = session?.sessionId {
+                ChatMetrics.shared.begin(.turnRender, key: key)
+            }
+        }
+    }
     /// Per-agent active turn id captured at the first delta. The MQTT
     /// subscribe loop reads this on reconnect to replay any envelopes
     /// (incl. the trailing `status_change=idle`) the broker may have
@@ -183,15 +211,25 @@ public final class SessionDetailViewModel {
     // property on an @Observable type, where plain `nonisolated` is rejected.
     // The deinit read is safe in practice (see the note above).
     nonisolated(unsafe) private var task: Task<Void, Never>?
+    /// The Cloud API history fetch `start` fires before the MQTT loop. Holds
+    /// `self` weakly, so the deinit doesn't need to reach it; `stop` cancels.
+    @ObservationIgnored private var initialSeedTask: Task<Void, Never>?
+    /// Refetches after every MQTT reconnect. The live stream stays open
+    /// across a reconnect, so the subscribe loop never sees one.
+    nonisolated(unsafe) private var reconnectCatchUpTask: Task<Void, Never>?
+    /// The M6 interval of the seed currently applying rows, so the reducer
+    /// path can count its SwiftData syncs against it.
+    @ObservationIgnored private var activeSeedMetricKey: String?
     /// Actor IDs for which this session-detail view has added an MQTT
     /// runtime-state subscription (beyond what SessionListViewModel manages
     /// for ConnectedAgentsStore agents). Tracked so we can unsubscribe on stop().
     private var sessionAgentSubscribedActorIDs: Set<String> = []
 
     // MARK: - Chip-bar state
-    /// Agent actors currently selected in the chip bar. Empty = no specific
-    /// mention; all agents will receive the message (broadcast semantics on
-    /// the daemon side). Populated by bootstrapChips / toggleAgentChip.
+    /// Agent actors currently selected in the chip bar — the send's
+    /// `mentionActorIDs`. Empty = no agent mentioned: the daemon silent-queues
+    /// the message (`route_session_message_to_runtimes`) and no agent
+    /// replies. Populated by bootstrapChips / toggleAgentChip.
     public private(set) var agentChipSelection: Set<String> = []
     /// Session + context bound together; both are always set or neither is.
     private var sessionBinding: (session: Session, modelContext: ModelContext)?
@@ -248,7 +286,12 @@ public final class SessionDetailViewModel {
     /// covers raw text deltas and misses the thinking + tool_use phases.
     /// This flag flips on any ACP event arrival or sendPrompt, and
     /// clears on `statusChange:.idle` or after 10s of silence.
-    public private(set) var isAgentWorking: Bool = false
+    public private(set) var isAgentWorking: Bool = false {
+        didSet { if isAgentWorking != oldValue { reportTurnActivity() } }
+    }
+    /// Whether the Live Activity sink was told about a turn that has not
+    /// been finished yet.
+    private var turnActivityOpen = false
     private var agentWorkingResetTask: Task<Void, Never>?
     private var inFlightPermissionRequestIDs: Set<String> = []
     /// ACP option lists per pending permission request, captured off the
@@ -289,9 +332,10 @@ public final class SessionDetailViewModel {
         didSet { registerOutboxDeliveryHook() }
     }
 
-    /// Messages this VM sent that are still waiting on the outbox. The
-    /// agent's placeholder card is raised when one of these is delivered,
-    /// not when the user taps send — see `sendPrompt`.
+    /// Messages this VM sent to an agent that are still waiting on the
+    /// outbox. The agent's placeholder card is raised when one of these is
+    /// delivered, not when the user taps send — see `sendPrompt`. A send
+    /// that mentions no agent never enters this set.
     private var sendsAwaitingDelivery: Set<String> = []
 
     /// Point the sender's delivery hook back at this VM. Called whenever
@@ -355,11 +399,10 @@ public final class SessionDetailViewModel {
         return ""
     }
 
-    /// Rebuilds `groupedEvents` from `events`. Call after any mutation that
+    /// Rebuilds `feedItems` from `events`. Call after any mutation that
     /// adds, removes, or reorders events, or changes the grouping-relevant
     /// fields on an existing event (eventType, isComplete, toolId).
     private func recomputeGroups() {
-        groupedEvents = groupEvents(events)
         // Union the delta-driven `streamingAgentSet` with the computed
         // `streamingAgentIDs` (which also covers `isAgentWorking`) so the
         // active-stream card surfaces as soon as `markAgentWorking()` flips
@@ -367,10 +410,23 @@ public final class SessionDetailViewModel {
         // round-trip via MQTT. Before this union the card only appeared
         // once a real delta arrived, which could take seconds on a
         // cold-spawn agent.
-        feedItems = buildFeedItems(
-            events,
-            streamingAgentIDs: streamingAgentSet.union(streamingAgentIDs)
-        )
+        // The reducer's set, not the throttled mirror: a first delta must
+        // be able to surface its card without waiting for the mirror flush.
+        let streaming = timelineState.streamingAgentSet.union(streamingAgentIDs)
+        feedStreamingAgents = streaming
+        feedItems = buildFeedItems(events, streamingAgentIDs: streaming)
+        feedTimeMarkers = AMUXCore.feedTimeMarkers(for: feedItems)
+    }
+
+    /// The streaming agents the current `feedItems` were built with. A
+    /// delta that only grows the text buffer leaves the feed's shape alone;
+    /// only a change in who is streaming needs a rebuild.
+    @ObservationIgnored private var feedStreamingAgents: Set<String> = []
+
+    private func recomputeGroupsIfStreamingAgentsChanged() {
+        if timelineState.streamingAgentSet.union(streamingAgentIDs) != feedStreamingAgents {
+            recomputeGroups()
+        }
     }
 
     private func sortEventsForDisplay() {
@@ -605,9 +661,9 @@ public final class SessionDetailViewModel {
     /// when the user typed only the prompt body. Manual @-picks are
     /// already inserted by the composer, so the contains() check skips
     /// them to avoid double-prepend.
-    func composeBodyWithMentions(_ text: String) -> String {
+    func composeBodyWithMentions(_ text: String, agentIDs: Set<String>? = nil) -> String {
         var body = text
-        for agentID in agentChipSelection {
+        for agentID in agentIDs ?? agentChipSelection {
             guard let agent = memberSheetAgents.first(where: { $0.id == agentID }) else { continue }
             let token = "@\(agent.displayName)"
             if !body.localizedCaseInsensitiveContains(token) {
@@ -659,6 +715,10 @@ public final class SessionDetailViewModel {
 
     public private(set) var memberSheetHumans: [MemberSheetHuman] = []
     public private(set) var memberSheetAgents: [MemberSheetAgent] = []
+    /// Why the last removal from the member sheet did not happen. The sheet
+    /// shows it as an alert and clears it on dismiss; without it a refused or
+    /// failed removal just put the row back with no explanation.
+    public var memberSheetErrorMessage: String?
 
     /// Per-agent latest plan_update parsed into a snapshot, filtered to
     /// agents that still have unfinished items. Empty when no agent in the
@@ -682,6 +742,16 @@ public final class SessionDetailViewModel {
     /// Loading / shaping logic lives in `SessionMemberSheetLoader`;
     /// this method binds the snapshot to the VM and runs the chip-bar
     /// auto-light cross-cutting rule.
+    /// One member-sheet refresh per turn start. `isActive` and `isStreaming`
+    /// both rise within a second or two of each other on every turn, and
+    /// each used to cost its own `GET /participants`.
+    public func refreshMemberSheetForTurnStart() async {
+        if let last = lastTurnStartMemberRefresh, Date.now.timeIntervalSince(last) < 3 { return }
+        lastTurnStartMemberRefresh = .now
+        await refreshMemberSheet()
+    }
+    @ObservationIgnored private var lastTurnStartMemberRefresh: Date?
+
     public func refreshMemberSheet() async {
         guard let session, !session.sessionId.isEmpty else { return }
         let loader = SessionMemberSheetLoader(
@@ -896,22 +966,6 @@ public final class SessionDetailViewModel {
         attachment(forAgentActorID: actorID)?.availableModels.map(\.id) ?? []
     }
 
-    /// Cheap change-detection key over this session's attachments. SwiftData
-    /// mutations don't re-evaluate nested optionals through `@Observable`, so
-    /// views observe this scalar instead of reaching into a row.
-    public var attachmentStateKey: String {
-        guard let ctx = startModelContext,
-              let sessionID = session?.sessionId, !sessionID.isEmpty
-        else { return "" }
-        let suffix = "::\(sessionID)"
-        let rows = (try? ctx.fetch(FetchDescriptor<AgentAttachment>()))?
-            .filter { $0.id.hasSuffix(suffix) }
-            .sorted(by: { $0.id < $1.id }) ?? []
-        return rows
-            .map { "\($0.id):\($0.lifecycle):\($0.status):\($0.currentModel ?? "")" }
-            .joined(separator: "|")
-    }
-
     /// The model the next send will actually run on: the selected agent's, or
     /// the sole agent's when the chip bar has no explicit selection. Nil when
     /// no agent is attached — the session is cold and the daemon picks on spawn.
@@ -1071,17 +1125,7 @@ public final class SessionDetailViewModel {
                   let sessionID = self.session?.sessionId,
                   !sessionID.isEmpty else { return }
 
-            let sessionsRepo = self.sessionsRepository
-            if let sessionsRepo {
-                do {
-                    try await sessionsRepo.removeParticipant(sessionID: sessionID, actorID: actorID)
-                } catch {
-                    print("[SessionDetailVM] removeHuman: removeParticipant failed: \(error)")
-                }
-            } else {
-                print("[SessionDetailVM] removeHuman: no sessions repo available")
-            }
-
+            _ = await self.removeParticipantFromCloud(sessionID: sessionID, actorID: actorID)
             await self.refreshMemberSheet()
         }
     }
@@ -1175,7 +1219,7 @@ public final class SessionDetailViewModel {
         case "claude": return .claudeCode
         case "opencode": return .opencode
         case "codex": return .codex
-        default: return .claudeCode
+        default: return .pi
         }
     }
 
@@ -1289,18 +1333,21 @@ public final class SessionDetailViewModel {
     /// Removes an agent participant from this session.
     ///
     /// Three-step ordering:
-    ///   1. Stop the agent's runtime (best-effort) so the Claude Code
+    ///   1. Delete the participant row in the cloud (source of truth). This
+    ///      goes first because it is also the permission check: the cloud
+    ///      refuses a caller who neither created the session nor speaks for
+    ///      the agent, and a refused removal must not have already stopped
+    ///      the agent's runtime.
+    ///   2. Stop the agent's runtime (best-effort) so the Claude Code
     ///      subprocess actually exits — otherwise it keeps the worktree
     ///      busy and the attachment stays "active"
     ///      until next daemon restart.
-    ///   2. RPC the daemon to drop the agent from its in-memory session
+    ///   3. RPC the daemon to drop the agent from its in-memory session
     ///      participant cache + sessions.toml, and fan a notify event so
-    ///      other connected clients re-pull. Best-effort; the Supabase
-    ///      delete below is authoritative.
-    ///   3. Delete the participant row from Supabase (source of truth).
+    ///      other connected clients re-pull. Best-effort.
     ///
     /// When the agent has no resolvable runtime id (e.g. the daemon is
-    /// offline or the attachment hasn't been published yet), step 1
+    /// offline or the attachment hasn't been published yet), step 2
     /// is skipped with a logged warning. The subprocess then keeps running
     /// until the daemon notices the participant is gone on next reload —
     /// suboptimal but recoverable.
@@ -1319,7 +1366,13 @@ public final class SessionDetailViewModel {
                 ?? self.memberSheetAgents.first(where: { $0.id == actorID })?.workspacePath
                 ?? ""
 
-            // 1. Stop the agent's runtime (best-effort).
+            // 1. Cloud delete (source of truth + permission gate).
+            guard await self.removeParticipantFromCloud(sessionID: sessionID, actorID: actorID) else {
+                await self.refreshMemberSheet()
+                return
+            }
+
+            // 2. Stop the agent's runtime (best-effort).
             if let routeActor, !routeActor.isEmpty,
                let runtimeID, !runtimeID.isEmpty,
                let teamcluService = self.teamcluService {
@@ -1336,7 +1389,7 @@ public final class SessionDetailViewModel {
                 print("[SessionDetailVM] removeAgent: skipping runtimeStop — routeActor=\(routeActor ?? "nil") runtimeID=\(runtimeID ?? "nil")")
             }
 
-            // 2. Best-effort daemon-side participant removal for cache
+            // 3. Best-effort daemon-side participant removal for cache
             //    invalidation + peer notify fanout.
             if let routeActor, !routeActor.isEmpty,
                let teamcluService = self.teamcluService {
@@ -1349,19 +1402,25 @@ public final class SessionDetailViewModel {
                 }
             }
 
-            // 3. Supabase delete (source of truth).
-            let sessionsRepo = self.sessionsRepository
-            if let sessionsRepo {
-                do {
-                    try await sessionsRepo.removeParticipant(sessionID: sessionID, actorID: actorID)
-                } catch {
-                    print("[SessionDetailVM] removeAgent: removeParticipant failed: \(error)")
-                }
-            } else {
-                print("[SessionDetailVM] removeAgent: no sessions repo available")
-            }
-
             await self.refreshMemberSheet()
+        }
+    }
+
+    /// Deletes the participant row in the cloud. On failure sets
+    /// `memberSheetErrorMessage` and returns false.
+    private func removeParticipantFromCloud(sessionID: String, actorID: String) async -> Bool {
+        guard let sessionsRepo = sessionsRepository else {
+            print("[SessionDetailVM] removeParticipant: no sessions repo available")
+            memberSheetErrorMessage = "Can't reach the server to remove this member."
+            return false
+        }
+        do {
+            try await sessionsRepo.removeParticipant(sessionID: sessionID, actorID: actorID)
+            return true
+        } catch {
+            print("[SessionDetailVM] removeParticipant failed: \(error)")
+            memberSheetErrorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -1511,6 +1570,10 @@ public final class SessionDetailViewModel {
         // replay in via incremental sync.)
         if task != nil { return }
         startModelContext = modelContext
+        // M1 normally starts at the push (SessionsTab); this is the fallback
+        // for any other way in. A begin for an open interval is a no-op.
+        let metricKey = session?.sessionId ?? ""
+        ChatMetrics.shared.begin(.openSession, key: metricKey)
 
         // Bind session persistence for chip-bar selection (idempotent —
         // bind() is a no-op after the first start() returns since `task`
@@ -1593,11 +1656,32 @@ public final class SessionDetailViewModel {
 
         recomputeGroups()
         hasLoadedInitialFeed = true
+        ChatMetrics.shared.set(.openSession, key: metricKey, "cached_events", Double(events.count))
+        ChatMetrics.shared.mark(.openSession, key: metricKey, "cache_ready")
         // Resume streaming state from any stop()-saved incomplete output
         // rows — one per agent that was mid-stream. Handles every agent
         // (multi-agent sessions persist one synthetic row each) and drops
         // the synthetic rows once their bytes are back in the buffers.
         restoreStreamingAgentSetFromIncompleteOutput()
+
+        // Fetch history from the Cloud API now, not behind the MQTT loop
+        // below. That loop seeds only after the broker is connected and the
+        // SUBACK is back, so a session with no local cache sat on "No
+        // messages yet" for as long as MQTT took — quick when it happened
+        // to be connected, much longer mid-reconnect — though the fetch is a
+        // plain HTTP call. The loop's own seed stays: it closes the gap
+        // between this fetch and the subscribe, and dedupes on
+        // `supabaseMessageId`, so running both costs one extra request.
+        hasFinishedInitialSeed = false
+        initialSeedTask?.cancel()
+        initialSeedTask = Task { @MainActor [weak self, modelContext] in
+            await self?.seedFromSupabaseMessages(modelContext: modelContext)
+            guard let self, !Task.isCancelled else { return }
+            self.hasFinishedInitialSeed = true
+            ChatMetrics.shared.set(.openSession, key: metricKey, "events_after_seed", Double(self.events.count))
+            ChatMetrics.shared.mark(.openSession, key: metricKey, "seeded")
+            ChatMetrics.shared.endWhenMarked(.openSession, key: metricKey, Self.openSessionEndPhases)
+        }
 
         // Single subscription path: session/{sid}/live. iOS only ever
         // resolves a session-backed detail view — bare-runtime navigation
@@ -1611,6 +1695,16 @@ public final class SessionDetailViewModel {
         let subscribeTopic = MQTTTopics.sessionLive(teamID: teamID, sessionID: session.sessionId)
         let mqtt = self.mqtt
         let hub = self.hub
+        // Whatever the broker published while the socket was down is gone;
+        // fetch it the same two ways the subscribe loop below seeds.
+        reconnectCatchUpTask?.cancel()
+        reconnectCatchUpTask = Task { @MainActor [weak self, mqtt, modelContext] in
+            for await _ in mqtt.connectionAccepted() {
+                guard let self, !Task.isCancelled else { return }
+                await self.seedFromSupabaseMessages(modelContext: modelContext)
+                await self.replayStreamingTurnsAfterReconnect(modelContext: modelContext)
+            }
+        }
         task = Task { @MainActor [weak self, mqtt, hub, subscribeTopic, modelContext] in
             // Outer loop: each iteration represents a fresh MQTT connection lifecycle.
             // When the inner stream finishes (e.g. after disconnect clears continuations),
@@ -1669,14 +1763,20 @@ public final class SessionDetailViewModel {
 
                     if live.eventType == "acp.event",
                        let envelope = try? Amux_Envelope(serializedBytes: live.body) {
+                        let handleStart = ContinuousClock.now
                         handleEnvelope(envelope, modelContext: modelContext)
+                        recordTurnRenderCost(since: handleStart)
                     } else if live.eventType.hasPrefix("message."),
                               let msgEnv = try? Teamclu_SessionMessageEnvelope(serializedBytes: live.body),
                               msgEnv.hasMessage {
                         // Other collaborators' chat messages — convert to a
                         // user_prompt AgentEvent so EventFeedView renders
                         // them. Loopback / dedupe handled inside.
+                        let handleStart = ContinuousClock.now
                         handleIncomingChatMessage(msgEnv.message, modelContext: modelContext)
+                        // The agent's final reply arrives here and can be
+                        // what closes the turn, so M2 must see it too.
+                        recordTurnRenderCost(since: handleStart)
                     }
                 }
                 // Stream finished — connection likely dropped. Loop and resubscribe.
@@ -1693,11 +1793,20 @@ public final class SessionDetailViewModel {
     /// keeps spinning and the MQTT subscription leaks.
     deinit {
         task?.cancel()
+        reconnectCatchUpTask?.cancel()
         spawningPollTask?.cancel()
     }
 
     public func stop() {
+        if let sessionId = session?.sessionId {
+            // Left before the history came in, or mid-turn: not a sample of
+            // either experience.
+            ChatMetrics.shared.end(.openSession, key: sessionId, outcome: .cancelled)
+            ChatMetrics.shared.end(.turnRender, key: sessionId, outcome: .cancelled)
+        }
         task?.cancel(); task = nil
+        reconnectCatchUpTask?.cancel(); reconnectCatchUpTask = nil
+        initialSeedTask?.cancel(); initialSeedTask = nil
         spawningPollTask?.cancel(); spawningPollTask = nil
         streamingMirrorFlushTask?.cancel(); streamingMirrorFlushTask = nil
         for (_, t) in interruptTimeoutTasks { t.cancel() }
@@ -1862,6 +1971,22 @@ public final class SessionDetailViewModel {
         // loopbacks + content-equal duplicates before feeding the
         // reducer so its identity-dedup doesn't conflate a fresh
         // message with a re-arrival under a different messageID.
+        if message.kind == .agentReply {
+            // Not drawn (the ACP output is the bubble); only its row id is
+            // taken, so the reply can be quoted and rated without a reload.
+            guard !message.messageID.isEmpty, !message.senderActorID.isEmpty else { return }
+            let dirty = applyTimelineInput(
+                .persistedReply(PersistedReplyInput(
+                    messageID: message.messageID,
+                    senderActorID: message.senderActorID,
+                    content: message.content,
+                    turnID: message.turnID.isEmpty ? nil : message.turnID
+                )),
+                modelContext: modelContext
+            )
+            if dirty { recomputeGroups() }
+            return
+        }
         guard message.kind == .text else { return }
         let myActorID = teamcluService?.currentHumanActorId ?? ""
         if !myActorID.isEmpty, message.senderActorID == myActorID { return }
@@ -1880,7 +2005,8 @@ public final class SessionDetailViewModel {
                 content: content,
                 createdAt: message.createdAt > 0
                     ? Date(timeIntervalSince1970: TimeInterval(message.createdAt))
-                    : .now
+                    : .now,
+                replyToMessageID: message.replyToMessageID.isEmpty ? nil : message.replyToMessageID
             )),
             modelContext: modelContext
         )
@@ -1915,6 +2041,21 @@ public final class SessionDetailViewModel {
     /// Streaming deltas (the hot path, dozens per second) return `false`
     /// after the first delta of a stream, skipping the SQLite commit and
     /// the O(n) regroup that would otherwise fire on every token.
+    /// Whether an ACP event means the agent is processing a prompt, and so
+    /// may raise the "Agent loading…" card. Lifecycle and ambient events do
+    /// not: a runtimeStart spawn with no prompt still emits a status change
+    /// and pi's `available_commands` list, and treating those as work put a
+    /// loading card over a session whose message mentioned no agent — the
+    /// daemon silent-queued it, so the card only ever timed out.
+    static func acpEventIndicatesWork(_ acp: Amux_AcpEvent) -> Bool {
+        switch acp.event {
+        case .thinking, .output, .toolUse, .toolResult, .permissionRequest, .planUpdate:
+            return true
+        case .statusChange, .availableCommands, .error, .raw, .none:
+            return false
+        }
+    }
+
     @discardableResult
     private func handleAcpEvent(_ acp: Amux_AcpEvent,
                                 sequence: Int,
@@ -1927,12 +2068,8 @@ public final class SessionDetailViewModel {
         // Skip for history-replay batches (requestTurnHistory responses) —
         // those events belong to an already-completed turn and must not
         // flip the agent chip to "running".
-        // Also skip for statusChange: a runtime transitioning to "active"
-        // (daemon spawn ready) does not mean the agent is processing a user
-        // prompt. Only thinking / tool_use / output events indicate real work.
-        if !isHistoryReplay, case .statusChange(_) = acp.event {
-            // lifecycle event — don't mark working
-        } else if !isHistoryReplay {
+        // Also skip lifecycle / ambient events — see `acpEventIndicatesWork`.
+        if !isHistoryReplay, Self.acpEventIndicatesWork(acp) {
             markAgentWorking()
         }
 
@@ -2283,23 +2420,63 @@ public final class SessionDetailViewModel {
     /// represented; only `user_*` and `agent_reply` kinds become AgentEvents.
     public func seedFromSupabaseMessages(modelContext: ModelContext) async {
         guard let session else { return }
+        // Fixture sessions are local only; a fetch would 404 and add network
+        // noise to exactly the numbers they exist to measure.
+        guard !PerfFixtures.isFixture(session.sessionId) else { return }
         guard let repo = messagesRepository else { return }
-        let messages: [MessageRecord]
+        // Own key per run: the open-time seed and the subscribe-time seed
+        // can overlap, and must not end each other's interval.
+        let seedKey = "\(session.sessionId)#\(UUID().uuidString.prefix(8))"
+        let metrics = ChatMetrics.shared
+        metrics.begin(.historySeed, key: seedKey)
+        let page: MessagePage
         do {
-            messages = try await repo.listForSession(sessionID: session.sessionId)
+            page = try await repo.listPage(sessionID: session.sessionId, limit: nil, cursor: nil)
         } catch {
             print("[SessionDetailVM] supabase messages seed failed: \(error)")
+            metrics.end(.historySeed, key: seedKey, outcome: .failed)
             return
         }
-        guard !messages.isEmpty else { return }
+        let messages = page.messages
+        // The newest page's cursor is where scrolling back starts. Only the
+        // first seed sets it: a reseed on reconnect must not rewind a reader
+        // who has already paged back past it.
+        if !hasResolvedOlderHistoryCursor {
+            hasResolvedOlderHistoryCursor = true
+            olderHistoryCursor = page.nextCursor
+            hasOlderHistory = page.nextCursor != nil
+        }
+        metrics.mark(.historySeed, key: seedKey, "fetched")
+        metrics.set(.historySeed, key: seedKey, "rows", Double(messages.count))
+        guard !messages.isEmpty else {
+            metrics.end(.historySeed, key: seedKey)
+            return
+        }
+        // Everything below runs on the main actor without a suspension
+        // point; its length is what the batch-apply fix (P1) should cut.
+        let applyStart = ContinuousClock.now
+        activeSeedMetricKey = seedKey
+        defer { activeSeedMetricKey = nil }
 
         let streamingBeforeSeed = timelineState.streamingTurnIDByAgent
 
-        // Reducer dedupes by `supabaseMessageID` and backfills the
-        // id onto an existing content-equal entry when one exists.
-        // Apply per record, project once at the end.
-        var anyChange = false
-        for record in messages {
+        var anyChange = applyHistoryRecords(messages, modelContext: modelContext)
+        if pruneTracedTurnRuntimeRows(modelContext: modelContext) { anyChange = true }
+        if anyChange { recomputeGroups() }
+        settleTurnsClosedByTrace(streamingBeforeSeed: streamingBeforeSeed)
+        metrics.set(.historySeed, key: seedKey, "apply_main_ms", Self.milliseconds(since: applyStart))
+        metrics.set(.historySeed, key: seedKey, "changed", anyChange ? 1 : 0)
+        metrics.end(.historySeed, key: seedKey)
+    }
+
+    /// Feeds Cloud API history rows through the reducer one by one. The
+    /// reducer dedupes by `supabaseMessageID` and backfills the id onto an
+    /// existing content-equal entry, so a row seen before is a no-op. Returns
+    /// whether anything changed; callers project (`recomputeGroups`) once.
+    private func applyHistoryRecords(_ records: [MessageRecord], modelContext: ModelContext) -> Bool {
+        var inputs: [TimelineInput] = []
+        inputs.reserveCapacity(records.count)
+        for record in records {
             let kind: HistoryKind
             switch record.kind {
             case "agent_reply": kind = .output
@@ -2314,7 +2491,7 @@ public final class SessionDetailViewModel {
                let turnID = record.turnID, !turnID.isEmpty {
                 tracedTurns[turnID] = TracedTurn(pointer: trace, senderActorID: record.senderActorID)
             }
-            let dirty = applyTimelineInput(
+            inputs.append(
                 .historyMessage(HistoryInput(
                     supabaseMessageID: record.id,
                     kind: kind,
@@ -2325,15 +2502,79 @@ public final class SessionDetailViewModel {
                     turnID: record.turnID,
                     sequence: record.sequence,
                     closesTurn: kind == .output && record.trace != nil,
-                    attachments: record.attachments
-                )),
-                modelContext: modelContext
+                    attachments: record.attachments,
+                    replyToMessageID: record.replyToMessageID
+                ))
             )
-            if dirty { anyChange = true }
         }
-        if pruneTracedTurnRuntimeRows(modelContext: modelContext) { anyChange = true }
-        if anyChange { recomputeGroups() }
-        settleTurnsClosedByTrace(streamingBeforeSeed: streamingBeforeSeed)
+        // One sort and one SwiftData diff for the page, not one per row: a
+        // 200-row seed used to sort and diff the whole feed 200 times, on
+        // the main actor, on every open and every reconnect.
+        return applyTimelineInputs(inputs, modelContext: modelContext)
+    }
+
+    /// Whether the server holds rows older than the oldest page loaded.
+    public private(set) var hasOlderHistory = false
+    public private(set) var isLoadingOlderHistory = false
+    @ObservationIgnored private var olderHistoryCursor: String?
+    @ObservationIgnored private var hasResolvedOlderHistoryCursor = false
+
+    /// The page before the oldest one loaded — what the reader sees when they
+    /// scroll to the top. Rows go through the same reducer path as the seed,
+    /// so they land in the local cache and are there next time offline. A
+    /// failed fetch keeps the cursor, so the next scroll to the top retries.
+    public func loadOlderHistory(modelContext: ModelContext) async {
+        guard let session, let repo = messagesRepository,
+              let cursor = olderHistoryCursor, !isLoadingOlderHistory else { return }
+        isLoadingOlderHistory = true
+        defer { isLoadingOlderHistory = false }
+        do {
+            let page = try await repo.listPage(sessionID: session.sessionId, limit: nil, cursor: cursor)
+            let streamingBefore = timelineState.streamingTurnIDByAgent
+            var changed = applyHistoryRecords(page.messages, modelContext: modelContext)
+            if pruneTracedTurnRuntimeRows(modelContext: modelContext) { changed = true }
+            if changed { recomputeGroups() }
+            settleTurnsClosedByTrace(streamingBeforeSeed: streamingBefore)
+            olderHistoryCursor = page.nextCursor
+            hasOlderHistory = page.nextCursor != nil
+        } catch {
+            print("[SessionDetailVM] older history fetch failed: \(error)")
+        }
+    }
+
+    // MARK: - Metrics
+
+    /// M1 is over when the cached feed is on screen and the Cloud API
+    /// history is in — usually in that order, but a local-only session
+    /// (perf fixtures) seeds before the first frame.
+    public static let openSessionEndPhases: Set<String> = ["first_frame", "seeded"]
+
+    static func milliseconds(since start: ContinuousClock.Instant) -> Double {
+        let elapsed = ContinuousClock.now - start
+        return Double(elapsed.components.seconds) * 1000
+            + Double(elapsed.components.attoseconds) / 1e15
+    }
+
+    /// M2. A turn is the span during which the reducer has an agent
+    /// streaming; every live envelope handled meanwhile adds its main-thread
+    /// cost. The view adds frame hitches and body re-evaluations to the same
+    /// interval (keyed by session id).
+    private func recordTurnRenderCost(since start: ContinuousClock.Instant) {
+        guard let key = session?.sessionId else { return }
+        let metrics = ChatMetrics.shared
+        let streaming = !timelineState.streamingAgentSet.isEmpty
+        if streaming { metrics.begin(.turnRender, key: key) }
+        guard metrics.isOpen(.turnRender, key: key) else { return }
+        let ms = Self.milliseconds(since: start)
+        metrics.add(.turnRender, key: key, "envelopes", 1)
+        metrics.add(.turnRender, key: key, "main_ms", ms)
+        metrics.max(.turnRender, key: key, "main_ms_max", ms)
+    }
+
+    private func closeTurnRenderInterval() {
+        guard let key = session?.sessionId else { return }
+        ChatMetrics.shared.set(.turnRender, key: key, "events_total", Double(events.count))
+        ChatMetrics.shared.end(.turnRender, key: key)
     }
 
     // MARK: - Turn traces
@@ -2655,7 +2896,10 @@ public final class SessionDetailViewModel {
         return (address, target)
     }
 
-    public func sendPrompt(_ text: String, modelId: String? = nil, attachmentURLs: [URL] = [], modelContext: ModelContext? = nil) async throws {
+    /// `replyTo` is the persisted id of the message being quoted, if any.
+    public func sendPrompt(_ text: String, modelId: String? = nil, attachmentURLs: [URL] = [],
+                           replyTo: String? = nil, agentIDs: Set<String>? = nil,
+                           modelContext: ModelContext? = nil) async throws {
         if let session, let teamcluService {
             // Session-backed chats use the session live stream as the
             // canonical messaging channel so other collaborators see the
@@ -2668,13 +2912,17 @@ public final class SessionDetailViewModel {
             // any visible mention even though the chip is engaging an
             // agent — confusing in chat history, especially for other
             // collaborators reading along.
-            let body = composeBodyWithMentions(text)
-            let messageID = UUID().uuidString
-            let mentionIDs = Array(agentChipSelection)
-            AnalyticsSink.track("message_sent", [
-                "agentCount": String(mentionIDs.count),
-                "hasAttachments": String(!attachmentURLs.isEmpty),
-            ])
+            let body = composeBodyWithMentions(text, agentIDs: agentIDs)
+            // Lowercase: the server stores this id in a `uuid` column, which
+            // hands it back lowercase, and the daemon dedupes on the exact
+            // string — an uppercase id reached it twice, once per spelling,
+            // and the agent answered both (#1696).
+            let messageID = UUID().uuidString.lowercased()
+            // `agentIDs` addresses a specific agent (regenerate) without
+            // touching the composer's chip selection.
+            let mentionIDs = Array(agentIDs ?? agentChipSelection)
+            ChatMetrics.shared.begin(.send, key: messageID)
+            ChatMetrics.shared.set(.send, key: messageID, "attachments", Double(attachmentURLs.count))
 
             // 1. Local user_prompt entry for the bubble. The
             //    reducer's .localPrompt path stamps `outboxMessageID =
@@ -2688,7 +2936,8 @@ public final class SessionDetailViewModel {
                         clientID: messageID,
                         senderActorID: teamcluService.currentHumanActorId ?? "",
                         content: body,
-                        createdAt: .now
+                        createdAt: .now,
+                        replyToMessageID: replyTo
                     )),
                     modelContext: ctx
                 )
@@ -2707,8 +2956,14 @@ public final class SessionDetailViewModel {
             //    above a message whose own status dot still read "sending".
             //    `handleOutboxDelivered` flips it once the row lands, which
             //    is the same moment the dot turns into a checkmark.
+            //
+            //    Only a send that mentions an agent raises the card at all:
+            //    the daemon silent-queues an unmentioned message, so no
+            //    agent is about to start and the card would sit on
+            //    "Agent loading…" until the 60s safety reset.
+            let engagesAgent = !mentionIDs.isEmpty
             if let outboxSender {
-                sendsAwaitingDelivery.insert(messageID)
+                if engagesAgent { sendsAwaitingDelivery.insert(messageID) }
                 await outboxSender.enqueue(
                     messageID: messageID,
                     sessionID: session.sessionId,
@@ -2716,7 +2971,8 @@ public final class SessionDetailViewModel {
                     content: body,
                     mentionActorIDs: mentionIDs,
                     modelID: modelId,
-                    attachmentURLs: attachmentURLs
+                    attachmentURLs: attachmentURLs,
+                    replyToMessageID: replyTo
                 )
                 return
             }
@@ -2732,11 +2988,13 @@ public final class SessionDetailViewModel {
                     modelId: modelId,
                     mentionActorIDs: mentionIDs,
                     attachmentURLs: attachmentURLs,
-                    messageID: messageID
+                    messageID: messageID,
+                    replyToMessageID: replyTo
                 )
                 // Same rule as the outbox path: the card goes up once the
-                // message is out, not when the button was pressed.
-                markAgentWorking()
+                // message is out, not when the button was pressed — and
+                // only when an agent was mentioned.
+                if engagesAgent { markAgentWorking() }
             } catch {
                 surfaceSendError(error)
                 throw error
@@ -2863,9 +3121,49 @@ public final class SessionDetailViewModel {
     /// layer switches the label to a "请耐心等候" variant after ~15s so
     /// the user knows we're still waiting rather than the indicator
     /// silently dropping.
+    /// Tells the Live Activity what the agent is doing: running (with its
+    /// latest line), waiting on an approval, or — on the working → idle
+    /// edge — done with its final answer. Cheap when nothing changed; the
+    /// sink throttles its own updates.
+    private func reportTurnActivity() {
+        guard let sink = TurnActivityCenter.sink, let session else { return }
+        let working = isAgentWorking || !streamingAgentSet.isEmpty
+        if working {
+            let waiting = feedItems.contains {
+                if case .permission(let e) = $0 { return !e.isComplete }
+                return false
+            }
+            let bucket = streamingAgentSet.sorted().first ?? agentChipSelection.sorted().first
+            let name = bucket.flatMap { id in memberSheetAgents.first { $0.id == id }?.displayName }
+                ?? memberSheetAgents.first?.displayName ?? String(localized: "Agent")
+            sink.update(TurnActivitySnapshot(
+                sessionID: session.sessionId,
+                sessionTitle: session.title,
+                agentName: name,
+                phase: waiting ? .waitingApproval : .running,
+                latestLine: TurnActivityCenter.lastLine(of: bucket.flatMap { streamingTextByAgent[$0] })
+            ))
+            turnActivityOpen = true
+        } else if turnActivityOpen {
+            turnActivityOpen = false
+            // From the reducer, not `feedItems`: on the working → idle edge
+            // the final output is already an entry, but the feed is rebuilt
+            // after this runs and would still end on the previous answer.
+            let final = timelineState.entries.last { $0.eventType == "output" && $0.isComplete }
+            sink.finish(
+                sessionID: session.sessionId,
+                finalLine: TurnActivityCenter.summary(of: final?.text)
+            )
+        }
+    }
+
     private func markAgentWorking() {
+        // Every work event lands here — each of a reply's deltas too — so
+        // the feed is rebuilt only on the idle → working edge. Rebuilding it
+        // per delta walked every event of the session 100+ times a turn.
+        let wasWorking = isAgentWorking
         isAgentWorking = true
-        recomputeGroups()
+        if !wasWorking { recomputeGroups() }
         armAgentWorkingSafetyReset()
     }
 
@@ -3009,9 +3307,23 @@ public final class SessionDetailViewModel {
     /// diff entirely, saving the main-thread work that dominated Time
     /// Profiler samples during streaming (dozens of frames per second).
     @discardableResult
+    /// `applyTimelineInput` for a batch: every input goes through the
+    /// reducer, then the feed is sorted and projected to SwiftData once.
+    private func applyTimelineInputs(_ inputs: [TimelineInput], modelContext: ModelContext) -> Bool {
+        var entriesChanged = false
+        for input in inputs where ChatTimelineReducer.apply(input, to: &timelineState) == .entriesChanged {
+            entriesChanged = true
+        }
+        return finishTimelineApply(entriesChanged ? .entriesChanged : .noop, modelContext: modelContext)
+    }
+
     private func applyTimelineInput(_ input: TimelineInput,
                                     modelContext: ModelContext) -> Bool {
-        let effect = ChatTimelineReducer.apply(input, to: &timelineState)
+        finishTimelineApply(ChatTimelineReducer.apply(input, to: &timelineState), modelContext: modelContext)
+    }
+
+    private func finishTimelineApply(_ effect: TimelineReducerEffect,
+                                     modelContext: ModelContext) -> Bool {
 
         if !timelineState.availableCommands.isEmpty {
             dynamicAvailableCommands = timelineState.availableCommands
@@ -3030,11 +3342,15 @@ public final class SessionDetailViewModel {
             // most one mirror per interval. The first delta of a stream
             // arrives via `.entriesChanged` and mirrors immediately.
             scheduleStreamingMirrorFlush()
+            recomputeGroupsIfStreamingAgentsChanged()
             #if DEBUG
             SessionDetailViewModel._testFastPathSkipCount &+= 1
             #endif
             return false
         case .entriesChanged:
+            if let activeSeedMetricKey {
+                ChatMetrics.shared.add(.historySeed, key: activeSeedMetricKey, "timeline_syncs", 1)
+            }
             mirrorReducerStreamingState()
             timelineState.entries.sort {
                 if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
@@ -3057,10 +3373,25 @@ public final class SessionDetailViewModel {
     private func mirrorReducerStreamingState() {
         streamingMirrorFlushTask?.cancel()
         streamingMirrorFlushTask = nil
-        streamingTextByAgent = timelineState.streamingTextByAgent
-        streamingModelByAgent = timelineState.streamingModelByAgent
-        streamingAgentSet = timelineState.streamingAgentSet
-        streamingTurnIDByAgent = timelineState.streamingTurnIDByAgent
+        copyStreamingMirror()
+    }
+
+    /// @Observable notifies on every assignment, equal value or not, so a
+    /// mirror that re-assigned all four fields at 10 Hz invalidated every
+    /// view reading the set / models / turn ids even when only the text grew.
+    private func copyStreamingMirror() {
+        if streamingTextByAgent != timelineState.streamingTextByAgent {
+            streamingTextByAgent = timelineState.streamingTextByAgent
+        }
+        if streamingModelByAgent != timelineState.streamingModelByAgent {
+            streamingModelByAgent = timelineState.streamingModelByAgent
+        }
+        if streamingAgentSet != timelineState.streamingAgentSet {
+            streamingAgentSet = timelineState.streamingAgentSet
+        }
+        if streamingTurnIDByAgent != timelineState.streamingTurnIDByAgent {
+            streamingTurnIDByAgent = timelineState.streamingTurnIDByAgent
+        }
     }
 
     /// Throttle leg of `mirrorReducerStreamingState` for the per-token
@@ -3075,10 +3406,7 @@ public final class SessionDetailViewModel {
             try? await Task.sleep(for: .milliseconds(100))
             guard let self, !Task.isCancelled else { return }
             self.streamingMirrorFlushTask = nil
-            self.streamingTextByAgent = self.timelineState.streamingTextByAgent
-            self.streamingModelByAgent = self.timelineState.streamingModelByAgent
-            self.streamingAgentSet = self.timelineState.streamingAgentSet
-            self.streamingTurnIDByAgent = self.timelineState.streamingTurnIDByAgent
+            self.copyStreamingMirror()
         }
     }
 
@@ -3269,12 +3597,79 @@ public final class SessionDetailViewModel {
     /// the message row itself was found (a not-yet-synced row can still
     /// resolve later); replyTo links are immutable, so no per-row
     /// invalidation is needed — content edits clear the whole map.
-    private var replyQuoteCache: [String: ReplyQuote?] = [:]
+    /// Memo only: written while rows render, so it must not be observed —
+    /// each write would invalidate every row that had read it.
+    @ObservationIgnored private var replyQuoteCache: [String: ReplyQuote?] = [:]
 
     /// Drops all memoized quotes; call when message content changes so a
     /// quoted snippet can't go stale.
     private func invalidateReplyQuotes() {
         replyQuoteCache = [:]
+    }
+
+    /// Posts `text` into another session as an ordinary message from the
+    /// signed-in user. It mentions no one, so agents there take it in as
+    /// context without answering. Persisted before publishing: the target
+    /// session is not open here and nothing would retry a lost publish.
+    public func forward(_ text: String, toSessionID sessionID: String) async throws {
+        guard let teamcluService else { throw TeamcluService.SendMessageError.mqttUnavailable }
+        try await teamcluService.sendMessage(sessionId: sessionID, content: text, persistFirst: true)
+    }
+
+    /// The prompt that started the turn shown as feed item `turnItemID`:
+    /// the nearest chat message above it. Nil when there is none, or when
+    /// it carried files — a text-only resend would ask a different question.
+    public func promptForRegeneration(turnItemID: String) -> AgentEvent? {
+        guard let prompt = promptByTurnItemID[turnItemID],
+              prompt.attachments.isEmpty,
+              let text = prompt.text, !text.isEmpty
+        else { return nil }
+        return prompt
+    }
+
+    private func rebuildFeedLookups() {
+        var prompts: [String: AgentEvent] = [:]
+        var bySupabaseID: [String: AgentEvent] = [:]
+        var lastPrompt: AgentEvent?
+        for item in feedItems {
+            switch item {
+            case .userMessage(let event):
+                lastPrompt = event
+                if let id = event.supabaseMessageId { bySupabaseID[id] = event }
+            case .completedTurn(let id, _, let finalEvent, _):
+                if let lastPrompt { prompts[id] = lastPrompt }
+                if let messageID = finalEvent.supabaseMessageId { bySupabaseID[messageID] = finalEvent }
+            case .activeStream, .permission, .todo, .error:
+                break
+            }
+        }
+        promptByTurnItemID = prompts
+        feedEventBySupabaseID = bySupabaseID
+    }
+
+    /// Asks `agentID` the turn's prompt again. This is not a true
+    /// regenerate: there is no server-side "replace this answer", so the
+    /// prompt goes out as a new message and the agent sees its earlier
+    /// answer in context — a prompt that refers back ("double it") builds
+    /// on that answer instead of redoing it. The quote, if any, goes along.
+    public func regenerate(turnItemID: String, agentID: String, modelContext: ModelContext?) async throws {
+        guard let prompt = promptForRegeneration(turnItemID: turnItemID), let text = prompt.text else { return }
+        try await sendPrompt(text, replyTo: prompt.replyToMessageID, agentIDs: [agentID], modelContext: modelContext)
+    }
+
+    /// The quote to draw above `event`'s bubble. A reply composed here (or
+    /// seeded from history) carries `replyToMessageID` itself; older live
+    /// messages from others only have it on their `SessionMessage` row.
+    public func replyQuote(for event: AgentEvent) -> ReplyQuote? {
+        if let target = event.replyToMessageID, !target.isEmpty {
+            let quoted = feedEventBySupabaseID[target]
+            return ReplyQuote(
+                messageID: target,
+                senderActorID: quoted?.senderActorID ?? "",
+                content: quoted?.text ?? ""
+            )
+        }
+        return replyQuote(forSupabaseMessageID: event.supabaseMessageId)
     }
 
     /// The message this event replies to, resolved from the SwiftData
@@ -3513,8 +3908,12 @@ extension SessionDetailViewModel {
         handleAgentWorkingSafetyTimeout()
     }
 
-    public func _test_armCompletedOutputSettle(bucket: String) {
+    /// Arms the complete-output settle and returns its task, so tests await
+    /// the 300 ms delay instead of sleeping past it.
+    @discardableResult
+    public func _test_armCompletedOutputSettle(bucket: String) -> Task<Void, Never>? {
         armCompletedOutputSettle(bucket: bucket)
+        return agentWorkingResetTask
     }
 
     public var _test_streamingTurnIDByAgent: [String: String] {
@@ -3658,6 +4057,40 @@ extension SessionDetailViewModel {
         interruptPendingAgents.insert(bucket)
         forceSettleInterruptedAgent(bucket)
     }
+
+    #if DEBUG
+    /// Fills this session with `PerfFixtures.history` through the reducer, so
+    /// the rows are the ones a real seed leaves behind.
+    public func _installPerfFixture(turns: Int, modelContext: ModelContext) {
+        _ = applyTimelineInputs(PerfFixtures.history(turns: turns).map { .historyMessage($0) },
+                                modelContext: modelContext)
+        try? modelContext.save()
+        recomputeGroups()
+    }
+
+    /// Plays `PerfFixtures.streamedTurn` through the live-envelope path —
+    /// the same handler and M2 accounting as the MQTT loop — one event per
+    /// `interval`, like a daemon streaming a reply.
+    public func _replayPerfTurn(interval: Duration = .milliseconds(25)) async {
+        guard let modelContext = startModelContext else { return }
+        let turnID = "perf-live-\(UUID().uuidString.prefix(8).lowercased())"
+        var sequence: UInt64 = 1
+        for acp in PerfFixtures.streamedTurn() {
+            var envelope = Amux_Envelope()
+            envelope.actorID = PerfFixtures.agentID
+            envelope.turnID = turnID
+            envelope.sequence = sequence
+            envelope.timestamp = Int64(Date().timeIntervalSince1970)
+            envelope.acpEvent = acp
+            sequence += 1
+            let start = ContinuousClock.now
+            handleEnvelope(envelope, modelContext: modelContext)
+            recordTurnRenderCost(since: start)
+            try? await Task.sleep(for: interval)
+            if Task.isCancelled { return }
+        }
+    }
+    #endif
 
     /// Direct test entry: build an AcpInput and run it through
     /// `applyTimelineInput` without a live MQTT session.

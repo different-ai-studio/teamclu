@@ -152,6 +152,8 @@ export interface BlobStorage {
    * contentHash, not merely the claimed size.
    */
   hashSha256(objectPath: string): Promise<string | null>;
+  /** Complete object bytes, bounded by the caller before this is used. */
+  readBytes(objectPath: string): Promise<Buffer | null>;
   /**
    * Remove the bytes. Idempotent: an object that is already gone is a success,
    * because the only caller is a collector and "not there" is the outcome it
@@ -236,6 +238,14 @@ export function supabaseBlobStorage(bucket: () => string): BlobStorage {
       return createHash("sha256").update(buf).digest("hex");
     },
 
+    async readBytes(objectPath) {
+      const { data, error } = await createServiceRoleClient()
+        .storage.from(bucket())
+        .download(objectPath);
+      if (error || !data) return null;
+      return Buffer.from(await data.arrayBuffer());
+    },
+
     async remove(objectPath) {
       const { error } = await createServiceRoleClient()
         .storage.from(bucket())
@@ -315,6 +325,23 @@ export function s3BlobStorage(bucket: () => string, prefix: () => string): BlobS
           hash.update(chunk);
         }
         return hash.digest("hex");
+      } catch (e) {
+        if (isMissingObject(e)) return null;
+        throw e;
+      }
+    },
+
+    async readBytes(objectPath) {
+      try {
+        const obj = await getS3Client().send(
+          new GetObjectCommand({ Bucket: bucket(), Key: key(objectPath) }),
+        );
+        if (!obj.Body) return null;
+        const chunks: Buffer[] = [];
+        for await (const chunk of obj.Body as AsyncIterable<Uint8Array>) {
+          chunks.push(Buffer.from(chunk));
+        }
+        return Buffer.concat(chunks);
       } catch (e) {
         if (isMissingObject(e)) return null;
         throw e;

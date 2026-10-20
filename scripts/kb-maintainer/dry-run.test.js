@@ -66,21 +66,18 @@ test("dryRun fails closed when ACL state is unknown", () => {
   );
 });
 
-test("dryRun fails when node id does not match config", () => {
+test("dryRun is portable across node ids", () => {
   const fx = makeFixture();
-  assert.throws(
-    () =>
-      dryRun({
-        configPath: fx.configPath,
-        statePath: fx.statePath,
-        documentsRoot: fx.documentsRoot,
-        knowledgeRoot: fx.knowledgeRoot,
-        nodeId: "other-node",
-        known: [],
-        aclPrefixes: [],
-      }),
-    /node/i,
-  );
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "other-node",
+    known: [],
+    aclPrefixes: [],
+  });
+  assert.equal(result.ok, true);
 });
 
 test("dryRun fails when _schema.md is missing", () => {
@@ -101,21 +98,103 @@ test("dryRun fails when _schema.md is missing", () => {
   );
 });
 
-test("dryRun fails when a documents ACL intersects the whitelist", () => {
+test("dryRun skips restricted folders instead of failing the run", () => {
   const fx = makeFixture();
-  assert.throws(
-    () =>
-      dryRun({
-        configPath: fx.configPath,
-        statePath: fx.statePath,
-        documentsRoot: fx.documentsRoot,
-        knowledgeRoot: fx.knowledgeRoot,
-        nodeId: "node-a",
-        known: [],
-        aclPrefixes: ["documents/handbook/"],
-      }),
-    /acl|restricted/i,
+  fs.mkdirSync(path.join(fx.documentsRoot, "handbook", "secret"), { recursive: true });
+  fs.writeFileSync(path.join(fx.documentsRoot, "handbook", "secret", "pay.pdf"), "pay");
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [
+      { path: "documents/handbook/secret/bonus.pdf", size: 3 },
+      { path: "documents/training/onboarding.pdf", size: 5 },
+    ],
+    aclPrefixes: ["documents/handbook/secret/", "knowledge/hr/"],
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.restrictedPrefixes, ["documents/handbook/secret/"]);
+  assert.equal(result.counts.restricted, 2);
+  const planned = [
+    ...result.plan.add,
+    ...result.plan.update,
+    ...result.plan.would_fetch,
+    ...result.plan.unchanged,
+  ].map((item) => item.path);
+  assert.deepEqual(planned.sort(), [
+    "documents/handbook/leave.pdf",
+    "documents/training/onboarding.pdf",
+  ]);
+  assert.equal(JSON.stringify(result.plan).includes("secret"), false);
+});
+
+test("dryRun queues imported sources under a restricted folder for retraction, not retention", () => {
+  const fx = makeFixture();
+  fs.mkdirSync(path.join(fx.documentsRoot, "handbook", "secret"), { recursive: true });
+  fs.writeFileSync(path.join(fx.documentsRoot, "handbook", "secret", "pay.pdf"), "pay");
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    teamId: "11111111-1111-4111-8111-111111111111",
+    sources: {
+      "documents/handbook/secret/pay.pdf": {
+        status: "imported",
+        sourceSha256: "ab".repeat(32),
+        affectedPages: ["pages/pay.md"],
+      },
+      "documents/handbook/secret/bonus.pdf": {
+        status: "imported",
+        sourceSha256: "cd".repeat(32),
+        affectedPages: ["pages/bonus.md"],
+      },
+    },
+  });
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    // Still listed by the team: a known path must not keep restricted content alive.
+    known: [{ path: "documents/handbook/secret/bonus.pdf", size: 3 }],
+    aclPrefixes: ["documents/handbook/secret/"],
+  });
+  assert.deepEqual(
+    result.plan.restrict.map((item) => item.path),
+    ["documents/handbook/secret/bonus.pdf", "documents/handbook/secret/pay.pdf"],
   );
+  assert.equal(result.plan.restrict[0].sourceSha256, "cd".repeat(32));
+  assert.deepEqual(result.plan.delete, []);
+  assert.equal(result.counts.restrict, 2);
+});
+
+test("dryRun restricts imported sources even when their folder is no longer selected", () => {
+  const fx = makeFixture();
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    teamId: "11111111-1111-4111-8111-111111111111",
+    sources: {
+      "documents/finance/q1.pdf": {
+        status: "imported",
+        sourceSha256: "ab".repeat(32),
+        affectedPages: ["pages/q1.md"],
+      },
+    },
+  });
+  fs.mkdirSync(path.join(fx.documentsRoot, "finance"), { recursive: true });
+  fs.writeFileSync(path.join(fx.documentsRoot, "finance", "q1.pdf"), "q1");
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: ["documents/finance/"],
+  });
+  assert.deepEqual(result.plan.restrict.map((item) => item.path), ["documents/finance/q1.pdf"]);
+  assert.deepEqual(result.plan.delete, []);
 });
 
 test("dryRun emits a stable add/would_fetch plan and is byte-identical across runs", () => {
@@ -169,7 +248,7 @@ test("dryRun does not download, call an agent, or write the vault", () => {
   assert.deepEqual(state.sources, {});
 });
 
-test("dryRun treats an imported-but-missing known path as delete, not would_fetch", () => {
+test("dryRun keeps an imported source that is listed but not downloaded", () => {
   const fx = makeFixture();
   const sha = "ab".repeat(32);
   writeJson(fx.statePath, {
@@ -194,13 +273,87 @@ test("dryRun treats an imported-but-missing known path as delete, not would_fetc
     ],
     aclPrefixes: [],
   });
+  assert.deepEqual(result.plan.delete, []);
+  assert.deepEqual(
+    result.plan.would_fetch.map((item) => item.path),
+    ["documents/handbook/gone.pdf", "documents/training/onboarding.pdf"],
+  );
+});
+
+test("dryRun still retracts an imported source that is gone from the team", () => {
+  const fx = makeFixture();
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    sources: {
+      "documents/handbook/gone.pdf": {
+        sourceSha256: "ab".repeat(32),
+        status: "imported",
+        affectedPages: ["pages/gone.md"],
+      },
+    },
+  });
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [{ path: "documents/training/onboarding.pdf", size: 40 }],
+    aclPrefixes: [],
+  });
   assert.deepEqual(
     result.plan.delete.map((item) => item.path),
     ["documents/handbook/gone.pdf"],
   );
-  assert.deepEqual(
-    result.plan.would_fetch.map((item) => item.path),
-    ["documents/training/onboarding.pdf"],
-  );
-  assert.ok(!result.plan.would_fetch.some((item) => item.path === "documents/handbook/gone.pdf"));
+});
+
+test("dryRun does not retract a listed source that is outside the selection and not downloaded", () => {
+  const fx = makeFixture();
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    sources: {
+      "documents/features/shell.md": {
+        sourceSha256: "ab".repeat(32),
+        status: "imported",
+        affectedPages: ["pages/3col-shell.md"],
+      },
+    },
+  });
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [{ path: "documents/features/shell.md", size: 20 }],
+    aclPrefixes: [],
+  });
+  assert.deepEqual(result.plan.delete, []);
+});
+
+test("dryRun does not retract an imported source that still exists outside the selection", () => {
+  const fx = makeFixture();
+  const features = path.join(fx.documentsRoot, "features");
+  fs.mkdirSync(features, { recursive: true });
+  fs.writeFileSync(path.join(features, "shell.md"), "# shell\n");
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    sources: {
+      "documents/features/shell.md": {
+        sourceSha256: "ab".repeat(32),
+        status: "imported",
+        affectedPages: ["pages/3col-shell.md"],
+      },
+    },
+  });
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+  });
+  assert.deepEqual(result.plan.delete, []);
 });

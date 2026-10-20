@@ -13,6 +13,9 @@ use crate::{
     AgentHandle, ChannelStore, FilterResult, ProcessedMessageTracker, MAX_PROCESSED_MESSAGES,
 };
 
+#[path = "seatalk_stream.rs"]
+mod stream;
+
 const SEATALK_API_BASE: &str = "https://openapi.seatalk.io";
 const SEATALK_WS_URL: &str = "wss://ws-openapi.haiserve.com/ws/bot";
 const TOKEN_REFRESH_MARGIN_SECS: u64 = 600;
@@ -137,6 +140,26 @@ impl SeaTalkClient {
         Ok(data)
     }
 
+    async fn get_quoted_text(&self, message_id: &str) -> Result<String, String> {
+        let path = format!(
+            "/messaging/v2/get_message_by_message_id?message_id={}",
+            urlencoding::encode(message_id)
+        );
+        let message = self
+            .api_call(reqwest::Method::GET, &path, None, true)
+            .await?;
+        // The API returns the message fields at the top level. Keep mentions
+        // in the original quote: they are context, not an address to this bot.
+        if message["tag"].as_str() != Some("text") {
+            return Err("引用的消息不是文本；请直接发送需要处理的文字。".into());
+        }
+        let text = message["text"]["plain_text"]
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| "引用消息没有可读取的文字；请直接发送需要处理的文字。".to_string())?;
+        Ok(text.to_string())
+    }
+
     async fn send_group_text(
         &self,
         group_id: &str,
@@ -202,6 +225,25 @@ struct HandlerContext {
     inbound_sink: Option<Arc<dyn crate::driver::InboundSink>>,
 }
 
+struct SeaTalkQuoteFetch {
+    client: Arc<SeaTalkClient>,
+    message_id: String,
+}
+
+#[async_trait::async_trait]
+impl crate::driver::FetchQuotedText for SeaTalkQuoteFetch {
+    async fn fetch(&self) -> Result<String, crate::driver::DriverError> {
+        self.client
+            .get_quoted_text(&self.message_id)
+            .await
+            .map_err(|error| {
+                crate::driver::DriverError::Transport(format!(
+                    "无法读取 SeaTalk 引用消息，请直接发送原文。{error}"
+                ))
+            })
+    }
+}
+
 pub struct SeaTalkGateway {
     config: Arc<RwLock<SeaTalkConfig>>,
     pub agent: Arc<dyn AgentHandle>,
@@ -258,6 +300,12 @@ impl SeaTalkGateway {
 
     pub async fn set_config(&self, config: SeaTalkConfig) {
         *self.config.write().await = config;
+    }
+
+    /// App id from config. Status only fills `app_id` after the socket starts,
+    /// and dispatch has to pick a bot before that.
+    pub async fn app_id(&self) -> String {
+        self.config.read().await.app_id.clone()
     }
 
     pub async fn get_status(&self) -> SeaTalkGatewayStatusResponse {
@@ -680,8 +728,8 @@ fn decode_conv_id(id: &str) -> (&str, Option<&str>) {
 
 fn seatalk_caps() -> crate::driver::ChannelCaps {
     crate::driver::ChannelCaps {
-        // SeaTalk's OpenAPI posts messages; there is no edit endpoint, so a
-        // streamed reply would have to be N messages. The core buffers instead.
+        // Keep agent events buffered. prepare_buffered_reply presents only
+        // the completed reply through SeaTalk's native streaming API.
         streaming_edit: false,
         // `dispatch_send` has rejected SeaTalk file sends all along; saying so
         // here is what makes the core degrade an attachment into text rather
@@ -708,6 +756,19 @@ fn extract_thread_id(payload: &serde_json::Value) -> Option<&str> {
         }
     }
     None
+}
+
+/// A reply to a new group mention starts a SeaTalk thread by using the root
+/// message's ID. Resolve it before session routing so the first turn and later
+/// thread messages share the same binding and agent context.
+fn reply_thread_id<'a>(event_type: &str, payload: &'a serde_json::Value) -> Option<&'a str> {
+    extract_thread_id(payload).or_else(|| {
+        if event_type == "new_mentioned_message_received_from_group_chat" {
+            optional_id(payload["message"]["message_id"].as_str())
+        } else {
+            None
+        }
+    })
 }
 
 fn short_thread_id(thread_id: &str) -> String {
@@ -744,7 +805,7 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
             payload.clone(),
             true,
         ),
-        "new_mentioned_message_received_from_group_chat" | "new_message_received_from_thread" => {
+        "new_mentioned_message_received_from_group_chat" => {
             let group_id = payload["group_id"]
                 .as_str()
                 .or_else(|| payload["group"]["group_id"].as_str())
@@ -777,19 +838,11 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    let thread_id = extract_thread_id(payload).map(str::to_string);
-    if event_type == "new_message_received_from_thread" && thread_id.is_none() {
+    let thread_id = reply_thread_id(event_type, payload).map(str::to_string);
+    if !is_dm && thread_id.is_none() {
         return None;
     }
     let text = extract_message_text(message);
-    // A bare `@Bot` with nothing after it: the inline path answered so the user
-    // could see the bot was alive. `Core::handle` returns `Empty` on blank
-    // text, so without this the mention gets silence.
-    let text = if text.is_empty() && matches!(kind, crate::driver::ConversationKind::Group) {
-        "你好，请直接说明需要我帮你做什么。".to_string()
-    } else {
-        text
-    };
 
     Some(crate::driver::InboundMessage {
         conversation: crate::driver::Conversation {
@@ -806,8 +859,8 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
         external_message_id: event_id.to_string(),
         text,
         attachments: Vec::new(),
-        // SeaTalk only delivers group messages the bot was mentioned in, and a
-        // DM is addressed by definition.
+        // Only explicit mention callbacks reach this group path. SeaTalk also
+        // sends generic thread callbacks, which we deliberately ignore.
         addressed_to_bot: true,
         quoted_text: None,
         reply_context: None,
@@ -817,7 +870,7 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
 /// SeaTalk as a transport driver.
 pub struct SeaTalkDriver {
     app_id: String,
-    client: SeaTalkClient,
+    client: Arc<SeaTalkClient>,
     /// Whether a thread splits the session, mirroring the inline path's config.
     dm_thread_session: bool,
     group_thread_session: bool,
@@ -826,7 +879,7 @@ pub struct SeaTalkDriver {
 impl SeaTalkDriver {
     pub fn new(app_id: String, app_secret: String) -> Self {
         Self {
-            client: SeaTalkClient::new(app_id.clone(), app_secret),
+            client: Arc::new(SeaTalkClient::new(app_id.clone(), app_secret)),
             app_id,
             dm_thread_session: false,
             group_thread_session: false,
@@ -901,6 +954,22 @@ impl crate::driver::ChannelDriver for SeaTalkDriver {
         }
     }
 
+    fn append_during_turn(&self) -> bool {
+        true
+    }
+
+    async fn prepare_buffered_reply(
+        &self,
+        to: &crate::driver::Conversation,
+        _reply_context: Option<&str>,
+    ) -> Result<Option<Box<dyn crate::driver::BufferedReply>>, crate::driver::DriverError> {
+        Ok(
+            stream::SeaTalkBufferedReply::start(self.client.clone(), to.clone())
+                .await
+                .map(|reply| Box::new(reply) as Box<dyn crate::driver::BufferedReply>),
+        )
+    }
+
     async fn deliver(
         &self,
         to: &crate::driver::Conversation,
@@ -940,6 +1009,14 @@ async fn handle_callback_event(
         );
         return Ok(());
     }
+    // The explicit-mention callback also covers mentions inside threads and
+    // includes their thread_id. Generic follower callbacks must not start a
+    // turn, show Thinking, or send a policy rejection. Ignore them before
+    // dedup too, so they cannot consume the explicit mention's callback ID.
+    if event_type == "new_message_received_from_thread" {
+        println!("[SeaTalk] ignoring thread follower event_id={event_id}; explicit @ required");
+        return Ok(());
+    }
     {
         let mut tracker = ctx.processed_events.write().await;
         if tracker.is_duplicate(&event_id) {
@@ -952,15 +1029,13 @@ async fn handle_callback_event(
 
     // Lifecycle events never open a session; everything else is a message and
     // belongs to the core (dedup, routing, identity, commands, writing, turn).
-    // Only the three message types go further. Everything else — lifecycle,
+    // Only the two addressed message types go further. Everything else — lifecycle,
     // and anything SeaTalk adds later — returns here: the old `match` had an
     // `other =>` arm, and without it an unknown event fell into the *group*
     // allowlist check, where a missing `group_id` meant firing a rejection at
     // an empty chat id.
     match event_type.as_str() {
-        "message_from_bot_subscriber"
-        | "new_mentioned_message_received_from_group_chat"
-        | "new_message_received_from_thread" => {}
+        "message_from_bot_subscriber" | "new_mentioned_message_received_from_group_chat" => {}
         "bot_added_to_group_chat" | "bot_removed_from_group_chat" | "new_bot_subscriber" => {
             println!("[SeaTalk] lifecycle event type={event_type} (ignored)");
             return Ok(());
@@ -994,14 +1069,16 @@ async fn handle_callback_event(
         match check_group_allowed(&cfg, group_id, &code, sender["email"].as_str()) {
             FilterResult::Allow => true,
             FilterResult::UserNotAllowed => {
-                let _ = ctx
-                    .client
-                    .send_group_text(
-                        group_id,
-                        "Sorry, you are not authorized to use this bot.",
-                        extract_thread_id(payload),
-                    )
-                    .await;
+                if let Some(thread_id) = reply_thread_id(&event_type, payload) {
+                    let _ = ctx
+                        .client
+                        .send_group_text(
+                            group_id,
+                            "Sorry, you are not authorized to use this bot.",
+                            Some(thread_id),
+                        )
+                        .await;
+                }
                 false
             }
             _ => false,
@@ -1012,28 +1089,19 @@ async fn handle_callback_event(
         return Ok(());
     }
 
-    if event_type == "new_message_received_from_thread" {
-        let payload = &event["event"];
-        let group_id = payload["group_id"]
-            .as_str()
-            .or_else(|| payload["group"]["group_id"].as_str())
-            .unwrap_or("");
-        if extract_thread_id(payload).is_none() {
-            println!(
-                "[SeaTalk] seatalk thread event missing thread_id event_type={event_type} event_id={event_id} group_id={group_id} thread_id_present=false"
-            );
-            return Ok(());
-        }
-    }
-
     match normalize_event(event) {
-        Some(inbound) => {
+        Some(mut inbound) => {
+            if let Some(message_id) = optional_id(payload["message"]["quoted_message_id"].as_str())
+            {
+                inbound.quoted_text = Some(crate::driver::QuotedText::Deferred(Arc::new(
+                    SeaTalkQuoteFetch {
+                        client: ctx.client.clone(),
+                        message_id: message_id.to_string(),
+                    },
+                )));
+            }
             let (chat, thread) = decode_conv_id(&inbound.conversation.id);
-            let route_scope = if thread.is_some() {
-                "thread"
-            } else {
-                "group"
-            };
+            let route_scope = if thread.is_some() { "thread" } else { "group" };
             println!(
                 "[SeaTalk] seatalk inbound normalized event_type={event_type} event_id={event_id} group_id={chat} thread_id={} route_scope={route_scope}",
                 thread.unwrap_or("-")
@@ -1321,7 +1389,42 @@ mod tests {
     }
 
     #[test]
-    fn normalize_group_mention_without_thread() {
+    fn normalize_group_mention_starts_thread_on_message_id() {
+        let event = group_event(
+            "new_mentioned_message_received_from_group_chat",
+            "ev1",
+            "g1",
+            "@Bot hello",
+            json!({ "message.message_id": "root-message" }),
+        );
+        let msg = normalize_event(&event).unwrap();
+        assert_eq!(msg.conversation.id, "g1#t=root-message");
+        // The callback event ID remains the dedup key; it is not a thread ID.
+        assert_eq!(msg.external_message_id, "ev1");
+        assert_eq!(msg.text, "hello");
+        let (group, thread) = decode_conv_id(&msg.conversation.id);
+        assert_eq!(group, "g1");
+        assert_eq!(
+            build_text_message("reply", thread)["thread_id"],
+            "root-message"
+        );
+    }
+
+    #[test]
+    fn normalize_group_mention_missing_message_id_fails_closed() {
+        for message_id in [json!(null), json!(""), json!("   "), json!(123)] {
+            let event = group_event(
+                "new_mentioned_message_received_from_group_chat",
+                "ev1",
+                "g1",
+                "@Bot hello",
+                json!({
+                    "message.message_id": message_id,
+                    "message.quoted_message_id": "quoted-message"
+                }),
+            );
+            assert!(normalize_event(&event).is_none());
+        }
         let event = group_event(
             "new_mentioned_message_received_from_group_chat",
             "ev1",
@@ -1329,9 +1432,21 @@ mod tests {
             "@Bot hello",
             json!({}),
         );
+        assert!(normalize_event(&event).is_none());
+    }
+
+    #[test]
+    fn normalize_group_mention_empty_thread_id_uses_message_id() {
+        let event = group_event(
+            "new_mentioned_message_received_from_group_chat",
+            "ev1",
+            "g1",
+            "@Bot",
+            json!({ "message.message_id": " root-message ", "message.thread_id": "  " }),
+        );
         let msg = normalize_event(&event).unwrap();
-        assert_eq!(msg.conversation.id, "g1");
-        assert_eq!(msg.text, "hello");
+        assert_eq!(msg.conversation.id, "g1#t=root-message");
+        assert_eq!(msg.text, "");
     }
 
     #[test]
@@ -1341,14 +1456,14 @@ mod tests {
             "ev2",
             "g1",
             "@Bot hi thread",
-            json!({ "message.thread_id": "t1" }),
+            json!({ "message.message_id": "reply-message", "message.thread_id": "t1" }),
         );
         let msg = normalize_event(&event).unwrap();
         assert_eq!(msg.conversation.id, "g1#t=t1");
     }
 
     #[test]
-    fn normalize_thread_event_with_thread_id() {
+    fn normalize_thread_follower_event_ignored() {
         let event = group_event(
             "new_message_received_from_thread",
             "ev3",
@@ -1356,8 +1471,7 @@ mod tests {
             "thread reply",
             json!({ "thread.thread_id": "t2" }),
         );
-        let msg = normalize_event(&event).unwrap();
-        assert_eq!(msg.conversation.id, "g1#t=t2");
+        assert!(normalize_event(&event).is_none());
     }
 
     #[test]
@@ -1367,17 +1481,95 @@ mod tests {
             "ev4",
             "g1",
             "no thread id",
-            json!({}),
+            json!({ "message.message_id": "reply-message" }),
         );
         assert!(normalize_event(&event).is_none());
     }
 
     #[test]
     fn normalize_dm_unaffected() {
-        let event = dm_event("ev5", "e99", "dm hello");
+        let mut event = dm_event("ev5", "e99", "dm hello");
+        event["event"]["message"]["message_id"] = json!("dm-message");
         let msg = normalize_event(&event).unwrap();
         assert_eq!(msg.conversation.id, "e99");
-        assert_eq!(msg.conversation.kind, crate::driver::ConversationKind::Direct);
+        assert_eq!(
+            msg.conversation.kind,
+            crate::driver::ConversationKind::Direct
+        );
+    }
+
+    #[test]
+    fn first_mention_and_thread_followups_share_session_binding() {
+        // Match the daemon's default SeaTalk configuration: each group thread
+        // gets one session. The queue and session router both use this binding.
+        let cfg = SeaTalkConfig::default();
+        assert!(cfg.group_thread_session);
+        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
+            .with_thread_sessions(cfg.dm_thread_session, cfg.group_thread_session);
+        let first = normalize_event(&group_event(
+            "new_mentioned_message_received_from_group_chat",
+            "ev-root",
+            "g1",
+            "@Bot remember this",
+            json!({ "message.message_id": "root-message" }),
+        ))
+        .unwrap();
+        let binding = driver.binding(&first.conversation);
+        assert_eq!(binding, "seatalk://app001/group/g1/thread/root-message");
+
+        for (event_id, message_id) in [
+            ("ev-mention", "mention-message"),
+            ("ev-followup", "followup-message"),
+        ] {
+            let mut event = group_event(
+                "new_mentioned_message_received_from_group_chat",
+                event_id,
+                "g1",
+                "@Bot continue",
+                json!({ "message.message_id": message_id, "message.thread_id": "root-message" }),
+            );
+            // A different participant in the same thread shares its context.
+            event["event"]["message"]["sender"] = json!({ "employee_code": "e2" });
+            let followup = normalize_event(&event).unwrap();
+            assert_eq!(followup.conversation, first.conversation);
+            assert_eq!(driver.binding(&followup.conversation), binding);
+            assert_ne!(followup.sender.external_id, first.sender.external_id);
+            assert_ne!(followup.external_message_id, first.external_message_id);
+            let (_, thread) = decode_conv_id(&followup.conversation.id);
+            assert_eq!(
+                build_text_message("reply", thread)["thread_id"],
+                "root-message"
+            );
+        }
+    }
+
+    #[test]
+    fn separate_group_mentions_get_separate_session_bindings() {
+        let cfg = SeaTalkConfig::default();
+        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
+            .with_thread_sessions(cfg.dm_thread_session, cfg.group_thread_session);
+        let bindings: Vec<_> = [("g1", "root-1"), ("g1", "root-2"), ("g2", "root-1")]
+            .into_iter()
+            .map(|(group, root)| {
+                let msg = normalize_event(&group_event(
+                    "new_mentioned_message_received_from_group_chat",
+                    &format!("ev-{group}-{root}"),
+                    group,
+                    "@Bot hello",
+                    json!({ "message.message_id": root }),
+                ))
+                .unwrap();
+                driver.binding(&msg.conversation)
+            })
+            .collect();
+        assert_eq!(
+            bindings,
+            vec![
+                "seatalk://app001/group/g1/thread/root-1",
+                "seatalk://app001/group/g1/thread/root-2",
+                "seatalk://app001/group/g2/thread/root-1"
+            ]
+        );
     }
 
     #[test]
@@ -1408,8 +1600,8 @@ mod tests {
 
     #[test]
     fn binding_group_without_thread() {
-        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
-            .with_thread_sessions(true, true);
+        let driver =
+            SeaTalkDriver::new("app001".into(), "secret".into()).with_thread_sessions(true, true);
         let conv = crate::driver::Conversation {
             channel: "seatalk",
             bot_id: None,
@@ -1421,8 +1613,8 @@ mod tests {
 
     #[test]
     fn binding_group_with_threads() {
-        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
-            .with_thread_sessions(true, true);
+        let driver =
+            SeaTalkDriver::new("app001".into(), "secret".into()).with_thread_sessions(true, true);
         let conv_t1 = crate::driver::Conversation {
             channel: "seatalk",
             bot_id: None,
@@ -1457,8 +1649,8 @@ mod tests {
 
     #[test]
     fn binding_thread_reply_preserved_when_thread_session_disabled() {
-        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
-            .with_thread_sessions(false, false);
+        let driver =
+            SeaTalkDriver::new("app001".into(), "secret".into()).with_thread_sessions(false, false);
         let conv = crate::driver::Conversation {
             channel: "seatalk",
             bot_id: None,

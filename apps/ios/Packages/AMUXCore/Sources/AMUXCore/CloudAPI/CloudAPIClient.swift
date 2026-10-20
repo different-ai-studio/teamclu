@@ -34,6 +34,15 @@ public struct CloudAPIClient: Sendable {
         self.send = send
     }
 
+    /// Same bearer and transport, different Cloud API origin (join-link redeem).
+    public func withBaseURL(_ url: URL) -> CloudAPIClient {
+        CloudAPIClient(
+            configuration: CloudAPIConfiguration(baseURL: url),
+            accessToken: accessToken,
+            send: send
+        )
+    }
+
     public func get<T: Decodable & Sendable>(_ path: String, as type: T.Type = T.self) async throws -> T {
         try await request("GET", path: path, body: Optional<Data>.none, idempotencyKey: nil, as: type)
     }
@@ -46,6 +55,14 @@ public struct CloudAPIClient: Sendable {
     ) async throws -> T {
         let data = try JSONEncoder().encode(body)
         return try await request("POST", path: path, body: data, idempotencyKey: idempotencyKey, as: type)
+    }
+
+    /// POST with a bearer and no body (join-link redeem).
+    public func post<T: Decodable & Sendable>(
+        _ path: String,
+        as type: T.Type = T.self
+    ) async throws -> T {
+        try await request("POST", path: path, body: Optional<Data>.none, idempotencyKey: nil, as: type)
     }
 
     public func postVoid<Body: Encodable & Sendable>(

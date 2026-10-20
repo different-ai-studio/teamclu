@@ -32,22 +32,13 @@ test("POST /v1/account/upgrade requires teamId + orgName", async () => {
   assert.equal(res.statusCode, 400);
 });
 
-test("POST /v1/account/bind-phone calls bindPhone", async () => {
+test("POST /v1/account/bind-phone is gone (410) and never reaches the repository", async () => {
   const calls: any[] = [];
   const repo = { bindPhone: async (a: any) => { calls.push(a); return { userId: "u1", bound: true }; } };
   const res = await handleBusinessApiRequest({
     httpMethod: "POST", path: "/v1/account/bind-phone", headers: AUTH,
     body: JSON.stringify({ phone: "13700000000", code: "123456" }),
   }, deps(repo));
-  assert.equal(res.statusCode, 200);
-  assert.deepEqual(calls[0], { phone: "13700000000", code: "123456" });
-  assert.equal(JSON.parse(res.body).bound, true);
-});
-
-test("POST /v1/account/bind-phone requires phone + code", async () => {
-  const res = await handleBusinessApiRequest({
-    httpMethod: "POST", path: "/v1/account/bind-phone", headers: AUTH,
-    body: JSON.stringify({ phone: "13700000000" }),
-  }, deps({ bindPhone: async () => ({}) }));
-  assert.equal(res.statusCode, 400);
+  assert.equal(res.statusCode, 410);
+  assert.equal(calls.length, 0);
 });

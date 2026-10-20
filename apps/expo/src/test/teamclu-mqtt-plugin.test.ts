@@ -54,6 +54,26 @@ describe("withTeamCluMqtt config plugin helpers", () => {
     expect(twice.match(/TeamCluMqttPackage/g)).toHaveLength(1);
   });
 
+  it("registers the package in the SDK 57 PackageList.apply template", () => {
+    const mainApplication = [
+      "        packageList =",
+      "          PackageList(this).packages.apply {",
+      "            // Packages that cannot be autolinked yet can be added manually here, for example:",
+      "            // add(MyReactNativePackage())",
+      "          }",
+    ].join("\n");
+
+    const once = plugin.addPackageRegistration(mainApplication);
+    const twice = plugin.addPackageRegistration(once);
+
+    expect(once).toContain("            // add(MyReactNativePackage())\n            add(TeamCluMqttPackage())");
+    expect(twice.match(/TeamCluMqttPackage/g)).toHaveLength(1);
+  });
+
+  it("fails the prebuild when MainApplication has no known anchor", () => {
+    expect(() => plugin.addPackageRegistration("class MainApplication {}")).toThrow(/TeamCluMqttPackage/);
+  });
+
   it("adds the CocoaMQTT pod once", () => {
     const podfile = [
       "platform :ios, '15.1'",
@@ -109,5 +129,29 @@ describe("writeMqttModuleFiles", () => {
     expect(() => plugin.writeMqttModuleFiles(projectRoot, undefined)).toThrow(
       /android\.package is required/,
     );
+  });
+});
+
+describe("addIosSourceFiles", () => {
+  // The files were written to ios/ but never added to the target, so no iOS
+  // build ever compiled the native client and MQTT silently never connected.
+  it("adds both generated files to the app target, once", async () => {
+    const { vi } = await import("vitest");
+    const { IOSConfig } = require("expo/config-plugins");
+    const added: string[] = [];
+    const spy = vi
+      .spyOn(IOSConfig.XcodeUtils, "addBuildSourceFileToGroup")
+      .mockImplementation((...raw: unknown[]) => {
+        const args = raw[0] as { filepath: string; groupName: string };
+        expect(args.groupName).toBe("TeamCluExpo");
+        added.push(args.filepath);
+      });
+    const project = { hasFile: (p: string) => added.includes(p) };
+
+    plugin.addIosSourceFiles(project, "TeamCluExpo");
+    plugin.addIosSourceFiles(project, "TeamCluExpo");
+
+    expect(added).toEqual(["TeamCluExpo/TeamCluMqtt.swift", "TeamCluExpo/TeamCluMqttBridge.m"]);
+    spy.mockRestore();
   });
 });

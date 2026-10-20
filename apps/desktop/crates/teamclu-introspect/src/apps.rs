@@ -168,9 +168,11 @@ fn needs(arguments: &Value, key: &str, message: &str) -> Result<(), String> {
     }
 }
 
-const MANAGE_ACTIONS: [&str; 11] = [
+const MANAGE_ACTIONS: [&str; 14] = [
     "list",
     "status",
+    "auth_info",
+    "runtime_info",
     "sessions",
     "create",
     "update",
@@ -178,6 +180,7 @@ const MANAGE_ACTIONS: [&str; 11] = [
     "download",
     "move_workdir",
     "deploy",
+    "undeploy",
     "logs",
     "delete",
 ];
@@ -235,6 +238,22 @@ fn manage_body(workspace: &str, arguments: &Value) -> Result<Value, String> {
             &mut body,
             &["since_minutes", "limit", "kind", "contains", "request_id"],
         ),
+        "runtime_info" => {
+            if let Some(language) = str_arg(arguments, "language") {
+                if !matches!(language.as_str(), "node" | "python" | "go" | "php" | "java") {
+                    return Err("language must be node, python, go, php, or java".to_string());
+                }
+                body["language"] = json!(language);
+            }
+        }
+        "deploy" => {
+            if let Some(intent) = arguments.get("migration_intent") {
+                if !intent.is_boolean() {
+                    return Err("migration_intent must be a boolean".to_string());
+                }
+                body["migrationIntent"] = intent.clone();
+            }
+        }
         "update" => {
             copy_args(arguments, &mut body, &UPDATE_FIELDS);
             if !UPDATE_FIELDS.iter().any(|k| body.get(*k).is_some()) {
@@ -244,7 +263,7 @@ fn manage_body(workspace: &str, arguments: &Value) -> Result<Value, String> {
                 ));
             }
         }
-        "delete" => require_named_app(arguments, "delete")?,
+        "delete" | "undeploy" => require_named_app(arguments, &action)?,
         _ => {}
     }
     Ok(body)
@@ -433,7 +452,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "manage_app",
-            "description": "Work with a TeamClu app — what its control panel does. Omit app_id and app_name to act on the app whose checkout is the workspace you are in; you do not need to ask the user which app this is, and `list` reports each app's local `workdir`. list: this team's apps. status: every setting, where the checkout is on this machine, what the checkout declares about how it is built and run, and how far its branch is ahead of what is live. sessions: conversations linked to the app. create: a new app with its code on this machine — from a starter template (type), an existing repo (git_remote_url) or a folder already here (local_dir). update: change name, type, visibility and the deployed site's login wall (auth_*) — only the fields you pass change. reseed: write the code again for an app whose code was never written or failed to be. download: clone a team app onto this machine. move_workdir: move this machine's checkout elsewhere (not the one you are running in). deploy: build the checkout on this machine and PUBLISH TO THE PUBLIC INTERNET; an app whose auth_mode is \"none\" is readable by anyone with the URL. deploy, delete, and an update that changes visibility or auth_* wait for the user to approve in the TeamClu desktop app; if they decline or nobody answers within two minutes nothing happens — tell the user, and do not retry on your own. logs: what the deployed app printed, which is how you find out why it 500s. delete: take the app offline for good; needs an explicit app_id or app_name. Related tools: manage_app_access (who on the team may work on it), manage_app_env, manage_app_cron, manage_app_files, manage_app_data, manage_app_domain. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (most changes need admin on the app).",
+            "description": "Work with a TeamClu app — what its control panel does. Omit app_id and app_name to act on the app whose checkout is the workspace you are in; you do not need to ask the user which app this is, and `list` reports each app's local `workdir`. list: this team's apps. status: every setting, where the checkout is on this machine, what the checkout declares about how it is built and run, and how far its branch is ahead of what is live. auth_info: read the app's raw login rules, effective policies and actual organization role directory from the authenticated Cloud API; read-only and no approval. If organization_status is unconfigured, stop role configuration; never fall back to another organization. App-management access does not grant deployed-site role access. runtime_info: app deployment contract, recorded and provider runtime state, regional capabilities, historical observations, and this machine's build facts; language filters discovery. sessions: conversations linked to the app. create: a new app with its code on this machine — from a starter template (type), an existing repo (git_remote_url) or a folder already here (local_dir). update: change name, type, visibility and the deployed site's login wall (auth_*) — only the fields you pass change. reseed: write the code again for an app whose code was never written or failed to be. download: clone a team app onto this machine. move_workdir: move this machine's checkout elsewhere (not the one you are running in). deploy: build the checkout on this machine and PUBLISH TO THE PUBLIC INTERNET; an app whose auth_mode is \"none\" is readable by anyone with the URL. deploy, undeploy, delete, and an update that changes visibility or auth_* wait for the user to approve in the TeamClu desktop app; if they decline or nobody answers within two minutes nothing happens — tell the user, and do not retry on your own. undeploy: stop the live site and clean deployment resources while retaining the app, repository, sessions, database and files; requires an explicit app_id or app_name and desktop approval. Acceptance is not completion: read status for cleanup progress and retry failed cleanup only when requested. logs: what the deployed app printed, which is how you find out why it 500s. delete: take the app offline for good; needs an explicit app_id or app_name. Related tools: manage_app_access (who on the team may work on it), manage_app_env, manage_app_cron, manage_app_files, manage_app_data, manage_app_domain. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (most changes need admin on the app).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -466,7 +485,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "auth_audience": {
                         "type": "string",
                         "enum": ["any", "org"],
-                        "description": "update: who passes the wall — any = any signed-in user, org = only people in this organisation."
+                        "description": "update: application default / compatibility fallback when a required rule omits roles and audience. any = any signed-in user; org = any effective role in the app’s organization, including future roles."
                     },
                     "auth_scope": {
                         "type": "string",
@@ -475,18 +494,21 @@ pub fn tool_definitions() -> Vec<Value> {
                     },
                     "auth_rules": {
                         "type": "array",
-                        "description": "update: exceptions to auth_scope, matched by path prefix, longest match wins. REPLACES the whole list — read status first to keep the existing rules. With auth_scope paths at least one rule must be required.",
+                        "description": "update: exceptions to auth_scope, matched by path prefix, longest match wins. REPLACES the whole list — read auth_info first and preserve unmodified rules, then read auth_info again after updating to verify raw rules, normalized paths and effective policies. Use actual role codes from that directory, never names, IDs or invented roles. roles takes precedence over rule audience, then auth_audience. Organization roles are shared across teams in that organization; do not enumerate users or turn dynamic org into all current role codes. With auth_scope paths at least one rule must be required.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "path": { "type": "string", "description": "Starts with /. /admin covers /admin and /admin/..., not /administrator." },
+                                "path": { "type": "string", "description": "Path prefix, not a glob: /api/staff covers itself and child paths. Legacy trailing /* is accepted by the Cloud API and normalized; internal * is invalid. Read back the normalized path." },
                                 "auth": { "type": "string", "enum": ["required", "public"] },
-                                "audience": { "type": "string", "enum": ["any", "org"], "description": "Only for required; omit to follow auth_audience." }
+                                "roles": { "type": "array", "items": { "type": "string" }, "description": "Only for required: [] accepts any signed-in user; nonempty actual organization role codes accept any one matching effective role (OR). Explicit roles, including [], override audience. For dynamic any organization role, use audience org without roles. Public rules omit both." },
+                                "audience": { "type": "string", "enum": ["any", "org"], "description": "Only for required when roles is absent: org dynamically accepts any effective organization role including future roles; any accepts any signed-in user. Omit both roles and audience to inherit auth_audience." }
                             },
                             "required": ["path", "auth"]
                         }
                     },
                     "since_minutes": { "type": "integer", "description": "logs: how far back to read. Default 30, max 10080 (7 days)." },
+                    "language": { "type": "string", "enum": ["node", "python", "go", "php", "java"], "description": "runtime_info: optionally filter capabilities and observations by language." },
+                    "migration_intent": { "type": "boolean", "description": "deploy: explicitly request migration of runtime, interpreter version, or layers after reviewing the live configuration; native approval still applies." },
                     "limit": { "type": "integer", "description": "logs: how many entries. Default 100, max 200." },
                     "kind": {
                         "type": "string",
@@ -653,6 +675,78 @@ mod tests {
     }
 
     #[test]
+    fn auth_info_schema_and_selectors() {
+        let tool = tool_definitions().remove(0);
+        assert!(tool["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("auth_info")));
+        assert_eq!(
+            tool["inputSchema"]["properties"]["auth_rules"]["items"]["properties"]["roles"]
+                ["items"]["type"],
+            "string"
+        );
+        assert_eq!(
+            tool["inputSchema"]["properties"]["auth_rules"]["items"]["properties"]["roles"]["type"],
+            "array"
+        );
+        for selector in [
+            json!({}),
+            json!({"app_id": APP}),
+            json!({"app_name": "demo"}),
+        ] {
+            let mut args = selector;
+            args["action"] = json!("auth_info");
+            let body = manage_body(WS, &args).unwrap();
+            assert_eq!(body["workspace_path"], WS);
+            assert_eq!(body["app_id"], args["app_id"]);
+            assert_eq!(body["app_name"], args["app_name"]);
+            args["action"] = json!("status");
+            let mut status = manage_body(WS, &args).unwrap();
+            status["action"] = json!("auth_info");
+            assert_eq!(body, status);
+        }
+    }
+
+    #[test]
+    fn runtime_info_is_exposed_and_forwarded_with_app_selectors() {
+        for selector in [
+            json!({}),
+            json!({"app_id": APP}),
+            json!({"app_name": "demo"}),
+        ] {
+            let mut args = selector;
+            args["action"] = json!("runtime_info");
+            let body = manage_body(WS, &args).unwrap();
+            assert_eq!(body["action"], "runtime_info");
+            assert_eq!(body["workspace_path"], WS);
+            assert_eq!(body["app_id"], args["app_id"]);
+            assert_eq!(body["app_name"], args["app_name"]);
+        }
+        let tools = tool_definitions();
+        let tool = tools.iter().find(|t| t["name"] == "manage_app").unwrap();
+        assert!(tool["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("runtime_info")));
+    }
+
+    #[test]
+    fn runtime_info_forwards_language() {
+        let body = manage_body(WS, &json!({"action":"runtime_info", "language":"java"})).unwrap();
+        assert_eq!(body["language"], "java");
+        let tool = tool_definitions()
+            .into_iter()
+            .find(|t| t["name"] == "manage_app")
+            .unwrap();
+        assert!(tool["inputSchema"]["properties"]["language"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("java")));
+        assert!(manage_body(WS, &json!({"action":"runtime_info", "language":"ruby"})).is_err());
+    }
+
+    #[test]
     fn unknown_action_is_rejected_before_anything_else() {
         // Checked first on purpose: a typo'd action must not reach the desktop
         // and must not read as "the app is missing".
@@ -668,6 +762,18 @@ mod tests {
         assert_eq!(body["workspace_path"], json!(WS));
         assert!(body.get("app_id").is_none());
         assert!(body.get("app_name").is_none());
+    }
+
+    #[test]
+    fn deploy_forwards_explicit_migration_intent() {
+        let body =
+            manage_body(WS, &json!({ "action": "deploy", "migration_intent": true })).unwrap();
+        assert_eq!(body["migrationIntent"], true);
+        assert!(manage_body(
+            WS,
+            &json!({ "action": "deploy", "migration_intent": "yes" })
+        )
+        .is_err());
     }
 
     #[test]
@@ -886,5 +992,12 @@ mod tests {
         assert_eq!(body["limit"], json!(20));
         assert!(body.get("contains").is_none());
         assert!(body.get("kind").is_none());
+    }
+    #[test]
+    fn undeploy_requires_explicit_app_and_preserves_workspace_binding() {
+        assert!(manage_body(WS, &json!({"action":"undeploy"})).is_err());
+        let body = manage_body(WS, &json!({"action":"undeploy","app_name":"优惠"})).unwrap();
+        assert_eq!(body["workspace_path"], WS);
+        assert_eq!(body["action"], "undeploy");
     }
 }

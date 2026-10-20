@@ -7,6 +7,10 @@ import { AgentBadge } from "../../../ui/atoms/AgentBadge";
 import { AvatarStack, type AvatarEntry } from "../../../ui/atoms/AvatarStack";
 import { UnreadDot } from "../../../ui/atoms/UnreadDot";
 import { colors, hai, iosType, spacing } from "../../../ui/theme";
+import { t } from "../../../lib/i18n";
+import { mentionPlainText } from "../mention-display";
+import type { SessionLiveActivity } from "../live-activity";
+import type { SessionContext } from "../session-context-names";
 import type { SessionSummary } from "../session-types";
 
 /**
@@ -39,11 +43,22 @@ type SessionRowProps = {
   isActive?: boolean;
   isMuted?: boolean;
   isPinned?: boolean;
+  /**
+   * From the session's live stream (iOS #1567): an agent is working here, or
+   * is waiting on you. Overrides the runtime colour while lit.
+   */
+  activity?: SessionLiveActivity;
   /** Live runtime attachment for this session's agent, when known. */
   runtime?: SessionRowRuntime | null;
   session: SessionSummary;
-  /** Workspace/worktree name shown at the head of the meta strip. */
-  workspaceName?: string;
+  /**
+   * The app or idea this session belongs to, at the head of the meta strip
+   * (iOS #1597, which replaced the workspace name and status word there: the
+   * leading dot already says what the agent is doing).
+   */
+  context?: SessionContext | null;
+  /** Unsent composer text: shown as "Draft: …" in place of the last message. */
+  draft?: string | null;
   onLongPress?: (session: SessionSummary) => void;
   onPress?: (session: SessionSummary) => void;
   unreadCount?: number;
@@ -125,21 +140,23 @@ export function SessionRow({
   isActive = false,
   isMuted = false,
   isPinned = false,
+  activity = "quiet",
   runtime,
   session,
-  workspaceName = "",
+  context = null,
+  draft = null,
   onLongPress,
   onPress,
   unreadCount = 0,
 }: SessionRowProps) {
   const title = session.title.trim() || "Untitled session";
-  const lastMessage = session.lastMessagePreview.trim();
+  const lastMessage = mentionPlainText(session.lastMessagePreview).trim();
+  const draftPreview = draft ? mentionPlainText(draft).replace(/\s+/g, " ").trim() : "";
   const timeLabel = formatRelativeTime(session.lastMessageAt || session.createdAt);
   const isUnread = unreadCount > 0 || Boolean(session.hasUnread);
   const isRunning = runtime?.status === STATUS_RUNNING;
   const isStopped = runtime?.status === STATUS_STOPPED;
   const badge = agentBadge(session, runtime, actorGlyphById);
-  const statusLabel = runtime?.status && runtime.status !== 0 ? runtime.statusLabel ?? "" : "";
 
   return (
     <Pressable
@@ -157,8 +174,14 @@ export function SessionRow({
       <View style={styles.headerRow}>
         <AgentBadge
           bg={colors.pebble}
-          breathing={isRunning}
-          dotColor={statusDotColor(runtime)}
+          breathing={isRunning || activity !== "quiet"}
+          dotColor={
+            activity === "needsAttention"
+              ? hai.cinnabar
+              : activity === "running"
+                ? hai.sage
+                : statusDotColor(runtime)
+          }
           fg={badge.fg}
           label={badge.glyph}
         />
@@ -185,29 +208,29 @@ export function SessionRow({
         <Text style={styles.time}>{timeLabel}</Text>
       </View>
 
-      {lastMessage ? (
+      {draftPreview ? (
+        <Text numberOfLines={1} style={styles.summary}>
+          <Text style={styles.draftLabel}>{t("Draft:")}</Text>
+          {draftPreview}
+        </Text>
+      ) : lastMessage ? (
         <Text numberOfLines={1} style={styles.summary}>
           {lastMessage}
         </Text>
       ) : null}
 
       <View style={styles.metaStrip}>
-        {workspaceName ? (
-          <Text numberOfLines={1} style={styles.workspace}>
-            {workspaceName}
-          </Text>
-        ) : null}
-        {workspaceName && statusLabel ? <View style={styles.metaSeparator} /> : null}
-        {statusLabel ? (
-          <Text
-            numberOfLines={1}
-            style={[
-              styles.statusLabel,
-              isRunning ? styles.statusLabelRunning : null,
-            ]}
-          >
-            {statusLabel}
-          </Text>
+        {context ? (
+          <View style={styles.context}>
+            <Ionicons
+              color={colors.slate}
+              name={context.kind === "app" ? "grid-outline" : "bulb-outline"}
+              size={10}
+            />
+            <Text numberOfLines={1} style={styles.contextName}>
+              {context.name}
+            </Text>
+          </View>
         ) : null}
         <View style={styles.metaSpacer} />
         <AvatarStack avatars={buildAvatars(session, actorGlyphById)} max={3} size={22} />
@@ -225,11 +248,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: spacing.sm,
   },
-  metaSeparator: {
-    backgroundColor: "rgba(166,163,156,0.5)",
-    borderRadius: 1.5,
-    height: 3,
-    width: 3,
+  context: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexShrink: 1,
+    gap: 4,
+  },
+  contextName: {
+    color: colors.slate,
+    flexShrink: 1,
+    ...iosType.caption,
   },
   metaSpacer: {
     flex: 1,
@@ -250,13 +278,8 @@ const styles = StyleSheet.create({
     // iOS uses `.padding(.vertical, 6)`; the List supplies the rest.
     paddingVertical: 6,
   },
-  statusLabel: {
-    color: colors.basalt,
-    ...iosType.caption,
-    fontWeight: "500",
-  },
-  statusLabelRunning: {
-    color: hai.sage,
+  draftLabel: {
+    color: hai.cinnabar,
   },
   summary: {
     color: colors.basalt,
@@ -275,9 +298,5 @@ const styles = StyleSheet.create({
   },
   titleStopped: {
     color: colors.basalt,
-  },
-  workspace: {
-    color: colors.slate,
-    ...iosType.captionMono,
   },
 });

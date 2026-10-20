@@ -1,17 +1,30 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useConnectedAgentsStore, useOnboarding, useTeamMqtt } from "../_layout";
 import { createActorsApi } from "../../src/features/actors/actor-api";
 import { isAgentActor, type Actor } from "../../src/features/actors/actor-types";
+import { createConfiguredTeamAppsApi } from "../../src/features/apps/team-apps-api";
+import type { TeamApp } from "../../src/features/apps/team-app-types";
+import { useAppsFeatureEnabled } from "../../src/features/apps/use-apps-feature";
 import { createIdeasApi } from "../../src/features/ideas/idea-api";
-import { isOpenIdea, type Idea } from "../../src/features/ideas/idea-types";
+import type { Idea } from "../../src/features/ideas/idea-types";
 import { createWorkspacesApi } from "../../src/features/workspaces/workspace-api";
+import {
+  loadLastContactByActor,
+  type LastContactByActor,
+} from "../../src/features/sessions/actor-picker-ordering";
+import { applyAppCheckouts } from "../../src/features/sessions/app-session";
 import { buildFirstMessageWithIdea } from "../../src/features/sessions/idea-preface";
-import { resolveInitialMessageMentionActorIds } from "../../src/features/sessions/session-mention-resolver";
 import { resolveAgentRuntimeStartPlans } from "../../src/features/sessions/runtime-start";
 import { createConfiguredSessionsApi } from "../../src/features/sessions/api-provider";
+import {
+  autoMentionAgentIds,
+  deriveSessionTitle,
+  startSessionWithAgents,
+} from "../../src/features/sessions/start-session";
+import { openCacheDb } from "../../src/lib/db/cache-db";
 import {
   NewSessionScreen,
   type AgentWorkspaceChoice,
@@ -22,13 +35,6 @@ import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
 import { uuidV4 } from "../../src/lib/uuid";
 import { showToast } from "../../src/ui/Toast";
 import { t } from "../../src/lib/i18n";
-
-function deriveTitle(firstMessage: string): string {
-  const trimmed = firstMessage.trim();
-  if (!trimmed) return t("New Session");
-  const firstLine = trimmed.split(/\n/)[0] ?? trimmed;
-  return firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine;
-}
 
 export default function NewSessionRoute() {
   const { t: tHook } = useTranslation();
@@ -41,8 +47,16 @@ export default function NewSessionRoute() {
   const [isBusy, setIsBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [actors, setActors] = useState<Actor[]>([]);
-  const [ideas, setIdeas] = useState<Idea[]>([]);
+  const [idea, setIdea] = useState<Idea | null>(null);
   const [workspaces, setWorkspaces] = useState<AgentWorkspaceChoice[]>([]);
+  const appsEnabled = useAppsFeatureEnabled();
+  const [apps, setApps] = useState<TeamApp[]>([]);
+  const [defaultAgentId, setDefaultAgentId] = useState<string | null>(null);
+  const [lastContact, setLastContact] = useState<LastContactByActor>(new Map());
+  const workspacesApi = useMemo(
+    () => createWorkspacesApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    [],
+  );
 
   useEffect(() => {
     const teamId = state.currentTeam?.id;
@@ -50,13 +64,11 @@ export default function NewSessionRoute() {
     let cancelled = false;
     void Promise.all([
       createActorsApi({ getAccessToken: supabaseAccessToken(supabase) }).listActors(teamId),
-      createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) }).listIdeas(teamId),
-      createWorkspacesApi({ getAccessToken: supabaseAccessToken(supabase) }).list(teamId),
+      workspacesApi.list(teamId),
     ])
-      .then(([actorRows, ideaRows, workspaceRows]) => {
+      .then(([actorRows, workspaceRows]) => {
         if (cancelled) return;
         setActors(actorRows);
-        setIdeas(ideaRows.filter(isOpenIdea));
         setWorkspaces(
           workspaceRows
             .filter((row) => !row.archived)
@@ -71,34 +83,93 @@ export default function NewSessionRoute() {
       .catch(() => {
         if (cancelled) return;
         setActors([]);
-        setIdeas([]);
         setWorkspaces([]);
+      });
+    // Picker order (iOS #1602): the viewer's default agent first, then by when
+    // we last talked. Both are hints — a failure just orders by name.
+    void createActorsApi({ getAccessToken: supabaseAccessToken(supabase) })
+      .getEffectiveDefaultAgent(teamId)
+      .then((id) => {
+        if (!cancelled) setDefaultAgentId(id);
+      })
+      .catch(() => {});
+    void openCacheDb()
+      .then((db) => loadLastContactByActor(db, teamId))
+      .then((map) => {
+        if (!cancelled) setLastContact(map);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [state.currentTeam?.id, workspacesApi]);
+
+  // Opened from an idea: no idea picker any more, but the session is still
+  // linked to it and its text prefaces the first message, as on iOS.
+  useEffect(() => {
+    const teamId = state.currentTeam?.id;
+    if (!teamId || !ideaId) {
+      setIdea(null);
+      return;
+    }
+    let cancelled = false;
+    void createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) })
+      .listIdeas(teamId)
+      .then((rows) => {
+        if (!cancelled) setIdea(rows.find((row) => row.ideaId === ideaId) ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [ideaId, state.currentTeam?.id]);
+
+  useEffect(() => {
+    const teamId = state.currentTeam?.id;
+    if (!teamId || !appsEnabled) {
+      setApps([]);
+      return;
+    }
+    let cancelled = false;
+    void createConfiguredTeamAppsApi(supabase)
+      .listApps(teamId)
+      .then((rows) => {
+        if (!cancelled) setApps(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setApps([]);
       });
     return () => {
       cancelled = true;
     };
-  }, [state.currentTeam?.id]);
+  }, [appsEnabled, state.currentTeam?.id]);
+
+  const loadAgentWorkspaces = useCallback(
+    async (agentId: string): Promise<AgentWorkspaceChoice[]> => {
+      const teamId = state.currentTeam?.id;
+      if (!teamId) return [];
+      const rows = await workspacesApi.list(teamId, { agentId });
+      return rows
+        .filter((row) => !row.archived)
+        .map((row) => ({ id: row.id, path: row.path ?? "", agentId: row.agentId }));
+    },
+    [state.currentTeam?.id, workspacesApi],
+  );
 
   useEffect(() => {
     void connectedAgentsStore?.reload();
   }, [connectedAgentsStore]);
 
-  const ideaChoices = useMemo(
-    () =>
-      ideas.map((idea) => ({
-        ideaId: idea.ideaId,
-        displayTitle: idea.title.trim() || tHook("Untitled idea"),
-      })),
-    [ideas],
-  );
-
   return (
     <NewSessionScreen
       actors={actors}
+      apps={appsEnabled ? apps : null}
       currentMemberActorId={state.currentMemberActorId}
+      defaultAgentId={defaultAgentId}
       errorMessage={errorMessage}
-      ideas={ideaChoices}
       isBusy={isBusy}
+      lastContactByActorId={lastContact}
+      loadAgentWorkspaces={loadAgentWorkspaces}
       selectedIdeaId={ideaId}
       workspaces={workspaces}
       onClose={() => router.back()}
@@ -108,6 +179,8 @@ export default function NewSessionRoute() {
         primaryAgentActorId,
         agentConfig,
         ideaId: chosenIdeaId,
+        app,
+        agentWorkspaces,
       }) => {
         if (!state.currentTeam) {
           setErrorMessage(tHook("No active team — bootstrap first."));
@@ -133,7 +206,7 @@ export default function NewSessionRoute() {
           if (selectedAgents.length > 0) {
             await connectedAgentsStore?.reload();
           }
-          const runtimePlans =
+          const resolvedPlans =
             selectedAgents.length > 0
               ? resolveAgentRuntimeStartPlans({
                   agents: selectedAgents.map((actor) => ({
@@ -161,74 +234,73 @@ export default function NewSessionRoute() {
                   })),
                 })
               : [];
+          // An app session runs each agent in its checkout of the app; the
+          // screen's app blocker has already made sure every agent has one.
+          const runtimePlans = applyAppCheckouts(resolvedPlans, app, [
+            ...agentWorkspaces.map((workspace) => ({
+              id: workspace.id,
+              path: workspace.path,
+              agentId: workspace.agentId ?? null,
+            })),
+            ...workspaces.map((workspace) => ({
+              id: workspace.id,
+              path: workspace.path,
+              agentId: workspace.agentId ?? null,
+            })),
+          ]);
 
           if (runtimePlans.length > 0 && !teamMqtt) {
             throw new Error(tHook("MQTT is not connected — wait for TeamClu to reconnect."));
           }
 
-          const idea = chosenIdeaId
-            ? ideas.find((row) => row.ideaId === chosenIdeaId)
-            : undefined;
-          const expandedMessage = buildFirstMessageWithIdea(firstMessage, idea);
-          const sessionId = await sessionsApi.createSession({
-            teamId: state.currentTeam.id,
-            title: deriveTitle(firstMessage),
-            mode: "collab",
-            primaryAgentId: primaryAgentActorId,
-            ideaId: chosenIdeaId,
-          });
-
-          // create_session seeds session_participants with the caller and the
-          // primary agent. Add any other picked collaborators (extra agents,
-          // humans) on top.
-          const extras = collaboratorActorIds.filter(
-            (id) => id !== primaryAgentActorId && id !== memberActorId,
+          const linkedIdea = chosenIdeaId && idea?.ideaId === chosenIdeaId ? idea : null;
+          const expandedMessage = buildFirstMessageWithIdea(firstMessage, linkedIdea);
+          // Exactly one reachable agent is @-mentioned; otherwise nobody is
+          // and the user picks with @ in the session (iOS #1601).
+          const mentionActorIds = autoMentionAgentIds(
+            runtimePlans.map((plan) => plan.agentActorId),
+            connectedAgentsStore?.getState().agents.map((agent) => agent.agentId) ?? [],
           );
-          if (extras.length > 0) {
-            await sessionsApi.addParticipants(sessionId, extras);
-          }
-
-          if (expandedMessage.trim().length > 0) {
-            const mentionActorIds = resolveInitialMessageMentionActorIds({
-              collaboratorActorIds,
-              teamActors: actors,
-            });
-            await sessionsApi.insertOutgoingMessage({
-              id: uuidV4(),
-              teamId: state.currentTeam.id,
-              sessionId,
-              senderActorId: memberActorId,
-              content: expandedMessage.trim(),
-              metadata: { mention_actor_ids: mentionActorIds },
-            });
-          }
-
-          if (runtimePlans.length > 0 && teamMqtt) {
-            const runtimeRpc = createRuntimeRpcClient({
-              mqtt: teamMqtt,
-              teamId: state.currentTeam.id,
-              requesterActorId: memberActorId,
-            });
-            for (const plan of runtimePlans) {
-              const actorName =
-                actorById.get(plan.agentActorId)?.displayName ?? tHook("Agent");
-              void runtimeRpc.runtimeStart({
-                targetActorId: plan.targetActorId,
-                workspaceId: plan.workspaceId,
-                worktree: plan.worktree,
-                sessionId,
-                agentType: plan.agentType,
-                initialPrompt: "",
-              }).catch((err) => {
+          const runtimeRpc =
+            runtimePlans.length > 0 && teamMqtt
+              ? createRuntimeRpcClient({
+                  mqtt: teamMqtt,
+                  teamId: state.currentTeam.id,
+                  requesterActorId: memberActorId,
+                })
+              : null;
+          const sessionId = await startSessionWithAgents(
+            {
+              sessionsApi,
+              runtimeRpc,
+              newMessageId: uuidV4,
+              onRuntimeStartError: (plan, err) => {
+                const actorName =
+                  actorById.get(plan.agentActorId)?.displayName ?? tHook("Agent");
                 showToast(
                   "error",
                   err instanceof Error
                     ? tHook("Couldn't start {{value}}: {{message}}", { value: actorName, message: err.message })
                     : tHook("Couldn't start {{value}}.", { value: actorName }),
                 );
-              });
-            }
-          }
+              },
+            },
+            {
+              teamId: state.currentTeam.id,
+              memberActorId,
+              title: deriveSessionTitle(firstMessage, t("New Session")),
+              message: expandedMessage,
+              primaryAgentActorId,
+              ideaId: chosenIdeaId,
+              appId: app?.id ?? null,
+              collaboratorActorIds,
+              mentionActorIds,
+              mentionDisplayNameById: Object.fromEntries(
+                selectedAgents.map((actor) => [actor.actorId, actor.displayName]),
+              ),
+              runtimePlans,
+            },
+          );
 
           router.replace(`/(app)/sessions/${sessionId}`);
         } catch (error) {

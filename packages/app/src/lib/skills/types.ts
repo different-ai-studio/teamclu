@@ -52,6 +52,8 @@ export type SkillSource =
 /** Skill directory names that TeamClu auto-provisions as inherent (cannot be deleted) */
 export const INHERENT_SKILL_NAMES = new Set([
   'create-role',
+  'deploy-app',
+  'app-auth',
   'macos-control',
   'windows-control',
 ])

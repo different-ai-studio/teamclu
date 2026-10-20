@@ -24,6 +24,9 @@ public final class SessionListViewModel {
     public var sessions: [Session] = []
     public var isLoading = true
     public var searchText = ""
+    /// Sessions whose cached messages contain `searchText`, refreshed by
+    /// `updateContentSearch`. Local only: what this device has loaded.
+    public private(set) var contentMatchSessionIDs: Set<String> = []
     private var task: Task<Void, Never>?
     private var inboxTask: Task<Void, Never>?
     // Retained so markAsRead() can mutate the same context the ingest uses.
@@ -670,13 +673,24 @@ public final class SessionListViewModel {
         if let validIDs = validSessionIDs {
             let all = (try? modelContext.fetch(FetchDescriptor<Session>())) ?? []
             var didDelete = false
-            for row in all where !validIDs.contains(row.sessionId) {
+            // Perf fixtures are local by design (DEBUG only), never on the server.
+            for row in all where !validIDs.contains(row.sessionId) && !PerfFixtures.isFixture(row.sessionId) {
                 modelContext.delete(row)
                 didDelete = true
             }
             if didDelete { try? modelContext.save() }
         }
         sessions = (try? modelContext.fetch(FetchDescriptor<Session>(sortBy: [SortDescriptor(\.lastMessageAt, order: .reverse)]))) ?? []
+    }
+
+    /// Reload after this device created `sessionID` locally. The id joins
+    /// `validSessionIDs` first: that set is the last cloud sync's, which
+    /// predates the session, so a plain `reloadSessions` deleted the row just
+    /// written, and the re-sync recreated it bare, losing `selectedAgentIds`
+    /// (the composer's lit @ agent).
+    public func adoptCreatedSession(_ sessionID: String, modelContext: ModelContext) {
+        validSessionIDs?.insert(sessionID)
+        reloadSessions(modelContext: modelContext)
     }
 
     /// Upsert-only sync from Supabase `workspaces`. Does NOT delete missing
@@ -725,17 +739,94 @@ public final class SessionListViewModel {
             session.participantCount = record.participantCount
             session.lastMessagePreview = record.lastMessagePreview
             session.lastMessageAt = record.lastMessageAt
-            session.ideaId = record.ideaID ?? ""
+            let ideaID = record.ideaID ?? ""
+            if session.ideaId != ideaID {
+                session.ideaId = ideaID
+                session.ideaTitle = ""
+            }
             session.primaryAgentId = record.primaryAgentID
             if let source = record.source { session.source = source }
+            let appID = record.appID ?? ""
+            if session.appId != appID {
+                session.appId = appID
+                session.appName = ""
+            }
         }
 
-        for stale in byID.values {
+        for stale in byID.values where !PerfFixtures.isFixture(stale.sessionId) {
             modelContext.delete(stale)
         }
 
+        fillIdeaTitlesFromCache(modelContext: modelContext)
         try? modelContext.save()
         reloadSessions(modelContext: modelContext)
+    }
+
+    /// Idea ids some session points at with no title cached yet — the caller fetches
+    /// the ideas only when this is non-empty.
+    public func ideaIDsMissingTitle(modelContext: ModelContext) -> Set<String> {
+        let sessions = (try? modelContext.fetch(FetchDescriptor<Session>())) ?? []
+        return Set(sessions.filter { !$0.ideaId.isEmpty && $0.ideaTitle.isEmpty }.map(\.ideaId))
+    }
+
+    /// Copies idea titles from the `SessionIdea` cache (kept by the Ideas
+    /// tab) onto the sessions that belong to them.
+    public func fillIdeaTitlesFromCache(modelContext: ModelContext) {
+        let ideas = (try? modelContext.fetch(FetchDescriptor<SessionIdea>())) ?? []
+        let titles = Dictionary(
+            ideas.map { ($0.ideaId, $0.displayTitle) },
+            uniquingKeysWith: { a, _ in a }
+        )
+        applyIdeaTitles(titles, modelContext: modelContext)
+    }
+
+    /// Writes idea titles onto the sessions that belong to them. Ids absent
+    /// from `titles` keep what they had cached.
+    public func applyIdeaTitles(_ titles: [String: String], modelContext: ModelContext) {
+        let sessions = (try? modelContext.fetch(FetchDescriptor<Session>())) ?? []
+        var changed = false
+        for session in sessions where !session.ideaId.isEmpty {
+            guard let title = titles[session.ideaId], !title.isEmpty,
+                  title != session.ideaTitle else { continue }
+            session.ideaTitle = title
+            changed = true
+        }
+        if changed { try? modelContext.save() }
+    }
+
+    /// Writes app names onto the sessions created from those apps. Ids absent
+    /// from `names` (an app the caller can no longer see) keep their cached
+    /// name rather than going blank.
+    public func applyAppNames(_ names: [String: String], modelContext: ModelContext) {
+        let sessions = (try? modelContext.fetch(FetchDescriptor<Session>())) ?? []
+        var changed = false
+        for session in sessions where !session.appId.isEmpty {
+            guard let name = names[session.appId], !name.isEmpty,
+                  name != session.appName else { continue }
+            session.appName = name
+            changed = true
+        }
+        if changed { try? modelContext.save() }
+    }
+
+    /// Looks `searchText` up in the cached messages of every session, so a
+    /// list search finds conversations by what was said in them, not only
+    /// by title. Two characters minimum: one matches nearly everything.
+    public func updateContentSearch(modelContext: ModelContext) {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= 2 else {
+            if !contentMatchSessionIDs.isEmpty { contentMatchSessionIDs = [] }
+            return
+        }
+        let prompt = "user_prompt", output = "output"
+        let descriptor = FetchDescriptor<AgentEvent>(
+            predicate: #Predicate { $0.eventType == prompt || $0.eventType == output }
+        )
+        let rows = (try? modelContext.fetch(descriptor)) ?? []
+        contentMatchSessionIDs = Set(rows.compactMap { row in
+            guard let text = row.text, MentionDisplayText.plainText(text).localizedStandardContains(query) else { return nil }
+            return row.agentId
+        })
     }
 
     // MARK: - Time Grouping
@@ -750,7 +841,12 @@ public final class SessionListViewModel {
         let visible = sessions
             .filter { !$0.isArchived }
             .filter { ($0.source == "cron") == showCronSessions }
-            .filter { q.isEmpty || $0.title.lowercased().contains(q) }
+            .filter {
+                q.isEmpty
+                    || $0.title.lowercased().contains(q)
+                    || $0.lastMessagePreview.lowercased().contains(q)
+                    || contentMatchSessionIDs.contains($0.sessionId)
+            }
             .sorted { $0.listDate > $1.listDate }
 
         let pinned = visible.filter { $0.isPinned }

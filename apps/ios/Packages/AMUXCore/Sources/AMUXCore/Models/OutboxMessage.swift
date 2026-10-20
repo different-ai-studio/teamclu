@@ -51,10 +51,12 @@ public final class OutboxMessage {
     /// attachments. Populated from AttachmentUpload.storageURL after uploads
     /// finish; sent in Teamclu_Message.attachment_urls instead of appended to content.
     public var attachmentUrlsJSON: String = "[]"
+    /// The persisted message this one quotes. Additive (schema 1.22.0).
+    public var replyToMessageID: String?
 
     public init(messageID: String, sessionID: String, senderActorID: String,
                 content: String, mentionActorIDs: [String], modelID: String?,
-                attachmentURLs: [URL] = []) {
+                attachmentURLs: [URL] = [], replyToMessageID: String? = nil) {
         self.messageID = messageID
         self.sessionID = sessionID
         self.senderActorID = senderActorID
@@ -66,6 +68,7 @@ public final class OutboxMessage {
         self.createdAt = .now
         self.stateRaw = OutboxState.pending.rawValue
         self.attemptCount = 0
+        self.replyToMessageID = replyToMessageID
     }
 
     public var state: OutboxState {

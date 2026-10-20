@@ -1,4 +1,7 @@
 import type { BootstrapTeam } from "./bootstrap-route";
+import type { OnboardingIntent } from "./onboarding-intent";
+import type { PendingInvite } from "./pending-invites";
+import type { PhoneAccount } from "./phone-login";
 
 export type OnboardingRoute =
   | "loading"
@@ -11,6 +14,18 @@ export type OnboardingRoute =
    * wrong one is filtered to empty by RLS.
    */
   | "selectTeam"
+  /**
+   * The sign-in named a person with identities in more than one org (an email
+   * user's later identities sit on accounts nobody signs in to directly) —
+   * pick which org to enter (`identityChoices`). iOS `route == .selectIdentity`
+   * (#1659, docs/plans/2026-10-08-staff-only-identity-model.md).
+   */
+  | "selectIdentity"
+  /**
+   * Signed in, in no team, and the user said at onboarding they are joining an
+   * existing one — so nothing is created for them. iOS `route == .noTeam`.
+   */
+  | "noTeam"
   | "ready"
   | "failed";
 
@@ -19,6 +34,17 @@ export type TeamSummary = {
   name: string;
   slug: string;
   role: string;
+};
+
+/** One identity of the signed-in person — one per org (`GET /v1/auth/identities`). */
+export type MyIdentity = {
+  userId: string;
+  orgId: string | null;
+  orgName: string | null;
+  orgLogo: string | null;
+  adminType: number;
+  /** The identity the current session belongs to. */
+  isCurrent: boolean;
 };
 
 export type BootstrapResult = {
@@ -37,9 +63,20 @@ export type OnboardingState = {
   route: OnboardingRoute;
   /** Populated while `route === "selectTeam"`, empty otherwise. */
   teamChoices: BootstrapTeam[];
+  /** Populated while `route === "selectIdentity"`, empty otherwise. */
+  identityChoices: MyIdentity[];
   isBusy: boolean;
   errorMessage: string | null;
   pendingEmailOTPEmail: string | null;
+  /** Phone a code was sent to; non-null puts the login screen on the code step. */
+  pendingPhoneOTPPhone: string | null;
+  /**
+   * Accounts the phone maps to, when `/v1/auth/phone/login` asked which one.
+   * Non-empty shows the account picker.
+   */
+  phoneAccounts: PhoneAccount[];
+  /** Invites addressed to this account; populated on the no-team screen. */
+  pendingInvites: PendingInvite[];
   currentTeam: TeamSummary | null;
   currentMemberActorId: string | null;
   isAnonymous: boolean;
@@ -60,8 +97,29 @@ export type OnboardingAction =
       type: "resetPendingEmail";
     }
   | {
+      type: "phoneOtpRequested";
+      phone: string;
+    }
+  | {
+      type: "resetPendingPhone";
+    }
+  | {
+      /** The phone maps to several accounts — ask which. */
+      type: "phoneAccountsOffered";
+      accounts: PhoneAccount[];
+    }
+  | {
+      type: "phoneAccountsDismissed";
+    }
+  | {
+      type: "pendingInvitesLoaded";
+      invites: PendingInvite[];
+    }
+  | {
       type: "bootstrapResolved";
       payload: BootstrapResult;
+      /** Onboarding intent at the time; `join` + no team → `noTeam`. */
+      intent?: OnboardingIntent | null;
     }
   | {
       type: "bootstrapFailed";
@@ -70,6 +128,16 @@ export type OnboardingAction =
   | {
       /** Activation failed — stay on the picker so another team can be tried. */
       type: "teamSelectionFailed";
+      message: string;
+    }
+  | {
+      /** Several identities — stop at the org picker before bootstrapping. */
+      type: "identitiesOffered";
+      identities: MyIdentity[];
+    }
+  | {
+      /** Switching identity failed — stay on the org picker with the error. */
+      type: "identitySelectionFailed";
       message: string;
     }
   | {

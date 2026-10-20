@@ -50,4 +50,18 @@ describe("notification routing", () => {
       }),
     ).toBe("notif-1:/(app)/sessions/session-3");
   });
+
+  it("carries the pushed message id so the session can scroll to it", () => {
+    expect(
+      notificationResponseToSessionHref({
+        notification: {
+          request: {
+            content: {
+              data: { session_id: "session-3", message_id: "msg-9" },
+            },
+          },
+        },
+      }),
+    ).toBe("/(app)/sessions/session-3?focusMessageId=msg-9");
+  });
 });

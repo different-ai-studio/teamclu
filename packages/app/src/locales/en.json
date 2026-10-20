@@ -35,12 +35,16 @@
     "wikiMaintainAction": "Maintain Wiki",
     "wikiMaintainTitle": "Maintain Wiki",
     "wikiMaintainHint": "Choose source folders, then check and compile. Nothing is published until you confirm.",
+    "wikiMaintainSummaryHint": "Review the result, then confirm publish. Nothing is written to the knowledge base until you confirm.",
     "wikiSourceFolders": "Source folders",
     "wikiCompilerModel": "Compiler model",
     "wikiCompilerModelEmpty": "No models available",
     "wikiCompilerModelHint": "Sign in a model provider, or configure team AI, then compile Wiki.",
     "wikiChangeSources": "Change source folders",
-    "wikiSingleMaintainerWarning": "Do not maintain this Wiki from another computer at the same time.",
+    "wikiSingleMaintainerWarning": "This version detects stale checkpoints but does not prevent two computers from starting. Start maintenance on one computer only.",
+    "wikiWaitingForModel": "This computer does not have the model that compiled the remaining sources. Choose that model, or explicitly pick another model before continuing. A finished result can still be published.",
+    "wikiChooseCompilerModel": "Choose a compiler model",
+    "wikiAdoptExisting": "Adopt the published Wiki",
     "wikiCheckCompile": "Check and compile",
     "wikiConfirmPublish": "Confirm publish",
     "wikiCompileProgress": "Compile progress",
@@ -58,9 +62,25 @@
     "wikiPagesDeleted": "{{count}} pages deleted",
     "wikiSourcesFailed": "{{count}} source failed",
     "wikiPartialPublish": "Pages that passed are saved. You can publish them now. Failed sources are left out and can be compiled again later.",
+    "wikiCompilerWroteNothing": "The compiler finished without writing Wiki pages for {{count}} sources. Try another compiler model, then compile again.",
+    "wikiCompilerModelFailed": "Compiler model failed: {{detail}}",
+    "wikiRetractBlocked": "A deleted source is still cited. Compile again before publishing.",
+    "wikiRestrictedFolders": "{{count}} restricted folders were not compiled.",
+    "wikiRestrictedRetracted": "Removed content from {{count}} restricted sources.",
+    "wikiRestrictBlocked": "Restricted content is still in the Wiki. Compile again before publishing.",
+    "wikiSourcesSkipped": "{{count}} sources were skipped this run and can be compiled again next time.",
     "wikiVisionEstimate": "{{pages}} vision pages · {{cost}} {{currency}}",
-    "wikiAcceptVisionCost": "Accept estimated vision cost",
-    "wikiAcceptVisionCostDetail": "Accept the estimated visual recognition cost before publishing.",
+    "wikiVisionBeforeCompileHint": "Confirm the visual recognition cost first. Images are sent to the current model only after you agree. The estimate is not refunded when recognition fails.",
+    "wikiVisionBeforeCompile": "{{pages}} pages need visual recognition, estimated {{cost}} {{currency}}. Agree to send them to the current model. If it cannot read images, those files fail and the rest still compile.",
+    "wikiVisionDeclined": "This run did not look at images.",
+    "wikiVisionUnsupported": "This model cannot read images.",
+    "wikiVisionRefused": "The model refused to read this file.",
+    "wikiVisionEmpty": "No text was recognized in this file.",
+    "wikiVisionUnreadable": "This file could not be opened.",
+    "wikiVisionTooManyPages": "This file has too many visual pages. Split it, then compile again.",
+    "wikiVisionNoPage": "The file was read, but the compiler did not write a Wiki page.",
+    "wikiCompileWithVision": "Agree and compile",
+    "wikiCompileWithoutVision": "Compile text only",
     "wikiPublishedSynced": "Published and synced",
     "wikiPublishedPending": "Published locally. Team sync still needs attention.",
     "wikiAiManaged": "AI-managed",
@@ -492,6 +512,15 @@
       "continue": "Continue",
       "creating": "Creating…"
     },
+    "identityPicker": {
+      "title": "Choose an organization",
+      "subtitle": "You belong to more than one organization. Pick the one to enter this time.",
+      "superAdmin": "Super admin",
+      "admin": "Admin",
+      "unnamedOrg": "Unnamed organization",
+      "current": "Current account",
+      "switching": "Switching…"
+    },
     "signIn": "Sign in",
     "willEmailCode": "We'll email you a 6-digit code.",
     "email": "Email",
@@ -577,6 +606,7 @@
     "restoreTabs": "Show files",
     "collapsePanel": "Collapse panel",
     "collapseSidebar": "Collapse sidebar",
+    "expandSidebar": "Expand sidebar",
     "settings": "Settings"
   },
   "chat": {
@@ -597,7 +627,8 @@
       "failedClickToRetry": "Failed — click to retry",
       "rejectedTitle": "Message not sent",
       "rejectedNotParticipant": "You are not in this session, so the message cannot be sent. Add yourself back to its members, or ask whoever created it to add you.",
-      "rejectedForbidden": "The server refused this message: you are not allowed to post in this session."
+      "rejectedForbidden": "The server refused this message: you are not allowed to post in this session.",
+      "rejectedWorkspaceUnavailable": "This agent's workspace folder does not exist on its machine, so it cannot start. Point it at a folder that machine has."
     },
     "newChat": "New Chat",
     "advancedSession": "Advanced session",
@@ -807,6 +838,9 @@
         "count": "{{count}} questions",
         "countOne": "{{count}} question",
         "answered": "Answered",
+        "answeredBy": "{{name}} chose {{answer}}",
+        "skipped": "Skipped",
+        "skippedBy": "{{name}} skipped",
         "processingAnswer": "Processing answer...",
         "waitingForResponse": "Waiting for response...",
         "customAnswerPlaceholder": "Or type a custom answer...",
@@ -939,16 +973,6 @@
       "sendConfirmAction": "Send anyway",
       "metaOffline": "→ {{name}} (offline)",
       "metaStale": "→ {{name}} (rebind required)"
-    },
-    "sessionNotice": {
-      "sentStaleOne": "Sent. {{name}} is no longer linked to this machine's agent — consider @-mentioning the local agent again.",
-      "sentStaleMany": "Sent. {{count}} agents need to be rebound.",
-      "sentOfflineOne": "Sent. {{name}} is offline; delivery will be attempted when online (not guaranteed).",
-      "sentOfflineMany": "Sent. {{count}} agents are offline; delivery will be attempted when online (not guaranteed).",
-      "sentMixed": "Sent. {{offlineCount}} agent(s) offline and {{staleCount}} need rebinding — check delivery when they are available.",
-      "sentRuntimeErrorOne": "Sent. {{name}} failed to start; retry it and verify processing.",
-      "sentRuntimeErrorMany": "Sent. {{count}} agents failed to start; retry them and verify processing.",
-      "sentUnavailableMixed": "Sent. Some agents are offline, need rebinding, or failed to start; recover them and verify processing."
     },
     "newSessionDialog": {
       "title": "New session",
@@ -1119,6 +1143,7 @@
     "runtimeRefresh": {
       "pendingTitle": "Workspace configuration updated",
       "failedTitle": "Runtime refresh failed",
+      "notWritableTitle": "Workspace directory is not writable",
       "pendingKinds": "Updated: {{kinds}}",
       "pendingBody": "Running sessions keep their current configuration; the latest configuration loads the next time their runtime starts.",
       "failedGeneric": "Could not read the updated workspace configuration.",
@@ -1181,6 +1206,11 @@
     "confirmDeleteDirDesc": "This will permanently delete this folder and all its contents.",
     "confirmBatchDeleteDesc": "This will permanently delete all selected items. This action cannot be undone for directories.",
     "duplicateFailed": "Duplicate failed",
+    "renameFailed": "Rename failed",
+    "createFailed": "Could not create \"{{name}}\"",
+    "invalidFileNameChars": "A name can't contain {{chars}}",
+    "invalidFileNameReserved": "\"{{name}}\" is a reserved name on Windows",
+    "invalidFileNameTrailing": "A name can't end with a space or a period",
     "undo": "Undo: {{desc}}"
   },
   "sessions": {
@@ -1435,6 +1465,7 @@
     "sourceLocalDaemonOffline": "amuxd is not connected, so this directory cannot be checked.",
     "libraryTitle": "All apps",
     "libraryDescription": "Every app of yours and your team's. Download one to work on it here.",
+    "localAgentBlocked": "A local agent is not installed, so apps cannot be downloaded, opened, or created yet.",
     "libraryDownload": "Download",
     "libraryDownloaded": "On this machine",
     "libraryNotHere": "Not on this machine",
@@ -1559,8 +1590,8 @@
       "baseline": "Every other page",
       "noRules": "No page has its own setting yet — the whole site follows the line above.",
       "addPage": "Add a page",
-      "rolesHint": "With login required and no roles selected, any signed-in user may enter. Selected roles admit members who hold any one of them.",
-      "rolesLoadFailed": "Could not load the role list, so saving is blocked — otherwise it would clear the roles this app restricts to. Please retry.",
+      "rolesHint": "Any active organization role includes future roles. Selected organization roles allow only the specified roles.",
+      "rolesLoadFailed": "Could not load authorization information. Original rules are preserved; editing and saving are unavailable. Retry.",
       "nothingProtected": "When every other page is public, at least one page has to require a login — otherwise this wall stops nothing.",
       "blankPath": "One row still has no path.",
       "col": {
@@ -1573,15 +1604,28 @@
         "required": "Login required"
       },
       "roles": {
-        "any": "Anyone signed in",
-        "empty": "No roles to choose from yet"
+        "empty": "No roles to choose from yet",
+        "choose": "Select at least one role",
+        "unavailable": "Inactive or missing"
       },
       "access": {
         "public": "No login needed",
         "any": "Sign in · anyone",
         "org": "Sign in · org roles",
         "roles": "Sign in · {{roles}}"
-      }
+      },
+      "audience": {
+        "any": "Any signed-in user",
+        "org": "Any active organization role",
+        "roles": "One of the selected organization roles",
+        "inherit": "Inherit app default"
+      },
+      "organization": "Organization role scope",
+      "organizationMissing": "This app has no organization configured. Organization audiences are unavailable.",
+      "saveFailed": "Saving failed. Your draft is preserved.",
+      "readbackFailed": "Saved successfully, but the confirmation read failed. Your draft is preserved; reopen to confirm.",
+      "rolesRequired": "Select at least one role, or switch to Any signed-in user.",
+      "confirmDefault": "Confirm the app default audience change. These inherited rules will also change:"
     },
     "env": {
       "tabTitle": "Variables & secrets",
@@ -1813,14 +1857,17 @@
       "permissionsReadOnly": "Only the creator or an admin can manage member access.",
       "noAccessRows": "No other members granted yet",
       "pickMember": "Pick member",
+      "searchMember": "Search members…",
+      "noMatchingMembers": "No matching members",
       "grantAccess": "Grant",
       "revokeAccess": "Revoke",
       "accessGranted": "Access granted",
       "accessRevoked": "Access revoked",
       "accessError": "Permission update failed",
-      "deleteHint": "The live site goes offline immediately; the app's database and uploaded files are kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
+      "uninstallBeforeDelete": "Manually uninstall the deployment first. Delete becomes available after cleanup succeeds.",
+      "deleteHint": "Uninstall the deployment first; the app's database and uploaded files are kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
       "deleteTitle": "Delete this app?",
-      "deleteConfirm": "The live site goes offline immediately and the app database is kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
+      "deleteConfirm": "The deployment is already uninstalled and the app database is kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
       "permission": {
         "view": "view",
         "prompt": "prompt",
@@ -1861,6 +1908,29 @@
       "lockfileOutOfSync": "pnpm-lock.yaml does not match package.json. Commit the lockfile, then retry.",
       "buildOutputMissing": "The build produced no .output/ directory. Check the build script.",
       "daemonNotConnected": "The local amuxd is not connected, so nothing can build. Make sure the daemon is running, then retry."
+    },
+    "undeploy": {
+      "details": "View cleanup details",
+      "redeploy": "Redeploy",
+      "section": "Live deployment",
+      "title": "Undeploy",
+      "confirm": "Uninstall this deployment?",
+      "hint": "The live app will stop serving. Code, sessions, database and uploaded files are retained. You can deploy it again.",
+      "running": "Uninstalling…",
+      "incomplete": "Cleanup incomplete",
+      "done": "Uninstalled",
+      "retry": "Retry cleanup",
+      "failed": "Could not uninstall deployment",
+      "checkFailed": "Could not read cleanup status. Refresh to retry.",
+      "httpTrigger": "HTTP trigger",
+      "originDomain": "Origin domain mapping",
+      "function": "FC function",
+      "artifact": "Build artifact",
+      "oauthClient": "Legacy login client",
+      "succeeded": "Cleaned",
+      "skipped": "Not needed",
+      "stepFailed": "Cleanup failed",
+      "accept": "Confirm uninstall"
     }
   },
   "knowledgeAcl": {
@@ -1982,7 +2052,6 @@
       "shortcuts": "Shortcuts",
       "channels": "Channels",
       "tokenUsage": "Token Usage",
-      "privacy": "Privacy & Telemetry",
       "cache": "Local Cache",
       "diagnostics": "Diagnostics & Support",
       "client": "Desktop",
@@ -1998,7 +2067,7 @@
       "rolesSkills": "Roles & Skills",
       "deps": "Dependencies",
       "billing": "Billing",
-      "teamRoles": "Team Roles",
+      "teamRoles": "Organization Roles",
       "knowledgeAcl": "Knowledge Access",
       "providerKeys": "Provider Keys",
       "operatorOrgs": "Orgs",
@@ -2333,11 +2402,22 @@
         "appId": "App ID",
         "appSecret": "App Secret",
         "appSecretPlaceholder": "Your app secret",
+        "appSecretStored": "Configured · leave empty to keep",
+        "addBot": "Add bot",
+        "removeBot": "Remove",
+        "botLabel": "Bot {{index}}",
+        "botEnabled": "Enabled",
+        "botsHint": "Each bot is its own SeaTalk app and its own connection. Group rules below apply to every bot. When more than one bot is running, a send target must start with bot:<App ID>/.",
+        "botConnected": "Connected",
+        "botDisconnected": "Not connected",
         "groupPolicy": "Group @bot policy",
         "groupPolicyOpen": "Open — answer @bot in any group",
         "groupPolicyAllowlist": "Allowlist — only listed group IDs",
         "groupPolicyDisabled": "Disabled — ignore group mentions",
         "groupAllowFrom": "Allowed group IDs (one per line)",
+        "systemPrompt": "System prompt",
+        "systemPromptPlaceholder": "Optional instructions this SeaTalk bot follows when it replies",
+        "systemPromptHint": "After you save, every reply from this bot includes this prompt.",
         "portalChecklist": "SeaTalk portal checklist",
         "checkBotOnline": "Set Bot status to Online",
         "checkWebSocket": "Event delivery: WebSocket mode",
@@ -2990,14 +3070,6 @@
       "overQuota": "Over quota",
       "beforeStats": "No statistics before {{date}}. Usage recording began with the new billing system; earlier records stayed with the old gateway and measure a different thing, so they were not carried over."
     },
-    "privacy": {
-      "title": "Privacy & Telemetry",
-      "description": "Control anonymous usage data collection to help improve TeamClu.",
-      "analyticsTitle": "Analytics Data Collection",
-      "analyticsDesc": "Store anonymous usage metrics locally (tokens, tool stats, scores). No code, conversations, or personal data. Data stays on your device.",
-      "analyticsEnabled": "Analytics enabled",
-      "analyticsDisabled": "Analytics disabled"
-    },
     "update": {
       "check": "Check for updates",
       "checking": "Checking",
@@ -3466,7 +3538,7 @@
       }
     },
     "teamRoles": {
-      "title": "Team Roles",
+      "title": "Organization Roles",
       "description": "Org-scoped roles shared across teams in this organization. System roles cannot be edited.",
       "noTeam": "Join or create a team to manage roles.",
       "newRole": "New role",
@@ -3494,7 +3566,10 @@
       "empty": "No restricted directories. Every member receives the whole knowledge vault.",
       "grantedCount": "{{count}} member(s) have access",
       "removeRule": "Remove restriction",
-      "addHint": "To restrict a folder, right-click it in the knowledge tree and choose Permissions. Setting it there means the folder is already chosen, and the dialog can show what it inherits from its parent."
+      "addHint": "To restrict a folder, right-click it in the knowledge tree and choose Permissions. Setting it there means the folder is already chosen, and the dialog can show what it inherits from its parent.",
+      "documentLibrariesTitle": "Document folders",
+      "documentLibrariesEmpty": "No document folders are restricted by role.",
+      "documentLibraryActorAudience": "Still granted by member."
     }
   },
   "skillssh": {
@@ -3625,18 +3700,6 @@
     "confirmRestore": "Restore"
   },
   "telemetry": {
-    "consent": {
-      "title": "Help improve {{appName}}",
-      "description": "Allow {{appName}} to collect anonymous usage data to help us improve agent quality.",
-      "collectTitle": "Collected",
-      "collectDescription": "Session duration, token usage, tool call statistics, feedback ratings, and model information",
-      "neverCollectTitle": "Never collected",
-      "neverCollectDescription": "Conversation content, code, file paths, project names, or personal information",
-      "changeAnytimeTitle": "Change anytime",
-      "changeAnytimeDescription": "You can turn this off anytime in Settings > System > Privacy & Telemetry",
-      "deny": "Not now",
-      "allow": "Allow analytics"
-    },
     "rating": {
       "question": "How was this result?",
       "starLabel": "{{count}} star",
@@ -3727,6 +3790,8 @@
     "searchPlaceholder": "Search actors",
     "noMatches": "No matching actors",
     "invite": "Invite actor",
+    "anotherComputer": "Run on another computer",
+    "anotherComputerHint": "Open the link on that computer and it joins this team as that machine's agent.",
     "defaultAgent": "Default agent",
     "type": {
       "agent": "Agent",
@@ -3894,11 +3959,8 @@
   },
   "invite": {
     "title": "Invite to team",
-    "description": "Create an invite link for a new teammate or agent.",
-    "shareDescription": "Share this link so they can join the team.",
-    "kindLabel": "Kind",
-    "kindMember": "Teammate",
-    "kindAgent": "Agent",
+    "description": "Share the join link to add someone.",
+    "managersOnly": "Only a team owner or admin can invite people.",
     "nameLabel": "Name",
     "namePlaceholder": "Display name",
     "linkLabel": "Invite link",
@@ -3908,12 +3970,7 @@
     "copyFailed": "Failed to copy invite link",
     "failed": "Failed to create invite: {{msg}}",
     "upgradeRequired": "This team is still in the shared org and is solo-only. Upgrade your account and create your own team to invite members.",
-    "upgradeButton": "Upgrade account",
-    "contactHint": "Add an email or phone and they'll see this invite when they sign in — no link to send.",
-    "emailLabel": "Email (optional)",
-    "emailPlaceholder": "name@example.com",
-    "phoneLabel": "Phone (optional)",
-    "phonePlaceholder": "13800138000"
+    "upgradeButton": "Upgrade account"
   },
   "pendingInvite": {
     "title": "You have team invites",
@@ -3933,6 +3990,16 @@
     "description": "Accepting joins the team this link belongs to, switches your active organization, and re-binds the local agent to that team. Continue only if you trust whoever sent it.",
     "tokenLabel": "Invite token",
     "signInFirst": "You'll sign in first; the invite is claimed right after.",
+    "cancel": "Not now",
+    "accept": "Join team"
+  },
+  "joinLink": {
+    "title": "Join this team?",
+    "description": "Accepting adds you as a member of this team. The local agent stays bound to the team it already has.",
+    "noServer": "Cloud API URL is not configured.",
+    "previewFailed": "Could not load this join link.",
+    "joinFailed": "Could not join this team.",
+    "signInFirst": "You'll sign in first; the team is joined right after.",
     "cancel": "Not now",
     "accept": "Join team"
   },
@@ -3960,6 +4027,12 @@
     "builtinLabel": "Built-in",
     "builtinPath": "~/.agents/skills/ ({{app}} built-in)",
     "roleManagedLabel": "Role"
+  },
+  "localAgent": {
+    "notInstalled": "Local agent is not installed",
+    "install": "Install",
+    "confirmTitle": "Install the local agent?",
+    "confirmBody": "This installs and sets up a local agent on this computer."
   },
   "daemon": {
     "agentRuntime": {
@@ -4008,6 +4081,19 @@
     "closeAria": "Close tab",
     "findClose": "Close (Escape)"
   },
+  "documentLibrary": {
+    "title": "Who can see this",
+    "inactiveRole": "Inactive",
+    "open": "Everyone on the team can sync this folder today.",
+    "actorLeftover": "This folder is still shared by named members. Saving will switch to roles and replace that list.",
+    "owner": "Owner",
+    "confirmTitle": "Stop syncing",
+    "confirmBody": "{{members}} member(s) will stop syncing {{files}} file(s) in this folder. Files already copied away cannot be taken back.",
+    "confirmCaveat": "Files already copied away cannot be taken back.",
+    "save": "Save",
+    "remove": "Make visible to the team",
+    "scopeNotice": "Removing access stops future syncing. It cannot take back copies already on someone's device."
+  },
   "thread": {
     "agentFallback": "Agent",
     "anchorLabel": "Thread anchor · read-only",
@@ -4028,6 +4114,7 @@
     "listSubtitle": "{{count}} threads in this session",
     "listOpen": "View threads",
     "listClose": "Close thread list",
+    "resize": "Drag to resize. Double-click to reset.",
     "listLoading": "Loading threads…",
     "listEmpty": "No threads yet"
   }

@@ -48,3 +48,44 @@ describe("publishOutboxRowViaOptionalMqtt", () => {
     );
   });
 });
+
+describe("publishOutboxRowViaMqtt reply quote", () => {
+  it("carries replyToMessageId so live receivers can render the quote", async () => {
+    const { fromBinary } = await import("@bufbuild/protobuf");
+    const { LiveEventEnvelopeSchema, SessionMessageEnvelopeSchema } = await import(
+      "@teamclu/app/proto/teamclu_pb"
+    );
+    const { publishOutboxRowViaMqtt } = await import(
+      "../features/sessions/session-outbox-publish"
+    );
+    const mqtt = { publish: vi.fn().mockResolvedValue(undefined) };
+
+    await publishOutboxRowViaMqtt(row({ replyToMessageId: "quoted-1" }), mqtt);
+
+    const envelope = fromBinary(LiveEventEnvelopeSchema, mqtt.publish.mock.calls[0]![1]);
+    const body = fromBinary(SessionMessageEnvelopeSchema, envelope.body);
+    expect(body.message?.replyToMessageId).toBe("quoted-1");
+  });
+});
+
+describe("publishOutboxRowViaMqtt attachments", () => {
+  it("hands the agent the files' public URLs", async () => {
+    const { fromBinary } = await import("@bufbuild/protobuf");
+    const { LiveEventEnvelopeSchema, SessionMessageEnvelopeSchema } = await import(
+      "@teamclu/app/proto/teamclu_pb"
+    );
+    const { publishOutboxRowViaMqtt } = await import(
+      "../features/sessions/session-outbox-publish"
+    );
+    const mqtt = { publish: vi.fn().mockResolvedValue(undefined) };
+
+    await publishOutboxRowViaMqtt(
+      row({ attachments: [{ url: "https://storage.test/attachments/t/s/a.png", path: "t/s/a.png", mime: "image/png" }] }),
+      mqtt,
+    );
+
+    const live = fromBinary(LiveEventEnvelopeSchema, mqtt.publish.mock.calls[0]?.[1] as Uint8Array);
+    const sent = fromBinary(SessionMessageEnvelopeSchema, live.body);
+    expect(sent.message?.attachmentUrls).toEqual(["https://storage.test/attachments/t/s/a.png"]);
+  });
+});

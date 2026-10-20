@@ -1,5 +1,5 @@
 //! The optional code-domain checkbox in the native publish approval.
-use super::{app_deploy, confirm_with_user, CONFIRM_TIMEOUT, ONE_AT_A_TIME};
+use super::{confirm_with_user, Confirmation, CONFIRM_TIMEOUT, ONE_AT_A_TIME};
 use serde_json::Value;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -180,12 +180,12 @@ pub(crate) async fn confirm_app_deploy_domain(
     app: &AppHandle,
     zh: bool,
     row: &Value,
+    mut request: Confirmation,
 ) -> Result<bool, String> {
     let Some((_current, code)) = legacy_app_domain_choice(row) else {
-        confirm_with_user(app, app_deploy(zh, row)).await?;
+        confirm_with_user(app, request).await?;
         return Ok(false);
     };
-    let mut request = app_deploy(zh, row);
     request.message.push_str(&if zh {
         format!("\n\n可选的新域名：{code}\n默认保留当前域名。勾选后仅在本次部署成功时切换，原域名仍可访问。")
     } else {

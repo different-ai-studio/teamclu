@@ -63,3 +63,160 @@ describe("TeamMqttClient", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 });
+
+describe("createTeamMqttClient connection state", () => {
+  it("tells a listener the current state, including one that subscribes after connecting", async () => {
+    const { createTeamMqttClient } = await import("../lib/mqtt/team-mqtt");
+    let emit: ((s: "connecting" | "connected" | "disconnected") => void) | null = null;
+    const adapter = {
+      connect: async () => {},
+      subscribe: async () => {},
+      publish: async () => {},
+      disconnect: async () => {},
+      onMessage: () => () => {},
+      onConnectionState: (h: (s: "connecting" | "connected" | "disconnected") => void) => {
+        emit = h;
+        return () => {};
+      },
+    };
+    const client = createTeamMqttClient({ adapter: adapter as never, url: "mqtt://x", username: "u", password: "p", clientId: "c" });
+    await client.start();
+
+    const seen: string[] = [];
+    client.onConnectionState((s) => seen.push(s));
+    expect(seen).toEqual(["connected"]);
+
+    emit!("disconnected");
+    expect(seen).toEqual(["connected", "disconnected"]);
+  });
+});
+
+describe("TeamMqttClient reconnect", () => {
+  function createDroppableAdapter() {
+    let stateHandler: ((s: "connecting" | "connected" | "disconnected") => void) | null = null;
+    const connect = vi.fn(async (_args: { options?: { password?: string } }) => {});
+    const subscribe = vi.fn(async (_topic: string) => {});
+    const adapter: ExpoMqttAdapter = {
+      connect: connect as ExpoMqttAdapter["connect"],
+      async disconnect() {},
+      subscribe,
+      async publish() {},
+      onConnectionState: (handler) => {
+        stateHandler = handler;
+        return () => {};
+      },
+      onMessage: () => () => {},
+    };
+    return { adapter, connect, subscribe, drop: () => stateHandler?.("disconnected") };
+  }
+
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("reconnects after a drop with a fresh password and restores broker subscriptions", async () => {
+    const { adapter, connect, subscribe, drop } = createDroppableAdapter();
+    const client = createTeamMqttClient({
+      adapter, url: "mqtt://x", username: "u", password: "old", clientId: "c",
+      refreshPassword: async () => "fresh",
+      reconnectDelayMs: () => 0,
+    });
+    const states: string[] = [];
+    await client.start();
+    client.onConnectionState((s) => states.push(s));
+    client.subscribe("amux/t/+/state", () => {});
+    subscribe.mockClear();
+
+    drop();
+    await flush();
+    await flush();
+
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(connect.mock.calls[1]![0].options?.password).toBe("fresh");
+    expect(subscribe).toHaveBeenCalledWith("amux/t/+/state");
+    expect(states).toEqual(["connected", "disconnected", "connected"]);
+  });
+
+  it("keeps retrying while the broker refuses, and stops once disposed", async () => {
+    const { adapter, connect, drop } = createDroppableAdapter();
+    const client = createTeamMqttClient({
+      adapter, url: "mqtt://x", username: "u", password: "p", clientId: "c",
+      reconnectDelayMs: () => 0,
+    });
+    await client.start();
+    connect.mockRejectedValueOnce(new Error("refused"));
+
+    drop();
+    for (let i = 0; i < 4; i += 1) await flush();
+    expect(connect).toHaveBeenCalledTimes(3);
+
+    await client.dispose();
+    drop();
+    for (let i = 0; i < 4; i += 1) await flush();
+    expect(connect).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not reconnect a client that never started", async () => {
+    const { adapter, connect, drop } = createDroppableAdapter();
+    createTeamMqttClient({
+      adapter, url: "mqtt://x", username: "u", password: "p", clientId: "c",
+      reconnectDelayMs: () => 0,
+    });
+    drop();
+    await flush();
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("keeps retrying when the very first connect fails", async () => {
+    const { adapter, connect } = createDroppableAdapter();
+    connect.mockRejectedValueOnce(new Error("offline"));
+    const client = createTeamMqttClient({
+      adapter, url: "mqtt://x", username: "u", password: "p", clientId: "c",
+      reconnectDelayMs: () => 0,
+    });
+    const states: string[] = [];
+    client.onConnectionState((s) => states.push(s));
+    await expect(client.start()).rejects.toThrow("offline");
+    for (let i = 0; i < 4; i += 1) await flush();
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(states.at(-1)).toBe("connected");
+    await client.dispose();
+  });
+
+  it("restores subscriptions before announcing the reconnect", async () => {
+    const { adapter, subscribe, drop } = createDroppableAdapter();
+    const client = createTeamMqttClient({
+      adapter, url: "mqtt://x", username: "u", password: "p", clientId: "c",
+      reconnectDelayMs: () => 0,
+    });
+    await client.start();
+    client.subscribe("amux/t/session/s/live", () => {});
+    subscribe.mockClear();
+    const subscribedWhenConnected: number[] = [];
+    client.onConnectionState((s) => {
+      if (s === "connected") subscribedWhenConnected.push(subscribe.mock.calls.length);
+    });
+    drop();
+    for (let i = 0; i < 4; i += 1) await flush();
+    expect(subscribedWhenConnected).toEqual([0, 1]);
+  });
+
+  it("resume() skips the backoff wait for a dropped client and leaves a live one alone", async () => {
+    const { adapter, connect, drop } = createDroppableAdapter();
+    const client = createTeamMqttClient({
+      adapter, url: "mqtt://x", username: "u", password: "p", clientId: "c",
+      reconnectDelayMs: () => 60_000,
+    });
+    await client.start();
+    client.resume();
+    await flush();
+    expect(connect).toHaveBeenCalledTimes(1);
+
+    drop();
+    await flush();
+    expect(connect).toHaveBeenCalledTimes(1);
+    client.resume();
+    await flush();
+    await flush();
+    expect(connect).toHaveBeenCalledTimes(2);
+    await client.dispose();
+  });
+});

@@ -1,27 +1,34 @@
-export type AgentType = "claude" | "opencode" | "codex";
+export type AgentType = "pi" | "claude" | "opencode" | "codex";
 
 /** The ordered list of agent types shown in the segmented control. */
-export const AGENT_TYPE_ORDER: readonly AgentType[] = ["claude", "opencode", "codex"];
+export const AGENT_TYPE_ORDER: readonly AgentType[] = ["pi", "claude", "opencode", "codex"];
+
+/**
+ * What to offer when an agent lists no type we recognise. The daemon runs pi
+ * and nothing else (ADR-0014); offering the legacy backends here would let
+ * someone pick a `runtime_start` that is refused.
+ */
+export const FALLBACK_AGENT_TYPES: readonly AgentType[] = ["pi"];
 
 /**
  * The types this agent can actually run, in display order — iOS
  * `AgentConfigSheet.AgentType.supported(from:)`.
  *
- * Offering all three regardless is not cosmetic: picking a backend the agent
+ * Offering every type regardless is not cosmetic: picking a backend the agent
  * does not support sends a `runtime_start` it cannot honour. An empty or
- * entirely unrecognised list falls back to the full set, which is what iOS
- * does too — better to offer everything than to offer nothing.
+ * entirely unrecognised list falls back to pi, the one backend the daemon
+ * still runs.
  */
 export function supportedAgentTypes(
   storedValues: ReadonlyArray<string> | null | undefined,
 ): readonly AgentType[] {
-  if (!storedValues || storedValues.length === 0) return AGENT_TYPE_ORDER;
+  if (!storedValues || storedValues.length === 0) return FALLBACK_AGENT_TYPES;
   const supported = new Set<AgentType>();
   for (const value of storedValues) {
     const normalized = normalizeStoredAgentType(value);
     if (normalized) supported.add(normalized);
   }
-  if (supported.size === 0) return AGENT_TYPE_ORDER;
+  if (supported.size === 0) return FALLBACK_AGENT_TYPES;
   return AGENT_TYPE_ORDER.filter((type) => supported.has(type));
 }
 
@@ -41,9 +48,34 @@ export function normalizeStoredAgentType(
       return "opencode";
     case "codex":
       return "codex";
+    case "pi":
+      return "pi";
     default:
       return null;
   }
+}
+
+/**
+ * The workspaces the config sheet offers for one agent, its default first so
+ * the sheet opens on it (`initialWorkspaceId` takes the first row) — the
+ * same seat `defaultWorkspaceFor` picks when the sheet is never opened
+ * (iOS #1681). Rows bound to another agent are left out: a session must never
+ * borrow another agent's path, so an agent that owns nothing gets an empty
+ * list. With no agent picked yet the list is returned unfiltered.
+ */
+export function agentConfigWorkspaceChoices<W extends { id: string; agentId?: string | null }>(
+  agentId: string | null | undefined,
+  defaultWorkspaceId: string | null | undefined,
+  workspaces: ReadonlyArray<W>,
+): W[] {
+  const rows = agentId
+    ? workspaces.filter(
+        (workspace) => workspace.agentId === agentId || workspace.id === defaultWorkspaceId,
+      )
+    : [...workspaces];
+  const preferred = rows.findIndex((workspace) => workspace.id === defaultWorkspaceId);
+  if (preferred <= 0) return rows;
+  return [rows[preferred], ...rows.slice(0, preferred), ...rows.slice(preferred + 1)];
 }
 
 /** Returns the id of the first workspace, or an empty string if the list is empty. */

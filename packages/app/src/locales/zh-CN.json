@@ -35,12 +35,16 @@
     "wikiMaintainAction": "维护 Wiki",
     "wikiMaintainTitle": "维护 Wiki",
     "wikiMaintainHint": "先选资料目录，再点「检查并编译」。确认发布前不会写入知识库。",
+    "wikiMaintainSummaryHint": "先看这次的结果，再确认发布。确认前不会写入知识库。",
     "wikiSourceFolders": "资料目录",
     "wikiCompilerModel": "编译模型",
     "wikiCompilerModelEmpty": "还没有可用模型",
     "wikiCompilerModelHint": "先在本机登录模型，或配置团队 AI，再编译 Wiki。",
     "wikiChangeSources": "更换资料目录",
-    "wikiSingleMaintainerWarning": "请勿同时在另一台电脑维护此 Wiki。",
+    "wikiSingleMaintainerWarning": "当前版本会阻止陈旧结果覆盖，但不会阻止两台电脑同时启动；请只在一台电脑上开始维护。",
+    "wikiWaitingForModel": "这台电脑没有编译剩余来源所用的模型。请先装上原模型，或明确改选另一个模型后再继续。已经完成的结果仍可发布。",
+    "wikiChooseCompilerModel": "选择编译模型",
+    "wikiAdoptExisting": "接管已发布的 Wiki",
     "wikiCheckCompile": "检查并编译",
     "wikiConfirmPublish": "确认发布",
     "wikiCompileProgress": "编译进度",
@@ -58,9 +62,25 @@
     "wikiPagesDeleted": "删除 {{count}} 个页面",
     "wikiSourcesFailed": "{{count}} 个资料处理失败",
     "wikiPartialPublish": "已通过的页面已保存，可以先发布。失败的资料不会写入，下次维护时再编译。",
+    "wikiCompilerWroteNothing": "编译结束了，但这 {{count}} 个资料没有写出 Wiki 页面。换一个编译模型后再编译一次。",
+    "wikiCompilerModelFailed": "编译模型报错：{{detail}}",
+    "wikiRetractBlocked": "已删除的资料还在 Wiki 里。先再编译一次，撤回成功后才能发布。",
+    "wikiRestrictedFolders": "{{count}} 个文件夹受权限限制，未编译。",
+    "wikiRestrictedRetracted": "已从 Wiki 中移除 {{count}} 个受限来源的内容。",
+    "wikiRestrictBlocked": "受限资料仍在 Wiki 中，请重新编译后再发布。",
+    "wikiSourcesSkipped": "{{count}} 个资料这次跳过了，下次维护时再编译。",
     "wikiVisionEstimate": "{{pages}} 个视觉识别页面 · 预计 {{cost}} {{currency}}",
-    "wikiAcceptVisionCost": "接受预计的视觉识别费用",
-    "wikiAcceptVisionCostDetail": "发布前确认接受预计的视觉识别费用。",
+    "wikiVisionBeforeCompileHint": "先确认看图费用。同意后才把图片和抽不出文字的页面发给当前模型。费用是预估，认失败的请求不退。",
+    "wikiVisionBeforeCompile": "有 {{pages}} 页需要视觉识别，预计 {{cost}} {{currency}}。同意后才会把这些页发给当前模型。如果这个模型不能看图，这些文件会单独失败，其余资料继续编译。",
+    "wikiVisionDeclined": "这次没有看图。",
+    "wikiVisionUnsupported": "当前模型不能看图。",
+    "wikiVisionRefused": "模型拒绝识别这一份。",
+    "wikiVisionEmpty": "没有认出文字。",
+    "wikiVisionUnreadable": "这份资料打不开。",
+    "wikiVisionTooManyPages": "视觉页数超过上限。拆开后再编译。",
+    "wikiVisionNoPage": "图已经看过，但没有写出 Wiki 页面。",
+    "wikiCompileWithVision": "同意并编译",
+    "wikiCompileWithoutVision": "只编译能读出文字的资料",
     "wikiPublishedSynced": "已发布并同步",
     "wikiPublishedPending": "已在本机发布，团队同步仍需处理。",
     "wikiAiManaged": "由 Agent 维护",
@@ -492,6 +512,15 @@
       "continue": "继续",
       "creating": "正在创建…"
     },
+    "identityPicker": {
+      "title": "选择要进入的组织",
+      "subtitle": "你在多个组织中都有身份，选择这次要进入哪一个。",
+      "superAdmin": "超级管理员",
+      "admin": "管理员",
+      "unnamedOrg": "未命名组织",
+      "current": "当前账号",
+      "switching": "正在切换…"
+    },
     "signIn": "登录",
     "willEmailCode": "我们将向你的邮箱发送 6 位验证码。",
     "email": "邮箱",
@@ -577,6 +606,7 @@
     "restoreTabs": "显示文件",
     "collapsePanel": "收起面板",
     "collapseSidebar": "收起侧边栏",
+    "expandSidebar": "展开侧边栏",
     "settings": "设置"
   },
   "chat": {
@@ -597,7 +627,8 @@
       "failedClickToRetry": "发送失败 — 点击重试",
       "rejectedTitle": "消息没有发出去",
       "rejectedNotParticipant": "你不在这个会话里，消息发不出去。请把自己加回会话成员，或让会话的创建者加你。",
-      "rejectedForbidden": "服务器拒绝了这条消息：你没有权限在这个会话里发言。"
+      "rejectedForbidden": "服务器拒绝了这条消息：你没有权限在这个会话里发言。",
+      "rejectedWorkspaceUnavailable": "这个 agent 绑定的工作目录不在它那台机器上，所以起不来。请在它的设置里换一个本机存在的工作目录。"
     },
     "newChat": "新聊天",
     "advancedSession": "高级会话",
@@ -807,6 +838,9 @@
         "count": "{{count}} 个问题",
         "countOne": "{{count}} 个问题",
         "answered": "已回答",
+        "answeredBy": "{{name}} 选择了 {{answer}}",
+        "skipped": "已跳过",
+        "skippedBy": "{{name}} 跳过了",
         "processingAnswer": "正在处理回答...",
         "waitingForResponse": "等待响应中...",
         "customAnswerPlaceholder": "或输入自定义回答...",
@@ -939,16 +973,6 @@
       "sendConfirmAction": "仍要发送",
       "metaOffline": "→ {{name}}（离线）",
       "metaStale": "→ {{name}}（需重新绑定）"
-    },
-    "sessionNotice": {
-      "sentStaleOne": "已发送。{{name}} 已与当前本机 Agent 断开，建议重新 @ 本机 Agent。",
-      "sentStaleMany": "已发送。{{count}} 个 Agent 需重新绑定。",
-      "sentOfflineOne": "已发送。{{name}} 当前离线，将在上线后尝试处理（不保证）。",
-      "sentOfflineMany": "已发送。{{count}} 个 Agent 当前离线，将在上线后尝试处理（不保证）。",
-      "sentMixed": "已发送。{{offlineCount}} 个 Agent 离线、{{staleCount}} 个需重新绑定 — 上线或重绑后再确认是否送达。",
-      "sentRuntimeErrorOne": "已发送。{{name}} 启动失败，请重试启动后确认是否处理。",
-      "sentRuntimeErrorMany": "已发送。{{count}} 个 Agent 启动失败，请重试启动后确认是否处理。",
-      "sentUnavailableMixed": "已发送。部分 Agent 离线、需重绑或启动失败，请恢复后确认是否处理。"
     },
     "newSessionDialog": {
       "title": "新会话",
@@ -1119,6 +1143,7 @@
     "runtimeRefresh": {
       "pendingTitle": "工作区配置已更新",
       "failedTitle": "运行时配置读取失败",
+      "notWritableTitle": "工作目录不可写",
       "pendingKinds": "已更新：{{kinds}}",
       "pendingBody": "运行中的会话保持当前配置，运行环境下次启动时自动加载最新配置。",
       "failedGeneric": "无法读取更新后的工作区配置。",
@@ -1181,6 +1206,11 @@
     "confirmDeleteDirDesc": "此操作将永久删除该文件夹及其所有内容。",
     "confirmBatchDeleteDesc": "此操作将永久删除所有选中项。文件夹删除后无法撤销。",
     "duplicateFailed": "创建副本失败",
+    "renameFailed": "重命名失败",
+    "createFailed": "无法创建「{{name}}」",
+    "invalidFileNameChars": "名称不能包含 {{chars}}",
+    "invalidFileNameReserved": "「{{name}}」是 Windows 的保留名称",
+    "invalidFileNameTrailing": "名称不能以空格或句点结尾",
     "undo": "撤销：{{desc}}"
   },
   "sessions": {
@@ -1435,6 +1465,7 @@
     "sourceLocalDaemonOffline": "本机 amuxd 未连接，无法检查这个目录。",
     "libraryTitle": "所有应用",
     "libraryDescription": "本人与团队的全部应用，可下载到本机。",
+    "localAgentBlocked": "未安装本机 Agent，暂时不能下载、打开或新建应用。",
     "libraryDownload": "下载",
     "libraryDownloaded": "已在本机",
     "libraryNotHere": "未在本机",
@@ -1559,8 +1590,8 @@
       "baseline": "其余所有页面",
       "noRules": "还没有单独设置的页面 —— 全站都按上面这条。",
       "addPage": "添加一个页面",
-      "rolesHint": "需要登录且未选角色时，任意已登录用户都可进入；选了角色则仅持有其中任一角色的成员可进入。",
-      "rolesLoadFailed": "角色列表加载失败，暂时无法保存 —— 否则会把已设的角色限制清空。请重试。",
+      "rolesHint": "组织内任意有效角色动态包含未来角色；指定组织角色只允许所选角色之一。",
+      "rolesLoadFailed": "角色列表加载失败，原规则已保留，暂时无法修改或保存。请重试。",
       "nothingProtected": "其余页面设为公开时，至少要有一个页面需要登录 —— 否则这道墙什么也没挡。",
       "blankPath": "有一行还没填路径。",
       "col": {
@@ -1573,15 +1604,28 @@
         "required": "需要登录"
       },
       "roles": {
-        "any": "任意用户",
-        "empty": "还没有可分配的角色"
+        "empty": "还没有可分配的角色",
+        "choose": "选择至少一个角色",
+        "unavailable": "已停用或缺失"
       },
       "access": {
         "public": "不需要登录",
         "any": "需要登录 · 任意用户",
         "org": "需要登录 · 组织角色",
         "roles": "需要登录 · {{roles}}"
-      }
+      },
+      "audience": {
+        "any": "任意已登录用户",
+        "org": "组织内任意有效角色",
+        "roles": "指定组织角色之一",
+        "inherit": "继承应用默认"
+      },
+      "organization": "组织角色范围",
+      "organizationMissing": "应用未配置组织，无法配置组织受众。",
+      "saveFailed": "保存失败，草稿已保留。",
+      "readbackFailed": "保存已成功，确认读取失败。草稿已保留，请重新打开确认。",
+      "rolesRequired": "指定角色模式至少选择一个角色；任意用户请切换到任意已登录用户。",
+      "confirmDefault": "确认更改应用默认受众，以下继承规则也将改变："
     },
     "env": {
       "tabTitle": "变量与密钥",
@@ -1813,14 +1857,17 @@
       "permissionsReadOnly": "仅创建者或 admin 可管理成员权限。",
       "noAccessRows": "尚未授权其他成员",
       "pickMember": "选择成员",
+      "searchMember": "搜索成员…",
+      "noMatchingMembers": "没有匹配的成员",
       "grantAccess": "授权",
       "revokeAccess": "撤销",
       "accessGranted": "已授权",
       "accessRevoked": "已撤销",
       "accessError": "权限操作失败",
-      "deleteHint": "删除后线上站点会立刻下线；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
+      "uninstallBeforeDelete": "请先手动卸载线上部署，清理成功后才能删除应用。",
+      "deleteHint": "请先卸载线上部署；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
       "deleteTitle": "删除应用？",
-      "deleteConfirm": "线上站点会立刻下线，应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
+      "deleteConfirm": "线上部署已卸载，应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
       "permission": {
         "view": "view",
         "prompt": "prompt",
@@ -1861,6 +1908,29 @@
       "lockfileOutOfSync": "pnpm-lock.yaml 与 package.json 不一致，请提交 lockfile 后重试。",
       "buildOutputMissing": "构建未产出 .output/ 目录，请检查构建脚本。",
       "daemonNotConnected": "本机 amuxd 未连接，无法构建。请确认守护进程在运行后重试。"
+    },
+    "undeploy": {
+      "details": "查看清理详情",
+      "redeploy": "重新部署",
+      "section": "线上部署",
+      "title": "卸载部署",
+      "confirm": "卸载线上部署？",
+      "hint": "线上应用将停止服务。代码、会话、数据库和上传文件会保留，之后可重新部署。",
+      "running": "卸载中…",
+      "incomplete": "清理未完成",
+      "done": "已卸载",
+      "retry": "重试清理",
+      "failed": "卸载部署失败",
+      "checkFailed": "无法读取卸载状态，请刷新重试。",
+      "httpTrigger": "HTTP 入口",
+      "originDomain": "源站域名映射",
+      "function": "FC 函数",
+      "artifact": "部署产物",
+      "oauthClient": "遗留登录客户端",
+      "succeeded": "已清理",
+      "skipped": "无需清理",
+      "stepFailed": "清理失败",
+      "accept": "确认卸载"
     }
   },
   "knowledgeAcl": {
@@ -1982,7 +2052,6 @@
       "shortcuts": "快捷方式",
       "channels": "通道",
       "tokenUsage": "Token 用量",
-      "privacy": "隐私与遥测",
       "cache": "本地缓存",
       "diagnostics": "诊断与支持",
       "client": "客户端",
@@ -1998,7 +2067,7 @@
       "rolesSkills": "角色与技能",
       "deps": "依赖",
       "billing": "账单",
-      "teamRoles": "团队角色",
+      "teamRoles": "组织角色",
       "knowledgeAcl": "知识库权限",
       "providerKeys": "供应商 Key",
       "operatorOrgs": "组织",
@@ -2333,11 +2402,22 @@
         "appId": "App ID",
         "appSecret": "App Secret",
         "appSecretPlaceholder": "你的 app secret",
+        "appSecretStored": "已配置 · 留空则保持不变",
+        "addBot": "添加机器人",
+        "removeBot": "移除",
+        "botLabel": "机器人 {{index}}",
+        "botEnabled": "启用",
+        "botsHint": "每个机器人是一个独立的 SeaTalk 应用，各自一条连接。下面的群策略对所有机器人共用。同时运行多个机器人时，发送目标要以 bot:<App ID>/ 开头。",
+        "botConnected": "已连接",
+        "botDisconnected": "未连接",
         "groupPolicy": "群内 @bot 策略",
         "groupPolicyOpen": "开放 —— 任意群里 @bot 都回复",
         "groupPolicyAllowlist": "白名单 —— 仅列出的群 ID",
         "groupPolicyDisabled": "关闭 —— 忽略群内 @",
         "groupAllowFrom": "允许的群 ID（每行一个）",
+        "systemPrompt": "系统提示词",
+        "systemPromptPlaceholder": "可选。这个 SeaTalk 机器人回复时会遵循这段说明",
+        "systemPromptHint": "保存后，这个机器人的每一轮回复都会带上这段提示。",
         "portalChecklist": "SeaTalk 平台配置清单",
         "checkBotOnline": "把 Bot 状态设为 Online",
         "checkWebSocket": "事件推送方式：WebSocket",
@@ -2990,14 +3070,6 @@
       "overQuota": "已超额",
       "beforeStats": "{{date}} 之前没有统计数据。用量统计自新账单系统上线起开始记录；更早的记录停留在旧网关，口径不同，没有迁移。"
     },
-    "privacy": {
-      "title": "隐私与遥测",
-      "description": "控制匿名使用数据收集，以帮助改进 TeamClu。",
-      "analyticsTitle": "分析数据收集",
-      "analyticsDesc": "在本地存储匿名使用指标（Token、工具统计、评分等）。不包含代码、对话或个人数据，数据仅保存在您的设备上。",
-      "analyticsEnabled": "分析已启用",
-      "analyticsDisabled": "分析已禁用"
-    },
     "update": {
       "check": "检查更新",
       "checking": "检查中",
@@ -3466,7 +3538,7 @@
       }
     },
     "teamRoles": {
-      "title": "团队角色",
+      "title": "组织角色",
       "description": "组织级角色，同组织下各团队共用。系统角色不可编辑。",
       "noTeam": "加入或创建团队后才能管理角色。",
       "newRole": "新建角色",
@@ -3494,7 +3566,10 @@
       "empty": "没有受限目录。每个成员都会收到完整的知识库。",
       "grantedCount": "{{count}} 人有权限",
       "removeRule": "移除限制",
-      "addHint": "要限制某个目录，在知识库树里右键它选「权限」。在那里设置意味着目录已经确定，而且弹窗能显示它从上级继承了什么。"
+      "addHint": "要限制某个目录，在知识库树里右键它选「权限」。在那里设置意味着目录已经确定，而且弹窗能显示它从上级继承了什么。",
+      "documentLibrariesTitle": "资料库文件夹",
+      "documentLibrariesEmpty": "没有按角色限制的资料库文件夹。",
+      "documentLibraryActorAudience": "当前仍按成员授权"
     }
   },
   "skillssh": {
@@ -3625,18 +3700,6 @@
     "confirmRestore": "确认恢复"
   },
   "telemetry": {
-    "consent": {
-      "title": "帮助改善 {{appName}}",
-      "description": "允许 {{appName}} 收集匿名使用数据，帮助我们改善 Agent 质量。",
-      "collectTitle": "收集内容",
-      "collectDescription": "会话时长、Token 消耗、工具调用统计、反馈评分、模型信息",
-      "neverCollectTitle": "绝不收集",
-      "neverCollectDescription": "对话内容、代码、文件路径、项目名称、个人信息",
-      "changeAnytimeTitle": "随时可改",
-      "changeAnytimeDescription": "可在设置 > 系统 > 隐私与遥测中随时关闭",
-      "deny": "暂不开启",
-      "allow": "允许分析"
-    },
     "rating": {
       "question": "这次结果怎么样？",
       "starLabel": "{{count}} 星",
@@ -3727,6 +3790,8 @@
     "searchPlaceholder": "搜索成员",
     "noMatches": "没有匹配的成员",
     "invite": "邀请成员",
+    "anotherComputer": "在另一台电脑上运行",
+    "anotherComputerHint": "在那台电脑上打开链接，它就会作为那台机器的 agent 加入团队。",
     "defaultAgent": "默认 Agent",
     "type": {
       "agent": "智能体",
@@ -3894,11 +3959,8 @@
   },
   "invite": {
     "title": "邀请加入团队",
-    "description": "为新成员或新 Agent 创建邀请链接。",
-    "shareDescription": "把这个链接分享给对方加入团队。",
-    "kindLabel": "类型",
-    "kindMember": "成员",
-    "kindAgent": "智能体",
+    "description": "把加入链接发给对方即可加入。",
+    "managersOnly": "只有团队所有者或管理员可以邀请成员。",
     "nameLabel": "名称",
     "namePlaceholder": "显示名称",
     "linkLabel": "邀请链接",
@@ -3908,12 +3970,7 @@
     "copyFailed": "复制失败",
     "failed": "创建邀请失败：{{msg}}",
     "upgradeRequired": "当前团队还在公共组织下，只能自己使用。升级账号、创建你自己的团队后即可邀请成员。",
-    "upgradeButton": "升级账号",
-    "contactHint": "填写邮箱或手机号后，对方登录时会直接看到这个邀请，不用你再发链接。",
-    "emailLabel": "邮箱（选填）",
-    "emailPlaceholder": "name@example.com",
-    "phoneLabel": "手机号（选填）",
-    "phonePlaceholder": "13800138000"
+    "upgradeButton": "升级账号"
   },
   "pendingInvite": {
     "title": "你有团队邀请",
@@ -3933,6 +3990,16 @@
     "description": "接受后会加入链接所属的团队、切换当前组织，并把本机 agent 重新绑定到该团队。只有信任发送者时才继续。",
     "tokenLabel": "邀请令牌",
     "signInFirst": "会先登录，登录后立即认领邀请。",
+    "cancel": "暂不",
+    "accept": "加入团队"
+  },
+  "joinLink": {
+    "title": "加入这个团队？",
+    "description": "接受后会以成员身份加入该团队，本机 agent 仍绑定当前已有的团队。",
+    "noServer": "尚未配置 Cloud API 地址。",
+    "previewFailed": "无法加载此加入链接。",
+    "joinFailed": "无法加入该团队。",
+    "signInFirst": "会先登录，登录后立即加入团队。",
     "cancel": "暂不",
     "accept": "加入团队"
   },
@@ -3960,6 +4027,12 @@
     "builtinLabel": "内置",
     "builtinPath": "~/.agents/skills/（{{app}} 内置）",
     "roleManagedLabel": "角色"
+  },
+  "localAgent": {
+    "notInstalled": "本机 Agent 未安装",
+    "install": "安装",
+    "confirmTitle": "安装本机 Agent？",
+    "confirmBody": "将在这台电脑上安装并初始化本机 Agent。"
   },
   "daemon": {
     "agentRuntime": {
@@ -4008,6 +4081,19 @@
     "closeAria": "关闭标签页",
     "findClose": "关闭（Esc）"
   },
+  "documentLibrary": {
+    "title": "谁可以看",
+    "inactiveRole": "已停用",
+    "open": "这个文件夹目前团队成员都能同步。",
+    "actorLeftover": "当前仍按成员授权。保存后会改成按角色，并替换原来的成员名单。",
+    "owner": "拥有者",
+    "confirmTitle": "停止同步",
+    "confirmBody": "{{members}} 名成员将停止同步这个文件夹里的 {{files}} 个文件。已经拷走的文件收不回来。",
+    "confirmCaveat": "已经拷走的文件收不回来。",
+    "save": "保存",
+    "remove": "改为团队可见",
+    "scopeNotice": "停止同步后不会再下发新文件，已经拷到本机的副本收不回来。"
+  },
   "thread": {
     "agentFallback": "Agent",
     "anchorLabel": "话题起点 · 只读",
@@ -4028,6 +4114,7 @@
     "listSubtitle": "本对话 {{count}} 个话题",
     "listOpen": "查看话题列表",
     "listClose": "关闭话题列表",
+    "resize": "拖动调整宽度，双击恢复默认",
     "listLoading": "加载话题…",
     "listEmpty": "暂无话题"
   }

@@ -4,7 +4,7 @@ import { createPhoneAuthRepository } from "../src/lib/supabase-repo/phone-auth.j
 
 // ── Minimal in-memory fake of the Supabase query builder + auth admin ────────
 // Supports exactly the chains phone-auth.ts uses.
-function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[] }, authStore: any) {
+function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[]; actors?: any[] }, authStore: any) {
   let idSeq = 1;
   function builder(table: string) {
     const filters: Array<[string, string, any]> = [];
@@ -14,11 +14,12 @@ function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[] }, authSto
     let maybe = false;
 
     const rowsMatching = () =>
-      db[table].filter((r: any) =>
+      (db[table] ?? []).filter((r: any) =>
         filters.every(([col, kind, val]) => {
           if (kind === "eq") return r[col] === val;
           if (kind === "gt") return r[col] > val;
           if (kind === "is_null") return r[col] == null;
+          if (kind === "in") return val.includes(r[col]);
           return true;
         }),
       );
@@ -53,6 +54,7 @@ function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[] }, authSto
       eq(c: string, v: any) { filters.push([c, "eq", v]); return api; },
       gt(c: string, v: any) { filters.push([c, "gt", v]); return api; },
       is(c: string, v: any) { filters.push([c, "is_null", v]); return api; },
+      in(c: string, v: any[]) { filters.push([c, "in", v]); return api; },
       order() { return api; },
       limit() { return api; },
       single() { single = true; return Promise.resolve(resolve()); },
@@ -64,14 +66,30 @@ function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[] }, authSto
 
   const client = {
     from: (t: string) => builder(t),
+    // phone-auth reads amux.actors; the fake keeps every table in one namespace.
+    schema: () => ({
+      from: (t: string) => builder(t),
+      // amux.staff_only(): the deployment setting, read from the fake db.
+      rpc: async (fn: string) =>
+        fn === "staff_only" ? { data: (db as any).staff_only === true, error: null } : { data: null, error: { message: `no rpc ${fn}` } },
+    }),
     auth: {
       admin: {
-        generateLink: async () => ({ data: { properties: { hashed_token: "ht_123" } }, error: null }),
+        generateLink: async ({ email }: any = {}) => ({
+          data: {
+            properties: { hashed_token: "ht_123" },
+            user: authStore.users.find((x: any) => x.email === email) ?? null,
+          },
+          error: null,
+        }),
         getUserById: async (id: string) => {
           const u = authStore.users.find((x: any) => x.id === id);
           return { data: { user: u ?? null }, error: u ? null : { message: "not found" } };
         },
         createUser: async ({ email, app_metadata }: any) => {
+          if (authStore.users.some((x: any) => x.email === email)) {
+            return { data: { user: null }, error: { message: "A user with this email address has already been registered" } };
+          }
           const u = { id: `auth-${idSeq++}`, email, app_metadata };
           authStore.users.push(u);
           return { data: { user: u }, error: null };
@@ -168,7 +186,10 @@ test("login reuses an existing public.users row (no new user)", async () => {
   assert.equal(authStore.users.length, 1); // no new auth user
 });
 
-test("login creates a new user when none exists in the default org", async () => {
+test("a phone with no identity gets a TeamClu phone account and NO row", async () => {
+  // The client then finds no team, asks for a team name, and bootstrap creates
+  // the tenant (amux.ensure_personal_org) with this person as admin_type 3.
+  // Nothing lands in DEFAULT_ORG any more.
   const authStore = { users: [] as any[] };
   const db = {
     auth_verify_code: [
@@ -179,10 +200,20 @@ test("login creates a new user when none exists in the default org", async () =>
   const repo = repoWith(db, authStore);
   const r: any = await repo.login({ phone: "13700000001", code: "123456" });
   assert.equal(r.created, true);
-  assert.equal(r.user.org_id, "org-default");
-  assert.equal(r.user.mobile, "13700000001");
-  assert.equal(authStore.users.length, 1);
-  assert.equal(db.users.length, 1);
+  assert.equal(r.user, null);
+  assert.ok(r.session?.access_token);
+  assert.deepEqual(authStore.users.map((u: any) => u.email), ["13700000001@teamclu.mobile"]);
+  assert.equal((authStore.users[0] as any).app_metadata, undefined, "no org claim: it has no org yet");
+  assert.equal(db.users.length, 0);
+  assert.equal(db.auth_verify_code[0].used, true);
+});
+
+test("signing in again before naming a team reuses the TeamClu phone account", async () => {
+  const authStore = { users: [{ id: "tc", email: "13700000002@teamclu.mobile" }] as any[] };
+  const db = { auth_verify_code: [code("13700000002")], users: [] as any[] };
+  const r: any = await repoWith(db, authStore).login({ phone: "13700000002", code: "123456" });
+  assert.equal(r.created, true);
+  assert.equal(authStore.users.length, 1, "no second account");
 });
 
 test("login returns MULTI_USER when the phone maps to >1 user", async () => {
@@ -270,8 +301,376 @@ test("login offers the picker across DIFFERENT orgs, not just within one", async
   assert.equal(db.auth_verify_code[0].used, false);
 });
 
+test("login drops gym-membership rows from the account picker", async () => {
+  // belayo's public.users is the partner's membership table: one admin_type=1
+  // row per gym card. Only employee records and identities that own an actor
+  // are accounts.
+  const db = {
+    auth_verify_code: [
+      { id: "c1", phone: "13700000020", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
+    ],
+    users: [
+      { id: "emp", org_id: "org-a", admin_type: 3, mobile: "13700000020", auth_user_id: "a1", deleted_at: null },
+      { id: "shadow", org_id: "org-default", admin_type: 1, mobile: "13700000020", auth_user_id: "a2", deleted_at: null },
+      { id: "card-1", org_id: "org-gym1", admin_type: 1, mobile: "13700000020", deleted_at: null },
+      { id: "card-2", org_id: "org-gym2", admin_type: 1, mobile: "13700000020", deleted_at: null },
+    ],
+    actors: [{ id: "act1", user_id: "shadow", team_id: "t1" }],
+  };
+  const repo = repoWith(db, { users: [] });
+  const r: any = await repo.login({ phone: "13700000020", code: "123456" });
+  assert.equal(r.multiUser, true);
+  assert.deepEqual(r.users.map((u: any) => u.id).sort(), ["emp", "shadow"]);
+});
+
+test("login signs straight in when membership rows leave a single account", async () => {
+  const authStore = { users: [{ id: "a1", email: "boss@acme.test", app_metadata: { org_id: "org-a" } }] };
+  const db = {
+    auth_verify_code: [
+      { id: "c1", phone: "13700000021", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
+    ],
+    users: [
+      { id: "emp", org_id: "org-a", admin_type: 2, mobile: "13700000021", auth_user_id: "a1", deleted_at: null },
+      { id: "card-1", org_id: "org-gym1", admin_type: 1, mobile: "13700000021", deleted_at: null },
+    ],
+  };
+  const repo = repoWith(db, authStore);
+  const r: any = await repo.login({ phone: "13700000021", code: "123456" });
+  assert.equal(r.multiUser, undefined);
+  assert.equal(r.user.id, "emp");
+  assert.equal(db.auth_verify_code[0].used, true);
+});
+
+test("login still honours an explicit pick of a row the picker would hide", async () => {
+  // A client holding yesterday's list must not be bounced back to the picker.
+  //
+  // The picked row carries no `auth_user_id`, which is the normal state of a
+  // partner row (550,666 of 629,445 in production). It is claimed for the one
+  // auth account this phone already signs in as rather than minting a second —
+  // same phone, same person, one account, an identity per tenant. The session
+  // therefore comes from `a1` while the identity returned is the picked row.
+  const authStore = { users: [{ id: "a1", email: "13700000022@phone.example.test" }] };
+  const db = {
+    auth_verify_code: [
+      { id: "c1", phone: "13700000022", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
+    ],
+    users: [
+      { id: "emp", org_id: "org-a", admin_type: 2, mobile: "13700000022", auth_user_id: "a1", deleted_at: null },
+      { id: "card-1", org_id: "org-gym1", admin_type: 1, mobile: "13700000022", deleted_at: null },
+    ],
+  };
+  const repo = repoWith(db, authStore);
+  const r: any = await repo.login({ phone: "13700000022", code: "123456", userId: "card-1" });
+  assert.equal(r.user.id, "card-1");
+  assert.equal(
+    db.users.find((u: any) => u.id === "card-1")!.auth_user_id,
+    "a1",
+    "the claimed row must be reachable by the gateway, which resolves on auth_user_id",
+  );
+});
+
+test("a staff row is never claimed by whoever verifies the SMS", async () => {
+  // Chinese mobile numbers are recycled. Inheriting a membership is a
+  // nuisance; inheriting a coach's or an accountant's row is a privilege
+  // escalation, and staff rows are exactly what an `audience: org` app admits
+  // on. So an unbound admin_type >= 2 row refuses rather than binding.
+  const authStore = { users: [] as any[] };
+  const db = {
+    auth_verify_code: [
+      { id: "c1", phone: "13700000023", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
+    ],
+    users: [
+      { id: "coach", org_id: "org-a", admin_type: 2, mobile: "13700000023", deleted_at: null },
+    ],
+  };
+  const repo = repoWith(db, authStore);
+  await assert.rejects(
+    () => repo.login({ phone: "13700000023", code: "123456" }),
+    (e: any) => e.statusCode === 403,
+  );
+  assert.equal((db.users[0] as any).auth_user_id, undefined, "must not have been claimed");
+  assert.equal(authStore.users.length, 0, "must not have minted an auth account either");
+  assert.equal(db.auth_verify_code[0].used, false, "a refused login must not burn the code");
+});
+
 test("login rejects a wrong/expired code", async () => {
   const db = { auth_verify_code: [] as any[], users: [] as any[] };
   const repo = repoWith(db, { users: [] });
   await assert.rejects(() => repo.login({ phone: "13700000003", code: "000000" }), /验证码错误或已过期/);
+});
+
+// --- tenant scoping (the app login page only) --------------------------------
+//
+// Every test here passes `tenantOrgId`. The platform-wide path — which is what
+// `/v1/auth/phone/login` serves for desktop and iOS — must keep behaving as the
+// tests above describe, and the last test in this block is what holds that.
+
+const code = (phone: string) => ({
+  id: "c1", phone, code: "123456", used: false,
+  expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x",
+});
+
+test("tenant scoping hides identities in other orgs instead of offering them", async () => {
+  const authStore = { users: [{ id: "a1", email: "13700000030@phone.example.test" }] };
+  const db = {
+    auth_verify_code: [code("13700000030")],
+    users: [
+      { id: "here", org_id: "org-tenant", admin_type: 2, mobile: "13700000030", auth_user_id: "a1", deleted_at: null },
+      { id: "elsewhere", org_id: "org-other", admin_type: 1, mobile: "13700000030", auth_user_id: "a1", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore).login({
+    phone: "13700000030", code: "123456", tenantOrgId: "org-tenant",
+  });
+  // One survivor in this tenant, so no picker at all.
+  assert.equal(r.multiUser, undefined);
+  assert.equal(r.user.id, "here");
+});
+
+test("two identities inside one tenant still get a picker, carrying admin_type and email", async () => {
+  const authStore = { users: [{ id: "a1", email: "13700000031@phone.example.test" }] };
+  const db = {
+    auth_verify_code: [code("13700000031")],
+    users: [
+      { id: "member", org_id: "org-tenant", admin_type: 1, email: "m@x.test", mobile: "13700000031", auth_user_id: "a1", deleted_at: null },
+      { id: "coach", org_id: "org-tenant", admin_type: 2, email: "c@x.test", mobile: "13700000031", auth_user_id: "a1", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore).login({
+    phone: "13700000031", code: "123456", tenantOrgId: "org-tenant",
+  });
+  assert.equal(r.multiUser, true);
+  // Within one tenant the org name is identical on every row, so admin_type and
+  // email are the only things that tell the entries apart.
+  assert.deepEqual(r.users.map((u: any) => [u.admin_type, u.email]).sort(), [[1, "m@x.test"], [2, "c@x.test"]]);
+  assert.equal(db.auth_verify_code[0].used, false, "a picker must not burn the code");
+});
+
+test("no identity in the tenant and no signup permission is a plain refusal", async () => {
+  const authStore = { users: [{ id: "a1", email: "13700000032@phone.example.test" }] };
+  const db = {
+    auth_verify_code: [code("13700000032")],
+    users: [
+      { id: "elsewhere", org_id: "org-other", admin_type: 1, mobile: "13700000032", auth_user_id: "a1", deleted_at: null },
+    ],
+  };
+  await assert.rejects(
+    () => repoWith(db, authStore).login({ phone: "13700000032", code: "123456", tenantOrgId: "org-tenant" }),
+    (e: any) => e.statusCode === 403 && /本租户没有账号/.test(e.message),
+  );
+  // Falling back to the unscoped list would both offer dead ends and disclose
+  // which other tenants this number holds accounts in.
+  assert.equal(db.users.length, 1);
+});
+
+test("signup lands in the tenant and REUSES the phone's existing auth account", async () => {
+  // The collision this avoids: the sign-up branch used to call createUser with
+  // the same synthetic email unconditionally, which a phone that already signs
+  // in somewhere else (15,459 of them) would fail on.
+  const authStore = {
+    users: [{ id: "a1", email: "13700000033@phone.example.test", app_metadata: { org_id: "org-default" } }],
+  };
+  const db = {
+    auth_verify_code: [code("13700000033")],
+    users: [
+      { id: "elsewhere", org_id: "org-other", admin_type: 1, mobile: "13700000033", auth_user_id: "a1", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore).login({
+    phone: "13700000033", code: "123456", tenantOrgId: "org-tenant", allowSignup: true,
+  });
+  assert.equal(r.created, true);
+  assert.equal(r.user.org_id, "org-tenant");
+  assert.equal(r.user.admin_type, 1, "product decision: a new tenant identity is a plain member row");
+  assert.equal(r.user.auth_user_id, "a1", "one person, one auth account");
+  assert.equal(authStore.users.length, 1, "no second auth account was minted");
+  assert.notEqual(r.user.id, "a1", "a second identity cannot take the auth user's id as its PK");
+});
+
+test("an app login never rewrites the org claim the desktop and iOS sessions read", async () => {
+  // `app_metadata.org_id` is one value on an auth account both surfaces share,
+  // and amux.current_org_id() prefers it over public.users.org_id. Writing it
+  // here would make opening an app on a phone silently move the same person's
+  // desktop session into that tenant.
+  const authStore = {
+    users: [{ id: "a1", email: "13700000034@phone.example.test", app_metadata: { org_id: "org-default" } }],
+  };
+  const db = {
+    auth_verify_code: [code("13700000034")],
+    users: [
+      { id: "here", org_id: "org-tenant", admin_type: 1, mobile: "13700000034", auth_user_id: "a1", deleted_at: null },
+    ],
+  };
+  await repoWith(db, authStore).login({
+    phone: "13700000034", code: "123456", tenantOrgId: "org-tenant",
+  });
+  assert.equal(authStore.users[0].app_metadata.org_id, "org-default");
+});
+
+test("omitting the tenant options leaves the platform-wide path untouched", async () => {
+  // The shipped contract for /v1/auth/phone/login, which desktop and iOS call
+  // with no app — and therefore no tenant — in sight.
+  const authStore = {
+    users: [{ id: "a1", email: "13700000035@phone.example.test", app_metadata: { org_id: "org-default" } }],
+  };
+  const db = {
+    auth_verify_code: [code("13700000035")],
+    users: [
+      { id: "a", org_id: "org-one", admin_type: 2, mobile: "13700000035", auth_user_id: "a1", deleted_at: null },
+      { id: "b", org_id: "org-two", admin_type: 2, mobile: "13700000035", auth_user_id: "a1", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore).login({ phone: "13700000035", code: "123456" });
+  assert.equal(r.multiUser, true, "still offers every org's identity");
+  assert.deepEqual(r.users.map((u: any) => u.org_id).sort(), ["org-one", "org-two"]);
+});
+
+test("the org claim is still synced on the platform-wide path", async () => {
+  const authStore = {
+    users: [{ id: "a1", email: "13700000036@phone.example.test", app_metadata: { org_id: "org-default" } }],
+  };
+  const db = {
+    auth_verify_code: [code("13700000036")],
+    users: [
+      { id: "only", org_id: "org-own", admin_type: 2, mobile: "13700000036", auth_user_id: "a1", deleted_at: null },
+    ],
+  };
+  await repoWith(db, authStore).login({ phone: "13700000036", code: "123456" });
+  assert.equal(authStore.users[0].app_metadata.org_id, "org-own");
+});
+
+// --- staff-only (PHONE_LOGIN_STAFF_ONLY) -------------------------------------
+//
+// TeamClu sign-in admits staff only. A gym card is not an account, even one
+// that once picked up an actor through the old picker.
+
+test("staff-only signs a staff phone straight in, past its card and its platform identity", async () => {
+  // A real shape seen on belayo: a staff row, the gym card TeamClu used to sign in as (with an
+  // actor), and the DEFAULT_ORG identity phone sign-up made for that person.
+  const authStore = { users: [{ id: "staff", email: "staff@gym.local", app_metadata: { org_id: "org-gym" } }] };
+  const db = {
+    auth_verify_code: [code("13700000040")],
+    users: [
+      { id: "staff", org_id: "org-gym", admin_type: 2, mobile: "13700000040", auth_user_id: "staff", deleted_at: null },
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000040", auth_user_id: "card", deleted_at: null },
+      { id: "shadow", org_id: "org-default", admin_type: 1, mobile: "13700000040", auth_user_id: "shadow", deleted_at: null },
+    ],
+    actors: [{ id: "a1", user_id: "card" }, { id: "a2", user_id: "shadow" }],
+  };
+  const r: any = await repoWith(db, authStore, { staffOnly: true }).login({ phone: "13700000040", code: "123456" });
+  assert.equal(r.multiUser, undefined);
+  assert.equal(r.user.id, "staff");
+});
+
+test("staff-only still offers a picker between two staff rows", async () => {
+  const db = {
+    auth_verify_code: [code("13700000041")],
+    users: [
+      { id: "s1", org_id: "org-a", admin_type: 2, mobile: "13700000041", auth_user_id: "s1", deleted_at: null },
+      { id: "s2", org_id: "org-b", admin_type: 3, mobile: "13700000041", auth_user_id: "s2", deleted_at: null },
+      { id: "card", org_id: "org-c", admin_type: 1, mobile: "13700000041", auth_user_id: "card", deleted_at: null },
+      { id: "shadow", org_id: "org-default", admin_type: 1, mobile: "13700000041", auth_user_id: "shadow", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, { users: [] }, { staffOnly: true }).login({ phone: "13700000041", code: "123456" });
+  assert.equal(r.multiUser, true);
+  assert.deepEqual(r.users.map((u: any) => u.id).sort(), ["s1", "s2"]);
+});
+
+test("staff-only ignores the DEFAULT_ORG row too: no staff row means a new TeamClu account", async () => {
+  // A phone sign-up's old DEFAULT_ORG row is admin_type 1 — on belayo that row
+  // is the partner app's member anchor. TeamClu no longer signs in as it.
+  const authStore = { users: [{ id: "shadow", email: "13700000042@phone.example.test", app_metadata: { org_id: "org-default" } }] };
+  const db = {
+    auth_verify_code: [code("13700000042")],
+    users: [
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000042", auth_user_id: "card", deleted_at: null },
+      { id: "shadow", org_id: "org-default", admin_type: 1, mobile: "13700000042", auth_user_id: "shadow", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore, { staffOnly: true }).login({ phone: "13700000042", code: "123456" });
+  assert.equal(r.multiUser, undefined);
+  assert.equal(r.user, null);
+  assert.ok(authStore.users.some((u: any) => u.email === "13700000042@teamclu.mobile"));
+  assert.equal(db.users.length, 2, "no row written");
+});
+
+test("staff-only gives a members-only phone a TeamClu account, not the member's", async () => {
+  // The card is bound to the partner's own auth account. Signing in as it is
+  // signing in as the member.
+  const authStore = { users: [{ id: "card", email: "om_x@wechat.com", app_metadata: { org_id: "org-gym" } }] };
+  const db = {
+    auth_verify_code: [code("13700000043")],
+    users: [
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000043", auth_user_id: "card", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore, { staffOnly: true }).login({ phone: "13700000043", code: "123456" });
+  assert.equal(r.created, true);
+  assert.equal(r.user, null);
+  assert.ok(authStore.users.some((u: any) => u.email === "13700000043@teamclu.mobile"));
+  assert.equal((authStore.users.find((u: any) => u.id === "card") as any).app_metadata.org_id, "org-gym", "the member's account is untouched");
+});
+
+test("staff-only is read from the database when not overridden", async () => {
+  const db = {
+    staff_only: true,
+    auth_verify_code: [code("13700000047")],
+    users: [
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000047", auth_user_id: "card", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, { users: [{ id: "card", email: "c@x.test" }] }).login({ phone: "13700000047", code: "123456" });
+  assert.equal(r.user, null, "the card was not offered");
+});
+
+test("staff-only refuses an explicit pick of a member row", async () => {
+  // A client holding a list from before the switch must not sign in as a card.
+  const db = {
+    auth_verify_code: [code("13700000045")],
+    users: [
+      { id: "staff", org_id: "org-gym", admin_type: 2, mobile: "13700000045", auth_user_id: "staff", deleted_at: null },
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000045", auth_user_id: "card", deleted_at: null },
+    ],
+  };
+  await assert.rejects(
+    () => repoWith(db, { users: [] }, { staffOnly: true }).login({ phone: "13700000045", code: "123456", userId: "card" }),
+    (e: any) => e.statusCode === 403,
+  );
+  assert.equal(db.auth_verify_code[0].used, false);
+});
+
+test("staff-only never touches the app login page", async () => {
+  const authStore = { users: [{ id: "card", email: "13700000046@phone.example.test" }] };
+  const db = {
+    auth_verify_code: [code("13700000046")],
+    users: [
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000046", auth_user_id: "card", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore, { staffOnly: true })
+    .login({ phone: "13700000046", code: "123456", tenantOrgId: "org-gym" });
+  assert.equal(r.user.id, "card");
+});
+
+test("an app sign-up hangs its member row off a member account, not a staff identity's", async () => {
+  // Every TeamClu identity is its own account: the staff row's account IS that
+  // org's identity, and a member row in another tenant must not join it.
+  const authStore = { users: [
+    { id: "staff-acct", email: "staff@gym.local" },
+    { id: "member-acct", email: "13700000048@phone.example.test" },
+  ] as any[] };
+  const db = {
+    auth_verify_code: [code("13700000048")],
+    users: [
+      { id: "staff", org_id: "org-gym", admin_type: 2, mobile: "13700000048", auth_user_id: "staff-acct", deleted_at: null },
+      { id: "card", org_id: "org-other", admin_type: 1, mobile: "13700000048", auth_user_id: "member-acct", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore).login({
+    phone: "13700000048", code: "123456", tenantOrgId: "org-app", allowSignup: true,
+  });
+  assert.equal(r.created, true);
+  assert.equal(r.user.org_id, "org-app");
+  assert.equal(r.user.auth_user_id, "member-acct");
 });

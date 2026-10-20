@@ -19,6 +19,16 @@
         "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       }
     },
+    "beta-apk": {
+      "extends": "production",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true",
+        "EXPO_PUBLIC_ANDROID_UPDATE_URL": "https://teamclaw.ucar.cc/beta/android/latest.json"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "env": {

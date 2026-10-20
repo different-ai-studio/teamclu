@@ -80,6 +80,7 @@ describe('ActorsView', () => {
     await waitFor(() => expect(screen.getByText('Contacts')).toBeInTheDocument())
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument())
     expect(screen.getByText('Reviewer')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run on another computer' })).toBeInTheDocument()
     expect(screen.getByText('Member')).toBeInTheDocument()
     expect(screen.getAllByText('Agent').length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText('online')).not.toBeInTheDocument()

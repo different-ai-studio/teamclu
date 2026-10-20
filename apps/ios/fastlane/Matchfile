@@ -1,5 +1,11 @@
 git_url("https://github.com/different-ai-studio/match-certificates.git")
 storage_mode("git")
 type("appstore")
-app_identifier("com.teamclu.mobile")
+# The app and its two extensions. Each needs its own App Store profile; run
+# ios-match.yml once per id before the first release that ships it.
+app_identifier([
+  "com.teamclu.mobile",
+  "com.teamclu.mobile.LiveActivity",
+  "com.teamclu.mobile.NotificationService",
+])
 team_id("43G5A6G9QV")

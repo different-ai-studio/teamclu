@@ -1,3 +1,5 @@
+import { buildAppAuthInfo } from "../src/lib/apps-auth-info.js";
+import { ApiError } from "../src/lib/http-utils.js";
 /** Contract gate — supabase-repo behaviour against a stub client. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -77,6 +79,7 @@ function contractRepo() {
   ];
   const ideaStore = fixture("ideas-list.json").items.slice();
   const configStore: Record<string, any> = {};
+  const wikiMaintainerStore: Record<string, any> = {};
   const messageStore: any[] = fixture("message-list.json").items.slice();
   const sessionStore: any[] = fixture("session-list.json").items.slice().map((s: any) => ({ ...s, participants: [{ sessionId: s.id, actorId: "actor-1", role: "owner", joinedAt: s.createdAt }] }));
   const gatewayBindings: Record<string, any> = {};
@@ -88,6 +91,11 @@ function contractRepo() {
   const reportStore = [];
   const skillStore = [];
   return {
+    async getAppAuthInfo(appId) {
+      if (appId === "missing") throw new ApiError(404, "not_found", "app not found");
+      if (appId === "catalog-denied") throw new ApiError(403, "forbidden", "catalog forbidden");
+      return buildAppAuthInfo({appId,teamId:"team-1",organization:{id:"org-1",name:"Org"},roles:[{id:"r",code:"reviewer",name:"Reviewer",status:"active"}],authMode:"platform",authScope:"paths",authAudience:"org",authRules:[{path:"/staff",auth:"required",audience:"org"}]});
+    },
     async enableShareMode(teamId, mode) {
       const row = {
         id: teamId,
@@ -136,6 +144,32 @@ function contractRepo() {
         models: input.models,
       };
       return { ...llmConfigStore[teamId] };
+    },
+    async getWikiMaintainerStatus(teamId) {
+      const config = wikiMaintainerStore[teamId] ?? null;
+      return {
+        config,
+        generation: 0,
+        stage: "idle",
+        checkpoint: null,
+        publishing: null,
+        syncStatus: null,
+        updatedAt: null,
+      };
+    },
+    async putWikiMaintainerConfig(teamId, input) {
+      const current = wikiMaintainerStore[teamId];
+      const currentVersion = current?.version ?? 0;
+      if (input.expectedVersion !== currentVersion) {
+        throw Object.assign(new Error("wiki config version conflict"), { code: "conflict" });
+      }
+      const saved = {
+        version: currentVersion + 1,
+        config: input.config,
+        updatedAt: "2026-09-22T00:00:00Z",
+      };
+      wikiMaintainerStore[teamId] = saved;
+      return saved;
     },
     async listApps({ teamId, limit }: any) {
       assert.equal(teamId, "team-1");
@@ -243,6 +277,10 @@ function contractRepo() {
     async listMessages(sessionId) {
       assert.equal(sessionId, "session-1");
       return messageStore;
+    },
+    async listSessionAttachments(sessionId) {
+      assert.equal(sessionId, "session-1");
+      return { items: [], nextCursor: null };
     },
     async insertMessage(_sessionId, input) {
       if (input.id === "duplicate-message") {
@@ -394,6 +432,16 @@ function contractRepo() {
       assert.ok(input.deviceId, "deviceId is required");
       const agentId = deviceAgentStore.get(`${teamId}:${input.deviceId}`) ?? null;
       return { agentId, displayName: agentId ? `name-of-${agentId}` : null };
+    },
+    async adoptLegacyAgentDevice(teamId, input) {
+      assert.equal(teamId, "team-1");
+      assert.ok(input.deviceId, "deviceId is required");
+      assert.ok(input.agentId, "agentId is required");
+      const key = `${teamId}:${input.deviceId}`;
+      const existing = deviceAgentStore.get(key);
+      if (existing && existing !== input.agentId) return { agentId: null, displayName: null };
+      deviceAgentStore.set(key, input.agentId);
+      return { agentId: input.agentId, displayName: `name-of-${input.agentId}` };
     },
     async ensureAgentForDevice(teamId, input) {
       assert.equal(teamId, "team-1");

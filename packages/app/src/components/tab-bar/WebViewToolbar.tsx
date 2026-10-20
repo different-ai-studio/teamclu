@@ -17,88 +17,112 @@ interface WebViewToolbarProps {
 export function WebViewToolbar({ url: rawUrl, label, zoomLevel }: WebViewToolbarProps) {
   const { t } = useTranslation()
   const url = normalizeUrl(rawUrl)
-  const [currentUrl, setCurrentUrl] = useState(url)
+  const [address, setAddress] = useState({ label, target: url, value: url })
+  // A reused toolbar must never render the previous webview's address.
+  const currentUrl = address.label === label && address.target === url ? address.value : url
   const [progress, setProgress] = useState(0)
   const [showProgress, setShowProgress] = useState(false)
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Poll the current URL periodically to keep address bar in sync
+  // Navigation events refresh the address immediately; polling remains a
+  // fallback for in-page history changes that do not trigger a page load.
   useEffect(() => {
-    if (!isTauri()) {
-      setCurrentUrl(url)
-      return
-    }
+    setAddress({ label, target: url, value: url })
+    setProgress(0)
+    setShowProgress(false)
+    if (!isTauri()) return
 
     let cancelled = false
-    const poll = async () => {
+    let unlisten: (() => void) | null = null
+    let addressRequest = 0
+    let pendingAddresses = 0
+    let metadataRequest = 0
+
+    const refreshAddress = async (navigation = false) => {
+      // A timer must not invalidate a slower lookup. Navigation may supersede it.
+      if (!navigation && pendingAddresses > 0) return
+      pendingAddresses++
+      const request = ++addressRequest
       try {
         const { invoke } = await import("@tauri-apps/api/core")
-        const [urlResult, titleResult, faviconResult] = await Promise.all([
-          invoke<string>("webview_get_url", { label }).catch(() => ""),
+        if (cancelled) return
+        const value = await invoke<string>("webview_get_url", { label })
+        if (!cancelled && request === addressRequest && value) {
+          setAddress(previous => previous.label === label && previous.target === url && previous.value === value
+            ? previous : { label, target: url, value })
+        }
+      } catch {
+        // The webview may not exist yet. A navigation event or poll retries.
+      } finally {
+        pendingAddresses--
+      }
+    }
+
+    const refreshMetadata = async () => {
+      const request = ++metadataRequest
+      try {
+        const { invoke } = await import("@tauri-apps/api/core")
+        if (cancelled) return
+        const [title, faviconUrl] = await Promise.all([
           invoke<string>("webview_get_title", { label }).catch(() => ""),
           invoke<string>("webview_get_favicon", { label }).catch(() => ""),
         ])
-        if (cancelled) return
-        if (urlResult) setCurrentUrl(urlResult)
+        if (cancelled || request !== metadataRequest) return
         const meta: { title?: string; faviconUrl?: string } = {}
-        if (titleResult) meta.title = titleResult
-        if (faviconResult) meta.faviconUrl = faviconResult
+        if (title) meta.title = title
+        if (faviconUrl) meta.faviconUrl = faviconUrl
         if (meta.title || meta.faviconUrl) {
           useTabsStore.getState().updateTabMeta(rawUrl, meta)
         }
       } catch {
-        // ignore
+        // Metadata must not hold up the address bar.
       }
     }
 
-    // Initial fetch after a short delay (webview might still be loading)
-    const initialTimer = setTimeout(poll, 2000)
-    // Poll every 2s to catch navigation changes
-    const interval = setInterval(poll, 2000)
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      if (cancelled) return
+      const dispose = await listen<{ label: string; progress: number }>("webview-progress", (event) => {
+        if (cancelled || event.payload.label !== label) return
+        void refreshAddress(true)
+        const p = event.payload.progress
+        setProgress(p)
+        if (fadeTimerRef.current !== null) {
+          clearTimeout(fadeTimerRef.current)
+          fadeTimerRef.current = null
+        }
+        if (p < 100) {
+          setShowProgress(true)
+        } else {
+          void refreshMetadata()
+          fadeTimerRef.current = setTimeout(() => {
+            setShowProgress(false)
+            fadeTimerRef.current = null
+          }, 300)
+        }
+      })
+      if (cancelled) dispose()
+      else unlisten = dispose
+    }).catch(() => {})
+
+    const refresh = () => {
+      void refreshAddress()
+      void refreshMetadata()
+    }
+    refresh()
+    const addressInterval = setInterval(() => { void refreshAddress() }, 250)
+    const metadataInterval = setInterval(() => { void refreshMetadata() }, 2000)
 
     return () => {
       cancelled = true
-      clearTimeout(initialTimer)
-      clearInterval(interval)
-    }
-  }, [label, url])
-
-  // Listen for webview-progress events from the Rust backend
-  useEffect(() => {
-    if (!isTauri()) return
-    let unlisten: (() => void) | null = null
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<{ label: string; progress: number }>("webview-progress", (event) => {
-        try {
-          const payload = event.payload
-          if (payload.label !== label) return
-          const p = payload.progress
-          setProgress(p)
-          if (p < 100) {
-            setShowProgress(true)
-            if (fadeTimerRef.current !== null) {
-              clearTimeout(fadeTimerRef.current)
-              fadeTimerRef.current = null
-            }
-          } else {
-            fadeTimerRef.current = setTimeout(() => {
-              setShowProgress(false)
-              fadeTimerRef.current = null
-            }, 300)
-          }
-        } catch {
-          // ignore malformed payload
-        }
-      }).then((fn) => { unlisten = fn })
-    })
-    return () => {
+      clearInterval(addressInterval)
+      clearInterval(metadataInterval)
       unlisten?.()
       if (fadeTimerRef.current !== null) {
         clearTimeout(fadeTimerRef.current)
         fadeTimerRef.current = null
       }
     }
-  }, [label])
+  }, [label, url, rawUrl])
 
   const invokeWebview = useCallback(async (command: string) => {
     if (!isTauri()) return

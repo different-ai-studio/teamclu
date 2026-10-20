@@ -1,4 +1,6 @@
+import { cloudApiBaseUrl } from "../../lib/cloud-api/client";
 import { t } from "../../lib/i18n";
+import { attachmentsFromMessage } from "./message-attachments";
 
 export interface SessionSummary {
   sessionId: string;
@@ -12,6 +14,12 @@ export interface SessionSummary {
   createdAt: string;
   createdBy: string;
   hasUnread?: boolean;
+  /** The idea this session belongs to; absent/empty for none. */
+  ideaId?: string;
+  /** The app this session was created from (`sessions.app_id`); absent/empty for none. */
+  appId?: string;
+  /** `user` | `cron` | `gateway` | `thread`; absent on older servers. */
+  source?: string;
 }
 
 export type MessageAttachment = {
@@ -144,25 +152,13 @@ export function mapSessionRecord(record: SessionRecord): SessionSummary {
   };
 }
 
-function coerceAttachments(value: unknown): MessageAttachment[] | undefined {
-  if (!Array.isArray(value) || value.length === 0) return undefined;
-  const out: MessageAttachment[] = [];
-  for (const entry of value) {
-    if (entry && typeof entry === "object") {
-      const row = entry as Record<string, unknown>;
-      const url = typeof row.url === "string" ? row.url : null;
-      if (!url) continue;
-      out.push({
-        url,
-        path: typeof row.path === "string" ? row.path : undefined,
-        mime: typeof row.mime === "string" ? row.mime : undefined,
-        size: typeof row.size === "number" ? row.size : null,
-      });
-    } else if (typeof entry === "string") {
-      out.push({ url: entry });
-    }
+/** The Cloud API origin, or null where none is configured (tests). */
+function attachmentBaseUrl(): string | null {
+  try {
+    return cloudApiBaseUrl();
+  } catch {
+    return null;
   }
-  return out.length > 0 ? out : undefined;
 }
 
 export function mapMessageRecord(record: MessageRecord): SessionMessage {
@@ -178,7 +174,7 @@ export function mapMessageRecord(record: MessageRecord): SessionMessage {
     sessionId: record.session_id ?? "",
     teamId: record.team_id ?? "",
     turnId: record.turn_id ?? "",
-    attachments: coerceAttachments(record.attachments),
+    attachments: attachmentsFromMessage(record.metadata, record.attachments, attachmentBaseUrl()),
   };
 }
 

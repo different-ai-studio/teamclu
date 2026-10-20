@@ -13,17 +13,23 @@ import {
   Text,
   View,
 } from "react-native";
-import Markdown from "react-native-markdown-display";
 
 import { t } from "../../../lib/i18n";
 import { colors, hai, iosType, radii, spacing, typography } from "../../../ui/theme";
+import type { FeedbackKind } from "../cloud-api";
 import type { MessageAttachment, SessionMessage } from "../session-types";
 import { buildThinkingBody, buildThinkingPreview } from "./agent-thinking-presentation";
 import { AudioPlayerChip } from "./AudioPlayerChip";
+import { useAttachmentImageSource } from "./attachment-image-source";
 import { ImageLightbox } from "./ImageLightbox";
+import { buildMarkdownStyles, hasBlockMarkdown } from "./markdown-styles";
+import { MessageMarkdown } from "./MessageMarkdown";
+import { OTHER_PALETTE, OWN_PALETTE } from "./markdown-palettes";
 import { PermissionBanner } from "./PermissionBanner";
 import { ToolCallLine } from "./ToolCallLine";
+import { mentionPlainText } from "../mention-display";
 import { toolCallPresentation, type ToolResult } from "../tool-display";
+import { successTone } from "../../../lib/haptics";
 
 const HIDDEN_MESSAGE_KINDS = new Set<string>([]);
 
@@ -40,6 +46,8 @@ export type SessionMessageRowProps = {
   onDelete?: (messageId: string) => void;
   onEdit?: (message: SessionMessage) => void;
   onJumpToReply?: (messageId: string) => void;
+  /** Long-press "Select": start multi-select with this message. */
+  onSelect?: (message: SessionMessage) => void;
   onReply?: (message: SessionMessage) => void;
   /** Click handler for the trailing outbox dot when the row is in `failed` state. */
   onRetryOutbox?: (messageId: string) => void;
@@ -58,6 +66,10 @@ export type SessionMessageRowProps = {
    * `foldToolResults`. Absent means the tool is still running.
    */
   toolResult?: ToolResult;
+  /** The signed-in member's feedback on this agent reply, if any. */
+  feedbackKind?: FeedbackKind | null;
+  /** Thumbs on agent replies — iOS `CompletedTurnBubbleView.onFeedback`. */
+  onFeedback?: (kind: FeedbackKind) => void;
 };
 
 export function normalizeBody(message: SessionMessage): string {
@@ -96,15 +108,20 @@ function agentNoteStyle(kind: string): { eyebrow: string; tint: string } {
   return { eyebrow: t("TOOL"), tint: hai.basalt };
 }
 
+// Built once: constructing an Intl formatter is slow on Hermes, and this ran
+// for every row on every render.
+let clockFormat: Intl.DateTimeFormat | null = null;
+
 export function formatTimestamp(value: string): string {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("en-US", {
+  clockFormat ??= new Intl.DateTimeFormat("en-US", {
     hour12: false,
     hour: "2-digit",
     minute: "2-digit",
-  }).format(date);
+  });
+  return clockFormat.format(date);
 }
 
 export function SessionMessageRow({
@@ -114,6 +131,7 @@ export function SessionMessageRow({
   onEdit,
   onJumpToReply,
   onReply,
+  onSelect,
   onRetryOutbox,
   outboxStatus,
   onGrantPermission,
@@ -123,6 +141,8 @@ export function SessionMessageRow({
   senderName,
   isStreaming = false,
   toolResult,
+  feedbackKind = null,
+  onFeedback,
 }: SessionMessageRowProps) {
   const { t: tHook } = useTranslation();
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
@@ -185,11 +205,15 @@ export function SessionMessageRow({
         label: tHook("Copy"),
         run: () => {
           void Clipboard.setStringAsync(message.content);
+          successTone();
         },
       },
     ];
     if (onReply) {
       actions.push({ label: tHook("Reply"), run: () => onReply(message) });
+    }
+    if (onSelect) {
+      actions.push({ label: tHook("Select"), run: () => onSelect(message) });
     }
     if (isOwnMessage && onEdit) {
       actions.push({ label: tHook("Edit"), run: () => onEdit(message) });
@@ -350,12 +374,14 @@ export function SessionMessageRow({
     );
   }
 
-  const body = normalizeBody(message);
   const attachments = message.attachments ?? [];
   // iOS splits three bubble shapes, not two: the user's own prompt, another
   // human's prompt, and an assistant reply. Only the third one runs full-bleed
   // and carries the "{Agent} · {Model}" caption.
   const isAgentReply = !isOwnMessage && message.kind.trim().toLowerCase() === "agent_reply";
+  // People's messages from the desktop carry mention/skill tokens written for
+  // the model; show them as @Name and /name (iOS MentionDisplayText).
+  const body = isAgentReply ? normalizeBody(message) : mentionPlainText(normalizeBody(message)) || normalizeBody(message);
   const captionLabel = isOwnMessage
     ? tHook("You")
     : isAgentReply
@@ -384,6 +410,7 @@ export function SessionMessageRow({
         style={({ pressed }) => [
           styles.surface,
           isAgentReply ? styles.surfaceAgent : styles.surfaceBounded,
+          !isAgentReply && hasBlockMarkdown(body) ? styles.surfaceBlock : null,
           isOwnMessage ? styles.surfaceOwn : styles.surfaceOther,
           pressed ? styles.surfacePressed : null,
         ]}
@@ -436,11 +463,13 @@ export function SessionMessageRow({
         <ImageLightbox onClose={() => setLightboxUrl(null)} url={lightboxUrl} />
 
         {body.length > 0 ? (
-          <Markdown
+          <MessageMarkdown
+            definiteWidth={isAgentReply || hasBlockMarkdown(body)}
+            palette={isOwnMessage ? OWN_PALETTE : OTHER_PALETTE}
+            streaming={isStreaming}
             style={isOwnMessage ? ownMarkdown : otherMarkdown}
-          >
-            {body}
-          </Markdown>
+            text={body}
+          />
         ) : null}
 
         {isStreaming ? (
@@ -456,6 +485,30 @@ export function SessionMessageRow({
         ) : null}
 
         <View style={styles.footerRow}>
+          {isAgentReply && onFeedback && !isStreaming ? (
+            <View style={styles.feedbackGroup}>
+              {(["positive", "negative"] as const).map((kind) => {
+                const active = feedbackKind === kind;
+                const icon = kind === "positive" ? "thumbs-up" : "thumbs-down";
+                return (
+                  <Pressable
+                    accessibilityLabel={kind === "positive" ? tHook("Helpful") : tHook("Not Helpful")}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    hitSlop={8}
+                    key={kind}
+                    onPress={() => onFeedback(kind)}
+                  >
+                    <Ionicons
+                      color={active ? hai.cinnabar : colors.slate}
+                      name={active ? icon : `${icon}-outline`}
+                      size={13}
+                    />
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
           {timestamp ? (
             <Text
               style={[styles.time, isOwnMessage ? styles.timeOwn : styles.timeOther]}
@@ -527,6 +580,15 @@ function OutboxStatusDot({
   return null;
 }
 
+function AttachmentImage({ url }: { url: string }) {
+  const source = useAttachmentImageSource(url);
+  return source ? (
+    <Image resizeMode="cover" source={source} style={styles.attachmentImage} />
+  ) : (
+    <View style={styles.attachmentImage} />
+  );
+}
+
 function AttachmentChip({
   attachment,
   isOwn,
@@ -543,11 +605,7 @@ function AttachmentChip({
         accessibilityRole="image"
         onPress={onOpenImage ? () => onOpenImage(attachment.url) : undefined}
       >
-        <Image
-          resizeMode="cover"
-          source={{ uri: attachment.url }}
-          style={styles.attachmentImage}
-        />
+        <AttachmentImage url={attachment.url} />
       </Pressable>
     );
   }
@@ -572,97 +630,9 @@ function AttachmentChip({
   );
 }
 
-/**
- * Markdown styling for the two bubble variants.
- *
- * `fence` is not optional decoration: react-native-markdown-display routes
- * ```-fenced blocks through it and indented blocks through `code_block`, and
- * agents emit fenced code almost exclusively. Styling only `code_block` left
- * the common case on the library's defaults.
- *
- * Same reason the blockquote and table rules are here. Their defaults are
- * hardcoded `#F5F5F5` / `#CCC` / `#000000`, which are off-palette everywhere
- * and unreadable inside the dark own-message bubble.
- */
-const OWN_SURFACE = "rgba(248,246,241,0.18)";
-
-const ownMarkdown = {
-  body: { color: hai.mist, ...iosType.subheadline, marginBottom: 0, marginTop: 0 },
-  code_inline: {
-    backgroundColor: OWN_SURFACE,
-    borderRadius: 4,
-    color: hai.mist,
-    paddingHorizontal: 4,
-  },
-  code_block: {
-    backgroundColor: OWN_SURFACE,
-    borderRadius: 6,
-    color: hai.mist,
-    padding: 8,
-  },
-  fence: {
-    backgroundColor: OWN_SURFACE,
-    borderRadius: 6,
-    color: hai.mist,
-    padding: 8,
-  },
-  blockquote: {
-    backgroundColor: OWN_SURFACE,
-    borderColor: "rgba(248,246,241,0.45)",
-    borderLeftWidth: 3,
-    marginLeft: 0,
-    paddingHorizontal: 8,
-  },
-  table: {
-    borderColor: "rgba(248,246,241,0.35)",
-    borderRadius: 4,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  tr: { borderBottomWidth: StyleSheet.hairlineWidth, borderColor: "rgba(248,246,241,0.35)" },
-  th: { color: hai.mist, padding: 6 },
-  td: { color: hai.mist, padding: 6 },
-  link: { color: hai.mist, textDecorationLine: "underline" as const },
-  paragraph: { color: hai.mist, marginBottom: 0, marginTop: 0 },
-};
-
-const otherMarkdown = {
-  body: { color: hai.onyx, ...iosType.subheadline, marginBottom: 0, marginTop: 0 },
-  code_inline: {
-    backgroundColor: hai.pebble,
-    borderRadius: 4,
-    color: hai.onyx,
-    paddingHorizontal: 4,
-  },
-  code_block: {
-    backgroundColor: hai.pebble,
-    borderRadius: 6,
-    color: hai.onyx,
-    padding: 8,
-  },
-  fence: {
-    backgroundColor: hai.pebble,
-    borderRadius: 6,
-    color: hai.onyx,
-    padding: 8,
-  },
-  blockquote: {
-    backgroundColor: hai.pebble,
-    borderColor: hai.slate,
-    borderLeftWidth: 3,
-    marginLeft: 0,
-    paddingHorizontal: 8,
-  },
-  table: {
-    borderColor: hai.hairline,
-    borderRadius: 4,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  tr: { borderBottomWidth: StyleSheet.hairlineWidth, borderColor: hai.hairline },
-  th: { color: hai.onyx, padding: 6 },
-  td: { color: hai.onyx, padding: 6 },
-  link: { color: hai.cinnabar, textDecorationLine: "underline" as const },
-  paragraph: { color: hai.onyx, marginBottom: 0, marginTop: 0 },
-};
+/** Markdown styling for the two bubble variants; see `markdown-styles`. */
+const ownMarkdown = buildMarkdownStyles(OWN_PALETTE);
+const otherMarkdown = buildMarkdownStyles(OTHER_PALETTE);
 
 const styles = StyleSheet.create({
   attachmentImage: {
@@ -723,6 +693,10 @@ const styles = StyleSheet.create({
      replies run to the full column width instead. */
   surfaceBounded: {
     maxWidth: 260,
+  },
+  // See `hasBlockMarkdown`: lists and headings need a definite width.
+  surfaceBlock: {
+    width: 260,
   },
   surfaceAgent: {
     alignSelf: "stretch",
@@ -891,6 +865,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 6,
     justifyContent: "flex-end",
+  },
+  feedbackGroup: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
+    marginRight: "auto",
   },
   outboxDot: {
     marginLeft: 2,

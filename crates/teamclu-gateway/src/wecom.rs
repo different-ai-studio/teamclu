@@ -1024,7 +1024,7 @@ pub(crate) fn normalize_callback(
         // reaching here already means it was. Stated rather than assumed: the
         // core must not have to know that rule per channel.
         addressed_to_bot: true,
-        quoted_text,
+        quoted_text: quoted_text.map(driver::QuotedText::Ready),
         // The websocket request this arrived on. Replies and streaming card
         // updates go back through it, not through a send-to-chat API.
         reply_context: (!req_id.is_empty()).then(|| req_id.to_string()),
@@ -3927,7 +3927,10 @@ mod normalize_tests {
             "quote": { "msgtype": "text", "text": { "content": "pick one: a or b" } },
         }));
         let inbound = normalize_callback(&msg, "bot-a", "req-1", None).unwrap();
-        assert_eq!(inbound.quoted_text.as_deref(), Some("pick one: a or b"));
+        assert!(matches!(
+            inbound.quoted_text,
+            Some(driver::QuotedText::Ready(ref text)) if text == "pick one: a or b"
+        ));
         assert_eq!(inbound.text, "yes");
     }
 
@@ -3966,10 +3969,10 @@ mod normalize_tests {
         }));
         let inbound = normalize_callback(&msg, "bot-a", "req-1", None).unwrap();
         assert_eq!(inbound.text, "对比一下这两个");
-        assert_eq!(
-            inbound.quoted_text.as_deref(),
-            Some("[attachment: report.xlsx]")
-        );
+        assert!(matches!(
+            inbound.quoted_text,
+            Some(driver::QuotedText::Ready(ref text)) if text == "[attachment: report.xlsx]"
+        ));
         let names: Vec<_> = inbound
             .attachments
             .iter()

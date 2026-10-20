@@ -1,10 +1,14 @@
 import { Ionicons } from "@expo/vector-icons";
 import { StyleSheet, Text, View } from "react-native";
 
+import { t } from "../../../lib/i18n";
 import { formatRelativeAbbreviated } from "../../../lib/relative-time";
 import { colors, hai, iosType, spacing } from "../../../ui/theme";
 import { actorIdHash } from "../../actors/team-stats";
+import { feedBodyText } from "../idea-feed";
 import type { Idea, IdeaStatus } from "../idea-types";
+import { IdeaFeedActions } from "./IdeaFeedActions";
+import { IdeaFeedMedia } from "./IdeaFeedMedia";
 
 /**
  * One row of the ideas list, ported from the iOS `IdeaRow` (`IdeaSheets.swift`).
@@ -19,6 +23,14 @@ export type IdeaRowProps = {
   creatorId?: string | null;
   creatorName?: string | null;
   idea: Idea;
+  /**
+   * Render as a team-feed post (iOS `IdeaFeedCard`): the description under
+   * the title, the idea's pictures, and the comment/like row. Off, the row
+   * stays the compact one search and the archive use.
+   */
+  feed?: boolean;
+  onOpenComments?: () => void;
+  onToggleLike?: (liked: boolean) => void;
 };
 
 /** Status ink: Sage when done, Basalt in flight, Cinnabar while still open. */
@@ -64,21 +76,45 @@ function StatusGlyph({ status }: { status: IdeaStatus }) {
   );
 }
 
-export function IdeaRow({ creatorId, creatorName, idea }: IdeaRowProps) {
+export function IdeaRow({
+  creatorId,
+  creatorName,
+  feed = false,
+  idea,
+  onOpenComments,
+  onToggleLike,
+}: IdeaRowProps) {
   const isDone = idea.status === "done";
   const name = creatorName?.trim() ?? "";
   const initial = name ? name.charAt(0).toUpperCase() : "·";
+  const body = feedBodyText(idea);
 
   return (
     <View style={styles.row}>
-      <View style={styles.gutter}>
-        <StatusGlyph status={idea.status} />
-      </View>
+      {/* The feed states status in words, as iOS `IdeaFeedCard`; the compact
+          row (search, archive) keeps iOS `IdeaRow`'s glyph. */}
+      {feed ? null : (
+        <View style={styles.gutter}>
+          <StatusGlyph status={idea.status} />
+        </View>
+      )}
 
       <View style={styles.body}>
         <Text numberOfLines={2} style={[styles.title, isDone ? styles.titleDone : null]}>
-          {idea.title}
+          {feed ? body.title || idea.title : idea.title}
         </Text>
+
+        {feed && body.description ? (
+          <Text numberOfLines={6} style={styles.description}>
+            {body.description}
+          </Text>
+        ) : null}
+
+        {feed && idea.attachmentUrls.length > 0 ? (
+          <View style={styles.media}>
+            <IdeaFeedMedia urls={idea.attachmentUrls} />
+          </View>
+        ) : null}
 
         <View style={styles.creatorFooter}>
           <View
@@ -93,7 +129,22 @@ export function IdeaRow({ creatorId, creatorName, idea }: IdeaRowProps) {
           <Text style={styles.updatedAt}>
             {formatRelativeAbbreviated(idea.updatedAt || idea.createdAt)}
           </Text>
+          {/* Only once it has moved off "open": a tag on every new post would
+              say nothing (iOS `IdeaFeedCard.byline`). */}
+          {feed && idea.status !== "open" ? (
+            <Text style={styles.statusTag}>
+              {(idea.status === "done" ? t("Done") : t("In Progress")).toUpperCase()}
+            </Text>
+          ) : null}
         </View>
+
+        {feed ? (
+          <IdeaFeedActions
+            idea={idea}
+            onOpenComments={onOpenComments}
+            onToggleLike={onToggleLike}
+          />
+        ) : null}
       </View>
     </View>
   );
@@ -127,9 +178,24 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     ...iosType.caption,
   },
+  statusTag: {
+    backgroundColor: hai.pebble,
+    borderRadius: 6,
+    color: hai.basalt,
+    fontSize: 9.5,
+    fontWeight: "600",
+    letterSpacing: 0.18 * 9.5,
+    overflow: "hidden",
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
   creatorSpacer: {
     flex: 1,
     minWidth: 8,
+  },
+  description: {
+    color: colors.onyx,
+    ...iosType.body,
   },
   glyphCheck: {
     fontWeight: "900",
@@ -144,6 +210,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingTop: 4,
     width: 14,
+  },
+  media: {
+    paddingTop: 2,
   },
   ringArc: {
     borderBottomColor: "transparent",
