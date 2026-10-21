@@ -6,7 +6,7 @@
   "description": "__MSG_extensionDescription__",
   "homepage_url": "https://www.teamclu.ai",
   "minimum_chrome_version": "116",
-  "permissions": ["sidePanel", "scripting", "activeTab", "storage", "identity"],
+  "permissions": ["sidePanel", "scripting", "storage", "identity"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js", "type": "module" },
   "action": { "default_title": "__MSG_appName__" },
