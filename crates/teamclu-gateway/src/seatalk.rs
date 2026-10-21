@@ -188,12 +188,16 @@ impl SeaTalkClient {
         if !(url.starts_with("https://") || url.starts_with("http://")) {
             return Err("SeaTalk media url is not http".into());
         }
-        let mut req = self.media_http.get(url);
-        if seatalk_media_host(url) {
-            let token = self.get_access_token().await?;
-            req = req.header("Authorization", format!("Bearer {token}"));
+        // `image.content` is caller-controlled. Refuse before any request so a
+        // group member cannot aim the daemon at an internal address.
+        if !seatalk_media_host(url) {
+            return Err("SeaTalk media url is not on a seatalk host".into());
         }
-        let resp = req
+        let token = self.get_access_token().await?;
+        let resp = self
+            .media_http
+            .get(url)
+            .header("Authorization", format!("Bearer {token}"))
             .send()
             .await
             .map_err(|e| format!("SeaTalk media download failed: {e}"))?;
@@ -839,7 +843,9 @@ fn seatalk_caps() -> crate::driver::ChannelCaps {
         interactive: false,
         threading: crate::driver::Threading::Inline,
         max_chars: 4000,
-        turn_timeout_secs: 180,
+        // Tools often run longer than the 180s IM default and emit nothing
+        // until they return. 600 matches Feishu and WeCom.
+        turn_timeout_secs: 600,
     }
 }
 
@@ -1197,6 +1203,9 @@ async fn enrich_inbound(
                     }
                 }
             }
+            // A bare @ is empty once the leading mention is removed. Leaving it
+            // in the prefix is what made the next bare @ look like new context.
+            drop_blank_history(&mut included);
             if let Some(prefix) = cursor::format_thread_history(&included) {
                 inbound.context_prefix = Some(prefix);
             }
@@ -1358,13 +1367,15 @@ fn history_body(
             let text = message["text"]["plain_text"]
                 .as_str()
                 .or_else(|| message["text"]["content"].as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            (text, None, None)
+                .unwrap_or("");
+            (strip_leading_mentions(text), None, None)
         }
         Some(tag) => (format!("[{tag}]"), None, None),
     }
+}
+
+fn drop_blank_history(messages: &mut Vec<cursor::HistoryMessage>) {
+    messages.retain(|message| !message.body.trim().is_empty());
 }
 
 fn json_sent_time(value: &serde_json::Value) -> Option<i64> {
@@ -1372,9 +1383,8 @@ fn json_sent_time(value: &serde_json::Value) -> Option<i64> {
     sent.as_i64().or_else(|| sent.as_u64().map(|n| n as i64))
 }
 
-/// The app token is only attached for SeaTalk's own hosts. `image.content` is
-/// caller-controlled, and a group member must not be able to point it at
-/// another server and collect the bot credential.
+/// Hosts `download_media` will contact. Anything else is refused before the
+/// request, and the bot token is only sent here.
 fn seatalk_media_host(url: &str) -> bool {
     let Some(host) = url
         .split_once("://")
@@ -1935,6 +1945,22 @@ mod tests {
         assert!(!seatalk_media_host("https://notseatalk.io/a.png"));
     }
 
+    #[tokio::test]
+    async fn download_media_refuses_other_hosts() {
+        let client = SeaTalkClient::new("app".into(), "secret".into());
+        for url in [
+            "https://cdn.example/a.png",
+            "http://127.0.0.1/latest/meta-data",
+            "https://notseatalk.io/a.png",
+        ] {
+            let err = client.download_media(url).await.unwrap_err();
+            assert!(
+                err.contains("not on a seatalk host"),
+                "{url} returned {err}"
+            );
+        }
+    }
+
     #[test]
     fn history_image_keeps_its_download_url() {
         let parsed = parse_history_message(&json!({
@@ -1952,6 +1978,48 @@ mod tests {
         );
         assert_eq!(parsed.image_name.as_deref(), Some("image-img1.jpg"));
         assert!(parsed.body.starts_with("[image:"));
+    }
+
+    #[test]
+    fn a_bare_mention_in_history_is_not_context() {
+        let bare = parse_history_message(&json!({
+            "message_id": "m1",
+            "message_sent_time": 20,
+            "sender": { "email": "a@b.com" },
+            "tag": "text",
+            "text": { "plain_text": "@牛来" }
+        }))
+        .unwrap();
+        assert_eq!(bare.body, "");
+
+        let question = parse_history_message(&json!({
+            "message_id": "m2",
+            "message_sent_time": 21,
+            "sender": { "email": "a@b.com" },
+            "tag": "text",
+            "text": { "plain_text": "@牛来 图里有什么" }
+        }))
+        .unwrap();
+        assert_eq!(question.body, "图里有什么");
+
+        let mut included = vec![bare, question];
+        drop_blank_history(&mut included);
+        let text = cursor::format_thread_history(&included).unwrap();
+        assert_eq!(
+            text,
+            "[Thread history]\na@b.com: 图里有什么\n[End thread history]"
+        );
+
+        let mut only_bare = vec![parse_history_message(&json!({
+            "message_id": "m3",
+            "message_sent_time": 22,
+            "sender": { "email": "a@b.com" },
+            "tag": "text",
+            "text": { "plain_text": "@牛来 @all" }
+        }))
+        .unwrap()];
+        drop_blank_history(&mut only_bare);
+        assert!(cursor::format_thread_history(&only_bare).is_none());
     }
 
     #[test]

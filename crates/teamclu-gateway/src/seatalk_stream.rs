@@ -205,6 +205,10 @@ struct Live {
     /// Exact text on the open stream. Keepalive resends this, not "Thinking",
     /// once a reply has replaced the placeholder.
     snapshot: String,
+    /// Full reply already on screen, closed chunks included. "Thinking" does
+    /// not count: a stream that dies before any answer still sends the whole
+    /// text. A later failure sends only the part past this prefix.
+    shown: String,
     broken: bool,
     /// `msg_id` from the update that closed the stream.
     finish_msg_id: Option<String>,
@@ -258,12 +262,12 @@ async fn settle_reply_cursor(client: &SeaTalkClient, cursor: Option<&ReplyCursor
     };
     if let Err(error) = cursor
         .store
-        .advance(&cursor.key, sent_time, &[msg_id.to_string()])
+        .note_reply(&cursor.key, sent_time, msg_id)
         .await
     {
         eprintln!("[SeaTalk] reply cursor was not saved: {error}");
     } else {
-        eprintln!("[SeaTalk] thread cursor advanced to reply msg_id={msg_id}");
+        eprintln!("[SeaTalk] thread cursor remembered reply msg_id={msg_id}");
     }
 }
 
@@ -279,6 +283,7 @@ async fn wait_for_reply(
         stream,
         closed: 0,
         snapshot: thinking,
+        shown: String::new(),
         broken: false,
         finish_msg_id: None,
     };
@@ -344,8 +349,8 @@ async fn wait_for_reply(
                         Ok(_) => {}
                         Err(error) => {
                             // SeaTalk terminates a stream after an error. Never
-                            // reference it again; the final text still goes out
-                            // through the ordinary send.
+                            // reference it again. The final text sends only
+                            // what this stream has not already shown.
                             tracing::warn!(error = %error, "SeaTalk: stream keepalive failed");
                             live.stream = None;
                             live.broken = true;
@@ -375,21 +380,56 @@ async fn show_final(
     text: &str,
 ) -> Result<(), String> {
     let text = if text.trim().is_empty() {
-        i18n::t(MsgKey::ReplyFinishedNoText, i18n::locale())
+        if live.shown.is_empty() {
+            i18n::t(MsgKey::ReplyFinishedNoText, i18n::locale())
+        } else {
+            live.shown.clone()
+        }
     } else {
         text.to_string()
     };
-    if live.stream.is_none() {
-        return target.send_text(client, &text).await;
-    }
-    match publish(client, target, live, &text, true).await {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            tracing::warn!(error = %error, "SeaTalk: closing the stream failed; delivering the reply as text");
-            live.stream = None;
-            target.send_text(client, &text).await
+    if live.stream.is_some() {
+        match publish(client, target, live, &text, true).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                tracing::warn!(error = %error, "SeaTalk: closing the stream failed; delivering the reply as text");
+                live.stream = None;
+                live.broken = true;
+            }
         }
     }
+    match unsent_reply(&live.shown, &text) {
+        Some(rest) => target.send_text(client, &rest).await,
+        None => Ok(()),
+    }
+}
+
+/// Text still missing from the thread. `shown` is what a successful stream
+/// update already put on screen, so the ordinary send carries only the tail.
+fn unsent_reply(shown: &str, text: &str) -> Option<String> {
+    if shown.is_empty() {
+        return Some(text.to_string());
+    }
+    let rest = if let Some(rest) = text.strip_prefix(shown) {
+        rest
+    } else {
+        let shared = shared_prefix_len(shown, text);
+        &text[shared..]
+    };
+    let rest = rest.trim();
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
+    }
+}
+
+fn shared_prefix_len(left: &str, right: &str) -> usize {
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum()
 }
 
 async fn publish(
@@ -401,38 +441,100 @@ async fn publish(
 ) -> Result<(), String> {
     let plan = frames_for(live.closed, &live.snapshot, text, finish, STREAM_CHAR_LIMIT);
     let mut stream = live.stream.take();
+    let mut visible = Visible::from_shown(&live.shown, &live.snapshot);
+    let mut advanced = false;
     for frame in plan.frames {
-        match frame {
-            Frame::Update { text, finish } => {
+        match &frame {
+            Frame::Update {
+                text: chunk,
+                finish,
+            } => {
                 let active = stream
                     .as_mut()
                     .ok_or_else(|| "SeaTalk reply stream unavailable".to_string())?;
-                let returned = active.update(client, target, &text, finish).await;
+                let returned = active.update(client, target, chunk, *finish).await;
                 let msg_id = match returned {
                     Ok(msg_id) => msg_id,
                     Err(error) => {
-                        live.stream = None;
+                        remember_partial(live, &visible, advanced);
                         return Err(error);
                     }
                 };
-                note_finish_id(live, msg_id, finish);
-                if finish {
+                note_finish_id(live, msg_id, *finish);
+                if *finish {
                     stream = None;
                 }
             }
-            Frame::Init { text } => match Stream::init(client, target, &text).await {
+            Frame::Init { text: chunk } => match Stream::init(client, target, chunk).await {
                 Ok(next) => stream = Some(next),
                 Err(error) => {
-                    live.stream = None;
+                    remember_partial(live, &visible, advanced);
                     return Err(error);
                 }
             },
         }
+        visible.apply(&frame);
+        advanced = true;
     }
     live.stream = stream;
     live.closed = plan.closed;
     live.snapshot = plan.snapshot;
+    live.shown = text.to_string();
     Ok(())
+}
+
+fn remember_partial(live: &mut Live, visible: &Visible, advanced: bool) {
+    live.stream = None;
+    if advanced {
+        live.shown = visible.full();
+        live.snapshot = visible.open.clone();
+    }
+}
+
+/// Reply text currently on screen: closed chunks, then the open snapshot.
+struct Visible {
+    closed: String,
+    open: String,
+}
+
+impl Visible {
+    fn from_shown(shown: &str, snapshot: &str) -> Self {
+        if shown.is_empty() {
+            return Self {
+                closed: String::new(),
+                open: String::new(),
+            };
+        }
+        match shown.strip_suffix(snapshot) {
+            Some(closed) => Self {
+                closed: closed.to_string(),
+                open: snapshot.to_string(),
+            },
+            None => Self {
+                closed: String::new(),
+                open: shown.to_string(),
+            },
+        }
+    }
+
+    fn full(&self) -> String {
+        let mut out = String::with_capacity(self.closed.len() + self.open.len());
+        out.push_str(&self.closed);
+        out.push_str(&self.open);
+        out
+    }
+
+    fn apply(&mut self, frame: &Frame) {
+        match frame {
+            Frame::Update { text, finish: true } => {
+                self.closed.push_str(text);
+                self.open.clear();
+            }
+            Frame::Update { text, .. } | Frame::Init { text } => {
+                self.open = text.clone();
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -593,5 +695,40 @@ mod tests {
         );
         assert_eq!(plan.closed, 2);
         assert_eq!(plan.snapshot, "ij");
+    }
+
+    #[test]
+    fn a_failed_preview_does_not_resend_the_text_already_shown() {
+        assert_eq!(
+            unsent_reply("先看一下日志", "先看一下日志\n\n有三处报错").as_deref(),
+            Some("有三处报错")
+        );
+        assert_eq!(unsent_reply("先看一下日志", "先看一下日志"), None);
+        assert_eq!(
+            unsent_reply("", "先看一下日志").as_deref(),
+            Some("先看一下日志")
+        );
+    }
+
+    #[test]
+    fn a_replaced_tail_sends_only_the_new_ending() {
+        assert_eq!(
+            unsent_reply("done\n\ntyping", "done\n\nnext").as_deref(),
+            Some("next")
+        );
+    }
+
+    #[test]
+    fn a_split_that_dies_after_the_first_chunk_keeps_that_chunk_shown() {
+        let mut visible = Visible::from_shown("", "Thinking…");
+        visible.apply(&Frame::Update {
+            text: "abcd".into(),
+            finish: true,
+        });
+        assert_eq!(visible.full(), "abcd");
+        assert_eq!(
+            unsent_reply(&visible.full(), "abcdefghij").as_deref(),
+            Some("efghij")
+        );
     }
 }

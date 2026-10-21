@@ -28,6 +28,17 @@ pub(crate) struct HistoryMessage {
     pub image_name: Option<String>,
 }
 
+/// A bot reply that is already read, but newer than the watermark. The
+/// watermark stays on the last message handed to the agent, so a message that
+/// arrived while the agent was replying is still unread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ReadAhead {
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    #[serde(rename = "sentTime")]
+    pub sent_time: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredCursor {
     #[serde(rename = "sentTime")]
@@ -36,6 +47,8 @@ pub(crate) struct StoredCursor {
     /// single id cannot tell same-second siblings apart.
     #[serde(rename = "messageIds")]
     pub message_ids: Vec<String>,
+    #[serde(default, rename = "readAhead")]
+    pub read_ahead: Vec<ReadAhead>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +121,7 @@ impl CursorStore {
         let entry = file.cursors.entry(key.to_string()).or_insert(StoredCursor {
             sent_time: i64::MIN,
             message_ids: Vec::new(),
+            read_ahead: Vec::new(),
         });
         if sent_time > entry.sent_time {
             entry.sent_time = sent_time;
@@ -119,7 +133,67 @@ impl CursorStore {
                 }
             }
         }
+        fold_read_ahead(entry);
         save(&self.path, &file)
+    }
+
+    /// Remember a bot reply without moving the watermark past messages the
+    /// agent has not seen yet.
+    pub(crate) async fn note_reply(
+        &self,
+        key: &str,
+        sent_time: i64,
+        message_id: &str,
+    ) -> Result<(), String> {
+        if sent_time <= 0 || message_id.is_empty() {
+            return Ok(());
+        }
+        let mut file = self.inner.lock().await;
+        if let Some(entry) = file.cursors.get(key) {
+            if sent_time < entry.sent_time
+                || entry
+                    .read_ahead
+                    .iter()
+                    .any(|item| item.message_id == message_id)
+                || (sent_time == entry.sent_time
+                    && entry.message_ids.iter().any(|id| id == message_id))
+            {
+                return Ok(());
+            }
+        }
+        let entry = file.cursors.entry(key.to_string()).or_insert(StoredCursor {
+            sent_time: i64::MIN,
+            message_ids: Vec::new(),
+            read_ahead: Vec::new(),
+        });
+        if sent_time == entry.sent_time {
+            entry.message_ids.push(message_id.to_string());
+        } else {
+            entry.read_ahead.push(ReadAhead {
+                message_id: message_id.to_string(),
+                sent_time,
+            });
+        }
+        save(&self.path, &file)
+    }
+}
+
+fn fold_read_ahead(entry: &mut StoredCursor) {
+    let mut folded = Vec::new();
+    entry.read_ahead.retain(|item| {
+        if item.sent_time > entry.sent_time {
+            true
+        } else {
+            if item.sent_time == entry.sent_time {
+                folded.push(item.message_id.clone());
+            }
+            false
+        }
+    });
+    for id in folded {
+        if !entry.message_ids.iter().any(|existing| existing == &id) {
+            entry.message_ids.push(id);
+        }
     }
 }
 
@@ -131,6 +205,13 @@ pub(crate) fn is_unread(message: &HistoryMessage, cursor: Option<&StoredCursor>)
     let Some(cursor) = cursor else {
         return true;
     };
+    if cursor
+        .read_ahead
+        .iter()
+        .any(|item| item.message_id == message.message_id)
+    {
+        return false;
+    }
     if message.sent_time > cursor.sent_time {
         return true;
     }
@@ -257,6 +338,7 @@ mod tests {
         let cursor = StoredCursor {
             sent_time: 10,
             message_ids: vec!["a".into()],
+            read_ahead: Vec::new(),
         };
         assert!(!is_unread(&msg("a", 10, "seen"), Some(&cursor)));
         assert!(is_unread(&msg("b", 10, "sibling"), Some(&cursor)));
@@ -270,6 +352,7 @@ mod tests {
         let cursor = StoredCursor {
             sent_time: 10,
             message_ids: vec!["a".into()],
+            read_ahead: Vec::new(),
         };
         let page = vec![
             msg("now", 12, "current"),
@@ -350,6 +433,50 @@ mod tests {
         let cursor = reopened.get(&key).await.unwrap();
         assert_eq!(cursor.sent_time, 20);
         assert_eq!(cursor.message_ids, vec!["m1", "m2", "m3"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_reply_ahead_of_the_watermark_is_read_and_the_gap_stays_unread() {
+        let cursor = StoredCursor {
+            sent_time: 10,
+            message_ids: vec!["asked".into()],
+            read_ahead: vec![ReadAhead {
+                message_id: "reply".into(),
+                sent_time: 30,
+            }],
+        };
+        assert!(!is_unread(&msg("reply", 30, "bot"), Some(&cursor)));
+        assert!(is_unread(
+            &msg("during", 20, "while you typed"),
+            Some(&cursor)
+        ));
+        assert!(is_unread(&msg("same-second", 30, "sibling"), Some(&cursor)));
+    }
+
+    #[tokio::test]
+    async fn noting_a_reply_does_not_move_the_watermark() {
+        let path = std::env::temp_dir().join(format!(
+            "seatalk-cursors-reply-{}-{}.json",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = CursorStore::open(&path).unwrap();
+        let key = thread_key("app", "group", "g1", "t1");
+        store.advance(&key, 10, &["asked".into()]).await.unwrap();
+        store.note_reply(&key, 10, "same-second").await.unwrap();
+        store.note_reply(&key, 30, "reply").await.unwrap();
+
+        let cursor = store.get(&key).await.unwrap();
+        assert_eq!(cursor.sent_time, 10);
+        assert_eq!(cursor.message_ids, vec!["asked", "same-second"]);
+        assert!(is_unread(&msg("during", 20, "gap"), Some(&cursor)));
+        assert!(!is_unread(&msg("reply", 30, "bot"), Some(&cursor)));
+
+        store.advance(&key, 40, &["next".into()]).await.unwrap();
+        let cursor = store.get(&key).await.unwrap();
+        assert!(cursor.read_ahead.is_empty());
+        assert!(!is_unread(&msg("reply", 30, "bot"), Some(&cursor)));
         let _ = std::fs::remove_file(&path);
     }
 }
