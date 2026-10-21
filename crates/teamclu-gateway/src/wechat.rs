@@ -424,6 +424,8 @@ fn normalize_message(
         attachments: Vec::new(),
         addressed_to_bot: true,
         quoted_text: None,
+        context_prefix: None,
+        after_persisted: None,
         reply_context: None,
     }
 }

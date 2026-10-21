@@ -962,6 +962,8 @@ pub(crate) fn normalize_event(
         attachments: Vec::new(),
         addressed_to_bot,
         quoted_text: None,
+        context_prefix: None,
+        after_persisted: None,
         // Feishu replies reference the message being answered, which keeps the
         // reply threaded under it instead of loose in the chat.
         reply_context: Some(message_id.to_string()),

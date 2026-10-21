@@ -1757,6 +1757,8 @@ fn normalize_email(
         // concept to invent one from.
         addressed_to_bot: true,
         quoted_text: None,
+        context_prefix: None,
+        after_persisted: None,
         reply_context: Some(normalize_message_id(&email.message_id)),
     }
 }
