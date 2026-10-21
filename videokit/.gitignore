@@ -1,0 +1,4 @@
+# Intermediates only: per-scene stills and the QA contact sheets. The rendered
+# MP4 + SRT under out/ are launch assets and ARE committed, so the launch can be
+# assembled without ImageMagick/ffmpeg.
+.tmp/
