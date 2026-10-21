@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import i18n from '@/lib/i18n'
 
 vi.mock('@/lib/daemon/local-agent-install', () => ({
@@ -22,6 +22,8 @@ const h = vi.hoisted(() => ({
   // unreachable/older daemon, which must fail loudly rather than mint a new id.
   deviceId: 'device-1' as string | null,
   ensureCalls: [] as Array<Record<string, unknown>>,
+  // When set, ensure-for-device waits on it — lets a test hold a bind open.
+  ensureGate: null as Promise<void> | null,
   // (team, device) → agent, mirroring what the server's unique index guarantees.
   deviceAgents: new Map<string, string>(),
   // What `amuxd doctor` reports for the managed runtime, as the setup store
@@ -58,6 +60,7 @@ vi.mock('@/lib/backend', () => ({
       // (team, device), so a second call returns the same agent with created:false.
       ensureAgentForDevice: vi.fn(async (input: Record<string, unknown>) => {
         h.ensureCalls.push(input)
+        if (h.ensureGate) await h.ensureGate
         const key = `${input.teamId}:${input.deviceId}`
         const existing = h.deviceAgents.get(key)
         const agentId = existing ?? `agent-for-${input.deviceId}-in-${input.teamId}`
@@ -204,6 +207,7 @@ beforeEach(() => {
   h.localActorId = 'actor-1'
   h.deviceId = 'device-1'
   h.ensureCalls = []
+  h.ensureGate = null
   h.deviceAgents = new Map()
   h.runtimeRows = runtimeRows(true)
   h.installCalls = []
@@ -409,6 +413,44 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(h.ensureCalls[0]).toMatchObject({ displayName: 'Existing robot' })
     // The old team's agent is left alone — no daemon_clear anywhere.
     expect(h.invokeCalls).not.toContain('daemon_clear')
+  })
+
+  it('concurrent refreshes on one team switch bind the machine once', async () => {
+    // A team switch reaches refresh() from the auth store, the current-team store
+    // and AuthGate at once. Each bind claims an invite that rotates the agent's
+    // credentials, so overlapping binds left the daemon holding an account the
+    // agent no longer pointed at (management grants then fail with
+    // agent_management_target_mismatch).
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't2'
+    h.deviceAgents.set('t1:device-1', 'agent-existing')
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+    let release!: () => void
+    h.ensureGate = new Promise<void>((r) => { release = r })
+
+    // vitest can hand the real @tauri-apps/api/core to overlapping dynamic
+    // imports of the vi.mock'd one (a harness artifact). The real module only
+    // forwards to __TAURI_INTERNALS__, so point that at the mock too.
+    const { invoke: mockedInvoke } = await import('@tauri-apps/api/core')
+    const w = window as unknown as { __TAURI_INTERNALS__?: unknown }
+    w.__TAURI_INTERNALS__ = { invoke: (cmd: string, args?: unknown) => mockedInvoke(cmd, args as never) }
+    onTestFinished(() => { delete w.__TAURI_INTERNALS__ })
+
+    // The gate holds the first bind open so the later calls genuinely overlap it.
+    const tick = () => new Promise((r) => setTimeout(r, 0))
+    const refresh = useDaemonOnboardingStore.getState().refresh
+    const runs = [refresh()]
+    while (h.ensureCalls.length === 0) await tick()
+    for (const opts of [undefined, { forceIdentityRebind: true }, undefined]) {
+      runs.push(refresh(opts))
+      await tick()
+    }
+    release()
+    await Promise.all(runs)
+
+    expect(h.ensureCalls).toHaveLength(1)
+    expect(h.invokeCalls.filter((cmd) => cmd === 'daemon_init')).toHaveLength(1)
+    expect(useDaemonOnboardingStore.getState().status).toBe('ready')
   })
 
   it('switching back to a team re-binds that team’s existing agent, not a new one', async () => {
