@@ -1,9 +1,10 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link2, Plus, Puzzle, X } from 'lucide-react'
+import { Link2, Plus, Puzzle, ShieldCheck, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,6 +15,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import {
+  linkHoverNeedsPermission,
+  linkHoverOriginsForDomain,
+  readAgentPageAccessMode,
+  readExtensionDiagnosticsOptIn,
+  requestOptionalHostAccess,
+  writeAgentPageAccessMode,
+  writeExtensionDiagnosticsOptIn,
+} from '@/lib/extension/page-access'
 import {
   addDomainToConfig,
   addUrlPatternToConfig,
@@ -37,6 +47,12 @@ export const ExtensionGeneralSection = React.memo(function ExtensionGeneralSecti
   const [clearingMap, setClearingMap] = React.useState(false)
   const [confirmClearMap, setConfirmClearMap] = React.useState(false)
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
+  const [agentPageAccess, setAgentPageAccess] = React.useState(
+    () => readAgentPageAccessMode() === 'ask',
+  )
+  const [diagnosticsOptIn, setDiagnosticsOptIn] = React.useState(() =>
+    readExtensionDiagnosticsOptIn(),
+  )
 
   React.useEffect(() => {
     let cancelled = false
@@ -78,8 +94,30 @@ export const ExtensionGeneralSection = React.memo(function ExtensionGeneralSecti
       }
       return
     }
-    setDraft('')
-    void persist(result.config)
+    const domain = result.config.domains.find((d) => !config.domains.includes(d)) ?? null
+    const save = () => {
+      setDraft('')
+      void persist(result.config)
+    }
+    if (!domain || !linkHoverNeedsPermission()) {
+      save()
+      return
+    }
+    // The hover button needs site access on that domain. Ask now, inside the
+    // click/Enter gesture — the package holds no site access by default.
+    void requestOptionalHostAccess(linkHoverOriginsForDomain(domain)).then((granted) => {
+      if (!granted) {
+        toast.error(
+          t(
+            'settings.extension.linkHover.permissionDenied',
+            'Site access was not granted, so the button cannot appear on {{domain}}.',
+            { domain },
+          ),
+        )
+        return
+      }
+      save()
+    })
   }, [config, draft, persist, t])
 
   const handleRemoveDomain = React.useCallback(
@@ -301,6 +339,59 @@ export const ExtensionGeneralSection = React.memo(function ExtensionGeneralSecti
               </ul>
             )}
           </div>
+        </div>
+      </SettingCard>
+
+      <SettingCard>
+        <div className="mb-4 flex items-start gap-3">
+          <div className="rounded-[10px] border border-border-soft bg-panel p-2.5">
+            <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h4 className="text-[13px] font-semibold text-foreground">
+              {t('settings.extension.privacy.title', 'Privacy')}
+            </h4>
+          </div>
+        </div>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-[12.5px] font-medium text-foreground">
+              {t('settings.extension.privacy.agentPageAccess', 'Let agents ask to read the current page')}
+            </p>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+              {t(
+                'settings.extension.privacy.agentPageAccessHint',
+                'When on, an agent can request the page in your active tab and you approve each request. When off, agents can never read your pages.',
+              )}
+            </p>
+          </div>
+          <Switch
+            checked={agentPageAccess}
+            onCheckedChange={(checked) => {
+              writeAgentPageAccessMode(checked ? 'ask' : 'off')
+              setAgentPageAccess(checked)
+            }}
+          />
+        </div>
+        <div className="mt-4 flex items-start justify-between gap-4 border-t border-border-soft pt-4">
+          <div className="min-w-0">
+            <p className="text-[12.5px] font-medium text-foreground">
+              {t('settings.extension.privacy.diagnostics', 'Send anonymous error reports')}
+            </p>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+              {t(
+                'settings.extension.privacy.diagnosticsHint',
+                'Crash and error reports (no account identity, no IP, URLs redacted) help us fix bugs. Off by default; takes effect after the side panel is reopened.',
+              )}
+            </p>
+          </div>
+          <Switch
+            checked={diagnosticsOptIn}
+            onCheckedChange={(checked) => {
+              writeExtensionDiagnosticsOptIn(checked)
+              setDiagnosticsOptIn(checked)
+            }}
+          />
         </div>
       </SettingCard>
 

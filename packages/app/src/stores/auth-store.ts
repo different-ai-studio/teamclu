@@ -1,4 +1,7 @@
 import { create } from "zustand";
+// The default i18next instance (initialised by @/lib/i18n at startup); imported
+// directly so this store does not pull the i18n bootstrap into every importer.
+import i18n from "i18next";
 import { cancelDesktopOAuth, cancelExtensionOAuth, type OAuthProvider } from "@/lib/auth";
 import { isChromeExtension } from "@/lib/config/platform";
 import type { PhoneUser } from "@/lib/auth/auth-client";
@@ -103,7 +106,24 @@ function configuredServerUrl(): string | undefined {
   }
 }
 
+/**
+ * Codes the Cloud API returns for a rejected sign-in that the user can act on.
+ * Shown instead of the raw upstream message ("auth.signInWithPassword: Invalid
+ * login credentials"), which read like a server fault.
+ */
+const FRIENDLY_AUTH_ERRORS: Record<string, { key: string; fallback: string }> = {
+  invalid_credentials: { key: "auth.errors.invalidCredentials", fallback: "Incorrect email or password." },
+  email_not_confirmed: { key: "auth.errors.emailNotConfirmed", fallback: "This email address has not been verified yet." },
+  rate_limited: { key: "auth.errors.rateLimited", fallback: "Too many attempts. Please wait a minute and try again." },
+  upstream_unavailable: { key: "auth.errors.serverUnavailable", fallback: "The sign-in service is temporarily unavailable. Please try again." },
+};
+
 function errorMessageFor(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && FRIENDLY_AUTH_ERRORS[code]) {
+    const { key, fallback } = FRIENDLY_AUTH_ERRORS[code];
+    return i18n.t(key, fallback);
+  }
   if (error instanceof Error) return error.message;
   // A rejected `invoke()` carries whatever the command's `Err(E)` serialized
   // to, and every native command this store calls is `Result<_, String>` — so

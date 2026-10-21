@@ -541,9 +541,32 @@ async function goTrueRequest({
 
   if (!res.ok) {
     const message = parsed?.msg || parsed?.message || parsed?.error_description || parsed?.error || text || `GoTrue ${path} failed`;
-    const code = res.status === 401 ? "missing_auth" : res.status === 422 ? "validation_failed" : "upstream_unavailable";
+    const code = goTrueErrorCode(res.status, parsed);
     throw new ApiError(res.status, code, `${operation}: ${message}`, { details: parsed });
   }
 
   return parsed ?? {};
+}
+
+/**
+ * Map a GoTrue failure onto our API error code.
+ *
+ * Every 4xx used to come back as `upstream_unavailable`, so a mistyped password
+ * read as "the auth service is down" — which is how the Chrome Web Store
+ * reviewer saw sign-in (Red Potassium). A 4xx is the caller's request being
+ * rejected, not the upstream failing: surface GoTrue's own `error_code` for the
+ * cases the client distinguishes and keep `upstream_unavailable` for 5xx only.
+ */
+export function goTrueErrorCode(status: number, parsed: any): string {
+  const upstreamCode = typeof parsed?.error_code === "string" ? parsed.error_code : null;
+  if (upstreamCode === "invalid_credentials" || parsed?.error === "invalid_grant") return "invalid_credentials";
+  if (upstreamCode === "email_not_confirmed") return "email_not_confirmed";
+  if (upstreamCode === "user_banned") return "forbidden";
+  if (status === 429 || (upstreamCode && /rate_limit/.test(upstreamCode))) return "rate_limited";
+  if (status === 401) return "missing_auth";
+  if (status === 403) return "forbidden";
+  if (status === 404) return "not_found";
+  if (status === 422) return "validation_failed";
+  if (status >= 400 && status < 500) return upstreamCode ?? "bad_request";
+  return "upstream_unavailable";
 }

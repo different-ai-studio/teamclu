@@ -1,4 +1,5 @@
 import { TOOL_GET_PAGE_DOM, type GetPageDomArgs, type GetPageDomResult } from '@/lib/remote-tools/types'
+import { requestAgentPageAccess } from '@/lib/extension/page-access'
 
 type ChromeRuntimeLike = {
   sendMessage?: (msg: unknown) => Promise<unknown>
@@ -15,6 +16,12 @@ export function createBrowserGetPageDomExecutor() {
     const runtime = readChromeRuntime()
     if (!runtime?.sendMessage) {
       throw new Error('chrome.runtime unavailable')
+    }
+
+    // The agent asked for the page; the user decides. Nothing is read from the
+    // tab until they approve in the side panel (see page-access.ts).
+    if (!(await requestAgentPageAccess())) {
+      throw new Error('user_denied_page_access')
     }
 
     const mode = args.mode === 'text' ? 'text' : 'outline'

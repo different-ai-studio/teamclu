@@ -7,13 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       brand:
-        description: "Brand id — a directory under brands/ in the enterprise-branding repo (e.g. copilot361, betly)"
+        description: "Brand id — 'teamclu' (first-party TeamClu listing) or a directory under brands/ in the enterprise-branding repo (e.g. copilot361)"
         type: string
         default: copilot361
       publish:
-        description: "Publish to Chrome Web Store (requires CHROME_* secrets); if unset, only builds + uploads the zip artifact"
+        description: "Upload to the brand's own Chrome Web Store item and submit it for review (requires CHROME_* secrets). Off = build + artifact only."
         type: boolean
-        default: true
+        default: false
 
 # Cancel in-progress extension release if a new tag/dispatch comes in.
 concurrency:
@@ -151,23 +151,34 @@ jobs:
       # publish one brand's package over another brand's Web Store item.
       # Only the package is uploaded here — listing metadata is in listing-kit.zip
       # and has to be entered by hand, the API has no endpoint for it.
+      #
+      # Guard rails (a tag push once could have published the copilot361 package
+      # over the TeamClu listing via the repo-level CHROME_EXTENSION_ID fallback):
+      #   * publishing only happens on an explicit workflow_dispatch with
+      #     publish=true — a tag push builds the artifact and stops;
+      #   * the item ID must come from the brand itself (brand.json →
+      #     chromeWebStore.extensionId); there is no repo-level fallback;
+      #   * only the teamclu brand may target the TeamClu item.
       - name: Publish to Chrome Web Store
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
         env:
-          CHROME_EXTENSION_ID_FALLBACK: ${{ secrets.CHROME_EXTENSION_ID }}
+          TEAMCLU_ITEM_ID: nlmkpmokfbboonocdnngddbfpdedkfee
           CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
           CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
           CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
         run: |
           CHROME_EXTENSION_ID="${CHROME_EXTENSION_ID:-}"
-          if [ -n "$CHROME_EXTENSION_ID" ]; then
-            echo "Web Store item: ${CHROME_EXTENSION_ID} (from brand ${BRAND:-?})"
-          else
-            CHROME_EXTENSION_ID="$CHROME_EXTENSION_ID_FALLBACK"
-            echo "Web Store item: repo-level CHROME_EXTENSION_ID secret (brand declares none)"
+          if [ -z "$CHROME_EXTENSION_ID" ]; then
+            echo "::error::Brand '${BRAND:-?}' declares no chromeWebStore.extensionId — refusing to publish (no repo-level fallback)."
+            exit 1
           fi
-          if [ -z "$CHROME_EXTENSION_ID" ] || [ -z "$CHROME_CLIENT_ID" ] || [ -z "$CHROME_CLIENT_SECRET" ] || [ -z "$CHROME_REFRESH_TOKEN" ]; then
-            echo "ℹ️ Chrome Web Store secrets not configured (CHROME_EXTENSION_ID / CHROME_CLIENT_ID / CHROME_CLIENT_SECRET / CHROME_REFRESH_TOKEN)."
+          if [ "$CHROME_EXTENSION_ID" = "$TEAMCLU_ITEM_ID" ] && [ "${BRAND:-}" != "teamclu" ]; then
+            echo "::error::Brand '${BRAND:-?}' points at the TeamClu Web Store item ($TEAMCLU_ITEM_ID) — refusing to publish."
+            exit 1
+          fi
+          echo "Web Store item: ${CHROME_EXTENSION_ID} (from brand ${BRAND})"
+          if [ -z "$CHROME_CLIENT_ID" ] || [ -z "$CHROME_CLIENT_SECRET" ] || [ -z "$CHROME_REFRESH_TOKEN" ]; then
+            echo "ℹ️ Chrome Web Store secrets not configured (CHROME_CLIENT_ID / CHROME_CLIENT_SECRET / CHROME_REFRESH_TOKEN)."
             echo "   Built extension.zip is available as a workflow artifact for manual upload."
             echo "   See docs/chrome-extension-design.md for how to obtain these once the Web Store listing exists."
             exit 0
