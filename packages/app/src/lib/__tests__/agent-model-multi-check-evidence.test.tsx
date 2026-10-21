@@ -70,7 +70,7 @@ describe("agent model multi-check evidence", () => {
       { id: "nemotron-3-super-free", displayName: "Nemotron (short id row)" },
     ];
     const byRuntimeId = {
-      "agent-1": entry("agent-1", "rt-1", available, "big-pickle"),
+      "agent-1::sess-1": entry("agent-1", "sess-1", available, "big-pickle"),
     };
     const { modelId: effectiveModelId, source } = selectAgentModel({
       sessionId: "sess-1",
