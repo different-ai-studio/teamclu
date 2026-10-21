@@ -71,7 +71,9 @@ runs:
 
         out = {
             'BRAND': 'teamclu',
-            'CHROME_EXTENSION_ID': '',
+            # The TeamClu Chrome Web Store item. release-extension.yml only lets
+            # BRAND=teamclu publish to it.
+            'CHROME_EXTENSION_ID': 'nlmkpmokfbboonocdnngddbfpdedkfee',
             'APP_NAME': app['displayName'],
             'APP_PRODUCT_NAME': app.get('name') or 'TeamClu',
             'APP_SLUG': 'teamclu',
@@ -200,7 +202,7 @@ runs:
         # to the brand rather than to a single repo-level secret that whichever
         # brand ran last would overwrite. The OAuth credentials stay repo-level:
         # they authenticate the publisher account, not the item. Empty here means
-        # "fall back to the CHROME_EXTENSION_ID secret".
+        # the brand cannot publish (release-extension.yml has no fallback).
         chrome = meta.get('chromeWebStore') or {}
 
         out = {

@@ -2,6 +2,7 @@ import * as React from "react";
 import { useEffect, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Toaster, toast } from "sonner";
+import { PageAccessConsentDialog } from "@/components/extension/PageAccessConsentDialog";
 import { cn, isTauri, removeStartupSkeleton } from "@/lib/utils";
 import { capabilities } from "@/lib/config/platform";
 import { isSoloBuild } from "@/lib/config/solo-build";
@@ -948,6 +949,7 @@ function App() {
       />
       <AppDeployConfirmDialog />
       <NewSessionDialog />
+      {capabilities.pageCapture ? <PageAccessConsentDialog /> : null}
     </>
   )
 

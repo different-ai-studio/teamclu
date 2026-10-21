@@ -4,18 +4,13 @@ import { isBrowserToolMessage } from './lib/browser-tools/messages'
 import { handleBrowserToolMessage } from './lib/browser-tools/handle-browser-tool'
 import { openSidePanelFromUserGesture } from './lib/open-side-panel'
 import { startSidePanelHostGate } from './lib/side-panel-host-gate'
+import {
+  chromeDynamicContentScriptDeps,
+  syncLinkHoverContentScript,
+} from './lib/dynamic-content-script'
+import { LINK_HOVER_CONFIG_KEY, readLinkHoverConfig } from '@teamclu/extension-link-hover'
 
 const SIDE_PANEL_PATH = 'sidepanel/index.html'
-
-/**
- * Hosts the extension is scoped to, read from the (brand-injected) manifest so
- * this stays in sync with host_permissions without hardcoding any brand's
- * domains. Falls back to all http/https for a non-branded build.
- */
-const SCOPED_TAB_URLS =
-  chrome.runtime.getManifest().host_permissions?.length
-    ? chrome.runtime.getManifest().host_permissions!
-    : ['http://*/*', 'https://*/*']
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
@@ -44,25 +39,38 @@ async function injectContentScript(tabId: number): Promise<void> {
       files: ['content-script.js'],
     })
   } catch (e) {
+    // Without activeTab or a granted host permission for this page Chrome
+    // refuses the injection. Say so instead of letting the follow-up
+    // sendMessage fail with an opaque "Receiving end does not exist".
     console.warn('[bg] inject content-script failed', tabId, e)
+    throw new Error('page_access_not_granted')
   }
 }
 
-/** Content scripts in manifest only attach on navigation — backfill open tabs. */
-async function injectOpenHttpTabs(): Promise<void> {
-  const tabs = await chrome.tabs.query({ url: SCOPED_TAB_URLS })
-  await Promise.all(
-    tabs.map(async (tab) => {
-      if (!tab.id) return
-      await injectContentScript(tab.id)
-    }),
-  )
+// No install-time injection into open tabs: the content script reaches a page
+// only (a) through a user/agent page request the user approved, via
+// scripting.executeScript on the active tab, or (b) on link-hover domains the
+// user allow-listed and granted host access for (registered below).
+async function syncLinkHover(): Promise<void> {
+  try {
+    await syncLinkHoverContentScript(
+      chromeDynamicContentScriptDeps(async () => (await readLinkHoverConfig()).domains),
+    )
+  } catch (e) {
+    console.warn('[bg] link-hover content script sync failed', e)
+  }
 }
 
 async function bootstrapSidePanel(): Promise<void> {
   await ensureGlobalSidePanel()
-  await injectOpenHttpTabs()
+  await syncLinkHover()
 }
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local' && LINK_HOVER_CONFIG_KEY in changes) void syncLinkHover()
+})
+chrome.permissions.onAdded.addListener(() => void syncLinkHover())
+chrome.permissions.onRemoved.addListener(() => void syncLinkHover())
 
 chrome.runtime.onInstalled.addListener(() => {
   void bootstrapSidePanel()
@@ -111,17 +119,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!isRequestPage(msg)) return undefined
 
   void (async () => {
-    const ctx = await fetchActivePageContext({
-      queryActiveTabId: async () => {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-        return tab?.id ?? null
-      },
-      sendToTab: async (tabId, m) => {
-        await injectContentScript(tabId)
-        return chrome.tabs.sendMessage(tabId, m)
-      },
-    })
-    sendResponse(ctx ?? { type: 'page-context', error: 'unavailable' })
+    try {
+      const ctx = await fetchActivePageContext({
+        queryActiveTabId: async () => {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+          return tab?.id ?? null
+        },
+        sendToTab: async (tabId, m) => {
+          await injectContentScript(tabId)
+          return chrome.tabs.sendMessage(tabId, m)
+        },
+      })
+      sendResponse(ctx ?? { type: 'page-context', error: 'unavailable' })
+    } catch (e) {
+      sendResponse({ type: 'page-context', error: e instanceof Error ? e.message : String(e) })
+    }
   })()
   return true
 })

@@ -2,20 +2,15 @@
   "manifest_version": 3,
   "default_locale": "zh_CN",
   "name": "__MSG_appName__",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "__MSG_extensionDescription__",
-  "permissions": ["sidePanel", "scripting", "activeTab", "tabs", "storage", "identity"],
-  "host_permissions": ["http://*/*", "https://*/*"],
+  "homepage_url": "https://www.teamclu.ai",
+  "minimum_chrome_version": "116",
+  "permissions": ["sidePanel", "scripting", "activeTab", "storage", "identity"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js", "type": "module" },
   "action": { "default_title": "__MSG_appName__" },
   "side_panel": { "default_path": "sidepanel/index.html" },
-  "content_scripts": [
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content-script.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",

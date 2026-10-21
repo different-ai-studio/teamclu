@@ -491,6 +491,12 @@
     "quitAndStopAgent": "退出并停止 Agent"
   },
   "auth": {
+    "errors": {
+      "invalidCredentials": "邮箱或密码错误。",
+      "emailNotConfirmed": "该邮箱尚未验证。",
+      "rateLimited": "尝试次数过多，请稍等一分钟再试。",
+      "serverUnavailable": "登录服务暂时不可用，请稍后重试。"
+    },
     "tagline": "AI Ally · AI 搭档",
     "teamBootstrapError": {
       "title": "工作区初始化未完成",
@@ -2882,6 +2888,22 @@
       "defaultAgentReadOnly": "仅团队 owner/admin 可编辑"
     },
     "extension": {
+      "pageAccess": {
+        "title": "允许 agent 读取当前页面？",
+        "description": "当前对话中的 AI agent 请求读取你当前标签页的内容（URL、标题和可见文本）。只有在你允许后，内容才会发送给团队的 agent 和 AI 模型。",
+        "chromePromptHint": "接下来 Chrome 会询问一次是否允许 TeamClu 访问网站，你可以随时在 chrome://extensions 中撤销。",
+        "allowOnce": "仅允许这一次",
+        "allowSession": "在侧边栏关闭前都允许",
+        "deny": "不允许",
+        "permissionDenied": "未获得 Chrome 网站访问权限，页面没有被分享。"
+      },
+      "privacy": {
+        "title": "隐私",
+        "agentPageAccess": "允许 agent 请求读取当前页面",
+        "agentPageAccessHint": "开启后，agent 可以请求读取当前标签页，每次都需要你确认；关闭后，agent 无法读取任何页面。",
+        "diagnostics": "发送匿名错误报告",
+        "diagnosticsHint": "崩溃和错误报告（不含账号身份和 IP，URL 已脱敏）帮助我们修复问题。默认关闭，重新打开侧边栏后生效。"
+      },
       "general": {
         "title": "通用",
         "description": "浏览器侧边栏的插件设置。"
@@ -2890,6 +2912,7 @@
         "title": "当前页面不可用"
       },
       "linkHover": {
+        "permissionDenied": "未获得网站访问权限，{{domain}} 上无法显示快捷按钮。",
         "title": "页面快捷按钮",
         "description": "在白名单站点上，悬停任意可点击链接时会显示 TeamClu 按钮，可将该链接带入侧边栏。",
         "hint": "example.com 会匹配 www.example.com 及所有子域名。未添加域名前，任何站点都不会显示按钮。",

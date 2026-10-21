@@ -1,5 +1,9 @@
 # Chrome Web Store — Privacy practices 填写内容（copilot361）
 
+> **TeamClu 自己的条目（nlmkpmokfbboonocdnngddbfpdedkfee）请看
+> [`chrome-webstore-teamclu-submission.md`](./chrome-webstore-teamclu-submission.md)。**
+> 下面的权限说法（tabs、全站 host 权限）已经不适用于 TeamClu 0.2.0 及之后的版本。
+
 > **已被 branding 仓库取代。** 这份文案是随品牌变的，现在的来源是
 > enterprise-branding 仓库的 `brands/<brand>/extension/privacy.json`，由
 > `scripts/build-extension-listing-kit.js` 组装进 `listing-kit.zip`。

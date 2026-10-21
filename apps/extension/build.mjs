@@ -170,6 +170,7 @@ await build({
   alias: esbuildAliasWithAllowlist,
   define: {
     __SIDE_PANEL_DOMAINS__: JSON.stringify(domainsCsv),
+    __TEAMCLU_EXTENSION_SETTINGS__: JSON.stringify(extensionSettingsBake),
   },
 })
 await build({

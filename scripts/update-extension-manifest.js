@@ -63,16 +63,24 @@ if (applyNameToExtensionManifest(manifest, buildConfig)) {
 }
 
 // Brand-scoped host access from `extensions.domains` / `extension.hosts`
-// (e.g. *.shopee.io). Non-empty → override host_permissions + content_scripts.matches.
+// (e.g. *.shopee.io). Non-empty → the brand gets install-time host access and a
+// static content script on exactly those hosts (its side panel is gated to
+// them anyway), and no optional all-sites access.
+//
+// The default (unbranded TeamClu) manifest declares NO install-time host access
+// and NO static content script: page access comes from activeTab, from
+// `optional_host_permissions` the user grants from the side panel, and from a
+// content script the background registers only for link-hover domains the user
+// allow-listed (see apps/extension/src/lib/dynamic-content-script.ts). That is
+// what the Chrome Web Store review asked for — keep it that way.
 const extensionPack = resolveExtensionPack(buildConfig);
 const brandHosts = domainsToChromeMatchPatterns(extensionPack.domains);
 if (brandHosts.length > 0) {
   manifest.host_permissions = [...brandHosts];
-  if (Array.isArray(manifest.content_scripts)) {
-    for (const cs of manifest.content_scripts) {
-      cs.matches = [...brandHosts];
-    }
-  }
+  manifest.content_scripts = [
+    { matches: [...brandHosts], js: ['content-script.js'], run_at: 'document_idle' },
+  ];
+  delete manifest.optional_host_permissions;
   console.log(`✓ Scoped extension hosts to ${brandHosts.length} pattern(s)`);
   updated = true;
 }

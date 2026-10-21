@@ -3,9 +3,9 @@
     "message": "TeamClu"
   },
   "extensionDescription": {
-    "message": "Team chat side panel + send current page to your AI agent"
+    "message": "AI chat side panel: talk with your team's AI agent and share the page you're on only when you approve."
   },
   "storeDesc": {
-    "message": "TeamClu is a browser extension that opens an AI chat side panel while you browse. Talk to your AI agent and teammates without leaving the page.\n\nKey features:\n• Side panel chat — converse with your agent while staying on the current tab\n• Page context — on explicit user action, send visible page text, links, or selection to the agent\n• Team collaboration — shared sessions, live message sync, and agent replies\n• Privacy-first — page content is read only when you trigger capture; no background monitoring\n\nHow to use:\n1. Click the toolbar icon to open the Chrome side panel\n2. Sign in with email (password tab for reviewers — see Test instructions)\n3. Pick a team and agent, then start chatting\n4. Optionally capture the active tab and send it as conversation context\n\nThe extension ships with a pre-configured cloud backend — sign in and go, no server setup required."
+    "message": "TeamClu opens a chat side panel next to any web page, where you talk with your teammates and your team's AI agent.\n\nWhat it does:\n• Side panel chat — chat with your team's AI agent and teammates without leaving the current tab.\n• Ask about the page — when an agent needs the page you are on, the side panel asks first. Nothing is read until you click Allow, and you can turn this off entirely in Settings.\n• Link button (optional) — on sites you add in Settings, hover a link and click the TeamClu button to send that link to the agent.\n• Team sessions — shared conversations with live sync.\n\nRequirements:\n• A TeamClu account (email + password, email code, or Google sign-in).\n• Agents are provided by your team (a computer running the TeamClu agent connected to your team).\n\nPrivacy: no site access is granted at install, there is no background page reading and no browsing-history collection. Error reports are off unless you turn them on. Full policy: https://www.teamclu.ai/privacy-extension"
   }
 }

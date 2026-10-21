@@ -20,57 +20,65 @@
 <body>
   <h1>{{APP_NAME}} Privacy Policy</h1>
   <p class="muted">Last updated: {{UPDATED}}</p>
-
-  <p>
-    {{APP_NAME}} is a browser extension that shows an AI chat side panel and lets
-    you send the content of a web page you are viewing to a {{APP_NAME}} agent.
-    This policy explains what data the extension handles and how.
-  </p>
-
-  <h2>What we handle</h2>
+  <p>This policy explains how the publisher of {{APP_NAME}} ("we", "us") collects, uses, stores, shares and protects information when you use the {{APP_NAME}} browser extension (the "Extension") and the service it connects to (the "Service").</p>
+  <h2>1. Single purpose</h2>
+  <p>{{APP_NAME}} adds a Chrome side panel in which you chat with your team and your team's AI agents and, when you choose, share the web page you are viewing as context for that conversation.</p>
+  <h2>2. Information we collect</h2>
   <ul>
-    <li>
-      <strong>Web page content</strong> — the text, DOM, and any selected text of
-      a page, captured <em>only</em> when you explicitly invoke {{APP_NAME}} (for
-      example by opening the side panel for the page or sharing a link). The
-      extension does not passively read or collect your browsing across sites.
-    </li>
-    <li>
-      <strong>Extension settings</strong> — your preferences (such as per-site
-      link-hover settings) are stored locally in your browser via the extension
-      <code>storage</code> API.
-    </li>
+    <li><strong>Account information</strong> — your email address and display name. If you use “Sign in with Google”, we receive your Google account name, email address and profile picture (OpenID scopes <code>email</code> and <code>profile</code> only). If you use password sign-in, your password is sent over TLS to our authentication server and stored there only as a salted hash. Authentication tokens are stored on our server and in the side panel's local storage in your browser so you stay signed in.</li>
+    <li><strong>Conversation content</strong> — messages, attachments and files you send in the side panel, session titles, and the replies produced by AI agents and teammates.</li>
+    <li><strong>Web page content you choose to share</strong> — the URL, title, visible text, selected text, links and a simplified outline of the page in your active tab. It is collected <strong>only</strong> when (a) an AI agent in your conversation asks to read the current page <strong>and you approve that request</strong> in the side panel, or (b) you click the {{APP_NAME}} link button that appears on websites you added to the allow-list in Settings (this shares that link, its text and the surrounding page). The Extension does not read pages in the background, does not request the <code>tabs</code> permission and does not collect your browsing history.</li>
+    <li><strong>Local settings</strong> — your link-button allow-list, page-access and diagnostics choices and UI preferences, stored only in your browser (<code>chrome.storage</code> / local web storage).</li>
+    <li><strong>Diagnostics (opt-in, off by default)</strong> — only if you turn on “Send anonymous error reports” in Settings, error reports (stack traces, Extension and browser version, a random installation ID, and redacted console/network breadcrumbs) are sent to our error-monitoring provider. No account identity or IP address is attached.</li>
+    <li><strong>Server logs</strong> — like most online services, our servers record IP addresses, timestamps and request metadata for security, abuse prevention and troubleshooting.</li>
+    <li>We do <strong>not</strong> collect payment or financial information, health information, precise location, keystrokes or mouse movements, or the content of pages you have not chosen to share.</li>
   </ul>
-
-  <h2>How it is used</h2>
-  <p>
-    Page content you choose to share is sent to the {{APP_NAME}} agent backend so
-    the agent can respond to your request. It is used solely to provide the chat
-    functionality you asked for. We do <strong>not</strong> sell or transfer your
-    data to third parties, do not use it for any purpose unrelated to the
-    extension's single purpose, and do not use it to determine creditworthiness or
-    for lending.
-  </p>
-
-  <h2>Permissions</h2>
+  <h2>3. How we use information</h2>
+  <p>We use information only to: sign you in and keep your account secure; deliver and sync messages within your team; send the content you share to your team's AI agent and the AI model it uses so it can answer you; operate, secure and troubleshoot the Service; and, if you opted in, fix crashes. We do not use your information for advertising, do not sell it, do not use it to determine creditworthiness or for lending purposes, and do not use it for any purpose unrelated to the Extension's single purpose.</p>
+  <h2>4. How we share information</h2>
   <ul>
-    <li><code>sidePanel</code> — renders the {{APP_NAME}} chat interface.</li>
-    <li><code>activeTab</code> / host access — reads the current page's content when you invoke the extension.</li>
-    <li><code>scripting</code> — injects the content script that extracts page content.</li>
-    <li><code>tabs</code> — identifies the active tab and opens/navigates URLs you share with the agent.</li>
-    <li><code>storage</code> — stores your settings locally in the browser.</li>
+    <li><strong>Your team</strong> — messages and shared page content in a team conversation are visible to members of that team.</li>
+    <li><strong>Agent hosts</strong> — your team's AI agents run on computers connected to your team (the {{APP_NAME}} agent daemon), which may be operated by {{APP_NAME}} or by members of your team. Conversation content, including page content you shared, is delivered to the agent host that serves the conversation.</li>
+    <li><strong>AI model providers</strong> — to generate replies, the relevant conversation content, including shared page content, is sent to the large-language-model provider configured for your team. Team administrators choose this provider or their own model endpoint. These providers process the data under their own API terms.</li>
+    <li><strong>Service providers</strong> — the cloud provider that hosts the {{APP_NAME}} backend (servers, database, file storage and e-mail delivery); Google (only when you use Google sign-in); Sentry, United States (only if you opted in to error reports). They process data on our behalf to provide the Service.</li>
+    <li><strong>Legal reasons</strong> — when required by law, or to protect the rights, property or safety of our users, the public or {{APP_NAME}}.</li>
+    <li>We never sell or rent personal data, and we do not share it with data brokers or advertisers.</li>
   </ul>
-
-  <h2>Data retention</h2>
-  <p>
-    Settings remain in local browser storage until you remove the extension or
-    clear them. Shared page content is processed to fulfil your request and is not
-    retained beyond what is needed to operate the service.
-  </p>
-
-  <h2>Contact</h2>
-  <p>
-    Questions about this policy: <a href="mailto:{{CONTACT}}">{{CONTACT}}</a>.
-  </p>
+  <h2>5. Storage, retention and security</h2>
+  <p>Data is encrypted in transit with TLS, access to production systems is restricted, and passwords are stored only as salted hashes.</p>
+  <ul>
+    <li>Account data is kept until you delete your account.</li>
+    <li>Conversations and shared page content are kept until you or your team administrator delete the conversation or the team, or your account is deleted.</li>
+    <li>Server logs and error reports are kept for a limited period (no longer than 90 days) unless needed to investigate a security incident.</li>
+    <li>Local settings stay in your browser until you clear them or uninstall the Extension.</li>
+    <li>When you ask us to delete your account, we delete your account data within 30 days, except where we are required by law to keep it.</li>
+  </ul>
+  <h2>6. International transfers</h2>
+  <p>Your information is stored and processed in the region where the {{APP_NAME}} backend is hosted, and in the countries where the providers listed above operate (for example the United States for Google and Sentry). We take the measures required by applicable law for such transfers.</p>
+  <h2>7. Your choices and rights</h2>
+  <ul>
+    <li>Turn agent page access off entirely, or decline any individual request, in the side panel (Settings → General → Privacy).</li>
+    <li>Turn error reports on or off at any time in the same place.</li>
+    <li>Remove site access you granted at <code>chrome://extensions</code> → {{APP_NAME}} → Site access, or uninstall the Extension at any time.</li>
+    <li>Revoke Google sign-in access at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</li>
+    <li>Request access to, correction, export or deletion of your data, or your whole account, by e-mailing <a href="mailto:{{CONTACT}}">{{CONTACT}}</a>. Depending on where you live (for example under the EU/UK GDPR, the California CCPA or China's PIPL) you may have further rights, including objecting to processing and lodging a complaint with a supervisory authority. We respond within 30 days.</li>
+  </ul>
+  <h2>8. Permissions the Extension uses</h2>
+  <ul>
+    <li><code>sidePanel</code> — shows the {{APP_NAME}} chat in Chrome's side panel.</li>
+    <li><code>activeTab</code> — lets the Extension access the tab you are on after you click the {{APP_NAME}} toolbar button, so a page you approve sharing can be read.</li>
+    <li><code>scripting</code> — injects the content script that extracts the page you approved sharing, and shows the link button on allow-listed sites.</li>
+    <li><code>storage</code> — keeps your local settings in your browser.</li>
+    <li><code>identity</code> — used only for the optional “Sign in with Google” flow.</li>
+    <li>Optional site access (<code>http://*/*</code>, <code>https://*/*</code>) — <strong>not granted at install</strong>. Chrome asks you only when you approve an agent's page request or add a site to the link-button allow-list, and only for that purpose.</li>
+  </ul>
+  <h2>9. Children</h2>
+  <p>The Extension is not directed to children under 13, and we do not knowingly collect their personal information. If you believe a child has provided us information, contact us and we will delete it.</p>
+  <h2>10. Chrome Web Store Limited Use</h2>
+  <p>Our use of information received from Chrome APIs adheres to the <a href="https://developer.chrome.com/docs/webstore/program-policies/policies">Chrome Web Store User Data Policy</a>, including the Limited Use requirements.</p>
+  <h2>11. Changes to this policy</h2>
+  <p>We will post any change on this page and update the “Last updated” date. If a change is material, we will tell you in the Extension or by e-mail before it takes effect.</p>
+  <h2>12. Contact</h2>
+  <p>Questions or requests about this policy or your data: <a href="mailto:{{CONTACT}}">{{CONTACT}}</a></p>
 </body>
 </html>
