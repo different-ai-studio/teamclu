@@ -98,11 +98,9 @@ Test account — email + password, no email code and no 2FA needed:
 Steps:
 1. Click the TeamClu toolbar icon. The side panel opens on the sign-in screen.
 2. Select the "Password" tab (not "Email"), enter the credentials above and click "Sign in".
-3. You are in the team "Chrome Review Demo". Its agent "Chrome Review Daemon" runs on our server 24/7. Click "New session" (or open an existing session) and send "Hello" — the agent replies within a few seconds.
-4. Open an article, e.g. https://en.wikipedia.org/wiki/Collaborative_software, and send: "Read the current page and summarize it."
-   The side panel shows "Share this page with the agent?". Click "Allow once". The first time, Chrome asks you to grant TeamClu site access — click "Allow". The agent then replies with a summary. Nothing is read from a page before you approve.
-5. Optional: Settings (gear icon) → General → add "wikipedia.org" under "Page quick-open button" and approve Chrome's prompt. Hovering a link on Wikipedia then shows a small TeamClu button that sends that link to the agent.
-6. Settings → General → Privacy lets you switch agent page access and error reports on/off.
+3. You are in the team "Chrome Review Demo" with its agent "Chrome Review Daemon", which runs on our server 24/7. Click "New Chat". IMPORTANT: in the model selector at the bottom of the chat box, scroll to the end of the list and choose "deepseek-v4-pro" (the team's model; other entries need the user's own provider key). Send "Hello" — the agent replies within about 10-20 seconds.
+4. Link button (page sharing): open Settings (gear icon) → General → "Page quick-open button", add "wikipedia.org" and click "Allow" in Chrome's site-access prompt (only that site is requested). Open https://en.wikipedia.org/wiki/Collaborative_software, hover any link in the article and click the small TeamClu button: the link is placed in the side-panel chat box, and you can send it to the agent (e.g. "Summarize this link").
+5. Settings → General → Privacy lets you switch agent page access and error reports on/off. No site access is granted at install, and nothing is read from a page without your action.
 
 If anything fails, contact contact@teamclu.ai.
 ```
@@ -116,7 +114,13 @@ Fixed the issues from the previous reviews: (1) sign-in — a working email+pass
 ## 6. Before you press Submit
 
 - [ ] Sign in once with the reviewer account in a fresh Chrome profile from outside mainland China and
-      walk through §4 (record a screen capture). Check the agent actually calls the page tool in step 4.
+      walk through §4 (record a screen capture). Verified 2026-10-21 (headless Chromium): sign-in OK,
+      "Hello" answered in ~10 s with team/deepseek-v4-pro; the default first model (opencode
+      "Claude Fable 5") fails with a provider 401, hence the model step in §4.
+- [ ] Agent-initiated page reading (`get_page_dom` remote tool) is PAUSED in the daemon
+      (`apps/daemon/src/daemon/server/remote_tools.rs`, `runtime/supervisor.rs`), so the agent cannot
+      read the open tab today. Either re-enable remote tools and redeploy amuxd, or drop the
+      "Ask about the page" bullet from `storeDesc` before submitting.
 - [ ] Keep the reviewer account, the `teamclaw-self-host-amuxd-1` container and the agent online for the
       whole review (3–14 days); no destructive deploys to the self-host stack meanwhile.
 - [ ] Deploy the website PR so the policy URL serves the new text.
