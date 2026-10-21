@@ -225,21 +225,28 @@ impl SeaTalkClient {
         group_id: &str,
         text: &str,
         thread_id: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
+        let mut ids = Vec::new();
         for chunk in chunk_text(text, TEXT_CHUNK_LIMIT) {
             let message = build_text_message(&chunk, thread_id);
-            self.api_call(
-                reqwest::Method::POST,
-                "/messaging/v2/group_chat",
-                Some(json!({
-                    "group_id": group_id,
-                    "message": message,
-                })),
-                true,
-            )
-            .await?;
+            let response = self
+                .api_call(
+                    reqwest::Method::POST,
+                    "/messaging/v2/group_chat",
+                    Some(json!({
+                        "group_id": group_id,
+                        "message": message,
+                    })),
+                    true,
+                )
+                .await?;
+            if let Some(id) = sent_message_id(&response) {
+                ids.push(id);
+            } else {
+                eprintln!("[SeaTalk] sent group text returned no message id");
+            }
         }
-        Ok(())
+        Ok(ids)
     }
 
     async fn send_single_text(
@@ -247,21 +254,60 @@ impl SeaTalkClient {
         employee_code: &str,
         text: &str,
         thread_id: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
+        let mut ids = Vec::new();
         for chunk in chunk_text(text, TEXT_CHUNK_LIMIT) {
             let message = build_text_message(&chunk, thread_id);
-            self.api_call(
-                reqwest::Method::POST,
-                "/messaging/v2/single_chat",
-                Some(json!({
-                    "employee_code": employee_code,
-                    "message": message,
-                })),
-                true,
-            )
-            .await?;
+            let response = self
+                .api_call(
+                    reqwest::Method::POST,
+                    "/messaging/v2/single_chat",
+                    Some(json!({
+                        "employee_code": employee_code,
+                        "message": message,
+                    })),
+                    true,
+                )
+                .await?;
+            if let Some(id) = sent_message_id(&response) {
+                ids.push(id);
+            } else {
+                eprintln!("[SeaTalk] sent direct text returned no message id");
+            }
         }
-        Ok(())
+        Ok(ids)
+    }
+}
+
+/// Send responses use `message_id`. Stream updates use `msg_id`. Either one
+/// is the thread message the next mention must treat as already read.
+fn sent_message_id(response: &serde_json::Value) -> Option<String> {
+    optional_id(response["message_id"].as_str())
+        .or_else(|| optional_id(response["msg_id"].as_str()))
+        .map(str::to_string)
+}
+
+async fn remember_sent_reply(
+    client: &SeaTalkClient,
+    store: &CursorStore,
+    key: &str,
+    message_id: &str,
+) {
+    let sent_time = match client.get_message(message_id).await {
+        Ok(message) => json_sent_time(&message).filter(|sent| *sent > 0),
+        Err(error) => {
+            eprintln!("[SeaTalk] reply cursor left in place; message lookup failed: {error}");
+            return;
+        }
+    };
+    let Some(sent_time) = sent_time else {
+        eprintln!("[SeaTalk] reply cursor left in place; message has no sent time");
+        return;
+    };
+    if let Err(error) = store.note_reply(key, sent_time, message_id).await {
+        eprintln!("[SeaTalk] reply cursor was not saved: {error}");
+    } else {
+        eprintln!("[SeaTalk] thread cursor remembered reply msg_id={message_id}");
     }
 }
 
@@ -435,13 +481,19 @@ impl SeaTalkGateway {
     /// Proactive DM send for cron / MCP `send` (HTTP OpenAPI, no WS required).
     pub async fn send_to_user(&self, employee_code: &str, text: &str) -> Result<(), String> {
         let client = self.messaging_client().await?;
-        client.send_single_text(employee_code, text, None).await
+        client
+            .send_single_text(employee_code, text, None)
+            .await
+            .map(|_| ())
     }
 
     /// Proactive group send for cron / MCP `send`.
     pub async fn send_to_chat(&self, group_id: &str, text: &str) -> Result<(), String> {
         let client = self.messaging_client().await?;
-        client.send_group_text(group_id, text, None).await
+        client
+            .send_group_text(group_id, text, None)
+            .await
+            .map(|_| ())
     }
 
     async fn messaging_client(&self) -> Result<SeaTalkClient, String> {
@@ -1101,13 +1153,25 @@ impl crate::driver::ChannelDriver for SeaTalkDriver {
         } else {
             msg.text.as_str()
         };
-        let result = match to.kind {
+        let group = matches!(to.kind, crate::driver::ConversationKind::Group);
+        let ids = match to.kind {
             crate::driver::ConversationKind::Group => {
                 self.client.send_group_text(chat, text, thread).await
             }
             _ => self.client.send_single_text(chat, text, thread).await,
         };
-        result.map_err(crate::driver::DriverError::Transport)?;
+        let ids = ids.map_err(crate::driver::DriverError::Transport)?;
+        if let (Some(store), Some(thread_id)) = (self.cursors.as_ref(), thread) {
+            let key = cursor::thread_key(
+                &self.app_id,
+                if group { "group" } else { "dm" },
+                chat,
+                thread_id,
+            );
+            for id in &ids {
+                remember_sent_reply(&self.client, store, &key, id).await;
+            }
+        }
         Ok(crate::driver::DeliveryId(to.id.clone()))
     }
 }
@@ -1943,6 +2007,23 @@ mod tests {
         assert!(seatalk_media_host("https://cdn.haiserve.com/a.png"));
         assert!(!seatalk_media_host("https://cdn.example/a.png"));
         assert!(!seatalk_media_host("https://notseatalk.io/a.png"));
+    }
+
+    #[test]
+    fn sent_text_id_accepts_either_field_name() {
+        assert_eq!(
+            sent_message_id(&json!({ "message_id": "plain-1" })).as_deref(),
+            Some("plain-1")
+        );
+        assert_eq!(
+            sent_message_id(&json!({ "msg_id": "stream-1" })).as_deref(),
+            Some("stream-1")
+        );
+        assert_eq!(
+            sent_message_id(&json!({ "message_id": "plain-1", "msg_id": "stream-1" })).as_deref(),
+            Some("plain-1")
+        );
+        assert_eq!(sent_message_id(&json!({ "code": 0 })), None);
     }
 
     #[tokio::test]

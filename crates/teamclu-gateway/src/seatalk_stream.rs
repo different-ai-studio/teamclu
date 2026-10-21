@@ -68,7 +68,7 @@ impl Target {
         }
     }
 
-    async fn send_text(&self, client: &SeaTalkClient, text: &str) -> Result<(), String> {
+    async fn send_text(&self, client: &SeaTalkClient, text: &str) -> Result<Vec<String>, String> {
         if self.group {
             client
                 .send_group_text(&self.chat, text, self.thread.as_deref())
@@ -210,8 +210,9 @@ struct Live {
     /// text. A later failure sends only the part past this prefix.
     shown: String,
     broken: bool,
-    /// `msg_id` from the update that closed the stream.
-    finish_msg_id: Option<String>,
+    /// Every bot message this turn put in the thread: closed stream chunks
+    /// and any plain-text fallback. The next mention treats all of them as read.
+    reply_ids: Vec<String>,
 }
 
 struct ReplyCursor {
@@ -233,10 +234,12 @@ fn reply_cursor(
     })
 }
 
-fn note_finish_id(live: &mut Live, id: Option<String>, finish: bool) {
+fn note_finish_id(ids: &mut Vec<String>, id: Option<String>, finish: bool) {
     if finish {
         if let Some(id) = id {
-            live.finish_msg_id = Some(id);
+            if !ids.iter().any(|existing| existing == &id) {
+                ids.push(id);
+            }
         }
     }
 }
@@ -245,29 +248,12 @@ async fn settle_reply_cursor(client: &SeaTalkClient, cursor: Option<&ReplyCursor
     let Some(cursor) = cursor else {
         return;
     };
-    let Some(msg_id) = live.finish_msg_id.as_deref() else {
+    if live.reply_ids.is_empty() {
         eprintln!("[SeaTalk] reply cursor left in place; finish returned no msg_id");
         return;
-    };
-    let sent_time = match client.get_message(msg_id).await {
-        Ok(message) => super::json_sent_time(&message).filter(|sent| *sent > 0),
-        Err(error) => {
-            eprintln!("[SeaTalk] reply cursor left in place; message lookup failed: {error}");
-            return;
-        }
-    };
-    let Some(sent_time) = sent_time else {
-        eprintln!("[SeaTalk] reply cursor left in place; message has no sent time");
-        return;
-    };
-    if let Err(error) = cursor
-        .store
-        .note_reply(&cursor.key, sent_time, msg_id)
-        .await
-    {
-        eprintln!("[SeaTalk] reply cursor was not saved: {error}");
-    } else {
-        eprintln!("[SeaTalk] thread cursor remembered reply msg_id={msg_id}");
+    }
+    for msg_id in &live.reply_ids {
+        super::remember_sent_reply(client, &cursor.store, &cursor.key, msg_id).await;
     }
 }
 
@@ -285,7 +271,7 @@ async fn wait_for_reply(
         snapshot: thinking,
         shown: String::new(),
         broken: false,
-        finish_msg_id: None,
+        reply_ids: Vec::new(),
     };
     let mut heartbeat = tokio::time::interval(KEEPALIVE);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -331,7 +317,7 @@ async fn wait_for_reply(
                             let stopped = i18n::t(MsgKey::SessionStopped, i18n::locale());
                             match stream.update(&client, &target, &stopped, true).await {
                                 Ok(msg_id) => {
-                                    note_finish_id(&mut live, msg_id, true);
+                                    note_finish_id(&mut live.reply_ids, msg_id, true);
                                     settle_reply_cursor(&client, reply_cursor.as_ref(), &live).await;
                                 }
                                 Err(error) => {
@@ -399,7 +385,13 @@ async fn show_final(
         }
     }
     match unsent_reply(&live.shown, &text) {
-        Some(rest) => target.send_text(client, &rest).await,
+        Some(rest) => {
+            let ids = target.send_text(client, &rest).await?;
+            for id in ids {
+                note_finish_id(&mut live.reply_ids, Some(id), true);
+            }
+            Ok(())
+        }
         None => Ok(()),
     }
 }
@@ -460,7 +452,7 @@ async fn publish(
                         return Err(error);
                     }
                 };
-                note_finish_id(live, msg_id, *finish);
+                note_finish_id(&mut live.reply_ids, msg_id, *finish);
                 if *finish {
                     stream = None;
                 }
@@ -695,6 +687,17 @@ mod tests {
         );
         assert_eq!(plan.closed, 2);
         assert_eq!(plan.snapshot, "ij");
+    }
+
+    #[test]
+    fn closed_chunks_and_the_plain_fallback_are_both_remembered() {
+        let mut ids = Vec::new();
+        note_finish_id(&mut ids, Some("chunk-1".into()), true);
+        note_finish_id(&mut ids, Some("chunk-1".into()), true);
+        note_finish_id(&mut ids, None, true);
+        note_finish_id(&mut ids, Some("ignored".into()), false);
+        note_finish_id(&mut ids, Some("plain-1".into()), true);
+        assert_eq!(ids, vec!["chunk-1".to_string(), "plain-1".to_string()]);
     }
 
     #[test]
