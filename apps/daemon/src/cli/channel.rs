@@ -80,6 +80,8 @@ fn bind(cfg: &mut DaemonConfig, b: ChannelBindArgs) -> anyhow::Result<()> {
                 enabled: true,
                 bot_token,
                 default_username,
+                workspace_id: None,
+                model: None,
             });
         }
         ChannelBindPlatform::Wecom {
@@ -103,12 +105,16 @@ fn bind(cfg: &mut DaemonConfig, b: ChannelBindArgs) -> anyhow::Result<()> {
                 enabled: true,
                 app_id,
                 app_secret,
+                workspace_id: None,
+                model: None,
             });
         }
         ChannelBindPlatform::Kook { bot_token } => {
             cfg.channels.kook = Some(KookChannel {
                 enabled: true,
                 bot_token,
+                workspace_id: None,
+                model: None,
             });
         }
         ChannelBindPlatform::Wechat {
@@ -119,6 +125,8 @@ fn bind(cfg: &mut DaemonConfig, b: ChannelBindArgs) -> anyhow::Result<()> {
                 enabled: true,
                 ilink_account,
                 ilink_token,
+                workspace_id: None,
+                model: None,
             });
         }
         ChannelBindPlatform::Email {
@@ -142,6 +150,8 @@ fn bind(cfg: &mut DaemonConfig, b: ChannelBindArgs) -> anyhow::Result<()> {
                 smtp_user,
                 smtp_pass,
                 allowed_senders: vec![],
+                workspace_id: None,
+                model: None,
             });
         }
         ChannelBindPlatform::Seatalk { app_id, app_secret } => {
@@ -160,6 +170,8 @@ fn bind(cfg: &mut DaemonConfig, b: ChannelBindArgs) -> anyhow::Result<()> {
                     app_id,
                     app_secret,
                     system_prompt: None,
+                    workspace_id: None,
+                    model: None,
                 }],
             });
         }

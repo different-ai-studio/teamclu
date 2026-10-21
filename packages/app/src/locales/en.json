@@ -2426,6 +2426,15 @@
         "checkAddToGroup": "Add the bot to your target group",
         "checkStartGateway": "Start the gateway below, then Re-verify WebSocket in the portal"
       },
+      "runtime": {
+        "advanced": "Advanced options",
+        "workspace": "Workspace",
+        "model": "Model",
+        "workspaceUnset": "Temporary directory",
+        "workspaceHint": "New sessions on this channel run here. Saving stores the current choice; you can change it later.",
+        "modelPiDefault": "Pi default model",
+        "modelHint": "Prefilled from the gateway model, or pi’s own default when that is unset. A later change applies to new sessions."
+      },
       "disconnected": "Disconnected",
       "connecting": "Connecting...",
       "connected": "Connected",

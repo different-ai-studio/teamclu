@@ -40,6 +40,9 @@ import {
   DeleteChannelDialog,
   X,
 } from './DiscordDialogs'
+import { ChannelRuntimeOptions } from './ChannelRuntimeOptions'
+import { inheritedRuntime, pinChannelRuntime } from './channel-runtime'
+import { useChannelRuntimeDefaults } from './use-channel-runtime-defaults'
 import { useShallow } from 'zustand/react/shallow'
 
 export function DiscordChannel() {
@@ -81,6 +84,9 @@ export function DiscordChannel() {
     guildId: string
     channelId: string
   } | null>(null)
+  const runtimeDefaults = useChannelRuntimeDefaults()
+  const pinRuntime = (config: DiscordConfig) =>
+    pinChannelRuntime(config, inheritedRuntime(runtimeDefaults))
 
   // Sync local config with store
   React.useEffect(() => {
@@ -109,8 +115,10 @@ export function DiscordChannel() {
   }
 
   const handleSave = async () => {
+    const config = pinRuntime(localConfig)
+    setLocalConfig(config)
     try {
-      await saveDiscordConfig(localConfig)
+      await saveDiscordConfig(config)
       if (isRunning) {
         setHasChanges(true)
       }
@@ -266,8 +274,9 @@ export function DiscordChannel() {
             <ToggleSwitch
               enabled={localConfig.enabled}
               onChange={async (enabled) => {
-                updateLocalConfig({ enabled })
-                await toggleDiscordEnabled(enabled, { ...localConfig, enabled })
+                const next = pinRuntime({ ...localConfig, enabled })
+                updateLocalConfig(next)
+                await toggleDiscordEnabled(enabled, next)
                 if (enabled && !isRunning) {
                   await startGateway()
                 } else if (!enabled && isRunning) {
@@ -281,8 +290,10 @@ export function DiscordChannel() {
                 variant="default"
                 size="sm"
                 onClick={async () => {
+                  const config = pinRuntime(localConfig)
+                  setLocalConfig(config)
                   await stopGateway()
-                  await saveDiscordConfig(localConfig)
+                  await saveDiscordConfig(config)
                   await startGateway()
                   setHasChanges(false)
                 }}
@@ -598,6 +609,16 @@ export function DiscordChannel() {
                 )}
               </div>
             </div>
+
+            <ChannelRuntimeOptions
+              workspaceId={localConfig.workspaceId}
+              model={localConfig.model}
+              workspaces={runtimeDefaults.workspaces}
+              models={runtimeDefaults.models}
+              inheritedWorkspaceId={runtimeDefaults.inheritedWorkspaceId}
+              inheritedModel={runtimeDefaults.inheritedModel}
+              onChange={updateLocalConfig}
+            />
 
             {/* Save Button */}
             <Button

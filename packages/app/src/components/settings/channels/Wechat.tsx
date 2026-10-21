@@ -29,6 +29,9 @@ import { type WeChatConfig, defaultWeChatConfig } from '@/stores/channels-types'
 import { WeChatIcon } from './shared'
 import { GatewayStatusCard } from './GatewayStatusCard'
 import { useChannelConfig } from '@/hooks/use-channel-config'
+import { ChannelRuntimeOptions } from './ChannelRuntimeOptions'
+import { inheritedRuntime, pinChannelRuntime } from './channel-runtime'
+import { useChannelRuntimeDefaults } from './use-channel-runtime-defaults'
 import { QRCodeSVG } from 'qrcode.react'
 import { invoke } from '@tauri-apps/api/core'
 import { useShallow } from 'zustand/react/shallow'
@@ -416,6 +419,7 @@ export function WeChatChannel() {
 
   const [expanded, setExpanded] = React.useState(false)
   const [wizardOpen, setWizardOpen] = React.useState(false)
+  const runtimeDefaults = useChannelRuntimeDefaults()
 
   React.useEffect(() => {
     loadWechatConfig()
@@ -441,6 +445,7 @@ export function WeChatChannel() {
     startGateway: startWechatGateway,
     stopGateway: stopWechatGateway,
     refreshStatus: refreshWechatStatus,
+    prepareConfig: (config) => pinChannelRuntime(config, inheritedRuntime(runtimeDefaults)),
   })
 
   const handleLoginSuccess = (data: { botToken: string; accountId: string; baseUrl: string }) => {
@@ -483,8 +488,9 @@ export function WeChatChannel() {
         onToggleExpanded={() => setExpanded(!expanded)}
         enabled={localConfig.enabled}
         onToggleEnabled={(enabled) => {
-          updateLocalConfig({ enabled })
-          toggleWechatEnabled(enabled, { ...localConfig, enabled })
+          const next = pinChannelRuntime({ ...localConfig, enabled }, inheritedRuntime(runtimeDefaults))
+          updateLocalConfig(next)
+          toggleWechatEnabled(enabled, next)
         }}
         isLoading={wechatIsLoading}
         isConnecting={isConnecting}
@@ -573,6 +579,19 @@ export function WeChatChannel() {
             {wechatGatewayStatus.errorMessage}
           </div>
         )}
+
+        <ChannelRuntimeOptions
+          workspaceId={localConfig.workspaceId}
+          model={localConfig.model}
+          workspaces={runtimeDefaults.workspaces}
+          models={runtimeDefaults.models}
+          inheritedWorkspaceId={runtimeDefaults.inheritedWorkspaceId}
+          inheritedModel={runtimeDefaults.inheritedModel}
+          onChange={(patch) => {
+            updateLocalConfig(patch)
+            setWechatHasChanges(true)
+          }}
+        />
 
         {/* Save Button */}
         <Button
