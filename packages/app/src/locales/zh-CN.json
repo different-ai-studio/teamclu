@@ -2426,6 +2426,15 @@
         "checkAddToGroup": "把机器人加进目标群",
         "checkStartGateway": "先在下方启动网关，再回平台 Re-verify WebSocket"
       },
+      "runtime": {
+        "advanced": "高级选项",
+        "workspace": "工作区",
+        "model": "模型",
+        "workspaceUnset": "临时目录",
+        "workspaceHint": "这个渠道的新会话会在这里运行。保存后会记下当前选择，之后可以再改。",
+        "modelPiDefault": "pi 的默认模型",
+        "modelHint": "未单独指定时，先用网关模型；网关也没指定就用 pi 自己的默认。改完只影响新会话。"
+      },
       "disconnected": "断开连接",
       "connecting": "连接中...",
       "connected": "已连接",

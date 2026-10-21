@@ -101,6 +101,9 @@ pub struct BotRuntimeConfig {
     pub workspace_dir: Option<String>,
     pub agent_type: Option<amux::AgentType>,
     pub system_prompt: Option<String>,
+    /// `provider/model` this channel (or WeCom bot) starts on.
+    /// `None` inherits the gateway-wide `channels.model`, then pi's own default.
+    pub model: Option<(String, String)>,
 }
 
 /// The pieces of daemon state a gateway spawn needs to build the SAME runtime
@@ -215,6 +218,8 @@ struct SpawnTarget {
     workspace_id: Option<String>,
     workspace_dir: Option<String>,
     agent_type: Option<amux::AgentType>,
+    /// Model pinned on this channel. `None` means inherit the gateway default.
+    model: Option<(String, String)>,
 }
 
 /// A chat turn's request to the daemon run loop, which owns the stored session
@@ -267,8 +272,8 @@ impl AmuxdAgentHandle {
     async fn spawn_target(&self, session: &str, binding: &str) -> Result<SpawnTarget, AgentError> {
         let bot = {
             let configs = self.bot_configs.lock().await;
-            bot_id_from_binding(binding)
-                .and_then(|b| configs.get(b))
+            runtime_config_key(binding)
+                .and_then(|key| configs.get(&key))
                 .cloned()
                 .unwrap_or_default()
         };
@@ -304,6 +309,7 @@ impl AmuxdAgentHandle {
             workspace_id,
             workspace_dir,
             agent_type,
+            model: bot.model,
         })
     }
 
@@ -588,25 +594,28 @@ impl AmuxdAgentHandle {
             None => (None, String::new()),
         };
 
+        let SpawnTarget {
+            workspace_id,
+            workspace_dir,
+            model: channel_model,
+            ..
+        } = self.spawn_target(session, &binding).await?;
         // Consult per-session override so the spawn picks up the desired
         // model. Stored as (provider, model); both fields are forwarded to
         // `create_gateway_session_with_model`, which calls `resolve_initial_model`
         // to build the pi model id (`provider/model` when both are set).
-        // Chat's own `/model` first, then the gateway-wide setting. Falling
-        // through to `None` means an unpinned spawn, which used to resolve
-        // against the device MRU — the implicit behaviour ADR-0007 removes.
+        // Chat's own `/model` first, then the channel's saved model, then the
+        // gateway-wide setting. Falling through to `None` means an unpinned
+        // spawn: pi keeps its own default. The device MRU used to fill that
+        // gap — the implicit behaviour ADR-0007 removes.
         let model_arg: Option<(String, String)> = {
             let overrides = self.model_override.lock().await;
-            overrides
-                .get(session)
-                .cloned()
-                .or_else(|| self.gateway_model.clone())
+            pick_spawn_model(
+                overrides.get(session).cloned(),
+                channel_model,
+                self.gateway_model.clone(),
+            )
         };
-        let SpawnTarget {
-            workspace_id,
-            workspace_dir,
-            ..
-        } = self.spawn_target(session, &binding).await?;
         // The run loop keys stored sessions by (cloud session, workspace); a
         // chat with neither has nothing to resume or record.
         let cold_key = remote_session_id.as_deref().zip(workspace_id.as_deref());
@@ -798,6 +807,35 @@ fn channel_name_from_binding(binding: &str) -> &str {
 pub fn bot_id_from_binding(binding: &str) -> Option<&str> {
     let rest = binding.strip_prefix("wecom://")?;
     rest.split('/').next().filter(|s| !s.is_empty())
+}
+
+/// Registry key for one channel's workspace and model.
+///
+/// WeCom is one entry per bot id. SeaTalk keeps the persona key
+/// (`seatalk:<app_id>`). Every other platform is a single account, keyed
+/// `channel:<scheme>` so a bot id cannot collide with a platform name.
+pub fn runtime_config_key(binding: &str) -> Option<String> {
+    if let Some(bot_id) = bot_id_from_binding(binding) {
+        return Some(bot_id.to_string());
+    }
+    if let Some(app_id) = seatalk_app_id_from_binding(binding) {
+        return Some(seatalk_persona_key(app_id));
+    }
+    match channel_name_from_binding(binding) {
+        "discord" | "feishu" | "kook" | "wechat" | "email" => {
+            Some(format!("channel:{}", channel_name_from_binding(binding)))
+        }
+        _ => None,
+    }
+}
+
+/// Session `/model`, then the channel's saved model, then `channels.model`.
+pub(crate) fn pick_spawn_model(
+    session_override: Option<(String, String)>,
+    channel_model: Option<(String, String)>,
+    gateway_model: Option<(String, String)>,
+) -> Option<(String, String)> {
+    session_override.or(channel_model).or(gateway_model)
 }
 
 /// Registry key for a SeaTalk app's persona. Prefixed so it cannot collide
@@ -2591,6 +2629,74 @@ pub(crate) mod tests {
         assert_eq!(bot_id_from_binding(""), None);
     }
 
+    #[test]
+    fn runtime_key_is_per_bot_for_wecom_and_per_platform_otherwise() {
+        assert_eq!(
+            runtime_config_key("wecom://botX/botX/single/u1").as_deref(),
+            Some("botX")
+        );
+        assert_eq!(
+            runtime_config_key("seatalk://app001/group/g1").as_deref(),
+            Some("seatalk:app001")
+        );
+        assert_eq!(
+            runtime_config_key("discord://app/chan").as_deref(),
+            Some("channel:discord")
+        );
+        assert_eq!(
+            runtime_config_key("feishu://app/chat").as_deref(),
+            Some("channel:feishu")
+        );
+        assert_eq!(runtime_config_key("not-a-binding"), None);
+    }
+
+    #[test]
+    fn spawn_model_prefers_the_chat_then_the_channel_then_the_gateway() {
+        let chat = Some(("a".into(), "chat".into()));
+        let channel = Some(("a".into(), "channel".into()));
+        let gateway = Some(("a".into(), "gateway".into()));
+        assert_eq!(
+            pick_spawn_model(chat.clone(), channel.clone(), gateway.clone()),
+            chat
+        );
+        assert_eq!(
+            pick_spawn_model(None, channel.clone(), gateway.clone()),
+            channel
+        );
+        assert_eq!(pick_spawn_model(None, None, gateway.clone()), gateway);
+        assert_eq!(pick_spawn_model(None, None, None), None);
+    }
+
+    #[tokio::test]
+    async fn discord_binding_uses_that_channels_workspace_and_model() {
+        let mut bots = HashMap::new();
+        bots.insert(
+            "channel:discord".to_string(),
+            BotRuntimeConfig {
+                workspace_id: Some("ws-discord".into()),
+                workspace_dir: Some("/ws/discord".into()),
+                agent_type: None,
+                system_prompt: None,
+                model: Some(("anthropic".into(), "claude-sonnet-4-6".into())),
+            },
+        );
+        let mut handle = make_handle();
+        handle.bot_configs = Arc::new(Mutex::new(bots));
+        handle.gateway_model = Some(("pi".into(), "fallback".into()));
+        handle.default_workspace_dir = Some("/ws/global".into());
+
+        let target = handle
+            .spawn_target("sess-d", "discord://app/chan")
+            .await
+            .unwrap();
+        assert_eq!(target.workspace_dir.as_deref(), Some("/ws/discord"));
+        assert_eq!(target.workspace_id.as_deref(), Some("ws-discord"));
+        assert_eq!(
+            pick_spawn_model(None, target.model, handle.gateway_model.clone()),
+            Some(("anthropic".into(), "claude-sonnet-4-6".into()))
+        );
+    }
+
     #[tokio::test]
     async fn resolution_priority_session_over_bot_over_global() {
         use amux::AgentType;
@@ -2602,6 +2708,7 @@ pub(crate) mod tests {
                 workspace_dir: Some("/ws/bot-a".into()),
                 agent_type: Some(AgentType::Opencode),
                 system_prompt: Some("A".into()),
+                model: None,
             },
         );
         let mut handle = make_handle();
@@ -2743,6 +2850,7 @@ pub(crate) mod tests {
                 workspace_dir: Some("/ws/bot-a".into()),
                 agent_type: Some(AgentType::Opencode),
                 system_prompt: None,
+                model: None,
             },
         );
         handle.bot_configs = Arc::new(Mutex::new(bots));

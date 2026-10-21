@@ -34,6 +34,9 @@ import { useChannelsStore } from '@/stores/channels-store'
 import { type EmailConfig, defaultEmailConfig } from '@/stores/channels-types'
 import { GmailIcon, SettingCard, ToggleSwitch, StatusBadge } from './shared'
 import { EmailSetupWizard } from './EmailSetupWizard'
+import { ChannelRuntimeOptions } from './ChannelRuntimeOptions'
+import { inheritedRuntime, pinChannelRuntime } from './channel-runtime'
+import { useChannelRuntimeDefaults } from './use-channel-runtime-defaults'
 import { useShallow } from 'zustand/react/shallow'
 
 export function EmailChannel() {
@@ -64,6 +67,9 @@ export function EmailChannel() {
   const [newSender, setNewSender] = React.useState('')
   const [newLabel, setNewLabel] = React.useState('')
   const [deleteSenderConfirm, setDeleteSenderConfirm] = React.useState<string | null>(null)
+  const runtimeDefaults = useChannelRuntimeDefaults()
+  const pinRuntime = (config: EmailConfig) =>
+    pinChannelRuntime(config, inheritedRuntime(runtimeDefaults))
 
   // Sync Email local config with store
   React.useEffect(() => {
@@ -85,8 +91,10 @@ export function EmailChannel() {
   }
 
   const handleEmailSave = async () => {
+    const config = pinRuntime(emailLocalConfig)
+    setEmailLocalConfig(config)
     try {
-      await saveEmailConfig(emailLocalConfig)
+      await saveEmailConfig(config)
       if (emailIsRunning) {
         setEmailHasChanges(true)
       }
@@ -198,8 +206,9 @@ export function EmailChannel() {
             <ToggleSwitch
               enabled={emailLocalConfig.enabled}
               onChange={async (enabled) => {
-                updateEmailLocalConfig({ enabled })
-                await toggleEmailEnabled(enabled, { ...emailLocalConfig, enabled })
+                const next = pinRuntime({ ...emailLocalConfig, enabled })
+                updateEmailLocalConfig(next)
+                await toggleEmailEnabled(enabled, next)
                 if (enabled && !emailIsRunning) {
                   await startEmailGateway()
                 } else if (!enabled && emailIsRunning) {
@@ -213,8 +222,10 @@ export function EmailChannel() {
                 variant="default"
                 size="sm"
                 onClick={async () => {
+                  const config = pinRuntime(emailLocalConfig)
+                  setEmailLocalConfig(config)
                   await stopEmailGateway()
-                  await saveEmailConfig(emailLocalConfig)
+                  await saveEmailConfig(config)
                   await startEmailGateway()
                   setEmailHasChanges(false)
                 }}
@@ -625,6 +636,19 @@ export function EmailChannel() {
                 </div>
               )}
             </div>
+
+            <ChannelRuntimeOptions
+              workspaceId={emailLocalConfig.workspaceId}
+              model={emailLocalConfig.model}
+              workspaces={runtimeDefaults.workspaces}
+              models={runtimeDefaults.models}
+              inheritedWorkspaceId={runtimeDefaults.inheritedWorkspaceId}
+              inheritedModel={runtimeDefaults.inheritedModel}
+              onChange={(patch) => {
+                updateEmailLocalConfig(patch)
+                setEmailHasChanges(true)
+              }}
+            />
 
             {/* Save Button */}
             <Button

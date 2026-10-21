@@ -208,4 +208,64 @@ describe("amuxd-channels", () => {
       ],
     });
   });
+
+  it("round-trips workspace and model for a channel and a WeCom bot", async () => {
+    vi.mocked(tauri.invoke).mockResolvedValue(undefined);
+
+    await saveChannelConfig("discord", {
+      enabled: true,
+      token: "tok",
+      dm: { enabled: false, policy: "open", allowFrom: [] },
+      guilds: {},
+      workspaceId: " ws-1 ",
+      model: " anthropic/claude ",
+    });
+
+    const [, discordArgs] = vi.mocked(tauri.invoke).mock.calls[0]!;
+    const discord = JSON.parse((discordArgs as { configJson: string }).configJson);
+    expect(discord.workspace_id).toBe("ws-1");
+    expect(discord.model).toBe("anthropic/claude");
+
+    await saveChannelConfig("wecom", {
+      enabled: true,
+      bots: [
+        {
+          enabled: true,
+          botId: "bot",
+          secret: "sec",
+          workspaceId: "ws-bot",
+          model: "pi/deepseek",
+        },
+      ],
+    });
+    const [, wecomArgs] = vi.mocked(tauri.invoke).mock.calls[1]!;
+    const wecom = JSON.parse((wecomArgs as { configJson: string }).configJson);
+    expect(wecom.bots[0]).toMatchObject({
+      workspace_id: "ws-bot",
+      model: "pi/deepseek",
+    });
+
+    await saveChannelConfig("feishu", {
+      enabled: true,
+      appId: "app",
+      appSecret: "sec",
+      workspaceId: "   ",
+      model: "",
+    });
+    const [, blankArgs] = vi.mocked(tauri.invoke).mock.calls[2]!;
+    const blank = JSON.parse((blankArgs as { configJson: string }).configJson);
+    expect(blank.workspace_id).toBeUndefined();
+    expect(blank.model).toBeUndefined();
+
+    vi.mocked(tauri.invoke).mockResolvedValue({
+      enabled: true,
+      bot_token: "tok",
+      workspace_id: "ws-1",
+      model: "anthropic/claude",
+    });
+    await expect(loadChannelConfig("discord")).resolves.toMatchObject({
+      workspaceId: "ws-1",
+      model: "anthropic/claude",
+    });
+  });
 });

@@ -37,6 +37,9 @@ import { FeishuIcon, ToggleSwitch } from './shared'
 import { GatewayStatusCard } from './GatewayStatusCard'
 import { TestCredentialsButton } from './TestCredentialsButton'
 import { useChannelConfig } from '@/hooks/use-channel-config'
+import { ChannelRuntimeOptions } from './ChannelRuntimeOptions'
+import { inheritedRuntime, pinChannelRuntime } from './channel-runtime'
+import { useChannelRuntimeDefaults } from './use-channel-runtime-defaults'
 import { useShallow } from 'zustand/react/shallow'
 
 // Feishu Setup Wizard
@@ -518,6 +521,7 @@ export function FeishuChannel() {
   const [feishuChatDialogOpen, setFeishuChatDialogOpen] = React.useState(false)
   const [editingFeishuChat, setEditingFeishuChat] = React.useState<{ id: string; config: FeishuChatConfig } | null>(null)
   const [deleteFeishuChatConfirm, setDeleteFeishuChatConfirm] = React.useState<string | null>(null)
+  const runtimeDefaults = useChannelRuntimeDefaults()
 
   const {
     localConfig: feishuLocalConfig,
@@ -538,6 +542,7 @@ export function FeishuChannel() {
     startGateway: startFeishuGateway,
     stopGateway: stopFeishuGateway,
     refreshStatus: refreshFeishuStatus,
+    prepareConfig: (config) => pinChannelRuntime(config, inheritedRuntime(runtimeDefaults)),
   })
 
   const handleFeishuTestCredentials = async () => {
@@ -592,8 +597,12 @@ export function FeishuChannel() {
         onToggleExpanded={() => setFeishuExpanded(!feishuExpanded)}
         enabled={feishuLocalConfig.enabled}
         onToggleEnabled={(enabled) => {
-          updateFeishuLocalConfig({ enabled })
-          toggleFeishuEnabled(enabled, { ...feishuLocalConfig, enabled })
+          const next = pinChannelRuntime(
+            { ...feishuLocalConfig, enabled },
+            inheritedRuntime(runtimeDefaults),
+          )
+          updateFeishuLocalConfig(next)
+          toggleFeishuEnabled(enabled, next)
         }}
         isLoading={feishuIsLoading}
         isConnecting={feishuIsConnecting}
@@ -749,6 +758,16 @@ export function FeishuChannel() {
                 )}
               </div>
             </div>
+
+        <ChannelRuntimeOptions
+          workspaceId={feishuLocalConfig.workspaceId}
+          model={feishuLocalConfig.model}
+          workspaces={runtimeDefaults.workspaces}
+          models={runtimeDefaults.models}
+          inheritedWorkspaceId={runtimeDefaults.inheritedWorkspaceId}
+          inheritedModel={runtimeDefaults.inheritedModel}
+          onChange={updateFeishuLocalConfig}
+        />
 
         {/* Save Button */}
         <Button

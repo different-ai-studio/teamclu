@@ -34,13 +34,10 @@ import { type WeComConfig, type WeComBot, defaultWeComConfig } from '@/stores/ch
 import { WeComIcon } from './shared'
 import { GatewayStatusCard } from './GatewayStatusCard'
 import { useChannelConfig } from '@/hooks/use-channel-config'
-import { useCurrentTeamStore } from '@/stores/current-team'
 import { botSecretPath, loadChannelSecretKeys } from '@/lib/team/channel-secret-presence'
-import {
-  getCurrentDaemonWorkspaceAgent,
-  listDaemonWorkspaces,
-  type DaemonWorkspace,
-} from '@/lib/daemon/daemon-workspaces'
+import { ChannelRuntimeOptions } from './ChannelRuntimeOptions'
+import { inheritedRuntime, pinChannelRuntime } from './channel-runtime'
+import { useChannelRuntimeDefaults } from './use-channel-runtime-defaults'
 import { useShallow } from 'zustand/react/shallow'
 
 // WeCom Setup Wizard
@@ -566,39 +563,16 @@ export function WeComChannel() {
   )
   const botStatuses = useChannelsStore(s => s.wecomBotStatuses)
   const loadWecomBotStatuses = useChannelsStore(s => s.loadWecomBotStatuses)
-  const team = useCurrentTeamStore(s => s.team)
 
   const [expanded, setExpanded] = React.useState(false)
   const [wizardOpen, setWizardOpen] = React.useState(false)
-  const [workspaceOptions, setWorkspaceOptions] = React.useState<DaemonWorkspace[]>([])
+  const runtimeDefaults = useChannelRuntimeDefaults()
 
   React.useEffect(() => {
     loadWecomConfig()
     loadWecomBotStatuses()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // Load available daemon workspaces for the per-bot workspace picker. Same source
-  // as DaemonWorkspacesSection (public.workspaces via the current daemon agent).
-  React.useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      if (!team?.id) {
-        if (!cancelled) setWorkspaceOptions([])
-        return
-      }
-      try {
-        const agent = await getCurrentDaemonWorkspaceAgent(team.id)
-        const list = agent ? await listDaemonWorkspaces(team.id, agent.id) : []
-        if (!cancelled) setWorkspaceOptions(list.filter(w => !w.archived))
-      } catch {
-        if (!cancelled) setWorkspaceOptions([])
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [team?.id])
 
   const {
     localConfig,
@@ -619,6 +593,12 @@ export function WeComChannel() {
     startGateway: startWecomGateway,
     stopGateway: stopWecomGateway,
     refreshStatus: refreshWecomStatus,
+    prepareConfig: (config) => ({
+      ...config,
+      bots: (config.bots ?? []).map((bot) =>
+        pinChannelRuntime(bot, inheritedRuntime(runtimeDefaults)),
+      ),
+    }),
   })
 
   const bots = localConfig.bots ?? []
@@ -691,8 +671,15 @@ export function WeComChannel() {
         onToggleExpanded={() => setExpanded(!expanded)}
         enabled={localConfig.enabled}
         onToggleEnabled={(enabled) => {
-          updateLocalConfig({ enabled })
-          toggleWecomEnabled(enabled, { ...localConfig, enabled })
+          const next = {
+            ...localConfig,
+            enabled,
+            bots: (localConfig.bots ?? []).map((bot) =>
+              pinChannelRuntime(bot, inheritedRuntime(runtimeDefaults)),
+            ),
+          }
+          updateLocalConfig(next)
+          toggleWecomEnabled(enabled, next)
         }}
         isLoading={wecomIsLoading}
         isConnecting={isConnecting}
@@ -853,28 +840,17 @@ export function WeComChannel() {
                   </p>
                 </div>
 
-                {/* Workspace */}
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">{t('settings.channels.wecom.botWorkspace', 'Workspace')}</label>
-                  {workspaceOptions.length > 0 ? (
-                    <select
-                      value={bot.workspaceId ?? ''}
-                      onChange={e => updateBot(i, { workspaceId: e.target.value || undefined })}
-                      className="h-9 w-full rounded-[7px] border border-border bg-paper px-3 text-[13px] transition-colors focus:border-foreground/30 focus:outline-none"
-                    >
-                      <option value="">{t('settings.channels.wecom.botDefaultOption', 'Default')}</option>
-                      {workspaceOptions.map(w => (
-                        <option key={w.id} value={w.id}>{w.name}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <Input
-                      value={bot.workspaceId ?? ''}
-                      onChange={e => updateBot(i, { workspaceId: e.target.value || undefined })}
-                      placeholder={t('settings.channels.wecom.botDefaultOption', 'Default')}
-                    />
-                  )}
-                </div>
+                {/* Workspace and model. Prefilled from the current defaults; a
+                    later edit is stored on this bot. */}
+                <ChannelRuntimeOptions
+                  workspaceId={bot.workspaceId}
+                  model={bot.model}
+                  workspaces={runtimeDefaults.workspaces}
+                  models={runtimeDefaults.models}
+                  inheritedWorkspaceId={runtimeDefaults.inheritedWorkspaceId}
+                  inheritedModel={runtimeDefaults.inheritedModel}
+                  onChange={(patch) => updateBot(i, patch)}
+                />
 
                 {/* System prompt */}
                 <div className="space-y-1">

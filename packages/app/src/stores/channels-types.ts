@@ -41,6 +41,10 @@ export interface DiscordConfig {
   dm: DmConfig
   guilds: Record<string, GuildConfig>
   retry?: RetryConfig
+  /** Empty inherits the agent default workspace. */
+  workspaceId?: string
+  /** `provider/model`. Empty inherits the gateway model, then pi's default. */
+  model?: string
 }
 
 // Feishu chat configuration
@@ -55,6 +59,8 @@ export interface FeishuConfig {
   appId: string
   appSecret: string
   chats: Record<string, FeishuChatConfig>
+  workspaceId?: string
+  model?: string
 }
 
 // Feishu gateway status
@@ -74,6 +80,8 @@ export interface SeaTalkBot {
   appSecret: string
   /** Persona injected into every turn this bot answers. */
   systemPrompt?: string
+  workspaceId?: string
+  model?: string
 }
 
 // SeaTalk configuration. Group and DM policy are shared by every bot.
@@ -123,6 +131,8 @@ export interface EmailConfig {
   labels: string[]
   replyAllNew: boolean
   displayName: string
+  workspaceId?: string
+  model?: string
 }
 
 // Email gateway status
@@ -162,6 +172,8 @@ export interface KookConfig {
   token: string
   dm: KookDmConfig
   guilds: Record<string, KookGuildConfig>
+  workspaceId?: string
+  model?: string
 }
 
 // KOOK gateway status
@@ -198,6 +210,8 @@ export interface WeComBot {
    * back empty, where empty means "unchanged".
    */
   apiKey?: string
+  /** `provider/model`. Empty inherits the gateway model, then pi's default. */
+  model?: string
 }
 
 export interface WeComConfig {
@@ -245,6 +259,8 @@ export interface WeChatConfig {
   accountId: string
   baseUrl: string
   syncBuf?: string
+  workspaceId?: string
+  model?: string
 }
 
 export type WeChatGatewayStatus = 'disconnected' | 'connecting' | 'connected' | 'error'

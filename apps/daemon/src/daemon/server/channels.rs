@@ -4,6 +4,54 @@
 use super::*;
 
 impl DaemonServer {
+    /// Workspace and model a channel (or one WeCom / SeaTalk bot) pinned in team.toml.
+    ///
+    /// An empty string is "inherit", not an explicit blank. A workspace id that
+    /// does not resolve on this machine is kept so the spawn fails closed
+    /// instead of sliding onto the agent default or a scratch directory.
+    async fn channel_bot_runtime(
+        &self,
+        label: &str,
+        workspace_id: Option<&str>,
+        model: Option<&str>,
+        system_prompt: Option<String>,
+    ) -> crate::channels::BotRuntimeConfig {
+        let workspace_id = workspace_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string);
+        let workspace_dir = match workspace_id.as_deref() {
+            Some(id) => {
+                let path = self
+                    .workspace_resolver
+                    .resolve(id)
+                    .await
+                    .ok()
+                    .map(|w| w.path);
+                if path.is_none() {
+                    warn!(
+                        channel = %label,
+                        workspace_id = %id,
+                        "channel workspace could not be resolved; \
+                         its sessions will reject scoped spawns"
+                    );
+                }
+                path
+            }
+            None => None,
+        };
+        let system_prompt = system_prompt
+            .map(|prompt| prompt.trim().to_string())
+            .filter(|prompt| !prompt.is_empty());
+        crate::channels::BotRuntimeConfig {
+            workspace_id,
+            workspace_dir,
+            agent_type: None,
+            system_prompt,
+            model: split_gateway_model(model.map(str::trim).filter(|id| !id.is_empty())),
+        }
+    }
+
     /// Build a `ChannelManager` from the given config and call
     /// `start_enabled()`. Returns `None` when the daemon has no `team_id`
     /// yet (not onboarded) — caller logs and skips. Per-channel start
@@ -106,40 +154,20 @@ impl DaemonServer {
         // workspace/agent instead of the daemon-wide gateway defaults. Retain
         // the configured ID when resolution fails so spawning fails closed.
         let bot_configs: std::collections::HashMap<String, crate::channels::BotRuntimeConfig> = {
-            use crate::channels::BotRuntimeConfig;
             let mut m = std::collections::HashMap::new();
             if let Some(wecom) = &cfg.channels.wecom {
                 for bot in wecom.resolved_bots() {
-                    let workspace_dir = match bot.workspace_id.as_deref() {
-                        Some(id) => {
-                            let path = self
-                                .workspace_resolver
-                                .resolve(id)
-                                .await
-                                .ok()
-                                .map(|w| w.path);
-                            if path.is_none() {
-                                warn!(
-                                    bot_id = %bot.bot_id,
-                                    workspace_id = %id,
-                                    "wecom bot workspace could not be resolved; \
-                                     its sessions will reject scoped spawns"
-                                );
-                            }
-                            path
-                        }
-                        None => None,
-                    };
                     let agent_type = bot.agent_type.as_deref().and_then(agent_type_from_name);
-                    m.insert(
-                        bot.bot_id.clone(),
-                        BotRuntimeConfig {
-                            workspace_id: bot.workspace_id.clone(),
-                            workspace_dir,
-                            agent_type,
-                            system_prompt: bot.system_prompt.clone(),
-                        },
-                    );
+                    let mut runtime = self
+                        .channel_bot_runtime(
+                            &bot.bot_id,
+                            bot.workspace_id.as_deref(),
+                            bot.model.as_deref(),
+                            bot.system_prompt.clone(),
+                        )
+                        .await;
+                    runtime.agent_type = agent_type;
+                    m.insert(bot.bot_id.clone(), runtime);
                 }
             }
             // Keyed apart from WeCom bot ids so the persona is found from
@@ -150,21 +178,89 @@ impl DaemonServer {
                     if !bot.enabled || bot.app_id.is_empty() {
                         continue;
                     }
-                    let Some(prompt) = bot
-                        .system_prompt
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|p| !p.is_empty())
-                    else {
-                        continue;
-                    };
-                    m.insert(
-                        crate::channels::agent_handle::seatalk_persona_key(&bot.app_id),
-                        BotRuntimeConfig {
-                            system_prompt: Some(prompt.to_string()),
-                            ..BotRuntimeConfig::default()
-                        },
-                    );
+                    let runtime = self
+                        .channel_bot_runtime(
+                            "seatalk",
+                            bot.workspace_id.as_deref(),
+                            bot.model.as_deref(),
+                            bot.system_prompt.clone(),
+                        )
+                        .await;
+                    if runtime.system_prompt.is_some()
+                        || runtime.workspace_id.is_some()
+                        || runtime.model.is_some()
+                    {
+                        m.insert(
+                            crate::channels::agent_handle::seatalk_persona_key(&bot.app_id),
+                            runtime,
+                        );
+                    }
+                }
+            }
+            for (key, label, workspace_id, model) in [
+                (
+                    "channel:discord",
+                    "discord",
+                    cfg.channels
+                        .discord
+                        .as_ref()
+                        .and_then(|c| c.workspace_id.as_deref()),
+                    cfg.channels
+                        .discord
+                        .as_ref()
+                        .and_then(|c| c.model.as_deref()),
+                ),
+                (
+                    "channel:feishu",
+                    "feishu",
+                    cfg.channels
+                        .feishu
+                        .as_ref()
+                        .and_then(|c| c.workspace_id.as_deref()),
+                    cfg.channels
+                        .feishu
+                        .as_ref()
+                        .and_then(|c| c.model.as_deref()),
+                ),
+                (
+                    "channel:kook",
+                    "kook",
+                    cfg.channels
+                        .kook
+                        .as_ref()
+                        .and_then(|c| c.workspace_id.as_deref()),
+                    cfg.channels.kook.as_ref().and_then(|c| c.model.as_deref()),
+                ),
+                (
+                    "channel:wechat",
+                    "wechat",
+                    cfg.channels
+                        .wechat
+                        .as_ref()
+                        .and_then(|c| c.workspace_id.as_deref()),
+                    cfg.channels
+                        .wechat
+                        .as_ref()
+                        .and_then(|c| c.model.as_deref()),
+                ),
+                (
+                    "channel:email",
+                    "email",
+                    cfg.channels
+                        .email
+                        .as_ref()
+                        .and_then(|c| c.workspace_id.as_deref()),
+                    cfg.channels.email.as_ref().and_then(|c| c.model.as_deref()),
+                ),
+            ] {
+                if workspace_id.is_none() && model.is_none() {
+                    continue;
+                }
+                let runtime = self
+                    .channel_bot_runtime(label, workspace_id, model, None)
+                    .await;
+                if runtime.workspace_id.is_some() || runtime.model.is_some() {
+                    m.insert(key.to_string(), runtime);
                 }
             }
             m

@@ -10,6 +10,9 @@ import { type SeaTalkBot, type SeaTalkConfig, defaultSeaTalkConfig } from '@/sto
 import { GatewayStatusCard } from './GatewayStatusCard'
 import { TestCredentialsButton } from './TestCredentialsButton'
 import { useChannelConfig } from '@/hooks/use-channel-config'
+import { ChannelRuntimeOptions } from './ChannelRuntimeOptions'
+import { inheritedRuntime, pinChannelRuntime } from './channel-runtime'
+import { useChannelRuntimeDefaults } from './use-channel-runtime-defaults'
 import { useShallow } from 'zustand/react/shallow'
 import {
   botSecretPath,
@@ -62,6 +65,7 @@ export function SeaTalkChannel() {
   const [secretKeys, setSecretKeys] = React.useState<Set<string>>(new Set())
   const [botStatuses, setBotStatuses] = React.useState<SeaTalkBotStatus[]>([])
   const [testingAppId, setTestingAppId] = React.useState<string | null>(null)
+  const runtimeDefaults = useChannelRuntimeDefaults()
 
   const {
     localConfig,
@@ -82,6 +86,12 @@ export function SeaTalkChannel() {
     startGateway: startSeaTalkGateway,
     stopGateway: stopSeaTalkGateway,
     refreshStatus: refreshSeaTalkStatus,
+    prepareConfig: (config) => ({
+      ...config,
+      bots: (config.bots ?? []).map((bot) =>
+        pinChannelRuntime(bot, inheritedRuntime(runtimeDefaults)),
+      ),
+    }),
   })
 
   const bots = localConfig.bots ?? []
@@ -133,8 +143,15 @@ export function SeaTalkChannel() {
       onToggleExpanded={() => setExpanded(!expanded)}
       enabled={localConfig.enabled}
       onToggleEnabled={(enabled) => {
-        updateLocalConfig({ enabled })
-        toggleSeaTalkEnabled(enabled, { ...localConfig, enabled })
+        const next = {
+          ...localConfig,
+          enabled,
+          bots: (localConfig.bots ?? []).map((bot) =>
+            pinChannelRuntime(bot, inheritedRuntime(runtimeDefaults)),
+          ),
+        }
+        updateLocalConfig(next)
+        toggleSeaTalkEnabled(enabled, next)
       }}
       isLoading={seatalkIsLoading}
       isConnecting={isConnecting}
@@ -298,6 +315,15 @@ export function SeaTalkChannel() {
                   )}
                 </p>
               </div>
+              <ChannelRuntimeOptions
+                workspaceId={bot.workspaceId}
+                model={bot.model}
+                workspaces={runtimeDefaults.workspaces}
+                models={runtimeDefaults.models}
+                inheritedWorkspaceId={runtimeDefaults.inheritedWorkspaceId}
+                inheritedModel={runtimeDefaults.inheritedModel}
+                onChange={(patch) => updateBot(index, patch)}
+              />
             </div>
           )
         })}

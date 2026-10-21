@@ -645,6 +645,8 @@ secret = ""
             enabled: true,
             bot_token: "tok".into(),
             default_username: None,
+            workspace_id: None,
+            model: None,
         });
         persist_from(&config).unwrap();
 
