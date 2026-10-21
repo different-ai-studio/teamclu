@@ -141,6 +141,12 @@ export async function fetchPublicConfig(args?: { fetchImpl?: typeof fetch }): Pr
   } catch {
     return;
   }
+  // The server was switched while this request was in flight (the startup
+  // fetch racing the onboarding "custom server" step). The flags are cached
+  // per origin, read at apply time, so applying now would file the old
+  // server's login methods under the new one. The switch fires its own fetch.
+  const current = (await getEffectiveServerConfig()).cloudApiUrl?.replace(/\/+$/, "");
+  if (current !== baseUrl) return;
   // Applied even when absent: `applyRemoteFeatures` treats a missing block as
   // "no overrides", and recording that is how a flag the server has STOPPED
   // sending stops applying instead of living on in the cache forever.
@@ -149,6 +155,19 @@ export async function fetchPublicConfig(args?: { fetchImpl?: typeof fetch }): Pr
   if (!patch) return;
   const saved = await getSavedServerConfig();
   await saveServerConfig({ ...saved, ...patch });
+}
+
+// Switching servers without a reload (the onboarding wizard does exactly that,
+// see `applyServerUrl` in DesktopOnboarding) leaves the login screen on the new
+// origin's cached flags — none on a fresh install, so email only — until the
+// next launch fetches them. Re-fetch on the switch instead.
+//
+// The event name is repeated from CLOUD_API_URL_CHANGED_EVENT rather than
+// imported, for the same partial-mock reason given in lib/remote-features.ts.
+if (typeof window !== "undefined") {
+  window.addEventListener("teamclu:cloud-api-url-changed", () => {
+    void fetchPublicConfig();
+  });
 }
 
 type CloudApiProbe =
