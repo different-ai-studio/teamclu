@@ -286,10 +286,8 @@ pub(crate) fn next_read_mark(
             ids.clear();
             ids.push(message_id.to_string());
         }
-        Some(current) if sent_time == current => {
-            if !ids.iter().any(|id| id == message_id) {
-                ids.push(message_id.to_string());
-            }
+        Some(current) if sent_time == current && !ids.iter().any(|id| id == message_id) => {
+            ids.push(message_id.to_string());
         }
         None => {
             best = Some(sent_time);
