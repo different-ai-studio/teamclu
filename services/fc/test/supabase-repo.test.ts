@@ -1193,6 +1193,7 @@ function fakeSupabase({
   onInsert = null,
   onUpsert = null,
   upsertData = null,
+  upsertSelectData = undefined,
 } = {}) {
   const client: any = {
     auth: auth ?? {
@@ -1210,6 +1211,7 @@ function fakeSupabase({
         onInsert,
         onUpsert,
         upsertData,
+        upsertSelectData,
       });
     },
     schema(name) {
@@ -1227,7 +1229,7 @@ function fakeSupabase({
 }
 
 function createTableQuery(table: any, calls: any, data: any, error: any, hooks: any = {}) {
-  const { onInsert, onUpsert, upsertData } = hooks;
+  const { onInsert, onUpsert, upsertData, upsertSelectData } = hooks;
   return {
     select(columns) {
       calls.push({ table, op: "select", columns });
@@ -1259,6 +1261,9 @@ function createTableQuery(table: any, calls: any, data: any, error: any, hooks: 
       calls.push({ table, op: "upsert", row, options });
       if (onUpsert) onUpsert(table, row);
       const resolvedData = upsertData ?? data[0] ?? null;
+      const selectData = upsertSelectData !== undefined
+        ? upsertSelectData
+        : (resolvedData == null ? [] : [resolvedData]);
       return {
         select(columns) {
           calls.push({ table, op: "upsert.select", columns });
@@ -1266,6 +1271,9 @@ function createTableQuery(table: any, calls: any, data: any, error: any, hooks: 
             async single() {
               calls.push({ table, op: "upsert.single" });
               return { data: resolvedData, error };
+            },
+            then(resolve, reject) {
+              return Promise.resolve({ data: selectData, error }).then(resolve, reject);
             },
           };
         },
@@ -1779,6 +1787,7 @@ test("ensureGatewaySession returns gatewaySessionId (daemon-required field) = ac
   // acp_session_id so a later getSessionByAcp lookup finds the row.
   assert.equal(out.gatewaySessionId, "acp-hex-1");
   assert.equal(out.created, true);
+  assert.equal("insertedActorIds" in out, false);
 });
 
 test("getSessionByAcp returns the {sessionId, gatewaySessionId} shape the daemon deserializes", async () => {
@@ -1888,6 +1897,10 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
       // names its own type must answer only the matching lookup; one that does
       // not (most tests) still answers both, as it always has.
       const matchActor = () => {
+        if (ctx.filters.id) {
+          const seeded = (state.actors ?? []).find((r: any) => r.id === ctx.filters.id);
+          if (seeded) return seeded;
+        }
         if (!actorRow) return null;
         const wanted = ctx.filters.actor_type;
         if (wanted && actorRow.actor_type && actorRow.actor_type !== wanted) return null;
@@ -2206,6 +2219,9 @@ function removeParticipantFixture({
     { session_id: "session-1", actor_id: "member-2" },
   ],
   sessionVisible = true,
+  actors = [] as any[],
+  callerActors = [] as any[],
+  publish = null as null | ((topic: string, body: string) => Promise<void>),
 } = {}) {
   const callerCalls: any[] = [];
   const adminCalls: any[] = [];
@@ -2216,6 +2232,8 @@ function removeParticipantFixture({
       sessions: sessionVisible
         ? [{ id: "session-1", team_id: "team-1", created_by_actor_id: createdBy }]
         : [],
+      session_participants: seats,
+      actors: callerActors,
     },
   });
   const admin = appsSupabase({
@@ -2224,9 +2242,13 @@ function removeParticipantFixture({
       agents: [{ id: "agent-1", owner_member_id: agentOwner }],
       agent_member_access: grants,
       session_participants: seats,
+      actors,
     },
   });
-  const repo = createRepo(caller, { createServiceRoleClient: () => admin });
+  const repo = createRepo(caller, {
+    createServiceRoleClient: () => admin,
+    ...(publish ? { publishSessionParticipantInbox: publish } : {}),
+  });
   const deletes = (calls: any[]) =>
     calls.filter((c) => c.table === "session_participants" && c.op === "delete");
   return { repo, callerCalls, adminCalls, deletes };
@@ -2296,6 +2318,220 @@ test("removeSessionParticipant answers 404 when nothing was deleted", async () =
     () => f.repo.removeSessionParticipant("session-1", "agent-1"),
     (err: any) => err.statusCode === 404,
   );
+});
+
+function flushMicrotasks() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test("upsertSessionParticipant notifies human members only when this call inserts a row", async () => {
+  const published: { topic: string; body: string }[] = [];
+  const repo = createRepo(fakeSupabase({
+    upsertSelectData: [{ session_id: "session-1", actor_id: "member-2" }],
+    tableData: {
+      session_participants: [{ session_id: "session-1", actor_id: "member-2", role: "member", joined_at: null }],
+      sessions: [{ id: "session-1", team_id: "team-1" }],
+      actors: [{ user_id: "user-2" }],
+    },
+  }), {
+    publishSessionParticipantInbox: async (topic: string, body: string) => {
+      published.push({ topic, body });
+    },
+  });
+
+  const out = await repo.upsertSessionParticipant("session-1", { actorId: "member-2", role: "member" });
+  await flushMicrotasks();
+
+  assert.equal(out.actorId, "member-2");
+  assert.equal(published.length, 1);
+  assert.equal(published[0].topic, "inbox/user-2");
+  const payload = JSON.parse(published[0].body);
+  assert.equal(payload.type, "session.participants");
+  assert.equal(payload.team_id, "team-1");
+  assert.equal(payload.session_id, "session-1");
+  assert.equal(payload.v, 2);
+  assert.equal("message_id" in payload, false);
+});
+
+test("upsertSessionParticipant does not notify when the seat already exists", async () => {
+  const published: string[] = [];
+  const repo = createRepo(fakeSupabase({
+    upsertSelectData: [],
+    tableData: {
+      session_participants: [{ session_id: "session-1", actor_id: "member-2", role: "member", joined_at: null }],
+    },
+  }), {
+    publishSessionParticipantInbox: async (topic: string) => { published.push(topic); },
+  });
+
+  const out = await repo.upsertSessionParticipant("session-1", { actorId: "member-2", role: "member" });
+  await flushMicrotasks();
+
+  assert.equal(out.actorId, "member-2");
+  assert.deepEqual(published, []);
+});
+
+test("upsertSessionParticipant returns before a failing inbox publish settles", async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let started = false;
+  const repo = createRepo(fakeSupabase({
+    upsertSelectData: [{ session_id: "session-1", actor_id: "member-2" }],
+    tableData: {
+      session_participants: [{ session_id: "session-1", actor_id: "member-2", role: "member", joined_at: null }],
+      sessions: [{ id: "session-1", team_id: "team-1" }],
+      actors: [{ user_id: "user-2" }],
+    },
+  }), {
+    publishSessionParticipantInbox: async () => {
+      started = true;
+      await gate;
+      throw new Error("mqtt down");
+    },
+  });
+  const logged: unknown[] = [];
+  const orig = console.error;
+  console.error = (...args: unknown[]) => { logged.push(args[0]); };
+
+  try {
+    const out = await repo.upsertSessionParticipant("session-1", { actorId: "member-2" });
+    await flushMicrotasks();
+    assert.equal(out.actorId, "member-2");
+    assert.equal(started, true);
+    assert.equal(logged.length, 0);
+    release();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    assert.equal(logged.some((line) => String(line).includes("notify failed")), true);
+  } finally {
+    console.error = orig;
+  }
+});
+
+test("joinSession notifies on the first insert and not on a repeat", async () => {
+  const published: string[] = [];
+  const make = (inserted: boolean) => createRepo(fakeSupabase({
+    rpcData: { join_session: inserted },
+    tableData: {
+      sessions: [{ id: "session-1", team_id: "team-1" }],
+      session_participants: [{ actor_id: "member-1" }],
+      actors: [{ user_id: "user-1" }],
+    },
+  }), {
+    publishSessionParticipantInbox: async (topic: string) => { published.push(topic); },
+  });
+
+  const first = await make(true).joinSession("session-1");
+  await flushMicrotasks();
+  assert.equal(first.id, "session-1");
+  assert.deepEqual(published, ["inbox/user-1"]);
+
+  await make(false).joinSession("session-1");
+  await flushMicrotasks();
+  assert.deepEqual(published, ["inbox/user-1"]);
+});
+
+test("ensureGatewaySession notifies when seats were inserted, including a new session", async () => {
+  const published: string[] = [];
+  const notifyRepo = (insertedActorIds: string[], created: boolean) => createRepo(fakeSupabase({
+    rpcData: {
+      ensure_gateway_session: [{
+        session_id: "sess-1",
+        acp_session_id: "acp-1",
+        created,
+        inserted_actor_ids: insertedActorIds,
+      }],
+    },
+    tableData: {
+      sessions: [{ id: "sess-1", team_id: "team-9" }],
+      session_participants: [{ actor_id: "member-1" }],
+      actors: [{ user_id: "user-9" }],
+    },
+  }), {
+    publishSessionParticipantInbox: async (topic: string) => { published.push(topic); },
+  });
+
+  const created = await notifyRepo(["member-1"], true).ensureGatewaySession({
+    teamId: "team-9",
+    binding: "wecom://room",
+    title: "Room",
+    primaryAgentActorId: "agent-1",
+  });
+  await flushMicrotasks();
+  assert.equal(created.created, true);
+  assert.equal(created.gatewaySessionId, "acp-1");
+  assert.equal("insertedActorIds" in created, false);
+  assert.deepEqual(published, ["inbox/user-9"]);
+
+  const repeat = await notifyRepo([], false).ensureGatewaySession({
+    teamId: "team-9",
+    binding: "wecom://room",
+    title: "Room",
+    primaryAgentActorId: "agent-1",
+  });
+  await flushMicrotasks();
+  assert.equal(repeat.created, false);
+  assert.deepEqual(published, ["inbox/user-9"]);
+
+  // created is not the publish switch. An existing session that seated
+  // someone still notifies; a brand-new session that inserted nobody does not.
+  const seatedExisting = await notifyRepo(["member-1"], false).ensureGatewaySession({
+    teamId: "team-9",
+    binding: "wecom://room",
+    title: "Room",
+    primaryAgentActorId: "agent-1",
+  });
+  await flushMicrotasks();
+  assert.equal(seatedExisting.created, false);
+  assert.deepEqual(published, ["inbox/user-9", "inbox/user-9"]);
+
+  const createdEmpty = await notifyRepo([], true).ensureGatewaySession({
+    teamId: "team-9",
+    binding: "wecom://room",
+    title: "Room",
+    primaryAgentActorId: "agent-1",
+  });
+  await flushMicrotasks();
+  assert.equal(createdEmpty.created, true);
+  assert.equal("insertedActorIds" in createdEmpty, false);
+  assert.deepEqual(published, ["inbox/user-9", "inbox/user-9"]);
+});
+
+test("removeSessionParticipant notifies remaining humans and the removed human", async () => {
+  const published: string[] = [];
+  const f = removeParticipantFixture({
+    seats: [
+      { session_id: "session-1", actor_id: "member-1" },
+      { session_id: "session-1", actor_id: "member-2" },
+    ],
+    actors: [{ id: "member-2", actor_type: "member", user_id: "user-removed" }],
+    callerActors: [{ id: "member-1", actor_type: "member", user_id: "user-remaining" }],
+    publish: async (topic: string) => { published.push(topic); },
+  });
+
+  await f.repo.removeSessionParticipant("session-1", "member-2");
+  await flushMicrotasks();
+
+  assert.deepEqual(published.sort(), ["inbox/user-remaining", "inbox/user-removed"]);
+});
+
+test("removeSessionParticipant does not notify an agent's user id", async () => {
+  const published: string[] = [];
+  const f = removeParticipantFixture({
+    callerId: "member-creator",
+    seats: [
+      { session_id: "session-1", actor_id: "agent-1" },
+      { session_id: "session-1", actor_id: "member-1" },
+    ],
+    actors: [{ id: "agent-1", actor_type: "agent", user_id: "user-agent" }],
+    callerActors: [{ id: "member-1", actor_type: "member", user_id: "user-remaining" }],
+    publish: async (topic: string) => { published.push(topic); },
+  });
+
+  await f.repo.removeSessionParticipant("session-1", "agent-1");
+  await flushMicrotasks();
+
+  assert.deepEqual(published, ["inbox/user-remaining"]);
 });
 
 test("apps: mapApp exposes exactly the canonical keys", async () => {
