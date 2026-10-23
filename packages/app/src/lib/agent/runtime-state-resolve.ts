@@ -473,7 +473,13 @@ export interface SelectedAgentModel {
 /**
  * Single resolver for "which model is selected for this agent in this session".
  *
- * Priority: user pick → daemon retain → provider fallback → empty.
+ * Priority: user pick → this session's participant row → this session's
+ * transcript → this session's own runtime `currentModel` → provider
+ * fallback (this client's last explicit pick) → first advertised model.
+ *
+ * Another session's live runtime is not a source. A new chat has no
+ * attachment of its own, so it must not display the model some other
+ * conversation is still running.
  *
  * The user pick ALWAYS wins. MQTT retain updates do not, cannot, and must not
  * silently override it. The only way to lose a pick is for the user to pick
@@ -547,8 +553,13 @@ export function selectAgentModel(args: {
     };
   }
 
-  const entry = resolveRuntimeStateEntryForAgent(agentId, args.byRuntimeId);
-  const retain = entry?.info.currentModel?.trim() ?? "";
+  // Only the runtime attached to this session. `resolveRuntimeStateEntryForAgent`
+  // without a session hint returns the freshest runtime of the agent, which is
+  // often a different conversation that is still running.
+  const ownRuntime = sessionId
+    ? resolveSessionAttachmentEntry(agentId, sessionId, args.byRuntimeId)
+    : undefined;
+  const retain = ownRuntime?.info.currentModel?.trim() ?? "";
   if (retain) {
     return {
       modelId: canonicalizeAgainstAvailable(
@@ -560,13 +571,6 @@ export function selectAgentModel(args: {
       source: "retain",
     };
   }
-
-  // No pick, no transcript, no live retain. There used to be a
-  // "上次选的模型" level here, backed by a `lastByAgent` map in localStorage.
-  // It is gone: the daemon owns that list now (`config::model_mru`) and
-  // resolves it when a runtime starts, so `RuntimeInfo.currentModel` — the
-  // retain checked just above — already carries the answer, and carries it
-  // for gateway and cron runtimes too, which could never see localStorage.
 
   const fallback = args.providerFallback?.trim() ?? "";
   if (fallback) {
