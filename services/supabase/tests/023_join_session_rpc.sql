@@ -40,7 +40,9 @@ begin
   -- (1) A team member (joiner) who is not yet a participant can join.
   perform set_config('request.jwt.claims',
     json_build_object('sub', v_joiner::text, 'role', 'authenticated')::text, true);
-  perform amux.join_session(v_session);
+  if amux.join_session(v_session) is not true then
+    raise exception 'first join should report an insert';
+  end if;
   if not exists (
     select 1 from amux.session_participants
     where session_id = v_session and actor_id = v_joiner
@@ -49,7 +51,9 @@ begin
   end if;
 
   -- (2) Idempotent: a second call must not create a duplicate row.
-  perform amux.join_session(v_session);
+  if amux.join_session(v_session) is not false then
+    raise exception 'second join should report no insert';
+  end if;
   if (select count(*) from amux.session_participants
         where session_id = v_session and actor_id = v_joiner) <> 1 then
     raise exception 'join_session created a duplicate participant row';
