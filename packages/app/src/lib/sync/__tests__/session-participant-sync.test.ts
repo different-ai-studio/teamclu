@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   isTauri: vi.fn(() => true),
   listSessionParticipantsForSync: vi.fn(),
+  beginSessionParticipantReplace: vi.fn(async () => 7),
   replaceSessionParticipants: vi.fn(async () => {}),
 }));
 
@@ -15,6 +16,7 @@ vi.mock("@/lib/backend", () => ({
 }));
 
 vi.mock("@/lib/cache/local-cache", () => ({
+  beginSessionParticipantReplace: mocks.beginSessionParticipantReplace,
   replaceSessionParticipants: mocks.replaceSessionParticipants,
 }));
 
@@ -48,8 +50,10 @@ describe("syncParticipantsForSession", () => {
     expect(count).toBe(2);
     expect(mocks.listSessionParticipantsForSync).toHaveBeenCalledWith("session-1", null);
     expect(mocks.replaceSessionParticipants).toHaveBeenCalledTimes(1);
-    const [sessionId, rows] = mocks.replaceSessionParticipants.mock.calls[0];
+    const [sessionId, teamId, generation, rows] = mocks.replaceSessionParticipants.mock.calls[0];
     expect(sessionId).toBe("session-1");
+    expect(teamId).toBe("team-1");
+    expect(generation).toBe(7);
     expect(rows).toEqual([
       expect.objectContaining({
         id: "uuid-me",
@@ -72,7 +76,7 @@ describe("syncParticipantsForSession", () => {
     const count = await syncParticipantsForSession("session-1", "team-1");
 
     expect(count).toBe(0);
-    expect(mocks.replaceSessionParticipants).toHaveBeenCalledWith("session-1", []);
+    expect(mocks.replaceSessionParticipants).toHaveBeenCalledWith("session-1", "team-1", 7, []);
   });
 
   it("leaves the cache alone when the pull failed", async () => {

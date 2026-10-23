@@ -38,6 +38,7 @@ export async function syncParticipantsForSession(
   teamId: string,
 ): Promise<number> {
   if (!isTauri()) return 0;
+  const generation = await cache.beginSessionParticipantReplace(sessionId);
   let data: SessionParticipantSyncRow[];
   try {
     // `null` asks for the whole session, not a delta since a watermark.
@@ -50,6 +51,6 @@ export async function syncParticipantsForSession(
     return 0;
   }
   const rows = (data ?? []).map(mapRow);
-  await cache.replaceSessionParticipants(sessionId, rows);
+  await cache.replaceSessionParticipants(sessionId, teamId, generation, rows);
   return rows.length;
 }
