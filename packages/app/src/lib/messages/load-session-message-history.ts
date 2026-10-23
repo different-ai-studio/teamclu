@@ -122,7 +122,7 @@ export async function loadSessionMessageHistory(
       const { syncParticipantsForSession } = await import(
         "@/lib/sync/session-participant-sync"
       );
-      await syncParticipantsForSession(sessionId, teamId, { full: true });
+      await syncParticipantsForSession(sessionId, teamId);
     }
     if (signal?.aborted) return;
     if (synced > 0) {

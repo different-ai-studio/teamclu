@@ -50,7 +50,7 @@ export function CacheSection() {
       if (activeSessionId) {
         await Promise.all([
           syncMessagesForSession(activeSessionId, teamId, { full: true }),
-          syncParticipantsForSession(activeSessionId, teamId, { full: true }),
+          syncParticipantsForSession(activeSessionId, teamId),
         ])
       }
 

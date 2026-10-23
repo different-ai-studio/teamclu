@@ -203,7 +203,7 @@ export const useSessionParticipantStore = create<State>((set, get) => ({
 
     try {
       if (teamId) {
-        await syncParticipantsForSession(sessionId, teamId, { full: true });
+        await syncParticipantsForSession(sessionId, teamId);
       }
       await get().ensureParticipants([sessionId], { force: true });
     } catch (error) {

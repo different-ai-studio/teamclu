@@ -270,6 +270,19 @@ export async function upsertSessionParticipantsBatch(
   await invoke("local_cache_session_participant_upsert_batch", { rows });
 }
 
+/**
+ * Replace one session's cached roster with a complete cloud snapshot.
+ * An empty list clears the session. Unlike the upsert, this runs for an
+ * empty snapshot and does not keep a newer local row.
+ */
+export async function replaceSessionParticipants(
+  sessionId: string,
+  rows: SessionParticipantRow[],
+): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("local_cache_session_participant_replace_session", { sessionId, rows });
+}
+
 export async function loadSessionParticipants(
   sessionId: string,
   includeDeleted = false,

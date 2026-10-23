@@ -326,6 +326,28 @@ pub async fn local_cache_session_participant_load_actor(
 }
 
 #[tauri::command]
+pub async fn local_cache_session_participant_replace_session(
+    state: tauri::State<'_, LocalCacheState>,
+    session_id: String,
+    rows: Vec<SessionParticipantRow>,
+) -> Result<(), String> {
+    let db = get_db(&state).await?;
+    let mut parents = Vec::with_capacity(rows.len() + 1);
+    parents.push(session_id.as_str());
+    parents.extend(rows.iter().map(|row| row.session_id.as_str()));
+    gate_parent_rows(
+        &db,
+        current_team(&state).await.as_deref(),
+        "participant",
+        ParentKind::Session,
+        parents,
+    )
+    .await?;
+    db.session_participant_replace_session(&session_id, &rows)
+        .await
+}
+
+#[tauri::command]
 pub async fn local_cache_session_participant_soft_delete(
     state: tauri::State<'_, LocalCacheState>,
     id: String,

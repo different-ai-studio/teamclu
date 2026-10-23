@@ -1,14 +1,15 @@
 /**
- * session-participant-sync.ts — Sync session_participants from Supabase into
- * local libsql cache.
+ * session-participant-sync.ts — Replace one session's cached roster with the
+ * cloud snapshot.
  *
- * updated_at: ✓ present on session_participants (confirmed via information_schema)
- * NOTE: session_participants has NO team_id column on Supabase — it is scoped
- * by session_id only. We use syncTableForSession which keys the watermark as
- * "session_participants:<sessionId>" namespaced by teamId.
+ * The cloud list is the roster. A successful pull of the whole session
+ * deletes that session's local rows and inserts the returned ones. A failed
+ * or truncated pull leaves the cache alone. There is no delta and no
+ * comparison of row ids or updated_at: session create still writes a
+ * temporary `sessionId:actorId` row, and the next successful snapshot
+ * replaces it.
  */
 
-import { syncTableForSession } from "@/lib/cache/cache-sync";
 import { getBackend } from "@/lib/backend";
 import * as cache from "@/lib/cache/local-cache";
 import { isTauri } from "@/lib/utils";
@@ -28,48 +29,27 @@ function mapRow(r: SessionParticipantSyncRow): cache.SessionParticipantRow {
 }
 
 /**
- * Pull session_participants for a session from Supabase (delta or full),
- * upsert into local cache, bump per-session watermark.
+ * Pull the full participant list for a session and replace the local rows.
  *
- * @returns number of rows synced
+ * @returns number of cloud rows written, or 0 when the pull did not complete
  */
 export async function syncParticipantsForSession(
   sessionId: string,
   teamId: string,
-  opts?: { full?: boolean },
 ): Promise<number> {
   if (!isTauri()) return 0;
-  const { count } = await syncTableForSession<
-    SessionParticipantSyncRow,
-    cache.SessionParticipantRow
-  >({
-    watermarkKey: "session_participants",
-    sessionId,
-    teamId,
-    pullRows: (updatedAfter) => getBackend().sync.listSessionParticipantsForSync(sessionId, updatedAfter),
-    mapRow,
-    upsertBatch: cache.upsertSessionParticipantsBatch,
-    full: opts?.full,
-    // Removing a participant is a hard DELETE server-side
-    // (supabase-repo `removeSessionParticipant`), so the row simply stops
-    // appearing — a delta sync has nothing to carry and even a full sync used
-    // to only upsert what survived. The removed actor stayed in the cache and
-    // came back the next time the session was opened. A full sync is the one
-    // moment we hold the server's complete answer, so make it authoritative.
-    //
-    // MQTT `participant.removed` already routes through `refreshSession`, which
-    // syncs with `full: true` — so this also propagates removals made on
-    // another device.
-    reconcileFull: async (rows) => {
-      const stillPresent = new Set(rows.map((row) => row.id));
-      const local = await cache.loadSessionParticipants(sessionId);
-      const gone = local.filter((row) => !stillPresent.has(row.id));
-      if (gone.length === 0) return;
-      const deletedAt = new Date().toISOString();
-      await Promise.all(
-        gone.map((row) => cache.softDeleteSessionParticipant(row.id, deletedAt)),
-      );
-    },
-  });
-  return count;
+  let data: SessionParticipantSyncRow[];
+  try {
+    // `null` asks for the whole session, not a delta since a watermark.
+    data = await getBackend().sync.listSessionParticipantsForSync(sessionId, null);
+  } catch (error) {
+    console.warn(
+      `[session-participants] ${teamId}/${sessionId} pull failed:`,
+      error instanceof Error ? error.message : error,
+    );
+    return 0;
+  }
+  const rows = (data ?? []).map(mapRow);
+  await cache.replaceSessionParticipants(sessionId, rows);
+  return rows.length;
 }
