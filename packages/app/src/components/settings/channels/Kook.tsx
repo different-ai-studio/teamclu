@@ -38,6 +38,9 @@ import {
   KookDeleteGuildDialog,
   KookDeleteChannelDialog,
 } from './KookDialogs'
+import { ChannelRuntimeOptions } from './ChannelRuntimeOptions'
+import { inheritedRuntime, pinChannelRuntime } from './channel-runtime'
+import { useChannelRuntimeDefaults } from './use-channel-runtime-defaults'
 import { useShallow } from 'zustand/react/shallow'
 
 export function KookChannel() {
@@ -77,6 +80,9 @@ export function KookChannel() {
     guildId: string
     channelId: string
   } | null>(null)
+  const runtimeDefaults = useChannelRuntimeDefaults()
+  const pinRuntime = (config: KookConfig) =>
+    pinChannelRuntime(config, inheritedRuntime(runtimeDefaults))
 
   // KOOK: sync local state with store
   React.useEffect(() => {
@@ -90,8 +96,10 @@ export function KookChannel() {
   }
 
   const handleKookSave = async () => {
+    const config = pinRuntime(kookLocalConfig)
+    setKookLocalConfig(config)
     try {
-      await saveKookConfig(kookLocalConfig)
+      await saveKookConfig(config)
       if (kookIsRunning) {
         setKookHasChanges(true)
       }
@@ -237,9 +245,10 @@ export function KookChannel() {
             <ToggleSwitch
               enabled={kookLocalConfig.enabled}
               onChange={async (enabled) => {
-                updateKookLocalConfig({ enabled })
+                const next = pinRuntime({ ...kookLocalConfig, enabled })
+                updateKookLocalConfig(next)
                 if (enabled && !kookIsRunning) {
-                  await saveKookConfig({ ...kookLocalConfig, enabled })
+                  await saveKookConfig(next)
                   await startKookGateway()
                 } else if (!enabled && kookIsRunning) {
                   await stopKookGateway()
@@ -252,8 +261,10 @@ export function KookChannel() {
                 variant="default"
                 size="sm"
                 onClick={async () => {
+                  const config = pinRuntime(kookLocalConfig)
+                  setKookLocalConfig(config)
                   await stopKookGateway()
-                  await saveKookConfig(kookLocalConfig)
+                  await saveKookConfig(config)
                   await startKookGateway()
                   setKookHasChanges(false)
                 }}
@@ -576,6 +587,16 @@ export function KookChannel() {
                 )}
               </div>
             </div>
+
+            <ChannelRuntimeOptions
+              workspaceId={kookLocalConfig.workspaceId}
+              model={kookLocalConfig.model}
+              workspaces={runtimeDefaults.workspaces}
+              models={runtimeDefaults.models}
+              inheritedWorkspaceId={runtimeDefaults.inheritedWorkspaceId}
+              inheritedModel={runtimeDefaults.inheritedModel}
+              onChange={updateKookLocalConfig}
+            />
 
             {/* Save Button */}
             <Button

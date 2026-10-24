@@ -18,6 +18,25 @@ export interface ChannelStatus {
 
 type ChannelConfig = Record<string, unknown>;
 
+function runtimeToDaemon(config: ChannelConfig): ChannelConfig {
+  const workspaceId = typeof config.workspaceId === "string" ? config.workspaceId.trim() : "";
+  const model = typeof config.model === "string" ? config.model.trim() : "";
+  return {
+    ...(workspaceId ? { workspace_id: workspaceId } : {}),
+    ...(model ? { model } : {}),
+  };
+}
+
+function runtimeFromDaemon(config: ChannelConfig): ChannelConfig {
+  const workspaceId =
+    typeof config.workspace_id === "string" ? config.workspace_id.trim() : "";
+  const model = typeof config.model === "string" ? config.model.trim() : "";
+  return {
+    ...(workspaceId ? { workspaceId } : {}),
+    ...(model ? { model } : {}),
+  };
+}
+
 export async function listChannels(): Promise<ChannelStatus[]> {
   try {
     return await invoke<ChannelStatus[]>("list_channels");
@@ -99,6 +118,7 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
         enabled: Boolean(config.enabled),
         bot_token: String(config.token ?? ""),
         default_username: config.defaultUsername ?? null,
+        ...runtimeToDaemon(config),
       };
     case "wecom": {
       const bots = Array.isArray(config.bots) ? (config.bots as ChannelConfig[]) : [];
@@ -109,10 +129,10 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
           bot_id: String(b.botId ?? ""),
           secret: String(b.secret ?? ""),
           encoding_aes_key: b.encodingAesKey || undefined,
-          workspace_id: b.workspaceId || undefined,
           system_prompt: b.systemPrompt || undefined,
           bot_name: b.botName || undefined,
           api_key: b.apiKey || undefined,
+          ...runtimeToDaemon(b),
         })),
       };
     }
@@ -121,6 +141,7 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
         enabled: Boolean(config.enabled),
         app_id: String(config.appId ?? ""),
         app_secret: String(config.appSecret ?? ""),
+        ...runtimeToDaemon(config),
       };
     case "seatalk": {
       const bots = Array.isArray(config.bots) ? (config.bots as ChannelConfig[]) : [];
@@ -138,6 +159,7 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
           app_id: String(b.appId ?? ""),
           app_secret: String(b.appSecret ?? ""),
           system_prompt: String(b.systemPrompt ?? "").trim() || undefined,
+          ...runtimeToDaemon(b),
         })),
       };
     }
@@ -145,12 +167,14 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
       return {
         enabled: Boolean(config.enabled),
         bot_token: String(config.token ?? ""),
+        ...runtimeToDaemon(config),
       };
     case "wechat":
       return {
         enabled: Boolean(config.enabled),
         ilink_account: String(config.accountId ?? ""),
         ilink_token: String(config.botToken ?? ""),
+        ...runtimeToDaemon(config),
       };
     case "email":
       return {
@@ -166,6 +190,7 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
         allowed_senders: Array.isArray(config.allowedSenders)
           ? config.allowedSenders
           : [],
+        ...runtimeToDaemon(config),
       };
   }
 }
@@ -183,6 +208,7 @@ function seatalkBotsFromDaemon(config: ChannelConfig): ChannelConfig[] {
       appId: String(b.app_id ?? ""),
       appSecret: String(b.app_secret ?? ""),
       systemPrompt: seatalkPrompt(b.system_prompt),
+      ...runtimeFromDaemon(b),
     }));
   }
   const appId = String(config.app_id ?? "");
@@ -204,6 +230,7 @@ function fromDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Cha
         enabled: Boolean(config.enabled),
         token: String(config.bot_token ?? ""),
         defaultUsername: config.default_username ?? undefined,
+        ...runtimeFromDaemon(config),
       };
     case "wecom": {
       const rawBots = config.bots;
@@ -215,10 +242,10 @@ function fromDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Cha
             botId: String(b.bot_id ?? ""),
             secret: String(b.secret ?? ""),
             encodingAesKey: b.encoding_aes_key ?? undefined,
-            workspaceId: b.workspace_id ?? undefined,
             systemPrompt: b.system_prompt ?? undefined,
             botName: b.bot_name ?? undefined,
             apiKey: b.api_key ?? undefined,
+            ...runtimeFromDaemon(b),
           })),
         };
       }
@@ -243,6 +270,7 @@ function fromDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Cha
         enabled: Boolean(config.enabled),
         appId: String(config.app_id ?? ""),
         appSecret: String(config.app_secret ?? ""),
+        ...runtimeFromDaemon(config),
       };
     case "seatalk":
       return {
@@ -260,12 +288,14 @@ function fromDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Cha
       return {
         enabled: Boolean(config.enabled),
         token: String(config.bot_token ?? ""),
+        ...runtimeFromDaemon(config),
       };
     case "wechat":
       return {
         enabled: Boolean(config.enabled),
         accountId: String(config.ilink_account ?? ""),
         botToken: String(config.ilink_token ?? ""),
+        ...runtimeFromDaemon(config),
       };
     case "email":
       return {
@@ -280,6 +310,7 @@ function fromDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Cha
         allowedSenders: Array.isArray(config.allowed_senders)
           ? config.allowed_senders
           : [],
+        ...runtimeFromDaemon(config),
       };
   }
 }

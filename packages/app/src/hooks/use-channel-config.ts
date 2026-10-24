@@ -38,6 +38,8 @@ interface UseChannelConfigOptions<TConfig> {
   refreshStatus: () => void
   /** Optional: toggle enabled state (some channels have a quick toggle) */
   toggleEnabled?: (enabled: boolean, config: TConfig) => void
+  /** Fold inherited workspace/model into the payload at save time. */
+  prepareConfig?: (config: TConfig) => TConfig
 }
 
 interface UseChannelConfigResult<TConfig> {
@@ -71,6 +73,7 @@ export function useChannelConfig<TConfig extends object>(
     startGateway,
     stopGateway,
     refreshStatus,
+    prepareConfig,
   } = options
 
   const [localConfig, setLocalConfig] = React.useState<TConfig>(defaultConfig)
@@ -98,13 +101,20 @@ export function useChannelConfig<TConfig extends object>(
     setLocalConfig(prev => ({ ...prev, ...updates }))
   }, [])
 
+  const preparedConfig = React.useCallback(
+    () => (prepareConfig ? prepareConfig(localConfig) : localConfig),
+    [localConfig, prepareConfig],
+  )
+
   // Saving used to be entirely silent: no toast on success, and the failure
   // toast could not fire because the stores swallowed their own errors. The
   // button just sat there either way, so "did that work?" had no answer.
   const handleSave = React.useCallback(async () => {
     setIsSaving(true)
+    const config = preparedConfig()
+    setLocalConfig(config)
     try {
-      await saveConfig(localConfig)
+      await saveConfig(config)
       if (isRunning) {
         setHasChanges(true)
       }
@@ -116,27 +126,31 @@ export function useChannelConfig<TConfig extends object>(
     } finally {
       setIsSaving(false)
     }
-  }, [localConfig, isRunning, saveConfig, setHasChanges])
+  }, [preparedConfig, isRunning, saveConfig, setHasChanges])
 
   const handleStartStop = React.useCallback(async () => {
     try {
       if (gatewayStatus.status === 'connected' || gatewayStatus.status === 'connecting') {
         await stopGateway()
       } else {
-        await saveConfig(localConfig)
+        const config = preparedConfig()
+        setLocalConfig(config)
+        await saveConfig(config)
         await startGateway()
       }
     } catch {
       // Error is handled by the store
     }
-  }, [gatewayStatus.status, localConfig, saveConfig, startGateway, stopGateway])
+  }, [gatewayStatus.status, preparedConfig, saveConfig, startGateway, stopGateway])
 
   const handleRestart = React.useCallback(async () => {
+    const config = preparedConfig()
+    setLocalConfig(config)
     await stopGateway()
-    await saveConfig(localConfig)
+    await saveConfig(config)
     await startGateway()
     setHasChanges(false)
-  }, [localConfig, saveConfig, startGateway, stopGateway, setHasChanges])
+  }, [preparedConfig, saveConfig, startGateway, stopGateway, setHasChanges])
 
   return {
     localConfig,

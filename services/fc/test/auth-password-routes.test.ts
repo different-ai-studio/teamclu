@@ -60,3 +60,29 @@ test("POST /v1/auth/signup proxies to GoTrue /signup", async () => {
   assert.equal(res.statusCode, 200);
   assert.deepEqual(JSON.parse(stub.calls[0].init.body), { email: "a@b.com", password: "pw" });
 });
+
+test("POST /v1/auth/signin-password maps wrong credentials to invalid_credentials, not upstream_unavailable", async () => {
+  const stub = stubGoTrue({
+    "POST /auth/v1/token?grant_type=password": () => new Response(JSON.stringify({
+      code: 400, error_code: "invalid_credentials", msg: "Invalid login credentials",
+    }), { status: 400 }),
+  });
+  const res = await handleBusinessApiRequest({
+    httpMethod: "POST", path: "/v1/auth/signin-password", headers: {},
+    body: JSON.stringify({ email: "a@b.com", password: "wrong" }),
+  }, authDeps(stub));
+  assert.equal(res.statusCode, 400);
+  assert.equal(JSON.parse(res.body).error.code, "invalid_credentials");
+});
+
+test("GoTrue 5xx still maps to upstream_unavailable", async () => {
+  const stub = stubGoTrue({
+    "POST /auth/v1/token?grant_type=password": () => new Response("bad gateway", { status: 502 }),
+  });
+  const res = await handleBusinessApiRequest({
+    httpMethod: "POST", path: "/v1/auth/signin-password", headers: {},
+    body: JSON.stringify({ email: "a@b.com", password: "pw" }),
+  }, authDeps(stub));
+  assert.equal(res.statusCode, 502);
+  assert.equal(JSON.parse(res.body).error.code, "upstream_unavailable");
+});

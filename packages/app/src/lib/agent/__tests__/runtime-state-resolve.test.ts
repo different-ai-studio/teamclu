@@ -247,7 +247,24 @@ describe("selectAgentModel — canonical model resolver", () => {
       available,
       byRuntimeId,
     });
-    expect(res.source).toBe("retain");
+    expect(res.source).toBe("fallback");
+    expect(res.modelId).toBe("big-pickle");
+  });
+
+  it("does not reuse another session's live runtime model", () => {
+    const other = entry(agentUuid, "session-other", available);
+    other.info.currentModel = "mimo-v2.5-free";
+    other.lastUpdated = Date.now();
+    const res = selectAgentModel({
+      sessionId: "session-new",
+      agentId: agentUuid,
+      available,
+      byRuntimeId: {
+        [`${agentUuid}::session-other`]: other,
+      },
+      providerFallback: "big-pickle",
+    });
+    expect(res.source).toBe("fallback");
     expect(res.modelId).toBe("big-pickle");
   });
 });

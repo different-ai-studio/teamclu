@@ -1,8 +1,10 @@
-//! Present a completed agent reply on the message that initially said Thinking.
+//! One SeaTalk stream for a turn.
 //! Protocol: https://open.seatalk.io/docs/send-streaming-message
 //!
-//! The worker receives exactly one complete reply, not ACP deltas. While it
-//! waits, it refreshes the placeholder inside SeaTalk's 30-second idle limit.
+//! The placeholder opens on "Thinking". Each reply so far replaces that
+//! snapshot as soon as it arrives. While the next reply is still running,
+//! the same stream is refreshed inside SeaTalk's 30-second idle limit.
+//! The final call only closes the stream.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,19 +17,21 @@ use crate::driver::{BufferedReply, Conversation, ConversationKind, DriverError, 
 use crate::i18n::{self, MsgKey};
 
 const KEEPALIVE: Duration = Duration::from_secs(10);
-const FRAME_INTERVAL: Duration = Duration::from_millis(200);
-const FRAME_CHARS: usize = 128;
 const STREAM_CHAR_LIMIT: usize = 4096;
 
-struct Completion {
-    text: String,
-    done: oneshot::Sender<Result<(), String>>,
+enum Note {
+    /// Reply text so far. Cumulative, not a delta.
+    Preview(String),
+    Finish {
+        text: String,
+        done: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 /// Its sender is the worker's lifetime guard. If the core is dropped or fails
 /// before finishing, receiver closure closes the waiting placeholder too.
 pub(super) struct SeaTalkBufferedReply {
-    completion: Option<mpsc::UnboundedSender<Completion>>,
+    tx: Option<mpsc::UnboundedSender<Note>>,
 }
 
 #[derive(Clone)]
@@ -64,7 +68,7 @@ impl Target {
         }
     }
 
-    async fn send_text(&self, client: &SeaTalkClient, text: &str) -> Result<(), String> {
+    async fn send_text(&self, client: &SeaTalkClient, text: &str) -> Result<Vec<String>, String> {
         if self.group {
             client
                 .send_group_text(&self.chat, text, self.thread.as_deref())
@@ -108,7 +112,7 @@ impl Stream {
         target: &Target,
         text: &str,
         finish: bool,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         self.seq += 1;
         let mut body = target.body();
         body["stream_id"] = json!(self.id);
@@ -117,7 +121,7 @@ impl Stream {
         // Each update replaces the snapshot. The init placeholder is not a
         // prefix of the answer; update samples in the API use answer text only.
         body["message"] = json!({ "text": { "format": 1, "content": text } });
-        client
+        let response = client
             .api_call(
                 reqwest::Method::POST,
                 target.endpoint(false),
@@ -125,13 +129,19 @@ impl Stream {
                 true,
             )
             .await?;
-        Ok(())
+        Ok(optional_id(response["msg_id"].as_str()).map(str::to_string))
     }
 }
 
 impl SeaTalkBufferedReply {
-    pub(super) async fn start(client: Arc<SeaTalkClient>, to: Conversation) -> Option<Self> {
+    pub(super) async fn start(
+        client: Arc<SeaTalkClient>,
+        to: Conversation,
+        app_id: &str,
+        cursors: Option<Arc<super::CursorStore>>,
+    ) -> Option<Self> {
         let target = Target::new(&to);
+        let reply_cursor = reply_cursor(app_id, &target, cursors);
         let thinking = i18n::t(MsgKey::ReplyThinking, i18n::locale());
         let stream = match Stream::init(&client, &target, &thinking).await {
             Ok(stream) => Some(stream),
@@ -143,23 +153,38 @@ impl SeaTalkBufferedReply {
             }
         };
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(wait_for_reply(client, target, thinking, stream, rx));
-        Some(Self {
-            completion: Some(tx),
-        })
+        tokio::spawn(wait_for_reply(
+            client,
+            target,
+            thinking,
+            stream,
+            reply_cursor,
+            rx,
+        ));
+        Some(Self { tx: Some(tx) })
     }
 }
 
 #[async_trait::async_trait]
 impl BufferedReply for SeaTalkBufferedReply {
+    async fn preview(&mut self, text: &str) -> Result<(), DriverError> {
+        let sender = self
+            .tx
+            .as_ref()
+            .ok_or_else(|| DriverError::Transport("SeaTalk reply already finished".into()))?;
+        sender
+            .send(Note::Preview(text.to_string()))
+            .map_err(|_| DriverError::Transport("SeaTalk reply worker stopped".into()))
+    }
+
     async fn finish(&mut self, msg: &OutboundMessage) -> Result<(), DriverError> {
         let sender = self
-            .completion
+            .tx
             .take()
             .ok_or_else(|| DriverError::Transport("SeaTalk reply already finished".into()))?;
         let (done, result) = oneshot::channel();
         sender
-            .send(Completion {
+            .send(Note::Finish {
                 text: msg.text.clone(),
                 done,
             })
@@ -173,48 +198,149 @@ impl BufferedReply for SeaTalkBufferedReply {
     }
 }
 
+struct Live {
+    stream: Option<Stream>,
+    /// Leading slices already closed. The open stream holds only the tail.
+    closed: usize,
+    /// Exact text on the open stream. Keepalive resends this, not "Thinking",
+    /// once a reply has replaced the placeholder.
+    snapshot: String,
+    /// Full reply already on screen, closed chunks included. "Thinking" does
+    /// not count: a stream that dies before any answer still sends the whole
+    /// text. A later failure sends only the part past this prefix.
+    shown: String,
+    broken: bool,
+    /// Every bot message this turn put in the thread: closed stream chunks
+    /// and any plain-text fallback. The next mention treats all of them as read.
+    reply_ids: Vec<String>,
+}
+
+struct ReplyCursor {
+    store: Arc<super::CursorStore>,
+    key: String,
+}
+
+fn reply_cursor(
+    app_id: &str,
+    target: &Target,
+    cursors: Option<Arc<super::CursorStore>>,
+) -> Option<ReplyCursor> {
+    let store = cursors?;
+    let thread = target.thread.as_deref()?;
+    let kind = if target.group { "group" } else { "dm" };
+    Some(ReplyCursor {
+        store,
+        key: super::cursor::thread_key(app_id, kind, &target.chat, thread),
+    })
+}
+
+fn note_finish_id(ids: &mut Vec<String>, id: Option<String>, finish: bool) {
+    if finish {
+        if let Some(id) = id {
+            if !ids.iter().any(|existing| existing == &id) {
+                ids.push(id);
+            }
+        }
+    }
+}
+
+async fn settle_reply_cursor(client: &SeaTalkClient, cursor: Option<&ReplyCursor>, live: &Live) {
+    let Some(cursor) = cursor else {
+        return;
+    };
+    if live.reply_ids.is_empty() {
+        eprintln!("[SeaTalk] reply cursor left in place; finish returned no msg_id");
+        return;
+    }
+    for msg_id in &live.reply_ids {
+        super::remember_sent_reply(client, &cursor.store, &cursor.key, msg_id).await;
+    }
+}
+
 async fn wait_for_reply(
     client: Arc<SeaTalkClient>,
     target: Target,
     thinking: String,
-    mut stream: Option<Stream>,
-    mut rx: mpsc::UnboundedReceiver<Completion>,
+    stream: Option<Stream>,
+    reply_cursor: Option<ReplyCursor>,
+    mut rx: mpsc::UnboundedReceiver<Note>,
 ) {
+    let mut live = Live {
+        stream,
+        closed: 0,
+        snapshot: thinking,
+        shown: String::new(),
+        broken: false,
+        reply_ids: Vec::new(),
+    };
     let mut heartbeat = tokio::time::interval(KEEPALIVE);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     heartbeat.tick().await;
     loop {
         tokio::select! {
             biased;
-            completion = rx.recv() => {
-                match completion {
-                    Some(completion) => {
-                        let text = if completion.text.trim().is_empty() {
-                            i18n::t(MsgKey::ReplyFinishedNoText, i18n::locale())
-                        } else {
-                            completion.text
-                        };
-                        let result = present_reply(&client, &target, stream, &thinking, &text).await;
-                        let _ = completion.done.send(result);
-                    }
-                    None => {
-                        if let Some(mut stream) = stream {
-                            let stopped = i18n::t(MsgKey::SessionStopped, i18n::locale());
-                            if let Err(error) = stream.update(&client, &target, &stopped, true).await {
-                                tracing::warn!(error = %error, "SeaTalk: could not close abandoned placeholder");
+            note = rx.recv() => {
+                match note {
+                    Some(Note::Preview(text)) => {
+                        let mut latest = text;
+                        let mut finish = None;
+                        loop {
+                            match rx.try_recv() {
+                                Ok(Note::Preview(text)) => latest = text,
+                                Ok(finish_note @ Note::Finish { .. }) => {
+                                    finish = Some(finish_note);
+                                    break;
+                                }
+                                Err(_) => break,
                             }
                         }
+                        show_preview(&client, &target, &mut live, &latest).await;
+                        if let Some(Note::Finish { text, done }) = finish {
+                            let result = show_final(&client, &target, &mut live, &text).await;
+                            if result.is_ok() {
+                                settle_reply_cursor(&client, reply_cursor.as_ref(), &live).await;
+                            }
+                            let _ = done.send(result);
+                            return;
+                        }
+                    }
+                    Some(Note::Finish { text, done }) => {
+                        let result = show_final(&client, &target, &mut live, &text).await;
+                        if result.is_ok() {
+                            settle_reply_cursor(&client, reply_cursor.as_ref(), &live).await;
+                        }
+                        let _ = done.send(result);
+                        return;
+                    }
+                    None => {
+                        if let Some(mut stream) = live.stream.take() {
+                            let stopped = i18n::t(MsgKey::SessionStopped, i18n::locale());
+                            match stream.update(&client, &target, &stopped, true).await {
+                                Ok(msg_id) => {
+                                    note_finish_id(&mut live.reply_ids, msg_id, true);
+                                    settle_reply_cursor(&client, reply_cursor.as_ref(), &live).await;
+                                }
+                                Err(error) => {
+                                    tracing::warn!(error = %error, "SeaTalk: could not close abandoned placeholder");
+                                }
+                            }
+                        }
+                        return;
                     }
                 }
-                return;
             }
             _ = heartbeat.tick() => {
-                if let Some(active) = stream.as_mut() {
-                    if let Err(error) = active.update(&client, &target, &thinking, false).await {
-                        // SeaTalk terminates a stream after an error. Never
-                        // reference it again; preserve the final-text fallback.
-                        tracing::warn!(error = %error, "SeaTalk: placeholder keepalive failed");
-                        stream = None;
+                if let Some(active) = live.stream.as_mut() {
+                    match active.update(&client, &target, &live.snapshot, false).await {
+                        Ok(_) => {}
+                        Err(error) => {
+                            // SeaTalk terminates a stream after an error. Never
+                            // reference it again. The final text sends only
+                            // what this stream has not already shown.
+                            tracing::warn!(error = %error, "SeaTalk: stream keepalive failed");
+                            live.stream = None;
+                            live.broken = true;
+                        }
                     }
                 }
             }
@@ -222,48 +348,272 @@ async fn wait_for_reply(
     }
 }
 
-async fn present_reply(
+async fn show_preview(client: &SeaTalkClient, target: &Target, live: &mut Live, text: &str) {
+    if live.broken || text.trim().is_empty() || text == live.snapshot {
+        return;
+    }
+    if let Err(error) = publish(client, target, live, text, false).await {
+        tracing::warn!(error = %error, "SeaTalk: reply preview failed; holding the final text");
+        live.stream = None;
+        live.broken = true;
+    }
+}
+
+async fn show_final(
     client: &SeaTalkClient,
     target: &Target,
-    mut stream: Option<Stream>,
-    thinking: &str,
+    live: &mut Live,
     text: &str,
 ) -> Result<(), String> {
-    if stream.is_none() {
-        return target.send_text(client, text).await;
+    let text = if text.trim().is_empty() {
+        if live.shown.is_empty() {
+            i18n::t(MsgKey::ReplyFinishedNoText, i18n::locale())
+        } else {
+            live.shown.clone()
+        }
+    } else {
+        text.to_string()
+    };
+    if live.stream.is_some() {
+        match publish(client, target, live, &text, true).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                tracing::warn!(error = %error, "SeaTalk: closing the stream failed; delivering the reply as text");
+                live.stream = None;
+                live.broken = true;
+            }
+        }
     }
-    let chunks = split_stream_text(text);
-    for (index, chunk) in chunks.iter().enumerate() {
-        if index > 0 {
-            stream = match Stream::init(client, target, thinking).await {
-                Ok(stream) => Some(stream),
-                Err(error) => {
-                    tracing::warn!(error = %error, "SeaTalk: next reply stream unavailable");
-                    None
+    match unsent_reply(&live.shown, &text) {
+        Some(rest) => {
+            let ids = target.send_text(client, &rest).await?;
+            for id in ids {
+                note_finish_id(&mut live.reply_ids, Some(id), true);
+            }
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+/// Text still missing from the thread. `shown` is what a successful stream
+/// update already put on screen, so the ordinary send carries only the tail.
+fn unsent_reply(shown: &str, text: &str) -> Option<String> {
+    if shown.is_empty() {
+        return Some(text.to_string());
+    }
+    let rest = if let Some(rest) = text.strip_prefix(shown) {
+        rest
+    } else {
+        let shared = shared_prefix_len(shown, text);
+        &text[shared..]
+    };
+    let rest = rest.trim();
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
+    }
+}
+
+fn shared_prefix_len(left: &str, right: &str) -> usize {
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum()
+}
+
+async fn publish(
+    client: &SeaTalkClient,
+    target: &Target,
+    live: &mut Live,
+    text: &str,
+    finish: bool,
+) -> Result<(), String> {
+    let plan = frames_for(live.closed, &live.snapshot, text, finish, STREAM_CHAR_LIMIT);
+    let mut stream = live.stream.take();
+    let mut visible = Visible::from_shown(&live.shown, &live.snapshot);
+    let mut advanced = false;
+    for frame in plan.frames {
+        match &frame {
+            Frame::Update {
+                text: chunk,
+                finish,
+            } => {
+                let active = stream
+                    .as_mut()
+                    .ok_or_else(|| "SeaTalk reply stream unavailable".to_string())?;
+                let returned = active.update(client, target, chunk, *finish).await;
+                let msg_id = match returned {
+                    Ok(msg_id) => msg_id,
+                    Err(error) => {
+                        remember_partial(live, &visible, advanced);
+                        return Err(error);
+                    }
+                };
+                note_finish_id(&mut live.reply_ids, msg_id, *finish);
+                if *finish {
+                    stream = None;
                 }
+            }
+            Frame::Init { text: chunk } => match Stream::init(client, target, chunk).await {
+                Ok(next) => stream = Some(next),
+                Err(error) => {
+                    remember_partial(live, &visible, advanced);
+                    return Err(error);
+                }
+            },
+        }
+        visible.apply(&frame);
+        advanced = true;
+    }
+    live.stream = stream;
+    live.closed = plan.closed;
+    live.snapshot = plan.snapshot;
+    live.shown = text.to_string();
+    Ok(())
+}
+
+fn remember_partial(live: &mut Live, visible: &Visible, advanced: bool) {
+    live.stream = None;
+    if advanced {
+        live.shown = visible.full();
+        live.snapshot = visible.open.clone();
+    }
+}
+
+/// Reply text currently on screen: closed chunks, then the open snapshot.
+struct Visible {
+    closed: String,
+    open: String,
+}
+
+impl Visible {
+    fn from_shown(shown: &str, snapshot: &str) -> Self {
+        if shown.is_empty() {
+            return Self {
+                closed: String::new(),
+                open: String::new(),
             };
         }
-        let result = match stream.as_mut() {
-            Some(active) => reveal_text(client, target, active, chunk).await,
-            None => Err("SeaTalk reply stream unavailable".to_string()),
-        };
-        if let Err(error) = result {
-            tracing::warn!(error = %error, "SeaTalk: streaming failed; delivering remaining reply as text");
-            // Include the current chunk: a failed request may not have reached
-            // SeaTalk. Previously completed chunks need not be sent again.
-            return target.send_text(client, &chunks[index..].concat()).await;
+        match shown.strip_suffix(snapshot) {
+            Some(closed) => Self {
+                closed: closed.to_string(),
+                open: snapshot.to_string(),
+            },
+            None => Self {
+                closed: String::new(),
+                open: shown.to_string(),
+            },
         }
     }
-    Ok(())
+
+    fn full(&self) -> String {
+        let mut out = String::with_capacity(self.closed.len() + self.open.len());
+        out.push_str(&self.closed);
+        out.push_str(&self.open);
+        out
+    }
+
+    fn apply(&mut self, frame: &Frame) {
+        match frame {
+            Frame::Update { text, finish: true } => {
+                self.closed.push_str(text);
+                self.open.clear();
+            }
+            Frame::Update { text, .. } | Frame::Init { text } => {
+                self.open = text.clone();
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Frame {
+    /// Replace the open stream. `finish` closes it.
+    Update { text: String, finish: bool },
+    /// Open the next stream. Its first snapshot is `text`.
+    Init { text: String },
+}
+
+struct Plan {
+    frames: Vec<Frame>,
+    closed: usize,
+    snapshot: String,
+}
+
+/// What to send so `text` becomes the visible reply.
+///
+/// An update replaces the whole open snapshot, so a reply that outgrows one
+/// stream closes that stream and continues in the next. An unchanged snapshot
+/// is not sent again; keepalive does that on its own timer.
+fn frames_for(closed: usize, snapshot: &str, text: &str, finish: bool, limit: usize) -> Plan {
+    let chunks = split_at(text, limit);
+    if chunks.is_empty() {
+        return Plan {
+            frames: Vec::new(),
+            closed,
+            snapshot: snapshot.to_string(),
+        };
+    }
+    let mut frames = Vec::new();
+    let mut closed = closed.min(chunks.len());
+    let mut snapshot = snapshot.to_string();
+    if chunks.len() <= closed {
+        if text != snapshot || finish {
+            frames.push(Frame::Update {
+                text: text.to_string(),
+                finish,
+            });
+            snapshot = text.to_string();
+        }
+        return Plan {
+            frames,
+            closed,
+            snapshot,
+        };
+    }
+    let last = chunks.len() - 1;
+    while closed < last {
+        let chunk = chunks[closed].to_string();
+        frames.push(Frame::Update {
+            text: chunk,
+            finish: true,
+        });
+        closed += 1;
+        let next = chunks[closed].to_string();
+        frames.push(Frame::Init { text: next.clone() });
+        snapshot = next;
+    }
+    let current = chunks[closed].to_string();
+    if current != snapshot || finish {
+        frames.push(Frame::Update {
+            text: current.clone(),
+            finish,
+        });
+        snapshot = current;
+    }
+    if finish {
+        closed = chunks.len();
+    }
+    Plan {
+        frames,
+        closed,
+        snapshot,
+    }
 }
 
 /// Split by Unicode characters, retaining all bytes. Each subsequent stream
 /// stays in the same thread and keeps the same session binding.
-fn split_stream_text(text: &str) -> Vec<&str> {
+fn split_at(text: &str, limit: usize) -> Vec<&str> {
+    if limit == 0 {
+        return vec![text];
+    }
     let mut chunks = Vec::new();
     let mut start = 0;
     for (count, (offset, _)) in text.char_indices().enumerate() {
-        if count > 0 && count % STREAM_CHAR_LIMIT == 0 {
+        if count > 0 && count % limit == 0 {
             chunks.push(&text[start..offset]);
             start = offset;
         }
@@ -274,24 +624,114 @@ fn split_stream_text(text: &str) -> Vec<&str> {
     chunks
 }
 
-async fn reveal_text(
-    client: &SeaTalkClient,
-    target: &Target,
-    stream: &mut Stream,
-    text: &str,
-) -> Result<(), String> {
-    // Short answers should also unfold across several snapshots. Long answers
-    // cap each frame so a full 4096-character stream still advances regularly.
-    let frame_chars = text.chars().count().div_ceil(8).clamp(1, FRAME_CHARS);
-    for (count, (offset, ch)) in text.char_indices().enumerate() {
-        let end = offset + ch.len_utf8();
-        if (count + 1) % frame_chars == 0 || end == text.len() {
-            let finish = end == text.len();
-            stream.update(client, target, &text[..end], finish).await?;
-            if !finish {
-                tokio::time::sleep(FRAME_INTERVAL).await;
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(plan: &Plan) -> Vec<(&str, bool)> {
+        plan.frames
+            .iter()
+            .map(|frame| match frame {
+                Frame::Update { text, finish } => (text.as_str(), *finish),
+                Frame::Init { text } => (text.as_str(), false),
+            })
+            .collect()
     }
-    Ok(())
+
+    #[test]
+    fn the_first_reply_replaces_thinking_without_closing() {
+        let plan = frames_for(0, "Thinking…", "先看一下日志", false, 4096);
+        assert_eq!(texts(&plan), vec![("先看一下日志", false)]);
+        assert_eq!(plan.closed, 0);
+        assert_eq!(plan.snapshot, "先看一下日志");
+    }
+
+    #[test]
+    fn a_later_reply_replaces_the_same_stream() {
+        let plan = frames_for(0, "先看一下日志", "先看一下日志\n\n有三处报错", false, 4096);
+        assert_eq!(texts(&plan), vec![("先看一下日志\n\n有三处报错", false)]);
+    }
+
+    #[test]
+    fn an_unchanged_reply_sends_nothing() {
+        let plan = frames_for(0, "先看一下日志", "先看一下日志", false, 4096);
+        assert!(plan.frames.is_empty());
+    }
+
+    #[test]
+    fn finish_closes_the_snapshot_already_shown() {
+        let plan = frames_for(0, "先看一下日志", "先看一下日志", true, 4096);
+        assert_eq!(texts(&plan), vec![("先看一下日志", true)]);
+        assert_eq!(plan.closed, 1);
+    }
+
+    #[test]
+    fn a_reply_past_the_limit_opens_the_next_stream() {
+        let plan = frames_for(0, "Thinking…", "abcdefghij", false, 4);
+        assert_eq!(
+            plan.frames,
+            vec![
+                Frame::Update {
+                    text: "abcd".into(),
+                    finish: true,
+                },
+                Frame::Init {
+                    text: "efgh".into(),
+                },
+                Frame::Update {
+                    text: "efgh".into(),
+                    finish: true,
+                },
+                Frame::Init { text: "ij".into() },
+            ]
+        );
+        assert_eq!(plan.closed, 2);
+        assert_eq!(plan.snapshot, "ij");
+    }
+
+    #[test]
+    fn closed_chunks_and_the_plain_fallback_are_both_remembered() {
+        let mut ids = Vec::new();
+        note_finish_id(&mut ids, Some("chunk-1".into()), true);
+        note_finish_id(&mut ids, Some("chunk-1".into()), true);
+        note_finish_id(&mut ids, None, true);
+        note_finish_id(&mut ids, Some("ignored".into()), false);
+        note_finish_id(&mut ids, Some("plain-1".into()), true);
+        assert_eq!(ids, vec!["chunk-1".to_string(), "plain-1".to_string()]);
+    }
+
+    #[test]
+    fn a_failed_preview_does_not_resend_the_text_already_shown() {
+        assert_eq!(
+            unsent_reply("先看一下日志", "先看一下日志\n\n有三处报错").as_deref(),
+            Some("有三处报错")
+        );
+        assert_eq!(unsent_reply("先看一下日志", "先看一下日志"), None);
+        assert_eq!(
+            unsent_reply("", "先看一下日志").as_deref(),
+            Some("先看一下日志")
+        );
+    }
+
+    #[test]
+    fn a_replaced_tail_sends_only_the_new_ending() {
+        assert_eq!(
+            unsent_reply("done\n\ntyping", "done\n\nnext").as_deref(),
+            Some("next")
+        );
+    }
+
+    #[test]
+    fn a_split_that_dies_after_the_first_chunk_keeps_that_chunk_shown() {
+        let mut visible = Visible::from_shown("", "Thinking…");
+        visible.apply(&Frame::Update {
+            text: "abcd".into(),
+            finish: true,
+        });
+        assert_eq!(visible.full(), "abcd");
+        assert_eq!(
+            unsent_reply(&visible.full(), "abcdefghij").as_deref(),
+            Some("efghij")
+        );
+    }
 }

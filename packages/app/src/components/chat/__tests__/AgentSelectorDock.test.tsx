@@ -160,22 +160,25 @@ describe('AgentSelectorDock', () => {
     expect((await screen.findAllByText('Sonnet 4.6')).length).toBeGreaterThanOrEqual(1)
   })
 
-  it('keeps the newest runtime row when duplicate rows arrive newest-first', async () => {
+  it('does not show another session runtime model on this session', async () => {
+    const now = Date.now()
     mocks.runtimeStates = {
-      'runtime-new': {
+      'a-1::session-1': {
         daemonActorId: 'a-1',
-        lastUpdated: Date.now(),
+        lastUpdated: now - 1,
         info: {
-          availableModels: [],
-          currentModel: 'new-model',
+          runtimeId: 'session-1',
+          availableModels: [{ id: 'old-model', displayName: 'old-model' }],
+          currentModel: 'old-model',
         },
       },
-      'runtime-old': {
+      'a-1::session-other': {
         daemonActorId: 'a-1',
-        lastUpdated: Date.now() - 1,
+        lastUpdated: now,
         info: {
-          availableModels: [],
-          currentModel: 'old-model',
+          runtimeId: 'session-other',
+          availableModels: [{ id: 'new-model', displayName: 'new-model' }],
+          currentModel: 'new-model',
         },
       },
     }
@@ -185,13 +188,13 @@ describe('AgentSelectorDock', () => {
         {...dockProps({
           activeSessionId: 'session-1',
           engagedAgents: [{ id: 'a-1', displayName: 'OpenCode Bot' }],
-          agentToRuntimeId: new Map([['a-1', 'runtime-new']]),
+          agentToRuntimeId: new Map([['a-1', 'session-1']]),
         })}
       />,
     )
 
-    expect(await screen.findByText('new-model')).toBeInTheDocument()
-    expect(screen.queryByText('old-model')).not.toBeInTheDocument()
+    expect(await screen.findByText('old-model')).toBeInTheDocument()
+    expect(screen.queryByText('new-model')).not.toBeInTheDocument()
   })
 
   it('hides model label on the pill in solo builds', async () => {

@@ -94,6 +94,17 @@ pub trait FetchQuotedText: Send + Sync {
     async fn fetch(&self) -> Result<String, DriverError>;
 }
 
+/// Runs after the inbound row is stored, and only then.
+///
+/// A channel read cursor belongs here: advancing it before the write would
+/// skip history when the write fails, and the core is the only place that
+/// knows the write succeeded. Dropping the message without a successful write
+/// must not call this.
+#[async_trait]
+pub trait AfterPersisted: Send + Sync {
+    async fn persisted(&self);
+}
+
 pub struct InboundMessage {
     pub conversation: Conversation,
     pub sender: ExternalSender,
@@ -112,6 +123,11 @@ pub struct InboundMessage {
     /// Text of the message being replied to, when the channel supports quoting.
     /// Used for context and for matching an answer back to a pending question.
     pub quoted_text: Option<QuotedText>,
+    /// Channel context placed before the quoted block. SeaTalk uses it for
+    /// unread thread history. Empty means there is nothing to add.
+    pub context_prefix: Option<String>,
+    /// See [`AfterPersisted`]. `None` for channels that have nothing to commit.
+    pub after_persisted: Option<Arc<dyn AfterPersisted>>,
     /// Opaque handle back to *this* request, for channels whose reply path is
     /// bound to the inbound one rather than to the conversation.
     ///
@@ -242,11 +258,17 @@ pub enum DriverError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryId(pub String);
 
-/// An output placeholder kept alive while the agent builds a complete reply.
-/// The driver presents the final message; no agent deltas or tool events are
-/// passed to this object. Dropping it must close an unfinished placeholder.
+/// An output placeholder kept alive while the agent builds its reply.
+///
+/// `preview` receives the reply so far (cumulative, not a delta). The default
+/// ignores it, so a channel that only wants the finished message stays quiet
+/// until `finish`. Dropping the placeholder must close it.
 #[async_trait]
 pub trait BufferedReply: Send {
+    async fn preview(&mut self, _text: &str) -> Result<(), DriverError> {
+        Ok(())
+    }
+
     async fn finish(&mut self, msg: &OutboundMessage) -> Result<(), DriverError>;
 }
 

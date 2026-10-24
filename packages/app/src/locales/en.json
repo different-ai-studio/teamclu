@@ -491,6 +491,12 @@
     "quitAndStopAgent": "Quit and stop Agent"
   },
   "auth": {
+    "errors": {
+      "invalidCredentials": "Incorrect email or password.",
+      "emailNotConfirmed": "This email address has not been verified yet.",
+      "rateLimited": "Too many attempts. Please wait a minute and try again.",
+      "serverUnavailable": "The sign-in service is temporarily unavailable. Please try again."
+    },
     "tagline": "AI Ally · AI Teammate",
     "teamBootstrapError": {
       "title": "Couldn't finish setting up your workspace",
@@ -2429,6 +2435,15 @@
         "checkAddToGroup": "Add the bot to your target group",
         "checkStartGateway": "Start the gateway below, then Re-verify WebSocket in the portal"
       },
+      "runtime": {
+        "advanced": "Advanced options",
+        "workspace": "Workspace",
+        "model": "Model",
+        "workspaceUnset": "Temporary directory",
+        "workspaceHint": "New sessions on this channel run here. Saving stores the current choice; you can change it later.",
+        "modelPiDefault": "Pi default model",
+        "modelHint": "Prefilled from the gateway model, or pi’s own default when that is unset. A later change applies to new sessions."
+      },
       "disconnected": "Disconnected",
       "connecting": "Connecting...",
       "connected": "Connected",
@@ -2827,10 +2842,8 @@
         "addBot": "Add bot",
         "removeBot": "Remove",
         "botLabel": "Bot {{n}}",
-        "botWorkspace": "Workspace",
         "botSystemPrompt": "System prompt",
         "botSystemPromptPlaceholder": "Optional system prompt for this bot",
-        "botDefaultOption": "Default",
         "botConnected": "Connected",
         "botDisconnected": "Disconnected",
         "completeMessage": "Your WeCom bot is now configured. Click \"Finish\" to save your settings and start using the bot.",
@@ -2878,6 +2891,22 @@
       "defaultAgentReadOnly": "Only team owner/admin can edit"
     },
     "extension": {
+      "pageAccess": {
+        "title": "Share this page with the agent?",
+        "description": "The AI agent in this conversation wants to read the page in your current tab (URL, title and visible text). It is sent to your team’s agent and AI model only if you allow it.",
+        "chromePromptHint": "Chrome will then ask you once to allow site access for TeamClu. You can revoke it any time in chrome://extensions.",
+        "allowOnce": "Allow once",
+        "allowSession": "Allow until panel closes",
+        "deny": "Don’t allow",
+        "permissionDenied": "Chrome site access was not granted, so the page was not shared."
+      },
+      "privacy": {
+        "title": "Privacy",
+        "agentPageAccess": "Let agents ask to read the current page",
+        "agentPageAccessHint": "When on, an agent can request the page in your active tab and you approve each request. When off, agents can never read your pages.",
+        "diagnostics": "Send anonymous error reports",
+        "diagnosticsHint": "Crash and error reports (no account identity, no IP, URLs redacted) help us fix bugs. Off by default; takes effect after the side panel is reopened."
+      },
       "general": {
         "title": "General",
         "description": "Extension settings for the browser side panel."
@@ -2886,6 +2915,7 @@
         "title": "Unavailable on this page"
       },
       "linkHover": {
+        "permissionDenied": "Site access was not granted, so the button cannot appear on {{domain}}.",
         "title": "Page quick-open button",
         "description": "On allowlisted sites, hovering any clickable link shows a TeamClu button to open the side panel with that link.",
         "hint": "example.com also matches www.example.com and all subdomains. Nothing is shown until you add at least one domain.",

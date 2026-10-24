@@ -12,6 +12,11 @@ import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
+import {
+  lookupMemberInboxRecipients,
+  publishSessionParticipantsChanged,
+  removedMemberUserId,
+} from "./session-participant-notify.js";
 import { ADMIN_LIST_CAP, clampPage, IN_FILTER_BATCH, isPlatformOperator, safeSearch } from "./platform-operators.js";
 import {
   DEFAULT_LIST_LIMIT,
@@ -685,6 +690,10 @@ export function createSupabaseBusinessRepository(options) {
     // never affected. It delivers to agent inboxes as well as sending the
     // notifications, hence the name change from `dispatchPush`.
     fanoutMessage,
+    // Optional inbox publish for a roster change. Absent in tests and in
+    // processes that have no MQTT publisher. Failures are logged and do not
+    // change the HTTP result of the seat write.
+    publishSessionParticipantInbox,
   } = options;
 
   if (!supabaseUrl) throw new Error("SUPABASE_URL is required");
@@ -841,6 +850,18 @@ export function createSupabaseBusinessRepository(options) {
     }
     const { createServiceRoleClient } = await import("./supabase.js");
     return createServiceRoleClient();
+  }
+
+  function scheduleSessionParticipantsChanged(sessionId: string, removedUserId: string | null = null) {
+    if (!publishSessionParticipantInbox) return;
+    void publishSessionParticipantsChanged({
+      sessionId,
+      removedUserId,
+      lookup: () => lookupMemberInboxRecipients(supabase, sessionId),
+      publish: publishSessionParticipantInbox,
+    }).catch((err: unknown) => {
+      console.error("[session-participants] notify failed (swallowed):", err);
+    });
   }
 
   async function findAgent(admin, agentId) {
@@ -3625,7 +3646,7 @@ export function createSupabaseBusinessRepository(options) {
       // SECURITY DEFINER RPC: verifies team membership and inserts the caller as
       // a participant, bypassing the participant-only RLS that would otherwise
       // hide the session and block self-insert. Idempotent.
-      const { error } = await supabase.rpc("join_session", { p_session_id: sessionId });
+      const { data, error } = await supabase.rpc("join_session", { p_session_id: sessionId });
       if (error) {
         if (error.code === "P0002") throw new ApiError(404, "not_found", "session not found");
         if (error.code === "42501") throw new ApiError(403, "forbidden", "not a member of this session's team");
@@ -3634,6 +3655,7 @@ export function createSupabaseBusinessRepository(options) {
       // The caller is now a participant, so RLS lets getSession read the row.
       const session = await this.getSession(sessionId);
       if (!session) throw new ApiError(404, "not_found", "session not found");
+      if (data === true) scheduleSessionParticipantsChanged(sessionId);
       return session;
     },
 
@@ -3795,8 +3817,13 @@ export function createSupabaseBusinessRepository(options) {
       const row = Array.isArray(data) ? data[0] : data;
       if (!row) throw new ApiError(502, "upstream_unavailable", "ensure_gateway_session returned no row");
       const acpSessionId = row.acp_session_id ?? row.acpSessionId ?? null;
+      const sessionId = row.session_id ?? row.sessionId ?? null;
+      const insertedActorIds = row.inserted_actor_ids ?? row.insertedActorIds ?? [];
+      if (sessionId && Array.isArray(insertedActorIds) && insertedActorIds.length > 0) {
+        scheduleSessionParticipantsChanged(sessionId);
+      }
       return {
-        sessionId: row.session_id ?? row.sessionId ?? null,
+        sessionId,
         // The amuxd daemon deserializes `gatewaySessionId` as a REQUIRED field
         // and uses it as the logical ACP session id it later looks up via
         // getSessionByAcp (which queries the acp_session_id column) — so it must
@@ -4194,12 +4221,16 @@ export function createSupabaseBusinessRepository(options) {
       // Re-joining no longer rewrites `role`. That is the safer half of the
       // change: the caller always sends "member", so the old path quietly
       // demoted an owner on every message they sent through a channel.
-      const { error: insertError } = await supabase
+      // `ignoreDuplicates` plus `select` returns only the row this call inserted.
+      // An empty array is a conflict, not an error — do not chain `.single()`,
+      // which turns zero rows into a PostgREST error. The read below still
+      // returns the existing seat for the HTTP body.
+      const { data: insertedRows, error: insertError } = await supabase
         .from("session_participants")
-        .upsert(row, { onConflict: "session_id,actor_id", ignoreDuplicates: true });
+        .upsert(row, { onConflict: "session_id,actor_id", ignoreDuplicates: true })
+        .select("session_id, actor_id, role, joined_at");
       if (insertError) throw insertError;
-      // `ignoreDuplicates` returns no rows for the conflict case, so the read
-      // is separate rather than chained off the write.
+      const inserted = Array.isArray(insertedRows) && insertedRows.length > 0;
       const { data, error } = await supabase
         .from("session_participants")
         .select("session_id, actor_id, role, joined_at")
@@ -4207,6 +4238,7 @@ export function createSupabaseBusinessRepository(options) {
         .eq("actor_id", input.actorId)
         .single();
       if (error) throw error;
+      if (inserted) scheduleSessionParticipantsChanged(sessionId);
       return {
         sessionId: data.session_id,
         actorId: data.actor_id,
@@ -4341,6 +4373,16 @@ export function createSupabaseBusinessRepository(options) {
         );
       }
 
+      // Remember a removed human's login before the row is gone. Agents are
+      // not inbox recipients even when they carry a user_id.
+      const { data: seatActor, error: seatActorErr } = await admin
+        .from("actors")
+        .select("actor_type, user_id")
+        .eq("id", actorId)
+        .maybeSingle();
+      if (seatActorErr) throw seatActorErr;
+      const removedUserId = removedMemberUserId(seatActor);
+
       // Asking for the deleted rows back is what tells a removal apart from a
       // miss; without it a wrong id is as silent as the RLS denial was.
       const { data: removed, error } = await admin
@@ -4351,6 +4393,7 @@ export function createSupabaseBusinessRepository(options) {
         .select("actor_id");
       if (error) throw error;
       if (!removed?.length) throw new ApiError(404, "not_found", "participant not found");
+      scheduleSessionParticipantsChanged(sessionId, removedUserId);
     },
 
     // --- Actor reads + external + access (member-access table) ---

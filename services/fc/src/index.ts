@@ -514,6 +514,11 @@ export function makeBusinessRepoFactory() {
       publishableKey: SUPABASE_PUBLISHABLE_KEY(),
       accessToken,
       fanoutMessage: async (record) => { await fanoutMessage(record, pushDeps()); },
+      publishSessionParticipantInbox: async (topic: string, body: string) => {
+        const mqtt = pushDeps().mqtt;
+        if (!mqtt) return;
+        await mqtt.publish(topic, body);
+      },
       ...makeDeployDeps(),
       ...makeTeardownDeps(),
       ...makeAppDataDeps(),

@@ -156,7 +156,9 @@ function main() {
   const permissionJustifications = privacy.permissionJustifications || {};
   const declaredPermissions = [
     ...(manifest.permissions || []),
-    ...(manifest.host_permissions?.length ? ['host_permissions'] : []),
+    ...(manifest.host_permissions?.length || manifest.optional_host_permissions?.length
+      ? ['host_permissions']
+      : []),
   ];
   for (const permission of declaredPermissions) {
     if (!permissionJustifications[permission]) {

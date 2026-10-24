@@ -706,6 +706,7 @@ impl ChannelManager {
     ) -> (Vec<SeaTalkGateway>, Vec<(String, String)>) {
         let mut started = Vec::new();
         let mut errors = Vec::new();
+        let cursors = open_seatalk_cursors();
         for bot in c.resolved_bots().into_iter().filter(|b| b.enabled) {
             if bot.app_id.is_empty() || bot.app_secret.is_empty() {
                 let message = "app id and app secret are required".to_string();
@@ -749,6 +750,9 @@ impl ChannelManager {
             let dm_thread = cfg.dm_thread_session;
             let group_thread = cfg.group_thread_session;
             gw.set_config(cfg).await;
+            if let Some(cursors) = &cursors {
+                gw.set_cursor_store(cursors.clone()).await;
+            }
             gw.use_core_pipeline(
                 self.core_sink_for(Arc::new(
                     gw.as_driver()
@@ -772,6 +776,26 @@ impl ChannelManager {
             }
         }
         (started, errors)
+    }
+}
+
+fn open_seatalk_cursors() -> Option<Arc<teamclu_gateway::seatalk::CursorStore>> {
+    let path = crate::config::layout::active_state_dir().join("seatalk-thread-cursors.json");
+    match teamclu_gateway::seatalk::CursorStore::open(&path) {
+        Ok(store) => {
+            println!(
+                "[ChannelManager] seatalk thread cursors at {}",
+                path.display()
+            );
+            Some(Arc::new(store))
+        }
+        Err(error) => {
+            eprintln!(
+                "[ChannelManager] seatalk thread cursors unavailable ({}): {error}",
+                path.display()
+            );
+            None
+        }
     }
 }
 

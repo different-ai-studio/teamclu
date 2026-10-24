@@ -522,7 +522,8 @@ pub struct ChannelsConfig {
     ///
     /// `None` keeps the old unpinned behaviour, which is what an existing
     /// team.toml deserializes to — the setting is additive, not a hard cutover.
-    /// A chat's own `/model` still wins for that session.
+    /// A chat's own `/model` still wins for that session, and a channel's own
+    /// `model` (or a WeCom or SeaTalk bot's) wins over this gateway-wide value.
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -549,6 +550,12 @@ pub struct DiscordChannel {
     pub bot_token: String,
     #[serde(default)]
     pub default_username: Option<String>,
+    /// Workspace this channel's sessions run in. Empty inherits the agent default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// `provider/model` this channel starts on. Empty inherits `channels.model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -589,6 +596,9 @@ pub struct WeComBot {
     /// leftover name then rides along in the prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_name: Option<String>,
+    /// `provider/model` this bot's sessions start on. Empty inherits `channels.model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 fn default_wecom_stream_max_secs() -> u64 {
@@ -648,6 +658,7 @@ impl WeComChannel {
             system_prompt: None,
             bot_name: None,
             api_key: None,
+            model: None,
         }]
     }
 }
@@ -659,6 +670,12 @@ pub struct FeishuChannel {
     /// Stored in the team secret store, not in team.toml (absent = unset).
     #[serde(default)]
     pub app_secret: String,
+    /// Workspace this channel's sessions run in. Empty inherits the agent default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// `provider/model` this channel starts on. Empty inherits `channels.model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -667,6 +684,12 @@ pub struct KookChannel {
     /// Stored in the team secret store, not in team.toml (absent = unset).
     #[serde(default)]
     pub bot_token: String,
+    /// Workspace this channel's sessions run in. Empty inherits the agent default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// `provider/model` this channel starts on. Empty inherits `channels.model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -676,6 +699,12 @@ pub struct WeChatChannel {
     /// Stored in the team secret store, not in team.toml (absent = unset).
     #[serde(default)]
     pub ilink_token: String,
+    /// Workspace this channel's sessions run in. Empty inherits the agent default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// `provider/model` this channel starts on. Empty inherits `channels.model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -691,6 +720,12 @@ pub struct SeaTalkBot {
     /// Persona injected into every turn this bot answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// Workspace this bot's sessions run in. Empty inherits the agent default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// `provider/model` this bot starts on. Empty inherits `channels.model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -737,6 +772,8 @@ impl SeaTalkChannel {
             app_id: self.app_id.clone(),
             app_secret: self.app_secret.clone(),
             system_prompt: self.system_prompt.clone(),
+            workspace_id: None,
+            model: None,
         }]
     }
 }
@@ -770,6 +807,12 @@ pub struct EmailChannel {
     pub smtp_pass: String,
     #[serde(default)]
     pub allowed_senders: Vec<String>,
+    /// Workspace this channel's sessions run in. Empty inherits the agent default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// `provider/model` this channel starts on. Empty inherits `channels.model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// How long an idle Attachment stays warm. Not a tuning knob: it defines the

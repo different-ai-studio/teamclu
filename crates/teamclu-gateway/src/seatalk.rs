@@ -16,6 +16,11 @@ use crate::{
 #[path = "seatalk_stream.rs"]
 mod stream;
 
+#[path = "seatalk_cursor.rs"]
+mod cursor;
+
+pub use cursor::CursorStore;
+
 const SEATALK_API_BASE: &str = "https://openapi.seatalk.io";
 const SEATALK_WS_URL: &str = "wss://ws-openapi.haiserve.com/ws/bot";
 const TOKEN_REFRESH_MARGIN_SECS: u64 = 600;
@@ -35,6 +40,8 @@ struct SeaTalkClient {
     app_id: String,
     app_secret: String,
     http: reqwest::Client,
+    /// Image bodies are larger than the JSON calls, so they get their own budget.
+    media_http: reqwest::Client,
     token: RwLock<Option<SeaTalkTokenInfo>>,
 }
 
@@ -44,6 +51,7 @@ impl SeaTalkClient {
             app_id,
             app_secret,
             http: crate::http_client_secs(10),
+            media_http: crate::http_client_secs(60),
             token: RwLock::new(None),
         }
     }
@@ -140,24 +148,76 @@ impl SeaTalkClient {
         Ok(data)
     }
 
-    async fn get_quoted_text(&self, message_id: &str) -> Result<String, String> {
+    async fn get_message(&self, message_id: &str) -> Result<serde_json::Value, String> {
         let path = format!(
             "/messaging/v2/get_message_by_message_id?message_id={}",
             urlencoding::encode(message_id)
         );
-        let message = self
-            .api_call(reqwest::Method::GET, &path, None, true)
-            .await?;
-        // The API returns the message fields at the top level. Keep mentions
-        // in the original quote: they are context, not an address to this bot.
-        if message["tag"].as_str() != Some("text") {
-            return Err("引用的消息不是文本；请直接发送需要处理的文字。".into());
+        self.api_call(reqwest::Method::GET, &path, None, true).await
+    }
+
+    async fn get_thread_page(
+        &self,
+        group: bool,
+        chat_id: &str,
+        thread_id: &str,
+        page_cursor: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let mut query = format!(
+            "{}={}&thread_id={}&page_size=50",
+            if group { "group_id" } else { "employee_code" },
+            urlencoding::encode(chat_id),
+            urlencoding::encode(thread_id),
+        );
+        if let Some(page_cursor) = page_cursor.filter(|c| !c.is_empty()) {
+            query.push_str("&cursor=");
+            query.push_str(&urlencoding::encode(page_cursor));
         }
-        let text = message["text"]["plain_text"]
-            .as_str()
-            .filter(|text| !text.trim().is_empty())
-            .ok_or_else(|| "引用消息没有可读取的文字；请直接发送需要处理的文字。".to_string())?;
-        Ok(text.to_string())
+        let path = if group {
+            format!("/messaging/v2/group_chat/get_thread_by_thread_id?{query}")
+        } else {
+            format!("/messaging/v2/single_chat/get_thread_by_thread_id?{query}")
+        };
+        self.api_call(reqwest::Method::GET, &path, None, true).await
+    }
+
+    /// `image.content` on an inbound message is a URL. Sending an image is the
+    /// opposite: that field is base64. Download with the bot token; the URL is
+    /// not public.
+    async fn download_media(&self, url: &str) -> Result<(Vec<u8>, String), String> {
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return Err("SeaTalk media url is not http".into());
+        }
+        // `image.content` is caller-controlled. Refuse before any request so a
+        // group member cannot aim the daemon at an internal address.
+        if !seatalk_media_host(url) {
+            return Err("SeaTalk media url is not on a seatalk host".into());
+        }
+        let token = self.get_access_token().await?;
+        let resp = self
+            .media_http
+            .get(url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(|e| format!("SeaTalk media download failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "SeaTalk media download failed: HTTP {}",
+                resp.status()
+            ));
+        }
+        let mime = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("SeaTalk media body failed: {e}"))?;
+        Ok((bytes.to_vec(), mime))
     }
 
     async fn send_group_text(
@@ -165,21 +225,28 @@ impl SeaTalkClient {
         group_id: &str,
         text: &str,
         thread_id: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
+        let mut ids = Vec::new();
         for chunk in chunk_text(text, TEXT_CHUNK_LIMIT) {
             let message = build_text_message(&chunk, thread_id);
-            self.api_call(
-                reqwest::Method::POST,
-                "/messaging/v2/group_chat",
-                Some(json!({
-                    "group_id": group_id,
-                    "message": message,
-                })),
-                true,
-            )
-            .await?;
+            let response = self
+                .api_call(
+                    reqwest::Method::POST,
+                    "/messaging/v2/group_chat",
+                    Some(json!({
+                        "group_id": group_id,
+                        "message": message,
+                    })),
+                    true,
+                )
+                .await?;
+            if let Some(id) = sent_message_id(&response) {
+                ids.push(id);
+            } else {
+                eprintln!("[SeaTalk] sent group text returned no message id");
+            }
         }
-        Ok(())
+        Ok(ids)
     }
 
     async fn send_single_text(
@@ -187,21 +254,60 @@ impl SeaTalkClient {
         employee_code: &str,
         text: &str,
         thread_id: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
+        let mut ids = Vec::new();
         for chunk in chunk_text(text, TEXT_CHUNK_LIMIT) {
             let message = build_text_message(&chunk, thread_id);
-            self.api_call(
-                reqwest::Method::POST,
-                "/messaging/v2/single_chat",
-                Some(json!({
-                    "employee_code": employee_code,
-                    "message": message,
-                })),
-                true,
-            )
-            .await?;
+            let response = self
+                .api_call(
+                    reqwest::Method::POST,
+                    "/messaging/v2/single_chat",
+                    Some(json!({
+                        "employee_code": employee_code,
+                        "message": message,
+                    })),
+                    true,
+                )
+                .await?;
+            if let Some(id) = sent_message_id(&response) {
+                ids.push(id);
+            } else {
+                eprintln!("[SeaTalk] sent direct text returned no message id");
+            }
         }
-        Ok(())
+        Ok(ids)
+    }
+}
+
+/// Send responses use `message_id`. Stream updates use `msg_id`. Either one
+/// is the thread message the next mention must treat as already read.
+fn sent_message_id(response: &serde_json::Value) -> Option<String> {
+    optional_id(response["message_id"].as_str())
+        .or_else(|| optional_id(response["msg_id"].as_str()))
+        .map(str::to_string)
+}
+
+async fn remember_sent_reply(
+    client: &SeaTalkClient,
+    store: &CursorStore,
+    key: &str,
+    message_id: &str,
+) {
+    let sent_time = match client.get_message(message_id).await {
+        Ok(message) => json_sent_time(&message).filter(|sent| *sent > 0),
+        Err(error) => {
+            eprintln!("[SeaTalk] reply cursor left in place; message lookup failed: {error}");
+            return;
+        }
+    };
+    let Some(sent_time) = sent_time else {
+        eprintln!("[SeaTalk] reply cursor left in place; message has no sent time");
+        return;
+    };
+    if let Err(error) = store.note_reply(key, sent_time, message_id).await {
+        eprintln!("[SeaTalk] reply cursor was not saved: {error}");
+    } else {
+        eprintln!("[SeaTalk] thread cursor remembered reply msg_id={message_id}");
     }
 }
 
@@ -223,24 +329,58 @@ struct HandlerContext {
     client: Arc<SeaTalkClient>,
     processed_events: Arc<RwLock<ProcessedMessageTracker>>,
     inbound_sink: Option<Arc<dyn crate::driver::InboundSink>>,
+    app_id: String,
+    cursors: Option<Arc<CursorStore>>,
 }
 
-struct SeaTalkQuoteFetch {
+struct SeaTalkImageFetch {
     client: Arc<SeaTalkClient>,
-    message_id: String,
+    url: String,
 }
 
 #[async_trait::async_trait]
-impl crate::driver::FetchQuotedText for SeaTalkQuoteFetch {
-    async fn fetch(&self) -> Result<String, crate::driver::DriverError> {
+impl crate::driver::FetchAttachment for SeaTalkImageFetch {
+    async fn fetch(&self) -> Result<Vec<u8>, crate::driver::DriverError> {
         self.client
-            .get_quoted_text(&self.message_id)
+            .download_media(&self.url)
             .await
-            .map_err(|error| {
-                crate::driver::DriverError::Transport(format!(
-                    "无法读取 SeaTalk 引用消息，请直接发送原文。{error}"
-                ))
-            })
+            .map(|(bytes, _mime)| bytes)
+            .map_err(crate::driver::DriverError::Transport)
+    }
+}
+
+/// Quote lookup already failed. Kept deferred so the core still refuses the
+/// turn instead of answering without the message the user pointed at.
+struct FailedQuoteFetch(String);
+
+#[async_trait::async_trait]
+impl crate::driver::FetchQuotedText for FailedQuoteFetch {
+    async fn fetch(&self) -> Result<String, crate::driver::DriverError> {
+        Err(crate::driver::DriverError::Transport(self.0.clone()))
+    }
+}
+
+/// Saves the thread cursor after the core stores the inbound row, then
+/// releases the per-thread lock. The lock must not stay held for the turn.
+struct AdvanceCursor {
+    store: Arc<CursorStore>,
+    key: String,
+    sent_time: i64,
+    message_ids: Vec<String>,
+    guard: tokio::sync::Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::driver::AfterPersisted for AdvanceCursor {
+    async fn persisted(&self) {
+        if let Err(error) = self
+            .store
+            .advance(&self.key, self.sent_time, &self.message_ids)
+            .await
+        {
+            eprintln!("[SeaTalk] thread cursor was not saved: {error}");
+        }
+        self.guard.lock().await.take();
     }
 }
 
@@ -259,6 +399,7 @@ pub struct SeaTalkGateway {
     task_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     processed_events: Arc<RwLock<ProcessedMessageTracker>>,
     inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
+    cursors: Arc<RwLock<Option<Arc<CursorStore>>>>,
 }
 
 impl SeaTalkGateway {
@@ -284,7 +425,14 @@ impl SeaTalkGateway {
                 MAX_PROCESSED_MESSAGES,
             ))),
             inbound_sink: Arc::new(RwLock::new(None)),
+            cursors: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Shared by every bot in this process. Keys include `app_id`, so one file
+    /// can hold cursors for all of them.
+    pub async fn set_cursor_store(&self, store: Arc<CursorStore>) {
+        *self.cursors.write().await = Some(store);
     }
 
     /// Hand inbound messages to the core instead of the inline handler.
@@ -295,7 +443,8 @@ impl SeaTalkGateway {
     /// A driver for the core to render replies through.
     pub async fn as_driver(&self) -> SeaTalkDriver {
         let cfg = self.config.read().await.clone();
-        SeaTalkDriver::new(cfg.app_id.clone(), cfg.app_secret.clone())
+        let cursors = self.cursors.read().await.clone();
+        SeaTalkDriver::new(cfg.app_id.clone(), cfg.app_secret.clone()).with_cursors(cursors)
     }
 
     pub async fn set_config(&self, config: SeaTalkConfig) {
@@ -332,13 +481,19 @@ impl SeaTalkGateway {
     /// Proactive DM send for cron / MCP `send` (HTTP OpenAPI, no WS required).
     pub async fn send_to_user(&self, employee_code: &str, text: &str) -> Result<(), String> {
         let client = self.messaging_client().await?;
-        client.send_single_text(employee_code, text, None).await
+        client
+            .send_single_text(employee_code, text, None)
+            .await
+            .map(|_| ())
     }
 
     /// Proactive group send for cron / MCP `send`.
     pub async fn send_to_chat(&self, group_id: &str, text: &str) -> Result<(), String> {
         let client = self.messaging_client().await?;
-        client.send_group_text(group_id, text, None).await
+        client
+            .send_group_text(group_id, text, None)
+            .await
+            .map(|_| ())
     }
 
     async fn messaging_client(&self) -> Result<SeaTalkClient, String> {
@@ -430,6 +585,8 @@ impl SeaTalkGateway {
             config: Arc::clone(&self.config),
             client,
             processed_events: Arc::clone(&self.processed_events),
+            app_id: config.app_id.clone(),
+            cursors: self.cursors.read().await.clone(),
         };
 
         let mode = config.mode.clone();
@@ -728,8 +885,8 @@ fn decode_conv_id(id: &str) -> (&str, Option<&str>) {
 
 fn seatalk_caps() -> crate::driver::ChannelCaps {
     crate::driver::ChannelCaps {
-        // Keep agent events buffered. prepare_buffered_reply presents only
-        // the completed reply through SeaTalk's native streaming API.
+        // One native stream for the turn. Each reply updates it as it arrives;
+        // keepalive holds that stream across the gap before the next reply.
         streaming_edit: false,
         // `dispatch_send` has rejected SeaTalk file sends all along; saying so
         // here is what makes the core degrade an attachment into text rather
@@ -738,7 +895,9 @@ fn seatalk_caps() -> crate::driver::ChannelCaps {
         interactive: false,
         threading: crate::driver::Threading::Inline,
         max_chars: 4000,
-        turn_timeout_secs: 180,
+        // Tools often run longer than the 180s IM default and emit nothing
+        // until they return. 600 matches Feishu and WeCom.
+        turn_timeout_secs: 600,
     }
 }
 
@@ -863,6 +1022,8 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
         // sends generic thread callbacks, which we deliberately ignore.
         addressed_to_bot: true,
         quoted_text: None,
+        context_prefix: None,
+        after_persisted: None,
         reply_context: None,
     })
 }
@@ -874,6 +1035,7 @@ pub struct SeaTalkDriver {
     /// Whether a thread splits the session, mirroring the inline path's config.
     dm_thread_session: bool,
     group_thread_session: bool,
+    cursors: Option<Arc<CursorStore>>,
 }
 
 impl SeaTalkDriver {
@@ -883,7 +1045,13 @@ impl SeaTalkDriver {
             app_id,
             dm_thread_session: false,
             group_thread_session: false,
+            cursors: None,
         }
+    }
+
+    fn with_cursors(mut self, cursors: Option<Arc<CursorStore>>) -> Self {
+        self.cursors = cursors;
+        self
     }
 
     pub fn with_thread_sessions(mut self, dm: bool, group: bool) -> Self {
@@ -963,11 +1131,14 @@ impl crate::driver::ChannelDriver for SeaTalkDriver {
         to: &crate::driver::Conversation,
         _reply_context: Option<&str>,
     ) -> Result<Option<Box<dyn crate::driver::BufferedReply>>, crate::driver::DriverError> {
-        Ok(
-            stream::SeaTalkBufferedReply::start(self.client.clone(), to.clone())
-                .await
-                .map(|reply| Box::new(reply) as Box<dyn crate::driver::BufferedReply>),
+        Ok(stream::SeaTalkBufferedReply::start(
+            self.client.clone(),
+            to.clone(),
+            &self.app_id,
+            self.cursors.clone(),
         )
+        .await
+        .map(|reply| Box::new(reply) as Box<dyn crate::driver::BufferedReply>))
     }
 
     async fn deliver(
@@ -982,14 +1153,372 @@ impl crate::driver::ChannelDriver for SeaTalkDriver {
         } else {
             msg.text.as_str()
         };
-        let result = match to.kind {
+        let group = matches!(to.kind, crate::driver::ConversationKind::Group);
+        let ids = match to.kind {
             crate::driver::ConversationKind::Group => {
                 self.client.send_group_text(chat, text, thread).await
             }
             _ => self.client.send_single_text(chat, text, thread).await,
         };
-        result.map_err(crate::driver::DriverError::Transport)?;
+        let ids = ids.map_err(crate::driver::DriverError::Transport)?;
+        if let (Some(store), Some(thread_id)) = (self.cursors.as_ref(), thread) {
+            let key = cursor::thread_key(
+                &self.app_id,
+                if group { "group" } else { "dm" },
+                chat,
+                thread_id,
+            );
+            for id in &ids {
+                remember_sent_reply(&self.client, store, &key, id).await;
+            }
+        }
         Ok(crate::driver::DeliveryId(to.id.clone()))
+    }
+}
+
+/// Attach the current image, the quoted message, and unread thread history.
+///
+/// History and quote lookups happen before the core sees the message. A
+/// history failure leaves the mention itself intact and does not move the
+/// cursor. A quote failure still fails the turn, matching the previous
+/// contract: the user pointed at one message and we could not read it.
+async fn enrich_inbound(
+    ctx: &HandlerContext,
+    payload: &serde_json::Value,
+    inbound: &mut crate::driver::InboundMessage,
+) {
+    let message = &payload["message"];
+    if let Some(url) = image_url(message) {
+        inbound
+            .attachments
+            .push(deferred_image(ctx.client.clone(), url, "image.jpg"));
+    }
+
+    let quoted_id = optional_id(message["quoted_message_id"].as_str()).map(str::to_string);
+    if let Some(quoted_id) = quoted_id.as_deref() {
+        match resolve_quote(&ctx.client, quoted_id).await {
+            Ok((text, attachments)) => {
+                inbound.quoted_text = Some(crate::driver::QuotedText::Ready(text));
+                inbound.attachments.extend(attachments);
+            }
+            Err(error) => {
+                inbound.quoted_text = Some(crate::driver::QuotedText::Deferred(Arc::new(
+                    FailedQuoteFetch(format!(
+                        "无法读取 SeaTalk 引用消息，请直接发送原文。{error}"
+                    )),
+                )));
+            }
+        }
+    }
+
+    let Some(store) = ctx.cursors.clone() else {
+        return;
+    };
+    let (chat_id, thread_id) = decode_conv_id(&inbound.conversation.id);
+    let Some(thread_id) = thread_id else {
+        return;
+    };
+    let current_id = optional_id(message["message_id"].as_str()).unwrap_or("");
+    if current_id.is_empty() {
+        return;
+    }
+    let kind = match inbound.conversation.kind {
+        crate::driver::ConversationKind::Group => "group",
+        _ => "dm",
+    };
+    let key = cursor::thread_key(&ctx.app_id, kind, chat_id, thread_id);
+    let guard = store.lock_thread(&key).await;
+    let cursor = store.get(&key).await;
+    let group = kind == "group";
+    match load_unread_history(
+        &ctx.client,
+        group,
+        chat_id,
+        thread_id,
+        current_id,
+        quoted_id.as_deref(),
+        cursor.as_ref(),
+    )
+    .await
+    {
+        Ok(history) => {
+            let mut included = history.unread;
+            let mut image_failures = 0usize;
+            for message in &mut included {
+                let Some(url) = message.image_url.clone() else {
+                    continue;
+                };
+                let filename = message
+                    .image_name
+                    .clone()
+                    .unwrap_or_else(|| image_filename(&message.message_id));
+                match ctx.client.download_media(&url).await {
+                    Ok((bytes, mime)) => {
+                        message.body = format!("[image: {filename}]");
+                        inbound.attachments.push(ready_image(filename, bytes, mime));
+                    }
+                    Err(error) => {
+                        image_failures += 1;
+                        message.body = "[image]".to_string();
+                        eprintln!(
+                            "[SeaTalk] thread image {} skipped: {error}",
+                            message.message_id
+                        );
+                    }
+                }
+            }
+            // A bare @ is empty once the leading mention is removed. Leaving it
+            // in the prefix is what made the next bare @ look like new context.
+            drop_blank_history(&mut included);
+            if let Some(prefix) = cursor::format_thread_history(&included) {
+                inbound.context_prefix = Some(prefix);
+            }
+            let current_sent = json_sent_time(message).or(history.current_sent_time);
+            if let Some(mark) = cursor::next_read_mark(current_id, current_sent, &included) {
+                println!(
+                    "[SeaTalk] thread history thread_id={thread_id} unread={} images_skipped={image_failures}",
+                    included.len()
+                );
+                inbound.after_persisted = Some(Arc::new(AdvanceCursor {
+                    store,
+                    key,
+                    sent_time: mark.sent_time,
+                    message_ids: mark.message_ids,
+                    guard: tokio::sync::Mutex::new(Some(guard)),
+                }));
+            }
+        }
+        Err(error) => {
+            eprintln!("[SeaTalk] thread history unavailable, continuing without it: {error}");
+        }
+    }
+}
+
+struct ThreadHistory {
+    unread: Vec<cursor::HistoryMessage>,
+    current_sent_time: Option<i64>,
+}
+
+async fn load_unread_history(
+    client: &SeaTalkClient,
+    group: bool,
+    chat_id: &str,
+    thread_id: &str,
+    current_id: &str,
+    quoted_id: Option<&str>,
+    cursor: Option<&cursor::StoredCursor>,
+) -> Result<ThreadHistory, String> {
+    let mut exclude = std::collections::HashSet::new();
+    exclude.insert(current_id);
+    if let Some(quoted_id) = quoted_id {
+        exclude.insert(quoted_id);
+    }
+    let mut fetched = Vec::new();
+    let mut current_sent_time = None;
+    let mut page_cursor: Option<String> = None;
+    for _ in 0..cursor::MAX_THREAD_PAGES {
+        let page = client
+            .get_thread_page(group, chat_id, thread_id, page_cursor.as_deref())
+            .await?;
+        let messages = page["thread_messages"].as_array();
+        let parsed: Vec<cursor::HistoryMessage> = messages
+            .map(|items| items.iter().filter_map(parse_history_message).collect())
+            .unwrap_or_default();
+        if current_sent_time.is_none() {
+            current_sent_time = parsed
+                .iter()
+                .find(|message| message.message_id == current_id)
+                .map(|message| message.sent_time)
+                .filter(|sent_time| *sent_time > 0);
+        }
+        fetched.extend(parsed);
+        match optional_id(page["next_cursor"].as_str()) {
+            Some(next) => page_cursor = Some(next.to_string()),
+            None => break,
+        }
+    }
+    let unread = cursor::select_unread(&fetched, cursor, &exclude, cursor::MAX_UNREAD_MESSAGES);
+    Ok(ThreadHistory {
+        unread,
+        current_sent_time,
+    })
+}
+
+async fn resolve_quote(
+    client: &SeaTalkClient,
+    message_id: &str,
+) -> Result<(String, Vec<crate::driver::InboundAttachment>), String> {
+    let message = client.get_message(message_id).await?;
+    // The API returns the message fields at the top level. Keep mentions in
+    // the original quote: they are context, not an address to this bot.
+    match message["tag"].as_str() {
+        Some("text") => {
+            let text = message["text"]["plain_text"]
+                .as_str()
+                .or_else(|| message["text"]["content"].as_str())
+                .filter(|text| !text.trim().is_empty())
+                .ok_or_else(|| {
+                    "引用消息没有可读取的文字；请直接发送需要处理的文字。".to_string()
+                })?;
+            Ok((text.to_string(), Vec::new()))
+        }
+        Some("image") => {
+            let url =
+                image_url(&message).ok_or_else(|| "引用的图片没有可下载的地址".to_string())?;
+            let (bytes, mime) = client.download_media(url).await?;
+            let filename = image_filename(message_id);
+            Ok((
+                format!("[image: {filename}]"),
+                vec![ready_image(filename, bytes, mime)],
+            ))
+        }
+        _ => Err("引用的消息不是文本；请直接发送需要处理的文字。".into()),
+    }
+}
+
+fn parse_history_message(value: &serde_json::Value) -> Option<cursor::HistoryMessage> {
+    let message_id = optional_id(value["message_id"].as_str())?.to_string();
+    let sent_time = value["message_sent_time"]
+        .as_i64()
+        .or_else(|| value["message_sent_time"].as_u64().map(|n| n as i64))
+        .unwrap_or(0);
+    let sender = history_sender(&value["sender"]);
+    let (body, image_url, image_name) = history_body(value, &message_id);
+    Some(cursor::HistoryMessage {
+        message_id,
+        sent_time,
+        sender,
+        body,
+        image_url,
+        image_name,
+    })
+}
+
+fn history_sender(sender: &serde_json::Value) -> String {
+    if let Some(email) = optional_id(sender["email"].as_str()) {
+        return email.to_string();
+    }
+    if let Some(code) = optional_id(sender["employee_code"].as_str()) {
+        return code.to_string();
+    }
+    if sender["sender_type"].as_i64() == Some(2) {
+        return "bot".to_string();
+    }
+    optional_id(sender["seatalk_id"].as_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn history_body(
+    message: &serde_json::Value,
+    message_id: &str,
+) -> (String, Option<String>, Option<String>) {
+    match message["tag"].as_str() {
+        Some("image") => {
+            let name = image_filename(message_id);
+            (
+                format!("[image: {name}]"),
+                image_url(message).map(str::to_string),
+                Some(name),
+            )
+        }
+        Some("file") => {
+            let name = optional_id(message["file"]["filename"].as_str()).unwrap_or("file");
+            (format!("[file: {name}]"), None, None)
+        }
+        Some("video") => ("[video]".to_string(), None, None),
+        Some("text") | None => {
+            let text = message["text"]["plain_text"]
+                .as_str()
+                .or_else(|| message["text"]["content"].as_str())
+                .unwrap_or("");
+            (strip_leading_mentions(text), None, None)
+        }
+        Some(tag) => (format!("[{tag}]"), None, None),
+    }
+}
+
+fn drop_blank_history(messages: &mut Vec<cursor::HistoryMessage>) {
+    messages.retain(|message| !message.body.trim().is_empty());
+}
+
+fn json_sent_time(value: &serde_json::Value) -> Option<i64> {
+    let sent = &value["message_sent_time"];
+    sent.as_i64().or_else(|| sent.as_u64().map(|n| n as i64))
+}
+
+/// Hosts `download_media` will contact. Anything else is refused before the
+/// request, and the bot token is only sent here.
+fn seatalk_media_host(url: &str) -> bool {
+    let Some(host) = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
+    else {
+        return false;
+    };
+    let host = host.split(':').next().unwrap_or(host);
+    host == "seatalk.io"
+        || host.ends_with(".seatalk.io")
+        || host == "haiserve.com"
+        || host.ends_with(".haiserve.com")
+}
+
+fn image_url(message: &serde_json::Value) -> Option<&str> {
+    let url = optional_id(message["image"]["content"].as_str())?;
+    if url.starts_with("https://") || url.starts_with("http://") {
+        Some(url)
+    } else {
+        None
+    }
+}
+
+fn image_filename(message_id: &str) -> String {
+    let id: String = message_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(24)
+        .collect();
+    let id = if id.is_empty() { "image" } else { &id };
+    format!("image-{id}.jpg")
+}
+
+fn deferred_image(
+    client: Arc<SeaTalkClient>,
+    url: &str,
+    filename: &str,
+) -> crate::driver::InboundAttachment {
+    crate::driver::InboundAttachment {
+        filename: filename.to_string(),
+        mime: String::new(),
+        size_hint: None,
+        source: crate::driver::AttachmentSource::Deferred(Arc::new(SeaTalkImageFetch {
+            client,
+            url: url.to_string(),
+        })),
+    }
+}
+
+fn ready_image(
+    filename: String,
+    bytes: Vec<u8>,
+    content_type: String,
+) -> crate::driver::InboundAttachment {
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let mime = if mime.is_empty() || mime == "application/octet-stream" {
+        String::new()
+    } else {
+        mime
+    };
+    crate::driver::InboundAttachment {
+        filename,
+        mime,
+        size_hint: Some(bytes.len()),
+        source: crate::driver::AttachmentSource::Ready(bytes),
     }
 }
 
@@ -1091,15 +1620,7 @@ async fn handle_callback_event(
 
     match normalize_event(event) {
         Some(mut inbound) => {
-            if let Some(message_id) = optional_id(payload["message"]["quoted_message_id"].as_str())
-            {
-                inbound.quoted_text = Some(crate::driver::QuotedText::Deferred(Arc::new(
-                    SeaTalkQuoteFetch {
-                        client: ctx.client.clone(),
-                        message_id: message_id.to_string(),
-                    },
-                )));
-            }
+            enrich_inbound(ctx, payload, &mut inbound).await;
             let (chat, thread) = decode_conv_id(&inbound.conversation.id);
             let route_scope = if thread.is_some() { "thread" } else { "group" };
             println!(
@@ -1132,16 +1653,20 @@ fn optional_id(value: Option<&str>) -> Option<&str> {
 
 #[allow(clippy::too_many_arguments)]
 fn extract_message_text(message: &serde_json::Value) -> String {
-    let tag = message["tag"].as_str().unwrap_or("");
-    match tag {
-        "text" => {
-            let raw = message["text"]["plain_text"]
-                .as_str()
-                .or_else(|| message["text"]["content"].as_str())
-                .unwrap_or("");
-            strip_leading_mentions(raw)
-        }
-        _ => String::new(),
+    let raw = message["text"]["plain_text"]
+        .as_str()
+        .or_else(|| message["text"]["content"].as_str())
+        .unwrap_or("");
+    let text = strip_leading_mentions(raw);
+    if !text.is_empty() {
+        return text;
+    }
+    // An image mention has no caption. A placeholder keeps the core from
+    // dropping it as an empty message before the bytes are attached.
+    if message["tag"].as_str() == Some("image") {
+        "[image]".to_string()
+    } else {
+        String::new()
     }
 }
 
@@ -1253,6 +1778,7 @@ impl Clone for SeaTalkGateway {
             task_handle: Arc::clone(&self.task_handle),
             processed_events: Arc::clone(&self.processed_events),
             inbound_sink: Arc::clone(&self.inbound_sink),
+            cursors: Arc::clone(&self.cursors),
         }
     }
 }
@@ -1447,6 +1973,134 @@ mod tests {
         let msg = normalize_event(&event).unwrap();
         assert_eq!(msg.conversation.id, "g1#t=root-message");
         assert_eq!(msg.text, "");
+    }
+
+    #[test]
+    fn normalize_image_mention_keeps_a_placeholder() {
+        let mut event = group_event(
+            "new_mentioned_message_received_from_group_chat",
+            "ev-img",
+            "g1",
+            "",
+            json!({ "message.message_id": "img-1", "message.thread_id": "t1" }),
+        );
+        event["event"]["message"]["tag"] = json!("image");
+        event["event"]["message"]["text"] = json!({});
+        event["event"]["message"]["image"] = json!({ "content": "https://cdn.example/a.png" });
+        let msg = normalize_event(&event).unwrap();
+        assert_eq!(msg.text, "[image]");
+        assert!(
+            msg.attachments.is_empty(),
+            "bytes are attached after normalize"
+        );
+        assert_eq!(
+            image_url(&event["event"]["message"]),
+            Some("https://cdn.example/a.png")
+        );
+    }
+
+    #[test]
+    fn media_token_stays_on_seatalk_hosts() {
+        assert!(seatalk_media_host(
+            "https://openapi.seatalk.io/messaging/v2/file/a"
+        ));
+        assert!(seatalk_media_host("https://cdn.haiserve.com/a.png"));
+        assert!(!seatalk_media_host("https://cdn.example/a.png"));
+        assert!(!seatalk_media_host("https://notseatalk.io/a.png"));
+    }
+
+    #[test]
+    fn sent_text_id_accepts_either_field_name() {
+        assert_eq!(
+            sent_message_id(&json!({ "message_id": "plain-1" })).as_deref(),
+            Some("plain-1")
+        );
+        assert_eq!(
+            sent_message_id(&json!({ "msg_id": "stream-1" })).as_deref(),
+            Some("stream-1")
+        );
+        assert_eq!(
+            sent_message_id(&json!({ "message_id": "plain-1", "msg_id": "stream-1" })).as_deref(),
+            Some("plain-1")
+        );
+        assert_eq!(sent_message_id(&json!({ "code": 0 })), None);
+    }
+
+    #[tokio::test]
+    async fn download_media_refuses_other_hosts() {
+        let client = SeaTalkClient::new("app".into(), "secret".into());
+        for url in [
+            "https://cdn.example/a.png",
+            "http://127.0.0.1/latest/meta-data",
+            "https://notseatalk.io/a.png",
+        ] {
+            let err = client.download_media(url).await.unwrap_err();
+            assert!(
+                err.contains("not on a seatalk host"),
+                "{url} returned {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn history_image_keeps_its_download_url() {
+        let parsed = parse_history_message(&json!({
+            "message_id": "img 1",
+            "message_sent_time": 20,
+            "sender": { "email": "a@b.com" },
+            "tag": "image",
+            "image": { "content": "https://cdn.example/a.png" }
+        }))
+        .unwrap();
+        assert_eq!(parsed.sender, "a@b.com");
+        assert_eq!(
+            parsed.image_url.as_deref(),
+            Some("https://cdn.example/a.png")
+        );
+        assert_eq!(parsed.image_name.as_deref(), Some("image-img1.jpg"));
+        assert!(parsed.body.starts_with("[image:"));
+    }
+
+    #[test]
+    fn a_bare_mention_in_history_is_not_context() {
+        let bare = parse_history_message(&json!({
+            "message_id": "m1",
+            "message_sent_time": 20,
+            "sender": { "email": "a@b.com" },
+            "tag": "text",
+            "text": { "plain_text": "@牛来" }
+        }))
+        .unwrap();
+        assert_eq!(bare.body, "");
+
+        let question = parse_history_message(&json!({
+            "message_id": "m2",
+            "message_sent_time": 21,
+            "sender": { "email": "a@b.com" },
+            "tag": "text",
+            "text": { "plain_text": "@牛来 图里有什么" }
+        }))
+        .unwrap();
+        assert_eq!(question.body, "图里有什么");
+
+        let mut included = vec![bare, question];
+        drop_blank_history(&mut included);
+        let text = cursor::format_thread_history(&included).unwrap();
+        assert_eq!(
+            text,
+            "[Thread history]\na@b.com: 图里有什么\n[End thread history]"
+        );
+
+        let mut only_bare = vec![parse_history_message(&json!({
+            "message_id": "m3",
+            "message_sent_time": 22,
+            "sender": { "email": "a@b.com" },
+            "tag": "text",
+            "text": { "plain_text": "@牛来 @all" }
+        }))
+        .unwrap()];
+        drop_blank_history(&mut only_bare);
+        assert!(cursor::format_thread_history(&only_bare).is_none());
     }
 
     #[test]

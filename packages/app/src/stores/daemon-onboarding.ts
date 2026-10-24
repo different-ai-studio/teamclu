@@ -610,8 +610,24 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
    * Every binding path funnels through here so that "the user is only ever asked
    * on first creation" holds for all three of them: a fresh machine, a machine
    * arriving from another team, and a linked-account switch.
+   *
+   * Single-flight per team. A team switch reaches refresh() from the auth store,
+   * the current-team store and AuthGate at once, and every bind claims an invite
+   * that rotates the agent's credentials. Overlapping binds each minted an
+   * account; the agent kept the last one while the daemon could be left holding
+   * another, so its management-grant checks failed with
+   * agent_management_target_mismatch. Later callers share the bind in flight.
    */
-  const bindOrPrompt = async (teamId: string): Promise<'bound' | 'prompting'> => {
+  let bindInFlight: { teamId: string; run: Promise<'bound' | 'prompting'> } | null = null
+  const bindOrPrompt = (teamId: string): Promise<'bound' | 'prompting'> => {
+    if (bindInFlight?.teamId === teamId) return bindInFlight.run
+    const run = bindOrPromptOnce(teamId).finally(() => {
+      if (bindInFlight?.run === run) bindInFlight = null
+    })
+    bindInFlight = { teamId, run }
+    return run
+  }
+  const bindOrPromptOnce = async (teamId: string): Promise<'bound' | 'prompting'> => {
     const deviceId = await requireDeviceId()
     const existing = await getBackend().actors.findAgentForDevice({ teamId, deviceId })
     if (!existing.agentId) {

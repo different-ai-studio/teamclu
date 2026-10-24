@@ -1025,6 +1025,8 @@ pub(crate) fn normalize_callback(
         // core must not have to know that rule per channel.
         addressed_to_bot: true,
         quoted_text: quoted_text.map(driver::QuotedText::Ready),
+        context_prefix: None,
+        after_persisted: None,
         // The websocket request this arrived on. Replies and streaming card
         // updates go back through it, not through a send-to-chat API.
         reply_context: (!req_id.is_empty()).then(|| req_id.to_string()),
@@ -2769,6 +2771,8 @@ impl WeComGateway {
             attachments: Vec::new(),
             addressed_to_bot: true,
             quoted_text: None,
+            context_prefix: None,
+            after_persisted: None,
             reply_context: Some(card_reply_context(req_id, task_id)),
         })
         .await;

@@ -12,6 +12,8 @@ import { i18nReady } from './lib/i18n'; // Initialize i18n
 import { appShortName, appStoragePrefix, buildConfig } from '@/lib/config/build-config'
 import { getDesktopDeviceId } from '@/lib/backend/cloud-api/device-id'
 import { fetchPublicConfig } from '@/lib/config/bootstrap'
+import { isChromeExtension } from '@/lib/config/platform'
+import { readExtensionDiagnosticsOptIn } from '@/lib/extension/page-access'
 
 import { ensureBundledAmuxdCurrent } from '@/lib/daemon/daemon-version-upgrade'
 import { initJwtBridge } from '@/lib/daemon/jwt-bridge'
@@ -61,7 +63,12 @@ void initSentry({
   // pipeline end-to-end without cutting a release build — same escape hatch,
   // same reasoning as `EXPO_PUBLIC_SENTRY_DEBUG` in
   // `apps/expo/src/lib/telemetry/sentry.ts`.
-  enabled: !import.meta.env.DEV || import.meta.env.VITE_SENTRY_DEBUG === '1',
+  //
+  // Chrome extension: error reports are opt-in (Settings → General → Privacy),
+  // as promised in the extension privacy policy. Default off.
+  enabled:
+    (!import.meta.env.DEV || import.meta.env.VITE_SENTRY_DEBUG === '1') &&
+    (!isChromeExtension() || readExtensionDiagnosticsOptIn()),
   // SEC-4: no IP / user identity by default, and every breadcrumb (console
   // arguments, fetch URLs) goes through the same redaction the Diagnostics
   // viewer uses. The Rust process applies the same policy in main.rs.

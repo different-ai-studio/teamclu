@@ -3,11 +3,12 @@
 //! exactly one channel, or true nowhere.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use super::*;
 use teamclu_gateway::driver::{
-    ChannelCaps, ChannelId, ConversationKind, DriverError, InboundAttachment, Threading,
+    AfterPersisted, BufferedReply, ChannelCaps, ChannelId, ConversationKind, DriverError,
+    InboundAttachment, OutboundMessage, Threading,
 };
 
 #[derive(Default)]
@@ -78,6 +79,7 @@ struct FakeWriter {
     log: Mutex<Vec<&'static str>>,
     /// Every inbound upload fails, the way an unreachable store does.
     fail_uploads: AtomicBool,
+    fail_write: AtomicBool,
 }
 
 #[async_trait]
@@ -90,6 +92,9 @@ impl SessionWriter for FakeWriter {
         attachments: Vec<PendingUpload>,
         _external: &str,
     ) -> Result<WrittenInbound, CoreError> {
+        if self.fail_write.load(Ordering::SeqCst) {
+            return Err(CoreError::Write("disk".into()));
+        }
         self.log.lock().unwrap().push("write_inbound");
         self.inbound
             .lock()
@@ -239,6 +244,29 @@ struct FakeDriver {
     ends: Mutex<Vec<Option<TurnEnd>>>,
     /// When set, `deliver` fails if the outbound message carries files.
     fail_attachment_deliver: bool,
+    /// When set, this non-streaming channel keeps a placeholder and records
+    /// each reply preview before the final close.
+    preview_log: Option<Arc<Mutex<Vec<String>>>>,
+}
+
+struct RecordingReply {
+    log: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl BufferedReply for RecordingReply {
+    async fn preview(&mut self, text: &str) -> Result<(), DriverError> {
+        self.log.lock().unwrap().push(format!("preview:{text}"));
+        Ok(())
+    }
+
+    async fn finish(&mut self, msg: &OutboundMessage) -> Result<(), DriverError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("finish:{}", msg.text));
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -303,6 +331,17 @@ impl ChannelDriver for FakeDriver {
             .push((text.to_string(), end.is_some()));
         self.ends.lock().unwrap().push(end);
         Ok(())
+    }
+
+    async fn prepare_buffered_reply(
+        &self,
+        _to: &Conversation,
+        _reply_context: Option<&str>,
+    ) -> Result<Option<Box<dyn BufferedReply>>, DriverError> {
+        let Some(log) = &self.preview_log else {
+            return Ok(None);
+        };
+        Ok(Some(Box::new(RecordingReply { log: log.clone() })))
     }
 }
 
@@ -388,6 +427,8 @@ fn inbound(text: &str) -> InboundMessage {
         attachments: Vec::new(),
         addressed_to_bot: true,
         quoted_text: None,
+        context_prefix: None,
+        after_persisted: None,
         reply_context: Some("req-1".into()),
     }
 }
@@ -405,6 +446,35 @@ fn driver(caps: ChannelCaps) -> FakeDriver {
         caps: Some(caps),
         ..Default::default()
     }
+}
+
+#[tokio::test]
+async fn a_buffered_placeholder_streams_each_reply_before_the_turn_ends() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let f = fixture(
+        "final answer",
+        vec!["先看一下日志", "先看一下日志\n\n有三处报错"],
+        FakeCommands::default(),
+    );
+    let d = FakeDriver {
+        caps: Some(MAIL),
+        preview_log: Some(log.clone()),
+        ..Default::default()
+    };
+    f.core.handle(&d, inbound("go")).await.unwrap();
+
+    assert_eq!(
+        log.lock().unwrap().as_slice(),
+        &[
+            "preview:先看一下日志".to_string(),
+            "preview:先看一下日志\n\n有三处报错".to_string(),
+            "finish:final answer".to_string(),
+        ]
+    );
+    assert!(
+        d.delivered.lock().unwrap().is_empty(),
+        "the placeholder owns the reply; a second send would duplicate it"
+    );
 }
 
 #[tokio::test]
@@ -453,6 +523,18 @@ async fn a_bare_mention_says_nothing_and_starts_nothing() {
         f.core.handle(&d, inbound("   ")).await.unwrap(),
         Outcome::Empty
     );
+}
+
+#[tokio::test]
+async fn a_bare_mention_with_thread_history_starts_a_turn() {
+    let f = plain("done");
+    let d = driver(IM);
+    let mut msg = inbound("");
+    msg.context_prefix = Some("[Thread history]\na@b.com: wdqdqwdqw\n[End thread history]".into());
+
+    let outcome = f.core.handle(&d, msg).await.unwrap();
+    assert!(matches!(outcome, Outcome::Handled { .. }));
+    assert!(f.writer.inbound.lock().unwrap()[0].0.contains("wdqdqwdqw"));
 }
 
 #[tokio::test]
@@ -556,7 +638,9 @@ async fn a_buffered_gateway_receives_the_real_turn_error() {
     assert!(err.to_string().contains("pi extension error"));
     assert_eq!(d.delivered.lock().unwrap().len(), 1);
     assert!(
-        d.delivered.lock().unwrap()[0].0.contains("pi extension error"),
+        d.delivered.lock().unwrap()[0]
+            .0
+            .contains("pi extension error"),
         "non-streaming gateways receive the actual turn error too"
     );
 }
@@ -623,6 +707,52 @@ async fn quoted_context_is_prepended_once_for_every_channel() {
     let written = f.writer.inbound.lock().unwrap();
     assert!(written[0].0.contains("[Quoted message]"));
     assert!(written[0].0.ends_with("yes"));
+}
+
+struct MarkPersisted(Arc<AtomicBool>);
+
+#[async_trait]
+impl AfterPersisted for MarkPersisted {
+    async fn persisted(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn thread_history_is_written_ahead_of_the_quote() {
+    let f = plain("done");
+    let d = driver(MAIL);
+    let mut msg = inbound("yes");
+    msg.context_prefix = Some("[Thread history]\na@b.com: earlier\n[End thread history]".into());
+    msg.quoted_text = Some(QuotedText::Ready("the quote".into()));
+
+    f.core.handle(&d, msg).await.unwrap();
+
+    let written = f.writer.inbound.lock().unwrap()[0].0.clone();
+    let history = written.find("[Thread history]").unwrap();
+    let quote = written.find("[Quoted message]").unwrap();
+    let question = written.rfind("yes").unwrap();
+    assert!(history < quote && quote < question);
+}
+
+#[tokio::test]
+async fn the_read_cursor_advances_only_after_the_inbound_row_is_written() {
+    let flag = Arc::new(AtomicBool::new(false));
+    let f = plain("done");
+    let d = driver(MAIL);
+    let mut msg = inbound("hi");
+    msg.after_persisted = Some(Arc::new(MarkPersisted(flag.clone())));
+    f.core.handle(&d, msg).await.unwrap();
+    assert!(flag.load(Ordering::SeqCst));
+
+    let flag = Arc::new(AtomicBool::new(false));
+    let f = plain("done");
+    f.writer.fail_write.store(true, Ordering::SeqCst);
+    let d = driver(MAIL);
+    let mut msg = inbound("hi");
+    msg.after_persisted = Some(Arc::new(MarkPersisted(flag.clone())));
+    assert!(f.core.handle(&d, msg).await.is_err());
+    assert!(!flag.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
