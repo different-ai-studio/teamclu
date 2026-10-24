@@ -59,9 +59,66 @@ full online run is the matched-snapshot comparison and yanked check.
 The raw comparison is saved locally at
 `/private/tmp/pr1732-security-20261024/before.json` and
 `/private/tmp/pr1732-security-20261024-after-online.json`; the supplemental
-output is `/private/tmp/pr1732-security-20261024-after-frozen.json`. For a new
-run, use the cargo-audit command and ten `--ignore` arguments in
-`.github/workflows/security-audit.yml` without weakening its defaults.
+output is `/private/tmp/pr1732-security-20261024-after-frozen.json`.
+
+## Reproduce the checks
+
+Run from the repository root on macOS with Rust 1.97.1 and cargo-audit 0.22.2.
+Before running the block, set `TASK_CARGO_HOME` to an absolute, isolated Cargo
+home with its own registry cache; set `SHERPA_ONNX_LIB_DIR` to the absolute
+read-only Sherpa 1.13.7 `lib` directory for this Mac. Set `AUDIT_DB` to a fresh
+task-local advisory database directory for the full online audit, and
+`FROZEN_AUDIT_DB` to a copy of the baseline database for the supplemental
+comparison. These are inputs: keep user-specific paths out of this document.
+The task's actual runs used these commands and flags with its task-local paths.
+The full online result is authoritative because `--no-fetch` omits yanked
+checks. Compare `database.last-commit` in the before and online JSON outputs;
+the recorded comparison matched at `21d909e4c8bd4e14c7aea58bf980c881a0053ab1`.
+
+```bash
+set -euo pipefail
+: "${TASK_CARGO_HOME:?set an isolated Cargo home}"
+: "${SHERPA_ONNX_LIB_DIR:?set the native Sherpa lib directory}"
+: "${AUDIT_DB:?set a task-local online advisory DB directory}"
+: "${FROZEN_AUDIT_DB:?set the frozen baseline advisory DB directory}"
+export CARGO_HOME="$TASK_CARGO_HOME"
+export CARGO_TARGET_DIR="$PWD/.cargo-target"
+export SHERPA_ONNX_LIB_DIR
+export RUSTUP_TOOLCHAIN=1.97.1 CI=1 BUILD_ENV=dev RUSTC_WRAPPER=/usr/bin/env
+export TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}'
+
+audit_ignores=(
+  --ignore RUSTSEC-2026-0204 --ignore RUSTSEC-2026-0258
+  --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+  --ignore RUSTSEC-2026-0185 --ignore RUSTSEC-2026-0235
+  --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0098
+  --ignore RUSTSEC-2026-0099 --ignore RUSTSEC-2026-0104
+)
+cargo audit --file Cargo.lock --db "$AUDIT_DB" --json "${audit_ignores[@]}" \
+  > "$TASK_CARGO_HOME/audit-online.json"
+cargo audit --no-fetch --file Cargo.lock --db "$FROZEN_AUDIT_DB" --json \
+  "${audit_ignores[@]}" > "$TASK_CARGO_HOME/audit-frozen.json"
+
+cargo metadata --locked --format-version 1 > "$TASK_CARGO_HOME/metadata.json"
+cargo tree --locked --offline -i ctutils@0.4.4 --depth 3
+cargo tree --locked --offline -i rustls-webpki@0.103.16 --depth 3
+cargo tree --locked --offline -i webpki-roots@1.0.10 --depth 3
+
+node scripts/rust-cli.js test -p teamclu-transport --locked
+node scripts/rust-cli.js test -p teamclu-gateway --locked
+node scripts/rust-cli.js test -p teamclu --locked --all-targets --no-run
+node scripts/rust-cli.js test -p teamclu --locked --lib
+node scripts/daemon-cargo.js test --locked --bin amuxd -- --test-threads=1
+cargo fmt --check --manifest-path apps/desktop/Cargo.toml
+cargo fmt --check -p teamclu-introspect
+node scripts/rust-cli.js clippy --manifest-path apps/desktop/Cargo.toml \
+  --all-targets -- -D warnings
+```
+
+The repository wrappers set up the desktop build and keep the daemon's sidecar
+target separate. The task used its existing worktree target directories and
+read-only native library input; it did not install dependencies or write to the
+user's shared Cargo cache.
 
 ## Local verification
 
@@ -80,7 +137,9 @@ separate sidecar target. No first-party runtime source changed.
 | CI desktop and introspect formatting | Both checks passed. |
 | Desktop Clippy `--all-targets -- -D warnings` | Passed. Existing third-party Serenity deprecation and future-incompatibility warnings remain. |
 
-The NATS roundtrip tests require an external `nats-server` and were not
-exercised here. The ignored transport documentation example did not execute. Native macOS linking was exercised; hosted Windows/Linux CI gates
-remain required after publication. This record does not claim deployment or
+The passing daemon run also emitted pre-existing source warnings; warning
+cleanup is separate from this dependency refresh. The NATS roundtrip tests
+require an external `nats-server` and were not exercised here. The ignored
+transport documentation example did not execute. Native macOS linking was
+exercised; hosted Windows/Linux CI gates remain required after publication. This record does not claim deployment or
 manual acceptance.
