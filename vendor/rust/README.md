@@ -1,19 +1,21 @@
 # Temporary Rust dependency backports
 
-Owner: TeamClu maintainers. These two complete published crate archives are
-checked in because their released parent manifests still constrain vulnerable
-dependency families. Root `[patch.crates-io]` selects them; both are excluded
+Owner: TeamClu maintainers. These three published crate archives are checked
+in because their released parent manifests still constrain vulnerable dependency
+families. Root `[patch.crates-io]` selects them; all three are excluded
 from the first-party workspace. They retain their original package versions,
 features, runtime Rust code, build scripts, and licenses. The normalized
 `Cargo.toml` dependency declarations differ, plus one credential-shaped upstream
-Rustdoc example is redacted as documented below. `Cargo.toml.orig` is preserved as
-published; use the adjacent `.patch` files when recreating these directories.
+Serenity Rustdoc example is redacted as documented below. `Cargo.toml.orig` is
+preserved as published; use the adjacent `.patch` files when recreating these
+directories.
 Do not regenerate the normalized manifests without reapplying these changes.
 
 | Package | Official archive and SHA-256 | License |
 | --- | --- | --- |
 | serenity 0.12.5 | https://static.crates.io/crates/serenity/serenity-0.12.5.crate — `9bde37f42765dfdc34e2a039e0c84afbf79a3101c1941763b0beb816c2f17541` | ISC, `serenity-0.12.5/LICENSE.md` |
 | sherpa-onnx-sys 1.13.7 | https://static.crates.io/crates/sherpa-onnx-sys/sherpa-onnx-sys-1.13.7.crate — `566aad07d0924a7ed897cc035cc67ad71cdfddb959717dbf445031d5d4b58d4d` | Apache-2.0, `sherpa-onnx-sys-1.13.7/LICENSE` |
+| rumqttc 0.25.1 | https://static.crates.io/crates/rumqttc/rumqttc-0.25.1.crate — `0feff8d882bff0b2fddaf99355a10336d43dd3ed44204f85ece28cf9626ab519` | Apache-2.0 (published manifest) |
 
 The hashes match the crates.io sparse-index checksums. Verification on
 2026-10-20 compared every published file: Serenity 174 files (166 Rust), Sherpa
@@ -23,6 +25,20 @@ identical runtime code. Each package also has one changed `Cargo.toml`; there
 are three changed upstream files in total. The checked-in patches record only
 the two manifest changes. No local `.cargo-ok`, native libraries,
 compiler outputs or probe harnesses are included.
+
+Verification on 2026-10-24 compared all 73 published rumqttc files (65 Rust)
+against that archive. Every Rust file, feature, license and other published file
+is byte-identical except the normalized `Cargo.toml`. Its only change is
+`rustls-webpki = "0.102.8"` to `"0.103.16"`; the adjacent patch records it.
+The original manifest SHA-256 is
+`537a03168b2328ad87423bba12a9b83638b17859d3cad2cf76cad8c5474888f5`;
+the patched one is
+`a8407b6a2d35021f7da60314bad331d34791c301e6d9aa47469571101b58bad7`.
+Published VCS revision: `f1e9e8d558783f942993046679cdf3c8c3a3d36b`.
+This backport removes the vulnerable `rustls-webpki 0.102.x` line while retaining
+MQTT over TCP and WSS, native roots with bundled fallback, and certificate and
+hostname verification. Replace it when an official audited rumqttc release
+accepts the fixed webpki generation and passes these product regressions.
 
 Serenity changes `tokio-tungstenite = 0.21.0` to `0.24.0` and enables `url`,
 retaining the original optional/backend feature wiring. The `url` feature is
@@ -45,8 +61,8 @@ that dormant iOS extraction path.
 
 To reproduce, download each exact archive, verify its hash, extract it under
 `vendor/rust`, then apply its adjacent patch from that directory. Compare all
-files against the archive and confirm only the two declared manifest deltas and
-the exact Rustdoc replacement below remain.
+files against the archive and confirm only the three declared manifest deltas and
+the exact Serenity Rustdoc replacement below remain.
 Use Cargo to resolve the lockfile; do not edit package checksums or versions by
 hand. Path packages have no registry checksum in Cargo.lock, which makes this
 separate source/provenance verification necessary. Audit the complete graph,
@@ -57,8 +73,9 @@ the fixed dependency generation and passes the product's gateway/speech and
 full Rust checks. Sherpa may also require updating the wrapper and native assets
 together. Recheck upstreams on dependency refreshes and security advisories;
 remove the matching root patch, directory and patch file together. See
-`docs/testing/2026-10-20-rust-security-remediation.md` for the audit policy and
-validation evidence.
+`docs/testing/2026-10-20-rust-security-remediation.md` for the earlier
+audit policy and evidence, and
+`docs/testing/2026-10-24-rust-security-followup.md` for this refresh.
 
 ## Credential-shaped documentation example redaction
 
