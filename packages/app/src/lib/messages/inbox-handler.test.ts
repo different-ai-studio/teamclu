@@ -185,6 +185,35 @@ describe("handleInboxEnvelope", () => {
     expect(onMessagePing).not.toHaveBeenCalled();
   });
 
+  it("handles a roster hint before unread and message side effects", () => {
+    const store = makeStore(["s1"]);
+    const onMessagePing = vi.fn();
+    const onParticipantsChanged = vi.fn();
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { session_id: "s1", team_id: "team-1", type: "session.participants" }),
+      "u1",
+      store,
+      console,
+      { onMessagePing, onParticipantsChanged },
+    );
+    expect(onParticipantsChanged).toHaveBeenCalledWith("s1", "team-1");
+    expect(onMessagePing).not.toHaveBeenCalled();
+    expect(store.patchRow).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
+    expect(store.loadFirstPage).not.toHaveBeenCalled();
+
+    onParticipantsChanged.mockClear();
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { session_id: "s1", type: "session.participants" }),
+      "u1",
+      store,
+      console,
+      { onParticipantsChanged },
+    );
+    expect(onParticipantsChanged).not.toHaveBeenCalled();
+    expect(store.patchRow).not.toHaveBeenCalled();
+  });
+
   it("marks active session read instead of patching unread on message ping", () => {
     shouldMarkSessionUnreadMock.mockReturnValue(false);
     const store = makeStore(["s1"]);

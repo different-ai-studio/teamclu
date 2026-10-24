@@ -247,7 +247,7 @@ public final class SessionListViewModel {
     }
 
     @MainActor
-    private func applyInboxPing(
+    func applyInboxPing(
         _ ping: InboxPing,
         teamID: String,
         sessionsRepo: SessionsRepository?,
@@ -255,6 +255,11 @@ public final class SessionListViewModel {
     ) async {
         let sid = ping.sessionID
         let descriptor = FetchDescriptor<Session>(predicate: #Predicate { $0.sessionId == sid })
+
+        // A roster hint is not a message. Leave unread and live activity alone.
+        if ping.type == "session.participants" {
+            return
+        }
 
         // Every ping means someone else moved in this session, which is the
         // trigger for watching its `session/live` feed. A "read" ping is the

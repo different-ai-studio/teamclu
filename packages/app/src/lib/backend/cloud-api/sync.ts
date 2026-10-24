@@ -24,10 +24,17 @@ export function createSyncModule(client: CloudApiClient): SyncBackend {
       });
     },
     async listSessionParticipantsForSync(sessionId, updatedAfter) {
-      return fetchAllSyncPages<SessionParticipantSyncRow>(client, "/v1/sync/session-participants", {
-        sessionId,
-        since: updatedAfter ?? null,
-      });
+      return fetchAllSyncPages<SessionParticipantSyncRow>(
+        client,
+        "/v1/sync/session-participants",
+        {
+          sessionId,
+          since: updatedAfter ?? null,
+        },
+        // A truncated page is not a roster. Callers that replace the local
+        // cache must fail instead of deleting the seats the missing pages held.
+        { incomplete: "throw" },
+      );
     },
   };
 }

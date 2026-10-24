@@ -270,6 +270,36 @@ export async function upsertSessionParticipantsBatch(
   await invoke("local_cache_session_participant_upsert_batch", { rows });
 }
 
+/**
+ * Take the next roster-replace number for this session. Call this before the
+ * cloud fetch. A later fetch gets a higher number and the earlier one is dropped.
+ */
+export async function beginSessionParticipantReplace(sessionId: string): Promise<number> {
+  if (!isTauri()) return 0;
+  return invoke("local_cache_session_participant_begin_replace", { sessionId });
+}
+
+/**
+ * Replace one session's cached roster with a complete cloud snapshot.
+ * An empty list clears the session. Unlike the upsert, this runs for an
+ * empty snapshot and does not keep a newer local row. The Rust side writes
+ * only when `teamId` matches the cached session and `generation` is still current.
+ */
+export async function replaceSessionParticipants(
+  sessionId: string,
+  teamId: string,
+  generation: number,
+  rows: SessionParticipantRow[],
+): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("local_cache_session_participant_replace_session", {
+    sessionId,
+    teamId,
+    generation,
+    rows,
+  });
+}
+
 export async function loadSessionParticipants(
   sessionId: string,
   includeDeleted = false,

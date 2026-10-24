@@ -3,7 +3,7 @@ use super::store::{
     LocalCacheStore, MessageLoadOptions, MessageRow, OutboxRow, SessionParticipantRow, SessionRow,
     SessionWorkspaceRow, SubmissionRow,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
@@ -17,6 +17,9 @@ use tokio::sync::{Mutex, RwLock};
 pub struct LocalCacheState {
     pub db: Arc<Mutex<Option<LocalCacheStore>>>,
     pub current_team_id: Arc<RwLock<Option<String>>>,
+    /// One counter per session, shared by every window. A roster replace
+    /// commits only when it still holds the latest number.
+    pub participant_replace_generation: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl Default for LocalCacheState {
@@ -24,6 +27,7 @@ impl Default for LocalCacheState {
         Self {
             db: Arc::new(Mutex::new(None)),
             current_team_id: Arc::new(RwLock::new(None)),
+            participant_replace_generation: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -323,6 +327,63 @@ pub async fn local_cache_session_participant_load_actor(
     assert_team(&state, &team_id).await?;
     let db = get_db(&state).await?;
     db.session_participant_load_actor(&actor_id, &team_id).await
+}
+
+/// Take the next roster-replace number for this session. Called before the
+/// cloud fetch so a later fetch wins if both are in flight.
+pub async fn begin_session_participant_replace(state: &LocalCacheState, session_id: &str) -> u64 {
+    let mut map = state.participant_replace_generation.lock().await;
+    let next = map.get(session_id).copied().unwrap_or(0).saturating_add(1);
+    map.insert(session_id.to_string(), next);
+    next
+}
+
+/// Replace the cached roster when the payload team matches the cached session
+/// and this fetch is still the latest one. A miss writes nothing.
+///
+/// The generation lock is held across the delete and insert, so an older
+/// fetch cannot land after a newer one has started.
+pub async fn apply_session_participant_replace(
+    state: &LocalCacheState,
+    db: &LocalCacheStore,
+    session_id: &str,
+    team_id: &str,
+    generation: u64,
+    rows: &[SessionParticipantRow],
+) -> Result<bool, String> {
+    let owner = db.team_for_session(session_id).await?;
+    if owner.as_deref() != Some(team_id) {
+        return Ok(false);
+    }
+    let map = state.participant_replace_generation.lock().await;
+    if map.get(session_id).copied() != Some(generation) {
+        return Ok(false);
+    }
+    db.session_participant_replace_session(session_id, rows)
+        .await?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn local_cache_session_participant_begin_replace(
+    state: tauri::State<'_, LocalCacheState>,
+    session_id: String,
+) -> Result<u64, String> {
+    Ok(begin_session_participant_replace(&state, &session_id).await)
+}
+
+#[tauri::command]
+pub async fn local_cache_session_participant_replace_session(
+    state: tauri::State<'_, LocalCacheState>,
+    session_id: String,
+    team_id: String,
+    generation: u64,
+    rows: Vec<SessionParticipantRow>,
+) -> Result<(), String> {
+    let db = get_db(&state).await?;
+    apply_session_participant_replace(&state, &db, &session_id, &team_id, generation, &rows)
+        .await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -800,5 +861,146 @@ mod tests {
             err.contains("submission: current=teamA, found=teamB"),
             "{err}"
         );
+    }
+
+    fn seat(id: &str, session_id: &str, actor_id: &str) -> SessionParticipantRow {
+        SessionParticipantRow {
+            id: id.to_string(),
+            session_id: session_id.to_string(),
+            actor_id: actor_id.to_string(),
+            joined_at: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            deleted_at: None,
+            synced_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn participant_replace_writes_when_payload_team_matches_the_cached_session() {
+        let state = LocalCacheState::default();
+        let (db, _dir) = new_store().await;
+        db.session_upsert_batch(&[session("s1", "teamB")])
+            .await
+            .unwrap();
+        db.session_participant_upsert_batch(&[seat("old", "s1", "me")])
+            .await
+            .unwrap();
+        // The process is looking at a different team. This replace does not
+        // consult that gate.
+        *state.current_team_id.write().await = Some("teamA".to_string());
+
+        let generation = begin_session_participant_replace(&state, "s1").await;
+        let wrote = apply_session_participant_replace(
+            &state,
+            &db,
+            "s1",
+            "teamB",
+            generation,
+            &[seat("new", "s1", "them")],
+        )
+        .await
+        .unwrap();
+
+        assert!(wrote);
+        let rows = db
+            .session_participant_load_session("s1", false)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "new");
+    }
+
+    #[tokio::test]
+    async fn participant_replace_skips_a_missing_session_and_a_team_mismatch() {
+        let state = LocalCacheState::default();
+        let (db, _dir) = new_store().await;
+        db.session_upsert_batch(&[session("s1", "teamB")])
+            .await
+            .unwrap();
+        db.session_participant_upsert_batch(&[seat("old", "s1", "me")])
+            .await
+            .unwrap();
+        let generation = begin_session_participant_replace(&state, "s1").await;
+
+        let missing = apply_session_participant_replace(
+            &state,
+            &db,
+            "ghost",
+            "teamB",
+            generation,
+            &[seat("new", "ghost", "them")],
+        )
+        .await
+        .unwrap();
+        assert!(!missing);
+
+        let mismatch = apply_session_participant_replace(
+            &state,
+            &db,
+            "s1",
+            "teamA",
+            generation,
+            &[seat("new", "s1", "them")],
+        )
+        .await
+        .unwrap();
+        assert!(!mismatch);
+
+        let rows = db
+            .session_participant_load_session("s1", false)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "old");
+    }
+
+    #[tokio::test]
+    async fn participant_replace_drops_a_stale_generation() {
+        let state = LocalCacheState::default();
+        let (db, _dir) = new_store().await;
+        db.session_upsert_batch(&[session("s1", "teamA")])
+            .await
+            .unwrap();
+        db.session_participant_upsert_batch(&[seat("old", "s1", "me")])
+            .await
+            .unwrap();
+
+        let first = begin_session_participant_replace(&state, "s1").await;
+        let second = begin_session_participant_replace(&state, "s1").await;
+        let stale = apply_session_participant_replace(
+            &state,
+            &db,
+            "s1",
+            "teamA",
+            first,
+            &[seat("stale", "s1", "them")],
+        )
+        .await
+        .unwrap();
+        assert!(!stale);
+        let rows = db
+            .session_participant_load_session("s1", false)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].id, "old");
+
+        let fresh = apply_session_participant_replace(
+            &state,
+            &db,
+            "s1",
+            "teamA",
+            second,
+            &[seat("fresh", "s1", "them")],
+        )
+        .await
+        .unwrap();
+        assert!(fresh);
+        let rows = db
+            .session_participant_load_session("s1", false)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "fresh");
     }
 }

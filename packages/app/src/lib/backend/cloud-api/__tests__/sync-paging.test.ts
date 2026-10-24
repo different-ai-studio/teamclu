@@ -88,6 +88,23 @@ describe("fetchAllSyncPages", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("incomplete"));
     warn.mockRestore();
   });
+
+  it("throws instead of returning a partial list when asked to", async () => {
+    const endless = Array.from({ length: 1200 }, () => ({
+      items: [{ id: "x" }],
+      nextCursor: "always",
+    }));
+    const { client } = pagingClient(endless);
+
+    await expect(
+      fetchAllSyncPages<{ id: string }>(
+        client,
+        "/v1/sync/session-participants",
+        { sessionId: "s" },
+        { incomplete: "throw" },
+      ),
+    ).rejects.toThrow(/incomplete/);
+  });
 });
 
 // Regression: every sync reader must page. listSessionsForTeamSince in
@@ -128,5 +145,17 @@ describe("sync readers page to exhaustion", () => {
     const { client } = twoPages();
     const rows = await createSyncModule(client).listSessionParticipantsForSync("session-1", null);
     expect(rows).toHaveLength(2);
+  });
+
+  it("listSessionParticipantsForSync refuses a truncated roster", async () => {
+    const endless = Array.from({ length: 1200 }, () => ({
+      items: [{ id: "x" }],
+      nextCursor: "always",
+    }));
+    const { client } = pagingClient(endless);
+
+    await expect(
+      createSyncModule(client).listSessionParticipantsForSync("session-1", null),
+    ).rejects.toThrow(/incomplete/);
   });
 });
