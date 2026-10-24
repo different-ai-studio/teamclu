@@ -58,19 +58,26 @@ describe('Auto Update - Configuration', () => {
     expect(buildRs).toContain('["app"]["updater"]["pubkey"]');
   });
 
-  it('Cargo.toml has updater and process plugins', () => {
+  it('custom updater keeps process support without the unused updater plugin', () => {
     const cargoPath = path.resolve(repoRoot, 'apps', 'desktop', 'Cargo.toml');
     const cargo = fs.readFileSync(cargoPath, 'utf-8');
 
-    expect(cargo).toContain('tauri-plugin-updater');
+    expect(cargo).not.toContain('tauri-plugin-updater');
     expect(cargo).toContain('tauri-plugin-process');
   });
 
-  it('lib.rs registers updater and process plugins', () => {
+  it('custom update commands are registered and called by the frontend', () => {
     const libPath = path.resolve(repoRoot, 'apps', 'desktop', 'src', 'lib.rs');
     const lib = fs.readFileSync(libPath, 'utf-8');
 
-    expect(lib).toContain('tauri_plugin_updater');
+    expect(lib).not.toContain('tauri_plugin_updater');
+    const store = fs.readFileSync(path.resolve(repoRoot, 'packages/app/src/stores/updater.ts'), 'utf-8');
+    for (const command of ['check_update', 'download_and_install_update', 'restart_app']) {
+      expect(lib).toContain(`commands::updater::${command}`);
+      expect(store).toContain(`"${command}"`);
+    }
+    const capability = JSON.parse(fs.readFileSync(path.resolve(repoRoot, 'apps/desktop/capabilities/default.json'), 'utf-8'));
+    expect(capability.permissions).not.toContain('updater:default');
     expect(lib).toContain('tauri_plugin_process');
   });
 

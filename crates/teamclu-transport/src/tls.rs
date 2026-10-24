@@ -72,9 +72,21 @@ pub fn default_tls_config() -> ResolvedTlsConfig {
 }
 
 fn native_root_store() -> Result<RootCertStore, String> {
-    let certs = rustls_native_certs::load_native_certs()
-        .map_err(|err| format!("load_native_certs failed: {err}"))?;
-    store_from_certs(certs)
+    store_from_native_result(rustls_native_certs::load_native_certs())
+}
+
+fn store_from_native_result(
+    result: rustls_native_certs::CertificateResult,
+) -> Result<RootCertStore, String> {
+    // 0.8 can return usable roots alongside load errors. Keep those roots;
+    // only an unusable store should trigger the uncached webpki fallback.
+    store_from_certs(result.certs).map_err(|reason| {
+        if result.errors.is_empty() {
+            reason
+        } else {
+            format!("{reason}; load_native_certs errors: {:?}", result.errors)
+        }
+    })
 }
 
 /// `Err` when the platform store yields nothing usable. An empty store is a
@@ -105,7 +117,9 @@ fn webpki_root_store() -> RootCertStore {
 
 fn config_from_roots(roots: RootCertStore) -> TlsConfiguration {
     TlsConfiguration::Rustls(Arc::new(
-        ClientConfig::builder()
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("ring supports the default TLS protocol versions")
             .with_root_certificates(roots)
             .with_no_client_auth(),
     ))
@@ -121,6 +135,89 @@ fn log_fallback(reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_native_load_reports_failure_without_panicking() {
+        let result = rustls_native_certs::CertificateResult::default();
+        assert!(store_from_native_result(result)
+            .unwrap_err()
+            .contains("no usable roots"));
+    }
+
+    #[test]
+    fn native_roots_survive_one_unparseable_certificate() {
+        let certificate = rcgen::generate_simple_self_signed(vec!["mqtt.test".into()]).unwrap();
+        let mut result = rustls_native_certs::CertificateResult::default();
+        result.certs = vec![
+            CertificateDer::from(vec![0]),
+            certificate.cert.der().clone(),
+        ];
+        assert_eq!(store_from_native_result(result).unwrap().len(), 1);
+    }
+
+    // Exercise rustls itself: a dependency migration must not turn either
+    // certificate trust or hostname verification into an accept-all callback.
+    fn handshake(trust_server: bool, hostname: &'static str) -> Result<(), rustls::Error> {
+        use rustls::pki_types::PrivatePkcs8KeyDer;
+        use std::io::Cursor;
+        let certificate = rcgen::generate_simple_self_signed(vec!["mqtt.test".into()]).unwrap();
+        let mut roots = RootCertStore::empty();
+        if trust_server {
+            roots.add(certificate.cert.der().clone()).unwrap();
+        }
+        let TlsConfiguration::Rustls(client) = config_from_roots(roots) else {
+            panic!("MQTT must retain rustls");
+        };
+        let server = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![certificate.cert.der().clone()],
+            PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()).into(),
+        )
+        .unwrap();
+        let mut client =
+            rustls::ClientConnection::new(client, hostname.try_into().unwrap()).unwrap();
+        let mut server = rustls::ServerConnection::new(Arc::new(server)).unwrap();
+        for _ in 0..10 {
+            let mut bytes = Vec::new();
+            client.write_tls(&mut bytes).unwrap();
+            server.read_tls(&mut Cursor::new(bytes)).unwrap();
+            server.process_new_packets()?;
+            let mut bytes = Vec::new();
+            server.write_tls(&mut bytes).unwrap();
+            client.read_tls(&mut Cursor::new(bytes)).unwrap();
+            client.process_new_packets()?;
+            if !client.is_handshaking() && !server.is_handshaking() {
+                return Ok(());
+            }
+        }
+        panic!("TLS handshake did not complete");
+    }
+
+    #[test]
+    fn trusted_mqtt_certificate_completes_handshake() {
+        handshake(true, "mqtt.test").unwrap();
+    }
+
+    #[test]
+    fn mqtt_tls_rejects_untrusted_certificates() {
+        assert!(matches!(
+            handshake(false, "mqtt.test"),
+            Err(rustls::Error::InvalidCertificate(_))
+        ));
+    }
+
+    #[test]
+    fn mqtt_tls_rejects_wrong_hostname() {
+        assert!(matches!(
+            handshake(true, "wrong.test"),
+            Err(rustls::Error::InvalidCertificate(_))
+        ));
+    }
 
     fn is_rustls(config: &TlsConfiguration) -> bool {
         matches!(config, TlsConfiguration::Rustls(_))

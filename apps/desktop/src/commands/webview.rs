@@ -255,7 +255,17 @@ fn identity_injection_origin(url: &tauri::Url, admin_console_vetted: bool) -> Op
 /// no clicks anywhere) — see GitHub issue #617.
 fn ensure_http_host_resolvable(url: &tauri::Url) -> Result<(), String> {
     use std::net::ToSocketAddrs;
+    ensure_http_host_resolvable_with(url, |addr| addr.to_socket_addrs())
+}
 
+// Keep OS lookup at the boundary so resolver outcomes need no public DNS in tests.
+fn ensure_http_host_resolvable_with<I>(
+    url: &tauri::Url,
+    resolve: impl FnOnce(&str) -> std::io::Result<I>,
+) -> Result<(), String>
+where
+    I: Iterator<Item = std::net::SocketAddr>,
+{
     if !matches!(url.scheme(), "http" | "https") {
         return Ok(());
     }
@@ -276,7 +286,7 @@ fn ensure_http_host_resolvable(url: &tauri::Url) -> Result<(), String> {
         .port_or_known_default()
         .unwrap_or(if url.scheme() == "https" { 443 } else { 80 });
     let addr = format!("{host}:{port}");
-    match addr.to_socket_addrs() {
+    match resolve(&addr) {
         Ok(mut iter) => {
             if iter.next().is_some() {
                 Ok(())
@@ -345,18 +355,29 @@ async fn ensure_http_url_reachable_async(url: &tauri::Url) -> Result<(), String>
     }
     ensure_http_host_resolvable_async(url).await?;
 
-    let client = reqwest::Client::builder()
-        .timeout(WEBVIEW_PREFLIGHT_TIMEOUT)
-        .connect_timeout(WEBVIEW_PREFLIGHT_TIMEOUT)
-        .user_agent(WEBVIEW_UA)
+    let client = preflight_client_builder()
         .build()
         .map_err(|e| format!("preflight client unavailable: {e}"))?;
 
     let host = url.host_str().unwrap_or("?").to_string();
+    probe_http_url(&client, url)
+        .await
+        .map_err(|err| format!("Host '{host}' is not reachable: {err}"))
+}
+
+fn preflight_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .timeout(WEBVIEW_PREFLIGHT_TIMEOUT)
+        .connect_timeout(WEBVIEW_PREFLIGHT_TIMEOUT)
+        .user_agent(WEBVIEW_UA)
+}
+
+// Preserve the transport error chain for certificate-specific regression tests.
+async fn probe_http_url(client: &reqwest::Client, url: &tauri::Url) -> Result<(), reqwest::Error> {
     match client.head(url.clone()).send().await {
         Ok(_) => Ok(()),
         Err(err) if err.is_status() => Ok(()),
-        Err(err) => Err(format!("Host '{host}' is not reachable: {err}")),
+        Err(err) => Err(err),
     }
 }
 
@@ -388,13 +409,17 @@ async fn ensure_http_url_reachable_async(url: &tauri::Url) -> Result<(), String>
 /// button does nothing": `webview_create` returned `Err` before `add_child`,
 /// so Web SSO never opened a window at all.
 async fn preflight_url(url: &tauri::Url) -> Result<(), String> {
+    apply_preflight_policy(ensure_http_url_reachable_async(url).await)
+}
+
+fn apply_preflight_policy(probe: Result<(), String>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        ensure_http_url_reachable_async(url).await
+        probe
     }
     #[cfg(not(target_os = "macos"))]
     {
-        if let Err(err) = ensure_http_url_reachable_async(url).await {
+        if let Err(err) = probe {
             log::warn!("[Webview] Pre-flight probe failed, opening anyway: {err}");
         }
         Ok(())
@@ -1639,79 +1664,278 @@ mod tests {
     }
 
     #[test]
-    fn ensure_http_host_resolvable_accepts_ip_literals() {
-        let url: tauri::Url = "http://127.0.0.1:8080/path".parse().expect("url");
-        assert!(ensure_http_host_resolvable(&url).is_ok());
+    fn ensure_http_host_resolvable_accepts_ip_literals_without_lookup() {
+        for raw in ["http://127.0.0.1:8080/path", "https://[::1]/"] {
+            let url = raw.parse().expect("url");
+            assert!(ensure_http_host_resolvable_with(&url, no_lookup).is_ok());
+            assert!(ensure_http_host_resolvable(&url).is_ok());
+        }
+    }
+
+    fn no_lookup(_: &str) -> std::io::Result<std::vec::IntoIter<std::net::SocketAddr>> {
+        panic!("IP and non-HTTP URLs must not reach the OS resolver");
     }
 
     #[test]
-    fn ensure_http_host_resolvable_skips_non_http_schemes() {
-        let url: tauri::Url = "data:text/plain,hi".parse().expect("url");
-        assert!(ensure_http_host_resolvable(&url).is_ok());
+    fn ensure_http_host_resolvable_skips_non_http_schemes_without_lookup() {
+        let url = "data:text/plain,hi".parse().expect("url");
+        assert!(ensure_http_host_resolvable_with(&url, no_lookup).is_ok());
     }
 
-    /// A host whose certificate does not cover the name completes DNS, TCP and
-    /// the TLS handshake, so the #617 DNS gate waves it through — and WKWebView
-    /// then wedged the AppKit main thread. `wrong.host.badssl.com` serves a
-    /// valid certificate for a different name, which is exactly that shape.
-    #[tokio::test]
-    async fn ensure_http_url_reachable_rejects_a_certificate_that_does_not_match() {
-        let url: tauri::Url = "https://wrong.host.badssl.com/".parse().expect("url");
-        // The DNS-only gate is happy with it — that is the gap being closed.
-        assert!(ensure_http_host_resolvable(&url).is_ok());
-        let err = ensure_http_url_reachable_async(&url)
+    #[test]
+    fn ensure_http_host_resolvable_rejects_resolver_errors() {
+        let url = "https://probe.test:8443/path".parse().expect("url");
+        let err = ensure_http_host_resolvable_with(&url, |addr| {
+            assert_eq!(addr, "probe.test:8443");
+            Err::<std::vec::IntoIter<std::net::SocketAddr>, _>(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "fixture lookup failure",
+            ))
+        })
+        .expect_err("resolver failure must reject");
+        assert!(
+            err.contains("probe.test") && err.contains("fixture lookup failure"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn ensure_http_host_resolvable_rejects_empty_results() {
+        let url = "https://probe.test/path".parse().expect("url");
+        let err = ensure_http_host_resolvable_with(&url, |_| Ok(Vec::new().into_iter()))
+            .expect_err("an empty lookup must reject");
+        assert!(
+            err.contains("probe.test") && err.contains("did not resolve"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn ensure_http_host_resolvable_accepts_resolver_address() {
+        let url = "https://probe.test/path".parse().expect("url");
+        let addr = "127.0.0.1:443".parse().unwrap();
+        assert!(ensure_http_host_resolvable_with(&url, |_| Ok(vec![addr].into_iter())).is_ok());
+    }
+
+    async fn answer_head<S>(mut stream: S, status: u16) -> String
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            assert_eq!(
+                stream.read(&mut byte).await.unwrap(),
+                1,
+                "complete request headers"
+            );
+            request.push(byte[0]);
+            assert!(request.len() < 8192, "bounded fixture request");
+        }
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 {status} Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
             .await
-            .expect_err("certificate name mismatch must be refused");
-        assert!(err.contains("not reachable"), "{err}");
+            .unwrap();
+        stream.shutdown().await.unwrap();
+        String::from_utf8(request).unwrap()
+    }
+
+    fn assert_head_request(request: &str) {
+        assert!(request.starts_with("HEAD /path HTTP/1.1\r\n"), "{request}");
+        assert!(
+            request.to_ascii_lowercase().contains(&format!(
+                "user-agent: {}\r\n",
+                WEBVIEW_UA.to_ascii_lowercase()
+            )),
+            "{request}"
+        );
     }
 
     #[tokio::test]
-    async fn ensure_http_url_reachable_allows_a_working_origin() {
-        let url: tauri::Url = "https://example.com/".parse().expect("url");
-        assert!(ensure_http_url_reachable_async(&url).await.is_ok());
+    async fn ensure_http_url_reachable_accepts_any_http_status() {
+        for status in [204, 404, 405] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/path", listener.local_addr().unwrap())
+                .parse()
+                .unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                answer_head(stream, status).await
+            });
+            let client = preflight_client_builder().no_proxy().build().unwrap();
+            probe_http_url(&client, &url)
+                .await
+                .expect("any HTTP response is reachable");
+            assert_head_request(&server.await.unwrap());
+        }
+    }
+
+    fn tls_certificates() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        use rcgen::{
+            BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
+            KeyPair, KeyUsagePurpose,
+        };
+        let now = std::time::SystemTime::now();
+        let day = std::time::Duration::from_secs(24 * 60 * 60);
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca.distinguished_name
+            .push(DnType::CommonName, "TeamClu preflight test CA");
+        ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        // Fresh on every run: no fixture expiry, and below native TLS lifetime limits.
+        ca.not_before = (now - day).into();
+        ca.not_after = (now + 30 * day).into();
+        let root = ca.self_signed(&ca_key).unwrap();
+        let leaf_key = KeyPair::generate().unwrap();
+        let mut leaf = CertificateParams::new(vec!["preflight.test".into()]).unwrap();
+        leaf.distinguished_name
+            .push(DnType::CommonName, "preflight.test");
+        leaf.not_before = ca.not_before;
+        leaf.not_after = ca.not_after;
+        leaf.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let certificate = leaf
+            .signed_by(&leaf_key, &Issuer::from_params(&ca, &ca_key))
+            .unwrap();
+        (
+            root.der().to_vec(),
+            certificate.der().to_vec(),
+            leaf_key.serialize_der(),
+        )
+    }
+
+    async fn tls_origin(
+        host: &str,
+        trusted: bool,
+    ) -> (
+        tauri::Url,
+        reqwest::Client,
+        tokio::task::JoinHandle<Option<String>>,
+    ) {
+        use tokio_rustls::rustls::{
+            self,
+            pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+        };
+        let (ca, certificate, key) = tls_certificates();
+        let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(certificate)],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
+        )
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+            match acceptor.accept(stream).await {
+                Ok(tls) => Some(answer_head(tls, 204).await),
+                Err(_) => None, // Expected when the client rejects the certificate.
+            }
+        });
+        let mut builder = preflight_client_builder().no_proxy().resolve(host, addr);
+        if trusted {
+            builder = builder.add_root_certificate(reqwest::Certificate::from_der(&ca).unwrap());
+        }
+        (
+            format!("https://{host}:{}/path", addr.port())
+                .parse()
+                .unwrap(),
+            builder.build().unwrap(),
+            server,
+        )
+    }
+
+    fn error_chain(err: &reqwest::Error) -> String {
+        let mut errors = String::new();
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(source) = current {
+            errors.push_str(&format!("{source:?}\n"));
+            current = source.source();
+        }
+        errors
+    }
+
+    #[tokio::test]
+    async fn ensure_http_url_reachable_accepts_trusted_matching_tls_origin() {
+        let (url, client, server) = tls_origin("preflight.test", true).await;
+        probe_http_url(&client, &url)
+            .await
+            .expect("trusted matching certificate");
+        assert_head_request(&server.await.unwrap().expect("TLS accepted"));
+    }
+
+    #[tokio::test]
+    async fn ensure_http_url_reachable_rejects_trusted_wrong_hostname() {
+        let (url, client, server) = tls_origin("wrong-name.test", true).await;
+        let err = probe_http_url(&client, &url)
+            .await
+            .expect_err("trusted certificate with wrong SAN must reject");
+        let chain = error_chain(&err);
+        assert!(
+            chain.contains("NotValidForName")
+                || chain.contains("code: -67602") // macOS errSecHostNameMismatch
+                || chain.to_ascii_lowercase().contains("hostname mismatch")
+                || chain.to_ascii_lowercase().contains("cn name does not match"),
+            "must reject certificate name, not connectivity: {chain}"
+        );
+        assert!(server.await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn ensure_http_url_reachable_rejects_untrusted_root() {
+        let (url, client, server) = tls_origin("preflight.test", false).await;
+        let err = probe_http_url(&client, &url)
+            .await
+            .expect_err("untrusted issuer must reject");
+        let chain = error_chain(&err);
+        assert!(
+            chain.contains("UnknownIssuer")
+                || chain.contains("code: -25318") // macOS missing certificate in chain
+                || chain.to_ascii_lowercase().contains("unable to get local issuer certificate")
+                || chain.to_ascii_lowercase().contains("self-signed certificate")
+                || chain.to_ascii_lowercase().contains("untrusted root")
+                || chain.to_ascii_lowercase().contains("not trusted by the trust provider")
+                || chain.to_ascii_lowercase().contains("authority that is not trusted"),
+            "must reject certificate trust, not connectivity: {chain}"
+        );
+        assert!(server.await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn ensure_http_url_reachable_skips_non_http_schemes() {
-        let url: tauri::Url = "about:blank".parse().expect("url");
+        let url = "about:blank".parse().expect("url");
         assert!(ensure_http_url_reachable_async(&url).await.is_ok());
     }
 
-    /// The probe is a gate on macOS and advice everywhere else. Both arms are
-    /// pinned here because the split is the fix: letting a failed probe veto on
-    /// Windows made `webview_create` return `Err` before `add_child`, so Web
-    /// SSO never opened a window — for an origin WebView2 loads fine.
-    #[tokio::test]
-    async fn preflight_blocks_only_on_macos() {
-        // `.invalid` is reserved by RFC 2606 and must not resolve, so the probe
-        // fails at the DNS step — no network round trip, no flake.
-        let url: tauri::Url = "https://no-such-host-teamclu-617.invalid/path"
-            .parse()
-            .expect("url");
-        assert!(ensure_http_url_reachable_async(&url).await.is_err());
-
-        let gated = preflight_url(&url).await;
-        if cfg!(target_os = "macos") {
-            assert!(gated.is_err(), "macOS must fail closed (#617)");
-        } else {
-            assert!(
-                gated.is_ok(),
-                "off macOS a failed probe must not veto the webview: {gated:?}"
-            );
-        }
+    #[test]
+    fn preflight_accepts_success_on_every_platform() {
+        assert!(apply_preflight_policy(Ok(())).is_ok());
     }
 
     #[test]
-    fn ensure_http_host_resolvable_rejects_unresolvable_host() {
-        // `.invalid` is reserved by RFC 2606 and must not resolve on the public DNS.
-        let url: tauri::Url = "https://no-such-host-teamclu-617.invalid/path"
-            .parse()
-            .expect("url");
-        let err = ensure_http_host_resolvable(&url).expect_err("unresolvable host");
-        assert!(
-            err.contains("no-such-host-teamclu-617.invalid"),
-            "error should name the host: {err}"
-        );
+    fn preflight_blocks_failure_only_on_macos() {
+        let gated = apply_preflight_policy(Err("fixture probe failure".into()));
+        if cfg!(target_os = "macos") {
+            assert_eq!(gated, Err("fixture probe failure".into()));
+        } else {
+            assert!(
+                gated.is_ok(),
+                "off macOS a failed probe must remain advisory: {gated:?}"
+            );
+        }
     }
 }
 

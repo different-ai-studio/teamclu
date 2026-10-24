@@ -866,6 +866,8 @@ test("the app lookup reads the custom domain columns the return check needs", as
   const row = {
     id: APP_ID,
     slug: "report",
+    app_code: "k7m2q9vx4n8p",
+    uses_app_code_domain: true,
     name: "周报",
     team_id: TEAM_ID,
     auth_mode: "platform",
@@ -889,6 +891,8 @@ test("the app lookup reads the custom domain columns the return check needs", as
   assert.deepEqual(await lookup(APP_ID), {
     id: APP_ID,
     slug: "report",
+    appCode: "k7m2q9vx4n8p",
+    usesAppCodeDomain: true,
     name: "周报",
     teamName: "研发效能部",
     authMode: "platform",
@@ -906,6 +910,7 @@ test("the app lookup reads the custom domain columns the return check needs", as
   // whether an account may be created — a column missing here is the bug this
   // assertion exists to catch, which is how the custom-domain pair got here.
   for (const col of [
+    "app_code", "uses_app_code_domain",
     "custom_domain", "custom_domain_verified_at", "name", "team_id", "auth_mode",
     "org_id", "auth_audience", "auth_scope", "auth_rules",
   ]) {
@@ -941,4 +946,43 @@ test("the app lookup surfaces a query error, but a failed team read only drops t
   assert.equal(app?.teamName, null);
   assert.equal(app?.customDomain, null);
   assert.equal(app?.customDomainVerifiedAt, null);
+});
+
+import { appOrigins } from "../src/lib/apps-public-host.js";
+
+test("login return origins include both code and existing name-based addresses", () => {
+  assert.deepEqual(appOrigins({ id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", appCode: "k7m2q9vx4n8p", usesAppCodeDomain: true }, { APPS_PUBLIC_DOMAIN: "apps.example.com" }), [
+    "https://a-k7m2q9vx4n8p.apps.example.com",
+    "https://shop-18e4ecad.apps.example.com",
+  ]);
+});
+
+test("login lookup loads the code needed to validate a code-host return address", async () => {
+  const client = { from() { return { select() { return this; }, eq() { return this; },
+    maybeSingle: async () => ({ data: { id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "门店大盘", app_code: "k7m2q9vx4n8p", uses_app_code_domain: true, auth_mode: "platform" }, error: null }),
+  }; } };
+  const app = await makeSupabaseLoginAppLookup(() => client)("18e4ecad-6189-495b-a873-7fe09179a5f5");
+  assert.equal(app?.appCode, "k7m2q9vx4n8p");
+  assert.ok(appOrigins(app!, { APPS_PUBLIC_DOMAIN: "apps.example.com" }).includes("https://a-k7m2q9vx4n8p.apps.example.com"));
+});
+
+test("disabled code origins are rejected until activation", () => {
+  assert.deepEqual(appOrigins({ id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", appCode: "k7m2q9vx4n8p", usesAppCodeDomain: false }, { APPS_PUBLIC_DOMAIN: "apps.example.com" }), ["https://shop-18e4ecad.apps.example.com"]);
+});
+
+
+test("missing code mode remains legacy and verified custom domains remain accepted", () => {
+  const app = { id: APP_ID, slug: "report", appCode: "k7m2q9vx4n8p", customDomain: "shop.example.org" };
+  assert.deepEqual(appOrigins(app, BASE_ENV), [ORIGIN]);
+  assert.deepEqual(appOrigins({ ...app, customDomainVerifiedAt: "2026-10-19" }, BASE_ENV), [ORIGIN, "https://shop.example.org"]);
+});
+
+test("the login service accepts code return addresses only after activation", async () => {
+  await withEnv({}, async () => {
+    for (const mode of [undefined, false, true]) {
+      const lookupApp = async () => ({ ...APP, appCode: "k7m2q9vx4n8p", usesAppCodeDomain: mode });
+      const response = await handleLoginRequest(get("/?" + new URLSearchParams({ ...flow, r: "https://a-k7m2q9vx4n8p.apps.example.com" })), deps({ lookupApp }));
+      assert.equal(response!.status, mode === true ? 200 : 400);
+    }
+  });
 });

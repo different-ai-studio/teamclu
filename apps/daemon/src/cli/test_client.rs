@@ -35,12 +35,14 @@ impl TestClient {
         opts.set_clean_session(true);
 
         if use_tls {
-            let mut tls_config = rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(
-                    crate::mqtt::client_danger::NoCertVerifier,
-                ))
-                .with_no_client_auth();
+            let mut tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .expect("ring supports the default TLS protocol versions")
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(crate::mqtt::client_danger::NoCertVerifier))
+            .with_no_client_auth();
             tls_config.alpn_protocols = vec![];
             opts.set_transport(Transport::tls_with_config(
                 rumqttc::TlsConfiguration::Rustls(Arc::new(tls_config)),

@@ -193,6 +193,18 @@ test("POST /v1/apps/:id/deploy returns 202 with deploy result", async () => {
   assert.deepEqual(seenBody, { gitCommitSha: "abc1234" });
 });
 
+test("POST /v1/apps/:id/deploy forwards the explicit domain choice", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "POST", "/v1/apps/:appId/deploy")[2];
+  for (const choice of [true, false]) {
+    let seen: any;
+    await handler({ params: { appId: "app-1" }, json: { useAppCodeDomain: choice },
+      repository: { deployApp: async (_id, body) => { seen = body; return { id: "app-1" }; } } });
+    assert.equal(seen.useAppCodeDomain, choice);
+  }
+});
+
 test("POST /v1/apps/:id/deploy 404s when repo returns null", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
