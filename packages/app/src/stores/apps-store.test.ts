@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { publicDeployConfirm } from "@/lib/apps/app-deploy-confirm";
+import i18n from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({
   listApps: vi.fn(),
@@ -1305,6 +1306,37 @@ describe("apps-store deploy", () => {
     );
     expect(vi.mocked(publicDeployConfirm.run)).toHaveBeenCalledTimes(1);
     expect(mocks.deployApp).toHaveBeenCalled();
+  });
+
+  it("active-turn warning follows the current language after the store is loaded", async () => {
+    const previousLanguage = i18n.language;
+    const { useAppsStore } = await import("./apps-store");
+    // Tests default to a Chinese-only build, so load English explicitly.
+    const { default: english } = await import("@/locales/en.json");
+    i18n.addResourceBundle("en", "translation", english, true, true);
+    const messages: string[] = [];
+    vi.mocked(publicDeployConfirm.run).mockImplementation(async (message) => {
+      messages.push(message);
+      return false;
+    });
+    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
+      workspace_has_active_turn: true,
+    });
+
+    try {
+      await i18n.changeLanguage("zh-CN");
+      await useAppsStore.getState().deploy("app-1");
+      await i18n.changeLanguage("en");
+      await useAppsStore.getState().deploy("app-1");
+
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toContain("有 AI 正在运行");
+      expect(messages[1]).toContain("AI is running");
+      expect(messages[1]).not.toMatch(/[\u3400-\u9fff]/);
+      expect(mocks.deployApp).not.toHaveBeenCalled();
+    } finally {
+      await i18n.changeLanguage(previousLanguage);
+    }
   });
 
   it("active turn: declined confirm aborts deploy", async () => {

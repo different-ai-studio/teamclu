@@ -1429,6 +1429,7 @@
     "preview": "预览",
     "deployConfirmMessage": "确认部署此应用？",
     "deployPublicWarning": "此应用未启用登录保护，任何拿到链接的人都能访问。\n\n确定继续部署吗？",
+    "deployActiveTurnWarning": "此应用的工作区有 AI 正在运行。现在部署可能把未完成的改动打包上线。\n\n确定继续部署吗？",
     "deployDomainSwitch": "部署成功后，改用应用代码域名",
     "deployDomainKeepHint": "默认保留当前域名；勾选切换后，原域名仍可访问。",
     "deployConfirmTitle": "确认部署",

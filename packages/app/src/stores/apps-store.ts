@@ -905,7 +905,9 @@ export const useAppsStore = create<AppsState>((set, get) => ({
           app.teamId,
         );
         if (envDiag?.workspace_has_active_turn) {
-          const accepted = await publicDeployConfirm.run(ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE);
+          const accepted = await publicDeployConfirm.run(
+            i18n.t("apps.deployActiveTurnWarning", ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE),
+          );
           if (!accepted) return;
         }
       }
