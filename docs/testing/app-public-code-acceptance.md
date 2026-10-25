@@ -14,10 +14,13 @@ This addendum supersedes the old format and rollout status below only for the
 - Tested source: **`ceab9f1a4fa9809eea2792ca23b85bb0d4c8d536`**, containing
   Tasks 1–5 through `964dc6b6` and the six Task 6 compatibility cases. The test
   runs preceded this test-only commit and used identical tracked content.
-- Task 1–5 scoped implementation reviews are recorded locally. Task 6 scoped
-  review and the controller-owned independent full-branch specification/quality
-  review are **PENDING**; historical review approvals below do not approve this
-  new source. No push, PR, merge, deployment, publication or live write occurred.
+- Task 1–6 scoped reviews and the independent whole-branch specification/code
+  quality review are **approved** for local Tasks 1–6. Reviewed source:
+  **`aa378b07029448bd305f5233cbee10a45f9902ae`** (base `f429b465`); no
+  Critical/Important defects or new Minor issues were found. The existing
+  test-output hygiene follow-up remains. Approval supports the planned staged
+  A/B integration; complete-format release acceptance remains PENDING. No push,
+  PR, merge, deployment, publication or live write occurred.
 
 ### Compatibility boundary audit
 
@@ -79,7 +82,7 @@ No new failures or unhandled frontend errors were observed.
 | Live Supabase MCP migration/readback | **PENDING Task 7** for M. The 2026-10-20 MCP application below concerns the old migration only. No new live/dev schema or data write was made. |
 | Online routing/auth/custom-domain/cron | **PENDING Task 7** on the intended environment; raw/full compatibility tests and local pgTAP do not establish real routing, login/callback/cookie or deployment behavior. |
 | Historical transient provider failure | One historical provider attempt returned `origin_security_unavailable:routeConfig`; a normal retry succeeded. Cause remains unknown; no claim of a fix or complete-format validation follows from the retry. |
-| Independent whole-branch review | **PENDING controller dispatch after Task 6 scoped review**; resolve Important/Critical findings and rerun covering checks before marking this gate passed. |
+| Independent whole-branch review | **APPROVED** for local Tasks 1–6 at `aa378b07` (base `f429b465`), with specification compliance and code quality approved; Task 1–6 scoped reviews also approved. No Critical/Important defects or new Minor issues. This is not immediate whole-branch deployment or release acceptance. |
 
 ### Two publication batches
 
