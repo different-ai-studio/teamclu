@@ -68,6 +68,37 @@ amuxd team secrets set --team-secret <64-hex> [--git-credential-file ~/.ssh/id_e
 amuxd config set …   # daemon.toml
 ```
 
+## Apps from the command line (for other agents)
+
+`amuxd app` creates, deploys and inspects TeamClu apps, so an agent amuxd did
+not start — Claude Code, Codex, a CI job — can publish one. It needs
+`amuxd start` to be running and acts as **this daemon's agent account**: the
+apps it creates belong to that agent, and a member's personal app is invisible
+to it until the member grants it access in TeamClu.
+
+Every command prints JSON on stdout. A failure prints
+`{"ok": false, "error": "…"}` and exits 1; the error names the next command to
+run where there is one.
+
+```bash
+amuxd app list                                   # this team's apps, with local checkouts
+amuxd app create --name 记账                      # starter template (static_web)
+amuxd app create --name site --dir ./site        # an existing folder, used in place
+amuxd app create --name api --git-remote <url>   # import a repository
+amuxd app status                                 # the app whose checkout cwd is in
+amuxd app deploy --app 记账                       # build here, publish
+amuxd app logs --id <app-id> --since 10 --kind all
+amuxd app reseed --id <app-id>                   # re-write code that never got seeded
+```
+
+With neither `--id` nor `--app`, a command acts on the app whose checkout the
+current directory is in. A Gitea-hosted app deploys its pushed `HEAD`, so
+commit and push before `deploy`. There is no approval prompt — whoever can run
+this as the daemon's user can drive the daemon outright already.
+
+The flows are `crates/teamclu-apps`, the same code the desktop's `manage_app`
+MCP tool runs (as the signed-in user, with an approval dialog for deploys).
+
 ## Config
 
 `amuxd config` edits `~/.amuxd/daemon.toml` by default. Use
