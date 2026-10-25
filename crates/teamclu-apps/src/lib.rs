@@ -122,9 +122,11 @@ pub trait Host: Send + Sync {
 
     /// Called once the server has previewed what a deploy changes, before
     /// anything is uploaded. An `Err` stops the deploy and withdraws the
-    /// preflight; its text is the reply.
-    async fn approve_deploy(&self, _row: &Value, _preview: &Value) -> Result<(), String> {
-        Ok(())
+    /// preflight; its text is the reply. `Ok(true)` also switches an app still
+    /// on its old domain to its app-code domain once the deploy succeeds; a
+    /// host with nobody to ask leaves that to [`DeployArgs`].
+    async fn approve_deploy(&self, _row: &Value, _preview: &Value) -> Result<bool, String> {
+        Ok(false)
     }
 
     /// An app was created, changed or deployed — refresh whatever shows it.

@@ -10,6 +10,16 @@ use crate::redact::redact_deploy_secrets;
 use crate::row::{app_brief, app_path, is_gitea_managed, row_id, row_str};
 use crate::{AppOps, Method};
 
+/// What the caller asked of one deploy.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeployArgs {
+    /// The revision carries a database migration the caller meant to ship.
+    pub migration_intent: bool,
+    /// Switch an app still on its old domain to its app-code domain once the
+    /// deploy succeeds. A host's approval can also say yes.
+    pub use_app_code_domain: bool,
+}
+
 /// A short-lived Gitea deploy key for the app's repo, as the daemon needs it.
 pub struct GitCredential {
     pub remote_url: String,
@@ -255,14 +265,14 @@ impl AppOps<'_> {
     /// A failure after `/deploy` must report `deploy_error` back: nothing
     /// server-side can observe that the local build never finished, and a row
     /// left at `awaiting_build` blocks every later deploy for 30 minutes.
-    pub async fn deploy(&self, row: &Value, migration_intent: bool) -> Result<Value, String> {
-        let deployed = self.run_deploy(row, migration_intent).await;
+    pub async fn deploy(&self, row: &Value, args: DeployArgs) -> Result<Value, String> {
+        let deployed = self.run_deploy(row, args).await;
         // Refresh after success or a rejected attempt alike.
         self.host.app_changed(row);
         Ok(json!({ "ok": true, "action": "deploy", "app": app_brief(&deployed?) }))
     }
 
-    async fn run_deploy(&self, row: &Value, migration_intent: bool) -> Result<Value, String> {
+    async fn run_deploy(&self, row: &Value, args: DeployArgs) -> Result<Value, String> {
         let app_id = row_id(row)?;
         let team_id = row_str(row, "teamId").unwrap_or_default().to_string();
         let provision = row_str(row, "provisionStatus").unwrap_or_default();
@@ -314,7 +324,7 @@ impl AppOps<'_> {
         }
         .ok_or("The daemon manifest did not include a source revision.")?
         .to_string();
-        let mut start_body = json!({ "revision": revision, "declaration": declaration, "migrationIntent": migration_intent });
+        let mut start_body = json!({ "revision": revision, "declaration": declaration, "migrationIntent": args.migration_intent });
         if let Some(sha) = &git_commit_sha {
             start_body["gitCommitSha"] = json!(sha);
         }
@@ -330,7 +340,11 @@ impl AppOps<'_> {
         let preflight_token = row_str(&preflight, "token").ok_or("preflight returned no token")?;
         let mut build_started = false;
         let result = async {
-            self.host.approve_deploy(row, &preflight["preview"]).await?;
+            let switch_domain = self.host.approve_deploy(row, &preflight["preview"]).await?;
+            // Absent keeps whatever domain the app is on; only a yes is sent.
+            if switch_domain || args.use_app_code_domain {
+                start_body["useAppCodeDomain"] = json!(true);
+            }
             start_body["preflightToken"] = json!(preflight_token);
             let started = self
                 .call(
@@ -468,7 +482,7 @@ mod tests {
         let host = TestHost(Surface::Cli);
         let ops = AppOps::new(&cloud, &daemon, &host);
 
-        let out = ops.deploy(&imported_row(), false).await.unwrap();
+        let out = ops.deploy(&imported_row(), DeployArgs::default()).await.unwrap();
         assert_eq!(out["app"]["url"], "https://a1.apps");
         let build = daemon.builds.lock().unwrap()[0].clone();
         assert_eq!(build["presignedPut"], "https://oss/put?Signature=s");
@@ -490,7 +504,7 @@ mod tests {
         let host = TestHost(Surface::Cli);
         let ops = AppOps::new(&cloud, &daemon, &host);
 
-        let err = ops.deploy(&imported_row(), false).await.unwrap_err();
+        let err = ops.deploy(&imported_row(), DeployArgs::default()).await.unwrap_err();
         assert!(!err.contains("Signature="), "{err}");
         let patch = cloud.calls_to(Method::Patch, "/v1/apps/a1");
         let body = patch[0].as_ref().unwrap();
@@ -506,7 +520,7 @@ mod tests {
             fn surface(&self) -> Surface {
                 Surface::Mcp
             }
-            async fn approve_deploy(&self, _: &Value, _: &Value) -> Result<(), String> {
+            async fn approve_deploy(&self, _: &Value, _: &Value) -> Result<bool, String> {
                 Err("The user declined.".to_string())
             }
         }
@@ -514,7 +528,7 @@ mod tests {
         cloud.reply(Method::Delete, "/v1/apps/a1/deploy/preflight", json!({}));
         let ops = AppOps::new(&cloud, &daemon, &Refuses);
 
-        let err = ops.deploy(&imported_row(), false).await.unwrap_err();
+        let err = ops.deploy(&imported_row(), DeployArgs::default()).await.unwrap_err();
         assert_eq!(err, "The user declined.");
         assert!(cloud
             .calls_to(Method::Post, "/v1/apps/a1/deploy")
@@ -535,7 +549,7 @@ mod tests {
         let host = TestHost(Surface::Cli);
         let ops = AppOps::new(&cloud, &daemon, &host);
         let row = json!({ "id": "a1", "provisionStatus": "pending" });
-        let err = ops.deploy(&row, false).await.unwrap_err();
+        let err = ops.deploy(&row, DeployArgs::default()).await.unwrap_err();
         assert!(err.contains("`amuxd app reseed`"), "{err}");
     }
 }

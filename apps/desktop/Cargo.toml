@@ -54,6 +54,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 teamclu-proto = { path = "../../crates/teamclu-proto" }
 teamclu-types = { path = "../../crates/teamclu-types" }
+teamclu-apps = { path = "../../crates/teamclu-apps" }
+async-trait = "0.1"
 teamclu-skillpack = { path = "../../crates/teamclu-skillpack" }
 teamclu-runtime-env = { path = "../../crates/teamclu-runtime-env" }
 teamclu-transport = { path = "../../crates/teamclu-transport" }

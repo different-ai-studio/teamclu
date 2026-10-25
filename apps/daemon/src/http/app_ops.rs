@@ -311,6 +311,8 @@ pub struct AppOpsBody {
     // deploy
     #[serde(default)]
     pub migration_intent: bool,
+    #[serde(default)]
+    pub use_app_code_domain: bool,
     // logs
     #[serde(default)]
     pub since_minutes: Option<u64>,
@@ -409,7 +411,13 @@ pub async fn app_ops(
                     Ok(serde_json::json!({ "action": "status", "app": ops.status(&row).await }))
                 }
                 "reseed" => ops.reseed(&row).await,
-                "deploy" => ops.deploy(&row, body.migration_intent).await,
+                "deploy" => {
+                    let args = teamclu_apps::DeployArgs {
+                        migration_intent: body.migration_intent,
+                        use_app_code_domain: body.use_app_code_domain,
+                    };
+                    ops.deploy(&row, args).await
+                }
                 "logs" => {
                     let args = LogsArgs {
                         since_minutes: body.since_minutes,

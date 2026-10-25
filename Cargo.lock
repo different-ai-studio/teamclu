@@ -9696,6 +9696,7 @@ version = "0.4.1-beta.101"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "block2",
@@ -9753,6 +9754,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-shell",
  "tauri-plugin-window-state",
+ "teamclu-apps",
  "teamclu-binpath",
  "teamclu-gateway",
  "teamclu-proto",

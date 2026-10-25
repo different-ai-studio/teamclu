@@ -282,6 +282,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_id_the_caller_cannot_see_reads_as_maybe_a_permission() {
+        let cloud = FakeCloud::default();
+        cloud.fail(
+            Method::Get,
+            "/v1/apps/a9",
+            404,
+            r#"{"error":{"code":"not_found","message":"app not found"}}"#,
+        );
+        let daemon = FakeDaemon::default();
+        let host = TestHost(Surface::Cli);
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let err = ops
+            .resolve_app(
+                "",
+                &AppSelector {
+                    app_id: Some("a9".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        // A personal app nobody shared with the daemon's agent looks exactly
+        // like a missing one; the reply has to say it could be either.
+        assert!(
+            err.contains("404") && err.contains("agent account"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
     async fn no_name_and_no_checkout_says_how_to_name_one_on_this_surface() {
         let cloud = FakeCloud::default();
         let daemon = FakeDaemon::default();

@@ -57,6 +57,9 @@ pub fn app_brief(row: &Value) -> Value {
     json!({
         "id": f("id"),
         "name": f("name"),
+        "app_code": f("appCode"),
+        "app_code_url": f("appCodeUrl"),
+        "uses_app_code_domain": f("usesAppCodeDomain"),
         "type": f("type"),
         "visibility": f("visibility"),
         "url": url,
