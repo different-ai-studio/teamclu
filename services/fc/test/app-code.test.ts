@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as appCodes from "../src/lib/apps-public-host.js";
 import { appPublicUrl, parseAppPublicHost } from "../src/lib/apps-public-host.js";
 
 const CODE = "k7m2q9vx4n8p";
@@ -26,7 +27,7 @@ test("code URLs require a configured domain and an exact valid code", () => {
 });
 
 test("code host parsing normalizes case and port and rejects malformed hosts", () => {
-  assert.deepEqual(parseAppPublicHost(" A-K7M2Q9VX4N8P.APPS.EXAMPLE.COM:443 ", env), { appCode: CODE });
+  assert.deepEqual(parseAppPublicHost(" A-K7M2Q9VX4N8P.APPS.EXAMPLE.COM:443 ", env), { appCode: "a-k7m2q9vx4n8p" });
   for (const host of ["a-short.apps.example.com", "a-k7m2q9vx4n8p0.apps.example.com", "a-k7m2q9vx4n8i.apps.example.com", "a-k7m2q9vx4n8_.apps.example.com", "x.a-k7m2q9vx4n8p.apps.example.com", "a-k7m2q9vx4n8p.apps.example.com.evil.org", "a-k7m2q9vx4n8p.other.example.com", "a-k7m2q9vx4n8papps.example.com"]) {
     assert.equal(parseAppPublicHost(host, env), null, host);
   }
@@ -37,4 +38,32 @@ test("legacy URL calls and ASCII and punycode routing remain compatible", () => 
   assert.equal(appPublicUrl("shop", ID, env, null), "https://shop-18e4ecad.apps.example.com");
   assert.deepEqual(parseAppPublicHost("SHOP-18E4ECAD.apps.example.com:443", env), { slug: "shop", idPrefix: "18e4ecad" });
   assert.deepEqual(parseAppPublicHost("xn--teamclu--18e4ecad-nx65apz36b.apps.example.com", env), { slug: "teamclu-官网", idPrefix: "18e4ecad" });
+});
+
+
+test("stored codes normalize to the complete code without dropping a leading random a", () => {
+  for (const [stored, expected] of [
+    ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"],
+    ["a-k7m2q9vx4n8p", "a-k7m2q9vx4n8p"],
+    ["ak7m2q9vx4n8", "a-ak7m2q9vx4n8"],
+    ["a-ak7m2q9vx4n8", "a-ak7m2q9vx4n8"],
+  ]) {
+    assert.equal(appCodes.normalizeAppCode(stored), expected);
+  }
+});
+
+test("storage candidates prefer complete codes while supporting legacy rows", () => {
+  for (const stored of ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"]) {
+    assert.deepEqual(appCodes.appCodeStorageCandidates(stored), ["a-k7m2q9vx4n8p", "k7m2q9vx4n8p"]);
+    assert.equal(appPublicUrl("shop", ID, env, stored), "https://a-k7m2q9vx4n8p.apps.example.com");
+  }
+  assert.deepEqual(appCodes.appCodeStorageCandidates("ak7m2q9vx4n8"), ["a-ak7m2q9vx4n8", "ak7m2q9vx4n8"]);
+});
+
+test("normalization rejects malformed storage rather than repairing it", () => {
+  for (const value of [null, undefined, 123, {}, [CODE], "", "a-a-k7m2q9vx4n8p", "K7M2Q9VX4N8P", "a-K7M2Q9VX4N8P", "A-k7m2q9vx4n8p", " k7m2q9vx4n8p", "a-k7m2q9vx4n8p ", "a-k7m2q9vx4n8p\n", "k7m2q9vx4n8p\n", "short", "k7m2q9vx4n8p0", "a-k7m2q9vx4n8p0", "k7m2q9vx4n8i", "k7m2q9vx4n8l", "k7m2q9vx4n8o", "k7m2q9vx4n8u", "a-k7m2q9vx4n8i", "a-k7m2q9vx4n8l", "a-k7m2q9vx4n8o", "a-k7m2q9vx4n8u"]) {
+    assert.equal(appCodes.normalizeAppCode(value), null, String(value));
+    assert.deepEqual(appCodes.appCodeStorageCandidates(value), [], String(value));
+    if (typeof value === "string") assert.equal(appPublicUrl("shop", ID, env, value), null, value);
+  }
 });

@@ -10174,7 +10174,7 @@ components:
         slug: { type: string }
         appCode:
           type: string
-          pattern: '^[0-9a-hjkmnp-tv-z]{12}$'
+          pattern: '^a-[0-9a-hjkmnp-tv-z]{12}$'
           readOnly: true
           description: Permanent globally unique random app identifier. Not an access credential.
         usesAppCodeDomain:
@@ -10184,7 +10184,7 @@ components:
         appCodeUrl:
           type: [string, "null"]
           readOnly: true
-          description: Candidate URL `https://a-<appCode>.<apps domain>`; null without an apps domain. Not served until usesAppCodeDomain is true.
+          description: Candidate URL `https://<appCode>.<apps domain>`; null without an apps domain. Not served until usesAppCodeDomain is true.
 
         type:
           $ref: "#/components/schemas/AppType"
@@ -10303,7 +10303,7 @@ components:
           readOnly: true
           description: >-
             Current public URL served by the deployment's reverse proxy:
-            `https://a-<appCode>.<apps domain>` when usesAppCodeDomain is true,
+            `https://<appCode>.<apps domain>` when usesAppCodeDomain is true,
             otherwise the legacy `https://<slug>-<first 8 of id>.<apps domain>`.
             Derived, never stored. Null when no apps domain is configured or
             the current legacy label cannot be represented; use fcEndpoint then.

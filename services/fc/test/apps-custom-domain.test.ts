@@ -181,9 +181,11 @@ test("custom domain DNS uses the code address", () => {
 });
 
 
-test("custom-domain CNAME remains legacy until explicit activation", () => {
-  for (const mode of [undefined, false, true]) {
-    const records = customDomainRecords({ id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", appCode: "k7m2q9vx4n8p", usesAppCodeDomain: mode }, "shop.example.org", "token", ENV);
-    assert.equal(records[0].value, mode === true ? "a-k7m2q9vx4n8p.apps.example.com" : "shop-18e4ecad.apps.example.com");
-  }
-});
+for (const storedCode of ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"]) {
+  test(`custom-domain CNAME for ${storedCode} remains legacy until explicit activation`, () => {
+    for (const mode of [undefined, false, true]) {
+      const records = customDomainRecords({ id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", appCode: storedCode, usesAppCodeDomain: mode }, "shop.example.org", "token", ENV);
+      assert.equal(records[0].value, mode === true ? "a-k7m2q9vx4n8p.apps.example.com" : "shop-18e4ecad.apps.example.com");
+    }
+  });
+}

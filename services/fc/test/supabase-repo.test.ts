@@ -1931,7 +1931,10 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
           ctx.op = "insert";
           calls.push({ table, op: "insert", row });
           // mutate state so the inserted row is what subsequent .single() returns
-          const inserted = { ...row, id: row.id ?? `${table}-id-1` };
+          const inserted = {
+            ...(table === "apps" ? { app_code: "a-k7m2q9vx4n8p" } : {}),
+            ...row, id: row.id ?? `${table}-id-1`,
+          };
           state[table] = [inserted];
           ctx.inserted = inserted;
           return builder;
@@ -2087,6 +2090,7 @@ function appsRepo(supabase: any, extra: any = {}) {
 }
 
 const APP_ROW = {
+  app_code: "a-k7m2q9vx4n8p",
   id: "app-1",
   team_id: "team-1",
   created_by_actor_id: "actor-app-1",
@@ -5765,7 +5769,7 @@ test("apps: domain gate treats absent mode as legacy even when a raw code is pre
   process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
   try {
     const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
-      provision_status: "ready", app_code: "invalid", auth_mode: "platform",
+      provision_status: "ready", app_code: "k7m2q9vx4n8p", auth_mode: "platform",
     }] } }), {
       startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
       finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
@@ -5864,12 +5868,12 @@ test("apps: app responses expose a candidate code URL while publicUrl follows ac
   const previous = process.env.APPS_PUBLIC_DOMAIN;
   process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
   try {
-    for (const mode of [false, true, undefined]) {
+    for (const [mode, storedCode] of [false, true, undefined].flatMap(mode => ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"].map(code => [mode, code] as const))) {
       const calls: any[] = [];
-      const row = { ...APP_ROW, id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", app_code: "k7m2q9vx4n8p", uses_app_code_domain: mode };
+      const row = { ...APP_ROW, id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", app_code: storedCode, uses_app_code_domain: mode };
       const repo = appsRepo(appsSupabase({ calls, seed: { apps: [row] } }));
       const app = await repo.getApp(row.id);
-      assert.equal(app.appCode, "k7m2q9vx4n8p");
+      assert.equal(app.appCode, "a-k7m2q9vx4n8p");
       assert.equal(app.usesAppCodeDomain, mode === true);
       assert.equal(app.appCodeUrl, "https://a-k7m2q9vx4n8p.apps.example.com");
       assert.equal(app.publicUrl, mode ? "https://a-k7m2q9vx4n8p.apps.example.com" : "https://shop-18e4ecad.apps.example.com");
@@ -5880,7 +5884,7 @@ test("apps: app responses expose a candidate code URL while publicUrl follows ac
     delete process.env.APPS_PUBLIC_DOMAIN;
     const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, app_code: "k7m2q9vx4n8p", uses_app_code_domain: true }] } }));
     const app = await repo.getApp(APP_ROW.id);
-    assert.equal(app.appCode, "k7m2q9vx4n8p");
+    assert.equal(app.appCode, "a-k7m2q9vx4n8p");
     assert.equal(app.appCodeUrl, null);
     assert.equal(app.publicUrl, null);
   } finally {
@@ -5979,7 +5983,7 @@ test("getHomeOrgId is null when there is no users row", async () => {
 
 function authInfoRepo({appOrg="org-1", teamOrg="org-1", member=true, rolesError=null, appVisible=true, authRules: authRules = [{path:"/staff",auth:"required",audience:"org"}]}={}) {
  const calls=[];
- const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
+ const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{app_code:"a-k7m2q9vx4n8p",id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
  return {repo,calls};
 }
 test("auth_info_checks_app_and_catalog_visibility",async()=>{
@@ -6237,4 +6241,35 @@ test("runtime info does not hide FC recreated by a partially failed restoration"
  assert.equal(info.currentDeployment.uninstallOperationId,undefined);
  assert.equal(info.currentDeployment.historical,undefined);
  assert.equal(info.currentDeployment.drift,true);
+});
+
+
+test("apps: list and get normalize both stored code forms without changing ids", async () => {
+  for (const app_code of ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p", "ak7m2q9vx4n8"]) {
+    const row = { ...APP_ROW, app_code };
+    const repo = appsRepo(appsSupabase({ seed: { apps: [row] } }));
+    const expected = app_code === "ak7m2q9vx4n8" ? "a-ak7m2q9vx4n8" : "a-k7m2q9vx4n8p";
+    const listed = await repo.listApps({ teamId: row.team_id, limit: 100 });
+    const fetched = await repo.getApp(row.id);
+    for (const app of [listed[0], fetched]) {
+      assert.equal(app.id, "app-1");
+      assert.equal(app.appCode, expected);
+    }
+  }
+});
+
+test("apps: list and get reject corrupt stored codes without leaking their value", async () => {
+  for (const app_code of [undefined, null, "", "bad-secret-code", "K7M2Q9VX4N8P", "a-a-k7m2q9vx4n8p", "a-k7m2q9vx4n8p "]) {
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, app_code }] } }));
+    for (const read of [() => repo.listApps({ teamId: "team-1", limit: 100 }), () => repo.getApp("app-1")]) {
+      await assert.rejects(read, (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.statusCode, 502);
+        assert.equal(error.code, "upstream_unavailable");
+        assert.match(error.message, /invalid app_code/);
+        if (app_code) assert.ok(!error.message.includes(app_code));
+        return true;
+      });
+    }
+  }
 });

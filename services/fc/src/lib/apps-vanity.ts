@@ -1,5 +1,5 @@
 import { classifyOriginEndpoint, signOriginToken, ORIGIN_VERSION_HEADER, type OriginAuthConfig, type OriginTarget } from "./apps-origin-auth.js";
-import { appPublicUrl, parseAppPublicHost } from "./apps-public-host.js";
+import { appCodeStorageCandidates, appPublicUrl, parseAppPublicHost } from "./apps-public-host.js";
 
 /**
  * Serving active code domains and legacy slug/id aliases under APPS_PUBLIC_DOMAIN.
@@ -82,8 +82,8 @@ export function selectByIdPrefix(rows: VanityApp[], idPrefix: string): VanityApp
  * Reads via PostgREST with the service-role key, which is how every other
  * tokenless path here reads the database.
  *
- * Code hosts use exact app_code equality (the unique index), gated on active
- * mode. Fetch two rows so even an impossible duplicate fails closed.
+ * Code hosts read both storage representations in one query, gated on active
+ * mode. Two rows can collide during migration, so ambiguous results fail closed.
  *
  * Legacy hosts filter on slug and match the id prefix in memory rather than asking
  * PostgREST for `id like '…%'`: `id` is a uuid column, and Postgres has no
@@ -120,7 +120,7 @@ export function makeSupabaseVanityLookup(getClient: () => any): LookupVanityApp 
       const { data, error } = await getClient()
         .from("apps")
         .select(LOOKUP_COLUMNS)
-        .eq("app_code", parsed.appCode)
+        .in("app_code", appCodeStorageCandidates(parsed.appCode))
         .eq("uses_app_code_domain", true)
         .limit(2);
       if (error) throw new Error(`vanity app lookup failed: ${error.message}`);
