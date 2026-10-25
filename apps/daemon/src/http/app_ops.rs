@@ -341,7 +341,9 @@ pub struct AppOpsBody {
 }
 
 const READ_ACTIONS: [&str; 3] = ["list", "status", "logs"];
-const WRITE_ACTIONS: [&str; 6] = ["create", "reseed", "download", "update", "deploy", "delete"];
+const WRITE_ACTIONS: [&str; 7] = [
+    "create", "reseed", "download", "update", "deploy", "undeploy", "delete",
+];
 
 /// A non-empty, trimmed string.
 fn present(v: &Option<String>) -> Option<String> {
@@ -420,6 +422,11 @@ pub async fn app_ops(
         // The app a directory happens to be is the right default for
         // deploying, and the wrong one for deleting: an agent that lost track
         // of which checkout it is in must not destroy the one it stands in.
+        "undeploy" if !selector.is_explicit() => {
+            return Err(refused(
+                "undeploy takes the app's site offline, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory".to_string(),
+            ))
+        }
         "delete" if !selector.is_explicit() => {
             return Err(refused(
                 "delete cannot be undone, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory".to_string(),
@@ -457,6 +464,7 @@ pub async fn app_ops(
                 "reseed" => ops.reseed(&row).await,
                 "download" => ops.download(&row).await,
                 "update" => ops.update(&row, &update).await,
+                "undeploy" => ops.undeploy(&row).await,
                 "delete" => ops.delete(&row).await,
                 "deploy" => {
                     let args = teamclu_apps::DeployArgs {

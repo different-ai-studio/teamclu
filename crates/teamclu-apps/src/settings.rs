@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
-use crate::row::{app_path, app_settings, row_id, row_str, APP_TYPES};
+use crate::row::{app_brief, app_path, app_settings, row_id, row_str, APP_TYPES};
 use crate::{AppOps, Method, Surface};
 
 /// An `update` call: every setting an operator may change, all optional.
@@ -206,6 +206,40 @@ impl AppOps<'_> {
         }))
     }
 
+    /// `undeploy` — take the deployed site down and keep everything else: the
+    /// app, its code, sessions and data. A deployed app has to be uninstalled
+    /// this way before [`AppOps::delete`] will take it.
+    pub async fn undeploy(&self, row: &Value) -> Result<Value, String> {
+        let app_id = row_id(row)?;
+        let result = self
+            .call(
+                Method::Post,
+                &app_path(&app_id, "/undeploy"),
+                Some(&json!({})),
+                None,
+                "Uninstalling the deployment (needs admin on it)",
+            )
+            .await?;
+        self.host.app_changed(&result["app"]);
+        let complete = result["operation"]["status"].as_str() == Some("succeeded");
+        let note = if complete {
+            "Deployment uninstalled. App, code, sessions and user data were retained.".to_string()
+        } else {
+            format!(
+                "Uninstall accepted, not yet complete. Read {} to verify cleanup progress; do not claim success until the operation succeeds.",
+                self.surface().step("manage_app", "status")
+            )
+        };
+        Ok(json!({
+            "ok": true,
+            "action": "undeploy",
+            "app": app_brief(&result["app"]),
+            "operation": result["operation"],
+            "complete": complete,
+            "note": note,
+        }))
+    }
+
     /// `delete` — the app, its function and its login client; the repository
     /// is archived. Cannot be undone from here, so callers name the app
     /// outright ([`crate::AppSelector::is_explicit`]) and confirm first.
@@ -390,6 +424,39 @@ mod tests {
             cloud.calls_to(Method::Patch, "/v1/apps/a1")[0],
             Some(json!({ "name": "账本" }))
         );
+    }
+
+    #[tokio::test]
+    async fn undeploy_says_whether_cleanup_finished() {
+        let cloud = FakeCloud::default();
+        cloud.reply(
+            Method::Post,
+            "/v1/apps/a1/undeploy",
+            json!({ "app": { "id": "a1", "fcStatus": "uninstalling" }, "operation": { "status": "running" } }),
+        );
+        let daemon = FakeDaemon::default();
+        let host = TestHost(Surface::Cli);
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let out = ops.undeploy(&json!({ "id": "a1" })).await.unwrap();
+        assert_eq!(out["complete"], false);
+        assert!(out["note"].as_str().unwrap().contains("`amuxd app status`"));
+        assert_eq!(out["app"]["fc_status"], "uninstalling");
+    }
+
+    #[tokio::test]
+    async fn deleting_a_deployed_app_names_undeploy_as_the_next_step() {
+        let cloud = FakeCloud::default();
+        cloud.fail(
+            Method::Delete,
+            "/v1/apps/a1",
+            409,
+            r#"{"code":"app_uninstall_required","message":"Uninstall the deployment successfully before deleting this app."}"#,
+        );
+        let daemon = FakeDaemon::default();
+        let host = TestHost(Surface::Cli);
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let err = ops.delete(&json!({ "id": "a1" })).await.unwrap_err();
+        assert!(err.contains("`amuxd app undeploy`"), "{err}");
     }
 
     #[tokio::test]

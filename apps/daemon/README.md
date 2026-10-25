@@ -93,12 +93,14 @@ amuxd app logs --id <app-id> --since 10 --kind all
 amuxd app reseed --id <app-id>                   # re-write code that never got seeded
 amuxd app download --app 记账                     # a teammate's app, onto this machine
 amuxd app update --id <app-id> --visibility team --auth-mode platform
-amuxd app delete --id <app-id> --yes             # site offline, repository archived
+amuxd app undeploy --id <app-id>                 # site offline; app, code and data kept
+amuxd app delete --id <app-id> --yes             # after undeploy; repository archived
 ```
 
 With neither `--id` nor `--app`, a command acts on the app whose checkout the
-current directory is in — except `delete`, which needs the app named and
-`--yes`. A Gitea-hosted app deploys its pushed `HEAD`, so
+current directory is in — except `undeploy` and `delete`, which need the app
+named (`delete` also `--yes`). A deployed app is undeployed before it can be
+deleted. A Gitea-hosted app deploys its pushed `HEAD`, so
 commit and push before `deploy`. There is no approval prompt — whoever can run
 this as the daemon's user can drive the daemon outright already.
 

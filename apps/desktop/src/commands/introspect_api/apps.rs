@@ -683,7 +683,7 @@ pub(super) async fn handle_app_manage(
         }
         "logs" => ops.logs(&row, &logs_args(&v)).await?,
         "delete" => ops.delete(&row).await?,
-        "undeploy" => undeploy_app(app, &api, &row).await?,
+        "undeploy" => ops.undeploy(&row).await?,
         other => return Err(format!("Unknown action: {other}")),
     };
     Ok(out.to_string())
@@ -801,25 +801,6 @@ async fn app_sessions(api: &AppApi, row: &Value) -> Result<Value, String> {
         })
         .collect();
     Ok(json!({ "action": "sessions", "app_id": app_id, "sessions": sessions }))
-}
-
-async fn undeploy_app(app: &AppHandle, api: &AppApi, row: &Value) -> Result<Value, String> {
-    let app_id = row_id(row)?;
-    let result = api
-        .call(
-            Method::POST,
-            &app_path(&app_id, "/undeploy"),
-            Some(&json!({})),
-            None,
-            "Uninstalling the deployment (needs admin on it)",
-        )
-        .await?;
-    notify_app_changed(app, &result["app"]);
-    let complete = result["operation"]["status"].as_str() == Some("succeeded");
-    Ok(
-        json!({"ok": true, "action": "undeploy", "app": app_brief(&result["app"]), "operation": result["operation"],
-        "complete": complete, "note": if complete {"Deployment uninstalled. App, code, sessions and user data were retained."} else {"Uninstall accepted, not yet complete. Read manage_app status to verify cleanup progress; do not claim success until the operation succeeds."}}),
-    )
 }
 
 #[cfg(test)]

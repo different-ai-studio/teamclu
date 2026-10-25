@@ -128,6 +128,13 @@ pub enum AppAction {
         #[arg(long)]
         request_id: Option<String>,
     },
+    /// Take the deployed site offline and keep the app, its code and its data.
+    /// A deployed app must be undeployed before it can be deleted. Needs an
+    /// explicit --id or --app.
+    Undeploy {
+        #[command(flatten)]
+        target: AppTarget,
+    },
     /// Delete the app: its site goes offline and its repository is archived.
     /// Needs an explicit --id or --app, and --yes.
     Delete {
@@ -175,6 +182,7 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> anyhow::Result<Value
             body["authRules"] = json!(auth_rules);
             body
         }
+        AppAction::Undeploy { target: t } => target(t),
         AppAction::Delete { target: t, yes } => {
             let mut body = target(t);
             body["confirm"] = json!(yes);
@@ -240,6 +248,7 @@ fn action_name(action: &AppAction) -> &'static str {
         AppAction::Reseed(_) => "reseed",
         AppAction::Download(_) => "download",
         AppAction::Update { .. } => "update",
+        AppAction::Undeploy { .. } => "undeploy",
         AppAction::Delete { .. } => "delete",
         AppAction::Deploy { .. } => "deploy",
         AppAction::Logs { .. } => "logs",

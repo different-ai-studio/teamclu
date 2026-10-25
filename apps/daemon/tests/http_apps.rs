@@ -471,6 +471,14 @@ async fn app_ops_update_and_the_delete_guards() {
 
     let (status, body) = app_ops(
         &app,
+        serde_json::json!({ "action": "undeploy", "workspacePath": "/work/notes" }),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("explicit"));
+
+    let (status, body) = app_ops(
+        &app,
         serde_json::json!({ "action": "delete", "appId": "a1" }),
     )
     .await;

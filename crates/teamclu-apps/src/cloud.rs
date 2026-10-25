@@ -92,6 +92,10 @@ fn hint(surface: Surface, e: &CloudError) -> Option<String> {
             "deploy it first ({})",
             surface.step("manage_app", "deploy")
         )),
+        "app_uninstall_required" => Some(format!(
+            "uninstall the deployment with {} and wait for it to finish, then delete",
+            surface.step("manage_app", "undeploy")
+        )),
         "app_storage_quota_exceeded" => Some(format!(
             "the app is over its storage quota — delete files, or raise it with {}",
             surface.step("manage_app_files", "set_quota")
