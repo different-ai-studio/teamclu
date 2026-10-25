@@ -1288,7 +1288,8 @@ export interface AppRow {
   teamId: string;
   name: string;
   slug: string;
-  /** Permanent random public identifier; older servers may omit it. */
+  /** Permanent public code: a- plus 12 lowercase Crockford Base32 characters.
+   * Older servers may omit it; legacy caches may retain only the 12-character random part. */
   appCode?: string;
   usesAppCodeDomain?: boolean;
   /** Candidate URL for an existing app; active only after an opted-in deploy. */

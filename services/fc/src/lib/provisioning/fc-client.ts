@@ -327,12 +327,15 @@ async function retryTriggerNotFound<T>(operation: () => Promise<T>): Promise<T> 
 // FC removes the prefix verbatim; include the gateway's separating space.
 const ORIGIN_TOKEN_LOOKUP = "header:X-Teamclu-Origin-Authorization:Bearer ";
 const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"];
-class OriginProviderError extends Error {
+class OriginProviderError extends ApiError {
   constructor(readonly operation: string, error?: any) {
     const code = error?.code ?? error?.data?.Code;
     // An arbitrary provider error message/request can include submitted JWKS or PEM.
     const known = ["AccessDenied", "Forbidden", "Unauthorized", "TriggerNotFound", "CustomDomainNotFound", "InvalidArgument", "Throttling", "InternalError"];
-    super(`FC origin ${operation}: ${known.includes(code) ? code : "ProviderError"}`);
+    // Keep the safe stage/code through finalizeDeploy's ApiError boundary.
+    // Never attach the original error: it can carry credentials or JWT config.
+    super(503, "origin_security_unavailable",
+      `origin security unavailable: ${operation} (${known.includes(code) ? code : "ProviderError"})`);
   }
 }
 async function originCall<T>(operation: string, call: () => Promise<T>): Promise<T> {

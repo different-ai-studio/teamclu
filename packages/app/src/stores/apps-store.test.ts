@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { publicDeployConfirm } from "@/lib/apps/app-deploy-confirm";
+import i18n from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({
   listApps: vi.fn(),
   createApp: vi.fn(),
   deleteApp: vi.fn(),
+  undeployApp: vi.fn(),
   updateAppProvisionStatus: vi.fn(),
   updateAppAuth: vi.fn(),
   updateAppDeployStatus: vi.fn(),
@@ -45,6 +47,7 @@ vi.mock("@/lib/backend", () => ({
       updateAppAuth: mocks.updateAppAuth,
       createApp: mocks.createApp,
       deleteApp: mocks.deleteApp,
+      undeployApp: mocks.undeployApp,
       updateAppProvisionStatus: mocks.updateAppProvisionStatus,
       updateAppDeployStatus: mocks.updateAppDeployStatus,
       deployApp: mocks.deployApp,
@@ -935,6 +938,100 @@ describe("apps-store deploy", () => {
     }
   });
 
+  // Catch reconstructing URLs from appCode or replacing the management UUID with it.
+  // Raw cached rows and full API rows must take the same consumer path.
+  it.each([
+    ["k7m2q9vx4n8p", false], ["k7m2q9vx4n8p", true],
+    ["a-k7m2q9vx4n8p", false], ["a-k7m2q9vx4n8p", true],
+  ] as const)("preserves supplied URLs and UUID management for code %s (opt-in: %s)", async (appCode, optIn) => {
+    const appId = "18e4ecad-6189-495b-a873-7fe09179a5f5";
+    const legacy = legacyApp({ id: appId, appCode });
+    const { useAppsStore } = await import("./apps-store");
+    mocks.listApps.mockResolvedValueOnce([legacy]);
+    await useAppsStore.getState().load("team-1", { force: true });
+    vi.mocked(publicDeployConfirm.run).mockImplementationOnce(async (_message, options) => {
+      options?.onDomainChoice?.(optIn);
+      return true;
+    });
+    mocks.deployApp.mockResolvedValueOnce({ ...legacy, deployToken: "tok-1", presignedPut: "https://oss/put" });
+    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
+    const finalized = {
+      ...legacy,
+      usesAppCodeDomain: optIn,
+      publicUrl: optIn ? "https://a-k7m2q9vx4n8p.apps.example" : "https://old.apps.example",
+    };
+    mocks.finalizeDeploy.mockResolvedValueOnce(finalized);
+
+    await useAppsStore.getState().deploy(appId);
+
+    expect(publicDeployConfirm.run).toHaveBeenCalledExactlyOnceWith(expect.any(String), expect.objectContaining({
+      domainChoice: {
+        currentUrl: "https://old.apps.example",
+        codeUrl: "https://a-k7m2q9vx4n8p.apps.example",
+      },
+    }));
+    expect(mocks.deployApp).toHaveBeenCalledExactlyOnceWith(appId, {
+      gitCommitSha: revision, revision, declaration: defaultDeclaration, preflightToken: "preflight-1",
+      ...(optIn ? { useAppCodeDomain: true } : {}),
+    });
+    expect(mocks.finalizeDeploy).toHaveBeenCalledExactlyOnceWith(appId, {
+      gitCommitSha: revision, revision, declaration: defaultDeclaration, deployToken: "tok-1",
+    });
+    expect(useAppsStore.getState().items).toEqual([finalized]);
+    expect(useAppsStore.getState().deployingIds).toEqual([]);
+    expect(mocks.cancelAppDeployPreflight).not.toHaveBeenCalled();
+
+    mocks.updateAppAuth.mockResolvedValueOnce({ ...finalized, authMode: "none" });
+    expect(await useAppsStore.getState().updateAuthPolicy(appId, { authMode: "none" })).toBe(true);
+    expect(useAppsStore.getState().items[0]).toMatchObject({ id: appId, appCode, authMode: "none" });
+    const operation = {
+      id: "5e9f6907-88b0-4fd4-81bc-8e6cc24638f6", appId, status: "pending" as const,
+      startedAt: "2026-10-25T00:00:00.000Z", updatedAt: "2026-10-25T00:00:00.000Z", error: null, steps: {},
+    };
+    mocks.undeployApp.mockResolvedValueOnce({
+      app: { ...finalized, fcStatus: "uninstalling", undeployOperation: operation }, operation,
+    });
+    expect(await useAppsStore.getState().undeployApp(appId)).toBe(true);
+    expect(useAppsStore.getState().items[0]).toMatchObject({ id: appId, appCode, fcStatus: "uninstalling" });
+    // Only a later server read proves uninstall completed, allowing deletion.
+    mocks.listApps.mockResolvedValueOnce([{
+      ...finalized, fcStatus: "uninstalled", fcEndpoint: null,
+      undeployOperation: { ...operation, status: "succeeded" },
+    }]);
+    await useAppsStore.getState().load("team-1", { force: true });
+    expect(useAppsStore.getState().items[0]).toMatchObject({ id: appId, fcStatus: "uninstalled" });
+    mocks.deleteApp.mockResolvedValueOnce(true);
+    expect(await useAppsStore.getState().deleteApp(appId)).toBe(true);
+    expect(useAppsStore.getState().items).toEqual([]);
+    // Check every external management/daemon call used by this lifecycle.
+    for (const boundary of [
+      mocks.getGitHead, mocks.daemonAppManifest, mocks.preflightAppDeploy,
+      mocks.getGitCredential, mocks.buildDaemonApp, mocks.revokeGitCredential,
+      mocks.updateAppAuth, mocks.undeployApp, mocks.deleteApp,
+    ]) {
+      expect(boundary).toHaveBeenCalledTimes(1);
+      expect(boundary.mock.calls[0][0]).toBe(appId);
+    }
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it.each(["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"])("cancels the UUID reservation without deploying code %s", async (appCode) => {
+    const appId = "18e4ecad-6189-495b-a873-7fe09179a5f5";
+    const legacy = legacyApp({ id: appId, appCode });
+    const { useAppsStore } = await import("./apps-store");
+    useAppsStore.setState({ items: [legacy] });
+    vi.mocked(publicDeployConfirm.run).mockResolvedValueOnce(false);
+
+    await useAppsStore.getState().deploy(appId);
+
+    expect(mocks.cancelAppDeployPreflight).toHaveBeenCalledExactlyOnceWith(appId, "preflight-1");
+    expect(mocks.deployApp).not.toHaveBeenCalled();
+    expect(mocks.buildDaemonApp).not.toHaveBeenCalled();
+    expect(mocks.finalizeDeploy).not.toHaveBeenCalled();
+    expect(useAppsStore.getState().items).toEqual([legacy]);
+    expect(useAppsStore.getState().deployingIds).toEqual([]);
+  });
+
   it("keeps the active-agent warning separate from the single domain-aware confirmation", async () => {
     const legacy = legacyApp({ authMode: "none" });
     const { useAppsStore } = await import("./apps-store");
@@ -1209,6 +1306,37 @@ describe("apps-store deploy", () => {
     );
     expect(vi.mocked(publicDeployConfirm.run)).toHaveBeenCalledTimes(1);
     expect(mocks.deployApp).toHaveBeenCalled();
+  });
+
+  it("active-turn warning follows the current language after the store is loaded", async () => {
+    const previousLanguage = i18n.language;
+    const { useAppsStore } = await import("./apps-store");
+    // Tests default to a Chinese-only build, so load English explicitly.
+    const { default: english } = await import("@/locales/en.json");
+    i18n.addResourceBundle("en", "translation", english, true, true);
+    const messages: string[] = [];
+    vi.mocked(publicDeployConfirm.run).mockImplementation(async (message) => {
+      messages.push(message);
+      return false;
+    });
+    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
+      workspace_has_active_turn: true,
+    });
+
+    try {
+      await i18n.changeLanguage("zh-CN");
+      await useAppsStore.getState().deploy("app-1");
+      await i18n.changeLanguage("en");
+      await useAppsStore.getState().deploy("app-1");
+
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toContain("有 AI 正在运行");
+      expect(messages[1]).toContain("AI is running");
+      expect(messages[1]).not.toMatch(/[\u3400-\u9fff]/);
+      expect(mocks.deployApp).not.toHaveBeenCalled();
+    } finally {
+      await i18n.changeLanguage(previousLanguage);
+    }
   });
 
   it("active turn: declined confirm aborts deploy", async () => {

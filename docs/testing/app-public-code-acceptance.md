@@ -1,5 +1,112 @@
 # App public-code migration acceptance
 
+## Complete App Code integration — 2026-10-25
+
+**Current outcome: local implementation checks pass; complete-format release
+acceptance is PENDING.** The final public/storage format is
+`^a-[0-9a-hjkmnp-tv-z]{12}$` (14 characters, unchanged 60 random bits).
+This addendum supersedes the old format and rollout status below only for the
+2026-10-25 change. The older evidence remains a dated historical record.
+
+- Implementation branch: `codex/app-code-public-format` in the same managed
+  worktree. Beta.101 release/source baseline: **`f429b465`**; no Beta binary was
+  installed to substitute for main or implementation-branch desktop acceptance.
+- Tested source: **`ceab9f1a4fa9809eea2792ca23b85bb0d4c8d536`**, containing
+  Tasks 1–5 through `964dc6b6` and the six Task 6 compatibility cases. The test
+  runs preceded this test-only commit and used identical tracked content.
+- Task 1–6 scoped reviews and the independent whole-branch specification/code
+  quality review are **approved** for local Tasks 1–6. Reviewed source:
+  **`aa378b07029448bd305f5233cbee10a45f9902ae`** (base `f429b465`); no
+  Critical/Important defects or new Minor issues were found. The existing
+  test-output hygiene follow-up remains. Approval supports the planned staged
+  A/B integration; complete-format release acceptance remains PENDING. No push,
+  PR, merge, deployment, publication or live write occurred.
+
+### Compatibility boundary audit
+
+The audit searched `app_code`/`appCode` consumers and length, regex and local
+prefix construction in Web, desktop/introspect, daemon, auth, Traefik and cleanup.
+No additional production assumption required a fix; no Rust source changed, so
+no new Rust check/test result is claimed.
+
+| Surface inspected | Result |
+| --- | --- |
+| Web settings/search: `lib/apps/app-code.ts`, `AppSettingsPanel`, `AppLibraryView` | Strict raw/full formatter supplies one complete code; malformed values cannot fall back to UUID or enter code search. Existing relationship filtering still bounds results. |
+| Web deployment: `app-deploy-confirm.ts`, `apps-store.ts`, `lib/backend/cloud-api/apps.ts` | Confirmation consumes supplied `publicUrl`/`appCodeUrl`; lifecycle, credentials, auth, data, domain and other management methods retain `appId` parameters. Six new raw/full fixture cases exercise deployment, cancellation, auth, undeploy and deletion with a real-shaped UUID. |
+| Native/introspect: `commands/introspect_api/apps.rs`, `confirm/app_domain.rs` | `app_brief` forwards `id`, `appCode` and URLs; native choice consumes supplied URLs, without code length/regex/prefix reconstruction. Management resolves row `id` and builds UUID API paths. Source audit only; no new native execution. |
+| Daemon: `http/apps.rs`, `sync/app_build.rs`, `sync/app_workdir.rs`, `daemon/server/app_git_credential.rs` | Build/workdir/OSS/credential operations remain keyed by app ID; no App Code parser or local public-code prefix construction was found. Source audit only. |
+| FC auth/login/cron/custom-domain/Traefik | Public/candidate URLs and allowed origins share `apps-public-host.ts`; dual-format lookup is bounded to complete/raw candidates and active mode. Login lookup, origin signing and resource keys remain UUID-based. |
+| FC cleanup: `supabase-repo.ts` lifecycle/delete and provisioning teardown | Resource teardown receives original `appId`, slug, function/OAuth/Git identifiers; cache invalidation uses the shared URL helpers. No code-dependent resource rename. |
+
+The six store regressions passed immediately against already-compatible
+production code: **83/83 store tests**. Their failure sensitivity was checked
+separately, without leaving a production change: temporarily reconstructing the
+candidate with `a-` plus the row code failed both complete-code cases (received
+`https://a-a-k7m2q9vx4n8p.apps.example`); temporarily substituting `appCode` for
+UUID in preflight failed all four successful-deploy cases. Both mutations were
+restored before all following checks. These are mutation-sensitivity RED results,
+**not baseline defects or missing-feature TDD failures**.
+
+### Fresh combined verification
+
+All commands ran in the managed worktree; `/private/tmp/task6-*.log` files are
+local, disposable evidence, while the actual counts and limits are recorded here.
+
+| Check / exact command | Result |
+| --- | --- |
+| `pnpm --filter @teamclu/app exec vitest run src/stores/apps-store.test.ts src/components/apps/__tests__/AppDeployConfirmDialog.test.tsx src/lib/apps/__tests__/app-domain-choice.test.ts src/lib/apps/__tests__/app-code.test.ts src/components/apps/__tests__/AppSettingsPanel.test.tsx src/components/apps/__tests__/AppLibraryView.test.tsx src/lib/__tests__/locale.test.ts src/__tests__/i18n-parity.test.ts` | Exit 0; **8 files / 240 tests passed** |
+| `pnpm --dir services/fc exec node --import tsx --test test/app-code.test.ts test/supabase-repo.test.ts test/apps-vanity.test.ts test/apps-custom-domain.test.ts test/apps-origin-auth.test.ts test/apps-traefik-provider.test.ts test/app-code-schema.test.ts test/app-code-full-format-schema.test.ts` | Exit 0; **460 passed, 0 skipped/failed** |
+| `pnpm --filter @teamclu/app exec vitest run` | Exit 0; **624 files passed / 1 skipped; 4,437 tests passed / 10 skipped / 0 failed**; 45.72 s |
+| `pnpm --filter @teamclu/app typecheck` | Exit 0; no TypeScript diagnostics |
+| `pnpm --dir services/fc typecheck` | Exit 0; no TypeScript diagnostics |
+| `pnpm --dir services/fc test` | Exit 0; **2,012 passed / 13 skipped / 0 failed** (2,025 tests); five additional gated suites skipped; 15.86 s |
+| `pnpm --dir services/fc openapi:lint` | Exit 0; valid, **11 warnings**. Linting an unchanged `f429b465` contract exported to `/private/tmp/task6-baseline-openapi.yaml` reproduces the same 11 rule/JSON-pointer pairs. |
+| `python3 /private/tmp/teamclu-app-code-db/local-db.py --exec bash services/supabase/tests/run.sh` | Exit 0; **64 files run / 0 failed / 0 quarantined**, including `043_apps_public_code.sql` and `app_code_full_format.test.sql` |
+| `git diff --check` | Exit 0 |
+
+Output is not pristine: frontend logs retain the existing Vite native-loader
+`__dirname` warning, two jsdom navigation diagnostics, one canvas diagnostic and
+the jsdom performance suggestion. FC retains skipped local HTTP integration
+fetch errors, including Node's misleading `failing tests` footer for skipped
+`sync-flow.test.ts` cases; its final counters show fail=0 and exit=0. The 13 skips
+and five skipped suites do not become SQL or real-account integration passes.
+No new failures or unhandled frontend errors were observed.
+
+### Layered acceptance and remaining gates
+
+| Layer | Current evidence / limit |
+| --- | --- |
+| Unit and controlled integration | PASS for the commands above, including complete/raw server mapping, strict formatter, scoped search, UUID management, supplied one-prefix candidate URL, React confirmation and eligibility. Synthetic fixtures are not deployed/account evidence. |
+| Isolated final-schema SQL | PASS on the retained task-only **native Supabase PostgreSQL 17.11 (aarch64 Darwin)** with all migrations including `20261025110255_apps_public_code_full_format.sql` applied. The helper guards loopback/native runtime and task data directory. This is not the exact CI PostgreSQL 17.6.1.106 image; no Docker/runtime-image verification occurred. |
+| Main/implementation real desktop | **PENDING Task 7** for complete-code settings/copy/search and supplied deployment/native URLs. The earlier 112 old-format checks and historical browser/native observations below remain historical, not validation of this 14-character change. The existing personal-account desktop fixture was left running without UI control, account/auth changes or restart. |
+| Live Supabase MCP migration/readback | **PENDING Task 7** for M. The 2026-10-20 MCP application below concerns the old migration only. No new live/dev schema or data write was made. |
+| Online routing/auth/custom-domain/cron | **PENDING Task 7** on the intended environment; raw/full compatibility tests and local pgTAP do not establish real routing, login/callback/cookie or deployment behavior. |
+| Historical transient provider failure | One historical provider attempt returned `origin_security_unavailable:routeConfig`; a normal retry succeeded. Cause remains unknown; no claim of a fix or complete-format validation follows from the retry. |
+| Independent whole-branch review | **APPROVED** for local Tasks 1–6 at `aa378b07` (base `f429b465`), with specification compliance and code quality approved; Task 1–6 scoped reviews also approved. No Critical/Important defects or new Minor issues. This is not immediate whole-branch deployment or release acceptance. |
+
+### Two publication batches
+
+**Batch A** is the compatible service reader change only: `d25554a3` (API full
+representation and stable URLs) and `ae24a401` (gateway raw/full lookup). Verify
+that version before any format migration. Do not release a whole-branch server
+artifact that silently also applies M or changes database defaults.
+
+**Batch B** contains the atomic M `84d0fc62`, frontend settings/search
+`49787b90` / `964dc6b6` and compatibility/evidence updates, after Batch A and the
+required acceptance gates. M requires a drained app lifecycle window and refuses
+existing tokens or pending/running/in-flight operations. Preserve all random
+tails, UUIDs, references, resource/auth identifiers, permissions, legacy-mode
+choices and byte-identical existing code URLs. Name-domain apps activate code
+mode only after an explicit successful opt-in deployment, retaining the old alias.
+Any future live M must use Supabase MCP first and read-only MCP verification;
+this record grants no publication or live-write authorization.
+
+## Historical 2026-10-19–20 acceptance — raw 12-character storage
+
+Everything below retains its original source revisions, counts, platform limits
+and old-migration meaning. Its “current” and “completed” statements are historical
+snapshots and do not close the 2026-10-25 gates above.
+
 Updated: 2026-10-20 (Asia/Shanghai). Original acceptance snapshot: 2026-10-19.
 
 **Current outcome: all executed integrated suites pass; release acceptance remains
@@ -486,3 +593,58 @@ cleanup is the other minor follow-up, outside this feature's acceptance scope.
 
 No release version was bumped. This document authorizes no push, PR, merge,
 tag, publication, live migration or deployment.
+
+
+## 2026-10-25 full-format B desktop acceptance and follow-up fixes
+
+This addendum supersedes earlier pending statements only for the checks below.
+It does not establish full release or cross-platform approval.
+
+Using the real signed-in macOS QA desktop against dev, the authorized disposable
+App Code B Desktop QA 20261025 (`a-p35cg2kk6bh3`) passed:
+
+- App Code settings display/copy and existing library exact/partial/case-insensitive
+  trimmed search; existing relationship scope remains effective.
+- No migration checkbox before first deployment; live legacy deployment defaults
+  unchecked and displays the complete code URL with one prefix.
+- Keyboard toggle and Escape cancellation retain legacy mode, release the
+  reservation, and reset the checkbox on reopening.
+- Unchecked successful redeployment retains the legacy URL.
+- Checked successful redeployment activates the code URL; both old and code
+  `/healthz` return 200 with the same test-only Linux/x64 JSON response.
+- Once activated, the migration checkbox is absent. Canceling the final inspection
+  releases its preflight reservation and leaves the App live.
+
+Fixture UUID: `4b7fe986-3bff-49e2-9f2d-1695ec605c51`; deployed fixture revision:
+`d0255f278f70d0e979a3e9dc87a3b41db1624af6`. The last post-cancel MCP read confirmed
+live, code mode true, no pending opt-in/error/token. Successful intermediate
+pre-finalize mode false was not sampled; a failed checked attempt directly
+confirmed that mode remained false and the reservation was released.
+
+The English AI-active warning was reproduced with a Chinese body. The follow-up
+fix uses call-time translation, preserving the Chinese fallback. A behavioral
+regression switches language after store import and confirms both translated
+payloads and that declining prevents deployment. The original desktop observation
+and this automated regression are distinct evidence; the corrected active-turn
+warning has not yet been re-observed in the real desktop.
+
+One checked attempt failed with `origin security unavailable: routeConfig`;
+normal recovery and checked retry succeeded. Investigation found that non-ApiError
+origin failures were collapsed to that generic fallback, so the text does not
+identify an actual route drift. The diagnostic fix preserves mutation-stage names
+and existing allowlisted provider codes through the ApiError boundary, without
+retaining raw provider messages, request objects, JWT material or causes.
+Regression coverage exercises real makeFcOps through finalizeDeploy and verifies
+unknown-code redaction. Read-side checks retain their existing safe field summaries.
+
+Historical provider root cause remains unknown: existing logs do not contain the
+original step/cause, and a narrowly scoped read-only ActionTrail LookupEvents
+request returned 403 NoPermission. No IAM grant, security relaxation, new retry
+policy or live backend change was made. Fresh read-only provider verification at
+2026-10-25T14:26:16.032Z reports protected, Internet URL disabled, JWT origin auth,
+and zero drift fields. HTTP-only origin behind the HTTPS gateway is intentional.
+
+Verification of follow-up source: frontend 4,438 passed / 10 skipped; FC 2,015
+passed / 13 skipped; both typechecks passed. Independent review found no blockers.
+The public test fixture is retained as authorized. No Beta/client publication,
+PR merge, custom-domain/login/cron or new native-platform acceptance is claimed.

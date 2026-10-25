@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { AppLibraryView } from '../AppLibraryView'
 import { useAppsStore } from '@/stores/apps-store'
@@ -52,6 +52,8 @@ const refreshLocalApps = vi.fn()
 const download = vi.fn()
 
 describe('AppLibraryView', () => {
+  afterEach(() => vi.restoreAllMocks())
+
   beforeEach(() => {
     vi.clearAllMocks()
     load.mockResolvedValue(undefined)
@@ -295,6 +297,74 @@ describe('AppLibraryView', () => {
     })
     render(<AppLibraryView />)
     fireEvent.change(screen.getByLabelText('搜索应用'), { target: { value: 'weigan' } })
+    expect(screen.getByText('Beta')).toBeInTheDocument()
+    expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['a-k7m2q9vx4n8p', 'a-k7m2q9vx4n8p'],
+    ['a-k7m2q9vx4n8p', 'q9vx4'],
+    ['a-k7m2q9vx4n8p', '  A-K7M2Q9VX4N8P  '],
+    ['k7m2q9vx4n8p', 'a-k7m2q9vx4n8p'],
+    ['k7m2q9vx4n8p', 'q9vx4'],
+    ['k7m2q9vx4n8p', '  A-K7M2Q9VX4N8P  '],
+  ])('search matches stored code %s with query %s within the relationship filter', (appCode, query) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected search request'))
+    // Both rows are visible to the caller. The team chip is a local relationship
+    // filter, not an authorization boundary or a source of otherwise hidden apps.
+    useAppsStore.setState({
+      items: [
+        mkApp('app-1', 'Own project', { appCode, relationship: 'owner' }),
+        mkApp('app-2', 'Team project', { appCode: 'a-0123456789ab', relationship: 'team', visibility: 'team' }),
+      ],
+    })
+    render(<AppLibraryView />)
+    const search = screen.getByLabelText('搜索应用')
+    fireEvent.change(search, { target: { value: query } })
+
+    expect(screen.getByText('Own project')).toBeInTheDocument()
+    expect(screen.queryByText('Team project')).not.toBeInTheDocument()
+    expect(screen.getByText('已在本机')).toBeInTheDocument()
+    expect(screen.queryByText('未在本机')).not.toBeInTheDocument()
+    expect(screen.getByTestId('app-relationship-chip-owner')).toHaveTextContent('我的1')
+    expect(screen.getByTestId('app-relationship-chip-team')).toHaveTextContent('团队1')
+
+    fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
+    fireEvent.change(search, { target: { value: 'a-k7m2q9vx4n8p' } })
+    expect(screen.queryByText('Own project')).not.toBeInTheDocument()
+    expect(screen.queryByText('Team project')).not.toBeInTheDocument()
+    expect(screen.getByText('没有匹配的应用')).toBeInTheDocument()
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(load).toHaveBeenCalledWith('team-1', { force: true })
+    expect(refreshLocalApps).toHaveBeenCalledTimes(1)
+    expect(download).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it.each([undefined, null, '', 'invalid-code', 'a-k7m2q9vx4n8o', 42])(
+    'ignores missing or invalid code %s without searching the UUID',
+    (appCode) => {
+      const appId = 'f9168c5e-ceb2-4faa-b6bf-329bf39fa1e4'
+      useAppsStore.setState({
+        items: [mkApp(appId, 'Project', { appCode } as Partial<AppRow>)],
+      })
+      render(<AppLibraryView />)
+      expect(screen.getByText('Project')).toBeInTheDocument()
+      const search = screen.getByLabelText('搜索应用')
+      for (const query of ['invalid-code', 'k7m2q9vx4n8o', '42', appId, 'f9168c5e']) {
+        fireEvent.change(search, { target: { value: query } })
+        expect(screen.queryByText('Project')).not.toBeInTheDocument()
+        expect(screen.getByText('没有匹配的应用')).toBeInTheDocument()
+      }
+    },
+  )
+
+  it('search still matches the app type', () => {
+    useAppsStore.setState({
+      items: [mkApp('app-1', 'Alpha'), mkApp('app-2', 'Beta', { type: 'slides' })],
+    })
+    render(<AppLibraryView />)
+    fireEvent.change(screen.getByLabelText('搜索应用'), { target: { value: '演示材料' } })
     expect(screen.getByText('Beta')).toBeInTheDocument()
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
   })
