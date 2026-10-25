@@ -1,5 +1,5 @@
 /**
- * Public hostnames: `a-<appCode>.<APPS_PUBLIC_DOMAIN>`. The legacy
+ * Public hostnames: `<appCode>.<APPS_PUBLIC_DOMAIN>`. The legacy
  * `<slug>-<id8>` form remains an alias and names existing FC origin resources.
  *
  * Why the id suffix rather than the bare slug: `apps_team_slug_uniq` makes a
@@ -20,7 +20,22 @@ type Env = NodeJS.ProcessEnv;
 export const appsPublicDomain = (env: Env = process.env) => env.APPS_PUBLIC_DOMAIN?.trim() || "";
 
 export const ID_PREFIX_LEN = 8;
-export const APP_CODE_RE = /^[0-9a-hjkmnp-tv-z]{12}$/;
+export const APP_CODE_RE = /^a-[0-9a-hjkmnp-tv-z]{12}$/;
+const LEGACY_APP_CODE_RE = /^[0-9a-hjkmnp-tv-z]{12}$/;
+
+/** Accept either stored representation, but expose only the complete code. */
+export function normalizeAppCode(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (value.length === 14 && APP_CODE_RE.test(value)) return value;
+  if (value.length === 12 && LEGACY_APP_CODE_RE.test(value)) return `a-${value}`;
+  return null;
+}
+
+/** Complete rows win during the transition from legacy stored random parts. */
+export function appCodeStorageCandidates(value: unknown): readonly string[] {
+  const code = normalizeAppCode(value);
+  return code ? [code, code.slice(2)] : [];
+}
 
 /** RFC 1035: one DNS label is at most 63 bytes, punycode included. */
 const MAX_LABEL_BYTES = 63;
@@ -95,7 +110,8 @@ export function appPublicUrl(
 ): string | null {
   const domain = appsPublicDomain(env);
   if (appCode != null) {
-    return domain && APP_CODE_RE.test(appCode) ? `https://a-${appCode}.${domain}` : null;
+    const code = normalizeAppCode(appCode);
+    return domain && code ? `https://${code}.${domain}` : null;
   }
   if (!domain || !slug || !appId) return null;
   const label = appPublicLabel(slug, appId);
@@ -165,7 +181,7 @@ export function parseAppPublicHost(
   const asciiLabel = name.slice(0, -suffix.length);
   // Exactly one level: `*.<domain>` matches `x.<domain>`, never `x.y.<domain>`.
   if (!asciiLabel || asciiLabel.includes(".")) return null;
-  if (asciiLabel.startsWith("a-") && APP_CODE_RE.test(asciiLabel.slice(2))) {
+  if (asciiLabel.startsWith("a-") && LEGACY_APP_CODE_RE.test(asciiLabel.slice(2))) {
     return { appCode: asciiLabel.slice(2) };
   }
   // DNS and the Host header carry the punycode form, and the id prefix is

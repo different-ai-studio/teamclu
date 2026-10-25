@@ -3,7 +3,7 @@
 import WebSocket from "ws";
 
 import { ApiError } from "../http-utils.js";
-import { appPublicUrl } from "../apps-public-host.js";
+import { appPublicUrl, normalizeAppCode } from "../apps-public-host.js";
 import { typeChangeNeedsRedeploy } from "../validation/app-type.js";
 
 // FC runtime is Node 20 which lacks native WebSocket. supabase-js v2.45+ tries
@@ -163,15 +163,17 @@ export function appRelationshipFor(
 // Exposes EXACTLY the canonical app fields. Reads snake_case DB columns
 // (PostgREST returns the table's native column names).
 export function mapApp(r: any) {
+  const appCode = normalizeAppCode(r.app_code);
+  if (!appCode) throw new ApiError(502, "upstream_unavailable", "apps.mapApp returned invalid app_code");
   return {
     id: r.id,
     ...(r.undeploy_operation ? { undeployOperation: r.undeploy_operation } : {}),
     teamId: r.team_id,
     name: r.name,
     slug: r.slug,
-    appCode: r.app_code,
+    appCode,
     usesAppCodeDomain: r.uses_app_code_domain === true,
-    appCodeUrl: r.app_code ? appPublicUrl(r.slug, r.id, process.env, r.app_code) : null,
+    appCodeUrl: appPublicUrl(r.slug, r.id, process.env, appCode),
     type: r.type,
     visibility: r.visibility,
     workspaceId: r.workspace_id ?? null,
@@ -237,7 +239,7 @@ export function mapApp(r: any) {
     fcStatus: r.fc_status ?? null,
     fcEndpoint: r.fc_endpoint ?? null,
     // Only an active code domain is canonical; the candidate alone changes no URL.
-    publicUrl: appPublicUrl(r.slug, r.id, process.env, r.uses_app_code_domain === true ? r.app_code : null),
+    publicUrl: appPublicUrl(r.slug, r.id, process.env, r.uses_app_code_domain === true ? appCode : null),
     fcFunctionName: r.fc_function_name ?? null,
     fcRegion: r.fc_region ?? null,
     createdAt: appIso(r.created_at)!,
