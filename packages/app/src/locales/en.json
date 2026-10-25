@@ -1550,7 +1550,7 @@
       "creatorUnknown": "Unknown member",
       "updated": "Last updated",
       "identifiers": "Identifiers",
-      "appId": "App ID",
+      "appCode": "App Code",
       "slug": "Slug",
       "workspaceId": "Workspace ID",
       "repo": "Repository",

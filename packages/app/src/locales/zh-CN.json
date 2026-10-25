@@ -1550,7 +1550,7 @@
       "creatorUnknown": "未知成员",
       "updated": "最近更新",
       "identifiers": "标识",
-      "appId": "应用 ID",
+      "appCode": "应用代码",
       "slug": "Slug",
       "workspaceId": "工作区 ID",
       "repo": "仓库",
