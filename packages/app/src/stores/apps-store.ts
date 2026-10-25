@@ -954,7 +954,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       if (app.authMode === "none" || domainChoice || preflight.preview.changes.length > 0) {
         const fields = preflight.preview.changes.map(c => `${c.field}: ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join("\n");
         const message = app.authMode === "none"
-          ? PUBLIC_DEPLOY_CONFIRM_MESSAGE
+          ? i18n.t("apps.deployPublicWarning", PUBLIC_DEPLOY_CONFIRM_MESSAGE)
           : i18n.t("apps.deployConfirmMessage", "确认部署此应用？");
         const accepted = await publicDeployConfirm.run(
           `${message}${fields ? `\n\n本次变更：\n${fields}` : ""}`,

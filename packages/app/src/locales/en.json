@@ -1428,6 +1428,7 @@
     },
     "preview": "Preview",
     "deployConfirmMessage": "Deploy this app?",
+    "deployPublicWarning": "This app has no login protection. Anyone with the link can access it.\n\nContinue deploying?",
     "deployDomainSwitch": "Use the app-code domain after deployment succeeds",
     "deployDomainKeepHint": "Keep the current domain by default. If switched, the old domain remains available.",
     "deployConfirmTitle": "Confirm deploy",
