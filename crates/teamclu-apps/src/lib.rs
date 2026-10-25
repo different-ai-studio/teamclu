@@ -54,7 +54,7 @@ pub use cloud::{explain, Cloud, CloudError, Method};
 pub use daemon::{daemon_error_text, DaemonError, LocalDaemon, DAEMON_DOWN};
 pub use deploy::{
     deploy_failure_request, mint_git_credential, require_artifact_verification,
-    return_git_credential, GitCredential,
+    return_git_credential, DeployArgs, GitCredential,
 };
 pub use logs::LogsArgs;
 pub use redact::{redact_deploy_secrets, redact_url_credentials};

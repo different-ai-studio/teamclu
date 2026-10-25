@@ -103,6 +103,10 @@ pub enum AppAction {
         /// Confirm that this deploy carries a database migration.
         #[arg(long)]
         migration: bool,
+        /// Move an app still on its old domain to its app-code domain once
+        /// this deploy succeeds.
+        #[arg(long)]
+        use_app_code_domain: bool,
     },
     /// The deployed app's own output.
     Logs {
@@ -200,9 +204,11 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> anyhow::Result<Value
         AppAction::Deploy {
             target: t,
             migration,
+            use_app_code_domain,
         } => {
             let mut body = target(t);
             body["migrationIntent"] = json!(migration);
+            body["useAppCodeDomain"] = json!(use_app_code_domain);
             body
         }
         AppAction::Logs {
@@ -286,6 +292,11 @@ mod tests {
         assert_eq!(body["workspacePath"], "/work/site");
         assert_eq!(body["appId"], Value::Null);
         assert_eq!(body["migrationIntent"], false);
+        assert_eq!(body["useAppCodeDomain"], false);
+        assert_eq!(
+            body_of(&["deploy", "--use-app-code-domain"])["useAppCodeDomain"],
+            true
+        );
     }
 
     #[test]

@@ -482,7 +482,10 @@ mod tests {
         let host = TestHost(Surface::Cli);
         let ops = AppOps::new(&cloud, &daemon, &host);
 
-        let out = ops.deploy(&imported_row(), DeployArgs::default()).await.unwrap();
+        let out = ops
+            .deploy(&imported_row(), DeployArgs::default())
+            .await
+            .unwrap();
         assert_eq!(out["app"]["url"], "https://a1.apps");
         let build = daemon.builds.lock().unwrap()[0].clone();
         assert_eq!(build["presignedPut"], "https://oss/put?Signature=s");
@@ -492,6 +495,33 @@ mod tests {
             finalize[0].as_ref().unwrap()["declaration"]["build"]["kind"],
             "node"
         );
+        // Nobody asked to switch domains, so the field is not sent at all:
+        // absent is what keeps the app on the domain it already has.
+        let started = cloud.calls_to(Method::Post, "/v1/apps/a1/deploy");
+        assert!(started[0]
+            .as_ref()
+            .unwrap()
+            .get("useAppCodeDomain")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_requested_domain_switch_rides_on_the_deploy_start() {
+        let (cloud, daemon) = deploy_world();
+        *daemon.build.lock().unwrap() = Some(Ok(json!({
+            "declaration": { "build": { "kind": "node" } },
+            "revision": "sha256:d",
+            "artifactVerification": { "status": "checked", "revision": "sha256:d", "unknownFiles": [] },
+        })));
+        let host = TestHost(Surface::Cli);
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let args = DeployArgs {
+            use_app_code_domain: true,
+            ..DeployArgs::default()
+        };
+        ops.deploy(&imported_row(), args).await.unwrap();
+        let started = cloud.calls_to(Method::Post, "/v1/apps/a1/deploy");
+        assert_eq!(started[0].as_ref().unwrap()["useAppCodeDomain"], true);
     }
 
     #[tokio::test]
@@ -504,7 +534,10 @@ mod tests {
         let host = TestHost(Surface::Cli);
         let ops = AppOps::new(&cloud, &daemon, &host);
 
-        let err = ops.deploy(&imported_row(), DeployArgs::default()).await.unwrap_err();
+        let err = ops
+            .deploy(&imported_row(), DeployArgs::default())
+            .await
+            .unwrap_err();
         assert!(!err.contains("Signature="), "{err}");
         let patch = cloud.calls_to(Method::Patch, "/v1/apps/a1");
         let body = patch[0].as_ref().unwrap();
@@ -528,7 +561,10 @@ mod tests {
         cloud.reply(Method::Delete, "/v1/apps/a1/deploy/preflight", json!({}));
         let ops = AppOps::new(&cloud, &daemon, &Refuses);
 
-        let err = ops.deploy(&imported_row(), DeployArgs::default()).await.unwrap_err();
+        let err = ops
+            .deploy(&imported_row(), DeployArgs::default())
+            .await
+            .unwrap_err();
         assert_eq!(err, "The user declined.");
         assert!(cloud
             .calls_to(Method::Post, "/v1/apps/a1/deploy")
