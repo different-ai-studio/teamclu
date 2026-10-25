@@ -751,6 +751,148 @@ test("two apps claiming one domain serve neither", async () => {
   assert.equal(await withDomain(() => lookup("shop.example.com")), null);
 });
 
+// Project selected columns and apply equality filters as PostgREST does.
+function codeHostClient(rows: Record<string, any>[], error: { message: string } | null = null) {
+  const calls: any[] = [];
+  const client = { from(table: string) {
+    assert.equal(table, "apps");
+    let selected = rows;
+    let columns: string[] = [];
+    const query = {
+      select(value: string) { columns = value.split(",").map((v) => v.trim()); return query; },
+      eq(column: string, value: unknown) {
+        calls.push(["eq", column, value]);
+        selected = selected.filter((row) => row[column] === value);
+        return query;
+      },
+      not(column: string, operator: string, value: unknown) {
+        assert.equal(operator, "is");
+        selected = selected.filter((row) => row[column] != value);
+        return query;
+      },
+      async limit(value: number) {
+        calls.push(["limit", value]);
+        return { data: selected.slice(0, value).map((row) => Object.fromEntries(columns.map((column) => [column, row[column]]))), error };
+      },
+    };
+    return query;
+  } };
+  return { client, calls };
+}
+
+const CODE_ROW = {
+  id: APP_ID, slug: "shop", app_code: "k7m2q9vx4n8p", uses_app_code_domain: true,
+  team_id: "team-right", fc_endpoint: "https://right.example", fc_status: "live",
+  auth_mode: "platform", auth_audience: "org", auth_scope: "paths",
+  auth_rules: [{ path: "/private/*", access: "authenticated" }],
+  custom_domain: "shop.example.org", custom_domain_verified_at: "2026-10-19T00:00:00Z",
+};
+
+test("code hosts select the exact active app without crossing teams", async () => {
+  const { client, calls } = codeHostClient([
+    { ...CODE_ROW, id: "18e4ecad-other-team", team_id: "team-wrong", app_code: "m3n4p5q6r7s8", fc_endpoint: "https://wrong.example" },
+    CODE_ROW,
+  ]);
+  const lookup = makeSupabaseVanityLookup(() => client);
+  const found = await withDomain(() => lookup(`A-K7M2Q9VX4N8P.${DOMAIN}:443`));
+  assert.deepEqual(found, {
+    id: APP_ID, slug: "shop", appCode: "k7m2q9vx4n8p", usesAppCodeDomain: true,
+    teamId: "team-right", orgId: null, fcEndpoint: "https://right.example", fcStatus: "live",
+    authMode: "platform", authAudience: "org", authScope: "paths",
+    authRules: [{ path: "/private/*", access: "authenticated" }],
+    customDomain: "shop.example.org", customDomainVerifiedAt: "2026-10-19T00:00:00Z",
+  });
+  assert.deepEqual(calls, [["eq", "app_code", "k7m2q9vx4n8p"], ["eq", "uses_app_code_domain", true], ["limit", 2]]);
+});
+
+test("disabled unknown and duplicate code hosts fail closed", async () => {
+  await withDomain(async () => {
+    for (const rows of [[], [{ ...CODE_ROW, uses_app_code_domain: false }], [CODE_ROW, { ...CODE_ROW, id: "other-app", team_id: "other-team" }]]) {
+      const { client } = codeHostClient(rows);
+      assert.equal(await makeSupabaseVanityLookup(() => client)(`a-k7m2q9vx4n8p.${DOMAIN}`), null);
+    }
+    const { client } = codeHostClient([CODE_ROW]);
+    assert.equal(await makeSupabaseVanityLookup(() => client)(`a-000000000000.${DOMAIN}`), null);
+  });
+});
+
+test("code-host database failures surface instead of masquerading as missing apps", async () => {
+  const { client } = codeHostClient([], { message: "code lookup unavailable" });
+  await assert.rejects(() => withDomain(() => makeSupabaseVanityLookup(() => client)(`a-k7m2q9vx4n8p.${DOMAIN}`)), /vanity app lookup failed: code lookup unavailable/);
+});
+
+test("activating a code domain invalidates its cached miss and both existing aliases", async () => {
+  const row = { ...CODE_ROW, uses_app_code_domain: false };
+  const { client } = codeHostClient([row]);
+  let queries = 0;
+  const lookup = makeVanityLookup({ getServiceRoleClient: () => { queries++; return client; } });
+  await withDomain(async () => {
+    __resetVanityCache();
+    try {
+      const codeHost = `a-k7m2q9vx4n8p.${DOMAIN}`;
+      const legacyHost = `shop-18e4ecad.${DOMAIN}`;
+      assert.equal(await lookup(codeHost), null);
+      assert.equal((await lookup(legacyHost))?.fcEndpoint, "https://right.example");
+      assert.equal((await lookup("shop.example.org"))?.fcEndpoint, "https://right.example");
+      row.uses_app_code_domain = true;
+      row.fc_endpoint = "https://new.example";
+      assert.equal(await lookup(codeHost), null, "activation alone still encounters the cached miss");
+      assert.equal(queries, 3);
+      invalidateAppHosts({ id: APP_ID, slug: "shop", appCode: "k7m2q9vx4n8p", usesAppCodeDomain: false, customDomain: "shop.example.org" });
+      assert.equal((await lookup(codeHost))?.fcEndpoint, "https://new.example");
+      assert.equal((await lookup(legacyHost))?.fcEndpoint, "https://new.example");
+      assert.equal((await lookup("shop.example.org"))?.fcEndpoint, "https://new.example");
+      assert.equal(queries, 6, "every alias must re-read immediately");
+    } finally { __resetVanityCache(); }
+  });
+});
+
+test("code host invalidation tolerates malformed domain and slug values", () => {
+  for (const slug of [null, undefined, "x".repeat(80)]) {
+    assert.doesNotThrow(() => invalidateAppHosts({ id: APP_ID, slug, appCode: "k7m2q9vx4n8p" }, env));
+  }
+  assert.doesNotThrow(() => invalidateAppHosts({ id: APP_ID, slug: "shop", appCode: "invalid.code" }, env));
+  assert.doesNotThrow(() => invalidateAppHosts({ id: APP_ID, slug: "shop", appCode: "k7m2q9vx4n8p" }, { APPS_PUBLIC_DOMAIN: "not a domain:99999" }));
+});
+
+
+test("an auth change through one alias immediately gates the other after invalidation", async () => {
+  const previousLogin = process.env.LOGIN_DOMAIN;
+  process.env.LOGIN_DOMAIN = "login.example.com";
+  const previousSecret = process.env.APPS_AUTH_SESSION_SECRET;
+  process.env.APPS_AUTH_SESSION_SECRET = "test-secret-at-least-32-characters-long";
+  const row = { ...CODE_ROW, auth_mode: "none", auth_scope: "all", auth_audience: "any", custom_domain_verified_at: null as string | null };
+  const { client } = codeHostClient([row]);
+  const lookup = makeVanityLookup({ getServiceRoleClient: () => client });
+  const service = createApp(deps(lookup));
+  await withDomain(async () => {
+    __resetVanityCache();
+    try {
+      const legacy = `shop-18e4ecad.${DOMAIN}`;
+      const code = `a-k7m2q9vx4n8p.${DOMAIN}`;
+      assert.equal((await lookup(legacy))?.authMode, "none");
+      assert.equal((await lookup(code))?.authMode, "none");
+      assert.equal(await lookup("shop.example.org"), null, "unverified custom domain stays refused");
+      row.auth_mode = "platform";
+      assert.equal((await lookup(code))?.authMode, "platform", "positive authorization state is always refreshed");
+      const changedViaLegacy = await lookup(legacy);
+      invalidateAppHosts(changedViaLegacy!);
+      for (const host of [code, legacy]) {
+        const response = await service.request(`https://${host}/private`, { headers: { host, "x-forwarded-proto": "https" } });
+        assert.equal(response.status, 302);
+        const location = new URL(response.headers.get("location")!);
+        assert.equal(location.host, "login.example.com");
+        assert.equal(location.searchParams.get("r"), `https://${host}`);
+      }
+    } finally { __resetVanityCache(); }
+  }).finally(() => {
+    if (previousLogin === undefined) delete process.env.LOGIN_DOMAIN;
+    else process.env.LOGIN_DOMAIN = previousLogin;
+    if (previousSecret === undefined) delete process.env.APPS_AUTH_SESSION_SECRET;
+    else process.env.APPS_AUTH_SESSION_SECRET = previousSecret;
+  });
+});
+
 
 // --- protected origins ------------------------------------------------------
 const ROUTE_DOMAIN = "origins.test";

@@ -1,5 +1,6 @@
 /**
- * Vanity hostnames for deployed apps: `<slug>-<id8>.<APPS_PUBLIC_DOMAIN>`.
+ * Public hostnames: `a-<appCode>.<APPS_PUBLIC_DOMAIN>`. The legacy
+ * `<slug>-<id8>` form remains an alias and names existing FC origin resources.
  *
  * Why the id suffix rather than the bare slug: `apps_team_slug_uniq` makes a
  * slug unique WITHIN a team, not globally, so two teams can both own `website`
@@ -19,6 +20,7 @@ type Env = NodeJS.ProcessEnv;
 export const appsPublicDomain = (env: Env = process.env) => env.APPS_PUBLIC_DOMAIN?.trim() || "";
 
 export const ID_PREFIX_LEN = 8;
+export const APP_CODE_RE = /^[0-9a-hjkmnp-tv-z]{12}$/;
 
 /** RFC 1035: one DNS label is at most 63 bytes, punycode included. */
 const MAX_LABEL_BYTES = 63;
@@ -89,11 +91,23 @@ export function appPublicUrl(
   slug: string | null | undefined,
   appId: string | null | undefined,
   env: Env = process.env,
+  appCode?: string | null,
 ): string | null {
   const domain = appsPublicDomain(env);
+  if (appCode != null) {
+    return domain && APP_CODE_RE.test(appCode) ? `https://a-${appCode}.${domain}` : null;
+  }
   if (!domain || !slug || !appId) return null;
   const label = appPublicLabel(slug, appId);
   return label && `https://${label}.${domain}`;
+}
+
+/** The current public address; backfilled or absent mode metadata stays legacy. */
+export function appCurrentPublicUrl(
+  app: { id: string; slug: string; appCode?: string | null; usesAppCodeDomain?: boolean },
+  env: Env = process.env,
+): string | null {
+  return appPublicUrl(app.slug, app.id, env, app.usesAppCodeDomain === true ? app.appCode : null);
 }
 
 /**
@@ -112,14 +126,18 @@ export function appOrigins(
   app: {
     id: string;
     slug: string;
+    appCode?: string | null;
+    usesAppCodeDomain?: boolean;
     customDomain?: string | null;
     customDomainVerifiedAt?: string | null;
   },
   env: Env = process.env,
 ): string[] {
   const out: string[] = [];
-  const vanity = appPublicUrl(app.slug, app.id, env);
+  const vanity = appCurrentPublicUrl(app, env);
   if (vanity) out.push(vanity);
+  const legacy = appPublicUrl(app.slug, app.id, env);
+  if (legacy && legacy !== vanity) out.push(legacy);
   // An unverified domain is stored but not served, so it is not an origin the
   // login service may return a visitor to either — the same gate that keeps a
   // certificate from being issued for it.
@@ -137,7 +155,7 @@ export function appOrigins(
 export function parseAppPublicHost(
   host: string | null | undefined,
   env: Env = process.env,
-): { slug: string; idPrefix: string } | null {
+): { slug: string; idPrefix: string; appCode?: never } | { appCode: string; slug?: never; idPrefix?: never } | null {
   const domain = appsPublicDomain(env);
   if (!domain || !host) return null;
   // Host carries the port on non-443 listeners; the label never does.
@@ -147,6 +165,9 @@ export function parseAppPublicHost(
   const asciiLabel = name.slice(0, -suffix.length);
   // Exactly one level: `*.<domain>` matches `x.<domain>`, never `x.y.<domain>`.
   if (!asciiLabel || asciiLabel.includes(".")) return null;
+  if (asciiLabel.startsWith("a-") && APP_CODE_RE.test(asciiLabel.slice(2))) {
+    return { appCode: asciiLabel.slice(2) };
+  }
   // DNS and the Host header carry the punycode form, and the id prefix is
   // encoded *inside* it — `xn--teamclu--cb4f314d-nx65apz36b` has no readable
   // `-cb4f314d` to split on. Decode first, then split, or every non-ASCII app

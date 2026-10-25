@@ -1121,3 +1121,60 @@ mod shell_quote_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod signature_regression_tests {
+    use super::*;
+
+    // Public prehashed test vector from minisign-verify 0.2.5 (MIT, Frank Denis).
+    const PUBLIC_KEY: &str = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+    const SIGNATURE: &str = "untrusted comment: signature from minisign secret key\nRUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\ntrusted comment: timestamp:1556193335\tfile:test\ny/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==";
+
+    #[test]
+    fn signed_update_accepts_release_signature_encodings() {
+        let key = STANDARD.encode(PUBLIC_KEY);
+        for signature in [
+            SIGNATURE.to_string(),
+            SIGNATURE.replace('\n', "\r\n"),
+            STANDARD.encode(SIGNATURE),
+        ] {
+            verify_signature(b"test", &signature, &key).unwrap();
+        }
+    }
+
+    #[test]
+    fn signed_update_rejects_tampered_payload_and_invalid_signature() {
+        let key = STANDARD.encode(PUBLIC_KEY);
+        assert!(verify_signature(b"Test", SIGNATURE, &key).is_err());
+        assert!(verify_signature(b"test", "invalid signature", &key).is_err());
+        assert!(verify_signature(b"test", SIGNATURE, "invalid public key").is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_updater_rejects_zip_payload_before_staging() {
+        assert!(stage_windows_installer(b"PK\x03\x04zip payload").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_updater_extracts_the_signed_archive_format() {
+        let output = tempfile::tempdir().unwrap();
+        let gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(gzip);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(3);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "TeamClu.app/Contents/MacOS/app", &b"bin"[..])
+            .unwrap();
+        let bytes = archive.into_inner().unwrap().finish().unwrap();
+        extract_updater_archive(&bytes, output.path()).unwrap();
+        assert_eq!(
+            std::fs::read(output.path().join("TeamClu.app/Contents/MacOS/app")).unwrap(),
+            b"bin"
+        );
+        assert!(find_app_bundle(output.path(), 2).is_some());
+    }
+}

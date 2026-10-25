@@ -1,0 +1,6 @@
+--- serenity-0.12.5/Cargo.toml
++++ serenity-0.12.5/Cargo.toml
+@@ -280 +280,2 @@
+-version = "0.21.0"
++version = "0.24.0"
++features = ["url"]

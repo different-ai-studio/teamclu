@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertDialog,
@@ -27,22 +27,33 @@ type PendingPrompt = DeployConfirmPrompt & {
 export function AppDeployConfirmDialog() {
   const { t } = useTranslation();
   const [pending, setPending] = useState<PendingPrompt | null>(null);
+  const pendingRef = useRef<PendingPrompt | null>(null);
+  const [switchDomain, setSwitchDomain] = useState(false);
 
   useEffect(() => {
-    registerDeployConfirmHandler(({ message }) =>
+    registerDeployConfirmHandler((prompt) =>
       new Promise<boolean>((resolve) => {
-        setPending({ message, resolve });
+        setSwitchDomain(false);
+        const next = { ...prompt, resolve };
+        pendingRef.current = next;
+        setPending(next);
       }),
     );
-    return () => registerDeployConfirmHandler(null);
+    return () => {
+      registerDeployConfirmHandler(null);
+      pendingRef.current?.resolve(false);
+      pendingRef.current = null;
+    };
   }, []);
 
   const close = useCallback((accepted: boolean) => {
-    setPending((current) => {
-      current?.resolve(accepted);
-      return null;
-    });
-  }, []);
+    const current = pendingRef.current;
+    if (!current) return;
+    pendingRef.current = null;
+    setPending(null);
+    if (accepted && current.domainChoice) current.onDomainChoice?.(switchDomain);
+    current.resolve(accepted);
+  }, [switchDomain]);
 
   return (
     <AlertDialog
@@ -60,6 +71,28 @@ export function AppDeployConfirmDialog() {
             {pending?.message}
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {pending?.domainChoice && (
+          <label className="flex items-start gap-2 text-[13px]">
+            <input
+              type="checkbox"
+              checked={switchDomain}
+              onChange={(event) => setSwitchDomain(event.target.checked)}
+              className="mt-1 accent-foreground"
+            />
+            <span>
+              {t("apps.deployDomainSwitch", "部署成功后，改用应用代码域名")}
+              <span className="mt-1 block break-all font-mono text-[11px] text-muted-foreground">
+                {pending.domainChoice.codeUrl}
+              </span>
+              <span className="mt-1 block text-[11.5px] text-muted-foreground">
+                {t("apps.deployDomainKeepHint", "默认保留当前域名；勾选切换后，原域名仍可访问。")}
+              </span>
+              <span className="block break-all font-mono text-[11px] text-faint">
+                {pending.domainChoice.currentUrl}
+              </span>
+            </span>
+          </label>
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => close(false)}>
             {t("common.cancel", "取消")}

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { promises as dns } from "node:dns";
 import { domainToASCII } from "node:url";
 import { ApiError } from "./http-utils.js";
-import { appFcRouteHost, appPublicUrl, appsFcRouteDomain, appsPublicDomain } from "./apps-public-host.js";
+import { appFcRouteHost, appCurrentPublicUrl, appsFcRouteDomain, appsPublicDomain } from "./apps-public-host.js";
 
 /**
  * Binding a domain the app's owner controls
@@ -171,7 +171,7 @@ export function normalizeCustomDomain(raw: unknown, env: NodeJS.ProcessEnv = pro
  * would otherwise have to remember across requests.
  */
 export function customDomainRecords(
-  app: { id: string; slug: string },
+  app: { id: string; slug: string; appCode?: string | null; usesAppCodeDomain?: boolean },
   domain: string,
   token: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -182,7 +182,7 @@ export function customDomainRecords(
   // Point at the vanity host rather than at the box's address: an A record
   // would have to be reissued if the box ever moved, and the vanity name is
   // already the one our certificate gate and proxy recognise.
-  const vanity = appPublicUrl(app.slug, app.id, env);
+  const vanity = appCurrentPublicUrl(app, env);
   if (vanity) {
     records.unshift({ type: "CNAME", name: domain, value: new URL(vanity).hostname });
   } else {

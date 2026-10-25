@@ -267,8 +267,15 @@ fn inspect_archive(path: &Path, label: &str, unknown: &mut Vec<String>) -> anyho
         if member.is_dir() {
             continue;
         }
-        let member_label = format!("{label}!{}", member.name());
-        if archive_candidate(member.name()) || opaque_archive_candidate(member.name()) {
+        let member_name = match member.name() {
+            Ok(name) => name.into_owned(),
+            Err(_) => {
+                unknown.push(label.to_string());
+                return Ok(());
+            }
+        };
+        let member_label = format!("{label}!{member_name}");
+        if archive_candidate(&member_name) || opaque_archive_candidate(&member_name) {
             unknown.push(member_label);
             continue;
         }
@@ -306,7 +313,7 @@ fn inspect_archive(path: &Path, label: &str, unknown: &mut Vec<String>) -> anyho
         match target {
             Some("Linux/x86_64") => {}
             Some(_) => unreachable!(),
-            None if native_candidate(member.name()) => unknown.push(member_label),
+            None if native_candidate(&member_name) => unknown.push(member_label),
             None => {}
         }
     }
@@ -1416,6 +1423,24 @@ fn map_docker_failure(args: &[&str], combined: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_encoded_archive_names_are_inspected() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("legacy.zip");
+        std::fs::write(
+            &archive,
+            serde_json::from_str::<Vec<u8>>(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/archive-cp437.json"
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut unknown = Vec::new();
+        inspect_archive(&archive, "output.zip", &mut unknown).unwrap();
+        assert!(unknown.is_empty());
+    }
+
     use super::*;
     use std::io::Read;
 
@@ -1820,7 +1845,7 @@ mod tests {
 
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         let mut names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
             .collect();
         names.sort();
         assert!(
@@ -1850,7 +1875,7 @@ mod tests {
         let bytes = zip_dir(tmp.path()).unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         let names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
             .collect();
         assert!(names.iter().any(|name| name == "app.py"), "{names:?}");
         assert!(

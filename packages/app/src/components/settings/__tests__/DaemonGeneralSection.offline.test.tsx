@@ -157,7 +157,10 @@ describe('DaemonGeneralSection without a network', () => {
     mockGetLocalDaemonAgent.mockRejectedValueOnce(new TypeError('Load failed'))
     mockGetLocalDaemonAgent.mockResolvedValue(null)
     const { DaemonGeneralSection } = await import('../DaemonGeneralSection')
-    render(<DaemonGeneralSection />)
+    // Settle the initial load and its offline subscription before firing online.
+    await act(async () => {
+      render(<DaemonGeneralSection />)
+    })
     await screen.findByTestId('daemon-general-offline')
     expect(mockGetLocalDaemonAgent).toHaveBeenCalledTimes(1)
 

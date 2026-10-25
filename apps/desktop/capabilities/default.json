@@ -98,7 +98,6 @@
       ]
     },
     "fs:default",
-    "updater:default",
     "core:webview:default",
     "core:window:allow-hide",
     "core:window:allow-show",

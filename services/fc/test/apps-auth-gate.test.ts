@@ -893,6 +893,20 @@ test("an unreadable path still admits a visitor who holds an org role", async ()
   });
 });
 
+
+test("both active aliases redirect protected requests to login", async () => {
+  await withEnv({}, async () => {
+    const active = app({ appCode: "k7m2q9vx4n8p", usesAppCodeDomain: true });
+    for (const origin of [ORIGIN, "https://a-k7m2q9vx4n8p.apps.example.com"]) {
+      const out = await applyAuthGate(new Request(origin + "/private"), active, deps());
+      assert.equal(out.response?.status, 302);
+      const location = new URL(out.response!.headers.get("location")!);
+      assert.equal(location.host, "login.example.com");
+      assert.equal(location.searchParams.get("r"), origin);
+    }
+  });
+});
+
 test("persisted PATCH/auth-info roundtrip and the same cookie follow current organization roles", async () => {
  await withEnv({}, async () => {
   let stored = app({authScope:"paths",authAudience:"org"});

@@ -1427,6 +1427,9 @@
       "done": "部署完成"
     },
     "preview": "预览",
+    "deployConfirmMessage": "确认部署此应用？",
+    "deployDomainSwitch": "部署成功后，改用应用代码域名",
+    "deployDomainKeepHint": "默认保留当前域名；勾选切换后，原域名仍可访问。",
     "deployConfirmTitle": "确认部署",
     "deployConfirmContinue": "继续部署",
     "deployFailed": "部署失败",
