@@ -3032,6 +3032,63 @@ test("apps: createApp inserts workspace + app and resolves caller actor", async 
   assert.equal(appUpdate?.row.provision_status, "repo_created");
 });
 
+test("apps: a daemon's agent creates an app it then owns", async () => {
+  // `amuxd app create` runs on the daemon's own agent account. The apps insert
+  // policy takes any actor of the team; the workspace's creator column
+  // references `amux.members`, so an agent leaves it null.
+  const calls: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({ calls, actorRow: { id: "agent-actor-1", actor_type: "agent" } }),
+  );
+  await repo.createApp({ teamId: "team-1", name: "Bot App", type: "static_web" });
+  const wsInsert = calls.find((c) => c.table === "workspaces" && c.op === "insert");
+  assert.equal(wsInsert?.row.created_by_member_id, null);
+  const appInsert = calls.find((c) => c.table === "apps" && c.op === "insert");
+  assert.equal(appInsert?.row.created_by_actor_id, "agent-actor-1");
+});
+
+test("apps: an agent administers the apps it created, and no others", async () => {
+  const own = { ...GITEA_MANAGED_APP, created_by_actor_id: "agent-actor-1" };
+  const agent = { id: "agent-actor-1", actor_type: "agent" };
+  const repo = appsRepo(appsSupabase({ seed: { apps: [own] }, actorRow: agent }));
+  assert.deepEqual(await repo.resolveAppCallerPermissionForApp(own), {
+    level: "admin",
+    callerActorId: "agent-actor-1",
+    // Written to `*_member_id` columns, which reference `amux.members`.
+    callerMemberId: null,
+  });
+  assert.equal(await repo.isAppCreator("team-1", "agent-actor-1"), true);
+
+  // A grant row naming the agent cannot exist for real (`member_id` is a
+  // member); even seeded, it confers nothing on an app the agent did not make.
+  const members = appsRepo(
+    appsSupabase({
+      seed: {
+        apps: [GITEA_MANAGED_APP],
+        app_member_access: [{ app_id: "app-1", member_id: "agent-actor-1", permission_level: "admin" }],
+      },
+      actorRow: agent,
+    }),
+  );
+  assert.equal(await members.resolveAppCallerPermissionForApp(GITEA_MANAGED_APP), null);
+  assert.equal(await members.cancelAppDeployPreflight("app-1", { deployToken: "t" }), null);
+});
+
+test("apps: an agent's own app is minted a key in the agent's name", async () => {
+  let title = "";
+  const gitea = fakeGitea({
+    createDeployKey: async (_appId: string, t: string) => { title = t; return { id: 7 }; },
+  });
+  const own = { ...GITEA_MANAGED_APP, visibility: "personal", created_by_actor_id: "agent-actor-1" };
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [own] }, actorRow: { id: "agent-actor-1", actor_type: "agent" } }),
+    { gitea },
+  );
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.equal(cred?.readOnly, false);
+  assert.ok(title.startsWith("jit-agent-actor-1-"), `titled for the agent, got ${title}`);
+});
+
 test("apps: createApp without Gitea configured throws gitea_unavailable before insert", async () => {
   const calls: any[] = [];
   const repo = appsRepo(appsSupabase({ calls }), {
