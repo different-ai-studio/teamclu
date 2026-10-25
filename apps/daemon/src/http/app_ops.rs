@@ -5,9 +5,9 @@
 //! it:
 //!
 //! - **Cloud** — the daemon's own agent account ([`DaemonCloud`]). Apps it
-//!   creates are created by that agent, and it sees what the Cloud API lets
-//!   that agent see: a member's personal app is invisible to it until the
-//!   member grants it access.
+//!   creates are created by that agent, which administers them. Anyone
+//!   else's app it can at most read: per-app grants name members only, so a
+//!   member's personal app stays invisible to it and a team app is read-only.
 //! - **Daemon** — this process ([`InProcessDaemon`]): the `/v1/apps/*`
 //!   handlers called directly, not over loopback.
 //! - **Host** — no window and no approval dialog. Whoever can read the root

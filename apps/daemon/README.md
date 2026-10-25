@@ -73,8 +73,10 @@ amuxd config set …   # daemon.toml
 `amuxd app` creates, deploys and inspects TeamClu apps, so an agent amuxd did
 not start — Claude Code, Codex, a CI job — can publish one. It needs
 `amuxd start` to be running and acts as **this daemon's agent account**: the
-apps it creates belong to that agent, and a member's personal app is invisible
-to it until the member grants it access in TeamClu.
+apps it creates belong to that agent, which can change, deploy and delete them.
+A teammate's team app it can list, inspect and download, but not deploy; a
+teammate's personal app it cannot see at all. Per-app access in TeamClu is
+granted to members, never to an agent.
 
 Every command prints JSON on stdout. A failure prints
 `{"ok": false, "error": "…"}` and exits 1; the error names the next command to
