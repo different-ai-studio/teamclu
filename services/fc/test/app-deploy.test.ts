@@ -1,3 +1,4 @@
+import { makeFcOps } from "../src/lib/provisioning/fc-client.js";
 import { ORIGIN_CONFIG } from "./fixtures/apps-origin-auth/config.js";
 import { finalizeDeploy } from "../src/lib/provisioning/app-deploy.js";
 import { test } from "node:test";
@@ -92,3 +93,37 @@ test("origin domain matching the public gateway domain is rejected before FC mut
     assert.deepEqual(calls, []);
   } finally { if (original === undefined) delete process.env.APPS_PUBLIC_DOMAIN; else process.env.APPS_PUBLIC_DOMAIN = original; }
 });
+
+for (const [operation, failingMethod, providerCode] of [
+  ["ensureHttpTrigger", "createTrigger", "AccessDenied"],
+  ["ensureCustomDomain", "createCustomDomain", "InternalError"],
+  ["ensureCustomDomain", "createCustomDomain", "SECRET-unrecognized-code"],
+] as const) {
+  test(`publish preserves sanitized ${operation} failure stage (${providerCode})`, async () => {
+    const client = {
+      getFunction: async () => ({ body: {} }),
+      updateFunction: async () => ({}),
+      createTrigger: async () => ({}),
+      getTrigger: async () => ({ body: { triggerConfig: JSON.stringify({ disableURLInternet: true }) } }),
+      [failingMethod]: async () => { throw Object.assign(new Error("SECRET request JWKS PEM"), {
+        code: providerCode, data: { request: "SECRET" },
+      }); },
+    };
+    const fcOps = makeFcOps(client, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", originAuth: ORIGIN_CONFIG });
+    await assert.rejects(() => finalizeDeploy({ readOriginAuth: () => ORIGIN_CONFIG, fcOps }, {
+      appId: APP_ID, slug: "app-a", appType: "static_web", fcFunctionName: "fn", ossObjectName: "code.zip",
+      declaration: { build: { kind: "node", output: "artifact" }, start: {
+        fcRuntime: "custom.debian10", command: ["node"], args: ["server.mjs"], port: 9000, layers: [],
+      } },
+    }), (error: any) => {
+      assert.equal(error.statusCode, 503);
+      assert.equal(error.code, "origin_security_unavailable");
+      assert.ok(error.message.includes(operation), "failure names the actual failed step rather than routeConfig");
+      assert.ok(error.message.includes(providerCode.startsWith("SECRET") ? "ProviderError" : providerCode));
+      assert.equal(JSON.stringify(error).includes("SECRET"), false);
+      assert.equal(error.message.includes("SECRET"), false);
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+  });
+}

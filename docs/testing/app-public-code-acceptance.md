@@ -593,3 +593,58 @@ cleanup is the other minor follow-up, outside this feature's acceptance scope.
 
 No release version was bumped. This document authorizes no push, PR, merge,
 tag, publication, live migration or deployment.
+
+
+## 2026-10-25 full-format B desktop acceptance and follow-up fixes
+
+This addendum supersedes earlier pending statements only for the checks below.
+It does not establish full release or cross-platform approval.
+
+Using the real signed-in macOS QA desktop against dev, the authorized disposable
+App Code B Desktop QA 20261025 (`a-p35cg2kk6bh3`) passed:
+
+- App Code settings display/copy and existing library exact/partial/case-insensitive
+  trimmed search; existing relationship scope remains effective.
+- No migration checkbox before first deployment; live legacy deployment defaults
+  unchecked and displays the complete code URL with one prefix.
+- Keyboard toggle and Escape cancellation retain legacy mode, release the
+  reservation, and reset the checkbox on reopening.
+- Unchecked successful redeployment retains the legacy URL.
+- Checked successful redeployment activates the code URL; both old and code
+  `/healthz` return 200 with the same test-only Linux/x64 JSON response.
+- Once activated, the migration checkbox is absent. Canceling the final inspection
+  releases its preflight reservation and leaves the App live.
+
+Fixture UUID: `4b7fe986-3bff-49e2-9f2d-1695ec605c51`; deployed fixture revision:
+`d0255f278f70d0e979a3e9dc87a3b41db1624af6`. The last post-cancel MCP read confirmed
+live, code mode true, no pending opt-in/error/token. Successful intermediate
+pre-finalize mode false was not sampled; a failed checked attempt directly
+confirmed that mode remained false and the reservation was released.
+
+The English AI-active warning was reproduced with a Chinese body. The follow-up
+fix uses call-time translation, preserving the Chinese fallback. A behavioral
+regression switches language after store import and confirms both translated
+payloads and that declining prevents deployment. The original desktop observation
+and this automated regression are distinct evidence; the corrected active-turn
+warning has not yet been re-observed in the real desktop.
+
+One checked attempt failed with `origin security unavailable: routeConfig`;
+normal recovery and checked retry succeeded. Investigation found that non-ApiError
+origin failures were collapsed to that generic fallback, so the text does not
+identify an actual route drift. The diagnostic fix preserves mutation-stage names
+and existing allowlisted provider codes through the ApiError boundary, without
+retaining raw provider messages, request objects, JWT material or causes.
+Regression coverage exercises real makeFcOps through finalizeDeploy and verifies
+unknown-code redaction. Read-side checks retain their existing safe field summaries.
+
+Historical provider root cause remains unknown: existing logs do not contain the
+original step/cause, and a narrowly scoped read-only ActionTrail LookupEvents
+request returned 403 NoPermission. No IAM grant, security relaxation, new retry
+policy or live backend change was made. Fresh read-only provider verification at
+2026-10-25T14:26:16.032Z reports protected, Internet URL disabled, JWT origin auth,
+and zero drift fields. HTTP-only origin behind the HTTPS gateway is intentional.
+
+Verification of follow-up source: frontend 4,438 passed / 10 skipped; FC 2,015
+passed / 13 skipped; both typechecks passed. Independent review found no blockers.
+The public test fixture is retained as authorized. No Beta/client publication,
+PR merge, custom-domain/login/cron or new native-platform acceptance is claimed.
