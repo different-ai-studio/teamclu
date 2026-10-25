@@ -31,7 +31,7 @@ export function normalizeAppCode(value: unknown): string | null {
   return null;
 }
 
-/** Complete rows win during the transition from legacy stored random parts. */
+/** Complete then legacy storage candidates for the same public code. */
 export function appCodeStorageCandidates(value: unknown): readonly string[] {
   const code = normalizeAppCode(value);
   return code ? [code, code.slice(2)] : [];
@@ -181,8 +181,8 @@ export function parseAppPublicHost(
   const asciiLabel = name.slice(0, -suffix.length);
   // Exactly one level: `*.<domain>` matches `x.<domain>`, never `x.y.<domain>`.
   if (!asciiLabel || asciiLabel.includes(".")) return null;
-  if (asciiLabel.startsWith("a-") && LEGACY_APP_CODE_RE.test(asciiLabel.slice(2))) {
-    return { appCode: asciiLabel.slice(2) };
+  if (APP_CODE_RE.test(asciiLabel)) {
+    return { appCode: asciiLabel };
   }
   // DNS and the Host header carry the punycode form, and the id prefix is
   // encoded *inside* it — `xn--teamclu--cb4f314d-nx65apz36b` has no readable

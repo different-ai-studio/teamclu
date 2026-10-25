@@ -228,12 +228,14 @@ test("the app serves the endpoint only when the lookup is wired, and honours the
 });
 
 
-test("Traefik selects code targets only for explicitly activated verified domains", async () => {
-  for (const mode of [undefined, false, true]) {
-    const row = { id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", app_code: "k7m2q9vx4n8p", uses_app_code_domain: mode, custom_domain: "shop.example.org", custom_domain_verified_at: "2026-10-19" };
-    let columns: string[] = [];
-    const q: any = { select(value: string) { columns = value.split(",").map(v => v.trim()); return q; }, not() { return q; }, then(resolve: any) { return Promise.resolve({ data: [Object.fromEntries(columns.map(c => [c, (row as any)[c]]))], error: null }).then(resolve); } };
-    const lookup = makeSupabaseTraefikDomainLookup(() => ({ from: () => q }), { APPS_PUBLIC_DOMAIN: "apps.example.com" });
-    assert.deepEqual(await lookup(), [{ domain: "shop.example.org", vanityHost: mode === true ? "a-k7m2q9vx4n8p.apps.example.com" : "shop-18e4ecad.apps.example.com" }]);
-  }
-});
+for (const storedCode of ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"]) {
+  test(`Traefik selects ${storedCode} targets only for explicitly activated verified domains`, async () => {
+    for (const mode of [undefined, false, true]) {
+      const row = { id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", app_code: storedCode, uses_app_code_domain: mode, custom_domain: "shop.example.org", custom_domain_verified_at: "2026-10-19" };
+      let columns: string[] = [];
+      const q: any = { select(value: string) { columns = value.split(",").map(v => v.trim()); return q; }, not() { return q; }, then(resolve: any) { return Promise.resolve({ data: [Object.fromEntries(columns.map(c => [c, (row as any)[c]]))], error: null }).then(resolve); } };
+      const lookup = makeSupabaseTraefikDomainLookup(() => ({ from: () => q }), { APPS_PUBLIC_DOMAIN: "apps.example.com" });
+      assert.deepEqual(await lookup(), [{ domain: "shop.example.org", vanityHost: mode === true ? "a-k7m2q9vx4n8p.apps.example.com" : "shop-18e4ecad.apps.example.com" }]);
+    }
+  });
+}

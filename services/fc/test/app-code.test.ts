@@ -27,7 +27,7 @@ test("code URLs require a configured domain and an exact valid code", () => {
 });
 
 test("code host parsing normalizes case and port and rejects malformed hosts", () => {
-  assert.deepEqual(parseAppPublicHost(" A-K7M2Q9VX4N8P.APPS.EXAMPLE.COM:443 ", env), { appCode: CODE });
+  assert.deepEqual(parseAppPublicHost(" A-K7M2Q9VX4N8P.APPS.EXAMPLE.COM:443 ", env), { appCode: "a-k7m2q9vx4n8p" });
   for (const host of ["a-short.apps.example.com", "a-k7m2q9vx4n8p0.apps.example.com", "a-k7m2q9vx4n8i.apps.example.com", "a-k7m2q9vx4n8_.apps.example.com", "x.a-k7m2q9vx4n8p.apps.example.com", "a-k7m2q9vx4n8p.apps.example.com.evil.org", "a-k7m2q9vx4n8p.other.example.com", "a-k7m2q9vx4n8papps.example.com"]) {
     assert.equal(parseAppPublicHost(host, env), null, host);
   }
