@@ -27,7 +27,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use teamclu_apps::{
     AppOps, AppSelector, Cloud, CloudError, CreateArgs, DaemonError, Host, LocalDaemon, LogsArgs,
-    Method, Surface,
+    Method, Surface, UpdateArgs,
 };
 
 use super::apps;
@@ -297,7 +297,7 @@ pub struct AppOpsBody {
     /// whose checkout this is.
     #[serde(default)]
     pub workspace_path: Option<String>,
-    // create
+    // create, update
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -308,6 +308,20 @@ pub struct AppOpsBody {
     pub git_remote_url: Option<String>,
     #[serde(default)]
     pub local_dir: Option<String>,
+    // update
+    #[serde(default)]
+    pub auth_mode: Option<String>,
+    #[serde(default)]
+    pub auth_audience: Option<String>,
+    #[serde(default)]
+    pub auth_scope: Option<String>,
+    #[serde(default)]
+    pub auth_rules: Option<Value>,
+    // delete
+    /// The caller's explicit go-ahead. Delete has no undo, and this surface
+    /// has no dialog to ask in, so the request itself must say yes.
+    #[serde(default)]
+    pub confirm: bool,
     // deploy
     #[serde(default)]
     pub migration_intent: bool,
@@ -327,7 +341,7 @@ pub struct AppOpsBody {
 }
 
 const READ_ACTIONS: [&str; 3] = ["list", "status", "logs"];
-const WRITE_ACTIONS: [&str; 3] = ["create", "reseed", "deploy"];
+const WRITE_ACTIONS: [&str; 6] = ["create", "reseed", "download", "update", "deploy", "delete"];
 
 /// A non-empty, trimmed string.
 fn present(v: &Option<String>) -> Option<String> {
@@ -388,6 +402,36 @@ pub async fn app_ops(
         app_name: present(&body.app_name),
         workspace_path: present(&body.workspace_path),
     };
+    let update = UpdateArgs {
+        name: present(&body.name),
+        app_type: present(&body.app_type),
+        visibility: present(&body.visibility),
+        auth_mode: present(&body.auth_mode),
+        auth_audience: present(&body.auth_audience),
+        auth_scope: present(&body.auth_scope),
+        auth_rules: body.auth_rules.clone(),
+    };
+    // Argument mistakes are refused before anything is resolved, so they cost
+    // no round trip and read as the mistakes they are.
+    match action.as_str() {
+        "update" => {
+            update.patch().map_err(refused)?;
+        }
+        // The app a directory happens to be is the right default for
+        // deploying, and the wrong one for deleting: an agent that lost track
+        // of which checkout it is in must not destroy the one it stands in.
+        "delete" if !selector.is_explicit() => {
+            return Err(refused(
+                "delete cannot be undone, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory".to_string(),
+            ))
+        }
+        "delete" if !body.confirm => {
+            return Err(refused(
+                "delete cannot be undone: the app's site goes offline and its repository is archived. Pass --yes to delete it.".to_string(),
+            ))
+        }
+        _ => {}
+    }
 
     let out = match action.as_str() {
         "list" => ops.list(&team_id).await,
@@ -411,6 +455,9 @@ pub async fn app_ops(
                     Ok(serde_json::json!({ "action": "status", "app": ops.status(&row).await }))
                 }
                 "reseed" => ops.reseed(&row).await,
+                "download" => ops.download(&row).await,
+                "update" => ops.update(&row, &update).await,
+                "delete" => ops.delete(&row).await,
                 "deploy" => {
                     let args = teamclu_apps::DeployArgs {
                         migration_intent: body.migration_intent,

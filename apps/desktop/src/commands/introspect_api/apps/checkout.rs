@@ -1,30 +1,19 @@
-//! Putting a team app's code on this machine: `download` and `move_workdir`.
+//! Moving a checkout on this machine: `move_workdir`, and who a seed commits as.
 //!
-//! `create` and `reseed` are `teamclu-apps` (shared with `amuxd app …`); these
-//! two are ports of the web app's flows that only this surface offers so far,
-//! built from the same crate pieces:
-//!
-//! | here                  | web app                                                     |
-//! |-----------------------|-------------------------------------------------------------|
-//! | [`download_app`]      | `ensureAppCheckout` in `stores/apps-store.ts`               |
-//! | [`move_app_workdir`]  | `handleMoveConfirm` in `components/apps/AppControlPanel.tsx`|
-//!
-//! Keep them in step with the web app: a change to what it sends the daemon,
-//! or to how it claims the app's workspace row, belongs here too.
+//! `create`, `reseed` and `download` are `teamclu-apps` (shared with
+//! `amuxd app …`). [`move_app_workdir`] is a port of `handleMoveConfirm` in
+//! `components/apps/AppControlPanel.tsx` that only this surface offers so far,
+//! built from the same crate pieces; keep it in step with the web app.
 
 use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{json, Value};
 use tauri::AppHandle;
-use teamclu_apps::{
-    bind_workspace_fields, daemon_error_text, mint_git_credential, return_git_credential,
-    write_provision_status, AppOps, DAEMON_DOWN, SEED_TIMEOUT,
-};
+use teamclu_apps::{bind_workspace_fields, daemon_error_text, AppOps, DAEMON_DOWN};
 
 use super::{
-    canonical_path, dir_has_files, introspect_caller_workspace, is_gitea_managed,
-    notify_app_changed, row_id, row_str, DesktopDaemon,
+    canonical_path, introspect_caller_workspace, notify_app_changed, row_id, row_str, DesktopDaemon,
 };
 use crate::commands::introspect_api::str_body_field;
 
@@ -87,128 +76,6 @@ pub(super) fn seed_git_identity(bearer: &str) -> (Option<String>, Option<String>
 
 // ─── download / move ────────────────────────────────────────────────────────
 
-/// Whether an app in `provision_status` has anything to download.
-///
-/// A hosted repo short of `ready` was never seeded, so a clone would fetch an
-/// empty repository. An imported one is not ours to be unready: its status
-/// only says whether the creator's own clone worked, and the repository is
-/// there to fetch either way. Same rule as `ensureAppCheckout`.
-fn download_allowed(
-    provision_status: &str,
-    gitea_managed: bool,
-    has_remote: bool,
-) -> Result<(), String> {
-    if provision_status == "ready" || (!gitea_managed && has_remote) {
-        return Ok(());
-    }
-    Err(format!(
-        "This app's code has not been written anywhere yet (provision_status {provision_status:?}), so there is nothing to download. Run reseed on it first."
-    ))
-}
-
-/// `download` — put a team app's code on this machine.
-///
-/// A port of `ensureAppCheckout`: nothing is cloned over a directory that
-/// already has files in it, because the only thing that could do there is
-/// destroy the checkout someone has.
-pub(super) async fn download_app(
-    app: &AppHandle,
-    ops: &AppOps<'_>,
-    row: &Value,
-) -> Result<Value, String> {
-    let app_id = row_id(row)?;
-    let status = row_str(row, "provisionStatus").unwrap_or("");
-    download_allowed(
-        status,
-        is_gitea_managed(row),
-        row_str(row, "gitRemoteUrl").is_some(),
-    )?;
-    let (workdir, device) = ops
-        .app_workdir_on_this_machine(row)
-        .await
-        .ok_or(DAEMON_DOWN)?;
-    if dir_has_files(&workdir) {
-        return Ok(json!({
-            "ok": true,
-            "action": "download",
-            "app_id": app_id,
-            "workdir": workdir,
-            "device_name": device,
-            "already_present": true,
-            "note": "This machine already holds a checkout there; nothing was cloned over it.",
-        }));
-    }
-
-    let credential = if is_gitea_managed(row) {
-        Some(
-            mint_git_credential(ops, &app_id)
-                .await
-                .map_err(|e| format!("No access to this app's repository: {e}"))?,
-        )
-    } else {
-        None
-    };
-    let remote = match (&credential, row_str(row, "gitRemoteUrl")) {
-        (Some(cred), _) => cred.remote_url.clone(),
-        (None, Some(url)) => url.to_string(),
-        // An app with no remote of any kind has nothing to fetch — its code
-        // only ever existed on the machine that made it.
-        (None, None) => {
-            return Err(
-                "This app has no repository address to download from; its code only exists on the machine that created it."
-                    .to_string(),
-            )
-        }
-    };
-
-    let (git_user_name, git_user_email) = ops.host.git_identity();
-    let mut body = json!({
-        "appId": app_id,
-        "teamId": row_str(row, "teamId"),
-        "gitRemoteUrl": remote,
-        "cloneOnly": true,
-    });
-    if let Some(cred) = &credential {
-        body["deployKeyPem"] = json!(cred.private_key_pem.trim());
-    }
-    if let Some(name) = git_user_name {
-        body["gitUserName"] = json!(name);
-    }
-    if let Some(email) = git_user_email {
-        body["gitUserEmail"] = json!(email);
-    }
-    let cloned = ops.daemon.seed(&body, SEED_TIMEOUT).await;
-    if let Some(cred) = &credential {
-        return_git_credential(ops, &app_id, cred.deploy_key_id).await;
-    }
-    let out = cloned.map_err(|e| {
-        if e.unreachable {
-            DAEMON_DOWN.to_string()
-        } else {
-            format!("Cloning the app failed: {}", daemon_error_text(&e))
-        }
-    })?;
-
-    let workdir = row_str(&out, "workdir").unwrap_or(&workdir).to_string();
-    // An import whose first clone failed elsewhere now has its code here, which
-    // is what `ready` means. The server lets only an admin write it; for anyone
-    // else the write is refused and the download still stands.
-    if status != "ready" {
-        write_provision_status(ops, row, "ready").await;
-    }
-    let mut report = json!({
-        "ok": true,
-        "action": "download",
-        "app_id": app_id,
-        "workdir": workdir,
-        "device_name": device,
-        "already_present": false,
-    });
-    bind_workspace_fields(ops, row, &workdir, &mut report).await;
-    notify_app_changed(app, row);
-    Ok(report)
-}
-
 /// `move_workdir` — relocate this machine's checkout of the app, whole.
 ///
 /// Not the checkout the caller is running in: that would pull the working
@@ -268,19 +135,6 @@ pub(super) async fn move_app_workdir(
 mod tests {
     use super::*;
     use crate::daemon_client::DaemonError;
-
-    #[test]
-    fn an_import_downloads_whatever_its_status_but_a_hosted_repo_must_be_ready() {
-        assert!(download_allowed("ready", true, true).is_ok());
-        for status in ["pending", "repo_created", "error"] {
-            // A hosted repo short of ready was never seeded and would clone empty.
-            assert!(download_allowed(status, true, true).is_err(), "{status}");
-            // An import's status is the creator's own clone; the repo is still there.
-            assert!(download_allowed(status, false, true).is_ok(), "{status}");
-        }
-        // With no remote there is nothing to fetch from, whatever the status.
-        assert!(download_allowed("error", false, false).is_err());
-    }
 
     #[test]
     fn moving_the_callers_own_checkout_is_refused_but_not_a_sibling() {

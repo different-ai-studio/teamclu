@@ -25,7 +25,8 @@
 //! bearer and a line to the local daemon, which builds what a deploy publishes
 //! and seeds, clones and moves checkouts.
 //!
-//! `list`, `status`, `create`, `reseed`, `deploy` and `logs` are the
+//! `list`, `status`, `create`, `reseed`, `download`, `update`, `deploy`,
+//! `logs` and `delete` are the
 //! `teamclu-apps` crate, which `amuxd app …` runs too on the daemon's own
 //! account; this file supplies the user's bearer, the loopback daemon and the
 //! approval dialog to it. The rest are still only here.
@@ -46,7 +47,7 @@ pub(super) use settings::{handle_app_access, handle_app_cron, handle_app_domain,
 use std::time::Duration;
 
 use reqwest::Method;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::{introspect_current_team, introspect_fc_client, items_of, str_body_field};
@@ -60,10 +61,7 @@ use crate::commands::oss_sync::fc_client::FcClient;
 // ([`DesktopDaemon`]) and the approval dialog + window refresh
 // ([`DesktopHost`]).
 
-pub(super) use teamclu_apps::{
-    app_brief, app_path, app_settings, canonical_path, dir_has_files, is_gitea_managed, row_id,
-    row_str, CloudError, APP_TYPES,
-};
+pub(super) use teamclu_apps::{app_brief, app_path, canonical_path, row_id, row_str, CloudError};
 use teamclu_apps::{AppOps, AppSelector, Surface};
 
 /// One sentence for a failed call: what was being done, and the server's reply.
@@ -578,6 +576,19 @@ fn create_args(v: &Value) -> teamclu_apps::CreateArgs {
     }
 }
 
+/// An `update` call's arguments, in the crate's shape.
+fn update_args(v: &Value) -> teamclu_apps::UpdateArgs {
+    teamclu_apps::UpdateArgs {
+        name: str_body_field(v, "name", "name"),
+        app_type: str_body_field(v, "type", "type"),
+        visibility: str_body_field(v, "visibility", "visibility"),
+        auth_mode: str_body_field(v, "auth_mode", "authMode"),
+        auth_audience: str_body_field(v, "auth_audience", "authAudience"),
+        auth_scope: str_body_field(v, "auth_scope", "authScope"),
+        auth_rules: v.get("auth_rules").or_else(|| v.get("authRules")).cloned(),
+    }
+}
+
 /// A `logs` call's arguments, in the crate's shape.
 fn logs_args(v: &Value) -> teamclu_apps::LogsArgs {
     teamclu_apps::LogsArgs {
@@ -604,7 +615,7 @@ pub(super) async fn handle_app_manage(
     match action.as_str() {
         "delete" | "undeploy" => require_named_app(&v, &action)?,
         "update" => {
-            update_patch(&v)?;
+            update_args(&v).patch()?;
         }
         "create" => {
             create_args(&v).source()?;
@@ -638,7 +649,7 @@ pub(super) async fn handle_app_manage(
         "deploy" => None,
         "delete" => Some(super::confirm::app_delete(zh, &row)),
         "undeploy" => Some(super::confirm::app_undeploy(zh, &row)),
-        "update" => super::confirm::app_exposure_change(zh, &row, &update_patch(&v)?),
+        "update" => super::confirm::app_exposure_change(zh, &row, &update_args(&v).patch()?),
         _ => None,
     };
     if let Some(confirmation) = confirmation {
@@ -658,9 +669,9 @@ pub(super) async fn handle_app_manage(
             "this_machine": daemon_selected_host_facts(&row).await?,
         }),
         "sessions" => app_sessions(&api, &row).await?,
-        "update" => update_app(app, &api, &row, &v).await?,
+        "update" => ops.update(&row, &update_args(&v)).await?,
         "reseed" => ops.reseed(&row).await?,
-        "download" => checkout::download_app(app, &ops, &row).await?,
+        "download" => ops.download(&row).await?,
         "move_workdir" => checkout::move_app_workdir(app, &ops, &row, &v).await?,
         "deploy" => {
             let args = teamclu_apps::DeployArgs {
@@ -671,7 +682,7 @@ pub(super) async fn handle_app_manage(
             ops.deploy(&row, args).await?
         }
         "logs" => ops.logs(&row, &logs_args(&v)).await?,
-        "delete" => delete_app(app, &api, &row).await?,
+        "delete" => ops.delete(&row).await?,
         "undeploy" => undeploy_app(app, &api, &row).await?,
         other => return Err(format!("Unknown action: {other}")),
     };
@@ -792,182 +803,6 @@ async fn app_sessions(api: &AppApi, row: &Value) -> Result<Value, String> {
     Ok(json!({ "action": "sessions", "app_id": app_id, "sessions": sessions }))
 }
 
-/// Whether an app of this type gets a Postgres schema on deploy. Mirrors
-/// `needsDatabase` in `services/fc/src/lib/provisioning/app-deploy.ts`, where
-/// anything unrecognised — the legacy stored value included — is a data app.
-fn needs_database(app_type: &str) -> bool {
-    !matches!(app_type.trim(), "static_web" | "slides" | "imported")
-}
-
-fn enum_field(
-    v: &Value,
-    snake: &str,
-    camel: &str,
-    allowed: &[&str],
-) -> Result<Option<String>, String> {
-    match str_body_field(v, snake, camel) {
-        None => Ok(None),
-        Some(value) if allowed.contains(&value.as_str()) => Ok(Some(value)),
-        Some(value) => Err(format!(
-            "{snake} must be one of: {} (got {value:?})",
-            allowed.join(", ")
-        )),
-    }
-}
-
-/// The `PATCH /v1/apps/:id` body an `update` call asks for.
-///
-/// Every field the row lets an operator set, and only those: status fields are
-/// the deploy's to write, and `runtime` is derived from the checkout on every
-/// deploy, so a setter for it would be overwritten by the next one. Values are
-/// checked here for the errors that need no round trip; the server validates
-/// again (rules as a set, the scope/rules pair) and its message is passed on.
-fn update_patch(v: &Value) -> Result<Value, String> {
-    let mut patch = Map::new();
-    if let Some(name) = str_body_field(v, "name", "name") {
-        patch.insert("name".into(), json!(name));
-    }
-    if let Some(app_type) = enum_field(v, "type", "type", &APP_TYPES)? {
-        patch.insert("type".into(), json!(app_type));
-    }
-    if let Some(visibility) = enum_field(v, "visibility", "visibility", &["personal", "team"])? {
-        patch.insert("visibility".into(), json!(visibility));
-    }
-    // `third` exists in the schema and is disabled in the UI: it cannot be
-    // deployed, so offering it here would only produce apps that fail to.
-    if let Some(mode) = enum_field(v, "auth_mode", "authMode", &["none", "platform"])? {
-        patch.insert("authMode".into(), json!(mode));
-    }
-    if let Some(audience) = enum_field(v, "auth_audience", "authAudience", &["any", "org"])? {
-        patch.insert("authAudience".into(), json!(audience));
-    }
-    if let Some(scope) = enum_field(v, "auth_scope", "authScope", &["all", "paths"])? {
-        patch.insert("authScope".into(), json!(scope));
-    }
-    if let Some(rules) = v.get("auth_rules").or_else(|| v.get("authRules")) {
-        let list = rules
-            .as_array()
-            .ok_or("auth_rules must be an array of {path, auth, audience?, roles?}")?;
-        for rule in list {
-            let path = rule.get("path").and_then(Value::as_str).unwrap_or("");
-            let auth = rule.get("auth").and_then(Value::as_str).unwrap_or("");
-            if !path.starts_with('/') || !matches!(auth, "required" | "public") {
-                return Err(format!(
-                    "each auth rule needs a path starting with \"/\" and auth \"required\" or \"public\" (got {rule})"
-                ));
-            }
-        }
-        patch.insert("authRules".into(), rules.clone());
-    }
-    if patch.is_empty() {
-        return Err(
-            "update needs at least one of: name, type, visibility, auth_mode, auth_audience, auth_scope, auth_rules"
-                .to_string(),
-        );
-    }
-    Ok(Value::Object(patch))
-}
-
-/// What an operator needs to hear about the change they just made — the
-/// consequences that are not visible on the row itself.
-fn update_notes(before: &Value, patch: &Value, after: &Value) -> Vec<String> {
-    let mut notes = Vec::new();
-
-    if patch.get("name").is_some() {
-        notes.push("The public URL does not change when an app is renamed.".to_string());
-    }
-
-    if let Some(next) = patch
-        .get("type")
-        .and_then(Value::as_str)
-        .filter(|next| Some(*next) != row_str(before, "type"))
-    {
-        let prev = row_str(before, "type").unwrap_or("data_app");
-        if needs_database(prev) && !needs_database(next) {
-            notes.push(format!(
-                "WARNING: from the next deploy on this app has no database — DATABASE_URL disappears from it, and code that uses the database will fail. The data is kept, and comes back if the type is set to data_app again. manage_app_data already reports no database. Type was {prev}."
-            ));
-        } else if !needs_database(prev) && needs_database(next) {
-            notes.push(
-                "The next deploy creates this app's database and gives the app DATABASE_URL. The code is not changed — the app has to use the database itself."
-                    .to_string(),
-            );
-        } else if !needs_database(next) {
-            notes.push(
-                "static_web, slides and imported deploy the same way: this changes the app's label and the starter template a reseed would write, not the running site."
-                    .to_string(),
-            );
-        }
-        if after.get("typePendingRedeploy").and_then(Value::as_bool) == Some(true) {
-            notes.push(
-                "The running app still has the old type; deploy (manage_app action \"deploy\") for it to take effect."
-                    .to_string(),
-            );
-        }
-    }
-
-    if let Some(visibility) = patch.get("visibility").and_then(Value::as_str) {
-        // The two consequences people get backwards, named (design §10):
-        // granted members keep seeing a personal app, and the daemon does not —
-        // it holds no member grant it could be given.
-        notes.push(if visibility == "personal" {
-            "Only the creator and members granted access (manage_app_access) see this app now. The local daemon cannot see it either, so agents it runs lose sight of it.".to_string()
-        } else {
-            "Everyone on the team can see this app now.".to_string()
-        });
-    }
-
-    let auth_changed = ["authMode", "authAudience", "authScope", "authRules"]
-        .iter()
-        .any(|k| patch.get(*k).is_some());
-    if auth_changed {
-        notes.push(
-            "The login wall is enforced by the gateway, so this applies from the next request — no deploy needed."
-                .to_string(),
-        );
-        if row_str(after, "authMode") == Some("none") {
-            notes.push("auth_mode is none: anyone with the URL can open the site.".to_string());
-        }
-        if after
-            .get("authModePendingRedeploy")
-            .and_then(Value::as_bool)
-            == Some(true)
-        {
-            notes.push(
-                "auth_mode_pending_redeploy only means the app's own login variables update on the next deploy; the wall itself is already in force."
-                    .to_string(),
-            );
-        }
-    }
-    notes
-}
-
-/// `update` — every setting on the row in one PATCH, the way the control panel
-/// saves a field: name, type, visibility and the login wall.
-async fn update_app(
-    app: &AppHandle,
-    api: &AppApi,
-    row: &Value,
-    v: &Value,
-) -> Result<Value, String> {
-    let patch = update_patch(v)?;
-    let app_id = row_id(row)?;
-    let updated = api
-        .patch(
-            &app_path(&app_id, ""),
-            &patch,
-            "Updating the app (needs admin on it)",
-        )
-        .await?;
-    notify_app_changed(app, &updated);
-    Ok(json!({
-        "ok": true,
-        "action": "update",
-        "app": app_settings(&updated),
-        "notes": update_notes(row, &patch, &updated),
-    }))
-}
-
 async fn undeploy_app(app: &AppHandle, api: &AppApi, row: &Value) -> Result<Value, String> {
     let app_id = row_id(row)?;
     let result = api
@@ -985,28 +820,6 @@ async fn undeploy_app(app: &AppHandle, api: &AppApi, row: &Value) -> Result<Valu
         json!({"ok": true, "action": "undeploy", "app": app_brief(&result["app"]), "operation": result["operation"],
         "complete": complete, "note": if complete {"Deployment uninstalled. App, code, sessions and user data were retained."} else {"Uninstall accepted, not yet complete. Read manage_app status to verify cleanup progress; do not claim success until the operation succeeds."}}),
     )
-}
-
-async fn delete_app(app: &AppHandle, api: &AppApi, row: &Value) -> Result<Value, String> {
-    let app_id = row_id(row)?;
-    // Tears down the function, its trigger, the artifact and the login client,
-    // and archives the repo — well past the default 30 s on a slow region.
-    api.call(
-        Method::DELETE,
-        &app_path(&app_id, ""),
-        None,
-        Some(Duration::from_secs(120)),
-        "Deleting the app (needs admin on it)",
-    )
-    .await?;
-    notify_app_changed(app, row);
-    Ok(json!({
-        "ok": true,
-        "action": "delete",
-        "app_id": app_id,
-        "name": row.get("name"),
-        "note": "The deployed site is offline. Its database, stored files and local checkouts were kept; its repository was archived and only an administrator can recover it.",
-    }))
 }
 
 #[cfg(test)]
@@ -1100,18 +913,6 @@ mod tests {
             &super::MANAGE_ACTIONS
         )
         .is_ok());
-    }
-
-    #[test]
-    fn update_patch_preserves_roles_and_legacy_audience() {
-        let rules = serde_json::json!([
-            {"path":"/api/staff/*", "auth":"required", "roles":["custom"]},
-            {"path":"/login", "auth":"required", "roles":[]},
-            {"path":"/org", "auth":"required", "audience":"org"},
-            {"path":"/both", "auth":"required", "roles":[], "audience":"org"}
-        ]);
-        let patch = super::update_patch(&serde_json::json!({"auth_rules":rules})).unwrap();
-        assert_eq!(patch["authRules"], rules);
     }
 
     #[test]
@@ -1384,95 +1185,5 @@ mod tests {
             require_named_app(&json!({ "workspace_path": "/work/site" }), "delete").unwrap_err();
         assert!(err.contains("app_id or app_name"), "{err}");
         assert!(require_named_app(&json!({ "app_name": "记账" }), "delete").is_ok());
-    }
-
-    #[test]
-    fn update_maps_every_setting_to_the_row_s_own_field_names() {
-        let patch = update_patch(&json!({
-            "name": "记账",
-            "type": "data_app",
-            "visibility": "team",
-            "auth_mode": "platform",
-            "auth_audience": "org",
-            "auth_scope": "paths",
-            "auth_rules": [{ "path": "/admin", "auth": "required", "audience": "org" }],
-        }))
-        .unwrap();
-        assert_eq!(
-            patch,
-            json!({
-                "name": "记账",
-                "type": "data_app",
-                "visibility": "team",
-                "authMode": "platform",
-                "authAudience": "org",
-                "authScope": "paths",
-                "authRules": [{ "path": "/admin", "auth": "required", "audience": "org" }],
-            })
-        );
-    }
-
-    #[test]
-    fn update_refuses_values_the_row_does_not_take() {
-        assert!(
-            update_patch(&json!({ "type": "fullstack_tanstack_postgres" }))
-                .unwrap_err()
-                .contains("static_web")
-        );
-        // Disabled in the UI because it cannot be deployed.
-        assert!(update_patch(&json!({ "auth_mode": "third" }))
-            .unwrap_err()
-            .contains("none, platform"));
-        assert!(
-            update_patch(&json!({ "auth_rules": [{ "path": "admin", "auth": "required" }] }))
-                .unwrap_err()
-                .contains("starting with")
-        );
-        assert!(update_patch(&json!({ "auth_rules": "/admin" }))
-            .unwrap_err()
-            .contains("array"));
-        // A status field is not a setting, and nothing to change is a mistake.
-        assert!(update_patch(&json!({ "fcStatus": "live" }))
-            .unwrap_err()
-            .contains("at least one"));
-    }
-
-    #[test]
-    fn leaving_data_app_warns_that_the_database_goes_away_on_deploy() {
-        let before = json!({ "type": "data_app" });
-        let after = json!({ "type": "static_web", "typePendingRedeploy": true });
-        let notes = update_notes(&before, &json!({ "type": "static_web" }), &after).join("\n");
-        assert!(
-            notes.contains("WARNING") && notes.contains("DATABASE_URL"),
-            "{notes}"
-        );
-        assert!(notes.contains("data is kept"), "{notes}");
-        assert!(notes.contains("deploy"), "{notes}");
-
-        // Legacy rows store an unrecognised type, which IS a data app.
-        let legacy = json!({ "type": "fullstack_tanstack_postgres" });
-        let notes = update_notes(&legacy, &json!({ "type": "slides" }), &after).join("\n");
-        assert!(notes.contains("WARNING"), "{notes}");
-
-        let notes = update_notes(
-            &json!({ "type": "static_web" }),
-            &json!({ "type": "data_app" }),
-            &json!({ "type": "data_app" }),
-        )
-        .join("\n");
-        assert!(notes.contains("creates this app's database"), "{notes}");
-        assert!(!notes.contains("WARNING"), "{notes}");
-    }
-
-    #[test]
-    fn a_login_change_says_it_is_live_without_a_deploy() {
-        let notes = update_notes(
-            &json!({ "authMode": "platform" }),
-            &json!({ "authMode": "none" }),
-            &json!({ "authMode": "none" }),
-        )
-        .join("\n");
-        assert!(notes.contains("no deploy needed"), "{notes}");
-        assert!(notes.contains("anyone with the URL"), "{notes}");
     }
 }

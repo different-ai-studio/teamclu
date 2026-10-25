@@ -62,6 +62,39 @@ pub enum AppAction {
     },
     /// Write the app's code again, for an app whose seed never ran or failed.
     Reseed(AppTarget),
+    /// Put a team app's code on this machine. Never clones over a checkout
+    /// that is already here.
+    Download(AppTarget),
+    /// Change the app's settings: name, type, visibility, and the login wall.
+    /// The reply's `notes` say what each change does and when it takes effect.
+    Update {
+        #[command(flatten)]
+        target: AppTarget,
+        /// A new name. The public URL does not change.
+        #[arg(long)]
+        name: Option<String>,
+        /// static_web, slides, data_app, or imported. Takes effect on the next
+        /// deploy; leaving data_app drops DATABASE_URL from the app.
+        #[arg(long = "type")]
+        app_type: Option<String>,
+        /// personal or team. A personal app is invisible to this daemon's
+        /// agent unless that agent created it.
+        #[arg(long)]
+        visibility: Option<String>,
+        /// none or platform (the login wall).
+        #[arg(long)]
+        auth_mode: Option<String>,
+        /// any or org.
+        #[arg(long)]
+        auth_audience: Option<String>,
+        /// all or paths.
+        #[arg(long)]
+        auth_scope: Option<String>,
+        /// The per-path rules, as JSON:
+        /// '[{"path":"/admin","auth":"required","audience":"org"}]'.
+        #[arg(long, value_parser = parse_json)]
+        auth_rules: Option<Value>,
+    },
     /// Build the checkout on this machine and publish it. A Gitea-hosted app
     /// must be committed and pushed first.
     Deploy {
@@ -91,6 +124,19 @@ pub enum AppAction {
         #[arg(long)]
         request_id: Option<String>,
     },
+    /// Delete the app: its site goes offline and its repository is archived.
+    /// Needs an explicit --id or --app, and --yes.
+    Delete {
+        #[command(flatten)]
+        target: AppTarget,
+        /// Yes, delete it. There is no undo.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+fn parse_json(raw: &str) -> Result<Value, String> {
+    serde_json::from_str(raw).map_err(|e| format!("not valid JSON: {e}"))
 }
 
 /// The JSON body for one action.
@@ -104,7 +150,32 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> anyhow::Result<Value
     };
     let mut body = match action {
         AppAction::List => json!({}),
-        AppAction::Status(t) | AppAction::Reseed(t) => target(t),
+        AppAction::Status(t) | AppAction::Reseed(t) | AppAction::Download(t) => target(t),
+        AppAction::Update {
+            target: t,
+            name,
+            app_type,
+            visibility,
+            auth_mode,
+            auth_audience,
+            auth_scope,
+            auth_rules,
+        } => {
+            let mut body = target(t);
+            body["name"] = json!(name);
+            body["type"] = json!(app_type);
+            body["visibility"] = json!(visibility);
+            body["authMode"] = json!(auth_mode);
+            body["authAudience"] = json!(auth_audience);
+            body["authScope"] = json!(auth_scope);
+            body["authRules"] = json!(auth_rules);
+            body
+        }
+        AppAction::Delete { target: t, yes } => {
+            let mut body = target(t);
+            body["confirm"] = json!(yes);
+            body
+        }
         AppAction::Create {
             name,
             app_type,
@@ -161,6 +232,9 @@ fn action_name(action: &AppAction) -> &'static str {
         AppAction::Status(_) => "status",
         AppAction::Create { .. } => "create",
         AppAction::Reseed(_) => "reseed",
+        AppAction::Download(_) => "download",
+        AppAction::Update { .. } => "update",
+        AppAction::Delete { .. } => "delete",
         AppAction::Deploy { .. } => "deploy",
         AppAction::Logs { .. } => "logs",
     }
@@ -222,6 +296,30 @@ mod tests {
             5
         );
         assert!(Harness::try_parse_from(["app", "status", "--id", "a1", "--app", "x"]).is_err());
+    }
+
+    #[test]
+    fn update_sends_only_what_was_given_and_rules_as_json() {
+        let body = body_of(&[
+            "update",
+            "--app",
+            "记账",
+            "--visibility",
+            "team",
+            "--auth-rules",
+            r#"[{"path":"/admin","auth":"required"}]"#,
+        ]);
+        assert_eq!(body["action"], "update");
+        assert_eq!(body["visibility"], "team");
+        assert_eq!(body["name"], Value::Null);
+        assert_eq!(body["authRules"][0]["path"], "/admin");
+        assert!(Harness::try_parse_from(["app", "update", "--auth-rules", "[oops"]).is_err());
+    }
+
+    #[test]
+    fn delete_carries_the_yes_it_was_given() {
+        assert_eq!(body_of(&["delete", "--id", "a1"])["confirm"], false);
+        assert_eq!(body_of(&["delete", "--id", "a1", "--yes"])["confirm"], true);
     }
 
     #[test]

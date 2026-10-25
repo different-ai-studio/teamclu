@@ -341,6 +341,20 @@ async fn fake_cloud() -> String {
             get(|headers: HeaderMap, Path(id): Path<String>| async move {
                 authed(&headers)?;
                 Ok::<_, StatusCode>(Json(row(&id)))
+            })
+            .patch(
+                |headers: HeaderMap, Path(id): Path<String>, Json(patch): Json<Value>| async move {
+                    authed(&headers)?;
+                    let mut updated = row(&id);
+                    for (k, v) in patch.as_object().cloned().unwrap_or_default() {
+                        updated[k] = v;
+                    }
+                    Ok::<_, StatusCode>(Json(updated))
+                },
+            )
+            .delete(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(StatusCode::NO_CONTENT)
             }),
         )
         .route(
@@ -422,4 +436,52 @@ async fn app_ops_needs_an_onboarded_daemon() {
     let (status, body) = app_ops(&app, serde_json::json!({ "action": "list" })).await;
     assert_eq!(status, 503, "{body}");
     assert!(body["detail"].as_str().unwrap().contains("amuxd init"));
+}
+
+/// `update` reaches the row; `delete` refuses an app inferred from a directory
+/// and one not confirmed, and goes through only when both are given.
+#[tokio::test]
+async fn app_ops_update_and_the_delete_guards() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "update", "appId": "a1", "visibility": "team" }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["app"]["visibility"], "team");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "update", "appId": "a1", "authMode": "third" }),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "delete", "workspacePath": "/work/notes", "confirm": true }),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("explicit"));
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "delete", "appId": "a1" }),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("--yes"));
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "delete", "appId": "a1", "confirm": true }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["action"], "delete");
 }

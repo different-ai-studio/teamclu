@@ -11,6 +11,10 @@
 //!   account so an agent amuxd did not start — Claude Code, Codex, a script —
 //!   can create and publish apps.
 //!
+//! Covered so far: list, status, create, reseed, download, update, deploy,
+//! logs and delete. The desktop's other app tools (access, env, cron, domain,
+//! data, files, move_workdir) are still only in the desktop.
+//!
 //! What a deploy or a create *is* — which calls, in which order, what goes
 //! back to the cloud when a leg fails — lives here once. Each surface supplies
 //! three things:
@@ -32,6 +36,7 @@ mod logs;
 mod redact;
 mod resolve;
 mod row;
+mod settings;
 mod status;
 #[cfg(test)]
 mod test_support;
@@ -58,6 +63,7 @@ pub use row::{
     add_checkout_snapshot, app_brief, app_path, app_settings, describe_code_version,
     is_gitea_managed, items_of, row_id, row_str, APP_TYPES,
 };
+pub use settings::{update_notes, UpdateArgs};
 pub use status::dir_has_files;
 
 /// Which surface is speaking — decides how a hint names the next step.

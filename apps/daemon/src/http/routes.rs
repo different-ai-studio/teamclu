@@ -183,7 +183,7 @@ pub fn build(state: HttpState) -> Router {
             post(apps::move_app_workdir),
         )
         // The app control plane for `amuxd app …`: list, status, create,
-        // reseed, deploy, logs — the flows the desktop's manage_app tool runs
+        // reseed, download, update, deploy, logs, delete — the flows the desktop's manage_app tool runs
         // (`teamclu-apps`), on this daemon's own agent account.
         .route("/v1/app-ops", post(app_ops::app_ops))
         // Device-level provider config (#742). Credentials are per-machine, not

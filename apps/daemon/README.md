@@ -89,10 +89,14 @@ amuxd app status                                 # the app whose checkout cwd is
 amuxd app deploy --app 记账                       # build here, publish
 amuxd app logs --id <app-id> --since 10 --kind all
 amuxd app reseed --id <app-id>                   # re-write code that never got seeded
+amuxd app download --app 记账                     # a teammate's app, onto this machine
+amuxd app update --id <app-id> --visibility team --auth-mode platform
+amuxd app delete --id <app-id> --yes             # site offline, repository archived
 ```
 
 With neither `--id` nor `--app`, a command acts on the app whose checkout the
-current directory is in. A Gitea-hosted app deploys its pushed `HEAD`, so
+current directory is in — except `delete`, which needs the app named and
+`--yes`. A Gitea-hosted app deploys its pushed `HEAD`, so
 commit and push before `deploy`. There is no approval prompt — whoever can run
 this as the daemon's user can drive the daemon outright already.
 

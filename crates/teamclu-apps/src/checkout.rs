@@ -1,5 +1,5 @@
-//! Putting a new app's code on this machine: `create`, its seed, `reseed`,
-//! and recording where the checkout is.
+//! Putting an app's code on this machine: `create`, its seed, `reseed`,
+//! `download`, and recording where the checkout is.
 //!
 //! Ports of the web app's flows — the same daemon calls, in the same order,
 //! with the same writes back to the cloud:
@@ -8,6 +8,7 @@
 //! |--------------------------|-------------------------------------------------------------|
 //! | [`AppOps::create`]       | `CreateAppView.submit` + `create` in `stores/apps-store.ts` |
 //! | [`run_seed`]             | `runSeed` in `stores/apps-store.ts`                         |
+//! | [`AppOps::download`]     | `ensureAppCheckout` in `stores/apps-store.ts`               |
 //! | [`bind_workspace_row`]   | `bindAppWorkdir` / `ensureAppWorkspaceRow` in `lib/apps/app-session.ts` |
 //!
 //! Two copies of these flows is the price of an agent's call working whether
@@ -23,6 +24,7 @@ use serde_json::{json, Value};
 use crate::daemon::{daemon_error_text, DAEMON_DOWN};
 use crate::deploy::{mint_git_credential, return_git_credential};
 use crate::row::{app_brief, app_path, is_gitea_managed, items_of, row_id, row_str, APP_TYPES};
+use crate::status::dir_has_files;
 use crate::{AppOps, Method};
 
 /// The daemon allows a clone five minutes, then commits and pushes the seed.
@@ -601,6 +603,129 @@ impl AppOps<'_> {
     }
 }
 
+/// Whether an app in `provision_status` has anything to download.
+///
+/// A hosted repo short of `ready` was never seeded, so a clone would fetch an
+/// empty repository. An imported one is not ours to be unready: its status
+/// only says whether the creator's own clone worked, and the repository is
+/// there to fetch either way. Same rule as `ensureAppCheckout`.
+fn download_allowed(
+    surface: crate::Surface,
+    provision_status: &str,
+    gitea_managed: bool,
+    has_remote: bool,
+) -> Result<(), String> {
+    if provision_status == "ready" || (!gitea_managed && has_remote) {
+        return Ok(());
+    }
+    Err(format!(
+        "This app's code has not been written anywhere yet (provision_status {provision_status:?}), so there is nothing to download. Run {} on it first.",
+        surface.step("manage_app", "reseed")
+    ))
+}
+
+impl AppOps<'_> {
+    /// `download` — put a team app's code on this machine.
+    ///
+    /// Nothing is cloned over a directory that already has files in it,
+    /// because the only thing that could do there is destroy the checkout
+    /// someone has.
+    pub async fn download(&self, row: &Value) -> Result<Value, String> {
+        let app_id = row_id(row)?;
+        let status = row_str(row, "provisionStatus").unwrap_or("");
+        download_allowed(
+            self.surface(),
+            status,
+            is_gitea_managed(row),
+            row_str(row, "gitRemoteUrl").is_some(),
+        )?;
+        let (workdir, device) = self
+            .app_workdir_on_this_machine(row)
+            .await
+            .ok_or(DAEMON_DOWN)?;
+        if dir_has_files(&workdir) {
+            return Ok(json!({
+                "ok": true,
+                "action": "download",
+                "app_id": app_id,
+                "workdir": workdir,
+                "device_name": device,
+                "already_present": true,
+                "note": "This machine already holds a checkout there; nothing was cloned over it.",
+            }));
+        }
+
+        let credential = if is_gitea_managed(row) {
+            Some(
+                mint_git_credential(self, &app_id)
+                    .await
+                    .map_err(|e| format!("No access to this app's repository: {e}"))?,
+            )
+        } else {
+            None
+        };
+        let remote = match (&credential, row_str(row, "gitRemoteUrl")) {
+            (Some(cred), _) => cred.remote_url.clone(),
+            (None, Some(url)) => url.to_string(),
+            // An app with no remote of any kind has nothing to fetch — its code
+            // only ever existed on the machine that made it.
+            (None, None) => {
+                return Err(
+                    "This app has no repository address to download from; its code only exists on the machine that created it."
+                        .to_string(),
+                )
+            }
+        };
+
+        let (git_user_name, git_user_email) = self.host.git_identity();
+        let mut body = json!({
+            "appId": app_id,
+            "teamId": row_str(row, "teamId"),
+            "gitRemoteUrl": remote,
+            "cloneOnly": true,
+        });
+        if let Some(cred) = &credential {
+            body["deployKeyPem"] = json!(cred.private_key_pem.trim());
+        }
+        if let Some(name) = git_user_name {
+            body["gitUserName"] = json!(name);
+        }
+        if let Some(email) = git_user_email {
+            body["gitUserEmail"] = json!(email);
+        }
+        let cloned = self.daemon.seed(&body, SEED_TIMEOUT).await;
+        if let Some(cred) = &credential {
+            return_git_credential(self, &app_id, cred.deploy_key_id).await;
+        }
+        let out = cloned.map_err(|e| {
+            if e.unreachable {
+                DAEMON_DOWN.to_string()
+            } else {
+                format!("Cloning the app failed: {}", daemon_error_text(&e))
+            }
+        })?;
+
+        let workdir = row_str(&out, "workdir").unwrap_or(&workdir).to_string();
+        // An import whose first clone failed elsewhere now has its code here,
+        // which is what `ready` means. The server lets only an admin write it;
+        // for anyone else the write is refused and the download still stands.
+        if status != "ready" {
+            write_provision_status(self, row, "ready").await;
+        }
+        let mut report = json!({
+            "ok": true,
+            "action": "download",
+            "app_id": app_id,
+            "workdir": workdir,
+            "device_name": device,
+            "already_present": false,
+        });
+        bind_workspace_fields(self, row, &workdir, &mut report).await;
+        self.host.app_changed(row);
+        Ok(report)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,6 +788,57 @@ mod tests {
         }
         let err = reseed_allowed("ready").unwrap_err();
         assert!(err.contains("over it"), "{err}");
+    }
+
+    #[test]
+    fn an_import_downloads_whatever_its_status_but_a_hosted_repo_must_be_ready() {
+        let ok = |status, gitea, remote| download_allowed(Surface::Mcp, status, gitea, remote);
+        assert!(ok("ready", true, true).is_ok());
+        for status in ["pending", "repo_created", "error"] {
+            // A hosted repo short of ready was never seeded and would clone empty.
+            assert!(ok(status, true, true).is_err(), "{status}");
+            // An import's status is the creator's own clone; the repo is still there.
+            assert!(ok(status, false, true).is_ok(), "{status}");
+        }
+        // With no remote there is nothing to fetch from, whatever the status.
+        assert!(ok("error", false, false).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_hosted_app_downloads_with_a_minted_key_it_then_returns() {
+        let cloud = FakeCloud::default();
+        cloud.reply(
+            Method::Get,
+            "/v1/apps/a1/git-credential",
+            json!({ "remoteUrl": "ssh://git@gitea/t/a1.git", "privateKeyPem": "PEM", "deployKeyId": 3 }),
+        );
+        cloud.reply(Method::Delete, "/v1/apps/a1/git-credential/3", json!({}));
+        cloud.reply(
+            Method::Get,
+            "/v1/workspaces?teamId=t1&limit=200&agentId=agent-1",
+            json!({ "items": [{ "id": "ws-9", "path": "/nonexistent-checkout/a1" }] }),
+        );
+        let daemon = FakeDaemon::default();
+        *daemon.seed.lock().unwrap() = Some(Ok(
+            json!({ "status": "ready", "workdir": "/nonexistent-checkout/a1" }),
+        ));
+        let host = TestHost(Surface::Cli);
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let row = json!({ "id": "a1", "teamId": "t1", "provisionStatus": "ready", "gitAuthKind": "gitea_deploy_key" });
+
+        let out = ops.download(&row).await.unwrap();
+        assert_eq!(out["already_present"], false);
+        assert_eq!(out["workspace_id"], "ws-9");
+        let seed = daemon.seeds.lock().unwrap()[0].clone();
+        assert_eq!(seed["cloneOnly"], true);
+        assert_eq!(seed["gitRemoteUrl"], "ssh://git@gitea/t/a1.git");
+        assert_eq!(seed["deployKeyPem"], "PEM");
+        assert_eq!(
+            cloud
+                .calls_to(Method::Delete, "/v1/apps/a1/git-credential/3")
+                .len(),
+            1
+        );
     }
 
     #[test]
