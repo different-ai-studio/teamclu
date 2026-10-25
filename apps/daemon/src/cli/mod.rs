@@ -1,6 +1,8 @@
+pub mod app;
 pub mod channel;
 pub mod clear;
 pub mod config_cmd;
+pub mod daemon_http;
 pub mod doctor;
 pub mod git_credential;
 pub mod git_ssh;
@@ -79,6 +81,10 @@ pub enum Commands {
     Config(ConfigArgs),
     /// Manage team-share state for this daemon.
     Team(TeamArgs),
+    /// Create, deploy and inspect TeamClu apps as this daemon's agent account.
+    /// JSON on stdout, exit status 1 on failure — for other agents to drive.
+    /// Needs `amuxd start` to be running.
+    App(app::AppArgs),
     /// Report install status of amuxd / the managed Node / pi / git as JSON.
     Doctor,
     /// Install or repair the managed pi runtime: the pinned Node.js, then pi

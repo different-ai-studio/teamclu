@@ -13,6 +13,7 @@ use axum::{
 use std::net::SocketAddr;
 
 use super::ai;
+use super::app_ops;
 use super::apps;
 use super::auth;
 use super::config;
@@ -181,6 +182,10 @@ pub fn build(state: HttpState) -> Router {
             "/v1/apps/:app_id/move-workdir",
             post(apps::move_app_workdir),
         )
+        // The app control plane for `amuxd app …`: list, status, create,
+        // reseed, deploy, logs — the flows the desktop's manage_app tool runs
+        // (`teamclu-apps`), on this daemon's own agent account.
+        .route("/v1/app-ops", post(app_ops::app_ops))
         // Device-level provider config (#742). Credentials are per-machine, not
         // per-workspace, so these need no workspace id — which is what lets
         // first-run onboarding configure a model before a project is chosen.

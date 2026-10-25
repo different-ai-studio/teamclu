@@ -228,6 +228,11 @@ fn main() -> anyhow::Result<()> {
         Commands::Status => {
             cli::process::run_status()?;
         }
+        Commands::App(args) => {
+            if !cli::app::run(args)? {
+                std::process::exit(1);
+            }
+        }
         Commands::Doctor => {
             cli::doctor::run()?;
         }
