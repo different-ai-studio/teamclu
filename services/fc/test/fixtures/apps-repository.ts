@@ -247,4 +247,3 @@ export function appsRepo(supabase: any, extra: any = {}) {
     ...extra,
   });
 }
-

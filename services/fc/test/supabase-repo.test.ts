@@ -6115,23 +6115,26 @@ test("apps: real provisioners preserve code identity from preflight through veri
 });
 
 test("apps: stale corrupt identity rejects before recovery, lifecycle or provider mutations", async () => {
-  for (const corrupt of [{ function_naming_mode: null }, { function_naming_mode: "unknown" }, { app_code: "bad" }, { fc_function_name: "foreign" }]) {
-    const calls: any[] = [];
-    let lifecycleCalls = 0;
-    let providerCalls = 0;
-    const db = appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "building", deploy_started_at: "2000-01-01T00:00:00Z", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", fc_function_name: "a-p35cg2kk6bh3", ...corrupt }] } });
-    const originalRpc = db.rpc;
-    db.rpc = async (name, args) => { lifecycleCalls++; return originalRpc(name, args); };
-    const repo = appsRepo(db, {
-      startDeploy: async () => { providerCalls++; throw Error("unexpected provider mutation"); },
-      finalizeDeploy: async () => { providerCalls++; throw Error("unexpected provider mutation"); },
-      readAppFunction: async () => { providerCalls++; throw Error("unexpected provider read"); },
-    });
-    await assert.rejects(() => repo.preflightAppDeploy("app-1", APP_DEPLOY), /invalid app function identity/);
-    assert.deepEqual(calls.filter(c => ["update", "insert", "delete", "upsert"].includes(c.op)), []);
-    assert.equal(lifecycleCalls, 0);
-    assert.equal(providerCalls, 0);
-  }
+  const restore = installOriginEnv();
+  try {
+    for (const corrupt of [{ function_naming_mode: null }, { function_naming_mode: "unknown" }, { app_code: "bad" }, { fc_function_name: "foreign" }, { fc_endpoint: "http://a-000000000000.origins.test" }, { fc_function_name: null, fc_endpoint: null, start_spec: null, env_deployed_at: null }]) {
+      const calls: any[] = [];
+      let lifecycleCalls = 0;
+      let providerCalls = 0;
+      const db = appsSupabase({ projectSelects: true, calls, seed: { apps: [{ ...APP_ROW, id: "76af539e-5341-4e96-bda7-6c8dacf2b092", provision_status: "ready", fc_status: "building", deploy_started_at: "2000-01-01T00:00:00Z", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", fc_function_name: "a-p35cg2kk6bh3", ...corrupt }] } });
+      const originalRpc = db.rpc;
+      db.rpc = async (name, args) => { lifecycleCalls++; return originalRpc(name, args); };
+      const repo = appsRepo(db, {
+        startDeploy: async () => { providerCalls++; throw Error("unexpected provider mutation"); },
+        finalizeDeploy: async () => { providerCalls++; throw Error("unexpected provider mutation"); },
+        readAppFunction: async () => { providerCalls++; throw Error("unexpected provider read"); },
+      });
+      await assert.rejects(() => repo.preflightAppDeploy("76af539e-5341-4e96-bda7-6c8dacf2b092", APP_DEPLOY), /invalid app function identity|Invalid apps origin configuration/);
+      assert.deepEqual(calls.filter(c => ["update", "insert", "delete", "upsert"].includes(c.op)), []);
+      assert.equal(lifecycleCalls, 0);
+      assert.equal(providerCalls, 0);
+    }
+  } finally { restore(); }
 });
 
 const CODE_RESOURCE_ROW = { ...APP_ROW, id: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "renamed", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", fc_function_name: "a-p35cg2kk6bh3", fc_endpoint: "http://a-p35cg2kk6bh3.origins.test", fc_status: "live", provision_status: "ready" };
@@ -6198,4 +6201,24 @@ test("completed uninstall retains naming mode and next deploy reuses actual iden
 test("failed redeploy with retained successful configuration requires its allocated code function", async () => {
  const repo=appsRepo(appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,fc_status:"deploy_error",fc_function_name:null,fc_endpoint:null,env_deployed_at:null,start_spec:APP_DECLARATION.start}]}}));
  await assert.rejects(()=>repo.getAppRuntimeInfo(CODE_RESOURCE_ROW.id),/invalid app function identity/);
+});
+
+test("apps: valid stale recovery proceeds and never allocated failure permits a fresh preflight", async () => {
+  const restore = installOriginEnv();
+  try {
+    for (const state of [
+      { fc_status: "building", fc_function_name: "a-p35cg2kk6bh3", fc_endpoint: null, start_spec: null, env_deployed_at: null, deploy_started_at: "2000-01-01T00:00:00Z", deploy_token: APP_PREFLIGHT_TOKEN },
+      { fc_status: "deploy_error", fc_function_name: null, fc_endpoint: null, start_spec: null, env_deployed_at: null },
+    ]) {
+      const calls: any[] = [];
+      const repo = appsRepo(appsSupabase({ projectSelects: true, calls, seed: { apps: [{ ...APP_ROW, id: "76af539e-5341-4e96-bda7-6c8dacf2b092", provision_status: "ready", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", deploy_token: null, ...state }] } }), { readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }) });
+      if (state.fc_status === "building") {
+        await assert.rejects(() => repo.preflightAppDeploy("76af539e-5341-4e96-bda7-6c8dacf2b092", { revision: "bad", declaration: APP_DECLARATION }), /imported deploy requires a content digest/);
+      } else {
+        const result = await repo.preflightAppDeploy("76af539e-5341-4e96-bda7-6c8dacf2b092", { revision: APP_REVISION, declaration: APP_DECLARATION });
+        assert.ok(result.token);
+      }
+      assert.equal(calls.filter(c => c.op === "update" && c.row.fc_status === "deploy_error").length, state.fc_status === "building" ? 1 : 0);
+    }
+  } finally { restore(); }
 });

@@ -3,8 +3,9 @@
 ## New-App function identity — local acceptance, 2026-10-26
 
 **Local automated checks pass; live acceptance and independent final whole-branch
-review remain pending.** This section concerns `codex/app-code-function-identity`,
-base `c6743220`, Tasks 1–5 through `8f6c9475` plus the Task 6 test/document changes.
+fix re-review remain pending.** This section concerns `codex/app-code-function-identity`,
+base `c6743220`, Tasks 1–6 plus the final-review stale-recovery correction. The
+whole-branch review at `12d15d6a` found P2/P3 issues; their fix re-review is pending.
 Older sections retain their dated scope and do not establish this feature's live
 or review acceptance.
 
@@ -23,12 +24,13 @@ was added.
 | --- | --- | --- |
 | `cd services/fc && node --import tsx --test test/app-function-identity-integration.test.ts` | 4 passed, 0 failed/skipped | `/private/tmp/function-task6-targeted.log` |
 | `pnpm --filter @teamclu/app exec vitest run src/components/apps/__tests__/AppSettingsPanel.test.tsx` | 1 file, 56 passed | `/private/tmp/function-task6-settings.log` |
-| `cd services/fc && npm test` | 2,050 passed, 13 skipped, 0 failed; 2,063 tests; five additional gated suites skipped | `/private/tmp/function-task6-fc.log` |
-| `cd services/fc && npm run typecheck` | Exit 0, no diagnostics | `/private/tmp/function-task6-fc-typecheck.log` |
+| `cd services/fc && npm test` | 2,051 passed, 13 skipped, 0 failed; 2,064 tests; five additional gated suites skipped | `/private/tmp/finalfix-full.log` |
+| `cd services/fc && npm run typecheck` | Exit 0, no diagnostics | `/private/tmp/finalfix-typecheck.log` |
 | `pnpm test:unit` | 624 files passed / 1 skipped; 4,440 tests passed / 10 skipped / 0 failed | `/private/tmp/function-task6-frontend-final.log` |
 | `pnpm typecheck` | Exit 0, no diagnostics | `/private/tmp/function-task6-root-typecheck.log` |
 | `python3 /private/tmp/teamclu-function-mode-task1/local-db.py --exec bash services/supabase/tests/run.sh` | 65 files run, 0 failed, 0 quarantined | `/private/tmp/function-task6-pgtap.log` |
-| `git diff --check` | Exit 0 | Task 6 report |
+| `cd services/fc && node --import tsx --test test/supabase-repo.test.ts test/app-function-identity-integration.test.ts` | 306 passed, 0 failed/skipped | `/private/tmp/finalfix-green.log` |
+| `git diff --check c6743220` | Exit 0, includes committed branch range | Final-fix report |
 
 The new integration executes real repository creation/preflight/start/finalize,
 identity resolution, persisted-row public/custom-domain lookup, endpoint
@@ -73,8 +75,11 @@ attempts were rerun successfully with narrow task access.
 
 Implementer self-review inspected schema/creation, identity propagation, strict
 origin credential classification and resource cleanup against the approved spec.
-Independent Task 6 review and the controller-owned whole-branch security/spec/code
-review are **pending**; self-review and green suites do not replace them. No real
+Independent Task 6 fix review approved the shared fixture correction. Final
+whole-branch review at `12d15d6a` required P2 identity validation before stale
+recovery and P3 EOF cleanup. Both are corrected with projected regressions;
+independent fix re-review is **pending**. Self-review and green suites do not
+replace it. No real
 UI/provider mapping, live credential rejection, deployed auth/custom-domain/cron,
 new desktop binary or native platform acceptance was executed in Task 6.
 
