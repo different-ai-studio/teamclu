@@ -9,7 +9,7 @@ vi.stubGlobal('localStorage', {
   clear: () => { Object.keys(store).forEach(k => delete store[k]) },
 })
 
-import { formatDate, formatTime, formatDateTime, formatRelativeDate, formatSessionDate, formatRelativeTime } from '@/lib/ui/date-format'
+import { formatDate, formatTime, formatDateTime, formatRelativeDate, formatSessionDate, formatRelativeTime, formatMessageBubbleTime } from '@/lib/ui/date-format'
 import { appShortName } from '@/lib/config/build-config'
 
 beforeEach(() => {
@@ -57,5 +57,27 @@ describe('date-format', () => {
   it('handles numeric timestamp input', () => {
     const result = formatDate(Date.now())
     expect(result).toBeTruthy()
+  })
+
+  it('formatMessageBubbleTime shows the clock on the same local day', () => {
+    const now = new Date(2026, 9, 26, 15, 0, 0)
+    const today = new Date(2026, 9, 26, 11, 22, 0)
+    expect(formatMessageBubbleTime(today, now)).toMatchObject({
+      label: '11:22',
+      title: '2026/10/26 11:22',
+    })
+  })
+
+  it('formatMessageBubbleTime prefixes the month and day on another day', () => {
+    const now = new Date(2026, 9, 26, 15, 0, 0)
+    const older = new Date(2026, 9, 25, 18, 4, 0)
+    expect(formatMessageBubbleTime(older, now)).toMatchObject({
+      label: '10/25 18:04',
+      title: '2026/10/25 18:04',
+    })
+  })
+
+  it('formatMessageBubbleTime returns null for an invalid time', () => {
+    expect(formatMessageBubbleTime(new Date('not-a-date'))).toBeNull()
   })
 })

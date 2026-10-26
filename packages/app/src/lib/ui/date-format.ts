@@ -123,6 +123,36 @@ export const formatRelativeTimeShort = (date: Date | string | number): string =>
   }
 };
 
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+/**
+ * Clock shown beside a message sender.
+ * Same local day: `11:22`. Any other day: `10/25 18:04`.
+ * `title` is the full local date for the hover tooltip.
+ * Returns null when the input is not a real time.
+ */
+export function formatMessageBubbleTime(
+  date: Date | string | number,
+  now: Date = new Date(),
+): { label: string; title: string; iso: string } | null {
+  const dateObj = typeof date === "string" || typeof date === "number" ? new Date(date) : date;
+  if (Number.isNaN(dateObj.getTime())) return null;
+
+  const clock = `${pad2(dateObj.getHours())}:${pad2(dateObj.getMinutes())}`;
+  const sameDay =
+    dateObj.getFullYear() === now.getFullYear() &&
+    dateObj.getMonth() === now.getMonth() &&
+    dateObj.getDate() === now.getDate();
+  const monthDay = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
+  return {
+    label: sameDay ? clock : `${monthDay} ${clock}`,
+    title: `${dateObj.getFullYear()}/${monthDay} ${clock}`,
+    iso: dateObj.toISOString(),
+  };
+}
+
 /**
  * Format relative time (e.g., "2 hours ago")
  */

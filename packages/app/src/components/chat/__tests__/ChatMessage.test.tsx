@@ -3,6 +3,7 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { useSessionStore } from '@/stores/session-store';
 import { useV2StreamingStore } from '@/stores/v2-streaming-store';
 import { ChatMessage } from '../ChatMessage';
+import { formatMessageBubbleTime } from '@/lib/ui/date-format';
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
@@ -63,6 +64,62 @@ describe('ChatMessage', () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it('shows the clock beside the sender once the message has settled', () => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 11, 22, 0);
+    const older = new Date(today);
+    older.setDate(today.getDate() - 1);
+    older.setHours(18, 4, 0, 0);
+
+    const { unmount } = render(
+      <ChatMessage
+        message={makeMessage({
+          id: 'msg-user-time',
+          role: 'user',
+          senderActorId: 'actor-1',
+          content: '今天的消息',
+          timestamp: today,
+        })}
+      />,
+    );
+    const userTime = screen.getByTestId('message-time');
+    expect(userTime).toHaveTextContent('11:22');
+    expect(userTime).toHaveAttribute('title', formatMessageBubbleTime(today)!.title);
+    expect(userTime.parentElement?.children[0]).toBe(userTime);
+    unmount();
+
+    render(
+      <ChatMessage
+        message={makeMessage({
+          id: 'msg-asst-time',
+          role: 'assistant',
+          senderActorId: 'actor-1',
+          content: '昨天的回复',
+          timestamp: older,
+        })}
+      />,
+    );
+    const assistantTime = screen.getByTestId('message-time');
+    expect(assistantTime).toHaveTextContent(formatMessageBubbleTime(older)!.label);
+    expect(assistantTime.parentElement?.children[0]?.textContent).toBe('actor-1');
+  });
+
+  it('hides the clock while a message is still streaming', () => {
+    render(
+      <ChatMessage
+        message={makeMessage({
+          id: 'msg-streaming-time',
+          role: 'assistant',
+          senderActorId: 'actor-1',
+          content: '还在写',
+          isStreaming: true,
+          timestamp: new Date(),
+        })}
+      />,
+    );
+    expect(screen.queryByTestId('message-time')).toBeNull();
   });
 
   it('user message renders its content', () => {
