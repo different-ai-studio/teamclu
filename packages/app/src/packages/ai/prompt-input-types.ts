@@ -40,4 +40,6 @@ export type PromptInputContextValue = {
   commandStartRef: React.MutableRefObject<number | null>
   // Ref to track hash (#) start position
   hashStartRef: React.MutableRefObject<number | null>
+  /** Changes when the draft identity changes, so undo does not cross chats. */
+  undoScope?: string
 }

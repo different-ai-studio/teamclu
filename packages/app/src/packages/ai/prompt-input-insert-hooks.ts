@@ -187,7 +187,7 @@ function walkToPosition(
   return targetNode ? { node: targetNode, offset: targetOffset } : null
 }
 
-function setCursorAtPosition(editable: HTMLElement, targetPos: number) {
+export function setCursorAtPosition(editable: HTMLElement, targetPos: number) {
   try {
     const result = walkToPosition(editable, targetPos)
     if (result) {

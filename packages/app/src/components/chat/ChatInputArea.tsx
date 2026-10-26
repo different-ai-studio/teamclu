@@ -587,6 +587,7 @@ export function ChatInputArea({
           <PromptInput
             value={inputValue}
             onValueChange={handleInputChange}
+            undoScope={activeSessionId ?? (draftPreselectedActor ? `actor:${draftPreselectedActor.id}` : "draft")}
             onSubmit={handleSubmit}
             onFilesChange={handleIncomingFiles}
             onFilePathsDrop={handleFilePathsDrop}
