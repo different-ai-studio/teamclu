@@ -310,7 +310,7 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
       before.setEnd(range.startContainer, range.startOffset)
       const holder = document.createElement("div")
       holder.appendChild(before.cloneContents())
-      return htmlToValue(holder)
+      return htmlToValue(holder).length
     }, [htmlToValue])
 
     const rememberEdit = React.useCallback((kind: ComposerEditKind) => {
