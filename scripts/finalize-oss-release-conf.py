@@ -68,8 +68,10 @@ def main() -> int:
     # (GitHub mode requires UPDATER_GITHUB_TOKEN)".
     #
     # This also deliberately REPLACES (not appends to) whatever endpoints the
-    # brand's build.config.json declared: a brand config may carry a GitHub
-    # fallback endpoint, but nothing in this channel is published to GitHub.
+    # brand's build.config.json declared. The binary updates from this
+    # channel's OSS manifest. release-oss.yml also attaches the same installers
+    # to the TeamClu GitHub Release; clients still pointed at GitHub move onto
+    # this build, and this build then follows the OSS manifest.
     with open("build.config.json", encoding="utf-8") as f:
         bc = json.load(f)
     bc.setdefault("app", {}).setdefault("updater", {})["endpoints"] = [manifest_url]

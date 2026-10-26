@@ -3,13 +3,18 @@ name: Nightly TeamClu Beta / Copilot361 Release
 # Nightly beta release for the OSS brands. Every night this:
 #   1. Bumps the desktop beta version by one (0.2.28-beta.1 -> 0.2.28-beta.2;
 #      or, from a stable X.Y.Z, starts X.Y.(Z+1)-beta.1) and commits that bump
-#      to `main`. The commit — NOT a git tag — is what advances the beta number,
-#      so `release.yml` (which triggers on `push: tags: v*`) is never fired.
+#      to `main`. This workflow does not push a `v*` tag itself; the bump
+#      commit is what advances the beta number.
 #   2. Dispatches release-oss.yml for TeamClu Beta and independent Copilot361 with the
 #      new `v<version>` tag input. That workflow re-syncs the four version
 #      sources on its runner, verifies the bump, and publishes each brand to its
 #      own OSS prefix — clients force-upgrade because the bundled amuxd version
 #      strictly increased.
+#      The teamclu run also creates the GitHub Release `v<version>` (installers
+#      + latest.json), so the releases page matches the beta. Copilot361 stays
+#      on OSS only. The tag is created with that workflow's GITHUB_TOKEN, which
+#      does not start release.yml. release.yml still skips this bump commit if
+#      a token that does trigger workflows creates the tag.
 #
 # release-oss.yml stays one-channel-per-run by design (per-channel concurrency
 # groups guard each channel's latest.json), so we dispatch it twice rather than

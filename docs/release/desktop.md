@@ -4,10 +4,10 @@ TeamClu 桌面端有两条独立发布渠道，不要混用：
 
 | 渠道 | 触发 | Workflow | 产物去向 |
 |------|------|----------|----------|
-| 官方 GitHub Release | `v*` tag push | `release.yml` | GitHub Releases（含 `latest.json`） |
-| 每日 Beta（OSS） | nightly / 手动 `workflow_dispatch` | `release-oss.yml`（brand=`teamclu`） | CDN `https://teamclaw.ucar.cc/beta/` |
+| 每日 Beta | nightly / 手动 `workflow_dispatch` | `release-oss.yml`（brand=`teamclu`） | CDN `https://teamclaw.ucar.cc/beta/`，并创建同版本 GitHub Release |
+| 官方 GitHub Release | 非 nightly bump 提交上的 `v*` tag push | `release.yml` | GitHub Releases（含 `latest.json`） |
 
-`release.yml` **不会**把官方包镜像到 OSS；国内 Beta 清单由 `release-oss.yml` 单独发布。
+每日 Beta 由 `release-oss.yml` 发布：安装包和 `latest.json` 写到 OSS，teamclu 品牌再把同一套安装包挂到 GitHub Release。nightly 的 bump 提交说明是 `chore(release): nightly beta v…`；`release.yml` 见到这个提交上的 tag 会跳过，避免同一版本再打一遍官方包。Copilot361 只写自己的 OSS 前缀。
 
 ## 版本号来源
 
@@ -99,11 +99,11 @@ Workflow：`.github/workflows/release.yml`
 
 Sidecar 随 Desktop 一起编译打包：`teamclu-introspect`、`amuxd`。
 
-国内 Beta 的 OSS 发布是另一条流水线（`release-oss.yml` → `publish-manifest`），把安装包与 `latest.json` 写到 `https://teamclaw.ucar.cc/beta/`（兼容旧 TeamClaw CDN 域名；前缀是 `beta`，不是 `releases`）。
+国内 Beta 由 `release-oss.yml` 发布：`publish-manifest` 把安装包与 `latest.json` 写到 `https://teamclaw.ucar.cc/beta/`（兼容旧 TeamClaw CDN 域名；前缀是 `beta`）。teamclu 同一次运行的 `publish-github-release` 再创建同版本的 GitHub Release。
 
 ### 5. 发布后验收
 
-**GitHub Release 资产（`release.yml`）：**
+**GitHub Release 资产（`release.yml`，每日 Beta 则由 `publish-github-release` 上传同一组文件）：**
 
 - `TeamClu_<version>_aarch64.dmg`
 - `TeamClu_<version>_x64.dmg`
@@ -127,9 +127,9 @@ curl -fsSL https://teamclaw.ucar.cc/beta/install.sh | bash
 | 官方 GitHub 包（`build.config.production.json` bake） | `https://github.com/different-ai-studio/teamclu/releases/latest/download/latest.json` |
 | 每日 Beta OSS 包（`release-oss.yml` 写入） | `https://teamclaw.ucar.cc/beta/latest.json` |
 
-自定义 Rust updater 读的是编译期 bake 的 `UPDATER_ENDPOINTS`（来自 `build.config`），不是 `tauri.conf.json` 的 `plugins.updater.endpoints`。
+自定义 Rust updater 读的是编译期 bake 的 `UPDATER_ENDPOINTS`（来自 `build.config`），不是 `tauri.conf.json` 的 `plugins.updater.endpoints`。每日 Beta 安装包的 updater 指向 OSS。GitHub Release 上的 `latest.json` 让仍指向 GitHub 的旧官方包升到这一版；升完之后 updater 跟着 OSS。
 
-**通知：** Release published 后 `wecom-notify.yml` 会推送企业微信（需 `WECOM_WEBHOOK_KEY`）。
+**通知：** `release.yml` 发布后 `wecom-notify.yml` 会推送企业微信（需 `WECOM_WEBHOOK_KEY`）。每日 Beta 的 GitHub Release 用 workflow 的 `GITHUB_TOKEN` 创建，这个 token 推送的 release 事件不会再触发别的 workflow。
 
 ## 重新发布 / 手动触发
 

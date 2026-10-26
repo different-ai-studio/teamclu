@@ -4,8 +4,11 @@ name: Release TeamClu Beta / Copilot361 (OSS)
 #
 # - `teamclu`: the first-party daily Beta, built from this repository and
 #   published under `/beta/` for the existing TeamClaw URL to remain valid.
+#   The same run also creates the GitHub Release `v<version>` (installers and
+#   latest.json) so the releases page matches this beta.
 # - `copilot361`: an independent OEM build, resolved from the private branding
-#   repository (see vars.BRANDING_REPO).
+#   repository (see vars.BRANDING_REPO). OSS only; it does not get a TeamClu
+#   GitHub Release.
 #
 # Betly is intentionally absent: its former TeamClaw channel is now TeamClu
 # Beta, with TeamClu identity and release page copy.
@@ -15,9 +18,11 @@ name: Release TeamClu Beta / Copilot361 (OSS)
 #                                     build flavor, release-page copy)
 #   branding/<palette>/{logo.png,theme.json}   assets, keyed by app.palette
 #
-# Unlike release.yml this workflow never creates a GitHub Release; installers and
-# the auto-update manifest go only to Alibaba Cloud OSS, plus a rendered release
-# page at `<prefix>/index.html`.
+# Installers and the auto-update manifest go to Alibaba Cloud OSS, plus a
+# rendered release page at `<prefix>/index.html`. For brand=teamclu,
+# publish-github-release then attaches those same installers to a GitHub
+# Release. tauri-action itself stays untagged; release.yml remains the
+# official build for tags that are not the nightly bump commit.
 #
 # Adding a brand = adding a directory in the branding repo + one `options:` entry
 # below. No other change to this file.
@@ -303,7 +308,9 @@ jobs:
       - name: Prebuild teamclu desktop binary
         run: cargo build --release --locked -p teamclu --target ${{ matrix.target }}
 
-      # Build only — no tagName, so tauri-action does NOT create a GitHub Release.
+      # Build only — no tagName, so tauri-action does not create a GitHub Release.
+      # publish-github-release attaches these artifacts once both desktop builds
+      # have succeeded.
       - uses: tauri-apps/tauri-action@v1
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -436,6 +443,19 @@ jobs:
           name: frag-${{ matrix.target }}
           path: frag/*.json
           if-no-files-found: error
+
+      - name: Stage GitHub Release assets
+        if: inputs.brand == 'teamclu'
+        run: node scripts/lib/stage-github-release-assets.js github-release "target/${{ matrix.target }}/release/bundle" "apps/desktop/target/${{ matrix.target }}/release/bundle"
+
+      - name: Upload GitHub Release assets
+        if: inputs.brand == 'teamclu'
+        uses: actions/upload-artifact@v7
+        with:
+          name: github-release-${{ matrix.target }}
+          path: github-release/*
+          if-no-files-found: error
+          retention-days: 1
 
   build-windows:
     runs-on: windows-latest
@@ -616,7 +636,8 @@ jobs:
         shell: bash
         run: cargo build --release --locked -p teamclu --no-default-features
 
-      # Build only — no tagName, so tauri-action does NOT create a GitHub Release.
+      # Build only — no tagName. publish-github-release attaches these
+      # artifacts once both desktop builds have succeeded.
       - uses: tauri-apps/tauri-action@v1
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -742,6 +763,20 @@ jobs:
           name: frag-windows
           path: frag/*.json
           if-no-files-found: error
+
+      - name: Stage GitHub Release assets
+        if: inputs.brand == 'teamclu'
+        shell: bash
+        run: node scripts/lib/stage-github-release-assets.js github-release target/release/bundle apps/desktop/target/release/bundle
+
+      - name: Upload GitHub Release assets
+        if: inputs.brand == 'teamclu'
+        uses: actions/upload-artifact@v7
+        with:
+          name: github-release-windows
+          path: github-release/*
+          if-no-files-found: error
+          retention-days: 1
 
   build-amuxd-linux:
     # Pin 22.04 (glibc 2.35). `ubuntu-latest` is 24.04 (glibc 2.39); a binary
@@ -969,3 +1004,58 @@ jobs:
           echo "Refreshing CDN paths:"; echo "$PATHS"
           aliyun cdn RefreshObjectCaches --profile cdn --ObjectType File --ObjectPath "$PATHS"
           echo "✅ CDN refresh submitted for mutable manifest files"
+
+  # TeamClu only. Copilot361 publishes to its own OSS prefix and must not
+  # create a release on this repository. Runs beside publish-manifest: both
+  # wait for the desktop installers, neither waits for the linux amuxd build.
+  publish-github-release:
+    needs: [build-macos, build-windows]
+    if: always() && inputs.brand == 'teamclu' && needs.build-macos.result == 'success' && needs.build-windows.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # create the release and the v* tag
+      actions: read # download the staged installer artifacts
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      # The tag has to point at the bump commit. release-oss rewrites the
+      # version locally in the build jobs; this checkout is the committed
+      # tree, so a mismatch means we would label the wrong commit.
+      - name: Refuse to tag a commit whose version is not this release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          VER="${TAG#v}"
+          COMMITTED="$(node -p "require('./package.json').version")"
+          if [ "$COMMITTED" != "$VER" ]; then
+            echo "::error::Commit ${GITHUB_SHA} is version ${COMMITTED}; this release is ${VER}. The GitHub Release tag has to point at the bump commit."
+            exit 1
+          fi
+
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: github-release-*
+          path: github-release-assets
+          merge-multiple: true
+
+      - name: Publish TeamClu GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e 'import { renderDesktopReleaseBody } from "./scripts/render-desktop-release-body.mjs"; process.stdout.write(renderDesktopReleaseBody({ appName: "TeamClu" }));' > "${RUNNER_TEMP}/release-notes.md"
+          node scripts/publish-teamclu-github-release.js \
+            --assets github-release-assets \
+            --tag "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "TeamClu $TAG" \
+            --notes "${RUNNER_TEMP}/release-notes.md" \
+            --repo "$GITHUB_REPOSITORY"
