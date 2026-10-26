@@ -17,20 +17,44 @@ jobs:
   # release that leaves the version unchanged silently keeps the old daemon.
   verify-version-bump:
     runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.gate.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
+      # Nightly beta tags are published by release-oss.yml (OSS + GitHub
+      # Release from the same build). Building again here would upload a
+      # second set of artifacts onto that tag. A GITHUB_TOKEN tag push does
+      # not start this workflow; this gate covers a PAT push that does.
+      - name: Skip nightly OSS beta tags
+        id: gate
+        run: |
+          set -euo pipefail
+          SUBJECT="$(git log -1 --format=%s)"
+          case "$SUBJECT" in
+            "chore(release): nightly beta "*)
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              echo "Tag ${GITHUB_REF_NAME} is the nightly OSS beta ($SUBJECT)."
+              echo "release-oss.yml publishes this GitHub Release."
+              ;;
+            *)
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
       - uses: actions/setup-node@v7
+        if: steps.gate.outputs.publish == 'true'
         with:
           node-version: lts/*
       - name: Verify desktop + amuxd version bump
+        if: steps.gate.outputs.publish == 'true'
         run: ./scripts/verify-release-version-bump.sh "${{ github.ref_name }}" "${{ github.ref_name }}"
 
   # macOS job creates the GitHub Release and uploads macOS artifacts
   release-macos:
     needs: verify-version-bump
+    if: needs.verify-version-bump.outputs.publish == 'true'
     permissions:
       contents: write
     strategy:
@@ -308,6 +332,7 @@ jobs:
   # Windows job uploads artifacts to the same GitHub Release created by macOS job
   release-windows:
     needs: verify-version-bump
+    if: needs.verify-version-bump.outputs.publish == 'true'
     permissions:
       contents: write
     runs-on: windows-latest
