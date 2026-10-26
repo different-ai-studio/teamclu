@@ -1135,23 +1135,21 @@ interface DaemonAppWorkdirInfo {
 export async function daemonAppManifest(
   appId: string,
   teamId?: string | null,
-): Promise<{ declaration: AppDeployDeclaration; gitCommitSha: string | null; clean: boolean; contentDigest: string } | null> {
-  try {
-    const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
-    const result = await daemonFetch<{ declaration?: AppDeployDeclaration; gitCommitSha?: string; clean?: boolean; contentDigest?: string }>(
-      `/v1/apps/${encodeURIComponent(appId)}/manifest${query}`,
-    )
-    if (!result.ok) {
-      console.warn('[daemon-local-client] app manifest unavailable (non-fatal):', result.error)
-      return null
-    }
-    return result.data?.declaration && result.data?.contentDigest
-      ? { declaration: result.data.declaration, gitCommitSha: result.data.gitCommitSha ?? null, clean: result.data.clean === true, contentDigest: result.data.contentDigest }
-      : null
-  } catch (err) {
-    console.warn('[daemon-local-client] app manifest unavailable:', err)
-    return null
+): Promise<{ declaration: AppDeployDeclaration; gitCommitSha: string | null; clean: boolean; contentDigest: string }> {
+  // Throws with the daemon's own detail: a deploy cannot go on without the
+  // declaration, and the reason (no checkout here, bad teamclu.app.json, git
+  // failing) is the only thing the user can act on.
+  const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
+  const result = await daemonFetch<{ declaration?: AppDeployDeclaration; gitCommitSha?: string; clean?: boolean; contentDigest?: string }>(
+    `/v1/apps/${encodeURIComponent(appId)}/manifest${query}`,
+  )
+  if (!result.ok) {
+    throw new Error(problemDetailFromErrorBody(result.error).detail || `amuxd could not read the app declaration (${result.status})`)
   }
+  if (!result.data?.declaration || !result.data?.contentDigest) {
+    throw new Error('amuxd did not return the app declaration')
+  }
+  return { declaration: result.data.declaration, gitCommitSha: result.data.gitCommitSha ?? null, clean: result.data.clean === true, contentDigest: result.data.contentDigest }
 }
 
 export async function daemonLocalAppIds(teamId?: string | null): Promise<string[] | null> {

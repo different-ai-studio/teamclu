@@ -1206,6 +1206,31 @@ describe("apps-store deploy", () => {
     );
   });
 
+  it("shows why amuxd could not read the declaration instead of a generic failure", async () => {
+    mocks.daemonAppManifest.mockRejectedValueOnce(
+      new Error('invalid teamclu.app.json: expected `,` or `}` at line 3 column 5'),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().deploy("app-1");
+
+    expect(mocks.preflightAppDeploy).not.toHaveBeenCalled();
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.anything(), { description: expect.stringContaining("invalid teamclu.app.json") },
+    );
+  });
+
+  it("explains a deploy from a machine without the app's checkout", async () => {
+    mocks.daemonAppManifest.mockRejectedValueOnce(
+      new Error("app checkout not found on this machine: /Users/x/.amuxd/apps/app-1"),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().deploy("app-1");
+
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.anything(), { description: expect.stringContaining("这台电脑上没有这个应用的代码目录") },
+    );
+  });
+
   it("finalizes with how the app says it starts", async () => {
     // The control plane assumed one answer for every app (node,
     // server/index.mjs, 9000). An app that builds elsewhere deployed a function

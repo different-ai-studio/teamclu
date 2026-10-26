@@ -364,6 +364,22 @@ pub struct AppManifestResponse {
     pub content_digest: String,
 }
 
+/// Prefix of the manifest error for an app with no checkout on this machine.
+/// The desktop matches on it to explain that the app lives on another machine.
+pub const ERR_NO_LOCAL_CHECKOUT: &str = "app checkout not found on this machine";
+
+/// Without this, a machine that never seeded the app reads as a missing
+/// teamclu.app.json, which sends the user to fix a file that is fine.
+fn require_local_checkout(path: &std::path::Path) -> Result<(), HttpError> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    Err(HttpError::validation(format!(
+        "{ERR_NO_LOCAL_CHECKOUT}: {}",
+        path.display()
+    )))
+}
+
 /// `GET /v1/apps/:appId/manifest?teamId=…` — what does this app declare?
 ///
 /// The declaration is a file in the checkout, so only this side can read it —
@@ -379,7 +395,7 @@ pub async fn app_manifest(
     require_scope(&principal, "workspace:read")?;
     let team_id = query.team_id.as_deref().unwrap_or("");
     let path = resolve_workdir("", &app_id, team_id)?;
-    let workdir_exists = path.is_dir();
+    require_local_checkout(&path)?;
     let (declaration, git_commit_sha, clean, content_digest) =
         tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let _ = crate::sync::app_git::ensure_runtime_excludes(&path);
@@ -395,7 +411,7 @@ pub async fn app_manifest(
         .map_err(map_build_error)?;
     Ok(Json(AppManifestResponse {
         declaration,
-        workdir_exists,
+        workdir_exists: true,
         git_commit_sha,
         clean,
         content_digest,
@@ -1647,6 +1663,18 @@ mod tests {
         );
         assert!(!rendered.contains("s3cret"), "{rendered}");
         assert!(rendered.contains("redacted"), "{rendered}");
+    }
+
+    #[test]
+    fn manifest_names_a_missing_checkout_rather_than_a_missing_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(require_local_checkout(dir.path()).is_ok());
+
+        let missing = dir.path().join("app-1");
+        let err = require_local_checkout(&missing).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::ValidationFailed));
+        assert!(err.detail.starts_with(ERR_NO_LOCAL_CHECKOUT));
+        assert!(err.detail.contains("app-1"));
     }
 
     #[test]
