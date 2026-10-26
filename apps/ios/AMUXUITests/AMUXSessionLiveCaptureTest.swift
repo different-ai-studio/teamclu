@@ -39,9 +39,7 @@ final class AMUXSessionLiveCaptureTest: XCTestCase {
                       "Set TEAMCLU_TEST_EMAIL and TEAMCLU_TEST_PASSWORD")
         signInIfNeeded()
 
-        let sessionsTab = app.tabBars.buttons["Sessions"]
-        XCTAssertTrue(sessionsTab.waitForExistence(timeout: 20))
-        sessionsTab.tap()
+        XCTAssertTrue(app.waitForHome(timeout: 20))
 
         // First actual session row. boundBy(0) is the "Today" section
         // header on iOS 26's UICollectionView-backed List; (1) is the
@@ -89,8 +87,7 @@ final class AMUXSessionLiveCaptureTest: XCTestCase {
     // MARK: - Helpers (copy of AMUXAuthUITests pattern)
 
     private func signInIfNeeded() {
-        let sessionsTab = app.tabBars.buttons["Sessions"]
-        if sessionsTab.waitForExistence(timeout: 6) { return }
+        if app.waitForHome(timeout: 6) { return }
 
         XCTAssertTrue(app.openLoginFromOnboarding(timeout: 8))
 
@@ -107,7 +104,7 @@ final class AMUXSessionLiveCaptureTest: XCTestCase {
         passwordField.typeText(testPassword)
 
         app.buttons["login.submitButton"].tap()
-        XCTAssertTrue(sessionsTab.waitForExistence(timeout: 20),
-                      "Sign-in did not reach Sessions tab")
+        XCTAssertTrue(app.waitForHome(timeout: 20),
+                      "Sign-in did not reach the session list")
     }
 }

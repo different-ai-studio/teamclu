@@ -31,6 +31,11 @@ public struct NewSessionSheet: View {
     let viewModel: SessionListViewModel
     let preselectedIdeaId: String?
     let preselectedCollaborators: [CachedActor]
+    /// The viewer's effective default agent, when the caller already knows
+    /// it. Nil makes the sheet ask the store itself.
+    let defaultAgentID: String?
+    /// Reloaded on open so the idea picker reads a fresh cache.
+    let ideaStore: IdeaStore?
 
     // Per-agent config (workspace + agent type) keyed by actorId. Resolved
     // automatically from each agent's stored defaults when they're tapped in
@@ -39,6 +44,17 @@ public struct NewSessionSheet: View {
     @State private var workspaceStore: WorkspaceStore?
 
     @State private var collaborators: [CachedActor] = []
+    /// The agent the session is for — starts as the viewer's default, and
+    /// is also in `collaborators` / `agentConfigs` like any other agent.
+    @State private var primaryAgentID: String?
+    /// Set once the user picks (or clears) the agent by hand, so a late
+    /// default lookup doesn't overwrite their choice.
+    @State private var didChooseAgent = false
+    /// Each picked agent's own workspaces, fetched on pick. The team-wide
+    /// `workspaces` list is one capped page, so an agent's rows can be
+    /// missing from it in a large team.
+    @State private var workspacesByAgent: [String: [WorkspaceRecord]] = [:]
+    @State private var loadingWorkspacesFor: Set<String> = []
     @State private var selectedIdeaId: String?
     @State private var selectedAppID: String?
     /// The selected agents' own workspaces, fetched per agent once an app is
@@ -56,7 +72,12 @@ public struct NewSessionSheet: View {
 
     @Query(filter: #Predicate<SessionIdea> { !$0.archived },
            sort: \SessionIdea.createdAt, order: .reverse)
-    private var ideas: [SessionIdea]
+    private var cachedIdeas: [SessionIdea]
+
+    /// The cache holds every team this device has been in.
+    private var ideas: [SessionIdea] {
+        cachedIdeas.filter { $0.teamId.isEmpty || $0.teamId == teamID }
+    }
 
     private var workspaces: [WorkspaceRecord] { workspaceStore?.workspaces ?? [] }
 
@@ -74,6 +95,8 @@ public struct NewSessionSheet: View {
                 viewModel: SessionListViewModel,
                 preselectedIdeaId: String? = nil,
                 preselectedCollaborators: [CachedActor] = [],
+                defaultAgentID: String? = nil,
+                ideaStore: IdeaStore? = nil,
                 onSessionCreated: ((String) -> Void)? = nil) {
         self.mqtt = mqtt
         self.peerId = peerId
@@ -90,6 +113,8 @@ public struct NewSessionSheet: View {
         self.viewModel = viewModel
         self.preselectedIdeaId = preselectedIdeaId
         self.preselectedCollaborators = preselectedCollaborators
+        self.defaultAgentID = defaultAgentID
+        self.ideaStore = ideaStore
         self.onSessionCreated = onSessionCreated
     }
 
@@ -110,11 +135,15 @@ public struct NewSessionSheet: View {
                 Color.amux.mist.ignoresSafeArea()
                 VStack(spacing: 0) {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 18) {
-                            collaboratorsSection
-                            if teamAppsStore != nil {
-                                appSection
+                        VStack(alignment: .leading, spacing: 8) {
+                            contextCard
+                            ForEach(contextNotes, id: \.self) { note in
+                                Text(note)
+                                    .font(.footnote)
+                                    .foregroundStyle(Color.amux.cinnabarDeep)
+                                    .padding(.horizontal, 20)
                             }
+                            .accessibilityIdentifier("newSession.appBlocker")
                         }
                         .padding(.top, 12)
                         .padding(.bottom, 16)
@@ -156,7 +185,7 @@ public struct NewSessionSheet: View {
             }
             .allowsHitTesting(!isSending)
             .navigationTitle("New Session")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { dismiss() } label: {
@@ -185,6 +214,10 @@ public struct NewSessionSheet: View {
                         // Tapping an already-configured agent deselects it.
                         agentConfigs.removeValue(forKey: actor.actorId)
                         collaborators.removeAll { $0.actorId == actor.actorId }
+                        if actor.actorId == primaryAgentID {
+                            primaryAgentID = nil
+                            didChooseAgent = true
+                        }
                     } else if let selection = resolveAgentDefaults(for: actor) {
                         agentConfigs[actor.actorId] = selection
                         if !collaborators.contains(where: { $0.actorId == actor.actorId }) {
@@ -204,7 +237,13 @@ public struct NewSessionSheet: View {
             }
             .task { await connectedAgentsStore?.reload() }
         }
-        .task { await connectedAgentsStore?.reload() }
+        .task {
+            if connectedAgentsStore?.agents.isEmpty != false {
+                await connectedAgentsStore?.reload()
+            }
+            await selectDefaultAgent()
+        }
+        .task { await ideaStore?.reload() }
         .task {
             if let teamAppsStore, !teamAppsStore.hasLoaded { await teamAppsStore.reload() }
         }
@@ -229,92 +268,272 @@ public struct NewSessionSheet: View {
         }
     }
 
-    // MARK: - Collaborators section
+    // MARK: - Context card
 
-    private var collaboratorsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HaiSectionLabel(String(localized: "Collaborators"))
-            HaiPaperCard {
-                Button {
-                    showMemberPicker = true
-                    isInputFocused = false
-                } label: {
-                    HStack(spacing: 10) {
-                        if collaborators.isEmpty {
-                            Text("Just you")
-                                .font(.system(size: 14.5))
-                                .foregroundStyle(Color.amux.basalt.opacity(0.6))
-                        } else {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 6) {
-                                    ForEach(collaborators, id: \.actorId) { member in
-                                        CollaboratorChip(name: member.displayName) {
-                                            removeCollaborator(member)
-                                        }
-                                    }
-                                }
-                                .padding(.vertical, 1)
-                            }
-                        }
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.amux.slate)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 13)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+    /// Who the session is with and what it is about: the agent (the
+    /// viewer's default to start with), where it works, an optional idea and
+    /// app, and anyone else to bring in.
+    private var contextCard: some View {
+        HaiPaperCard {
+            agentRow
+            hairline
+            workspaceRow
+            hairline
+            ideaRow
+            if teamAppsStore != nil {
+                hairline
+                appRow
             }
+            hairline
+            collaboratorsRow
         }
     }
 
-    // MARK: - App section
+    private var hairline: some View {
+        Rectangle()
+            .fill(Color.amux.hairline)
+            .frame(height: 0.5)
+            .padding(.leading, 14)
+    }
 
-    /// The session's app. Replaces the old idea picker; an idea still rides
-    /// along when the sheet is opened from an idea (`preselectedIdeaId`).
-    private var appSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HaiSectionLabel(String(localized: "App"))
-            HaiPaperCard {
-                Menu {
-                    Button {
-                        selectedAppID = nil
-                    } label: {
-                        Label(String(localized: "None"), systemImage: selectedAppID == nil ? "checkmark" : "circle")
+    private var agents: [ConnectedAgent] { connectedAgentsStore?.agents ?? [] }
+
+    private var primaryAgent: ConnectedAgent? {
+        guard let primaryAgentID else { return nil }
+        return agents.first { $0.id == primaryAgentID }
+    }
+
+    private var agentRow: some View {
+        Menu {
+            ForEach(agents) { agent in
+                Button {
+                    didChooseAgent = true
+                    selectPrimaryAgent(agent.id)
+                } label: {
+                    if agent.id == primaryAgentID {
+                        Label(agent.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(agent.displayName)
                     }
-                    if let apps = teamAppsStore?.apps, !apps.isEmpty {
-                        Divider()
-                        ForEach(apps) { app in
-                            Button {
-                                selectedAppID = app.id
-                            } label: {
-                                Label(app.needsDesktopSetup ? String(localized: "\(app.name) (not set up yet)") : app.name,
-                                      systemImage: selectedAppID == app.id ? "checkmark" : "circle")
-                            }
-                            // No code yet, so no agent can have a checkout of it.
-                            .disabled(app.needsDesktopSetup)
+                }
+            }
+            if primaryAgentID != nil {
+                Divider()
+                Button {
+                    didChooseAgent = true
+                    selectPrimaryAgent(nil)
+                } label: {
+                    Text("No agent")
+                }
+            }
+        } label: {
+            HaiSheetRow(
+                label: String(localized: "Agent"),
+                value: primaryAgent?.displayName ?? String(localized: "Choose agent"),
+                valueIsMuted: primaryAgent == nil,
+                showsChevron: true
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(agents.isEmpty)
+        .accessibilityIdentifier("newSession.agentRow")
+    }
+
+    /// The primary agent's own workspaces, falling back to its rows in the
+    /// team-wide page until the per-agent fetch lands.
+    private var primaryWorkspaces: [WorkspaceRecord] {
+        guard let primaryAgentID else { return [] }
+        return workspacesByAgent[primaryAgentID]
+            ?? workspaces.filter { $0.agentID == primaryAgentID }
+    }
+
+    private var workspaceRowValue: (text: String, muted: Bool) {
+        guard let primaryAgentID else { return (String(localized: "None"), true) }
+        // An app session runs in the agent's checkout of the app, whatever
+        // is picked here.
+        if let checkout = appCheckout(for: primaryAgentID) {
+            return (Self.workspaceName(checkout), false)
+        }
+        if let id = agentConfigs[primaryAgentID]?.workspaceID,
+           let workspace = (primaryWorkspaces + workspaces).first(where: { $0.id == id }) {
+            return (Self.workspaceName(workspace), false)
+        }
+        if loadingWorkspacesFor.contains(primaryAgentID) {
+            return (String(localized: "Loading…"), true)
+        }
+        return (String(localized: "None"), true)
+    }
+
+    private var workspaceRow: some View {
+        Menu {
+            ForEach(primaryWorkspaces) { workspace in
+                Button {
+                    guard let primaryAgentID else { return }
+                    let type = agentConfigs[primaryAgentID]?.agentType
+                        ?? resolveAgentDefaults(forAgentID: primaryAgentID)?.agentType
+                        ?? .pi
+                    agentConfigs[primaryAgentID] = AgentConfigSheet.Selection(
+                        workspaceID: workspace.id, agentType: type
+                    )
+                } label: {
+                    if agentConfigs[primaryAgentID ?? ""]?.workspaceID == workspace.id {
+                        Label(Self.workspaceName(workspace), systemImage: "checkmark")
+                    } else {
+                        Text(Self.workspaceName(workspace))
+                    }
+                }
+            }
+        } label: {
+            HaiSheetRow(
+                label: String(localized: "Workspace"),
+                value: workspaceRowValue.text,
+                valueIsMuted: workspaceRowValue.muted,
+                showsChevron: true
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(primaryWorkspaces.isEmpty || selectedApp != nil)
+        .accessibilityIdentifier("newSession.workspaceRow")
+    }
+
+    private var selectedIdea: SessionIdea? {
+        guard let selectedIdeaId else { return nil }
+        return ideas.first { $0.ideaId == selectedIdeaId }
+    }
+
+    private var ideaRow: some View {
+        Menu {
+            Button {
+                selectedIdeaId = nil
+            } label: {
+                Label(String(localized: "None"), systemImage: selectedIdeaId == nil ? "checkmark" : "circle")
+            }
+            if !ideas.isEmpty {
+                Divider()
+                ForEach(ideas, id: \.ideaId) { idea in
+                    Button {
+                        selectedIdeaId = idea.ideaId
+                    } label: {
+                        if idea.ideaId == selectedIdeaId {
+                            Label(idea.displayTitle, systemImage: "checkmark")
+                        } else {
+                            Text(idea.displayTitle)
                         }
                     }
-                } label: {
-                    HaiSheetRow(
-                        label: String(localized: "App"),
-                        value: selectedApp?.name ?? String(localized: "None"),
-                        valueIsMuted: selectedApp == nil,
-                        showsChevron: true
-                    )
                 }
-                .buttonStyle(.plain)
             }
-            if let appBlocker {
-                Text(appBlocker)
-                    .font(.footnote)
-                    .foregroundStyle(Color.amux.cinnabarDeep)
-                    .padding(.horizontal, 4)
-                    .accessibilityIdentifier("newSession.appBlocker")
-            }
+        } label: {
+            HaiSheetRow(
+                label: String(localized: "Idea"),
+                value: selectedIdea?.displayTitle ?? String(localized: "None"),
+                valueIsMuted: selectedIdea == nil,
+                showsChevron: true
+            )
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("newSession.ideaRow")
+    }
+
+    /// The session's app. Picking one seats every agent in its checkout of
+    /// the app's code.
+    private var appRow: some View {
+        Menu {
+            Button {
+                selectedAppID = nil
+            } label: {
+                Label(String(localized: "None"), systemImage: selectedAppID == nil ? "checkmark" : "circle")
+            }
+            if let apps = teamAppsStore?.apps, !apps.isEmpty {
+                Divider()
+                ForEach(apps) { app in
+                    Button {
+                        selectedAppID = app.id
+                    } label: {
+                        Label(app.needsDesktopSetup ? String(localized: "\(app.name) (not set up yet)") : app.name,
+                              systemImage: selectedAppID == app.id ? "checkmark" : "circle")
+                    }
+                    // No code yet, so no agent can have a checkout of it.
+                    .disabled(app.needsDesktopSetup)
+                }
+            }
+        } label: {
+            HaiSheetRow(
+                label: String(localized: "App"),
+                value: selectedApp?.name ?? String(localized: "None"),
+                valueIsMuted: selectedApp == nil,
+                showsChevron: true
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("newSession.appRow")
+    }
+
+    /// Everyone picked besides the viewer and the primary agent.
+    private var otherCollaborators: [CachedActor] {
+        collaborators.filter { $0.actorId != primaryAgentID }
+    }
+
+    private var collaboratorsRow: some View {
+        Button {
+            showMemberPicker = true
+            isInputFocused = false
+        } label: {
+            HStack(spacing: 10) {
+                Text("Collaborators")
+                    .font(.system(size: 14.5))
+                    .foregroundStyle(Color.amux.onyx)
+                Spacer(minLength: 8)
+                if otherCollaborators.isEmpty {
+                    Text("None")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.amux.basalt.opacity(0.6))
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(otherCollaborators, id: \.actorId) { member in
+                                CollaboratorChip(name: member.displayName) {
+                                    removeCollaborator(member)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 1)
+                    }
+                    .defaultScrollAnchor(.trailing)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.amux.slate)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("newSession.collaboratorsRow")
+    }
+
+    /// What stands between the user and Send, beyond an empty message.
+    private var contextNotes: [String] {
+        var notes: [String] = []
+        if let primaryAgentID,
+           agentConfigs[primaryAgentID] == nil,
+           selectedApp == nil,
+           !loadingWorkspacesFor.contains(primaryAgentID),
+           workspacesByAgent[primaryAgentID] != nil {
+            notes.append(String(localized: "This agent has no workspace. Add one in Agent settings."))
+        }
+        if let appBlocker { notes.append(appBlocker) }
+        return notes
+    }
+
+    private static func workspaceName(_ workspace: WorkspaceRecord) -> String {
+        if !workspace.displayName.isEmpty { return workspace.displayName }
+        let last = (workspace.path as NSString).lastPathComponent
+        return last.isEmpty ? workspace.path : last
     }
 
     private var selectedApp: TeamAppRecord? {
@@ -438,6 +657,71 @@ public struct NewSessionSheet: View {
         agentConfigs.removeValue(forKey: member.actorId)
     }
 
+    /// Starts the sheet on the viewer's default agent. Skipped when the
+    /// caller brought its own agents, or the user already chose.
+    private func selectDefaultAgent() async {
+        guard primaryAgentID == nil, !didChooseAgent,
+              !collaborators.contains(where: \.isAgent) else { return }
+        var id = defaultAgentID
+        if id == nil { id = await actorStore?.getEffectiveDefaultAgent() }
+        // A default pointing at an agent the viewer can no longer reach is
+        // as good as none.
+        guard !didChooseAgent, primaryAgentID == nil,
+              let id, agents.contains(where: { $0.id == id }) else { return }
+        selectPrimaryAgent(id)
+    }
+
+    /// Swaps the primary agent, then seats it in its default workspace once
+    /// its own workspace list has loaded.
+    private func selectPrimaryAgent(_ agentID: String?) {
+        if let old = primaryAgentID {
+            collaborators.removeAll { $0.actorId == old }
+            agentConfigs.removeValue(forKey: old)
+        }
+        primaryAgentID = agentID
+        guard let agentID else { return }
+        if !collaborators.contains(where: { $0.actorId == agentID }) {
+            collaborators.insert(cachedActor(forAgentID: agentID), at: 0)
+        }
+        Task {
+            await loadWorkspaces(forAgentID: agentID)
+            guard primaryAgentID == agentID, agentConfigs[agentID] == nil else { return }
+            if let selection = resolveAgentDefaults(forAgentID: agentID) {
+                agentConfigs[agentID] = selection
+            }
+        }
+    }
+
+    private func loadWorkspaces(forAgentID agentID: String) async {
+        guard workspacesByAgent[agentID] == nil,
+              let workspacesRepository, !teamID.isEmpty else { return }
+        loadingWorkspacesFor.insert(agentID)
+        defer { loadingWorkspacesFor.remove(agentID) }
+        let rows = (try? await workspacesRepository.listWorkspaces(teamID: teamID, agentID: agentID)) ?? []
+        workspacesByAgent[agentID] = rows.filter { $0.agentID == nil || $0.agentID == agentID }
+    }
+
+    /// The agent's cached actor row, or one built from what the
+    /// connected-agents list knows when the cache hasn't caught up.
+    private func cachedActor(forAgentID agentID: String) -> CachedActor {
+        let descriptor = FetchDescriptor<CachedActor>(predicate: #Predicate { $0.actorId == agentID })
+        if let cached = try? modelContext.fetch(descriptor).first { return cached }
+        let agent = agents.first { $0.id == agentID }
+        return CachedActor(
+            actorId: agentID,
+            teamId: teamID,
+            actorType: "agent",
+            displayName: agent?.displayName ?? agentID,
+            agentTypes: agent?.agentTypes ?? [],
+            defaultAgentType: agent?.defaultAgentType
+        )
+    }
+
+    private func resolveAgentDefaults(forAgentID agentID: String) -> AgentConfigSheet.Selection? {
+        guard let actor = collaborators.first(where: { $0.actorId == agentID }) else { return nil }
+        return resolveAgentDefaults(for: actor)
+    }
+
     /// Builds the (workspace, agent type) pair the daemon needs, using the
     /// agent's stored defaults. Prefer the agent's `default_workspace_id`, then
     /// any workspace owned by the agent. Never borrow another agent's path.
@@ -446,7 +730,7 @@ public struct NewSessionSheet: View {
         guard let workspaceID = SessionCreationInput.defaultWorkspace(
             agentID: actor.actorId,
             defaultWorkspaceID: actor.defaultWorkspaceId,
-            workspaces: workspaces
+            workspaces: (workspacesByAgent[actor.actorId] ?? []) + workspaces
         )?.id else { return nil }
         let allowedTypes = AgentConfigSheet.AgentType.supported(from: actor.agentTypes)
         let defaultType = AgentConfigSheet.AgentType.fromStoredValue(actor.defaultAgentType ?? actor.agentTypes.first)

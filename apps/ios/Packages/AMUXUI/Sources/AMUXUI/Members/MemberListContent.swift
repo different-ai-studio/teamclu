@@ -56,7 +56,7 @@ public struct MemberListContent: View {
 
     /// True when the current user has zero accessible agents in this team.
     /// Distinct from "team has zero agents" — handled separately by the
-    /// RootTabView reminder sheet.
+    /// RootView reminder sheet.
     private var showOwnAgentNotice: Bool {
         guard let store = connectedAgentsStore else { return false }
         return !store.isLoading && store.agents.isEmpty
@@ -154,7 +154,7 @@ public struct MemberListContent: View {
 
     @ViewBuilder
     private func detailLink(_ a: CachedActor) -> some View {
-        NavigationLink(value: a.actorId) {
+        NavigationLink(value: "actor:\(a.actorId)") {
             ActorRow(actor: a, isMe: a.actorId == currentActorID,
                      devicePresence: devicePresence(a))
         }

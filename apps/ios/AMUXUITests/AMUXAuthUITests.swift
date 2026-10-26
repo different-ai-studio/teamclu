@@ -97,18 +97,16 @@ final class AMUXAuthUITests: XCTestCase {
 
     // MARK: - Sign-in + MQTT connection
 
-    /// Full E2E test: signs in with the pre-created test account, then verifies the Sessions
-    /// tab is reachable and the "New Session" button appears — which proves the app is
-    /// authenticated, onboarded, and connected to the MQTT broker.
+    /// Full E2E test: signs in with the pre-created test account, then verifies the session
+    /// list and its bottom bar appear — which proves the app is authenticated, onboarded,
+    /// and connected to the MQTT broker.
     @MainActor
     func testSignInAndMQTTConnects() throws {
         try XCTSkipIf(testEmail.isEmpty || testPassword.isEmpty,
                       "Set TEAMCLU_TEST_EMAIL and TEAMCLU_TEST_PASSWORD to run this test")
 
         // Handle the case where the app already has a valid session.
-        let sessionsTab = app.tabBars.buttons["Sessions"]
-        if sessionsTab.waitForExistence(timeout: 6) {
-            sessionsTab.tap()
+        if app.waitForHome(timeout: 6) {
             assertMQTTConnected()
             return
         }
@@ -134,24 +132,24 @@ final class AMUXAuthUITests: XCTestCase {
 
         // Wait for the app to reach the main UI (auth + bootstrap + MQTT connect).
         XCTAssertTrue(
-            app.tabBars.buttons["Sessions"].waitForExistence(timeout: 20),
-            "Sessions tab should appear after successful sign-in"
+            app.waitForHome(timeout: 20),
+            "Session list should appear after successful sign-in"
         )
-        app.tabBars.buttons["Sessions"].tap()
 
         assertMQTTConnected()
     }
 
     // MARK: - Daemon invite link
 
-    /// Actors tab → Invite → name an agent → the backend mints an invite and
+    /// Menu → Actors → Invite → name an agent → the backend mints an invite and
     /// the sheet shows its deeplink. The sheet only invites agents now.
     @MainActor
     func testDaemonInviteLinkGenerated() throws {
         XCTAssertTrue(app.signInIfNeeded(), "Not signed in and no E2E account configured")
 
         let inviteButton = app.buttons["members.inviteButton"]
-        XCTAssertTrue(app.tap(app.tabBars.buttons["Actors"], until: inviteButton),
+        XCTAssertTrue(app.openHomeMenuItem("sessions.menu.members", timeout: 20)
+                      && inviteButton.waitForExistence(timeout: 8),
                       "Invite button not found\n\(app.debugDescription)")
         inviteButton.tap()
 
@@ -193,17 +191,16 @@ final class AMUXAuthUITests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Asserts the app is connected to MQTT by verifying the New Session button is present.
-    /// The button only renders once the MQTT service is up and the daemon is reachable.
+    /// Asserts the app reached the session list by verifying its bottom bar is present.
     private func assertMQTTConnected() {
-        let newSessionButton = app.buttons["sessions.newSessionButton"]
+        let newSessionButton = app.homeComposerField
         guard newSessionButton.waitForExistence(timeout: 15) else {
             let screenshot = XCUIScreen.main.screenshot()
             let attachment = XCTAttachment(screenshot: screenshot)
             attachment.name = "mqtt-connect-failure"
             attachment.lifetime = .keepAlways
             add(attachment)
-            XCTFail("New Session button did not appear — MQTT may not be connected.\n\(app.debugDescription)")
+            XCTFail("Session list bottom bar did not appear — MQTT may not be connected.\n\(app.debugDescription)")
             return
         }
     }

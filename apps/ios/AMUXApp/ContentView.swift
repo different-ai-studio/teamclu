@@ -12,7 +12,7 @@ struct ContentView: View {
     @State private var hub: MQTTMessageHub
     @State private var teamcluService = TeamcluService()
     @State private var onboarding: AppOnboardingCoordinator
-    /// Bridges push/deep-link "open session" intents into RootTabView's
+    /// Bridges push/deep-link "open session" intents into RootView's
     /// session NavigationStack (which owns `sessionsPath`).
     @State private var navigationRouter = NavigationRouter()
     /// Deployment feature flags, refreshed with the broker config on every
@@ -105,7 +105,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var readyView: some View {
-        RootTabView(
+        RootView(
             mqtt: mqtt,
             hub: hub,
             pairing: pairing,
@@ -163,6 +163,11 @@ struct ContentView: View {
 
             if showSplash {
                 ApertureSplashView { splashLapFinished = true }
+                    // UI tests wait this out: the screen underneath is
+                    // already in the accessibility tree while the splash
+                    // still swallows every tap.
+                    .accessibilityElement()
+                    .accessibilityIdentifier("app.splash")
                     .transition(.opacity)
                     .zIndex(1)
             }
@@ -299,10 +304,10 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .amuxOpenSession)) { note in
             guard let sid = note.userInfo?["session_id"] as? String else { return }
-            // Record the intent on the shared router. RootTabView observes
-            // `pendingSessionID`, switches to the Sessions tab, and pushes the
+            // Record the intent on the shared router. RootView observes
+            // `pendingSessionID` and pushes the
             // session onto its NavigationStack. We record even before
-            // onboarding is `.ready` (cold launch from a push): RootTabView
+            // onboarding is `.ready` (cold launch from a push): RootView
             // consumes any already-pending intent when it first mounts, so the
             // deep link survives the launch-time onboarding gap.
             logger.info("Open-session deep link received; routing to \(sid, privacy: .public)")
@@ -465,7 +470,7 @@ struct ContentView: View {
                 await attachTraceRecorder()
             }
             // Coordinator-driven team runtime preparation runs from
-            // RootTabView's .task; TeamcluService start follows from
+            // RootView's .task; TeamcluService start follows from
             // the onChange(teamRuntimeContext) hook above.
         } catch {
             ChatMetrics.shared.end(.foregroundResume, outcome: .failed)

@@ -823,6 +823,16 @@
         }
       }
     },
+    "Choose agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择 Agent"
+          }
+        }
+      }
+    },
     "Choose an agent for this chat.": {
       "localizations": {
         "zh-Hans": {
@@ -2105,6 +2115,16 @@
         }
       }
     },
+    "Loading…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加载中…"
+          }
+        }
+      }
+    },
     "Makes this the default workspace": {
       "localizations": {
         "zh-Hans": {
@@ -2196,12 +2216,32 @@
         }
       }
     },
+    "Menu": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "菜单"
+          }
+        }
+      }
+    },
     "Message": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "消息"
+          }
+        }
+      }
+    },
+    "Message %@…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "给 %@ 发消息…"
           }
         }
       }
@@ -2372,6 +2412,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "暂无想法"
+          }
+        }
+      }
+    },
+    "No agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不指定 Agent"
           }
         }
       }

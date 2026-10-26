@@ -17,6 +17,10 @@ public struct IdeaDetailView: View {
     /// Forwarded to NewSessionSheet's member picker so it refreshes presence.
     let actorStore: ActorStore?
     let agentPresenceStore: AgentPresenceStore?
+    /// Handed to the new-session sheet, which seats the picked agent in one
+    /// of its workspaces.
+    let currentActorID: String?
+    let workspacesRepository: (any WorkspaceRepository)?
     @Binding var navigationPath: [String]
 
     @Environment(\.dismiss) private var dismiss
@@ -56,6 +60,8 @@ public struct IdeaDetailView: View {
         connectedAgentsStore: ConnectedAgentsStore? = nil,
         actorStore: ActorStore? = nil,
         agentPresenceStore: AgentPresenceStore? = nil,
+        currentActorID: String? = nil,
+        workspacesRepository: (any WorkspaceRepository)? = nil,
         navigationPath: Binding<[String]>
     ) {
         self.ideaID = ideaID
@@ -69,6 +75,8 @@ public struct IdeaDetailView: View {
         self.connectedAgentsStore = connectedAgentsStore
         self.actorStore = actorStore
         self.agentPresenceStore = agentPresenceStore
+        self.currentActorID = currentActorID
+        self.workspacesRepository = workspacesRepository
         self._navigationPath = navigationPath
     }
 
@@ -137,7 +145,6 @@ public struct IdeaDetailView: View {
         }
         .navigationTitle(IdeaUIPresentation.singularTitle)
         .navigationBarTitleDisplayMode(.inline)
-        // Tab-bar visibility hoisted to IdeasTab's NavigationStack root.
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
@@ -161,12 +168,16 @@ public struct IdeaDetailView: View {
                 mqtt: mqtt,
                 peerId: peerId,
                 teamcluService: teamcluService,
+                teamID: item.teamID,
+                currentActorID: currentActorID,
                 connectedAgentsStore: connectedAgentsStore,
                 actorStore: actorStore,
                 agentPresenceStore: agentPresenceStore,
+                workspacesRepository: workspacesRepository,
                 sessionsRepository: sessionsRepository,
                 viewModel: sessionViewModel,
                 preselectedIdeaId: item.id,
+                ideaStore: ideaStore,
                 onSessionCreated: { sessionKey in
                     showNewSession = false
                     navigationPath.append(sessionKey)

@@ -108,7 +108,7 @@ struct AMUXApp: App {
                   let token = comps.queryItems?.first(where: { $0.name == "token" })?.value
             else { return }
             // Persist before posting: on a cold launch the notification has no
-            // live listener (RootTabView isn't mounted until bootstrap finishes),
+            // live listener (RootView isn't mounted until bootstrap finishes),
             // so the token would be lost and bootstrap would auto-create a junk
             // team. bootstrap() reads this key before its auto-create branch.
             UserDefaults.standard.set(token, forKey: InviteDeepLink.pendingTokenDefaultsKey)

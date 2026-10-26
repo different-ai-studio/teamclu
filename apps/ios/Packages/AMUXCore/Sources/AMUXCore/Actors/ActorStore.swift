@@ -10,7 +10,7 @@ public extension Notification.Name {
 public enum InviteDeepLink {
     /// UserDefaults key under which a cold-launch invite deeplink token is
     /// stashed. At cold launch the `amuxInviteTokenReceived` NotificationCenter
-    /// listener (RootTabView.onReceive) is not mounted yet — the app is still on
+    /// listener (RootView.onReceive) is not mounted yet — the app is still on
     /// the `.loading` route running bootstrap — so a posted notification is
     /// dropped. Persisting the token lets `AppOnboardingCoordinator.bootstrap`
     /// claim the invite BEFORE its auto-create-team branch, instead of stranding

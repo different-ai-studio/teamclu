@@ -7,7 +7,7 @@ import AMUXSharedUI
 // MARK: - IdeaStatsSheet
 
 /// Team-wide idea statistics. Opened from the leading toolbar button in
-/// `IdeasTab`. Mirrors `TeamStatsSheet`: period picker, 3 summary cards,
+/// the ideas list. Mirrors `TeamStatsSheet`: period picker, 3 summary cards,
 /// a contributor ranking, and a per-workspace breakdown. All counts are
 /// computed from real `IdeaRecord` data (active + archived) filtered by
 /// `createdAt` against the selected period.

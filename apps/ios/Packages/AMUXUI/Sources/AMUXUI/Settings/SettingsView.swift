@@ -130,13 +130,15 @@ public struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Button { dismiss() } label: {
                         Image(systemName: "xmark")
                             .font(.title3)
                             .foregroundStyle(Color.amux.basalt)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Close")
+                    .accessibilityIdentifier("settings.closeButton")
                 }
             }
             .sheet(isPresented: $showPendingInvites) {

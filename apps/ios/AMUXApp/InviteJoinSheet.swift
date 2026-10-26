@@ -6,7 +6,7 @@ import AMUXSharedUI
 
 /// Lets the user paste a `teamclu://invite?token=…` link (or a bare token)
 /// before they have a session. Two paths: "Continue" joins anonymously (then
-/// RootTabView replays the token through the usual claim pipeline), or "I
+/// RootView replays the token through the usual claim pipeline), or "I
 /// already have an account" routes to sign-in with the token stashed so an
 /// existing user joins the team under their real identity.
 ///

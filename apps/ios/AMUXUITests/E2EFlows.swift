@@ -37,37 +37,34 @@ extension XCUIApplication {
             .count
     }
 
-    /// Sessions tab → New Session → the E2E agent as collaborator. Leaves the
-    /// sheet open with the message field ready and returns it.
+    /// Session list bottom bar → New Session → the E2E agent as the
+    /// session's agent. Leaves the sheet open with the message field ready
+    /// and returns it.
     func openNewSessionWithE2EAgent(file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
-        let sessionsTab = tabBars.buttons["Sessions"]
-        XCTAssertTrue(sessionsTab.waitForExistence(timeout: 20), "Sessions tab missing", file: file, line: line)
-        sessionsTab.tap()
+        let composer = homeComposerField
+        XCTAssertTrue(waitForHome(timeout: 20), "Session list bottom bar missing", file: file, line: line)
+        composer.tap()
 
-        let newSession = buttons["sessions.newSessionButton"]
-        XCTAssertTrue(newSession.waitForExistence(timeout: 15), "New Session button missing", file: file, line: line)
-        newSession.tap()
-
-        let collaborators = buttons["Just you"]
-        XCTAssertTrue(collaborators.waitForExistence(timeout: 10), "Collaborators row missing", file: file, line: line)
-        collaborators.tap()
+        let agentRow = buttons["newSession.agentRow"]
+        XCTAssertTrue(agentRow.waitForExistence(timeout: 10), "Agent row missing", file: file, line: line)
+        agentRow.tap()
 
         let agent = buttons.matching(NSPredicate(format: "label CONTAINS %@", E2EAccount.agentName)).firstMatch
         XCTAssertTrue(
             agent.waitForExistence(timeout: 15),
-            "Agent \(E2EAccount.agentName) not in the picker\n\(debugDescription)",
+            "Agent \(E2EAccount.agentName) not in the agent menu\n\(debugDescription)",
             file: file, line: line
         )
         agent.tap()
-        XCTAssertFalse(
-            staticTexts["actorPicker.toast"].waitForExistence(timeout: 1),
-            "Picker refused the agent: \(staticTexts["actorPicker.toast"].label)",
+
+        // The agent is seated once its workspaces load and the row shows one.
+        let workspaceRow = buttons["newSession.workspaceRow"]
+        XCTAssertTrue(workspaceRow.waitForExistence(timeout: 5), "Workspace row missing", file: file, line: line)
+        XCTAssertTrue(
+            workspaceRow.wait(for: \.isEnabled, toEqual: true, timeout: 15),
+            "Agent \(E2EAccount.agentName) has no workspace\n\(debugDescription)",
             file: file, line: line
         )
-
-        let confirm = buttons["Confirm"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "Picker Confirm missing", file: file, line: line)
-        confirm.tap()
 
         let messageField = textFields["newSession.messageField"]
         XCTAssertTrue(messageField.waitForExistence(timeout: 10), "Message field missing", file: file, line: line)

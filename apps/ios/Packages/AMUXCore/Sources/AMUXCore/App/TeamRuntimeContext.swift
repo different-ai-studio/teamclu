@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Built once per active-team transition by `AppOnboardingCoordinator`,
 /// replaced atomically when the active team changes, nilled on sign-out.
-/// Pass this into `RootTabView` instead of having the view construct
+/// Pass this into `RootView` instead of having the view construct
 /// repositories itself; that keeps composition out of view bodies and
 /// makes team switching a single observable change.
 ///

@@ -14,6 +14,7 @@ final class AMUXSettingsUITests: XCTestCase {
             throw XCTSkip("Signed out and no E2E account configured")
         }
 
+        XCTAssertTrue(app.waitForHome(timeout: 8))
         let shortcuts = app.buttons["sessions.shortcutsButton"]
         XCTAssertTrue(shortcuts.waitForExistence(timeout: 8))
         shortcuts.tap()

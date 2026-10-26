@@ -32,10 +32,8 @@ final class AMUXSessionLiveDiagTest: XCTestCase {
         try XCTSkipIf(ProcessInfo.processInfo.environment["AMUX_RUN_SESSION_LIVE_DIAG"] != "1",
                       "Skipped pending follow-up that unblocks ReplySheet send button. Set AMUX_RUN_SESSION_LIVE_DIAG=1 to run anyway.")
 
-        let sessionsTab = app.tabBars.buttons["Sessions"]
-        XCTAssertTrue(sessionsTab.waitForExistence(timeout: 15),
-                      "Sessions tab not visible — app may not be signed in.\n\(app.debugDescription)")
-        sessionsTab.tap()
+        XCTAssertTrue(app.waitForHome(timeout: 15),
+                      "Session list not visible — app may not be signed in.\n\(app.debugDescription)")
 
         // boundBy(0) is the "Yesterday" section header; (1) is the first
         // actual session row.

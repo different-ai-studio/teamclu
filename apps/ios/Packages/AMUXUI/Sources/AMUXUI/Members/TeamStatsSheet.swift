@@ -7,7 +7,7 @@ import AMUXSharedUI
 // MARK: - TeamStatsSheet
 
 /// Team-wide statistics sheet. Opened from the leading toolbar button in
-/// MembersTab. Shows token consumption, session count, and skills invocations
+/// the actors list. Shows token consumption, session count, and skills invocations
 /// across the whole team, plus a per-actor token ranking and a skills
 /// breakdown — all served by `GET /v1/teams/:id/leaderboard`, the same
 /// aggregates the desktop leaderboard reads. No fabricated numbers: while

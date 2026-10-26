@@ -37,11 +37,36 @@ enum E2EAccount {
 }
 
 extension XCUIApplication {
-    /// Signs in with the E2E account unless the app already shows the main
-    /// tabs. Returns false when it is signed out and no account is set.
+    /// The session list's bottom bar field — only on screen once the app is
+    /// signed in and in a team, so it doubles as the "home" signal.
+    var homeComposerField: XCUIElement { buttons["sessions.composerField"] }
+
+    /// Waits for the session list to be on screen *and* usable. The launch
+    /// splash sits over it for a moment after its controls already exist,
+    /// swallowing taps — so existence alone isn't enough.
+    func waitForHome(timeout: TimeInterval) -> Bool {
+        guard homeComposerField.waitForExistence(timeout: timeout) else { return false }
+        let splash = descendants(matching: .any)["app.splash"]
+        return splash.waitForNonExistence(timeout: 10)
+    }
+
+    /// Opens one of the session list's top-right menu entries, e.g.
+    /// `"sessions.menu.members"`.
+    func openHomeMenuItem(_ identifier: String, timeout: TimeInterval = 8) -> Bool {
+        let menu = buttons["sessions.menuButton"]
+        guard waitForHome(timeout: timeout), menu.waitForExistence(timeout: 5) else { return false }
+        menu.tap()
+        let item = buttons[identifier]
+        guard item.waitForExistence(timeout: 5) else { return false }
+        item.tap()
+        return true
+    }
+
+    /// Signs in with the E2E account unless the app already shows the
+    /// session list. Returns false when it is signed out and no account is set.
     @discardableResult
     func signInIfNeeded(timeout: TimeInterval = 30) -> Bool {
-        if tabBars.firstMatch.waitForExistence(timeout: 8) { return true }
+        if waitForHome(timeout: 8) { return true }
         guard E2EAccount.isConfigured, openLoginFromOnboarding() else { return false }
         let methodPicker = segmentedControls["login.methodPicker"]
         guard methodPicker.waitForExistence(timeout: 5) else { return false }
@@ -54,6 +79,6 @@ extension XCUIApplication {
         passwordField.tap()
         passwordField.typeText(E2EAccount.password)
         buttons["login.submitButton"].tap()
-        return tabBars.firstMatch.waitForExistence(timeout: timeout)
+        return waitForHome(timeout: timeout)
     }
 }

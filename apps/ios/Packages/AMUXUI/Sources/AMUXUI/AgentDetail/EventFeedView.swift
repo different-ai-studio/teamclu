@@ -111,7 +111,7 @@ public struct EventBubbleView: View {
     }
 
     private var currentActorID: String? {
-        // The detail surface lives inside RootTabView's scope, which
+        // The detail surface lives inside RootView's scope, which
         // installs the AppOnboardingCoordinator into the environment.
         // We pull the active actor id directly from there so the bubble
         // identity question — "did I send this?" — has a single source

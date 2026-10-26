@@ -870,7 +870,7 @@ public final class AppOnboardingCoordinator {
                     // session before reloading — otherwise we stay signed in as
                     // the throwaway anonymous user that opened the link, find it
                     // has no team, and auto-create a junk team instead of joining
-                    // the invited one. Mirrors RootTabView.claimAndSwitch.
+                    // the invited one. Mirrors RootView.claimAndSwitch.
                     if let rt = result.refreshToken, !rt.isEmpty {
                         try await store.setSession(refreshToken: rt)
                         isAnonymous = await store.isAnonymous()
