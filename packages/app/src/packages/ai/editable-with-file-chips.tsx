@@ -931,6 +931,8 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
           })
         }}
         onPaste={(event) => {
+          // Menu paste has no keydown, so the post-undo input lock would drop it.
+          acceptInputRef.current = true
           rememberEdit("other")
           onPaste?.(event)
         }}

@@ -353,6 +353,28 @@ describe('EditableWithFileChips', () => {
     await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('12312'))
   })
 
+  it('accepts a menu paste after undo without a keydown', async () => {
+    let now = 9_500
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    render(<TestHarness initialValue="" />)
+    const editable = document.querySelector('[contenteditable="true"]') as HTMLElement
+    insertText(editable, '第一组')
+    now += 800
+    insertText(editable, '第二组')
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('第一组第二组'))
+
+    pressUndo(editable)
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined))))
+    })
+    fireEvent.paste(editable)
+    editable.textContent = '第一组贴上来'
+    fireEvent.input(editable)
+
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('第一组贴上来'))
+    expect(editable.textContent).toBe('第一组贴上来')
+  })
+
   it('undoes when the IME delivers Cmd+Z as Process/KeyZ instead of z', async () => {
     let now = 11_000
     vi.spyOn(Date, 'now').mockImplementation(() => now)
