@@ -676,3 +676,29 @@ test("origin config is validated before provisioning and no default URL is publi
   (error: any) => error.statusCode === 503 && error.code === "origin_security_unavailable");
   assert.deepEqual(calls, []);
 });
+
+
+test("canonical code allocation rejects corrupt identity before mint", async () => {
+  let minted = 0;
+  const deps = { mintUploadUrl: async () => { minted++; return "https://upload.test"; } };
+  const target = { appId: "app-1", slug: "renamed", appCode: "a-p35cg2kk6bh3", functionNamingMode: "app_code" as const, region: "cn-hangzhou" };
+  assert.equal((await startDeploy(deps, target)).fcFunctionName, target.appCode);
+  for (const bad of [{ fcFunctionName: "foreign" }, { appCode: "invalid" }, { functionNamingMode: null }, { functionNamingMode: "unknown" }]) {
+    await assert.rejects(() => startDeploy(deps, { ...target, ...bad } as any), /invalid app function identity/);
+  }
+  assert.equal(minted, 1);
+});
+
+test("canonical code finalize rejects mismatch before provider writes", async () => {
+  const calls: any[] = [];
+  const deps = { fcOps: {
+    ensureFunction: async (name: string) => { calls.push(name); },
+    ensureHttpTrigger: async () => ({ internetUrlDisabled: true as const }),
+    ensureCustomDomain: async (name: string, host: string, target: any) => { calls.push([name, host, target.appCode]); return `http://${host}`; },
+  } };
+  const input = { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "renamed", appCode: "a-p35cg2kk6bh3", functionNamingMode: "app_code" as const, appType: "static_web", fcFunctionName: "a-p35cg2kk6bh3", ossObjectName: "apps/app-1/code.zip" };
+  await assert.rejects(() => finalizeDeploy(deps, { ...input, fcFunctionName: "foreign" }), /invalid app function identity/);
+  assert.deepEqual(calls, []);
+  assert.equal((await finalizeDeploy(deps, input)).fcEndpoint, "http://a-p35cg2kk6bh3.origins.test");
+  assert.deepEqual(calls, [input.appCode, [input.appCode, "a-p35cg2kk6bh3.origins.test", input.appCode]]);
+});

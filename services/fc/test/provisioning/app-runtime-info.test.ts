@@ -2,7 +2,7 @@ import { installOriginEnv } from "../fixtures/apps-origin-auth/config.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Function as FcFunction, FunctionLayer, CustomRuntimeConfig, GetFunctionResponse } from "@alicloud/fc20230330";
-import { projectFunction, driftFields, readAppOriginSecurity, projectOriginSecurity } from "../../src/lib/provisioning/app-runtime-info.js";
+import { validateAppOrigin, projectFunction, driftFields, readAppOriginSecurity, projectOriginSecurity } from "../../src/lib/provisioning/app-runtime-info.js";
 import { preflightAppDeploy } from "../../src/lib/provisioning/app-deploy-preflight.js";
 
 const region = "cn-shenzhen";
@@ -76,7 +76,7 @@ test("origin status correlates the raw slug and full UUID with the canonical Hos
     const result = await readAppOriginSecurity({ ...originRow, fc_endpoint: "http://app-a-76af539e.origins.test" },
       async (name, host, target, _config, actualRegion) => { seen.push(name, host, target, actualRegion); return protectedSummary; });
     assert.deepEqual(result, protectedSummary);
-    assert.deepEqual(seen, ["legacy-name", "app-a-76af539e.origins.test", { appId: originRow.id, slug: originRow.slug }, "cn-shenzhen"]);
+    assert.deepEqual(seen, ["legacy-name", "app-a-76af539e.origins.test", { appId: originRow.id, slug: originRow.slug, appCode: undefined, functionNamingMode: "legacy" }, "cn-shenzhen"]);
   } finally { restore(); }
 });
 
@@ -110,4 +110,15 @@ test("origin status fails safely without provider/configuration or for an incorr
 test("origin security projection rejects arbitrary fields, enum strings and secret drift values", () => {
   assert.deepEqual(projectOriginSecurity({ status: "SECRET", internetUrlDisabled: "SECRET", customDomainAuth: "SECRET", httpsOnly: "SECRET", driftFields: ["SECRET", "authConfig.JWKS", "authConfig.JWKS", { secret: "SECRET" }], privateKey: "SECRET", authConfig: "SECRET" }),
     { status: "unavailable", internetUrlDisabled: null, customDomainAuth: "unknown", httpsOnly: null, driftFields: ["authConfig.JWKS"] });
+});
+
+
+test("origin validation uses code independently of renamed slug and public domain choice", () => {
+  const restore = installOriginEnv();
+  try {
+    const target = { appId: originRow.id, slug: "renamed", appCode: "a-p35cg2kk6bh3", functionNamingMode: "app_code" as const };
+    assert.equal(validateAppOrigin(target).host, "a-p35cg2kk6bh3.origins.test");
+    for (const appCode of [null, "bad", "A-P35CG2KK6BH3"]) assert.throws(() => validateAppOrigin({ ...target, appCode }), /origin security unavailable/);
+    assert.equal(validateAppOrigin({ ...target, functionNamingMode: "legacy" }).host, "renamed-76af539e.origins.test");
+  } finally { restore(); }
 });

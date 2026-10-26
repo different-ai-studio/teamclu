@@ -1,10 +1,10 @@
+import { appManagedOriginHost, resolveAppFunctionName } from "../apps-function-identity.js";
 import { originJwks, ORIGIN_VERSION_HEADER, ORIGIN_VERSION_CLAIM_MAPPING, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
 import { imageForPull } from "./apps-registry.js";
 import { ApiError } from "../http-utils.js";
-import { appPublicLabel } from "../apps-public-host.js";
 import {
   isContainerKind,
   resolveLayers,
@@ -386,8 +386,8 @@ function requireOriginConfig(cfg: FcOpsConfig): OriginAuthConfig {
   return cfg.originAuth;
 }
 function assertOriginTarget(config: OriginAuthConfig, domainName: string, target: OriginTarget) {
-  const label = target && appPublicLabel(target.slug, target.appId);
-  if (!label || domainName !== `${label}.${config.routeDomain}`) throw new Error("FC origin configuration mismatch: domainName");
+  const host = target && appManagedOriginHost(target, { APPS_FC_ROUTE_DOMAIN: config.routeDomain });
+  if (!host || domainName !== host) throw new Error("FC origin configuration mismatch: domainName");
   originJwks(config, target.appId);
 }
 class OriginSecurityDrift extends Error {}
@@ -488,6 +488,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
     async ensureCustomDomain(functionName: string, domainName: string, target: OriginTarget): Promise<string> {
       const config = requireOriginConfig(cfg);
       assertOriginTarget(config, domainName, target);
+      resolveAppFunctionName({ ...target, fcFunctionName: functionName });
       const body = {
         protocol: "HTTP",
         routeConfig: new $fc.RouteConfig({ routes: [new $fc.PathConfig({ path: "/*", functionName, qualifier: "LATEST" })] }),
@@ -512,6 +513,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       try {
         const config = requireOriginConfig(cfg);
         assertOriginTarget(config, domainName, target);
+        resolveAppFunctionName({ ...target, fcFunctionName: functionName });
         const trigger: any = await originCall("getTrigger", () => client.getTrigger(functionName, "http"));
         const disabled = jsonObject(trigger?.body?.triggerConfig)?.disableURLInternet;
         summary.internetUrlDisabled = typeof disabled === "boolean" ? disabled : null;

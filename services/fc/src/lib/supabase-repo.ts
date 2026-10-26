@@ -1,3 +1,4 @@
+import { resolveAppFunctionName } from "./apps-function-identity.js";
 import { assertLifecycleAvailable, lifecycleRpc, operationView } from "./app-lifecycle.js";
 import { appFcRouteHost } from "./apps-public-host.js";
 /**
@@ -219,7 +220,7 @@ import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-
 import {
   REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger,
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, MESSAGE_ATTACHMENT_SCAN_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
-  APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
+  appFunctionTargetFromRow, APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
   mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
   mapActor, mapTeamMember, mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
@@ -4917,6 +4918,7 @@ export function createSupabaseBusinessRepository(options) {
             team_id: input.teamId,
             created_by_actor_id: createdByActorId,
             org_id: appOrgId,
+            function_naming_mode: "app_code",
             name: input.name,
             slug,
             type: input.type,
@@ -5344,7 +5346,7 @@ export function createSupabaseBusinessRepository(options) {
 
     async preflightAppDeploy(appId: string, input: { revision?: string; gitCommitSha?: string; declaration?: unknown; migrationIntent?: boolean }) {
       const { data: existing, error } = await supabase.from("apps")
-        .select("id, slug, team_id, created_by_actor_id, provision_status, git_auth_kind, fc_status, deploy_started_at, deploy_token")
+        .select("id, slug, app_code, function_naming_mode, fc_function_name, team_id, created_by_actor_id, provision_status, git_auth_kind, fc_status, deploy_started_at, deploy_token")
         .eq("id", appId).maybeSingle();
       if (error) throw error;
       if (!existing) return null;
@@ -5370,7 +5372,8 @@ export function createSupabaseBusinessRepository(options) {
       } else if (!revision.startsWith("sha256:")) {
         throw new ApiError(400, "validation_failed", "imported deploy requires a content digest");
       }
-      validateAppOrigin({ appId: existing.id, slug: existing.slug });
+      resolveAppFunctionName({ ...appFunctionTargetFromRow(existing), fcFunctionName: existing.fc_function_name });
+      validateAppOrigin({ ...appFunctionTargetFromRow(existing), slug: existing.slug });
       const info = await this.getAppRuntimeInfo(appId);
       if (!info) return null;
       assertNoUnexpectedOriginEntries(info.originSecurity);
@@ -5426,7 +5429,7 @@ export function createSupabaseBusinessRepository(options) {
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, app_code, uses_app_code_domain, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -5455,7 +5458,8 @@ export function createSupabaseBusinessRepository(options) {
       if (progress === "blocked") {
         throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
       }
-      validateAppOrigin({ appId: existing.id, slug: existing.slug });
+      resolveAppFunctionName({ ...appFunctionTargetFromRow(existing), fcFunctionName: existing.fc_function_name });
+      validateAppOrigin({ ...appFunctionTargetFromRow(existing), slug: existing.slug });
       const info = await this.getAppRuntimeInfo(appId);
       if (!info) return null;
       assertNoUnexpectedOriginEntries(info.originSecurity);
@@ -5468,6 +5472,7 @@ export function createSupabaseBusinessRepository(options) {
       const deployStartedAt = new Date().toISOString();
       try {
         const r = await startDeploy({
+          ...appFunctionTargetFromRow(existing),
           appId,
           region: existing.fc_region || appsRegion(),
           fcFunctionName: existing.fc_function_name,
@@ -5539,7 +5544,7 @@ export function createSupabaseBusinessRepository(options) {
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, app_code, uses_app_code_domain, deploy_use_app_code_domain, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, git_auth_kind")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, deploy_use_app_code_domain, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, git_auth_kind")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -5559,7 +5564,8 @@ export function createSupabaseBusinessRepository(options) {
       // may have no choice recorded; an already active app never reverts.
       const usesAppCodeDomain = existing.uses_app_code_domain === true || existing.deploy_use_app_code_domain === true;
       const revision = String(input?.revision ?? "");
-      validateAppOrigin({ appId: existing.id, slug: existing.slug });
+      resolveAppFunctionName({ ...appFunctionTargetFromRow(existing), fcFunctionName: existing.fc_function_name });
+      validateAppOrigin({ ...appFunctionTargetFromRow(existing), slug: existing.slug });
       const info = await this.getAppRuntimeInfo(appId);
       if (!info) return null;
       assertNoUnexpectedOriginEntries(info.originSecurity);
@@ -5610,6 +5616,7 @@ export function createSupabaseBusinessRepository(options) {
         const userEnv = await buildUserEnvForFinalize(appId);
         const envDeployedAt = new Date().toISOString();
         const r = await finalizeDeploy({
+          ...appFunctionTargetFromRow(existing),
           appId,
           slug: existing.slug,
           orgId,
@@ -5823,7 +5830,7 @@ export function createSupabaseBusinessRepository(options) {
     async getAppRuntimeInfo(appId: string, language?: AppLanguage) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, slug, team_id, type, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, git_commit_sha, env_deployed_at, updated_at, undeploy_operation")
+        .select("id, slug, app_code, function_naming_mode, team_id, type, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, git_commit_sha, env_deployed_at, updated_at, undeploy_operation")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -5832,6 +5839,7 @@ export function createSupabaseBusinessRepository(options) {
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission) return null;
 
+      resolveAppFunctionName({ ...appFunctionTargetFromRow(app), fcFunctionName: app.fc_function_name });
       const region = app.fc_region || appsRegion();
       const cleanupAt = Date.parse(app.undeploy_operation?.updatedAt ?? "");
       const deployedAt = Date.parse(app.env_deployed_at ?? "");

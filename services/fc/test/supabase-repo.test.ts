@@ -1,3 +1,4 @@
+import { startDeploy as provisionStartDeploy, finalizeDeploy as provisionFinalizeDeploy } from "../src/lib/provisioning/app-deploy.js";
 import { ApiError } from "../src/lib/http-utils.js";
 import { installOriginEnv, ORIGIN_ENV } from "./fixtures/apps-origin-auth/config.js";
 import { test } from "node:test";
@@ -5591,6 +5592,7 @@ test("apps: code collisions retry app insertion without duplicating the workspac
   assert.equal(calls.filter((c) => c.table === "workspaces" && c.op === "insert").length, 1);
   const insertedApp = calls.find((c) => c.table === "apps" && c.op === "insert");
   assert.ok(insertedApp.row.workspace_id);
+  assert.equal(insertedApp.row.function_naming_mode, "app_code");
 });
 
 test("apps: code collision exhaustion never attempts a sixth insert", async () => {
@@ -6272,4 +6274,73 @@ test("apps: list and get reject corrupt stored codes without leaking their value
       });
     }
   }
+});
+
+test("apps: every canonical creation path overrides caller naming mode without exposing it", async () => {
+  for (const extra of [{}, { gitRemoteUrl: "https://github.com/owner/repo.git" }, { localOnly: true }]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls }));
+    const app = await repo.createApp({ teamId: "team-1", name: "New", type: "static_web", ...extra, functionNamingMode: "legacy", function_naming_mode: "legacy" } as any);
+    assert.equal(calls.find(c => c.table === "apps" && c.op === "insert").row.function_naming_mode, "app_code");
+    assert.equal("functionNamingMode" in app, false);
+    assert.equal("function_naming_mode" in app, false);
+  }
+});
+
+test("apps: deploy and finalize pass only trusted stored code identity through provisioners", async () => {
+  const code = "a-p35cg2kk6bh3";
+  const seen: any[] = [];
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready", function_naming_mode: "app_code", app_code: code }] } }), {
+    startDeploy: async (input: any) => { seen.push(input); return { fcFunctionName: code, fcRegion: input.region, ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put" }; },
+    finalizeDeploy: async (input: any) => { seen.push(input); return { fcEndpoint: `http://${code}.origins.test` }; },
+  });
+  const started = await repo.deployApp("app-1", { ...APP_DEPLOY, functionNamingMode: "legacy", appCode: "a-000000000000" } as any);
+  await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+  assert.equal(seen.length, 2);
+  for (const input of seen) {
+    assert.equal(input.functionNamingMode, "app_code");
+    assert.equal(input.appCode, code);
+  }
+});
+
+test("apps: corrupt code identity fails preflight, start, finalize and runtime before provisioners", async () => {
+  for (const corrupt of [{ function_naming_mode: null }, { function_naming_mode: "unknown" }, { function_naming_mode: "app_code", app_code: "bad" }, { function_naming_mode: "app_code", fc_function_name: "foreign" }]) {
+    let calls = 0;
+    const row = { ...APP_ROW, provision_status: "ready", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", ...corrupt };
+    const repo = appsRepo(appsSupabase({ seed: { apps: [row] } }), { startDeploy: async () => { calls++; throw Error("unexpected"); }, finalizeDeploy: async () => { calls++; throw Error("unexpected"); }, readAppFunction: async () => { calls++; throw Error("unexpected"); } });
+    await assert.rejects(() => repo.preflightAppDeploy("app-1", APP_DEPLOY), /invalid app function identity/);
+    await assert.rejects(() => repo.deployApp("app-1", APP_DEPLOY), /invalid app function identity/);
+    await assert.rejects(() => repo.getAppRuntimeInfo("app-1"), /invalid app function identity/);
+    const finalizeRepo = appsRepo(appsSupabase({ seed: { apps: [{ ...row, fc_status: "awaiting_build", fc_function_name: "a-p35cg2kk6bh3", ...corrupt }] } }), { finalizeDeploy: async () => { calls++; throw Error("unexpected"); } });
+    await assert.rejects(() => finalizeRepo.finalizeDeploy("app-1", appFinalize(APP_PREFLIGHT_TOKEN)), /invalid app function identity/);
+    assert.equal(calls, 0);
+  }
+});
+
+
+test("apps: real provisioners preserve code identity from preflight through verified Live publication", async () => {
+  const restore = installOriginEnv();
+  try {
+    const id = "76af539e-5341-4e96-bda7-6c8dacf2b092";
+    const code = "a-p35cg2kk6bh3";
+    const calls: any[] = [];
+    const provider: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id, type: "static_web", slug: "renamed", app_code: code, function_naming_mode: "app_code", provision_status: "ready", deploy_token: null, fc_function_name: null, fc_endpoint: null, start_spec: null }] } }), {
+      validateAppOrigin: undefined,
+      readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+      startDeploy: (input: any) => provisionStartDeploy({ mintUploadUrl: async () => "https://oss/put" }, input),
+      finalizeDeploy: (input: any) => provisionFinalizeDeploy({ fcOps: {
+        ensureFunction: async name => { provider.push(["function", name]); },
+        ensureHttpTrigger: async name => { provider.push(["trigger", name]); return { internetUrlDisabled: true }; },
+        ensureCustomDomain: async (name, host) => { provider.push(["domain", name, host]); return `http://${host}`; },
+      } }, input),
+    });
+    const preflight = await repo.preflightAppDeploy(id, { revision: APP_REVISION, declaration: APP_DECLARATION });
+    const started = await repo.deployApp(id, { ...APP_DEPLOY, preflightToken: preflight.token });
+    assert.equal(started.fcFunctionName, code);
+    await repo.finalizeDeploy(id, appFinalize(preflight.token));
+    assert.deepEqual(provider, [["function", code], ["trigger", code], ["domain", code, `${code}.origins.test`]]);
+    const live = calls.find(c => c.table === "apps" && c.op === "update" && c.row.fc_status === "live");
+    assert.equal(live.row.fc_endpoint, `http://${code}.origins.test`);
+  } finally { restore(); }
 });

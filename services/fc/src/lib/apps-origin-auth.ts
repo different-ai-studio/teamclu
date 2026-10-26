@@ -1,3 +1,4 @@
+import type { FunctionNamingMode } from "./apps-function-identity.js";
 import { createHmac } from 'node:crypto';
 import { SignJWT } from 'jose';
 import { appPublicLabel } from './apps-public-host.js';
@@ -15,6 +16,8 @@ export type OriginAuthConfig = {
   routeDomain: string;
 };
 export type OriginTarget = {
+  appCode?: string | null;
+  functionNamingMode?: FunctionNamingMode;
   appId: string;
   slug: string;
 };

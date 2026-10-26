@@ -1,3 +1,4 @@
+import { readFunctionNamingMode, type AppFunctionTarget } from "../apps-function-identity.js";
 // Shared helpers for the Supabase repository factories (business + auth),
 // extracted from supabase-repo.ts so both can import them without a cycle.
 import WebSocket from "ws";
@@ -119,7 +120,7 @@ export function mapSetTeamMemberRoleError(error: any) {
 // the client contract. Selecting it keeps finalizeDeploy and the data browser
 // from needing a second round trip.
 export const APP_COLUMNS =
-  "id, team_id, org_id, created_by_actor_id, name, slug, app_code, uses_app_code_domain, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, start_spec, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, undeploy_operation, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
+  "id, team_id, org_id, created_by_actor_id, name, slug, app_code, function_naming_mode, uses_app_code_domain, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, start_spec, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, undeploy_operation, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
 
 export function slugify(name: string): string {
   return (
@@ -575,4 +576,9 @@ export function mapLeaderboardRow(row, contribution = null) {
     appsCreated: Number(contribution?.apps_created ?? 0),
     score: Number(row?.score ?? 0),
   };
+}
+
+/** Internal identity only; never added to the public App DTO. */
+export function appFunctionTargetFromRow(row: { id: string; slug: string | null; app_code?: string | null; function_naming_mode?: unknown }): AppFunctionTarget {
+  return { appId: row.id, slug: row.slug, appCode: row.app_code, functionNamingMode: readFunctionNamingMode(row.function_naming_mode) };
 }

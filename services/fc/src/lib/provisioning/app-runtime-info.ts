@@ -1,4 +1,5 @@
-import { appPublicLabel } from "../apps-public-host.js";
+import { appManagedOriginHost, resolveAppFunctionName } from "../apps-function-identity.js";
+import { appFunctionTargetFromRow } from "../supabase-repo/shared.js";
 import { classifyOriginEndpoint, originJwks, readAppsOriginAuthConfig, type OriginAuthConfig, type OriginSecuritySummary, type OriginTarget } from "../apps-origin-auth.js";
 import { ApiError } from "../http-utils.js";
 import * as $fc from "@alicloud/fc20230330";
@@ -77,9 +78,8 @@ export function validateAppOrigin(target: OriginTarget, readConfig = () => readA
     const config = readConfig();
     const publicDomain = process.env.APPS_PUBLIC_DOMAIN?.trim().toLowerCase().replace(/\.$/, "");
     if (publicDomain && config.routeDomain === publicDomain) throw new Error("route domain");
-    const label = appPublicLabel(target.slug, target.appId);
-    if (!label) throw new Error("origin hostname");
-    const host = `${label}.${config.routeDomain}`;
+    const host = appManagedOriginHost(target, { APPS_FC_ROUTE_DOMAIN: config.routeDomain });
+    if (!host) throw new Error("origin hostname");
     originJwks(config, target.appId);
     return { config, host };
   } catch {
@@ -88,7 +88,7 @@ export function validateAppOrigin(target: OriginTarget, readConfig = () => readA
   }
 }
 
-type OriginRow = { id: string; slug: string; fc_endpoint?: string | null; fc_function_name?: string | null; fc_region?: string | null };
+type OriginRow = { app_code?: string | null; function_naming_mode?: unknown; id: string; slug: string; fc_endpoint?: string | null; fc_function_name?: string | null; fc_region?: string | null };
 type OriginReader = (functionName: string, host: string, target: OriginTarget, config: OriginAuthConfig, region?: string | null) => Promise<OriginSecuritySummary>;
 const readProviderOrigin: OriginReader = async (functionName, host, target, config, region) => {
   const resolved = resolveAppsOss();
@@ -104,7 +104,8 @@ export async function readAppOriginSecurity(row: OriginRow, reader: OriginReader
   let legacy = false;
   try {
     if (!row.fc_endpoint) return summary;
-    const target = { appId: row.id, slug: row.slug };
+    const target = appFunctionTargetFromRow(row);
+    resolveAppFunctionName({ ...target, fcFunctionName: row.fc_function_name });
     legacy = classifyOriginEndpoint(row.fc_endpoint, target, process.env.APPS_FC_ROUTE_DOMAIN ?? "") === "legacy";
     const { config, host } = validateAppOrigin(target);
     if (!row.fc_function_name) return { ...summary, status: legacy ? "legacy_unverified" : "unavailable", driftFields: ["providerFunction"] };
