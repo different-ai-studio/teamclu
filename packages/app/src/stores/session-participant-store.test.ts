@@ -295,9 +295,7 @@ describe("session-participant-store", () => {
 
     await useSessionParticipantStore.getState().refreshSession("s1", "team-1");
 
-    expect(sync.syncParticipantsForSession).toHaveBeenCalledWith("s1", "team-1", {
-      full: true,
-    });
+    expect(sync.syncParticipantsForSession).toHaveBeenCalledWith("s1", "team-1");
     expect(useSessionParticipantStore.getState().participantsBySession.s1).toHaveLength(2);
   });
 

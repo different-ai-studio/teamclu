@@ -29,6 +29,7 @@ export async function fetchAllSyncPages<T>(
   client: CloudApiClient,
   path: string,
   params: Record<string, string | null | undefined>,
+  options?: { incomplete?: "warn" | "throw" },
 ): Promise<T[]> {
   const all: T[] = [];
   let cursor: string | null = null;
@@ -51,10 +52,13 @@ export async function fetchAllSyncPages<T>(
   } while (cursor && pages < MAX_PAGES);
 
   if (cursor) {
-    console.warn(
+    const message =
       `[sync] ${path} still had a cursor after ${MAX_PAGES} pages (${all.length} rows); ` +
-        "stopping short — this delta is incomplete.",
-    );
+      "stopping short — this delta is incomplete.";
+    if (options?.incomplete === "throw") {
+      throw new Error(message);
+    }
+    console.warn(message);
   }
 
   return all;

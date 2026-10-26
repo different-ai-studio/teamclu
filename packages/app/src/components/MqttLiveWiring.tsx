@@ -21,6 +21,7 @@ import { markStartup } from "@/lib/telemetry/startup-perf";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
+import { syncParticipantsForSession } from "@/lib/sync/session-participant-sync";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { listenForEnvelopes } from "@/lib/mqtt/mqtt-bridge";
@@ -737,6 +738,14 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
           if (env.topic.startsWith("inbox/")) {
             handleInboxEnvelope(env, userId, useSessionListStore.getState(), console, {
               onMessagePing: (sessionId) => onInboxMessagePingRef.current(sessionId),
+              onParticipantsChanged: (sessionId, teamId) => {
+                const currentTeamId = useCurrentTeamStore.getState().team?.id;
+                if (currentTeamId === teamId) {
+                  void useSessionParticipantStore.getState().refreshSession(sessionId, teamId);
+                  return;
+                }
+                void syncParticipantsForSession(sessionId, teamId);
+              },
             });
             return;
           }

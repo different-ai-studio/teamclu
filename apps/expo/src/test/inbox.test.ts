@@ -25,6 +25,7 @@ describe("parseInboxPing", () => {
   it("ignores another team's ping, other types, and garbage", () => {
     expect(parseInboxPing(enc({ type: "message", team_id: "t2", session_id: "s1" }), "t1")).toBeNull();
     expect(parseInboxPing(enc({ type: "presence", session_id: "s1" }), "t1")).toBeNull();
+    expect(parseInboxPing(enc({ type: "session.participants", team_id: "t1", session_id: "s1" }), "t1")).toBeNull();
     expect(parseInboxPing(enc({ team_id: "t1" }), "t1")).toBeNull();
     expect(parseInboxPing("not json", "t1")).toBeNull();
     expect(parseInboxPing(enc(null), "t1")).toBeNull();

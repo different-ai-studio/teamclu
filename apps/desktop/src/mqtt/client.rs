@@ -454,6 +454,9 @@ pub async fn run_event_loop(bus: Arc<super::MqttBusInner>, app: tauri::AppHandle
                 if bus.is_connected() {
                     backoff_secs = 1;
                 }
+                if let Some((session_id, team_id)) = membership_inbox(&p.topic, &p.payload) {
+                    tracing::info!(session_id, team_id, "inbox session.participants");
+                }
                 let _ = env_tx.send((p.topic.clone(), p.payload.to_vec()));
             }
             Ok(Event::Outgoing(outgoing)) => {
@@ -483,6 +486,24 @@ pub async fn run_event_loop(bus: Arc<super::MqttBusInner>, app: tauri::AppHandle
             }
         }
     }
+}
+
+/// User-inbox roster hint. Logged so a membership ping is visible in
+/// `TeamClu.log`; other inbox types stay quiet.
+fn membership_inbox(topic: &str, payload: &[u8]) -> Option<(String, String)> {
+    if !topic.starts_with("inbox/") {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    if value.get("type").and_then(|t| t.as_str()) != Some("session.participants") {
+        return None;
+    }
+    let session_id = value
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let team_id = value.get("team_id").and_then(|v| v.as_str()).unwrap_or("");
+    Some((session_id.to_string(), team_id.to_string()))
 }
 
 #[cfg(test)]
@@ -624,6 +645,21 @@ mod tests {
             }
         ));
         assert_eq!(event_loop_pending.len(), 1);
+    }
+
+    #[test]
+    fn membership_inbox_logs_only_the_roster_hint() {
+        let payload =
+            br#"{"v":2,"type":"session.participants","team_id":"t1","session_id":"s1","ts":1}"#;
+        assert_eq!(
+            membership_inbox("inbox/user-1", payload),
+            Some(("s1".to_string(), "t1".to_string()))
+        );
+        assert_eq!(
+            membership_inbox("inbox/user-1", br#"{"type":"message","session_id":"s1"}"#),
+            None
+        );
+        assert_eq!(membership_inbox("amux/team/session/s1/live", payload), None);
     }
 
     #[test]

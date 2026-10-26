@@ -152,9 +152,14 @@ public final class SessionLiveActivityStore {
 
     // MARK: - Triggers
 
+    /// Sessions `noteActivity` has seen, in order. Inbox tests read this
+    /// because `.idleChatter` does not change the public activity color.
+    internal private(set) var notedSessionIDs: [String] = []
+
     /// "Something happened in this session" — from an `inbox/<user>` ping.
     /// Subscribes if we aren't already, and resets the quiet timer either way.
     public func noteActivity(sessionID: String) {
+        notedSessionIDs.append(sessionID)
         apply(.idleChatter, to: sessionID)
     }
 

@@ -2,7 +2,7 @@
 
 use super::rows::{SessionParticipantRow, SessionRow, SessionWorkspaceRow};
 use super::{opt_val, run_write_batch, text, LocalCacheStore};
-use libsql::params;
+use libsql::{params, TransactionBehavior};
 
 impl LocalCacheStore {
     pub async fn session_upsert_batch(&self, rows: &[SessionRow]) -> Result<(), String> {
@@ -235,6 +235,67 @@ impl LocalCacheStore {
         .await
     }
 
+    /// Replace this session's cached roster with the cloud snapshot.
+    ///
+    /// One transaction deletes every local row for the session, including
+    /// soft-deleted ones, then inserts the cloud rows. A newer local
+    /// `updated_at` or a synthesized `session:actor` id cannot keep a seat the
+    /// cloud no longer has, and cannot block a seat the cloud still has.
+    /// Callers must pass a complete successful fetch: an empty slice means the
+    /// cloud roster is empty. A row for another session is rejected before
+    /// anything is deleted.
+    pub async fn session_participant_replace_session(
+        &self,
+        session_id: &str,
+        rows: &[SessionParticipantRow],
+    ) -> Result<(), String> {
+        if rows.iter().any(|row| row.session_id != session_id) {
+            return Err(
+                "session_participant_replace_session: row session_id does not match".to_string(),
+            );
+        }
+        let conn = self.conn.lock().await;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await
+            .map_err(|e| format!("session_participant_replace_session: begin: {e}"))?;
+        tx.execute(
+            "DELETE FROM session_participant WHERE session_id = ?1",
+            params![session_id.to_string()],
+        )
+        .await
+        .map_err(|e| format!("session_participant_replace_session: delete: {e}"))?;
+        if !rows.is_empty() {
+            let stmt = tx
+                .prepare(
+                    "INSERT INTO session_participant
+                        (id, session_id, actor_id, joined_at, created_at, updated_at, deleted_at, synced_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                )
+                .await
+                .map_err(|e| format!("session_participant_replace_session: prepare: {e}"))?;
+            for row in rows {
+                stmt.reset();
+                stmt.execute(vec![
+                    text(&row.id),
+                    text(&row.session_id),
+                    text(&row.actor_id),
+                    opt_val(&row.joined_at),
+                    text(&row.created_at),
+                    text(&row.updated_at),
+                    opt_val(&row.deleted_at),
+                    text(&row.synced_at),
+                ])
+                .await
+                .map_err(|e| format!("session_participant_replace_session: {e}"))?;
+            }
+        }
+        tx.commit()
+            .await
+            .map_err(|e| format!("session_participant_replace_session: commit: {e}"))?;
+        Ok(())
+    }
+
     pub async fn session_participant_load_session(
         &self,
         session_id: &str,
@@ -419,5 +480,177 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows.len(), 2);
+    }
+
+    fn participant(
+        id: &str,
+        session_id: &str,
+        actor_id: &str,
+        updated_at: &str,
+        deleted_at: Option<&str>,
+    ) -> crate::local_cache::store::SessionParticipantRow {
+        crate::local_cache::store::SessionParticipantRow {
+            id: id.to_string(),
+            session_id: session_id.to_string(),
+            actor_id: actor_id.to_string(),
+            joined_at: Some(updated_at.to_string()),
+            created_at: updated_at.to_string(),
+            updated_at: updated_at.to_string(),
+            deleted_at: deleted_at.map(str::to_string),
+            synced_at: updated_at.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_participant_replace_session_takes_the_cloud_snapshot() {
+        let (store, _dir) = new_store().await;
+        store
+            .session_participant_upsert_batch(&[
+                participant(
+                    "s1:me",
+                    "s1",
+                    "me",
+                    "2026-10-22T15:57:44Z",
+                    Some("2026-10-22T15:57:44Z"),
+                ),
+                participant(
+                    "s1:agent",
+                    "s1",
+                    "agent",
+                    "2026-10-22T15:57:44Z",
+                    Some("2026-10-22T15:57:44Z"),
+                ),
+                participant("s2:me", "s2", "me", "2026-10-22T15:57:44Z", None),
+            ])
+            .await
+            .unwrap();
+
+        // The cloud rows are older than the local soft-delete. Upsert would
+        // refuse them; replace still installs them.
+        store
+            .session_participant_replace_session(
+                "s1",
+                &[
+                    participant("uuid-me", "s1", "me", "2026-10-22T15:56:00Z", None),
+                    participant(
+                        "uuid-invitee",
+                        "s1",
+                        "invitee",
+                        "2026-10-22T15:57:43Z",
+                        None,
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let rows = store
+            .session_participant_load_session("s1", true)
+            .await
+            .unwrap();
+        let mut ids: Vec<_> = rows.iter().map(|row| row.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["uuid-invitee", "uuid-me"]);
+        assert!(rows.iter().all(|row| row.deleted_at.is_none()));
+        assert_eq!(
+            store
+                .session_participant_load_session("s2", true)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        store
+            .session_participant_replace_session("s1", &[])
+            .await
+            .unwrap();
+        assert!(store
+            .session_participant_load_session("s1", true)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .session_participant_load_session("s2", true)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn session_participant_replace_session_rejects_another_session_without_deleting() {
+        let (store, _dir) = new_store().await;
+        store
+            .session_participant_upsert_batch(&[participant(
+                "s1:me",
+                "s1",
+                "me",
+                "2026-10-22T15:57:44Z",
+                None,
+            )])
+            .await
+            .unwrap();
+
+        let err = store
+            .session_participant_replace_session(
+                "s1",
+                &[participant(
+                    "s2:other",
+                    "s2",
+                    "other",
+                    "2026-10-22T15:57:44Z",
+                    None,
+                )],
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("does not match"), "{err}");
+        assert_eq!(
+            store
+                .session_participant_load_session("s1", true)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn session_participant_replace_session_rolls_back_when_insert_fails() {
+        let (store, _dir) = new_store().await;
+        store
+            .session_participant_upsert_batch(&[participant(
+                "s1:me",
+                "s1",
+                "me",
+                "2026-10-22T15:57:44Z",
+                None,
+            )])
+            .await
+            .unwrap();
+
+        let err = store
+            .session_participant_replace_session(
+                "s1",
+                &[
+                    participant("uuid-a", "s1", "same", "2026-10-22T15:56:00Z", None),
+                    participant("uuid-b", "s1", "same", "2026-10-22T15:56:00Z", None),
+                ],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("session_participant_replace_session: "),
+            "{err}"
+        );
+        let rows = store
+            .session_participant_load_session("s1", true)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "s1:me");
     }
 }

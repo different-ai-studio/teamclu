@@ -581,6 +581,8 @@ pub fn run() {
             local_cache::commands::local_cache_session_participant_upsert_batch,
             local_cache::commands::local_cache_session_participant_load_session,
             local_cache::commands::local_cache_session_participant_load_actor,
+            local_cache::commands::local_cache_session_participant_begin_replace,
+            local_cache::commands::local_cache_session_participant_replace_session,
             local_cache::commands::local_cache_session_participant_soft_delete,
             local_cache::commands::local_cache_message_upsert_batch,
             local_cache::commands::local_cache_message_load_session,

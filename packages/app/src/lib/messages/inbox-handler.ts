@@ -15,7 +15,8 @@ import { mqttSubscribe } from "@/lib/mqtt/mqtt-bridge";
 
 interface InboxPing {
   session_id: string;
-  type?: "message" | "read";
+  team_id?: string;
+  type?: "message" | "read" | "session.participants";
   ts?: number;
 }
 
@@ -110,6 +111,8 @@ export interface InboxStore {
 interface HandleInboxEnvelopeOptions {
   /** Called for message pings (not read); used to SUB session/live on inbox activity. */
   onMessagePing?: (sessionId: string) => void;
+  /** A roster hint. The handler returns before unread and message side effects. */
+  onParticipantsChanged?: (sessionId: string, teamId: string) => void;
 }
 
 export function handleInboxEnvelope(
@@ -137,6 +140,13 @@ export function handleInboxEnvelope(
   }
   if (!payload || typeof payload.session_id !== "string") {
     logger.warn("[inbox] missing session_id", payload);
+    return;
+  }
+
+  if (payload.type === "session.participants") {
+    if (typeof payload.team_id === "string" && payload.team_id.length > 0) {
+      options?.onParticipantsChanged?.(payload.session_id, payload.team_id);
+    }
     return;
   }
 
