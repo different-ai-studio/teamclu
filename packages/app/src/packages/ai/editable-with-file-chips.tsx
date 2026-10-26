@@ -108,6 +108,7 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
     const acceptInputRef = React.useRef(true)
     const composingRef = React.useRef(false)
     const compositionBaseRef = React.useRef<string | null>(null)
+    const compositionCaretRef = React.useRef<number | null>(null)
     const historyShortcutRef = React.useRef(false)
     const historyKeyDownRef = React.useRef(false)
     const undoKeyDownSeenRef = React.useRef(false)
@@ -338,7 +339,12 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
       suspendCheckpointsRef.current = true
       userEditPendingRef.current = false
       compositionBaseRef.current = null
-      const caret = caretAfterReplacement(modelRef.current ?? htmlToValue(element), next.value)
+      compositionCaretRef.current = null
+      const derived = caretAfterReplacement(modelRef.current ?? htmlToValue(element), next.value)
+      // A failed selection during beforeinput stores 0. Trust a caret that
+      // actually sits inside the restored text, including a mid-phrase IME.
+      const stored = next.caret
+      const caret = stored > 0 && stored <= next.value.length ? stored : derived
       pendingCaretRef.current = caret
       modelRef.current = next.value
       historyWriteRef.current = next.value
@@ -419,6 +425,7 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
         echoValueRef.current = null
         userEditPendingRef.current = false
         compositionBaseRef.current = null
+        compositionCaretRef.current = null
       }
 
       if (!editableRef.current) return
@@ -513,7 +520,9 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
       if (base != null && base !== committed && !applyingHistoryRef.current) {
         // A committed phrase is its own step. Merging it into the previous
         // phrase is why the first undo removes two segments.
-        historyRef.current.checkpoint({ value: base, caret: base.length }, "other")
+        const caret = compositionCaretRef.current ?? base.length
+        compositionCaretRef.current = null
+        historyRef.current.checkpoint({ value: base, caret }, "other")
       }
       modelRef.current = committed
       lastCommittedRef.current = committed
@@ -631,7 +640,9 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
         if (historyKeyDownRef.current || historyApplyRef.current) return
         historyKeyDownRef.current = true
         undoKeyDownSeenRef.current = true
-        runHistoryCommand(command, e.repeat)
+        // This keydown is the press. The echo window only drops the keyup
+        // and historyUndo that the IME adds for the same press.
+        runHistoryCommand(command, true)
         return
       }
       acceptInputRef.current = true
@@ -798,43 +809,6 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
       onKeyDown?.(e)
     }, [handleInput, onKeyDown, rememberEdit, runHistoryCommand])
 
-    const handleBeforeInput = React.useCallback((e: React.FormEvent<HTMLDivElement>) => {
-      const inputEvent = e.nativeEvent as InputEvent
-      const kind = composerEditKind(inputEvent.inputType)
-      if (kind === "undo" || kind === "redo") {
-        e.preventDefault()
-        if (
-          !acceptInputRef.current ||
-          historyKeyDownRef.current ||
-          historyShortcutRef.current ||
-          historyApplyRef.current ||
-          suspendCheckpointsRef.current
-        ) return
-        if (kind === "undo") performUndo()
-        else performRedo()
-        return
-      }
-      if (!acceptInputRef.current) {
-        e.preventDefault()
-        return
-      }
-
-      if (inputEvent.inputType === "insertLineBreak" || inputEvent.inputType === "insertParagraph") {
-        rememberEdit("type")
-        return
-      }
-
-      const data = inputEvent.data
-      // Some desktop/webview input methods can surface arrow-key escape bytes as
-      // insertText. Text editing keys should move the caret, never mutate content.
-      if (data && containsControlInput(data)) {
-        e.preventDefault()
-        return
-      }
-      if (!kind || composingRef.current) return
-      rememberEdit(kind)
-    }, [performRedo, performUndo, rememberEdit])
-
     React.useEffect(() => {
       const element = editableRef.current
       if (!element) return
@@ -871,12 +845,9 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
         rememberEdit(kind)
       }
       element.addEventListener("beforeinput", onBeforeInput)
-      document.getElementById("__undo_dbg")?.remove()
       const onWindowHistoryKey = (event: KeyboardEvent) => {
         const editor = editableRef.current
         if (!editor) return
-        const command = composerHistoryCommand(event)
-        if (!command) return
         const target = event.target as Node | null
         const focused = document.activeElement
         const hits =
@@ -885,32 +856,33 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
           focused === editor ||
           (!!focused && editor.contains(focused))
         if (!hits) return
-        // One physical Cmd+Z. The IME delivers a second keydown before keyup,
-        // and that second event was undoing another segment.
+        if (event.type === "keyup" && (event.key === "Meta" || event.key === "Control")) {
+          undoKeyDownSeenRef.current = false
+          historyKeyDownRef.current = false
+          return
+        }
+        const command = composerHistoryCommand(event)
+        if (!command) return
+        // One physical Cmd+Z. A second keydown before keyup, and a keyup
+        // after the keydown already undid, are the same press.
         if (event.type === "keyup") {
           historyKeyDownRef.current = false
           event.preventDefault()
           event.stopPropagation()
-          // Keydown already undid this press. A later keyup (IME sends a
-          // second one, often after the key is released) must not undo again.
           if (undoKeyDownSeenRef.current) return
           if (!historyApplyRef.current) runHistoryCommand(command, false)
           return
-        } else if ((historyKeyDownRef.current || undoKeyDownSeenRef.current) && !event.repeat && historyEchoBlocked(false)) {
-          event.preventDefault()
-          event.stopPropagation()
-          return
-        } else if (historyKeyDownRef.current && !event.repeat) {
-          event.preventDefault()
-          event.stopPropagation()
-          return
-        } else {
-          historyKeyDownRef.current = true
-          undoKeyDownSeenRef.current = true
         }
+        if (historyKeyDownRef.current && !event.repeat) {
+          event.preventDefault()
+          event.stopPropagation()
+          return
+        }
+        historyKeyDownRef.current = true
+        undoKeyDownSeenRef.current = true
         event.preventDefault()
         event.stopPropagation()
-        if (!historyApplyRef.current) runHistoryCommand(command, event.repeat)
+        if (!historyApplyRef.current) runHistoryCommand(command, true)
       }
       window.addEventListener("keydown", onWindowHistoryKey, true)
       window.addEventListener("keyup", onWindowHistoryKey, true)
@@ -919,7 +891,7 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
         window.removeEventListener("keydown", onWindowHistoryKey, true)
         window.removeEventListener("keyup", onWindowHistoryKey, true)
       }
-    }, [historyEchoBlocked, rememberEdit, runHistoryCommand])
+    }, [rememberEdit, runHistoryCommand])
 
     React.useEffect(() => {
       if (autoFocus && editableRef.current) {
@@ -939,13 +911,13 @@ export const EditableWithFileChips = React.forwardRef<HTMLDivElement, EditableWi
         data-enable-grammarly="false"
         data-testid={testId}
         onInput={handleInput}
-        onBeforeInput={handleBeforeInput}
         onKeyDown={handleKeyDown}
         onCompositionStart={(event) => {
           composingRef.current = true
           if (compositionBaseRef.current == null) {
             const editor = editableRef.current
             compositionBaseRef.current = modelRef.current ?? (editor ? htmlToValue(editor) : "")
+            compositionCaretRef.current = editor ? readCaretOffset(editor) : null
           }
           onCompositionStart?.(event)
         }}

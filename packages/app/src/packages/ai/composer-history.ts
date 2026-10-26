@@ -1,10 +1,8 @@
 export const COMPOSER_UNDO_COALESCE_MS = 500
 export const COMPOSER_UNDO_LIMIT = 100
 /**
- * One physical Cmd+Z on macOS arrives as more than one event: the keydown,
- * and then a keyup or a second keydown from the IME / Edit menu. Those land
- * far enough apart to paint twice, which is the "one press undoes two
- * segments" flash. A real second press is slower than this.
+ * A keyup or a historyUndo that follows the keydown of the same press.
+ * A later keydown is a new press and is not held back by this window.
  */
 export const COMPOSER_UNDO_ECHO_MS = 250
 

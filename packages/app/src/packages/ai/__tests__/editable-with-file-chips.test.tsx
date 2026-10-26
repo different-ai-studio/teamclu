@@ -30,6 +30,18 @@ function TestHarness({ initialValue }: { initialValue: string }) {
   )
 }
 
+function placeCaretAt(element: HTMLElement, offset: number) {
+  const node = element.firstChild
+  if (!node) return
+  const range = document.createRange()
+  const selection = window.getSelection()
+  const at = Math.min(offset, node.textContent?.length ?? 0)
+  range.setStart(node, at)
+  range.collapse(true)
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
 function placeCaretAtEnd(element: HTMLElement) {
   const range = document.createRange()
   const selection = window.getSelection()
@@ -401,7 +413,7 @@ describe('EditableWithFileChips', () => {
     expect(screen.getByTestId('value').textContent).toBe('第一段第二段')
   })
 
-  it('one tap removes only the last segment when another undo arrives right after keyup', async () => {
+  it('undoes the next segment on a second press even when it lands inside the echo window', async () => {
     let now = 50_000
     vi.spyOn(Date, 'now').mockImplementation(() => now)
     render(<TestHarness initialValue="" />)
@@ -416,24 +428,60 @@ describe('EditableWithFileChips', () => {
     await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('第一组输入第二组输入第三组输入'))
 
     fireEvent.keyDown(editable, { key: 'z', metaKey: true })
-    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('第一组输入第二组输入'))
     fireEvent.keyUp(editable, { key: 'z', metaKey: true })
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('第一组输入第二组输入'))
+
     fireEvent.keyUp(editable, { key: 'z', code: 'KeyZ', metaKey: true })
-    editable.dispatchEvent(imeUndoKey('keydown'))
-    editable.dispatchEvent(imeUndoKey('keyup'))
     const historyUndo = new InputEvent('beforeinput', { bubbles: true, cancelable: true })
     Object.defineProperty(historyUndo, 'inputType', { value: 'historyUndo' })
     editable.dispatchEvent(historyUndo)
     editable.textContent = '第一组输入'
     fireEvent.input(editable)
-
     expect(screen.getByTestId('value').textContent).toBe('第一组输入第二组输入')
     expect(editable.textContent).toBe('第一组输入第二组输入')
 
-    historyClock += 1000
     fireEvent.keyDown(editable, { key: 'z', metaKey: true })
     fireEvent.keyUp(editable, { key: 'z', metaKey: true })
     await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('第一组输入'))
+  })
+
+  it('undoes once when the only signal is two keyups', async () => {
+    let now = 60_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    render(<TestHarness initialValue="" />)
+    const editable = document.querySelector('[contenteditable="true"]') as HTMLElement
+    insertText(editable, '第一组')
+    now += 800
+    insertText(editable, '第二组')
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('第一组第二组'))
+
+    editable.dispatchEvent(imeUndoKey('keyup'))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    editable.dispatchEvent(imeUndoKey('keyup'))
+    expect(screen.getByTestId('value').textContent).toBe('第一组')
+
+    historyClock += 1000
+    editable.dispatchEvent(imeUndoKey('keyup'))
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(''))
+  })
+
+  it('puts the caret back where a phrase was composed', async () => {
+    render(<TestHarness initialValue="abcd" />)
+    const editable = document.querySelector('[contenteditable="true"]') as HTMLElement
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('abcd'))
+    placeCaretAt(editable, 2)
+    fireEvent.compositionStart(editable)
+    editable.textContent = 'ab你cd'
+    fireEvent.input(editable)
+    fireEvent.compositionEnd(editable)
+    fireEvent.input(editable)
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('ab你cd'))
+
+    pressUndo(editable)
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe('abcd'))
+    expect(caretOffset(editable)).toBe(2)
   })
 
   it('keeps the first undo to one phrase when phrases are close and the browser then deletes another', async () => {
