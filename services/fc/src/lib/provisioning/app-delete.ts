@@ -1,11 +1,12 @@
 import { DeleteObjectCommand } from "@aws-sdk/client-s3";
 import type { AuthMode } from "./app-auth-mode.js";
 import { OAUTH_CLIENT_SECRET_KIND } from "./app-secrets.js";
-import { appFunctionName, appOssObjectName } from "./app-deploy.js";
+import { appOssObjectName } from "./app-deploy.js";
 import type { GotrueOAuthClient } from "./gotrue-oauth.js";
 import { GITEA_AUTH_KIND, type GiteaClient } from "./gitea.js";
 import { revokeAllDeployKeys } from "./deploy-key.js";
-import { appFcRouteHost } from "../apps-public-host.js";
+import { resolveAppFunctionName, type FunctionNamingMode } from "../apps-function-identity.js";
+import { appDeploymentOriginHost } from "../apps-origin-auth.js";
 
 export type TeardownAppDeps = {
   fcOps?: {
@@ -22,9 +23,12 @@ export type TeardownAppDeps = {
 
 export type TeardownAppInput = {
   appId: string;
-  /** Needed to rebuild the app's custom-domain host, which carries the slug. */
+  /** Trusted stored identity; older callers may omit the new fields. */
   slug?: string | null;
   fcFunctionName?: string | null;
+  appCode?: string | null;
+  functionNamingMode?: FunctionNamingMode;
+  fcEndpoint?: string | null;
   authMode?: AuthMode | string | null;
   oauthClientId?: string | null;
   gitAuthKind?: string | null;
@@ -36,7 +40,10 @@ export async function teardownAppResources(
   deps: TeardownAppDeps,
   input: TeardownAppInput,
 ): Promise<{ archivedRepoUrl: string | null }> {
-  const functionName = input.fcFunctionName?.trim() || appFunctionName(input.appId);
+  const target = { ...input, slug: input.slug ?? null };
+  const functionName = resolveAppFunctionName({ ...target, legacyFallback: "uuid" });
+  // Validate all identity before the first external mutation, including best-effort cleanup.
+  const routeHost = appDeploymentOriginHost(target, input.fcEndpoint);
 
   if (deps.fcOps) {
     try {
@@ -50,7 +57,6 @@ export async function teardownAppResources(
     // Separate try: a custom domain outlives its function, and a quota is
     // account-wide — leaking one per deleted app is how the next create starts
     // failing for an unrelated app.
-    const routeHost = appFcRouteHost(input.slug, input.appId);
     if (routeHost && deps.fcOps.deleteCustomDomain) {
       try {
         await deps.fcOps.deleteCustomDomain(routeHost);

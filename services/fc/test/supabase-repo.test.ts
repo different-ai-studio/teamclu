@@ -6364,3 +6364,69 @@ test("apps: stale corrupt identity rejects before recovery, lifecycle or provide
     assert.equal(providerCalls, 0);
   }
 });
+
+const CODE_RESOURCE_ROW = { ...APP_ROW, id: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "renamed", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", fc_function_name: "a-p35cg2kk6bh3", fc_endpoint: "http://a-p35cg2kk6bh3.origins.test", fc_status: "live", provision_status: "ready" };
+
+test("code logs and runtime select trusted actual function and metadata", async () => {
+ const prev=process.env.APPS_FC_ROUTE_DOMAIN;process.env.APPS_FC_ROUTE_DOMAIN="origins.test";
+ try {
+  const calls:any[]=[];const seen:string[]=[];
+  const db=appsSupabase({calls,seed:{apps:[CODE_RESOURCE_ROW]}});
+  const repo=appsRepo(db,{appLogs:async(input:any)=>{seen.push(input.functionName);return {items:[]};},readAppFunction:async(name:string)=>{seen.push(name);return {};},readAppOriginSecurity:async()=>({})});
+  await repo.getAppLogs(CODE_RESOURCE_ROW.id);const runtime=await repo.getAppRuntimeInfo(CODE_RESOURCE_ROW.id);
+  assert.deepEqual(seen,["a-p35cg2kk6bh3","a-p35cg2kk6bh3"]);
+  assert.equal(runtime.currentDeployment.functionName,"a-p35cg2kk6bh3");
+  assert.ok(calls.filter(c=>c.table==='apps'&&c.op==='select').every(c=>c.columns.includes('function_naming_mode')&&c.columns.includes('app_code')));
+ } finally {if(prev===undefined)delete process.env.APPS_FC_ROUTE_DOMAIN;else process.env.APPS_FC_ROUTE_DOMAIN=prev;}
+});
+
+test("code uninstall captures exact validated code host before queuing cleanup", async () => {
+ const prev=process.env.APPS_FC_ROUTE_DOMAIN;process.env.APPS_FC_ROUTE_DOMAIN="origins.test";
+ try {
+  for(const fc_endpoint of [CODE_RESOURCE_ROW.fc_endpoint,null]) {
+   const db=appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,fc_endpoint}]}});const rpc=db.rpc.bind(db);const queued:any[]=[];
+   db.rpc=async(name,args)=>{queued.push([name,args]);return rpc(name,args);};
+   const result=await appsRepo(db).undeployApp(CODE_RESOURCE_ROW.id);
+   assert.equal(result.operation.status,"pending");
+   assert.equal(queued[0][1].p_origin_domain,"a-p35cg2kk6bh3.origins.test");
+  }
+ } finally {if(prev===undefined)delete process.env.APPS_FC_ROUTE_DOMAIN;else process.env.APPS_FC_ROUTE_DOMAIN=prev;}
+});
+
+test("damaged allocated code resources reject logs runtime uninstall and delete before external operations", async () => {
+ const prev=process.env.APPS_FC_ROUTE_DOMAIN;process.env.APPS_FC_ROUTE_DOMAIN="origins.test";
+ try {
+  for(const corrupt of [{fc_function_name:"foreign"},{fc_function_name:null},{app_code:"p35cg2kk6bh3"},{function_naming_mode:null},{fc_endpoint:"http://a-000000000000.origins.test"},{fc_endpoint:"https://foreign.example"}]) {
+   let external=0;const db=appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,...corrupt}]}});
+   const repo=appsRepo(db,{createServiceRoleClient:()=>{external++;return db;},appLogs:async()=>{external++;return {};},readAppFunction:async()=>{external++;return {};}});
+   for(const read of [()=>repo.getAppLogs(CODE_RESOURCE_ROW.id),()=>repo.getAppRuntimeInfo(CODE_RESOURCE_ROW.id),()=>repo.undeployApp(CODE_RESOURCE_ROW.id)])await assert.rejects(read);
+   const deleted=appsRepo(appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,fc_status:"uninstalled",undeploy_operation:{status:"succeeded"},...corrupt}]}}),{createServiceRoleClient:()=>{external++;return db;}});
+   await assert.rejects(()=>deleted.deleteApp(CODE_RESOURCE_ROW.id));
+   assert.equal(external,0);
+  }
+ } finally {if(prev===undefined)delete process.env.APPS_FC_ROUTE_DOMAIN;else process.env.APPS_FC_ROUTE_DOMAIN=prev;}
+});
+
+test("never allocated code deployment failure still permits runtime inspection for retry", async () => {
+ const repo=appsRepo(appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,fc_status:"deploy_error",fc_function_name:null,fc_endpoint:null,start_spec:null,env_deployed_at:null}]}}),{readAppOriginSecurity:async()=>({})});
+ assert.equal((await repo.getAppRuntimeInfo(CODE_RESOURCE_ROW.id)).currentDeployment,null);
+});
+
+test("completed uninstall retains naming mode and next deploy reuses actual identity", async () => {
+ const restore=installOriginEnv();
+ try {
+  for(const [mode,name] of [["app_code","a-p35cg2kk6bh3"],["legacy","older-function"]]) {
+   const row={...CODE_RESOURCE_ROW,id:"app-1",function_naming_mode:mode,fc_function_name:name,fc_endpoint:null,fc_status:"uninstalled",undeploy_operation:{id:"completed",status:"succeeded"}};
+   const db=appsSupabase({seed:{apps:[row]}});let seen:any;
+   const repo=appsRepo(db,{startDeploy:async(input:any)=>{seen=input;return provisionStartDeploy({mintUploadUrl:async()=>"https://oss/put"},input);}});
+   const deployed=await repo.deployApp(row.id,APP_DEPLOY);
+   assert.equal(deployed.fcFunctionName,name);assert.equal(seen.functionNamingMode,mode);
+   const fetched=await repo.getApp(row.id);assert.equal("functionNamingMode" in fetched,false);
+  }
+ } finally {restore();}
+});
+
+test("failed redeploy with retained successful configuration requires its allocated code function", async () => {
+ const repo=appsRepo(appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,fc_status:"deploy_error",fc_function_name:null,fc_endpoint:null,env_deployed_at:null,start_spec:APP_DECLARATION.start}]}}));
+ await assert.rejects(()=>repo.getAppRuntimeInfo(CODE_RESOURCE_ROW.id),/invalid app function identity/);
+});

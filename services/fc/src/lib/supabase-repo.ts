@@ -1,6 +1,6 @@
 import { resolveAppFunctionName } from "./apps-function-identity.js";
 import { assertLifecycleAvailable, lifecycleRpc, operationView } from "./app-lifecycle.js";
-import { appFcRouteHost } from "./apps-public-host.js";
+import { appDeploymentOriginHost } from "./apps-origin-auth.js";
 /**
  * The business repository — PostgREST + caller JWT + RLS.
  *
@@ -124,7 +124,6 @@ import { readAppFunction as defaultReadAppFunction, projectFunction, providerErr
 import { preflightAppDeploy as checkAppDeployPreflight, verifyAppDeployPreflight, isAppDeployPreflightExpired } from "./provisioning/app-deploy-preflight.js";
 import { appsRegion } from "./provisioning/apps-oss.js";
 import {
-  appFunctionName,
   appOssObjectName,
   assertDeployAllowed,
   buildAppStorageEnv,
@@ -177,6 +176,17 @@ import {
 } from "./apps-custom-domain.js";
 import { invalidateAppHosts } from "./apps-vanity.js";
 
+/** Allocated code rows must not enter a historical worker's UUID fallback. */
+function validateAllocatedAppIdentity(row: any, forCleanup = false): void {
+  const target = appFunctionTargetFromRow(row);
+  resolveAppFunctionName({ ...target, fcFunctionName: row.fc_function_name, legacyFallback: "uuid" });
+  // An initial deploy_error may precede allocation; cleanup cannot use that exception.
+  if (target.functionNamingMode === "app_code" && !row.fc_function_name
+      && ((row.fc_status && row.fc_status !== "not_deployed" && (forCleanup || row.fc_status !== "deploy_error")) || row.fc_endpoint || row.env_deployed_at || row.start_spec)) {
+    throw new ApiError(409, "invalid_app_function_identity", "invalid app function identity");
+  }
+}
+
 /**
  * The client-facing shape of an app's custom domain.
  *
@@ -191,7 +201,7 @@ function customDomainView(row: any) {
     verified: Boolean(row.custom_domain_verified_at),
     verifiedAt: row.custom_domain_verified_at ?? null,
     dns: domain
-      ? customDomainRecords({ id: row.id, slug: row.slug, appCode: row.app_code, usesAppCodeDomain: row.uses_app_code_domain }, domain, row.custom_domain_token ?? "")
+      ? customDomainRecords({ id: row.id, slug: row.slug, appCode: row.app_code, usesAppCodeDomain: row.uses_app_code_domain, functionNamingMode: appFunctionTargetFromRow(row).functionNamingMode }, domain, row.custom_domain_token ?? "")
       : [],
   };
 }
@@ -5227,7 +5237,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "id, slug, app_code, uses_app_code_domain, team_id, created_by_actor_id, custom_domain, custom_domain_token, custom_domain_verified_at",
+          "id, slug, app_code, function_naming_mode, uses_app_code_domain, team_id, created_by_actor_id, custom_domain, custom_domain_token, custom_domain_verified_at",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -5272,7 +5282,7 @@ export function createSupabaseBusinessRepository(options) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", appId)
-        .select("id, slug, app_code, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
         .maybeSingle();
       if (error) {
         // 23505 is the unique index on lower(custom_domain): another app has
@@ -5314,7 +5324,7 @@ export function createSupabaseBusinessRepository(options) {
         .from("apps")
         .update({ custom_domain_verified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
         .eq("id", appId)
-        .select("id, slug, app_code, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
@@ -5336,7 +5346,7 @@ export function createSupabaseBusinessRepository(options) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", appId)
-        .select("id, slug, app_code, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
@@ -5840,7 +5850,8 @@ export function createSupabaseBusinessRepository(options) {
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission) return null;
 
-      resolveAppFunctionName({ ...appFunctionTargetFromRow(app), fcFunctionName: app.fc_function_name });
+      validateAllocatedAppIdentity(app);
+      appDeploymentOriginHost(appFunctionTargetFromRow(app), app.fc_endpoint);
       const region = app.fc_region || appsRegion();
       const cleanupAt = Date.parse(app.undeploy_operation?.updatedAt ?? "");
       const deployedAt = Date.parse(app.env_deployed_at ?? "");
@@ -5921,7 +5932,7 @@ export function createSupabaseBusinessRepository(options) {
     async getAppLogs(appId: string, query: any = {}) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, slug, team_id, type, fc_status, fc_function_name, created_by_actor_id")
+        .select("id, slug, app_code, function_naming_mode, team_id, type, fc_status, fc_endpoint, fc_function_name, created_by_actor_id")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -5949,9 +5960,12 @@ export function createSupabaseBusinessRepository(options) {
         );
       }
 
+      validateAllocatedAppIdentity(app);
+      const target = appFunctionTargetFromRow(app);
+      appDeploymentOriginHost(target, app.fc_endpoint);
       try {
         return await appLogs({
-          functionName: app.fc_function_name || appFunctionName(app.id),
+          functionName: resolveAppFunctionName({ ...target, fcFunctionName: app.fc_function_name, legacyFallback: "uuid" }),
           sinceMinutes: parseLogMinutes(query.sinceMinutes),
           limit: parseLogLimit(query.limit),
           kind: parseLogKind(query.kind),
@@ -6997,14 +7011,19 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async undeployApp(appId: string) {
-      const app = await this.getApp(appId);
+      const { data: app, error } = await supabase.from("apps")
+        .select("id, slug, app_code, function_naming_mode, team_id, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, env_deployed_at, custom_domain, uses_app_code_domain")
+        .eq("id", appId).maybeSingle();
+      if (error) throw error;
       if (!app) return null;
-      const permission = await this.resolveAppCallerPermissionForApp({ id: app.id, team_id: app.teamId, created_by_actor_id: app.createdByActorId });
+      const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission || permission.level !== "admin") return null;
+      validateAllocatedAppIdentity(app, true);
+      const originDomain = appDeploymentOriginHost(appFunctionTargetFromRow(app), app.fc_endpoint);
       const admin = await serviceRoleClient("app deployment lifecycle");
-      const operation = await lifecycleRpc(admin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "undeploy", p_token: null, p_origin_domain: appFcRouteHost(app.slug, appId) });
+      const operation = await lifecycleRpc(admin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "undeploy", p_token: null, p_origin_domain: originDomain });
       if (!operation) throw new ApiError(409, "not_deployed", "app has no deployment to uninstall");
-      invalidateAppHosts({ id: appId, slug: app.slug, customDomain: app.customDomain });
+      invalidateAppHosts({ id: appId, slug: app.slug, appCode: app.app_code, usesAppCodeDomain: app.uses_app_code_domain, customDomain: app.custom_domain });
       return { app: await this.getApp(appId), operation: operationView(operation) };
     },
 
@@ -7012,7 +7031,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
         .select(
-          "id, team_id, workspace_id, slug, name, app_code, uses_app_code_domain, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id, custom_domain",
+          "id, team_id, workspace_id, slug, name, app_code, function_naming_mode, uses_app_code_domain, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id, custom_domain",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -7031,6 +7050,8 @@ export function createSupabaseBusinessRepository(options) {
           throw new ApiError(409, "app_uninstall_required", "Uninstall the deployment successfully before deleting this app.");
         }
       };
+      validateAllocatedAppIdentity(existing);
+      appDeploymentOriginHost(appFunctionTargetFromRow(existing), existing.fc_endpoint);
       assertUninstalled(existing);
 
       const admin = await serviceRoleClient("delete app and archive workspace");
@@ -7050,8 +7071,8 @@ export function createSupabaseBusinessRepository(options) {
       assertUninstalled(lockedApp);
       const teardownInput = {
         appId,
-        // Carries the app's custom-domain host, which is built from the slug.
-        slug: existing.slug,
+        ...appFunctionTargetFromRow(existing),
+        fcEndpoint: existing.fc_endpoint,
         fcFunctionName: existing.fc_function_name,
         authMode: existing.auth_mode,
         oauthClientId: existing.oauth_client_id,

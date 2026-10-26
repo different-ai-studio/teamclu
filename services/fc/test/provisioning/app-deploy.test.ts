@@ -702,3 +702,33 @@ test("canonical code finalize rejects mismatch before provider writes", async ()
   assert.equal((await finalizeDeploy(deps, input)).fcEndpoint, "http://a-p35cg2kk6bh3.origins.test");
   assert.deepEqual(calls, [input.appCode, [input.appCode, "a-p35cg2kk6bh3.origins.test", input.appCode]]);
 });
+
+test("teardown selects code function and exact origin before any destructive call", async () => {
+  const prev = process.env.APPS_FC_ROUTE_DOMAIN;
+  process.env.APPS_FC_ROUTE_DOMAIN = "origins.test";
+  try {
+    const { teardownAppResources } = await import("../../src/lib/provisioning/app-delete.js");
+    const calls: string[] = [];
+    const deps = { fcOps: { deleteHttpTrigger: async (n: string) => { calls.push("trigger:" + n); }, deleteFunction: async (n: string) => { calls.push("function:" + n); }, deleteCustomDomain: async (n: string) => { calls.push("domain:" + n); } }, deleteOssObject: async (n: string) => { calls.push("artifact:" + n); } };
+    const input = { appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "renamed", appCode: "a-p35cg2kk6bh3", functionNamingMode: "app_code" as const, fcFunctionName: "a-p35cg2kk6bh3", fcEndpoint: "http://a-p35cg2kk6bh3.origins.test" };
+    await teardownAppResources(deps, input);
+    assert.deepEqual(calls, ["trigger:a-p35cg2kk6bh3", "function:a-p35cg2kk6bh3", "domain:a-p35cg2kk6bh3.origins.test", "artifact:apps/3f1c9a2e-0000-4000-8000-000000000abc/code.zip"]);
+    for (const corrupt of [{ fcFunctionName: "foreign" }, { appCode: "p35cg2kk6bh3" }, { fcEndpoint: "http://a-000000000000.origins.test" }, { fcEndpoint: "https://external.example" }]) {
+      calls.length = 0;
+      await assert.rejects(() => teardownAppResources(deps, { ...input, ...corrupt }));
+      assert.deepEqual(calls, []);
+    }
+    calls.length = 0;
+    await teardownAppResources(deps, { appId: input.appId, slug: "renamed" });
+    assert.equal(calls[1], "function:tc-app-3f1c9a2e-0000-4000-8000-000000000abc");
+  } finally { if (prev === undefined) delete process.env.APPS_FC_ROUTE_DOMAIN; else process.env.APPS_FC_ROUTE_DOMAIN = prev; }
+});
+
+test("legacy external endpoint teardown never deletes a guessed managed domain", async () => {
+ const prev=process.env.APPS_FC_ROUTE_DOMAIN;process.env.APPS_FC_ROUTE_DOMAIN="origins.test";
+ try {
+  const {teardownAppResources}=await import("../../src/lib/provisioning/app-delete.js");const calls:string[]=[];
+  await teardownAppResources({fcOps:{deleteFunction:async n=>{calls.push(n);},deleteCustomDomain:async n=>{calls.push(n);}}},{appId:"3f1c9a2e-0000-4000-8000-000000000abc",slug:"renamed",fcEndpoint:"https://old.fcapp.run"});
+  assert.deepEqual(calls,["tc-app-3f1c9a2e-0000-4000-8000-000000000abc"]);
+ }finally{if(prev===undefined)delete process.env.APPS_FC_ROUTE_DOMAIN;else process.env.APPS_FC_ROUTE_DOMAIN=prev;}
+});

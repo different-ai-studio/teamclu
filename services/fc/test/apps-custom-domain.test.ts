@@ -189,3 +189,12 @@ for (const storedCode of ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"]) {
     }
   });
 }
+
+for (const mode of ["legacy", "app_code"] as const) {
+  test(`fallback CNAME follows ${mode} function identity independently of public address choice`, () => {
+    const app = { ...APP, appCode: "a-p35cg2kk6bh3", functionNamingMode: mode, usesAppCodeDomain: true };
+    const records = customDomainRecords(app, "shop.example.org", "t", { ...ENV, APPS_PUBLIC_DOMAIN: "" });
+    assert.equal(records[0].value, mode === "app_code" ? "a-p35cg2kk6bh3.fc-apps.example.com" : "report-11111111.fc-apps.example.com");
+    assert.equal(customDomainRecords(app, "shop.example.org", "t", ENV)[0].value, "a-p35cg2kk6bh3.apps.example.com");
+  });
+}

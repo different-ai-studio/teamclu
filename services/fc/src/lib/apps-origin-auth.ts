@@ -1,4 +1,4 @@
-import { appManagedOriginHost, readFunctionNamingMode, type FunctionNamingMode } from "./apps-function-identity.js";
+import { appManagedOriginHost, readFunctionNamingMode, type AppFunctionTarget, type FunctionNamingMode } from "./apps-function-identity.js";
 import { createHmac } from 'node:crypto';
 import { SignJWT } from 'jose';
 // FC requires a nonempty claim mapping. This metadata is never a user identity
@@ -146,4 +146,14 @@ export function classifyOriginEndpoint(endpoint: string, target: OriginTarget, r
   if (url.hostname !== expectedHost || url.port || !/^https?:\/\/[^/?#]+\/?$/i.test(endpoint))
     invalid('origin endpoint');
   return 'protected';
+}
+
+/** Capture only a validated managed resource; historical external endpoints have no managed domain. */
+export function appDeploymentOriginHost(target: AppFunctionTarget, endpoint?: string | null, env: NodeJS.ProcessEnv = process.env): string | null {
+  const host = appManagedOriginHost(target, env);
+  if (!endpoint) return host;
+  // Config-absent legacy installations never had a managed domain to clean up.
+  if (!host && readFunctionNamingMode(target.functionNamingMode) === "legacy") return null;
+  const kind = classifyOriginEndpoint(endpoint, { ...target, slug: target.slug ?? "" }, env.APPS_FC_ROUTE_DOMAIN ?? "");
+  return kind === "protected" ? new URL(endpoint).hostname : null;
 }
