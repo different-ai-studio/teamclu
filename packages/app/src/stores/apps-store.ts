@@ -267,6 +267,13 @@ export function mapDeployErrorReason(raw: string): string {
       "This app has no code yet — its folder has neither a package.json nor a Dockerfile. Ask the agent to build it, or reseed the app.",
     );
   }
+  // amuxd's ERR_NO_LOCAL_CHECKOUT: the app was seeded on another machine.
+  if (raw.includes("app checkout not found on this machine")) {
+    return i18n.t(
+      "apps.deployErrorReason.noLocalCheckout",
+      "This app's code is not on this computer. Deploy from the computer that holds its checkout, or bring the app onto this one first.",
+    );
+  }
   // Says which file was not found. Windows resolves a bare command name by
   // appending .exe only, so a missing pnpm used to surface as a bare "the
   // system cannot find the file specified" with no clue what file.
@@ -940,9 +947,6 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // presigned URL to upload to, and only the machine holding the checkout
       // can say which this is.
       const declared = await daemonAppManifest(appId, app.teamId);
-      if (!declared) {
-        throw new Error("amuxd did not return the app declaration");
-      }
       if (viaGitea && (!declared.clean || declared.gitCommitSha !== gitCommitSha)) {
         throw new Error("部署前请提交并推送所有改动，且本地 HEAD 必须与 Gitea HEAD 一致");
       }
