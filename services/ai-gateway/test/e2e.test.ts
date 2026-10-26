@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * End-to-end: the real Hono app, against a real Postgres carrying the real
  * migrations, talking to the real upstream.
@@ -226,6 +227,36 @@ test("the sign has to match the kind", { skip: !DB }, async () => {
 
   const zero = await post({ amountCredits: 0, kind: "adjustment", idempotencyKey: `z-${Date.now()}` });
   assert.equal(zero.status, 400);
+});
+
+test("org endpoints sum an org's teams and top up only a team that belongs to it", { skip: !DB }, async () => {
+  const svc = { Authorization: `Bearer ${SERVICE_TOKEN}`, "Content-Type": "application/json" };
+  const orgId = randomUUID();
+  await admin`update amux.teams set oid = ${orgId}::uuid where id = ${teamId}::uuid`;
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  await admin`
+    insert into amux.team_credit_balance (team_id, balance_credits)
+    values (${teamId}::uuid, 1000)
+    on conflict (team_id) do update set balance_credits = 1000`;
+
+  assert.equal((await req(`/internal/orgs/${orgId}/credits/summary`)).status, 401);
+
+  const get = async () => (await req(`/internal/orgs/${orgId}/credits/summary`, { headers: svc })).json() as Promise<any>;
+  assert.equal((await get()).balanceCredits, 1000);
+
+  const post = (b: unknown) =>
+    req(`/internal/orgs/${orgId}/credits/top-up`, { method: "POST", headers: svc, body: JSON.stringify(b) });
+  const key = `org-topup-${Date.now()}`;
+  const ok = await post({ teamId, amountCredits: 500, kind: "grant", idempotencyKey: key });
+  assert.equal(ok.status, 200);
+  assert.equal((await ok.json() as any).applied, true);
+  assert.equal((await get()).balanceCredits, 1500);
+  assert.equal((await (await post({ teamId, amountCredits: 500, kind: "grant", idempotencyKey: key })).json() as any).applied, false);
+
+  // otherTeamId is in no org, so naming it under this org must be refused.
+  assert.equal((await post({ teamId: otherTeamId, amountCredits: 1, kind: "grant", idempotencyKey: `${key}-b` })).status, 404);
+  assert.equal((await post({ amountCredits: 1, kind: "grant", idempotencyKey: `${key}-c` })).status, 400);
+  assert.equal((await req(`/internal/orgs/${randomUUID()}/credits/summary`, { headers: svc })).status, 404);
 });
 
 test("non-streaming completion round-trips and writes a usage row", { skip: !DB || !KEY }, async () => {

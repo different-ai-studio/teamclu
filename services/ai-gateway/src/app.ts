@@ -21,6 +21,8 @@ import {
   reserve,
   settle,
   topUp,
+  orgCredits,
+  orgOwnsTeam,
   SIGNUP_GRANT_CREDITS,
 } from "./credits.js";
 
@@ -486,8 +488,7 @@ export function createApp(deps: Deps) {
 
   // Adding credits. FC calls this for manual top-ups today and for payment
   // webhooks later; the gateway stays the ledger's only writer either way.
-  internal.post("/teams/:teamId/credits/top-up", async (c) => {
-    const teamId = c.req.param("teamId");
+  const applyTopUp = async (c: any, teamId: string) => {
     const body = (await c.req.json().catch(() => null)) as {
       amountCredits?: number;
       kind?: string;
@@ -533,6 +534,34 @@ export function createApp(deps: Deps) {
     // 200 either way: a duplicate delivery is a success from the caller's side,
     // and `applied` says which happened.
     return c.json({ teamId, ...result });
+  };
+  internal.post("/teams/:teamId/credits/top-up", (c) => applyTopUp(c, c.req.param("teamId")));
+
+  // The internal platform addresses customers by org, but credits are ledgered
+  // per team, so a read sums an org's teams and a write must name the team.
+  // Naming it (rather than defaulting to the oldest) keeps money from landing
+  // on a team the caller did not mean when an org has several.
+  const UUID = /^[0-9a-f-]{36}$/i;
+  internal.get("/orgs/:orgId/credits/summary", async (c) => {
+    const orgId = c.req.param("orgId");
+    if (!UUID.test(orgId)) return c.json(err("invalid_request", "orgId must be a uuid", 400), 400);
+    const r = await orgCredits(sql, orgId);
+    if (r.teams.length === 0) return c.json(err("not_found", "org has no teams", 404), 404);
+    return c.json(r);
+  });
+  // Body is the team top-up body plus a required `teamId` belonging to the org.
+  internal.post("/orgs/:orgId/credits/top-up", async (c) => {
+    const orgId = c.req.param("orgId");
+    if (!UUID.test(orgId)) return c.json(err("invalid_request", "orgId must be a uuid", 400), 400);
+    const raw = (await c.req.raw.clone().json().catch(() => null)) as { teamId?: string } | null;
+    const teamId = raw?.teamId;
+    if (!teamId || !UUID.test(teamId)) {
+      return c.json(err("invalid_request", "teamId (uuid) is required", 400), 400);
+    }
+    if (!(await orgOwnsTeam(sql, orgId, teamId))) {
+      return c.json(err("not_found", "team does not belong to this org", 404), 404);
+    }
+    return applyTopUp(c, teamId);
   });
 
   // The gate on turning enforcement on (§4.8.1). Idempotent, so it can be run
