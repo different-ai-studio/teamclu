@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { promises as dns } from "node:dns";
 
-import { appPublicUrl } from "./apps-public-host.js";
+import { appCurrentPublicUrl } from "./apps-public-host.js";
 
 /**
  * Traefik's HTTP provider for the custom domains users bind to their apps
@@ -171,14 +171,14 @@ export function makeSupabaseTraefikDomainLookup(
   return async () => {
     const { data, error } = await getClient()
       .from("apps")
-      .select("id, slug, custom_domain, custom_domain_verified_at")
+      .select("id, slug, app_code, uses_app_code_domain, custom_domain, custom_domain_verified_at")
       .not("custom_domain", "is", null)
       .not("custom_domain_verified_at", "is", null);
     if (error) throw new Error(`traefik custom domain lookup failed: ${error.message}`);
     const out: TraefikCustomDomain[] = [];
     for (const row of data ?? []) {
       const domain = String(row.custom_domain ?? "").trim().toLowerCase();
-      const url = appPublicUrl(row.slug, row.id, env);
+      const url = appCurrentPublicUrl({ id: row.id, slug: row.slug, appCode: row.app_code, usesAppCodeDomain: row.uses_app_code_domain }, env);
       if (!domain || !url || !row.custom_domain_verified_at) continue;
       out.push({ domain, vanityHost: new URL(url).hostname });
     }

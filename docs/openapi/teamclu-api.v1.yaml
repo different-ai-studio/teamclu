@@ -7524,6 +7524,10 @@ paths:
               type: object
               required: [revision, declaration, preflightToken]
               properties:
+                useAppCodeDomain:
+                  type: boolean
+                  default: false
+                  description: Opt an existing app into its code domain after this deploy succeeds. Omitted or false preserves its current mode. Existing domains remain aliases.
                 revision: { type: string }
                 preflightToken: { type: string }
                 declaration:
@@ -10131,7 +10135,7 @@ components:
         operation: { $ref: "#/components/schemas/AppUndeployOperation" }
     App:
       type: object
-      required: [id, teamId, name, slug, type, visibility, provisionStatus, createdAt, updatedAt]
+      required: [id, teamId, name, slug, appCode, usesAppCodeDomain, appCodeUrl, publicUrl, type, visibility, provisionStatus, createdAt, updatedAt]
       properties:
         canManageDeployment:
           type: boolean
@@ -10168,6 +10172,20 @@ components:
             the grant records it. Null otherwise.
         name: { type: string }
         slug: { type: string }
+        appCode:
+          type: string
+          pattern: '^a-[0-9a-hjkmnp-tv-z]{12}$'
+          readOnly: true
+          description: Permanent globally unique random app identifier. Not an access credential.
+        usesAppCodeDomain:
+          type: boolean
+          readOnly: true
+          description: Existing apps retain false until an explicitly opted-in deploy succeeds. New apps default true.
+        appCodeUrl:
+          type: [string, "null"]
+          readOnly: true
+          description: Candidate URL `https://<appCode>.<apps domain>`; null without an apps domain. Not served until usesAppCodeDomain is true.
+
         type:
           $ref: "#/components/schemas/AppType"
         visibility: { type: string, enum: [personal, team] }
@@ -10282,11 +10300,13 @@ components:
             cannot be derived from the app — prefer `publicUrl` when present.
         publicUrl:
           type: [string, "null"]
+          readOnly: true
           description: >-
-            Vanity URL (`https://<slug>-<first 8 of id>.<apps domain>`) served
-            by the deployment's own reverse proxy. Derived, never stored, and
-            null when the deployment has no apps domain configured — then
-            `fcEndpoint` is the only address the app has.
+            Current public URL served by the deployment's reverse proxy:
+            `https://<appCode>.<apps domain>` when usesAppCodeDomain is true,
+            otherwise the legacy `https://<slug>-<first 8 of id>.<apps domain>`.
+            Derived, never stored. Null when no apps domain is configured or
+            the current legacy label cannot be represented; use fcEndpoint then.
         fcFunctionName: { type: [string, "null"] }
         fcRegion: { type: [string, "null"] }
         createdAt: { type: string, format: date-time }

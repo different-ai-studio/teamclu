@@ -23,6 +23,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { cn, copyToClipboard, isTauri, openExternalUrl } from '@/lib/utils'
+import { formatAppCode } from '@/lib/apps/app-code'
 import { appGitKind, appStatusMeta, canReseed } from '@/lib/apps/app-list-helpers'
 import { APP_TYPES, IMPORTED_APP_TYPE, resolveAppType, type AppTypeId } from '@/lib/apps/app-types'
 import { forgetAppSessionSetups } from '@/lib/apps/app-session-setup'
@@ -728,9 +729,9 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
             testId="app-settings-identifiers"
             items={[
               {
-                key: 'id',
-                label: t('apps.settingsPage.appId', '应用 ID'),
-                value: app.id,
+                key: 'app-code',
+                label: t('apps.settingsPage.appCode', '应用代码'),
+                value: formatAppCode(app.appCode),
                 copy: true,
               },
               {

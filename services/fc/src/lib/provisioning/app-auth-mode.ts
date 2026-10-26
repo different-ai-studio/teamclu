@@ -1,5 +1,5 @@
 import { authBaseURL } from "../../auth/base-url.js";
-import { appPublicUrl } from "../apps-public-host.js";
+import { appCurrentPublicUrl } from "../apps-public-host.js";
 import { ApiError } from "../http-utils.js";
 import { OAUTH_CLIENT_SECRET_KIND } from "./app-secrets.js";
 import { type GotrueOAuthClient } from "./gotrue-oauth.js";
@@ -50,8 +50,8 @@ export function parseAuthAudience(raw: unknown): AuthAudience | undefined {
  * against. Without an apps domain there is nowhere to come back to, so the mode
  * is refused up front rather than at the visitor's first page load.
  */
-function requireAppPublicUrl(slug: string, appId: string, env: NodeJS.ProcessEnv): string {
-  const publicUrl = appPublicUrl(slug, appId, env);
+function requireAppPublicUrl(input: { appId: string; slug: string; appCode?: string | null; usesAppCodeDomain?: boolean }, env: NodeJS.ProcessEnv): string {
+  const publicUrl = appCurrentPublicUrl({ ...input, id: input.appId }, env);
   if (!publicUrl) {
     throw new ApiError(409, "vanity_required", "platform auth requires APPS_PUBLIC_DOMAIN");
   }
@@ -72,6 +72,8 @@ export type AuthModeChangeDeps = {
 };
 
 export type AuthModeChangeInput = {
+  appCode?: string | null;
+  usesAppCodeDomain?: boolean;
   appId: string;
   name: string;
   slug: string;
@@ -114,7 +116,7 @@ export async function applyAuthModeChange(
     // Fails the request rather than the visitor: an app switched to "requires
     // login" on a deployment with no apps domain would otherwise look enabled
     // and serve a misconfiguration page to everyone who opened it.
-    requireAppPublicUrl(input.slug, input.appId, env);
+    requireAppPublicUrl(input, env);
     return unchanged;
   }
 
@@ -156,11 +158,11 @@ export async function applyAuthModeChange(
  * instead lets the app detect that the feature is unavailable.
  */
 export function buildPlatformAuthEnv(
-  input: { appId: string; slug: string },
+  input: { appId: string; slug: string; appCode?: string | null; usesAppCodeDomain?: boolean },
   env: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
   const out: Record<string, string> = {
-    APP_PUBLIC_URL: requireAppPublicUrl(input.slug, input.appId, env),
+    APP_PUBLIC_URL: requireAppPublicUrl(input, env),
     API_BASE: authBaseURL().replace(/\/+$/, ""),
   };
   const supabaseUrl = env.SUPABASE_PUBLIC_URL?.trim().replace(/\/+$/, "") || "";

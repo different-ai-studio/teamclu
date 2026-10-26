@@ -86,6 +86,7 @@ const baseApp: AppRow = {
   teamId: 'team-1',
   name: 'Demo App',
   slug: 'demo-app',
+  appCode: 'a-k7m2q9vx4n8p',
   type: 'static_web',
   visibility: 'team',
   workspaceId: 'ws-1',
@@ -364,10 +365,46 @@ describe('AppSettingsPanel', () => {
       render(<AppSettingsPanel app={baseApp} />)
       expect(screen.getByTestId('app-settings-created').textContent).toContain('海港')
       const ids = screen.getByTestId('app-settings-identifiers').textContent
-      expect(ids).toContain('app-1')
+      expect(ids).toContain('a-k7m2q9vx4n8p')
+      expect(ids).not.toContain('app-1')
       expect(ids).toContain('demo-app')
       expect(ids).toContain('ws-1')
     })
+
+    it.each([
+      ['a-k7m2q9vx4n8p', 'a-k7m2q9vx4n8p'],
+      ['k7m2q9vx4n8p', 'a-k7m2q9vx4n8p'],
+      ['a-ak7m2q9vx4n8', 'a-ak7m2q9vx4n8'],
+      ['ak7m2q9vx4n8', 'a-ak7m2q9vx4n8'],
+    ])('shows and copies the complete public code for %s', async (appCode, expected) => {
+      const id = '18e4ecad-6189-495b-a873-7fe09179a5f5'
+      render(<AppSettingsPanel app={{ ...baseApp, id, appCode }} />)
+      const ids = screen.getByTestId('app-settings-identifiers')
+      expect(ids.textContent).toContain(expected)
+      expect(ids.textContent).not.toContain(id)
+      expect(ids.textContent).not.toContain('应用 ID')
+      expect(ids.textContent).toContain('demo-app')
+      expect(ids.textContent).toContain('ws-1')
+
+      const codeRow = within(ids).getByText('应用代码').nextElementSibling as HTMLElement
+      await userEvent.setup().click(within(codeRow).getByRole('button', { name: '复制' }))
+      expect(utilMocks.copyToClipboard).toHaveBeenCalledExactlyOnceWith(expected)
+    })
+
+    it.each([undefined, null, '', 'invalid-code', 'a-k7m2q9vx4n8p\n'])(
+      'shows an unavailable code without a UUID fallback or copy button for %j',
+      (appCode) => {
+        const id = '18e4ecad-6189-495b-a873-7fe09179a5f5'
+        render(<AppSettingsPanel app={{ ...baseApp, id, appCode } as AppRow} />)
+        const ids = screen.getByTestId('app-settings-identifiers')
+        expect(ids.textContent).not.toContain(id)
+        expect(ids.textContent).toContain('demo-app')
+        expect(ids.textContent).toContain('ws-1')
+        const codeRow = within(ids).getByText('应用代码').nextElementSibling as HTMLElement
+        expect(codeRow.textContent).toBe('—')
+        expect(within(codeRow).queryByRole('button')).toBeNull()
+      },
+    )
 
     it('says the creator is unknown rather than showing an actor id', () => {
       actorMocks.actors = []

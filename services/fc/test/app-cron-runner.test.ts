@@ -23,6 +23,7 @@ function makeDb(tables: Record<string, any[]>) {
     let sortAsc = true;
     let take: number | null = null;
     let skip = 0;
+    let columns: string[] | null = null;
 
     const rows = () => {
       let out = tables[table].filter((r) => filters.every((f) => f(r)));
@@ -37,6 +38,7 @@ function makeDb(tables: Record<string, any[]>) {
       // Reads hand back copies. Sharing the row objects would let a test that
       // mutates the store also mutate the value the runner read a moment
       // earlier — which is exactly the compare-and-set being tested.
+      if (copy && table === "apps" && columns) return out.map(r => Object.fromEntries(columns!.map(c => [c, r[c]])));
       return copy ? out.map((r) => ({ ...r })) : out;
     };
 
@@ -73,7 +75,8 @@ function makeDb(tables: Record<string, any[]>) {
         take = to - from + 1;
         return builder;
       },
-      select() {
+      select(value?: string) {
+        if (value) columns = value.split(",").map(c => c.trim());
         return builder;
       },
       async maybeSingle() {
@@ -94,8 +97,8 @@ function makeDb(tables: Record<string, any[]>) {
     tables,
     from(table: string) {
       return {
-        select() {
-          return query(table, true).builder;
+        select(columns?: string) {
+          return query(table, true).builder.select(columns);
         },
         update(patch: Record<string, any>) {
           const q = query(table);
@@ -510,6 +513,16 @@ test("the tick stops claiming when its own clock runs out", async () => {
   assert.ok(untouched.length > 0, "unclaimed jobs must keep their schedule");
 });
 
+
+
+test("cron selects the current app address from explicitly activated code metadata", async () => {
+  for (const mode of [undefined, false, true]) {
+    const db = makeDb({ app_cron_jobs: [job()], apps: [{ id: APP_ID, slug: "report", app_code: "k7m2q9vx4n8p", uses_app_code_domain: mode }], app_cron_runs: [] });
+    let seen = "";
+    await runDueAppCronJobs({ client: db, env: ENV, now: new Date("2026-09-10T09:00:30.000Z"), fetchImpl: (async (url: any) => { seen = String(url); return new Response(""); }) as any });
+    assert.equal(seen, (mode === true ? "https://a-k7m2q9vx4n8p.apps.example.com" : "https://report-11111111.apps.example.com") + "/api/daily");
+  }
+});
 
 for (const fc_status of ['uninstalling','uninstall_failed','uninstalled']) test(`cron skips ${fc_status} apps and advances schedule without fetching`,async()=>{
  const db=makeDb({app_cron_jobs:[job()],apps:[{...apps()[0],fc_status}],app_cron_runs:[]});

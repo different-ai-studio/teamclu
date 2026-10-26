@@ -11,6 +11,7 @@ import { useUIStore } from '@/stores/ui'
 import { resolveAppType } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appGitKind } from '@/lib/apps/app-list-helpers'
+import { formatAppCode } from '@/lib/apps/app-code'
 import { openCreateApp } from '@/lib/tabs/app-tabs'
 import { countAppsByRelationship, filterAppsByRelationship, isSharedByMe } from '@/lib/apps/app-relationship'
 import { useAppRelationshipLabel, type AppRelationshipLabel } from '@/lib/apps/use-app-relationship-label'
@@ -255,7 +256,7 @@ export function AppLibraryView() {
     [creatorById],
   )
 
-  // Name, creator and type all match: in a team list the thing you remember is
+  // Name, creator, type and public code all match: in a team list the thing you remember is
   // as often "the one 海港 made" as it is the app's own name.
   //
   // The relationship filter goes first and search narrows what it left, so the
@@ -266,7 +267,7 @@ export function AppLibraryView() {
     if (!needle) return related
     return related.filter((app) => {
       const typeMeta = resolveAppType(app.type)
-      const haystack = [app.name, creatorFor(app) ?? '', typeMeta.label]
+      const haystack = [app.name, creatorFor(app) ?? '', typeMeta.label, formatAppCode(app.appCode) ?? '']
       return haystack.some((field) => field.toLowerCase().includes(needle))
     })
   }, [items, filter, myActorId, query, creatorFor])

@@ -4,6 +4,7 @@ import {
   ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE,
   PUBLIC_DEPLOY_CONFIRM_MESSAGE,
   publicDeployConfirm,
+  legacyAppDomainChoice,
 } from "@/lib/apps/app-deploy-confirm";
 import {
   seedDaemonApp,
@@ -904,12 +905,16 @@ export const useAppsStore = create<AppsState>((set, get) => ({
           app.teamId,
         );
         if (envDiag?.workspace_has_active_turn) {
-          const accepted = await publicDeployConfirm.run(ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE);
+          const accepted = await publicDeployConfirm.run(
+            i18n.t("apps.deployActiveTurnWarning", ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE),
+          );
           if (!accepted) return;
         }
       }
     }
 
+    let useAppCodeDomain = false;
+    const domainChoice = legacyAppDomainChoice(app);
     set((s) => ({ deployingIds: [...s.deployingIds, appId] }));
     setDeployProgress(set, appId, "prepare");
     let reservationToken: string | undefined;
@@ -948,12 +953,22 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         revision, declaration: declared.declaration, ...(gitCommitSha ? { gitCommitSha } : {}), migrationIntent: true,
       });
       reservationToken = preflight.token;
-      if (app.authMode === "none" || preflight.preview.changes.length > 0) {
+      if (app.authMode === "none" || domainChoice || preflight.preview.changes.length > 0) {
         const fields = preflight.preview.changes.map(c => `${c.field}: ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join("\n");
-        const accepted = await publicDeployConfirm.run(`${PUBLIC_DEPLOY_CONFIRM_MESSAGE}${fields ? `\n\n本次变更：\n${fields}` : ""}`);
+        const message = app.authMode === "none"
+          ? i18n.t("apps.deployPublicWarning", PUBLIC_DEPLOY_CONFIRM_MESSAGE)
+          : i18n.t("apps.deployConfirmMessage", "确认部署此应用？");
+        const accepted = await publicDeployConfirm.run(
+          `${message}${fields ? `\n\n本次变更：\n${fields}` : ""}`,
+          domainChoice ? {
+            domainChoice,
+            onDomainChoice: (checked) => { useAppCodeDomain = checked; },
+          } : undefined,
+        );
         if (!accepted) return;
       }
       const started = await getBackend().apps.deployApp(appId, {
+        ...(useAppCodeDomain ? { useAppCodeDomain: true } : {}),
         ...(gitCommitSha ? { gitCommitSha } : {}),
         revision,
         declaration: declared.declaration,

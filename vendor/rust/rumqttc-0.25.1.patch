@@ -1,0 +1,5 @@
+--- rumqttc-0.25.1/Cargo.toml
++++ rumqttc-0.25.1/Cargo.toml
+@@ -204 +204 @@
+-version = "0.102.8"
++version = "0.103.16"

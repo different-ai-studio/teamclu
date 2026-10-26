@@ -290,7 +290,7 @@ pub(crate) fn validate_slug(slug: &str) -> Result<(), String> {
 /// Returns None for entries that are directories or contain path traversal.
 // The traversal guard lives in `teamclu-skillpack` because the daemon unpacks
 // the same archives during its reconcile. The unpacking loops stay separate —
-// the two crates are on different major versions of `zip` — but the rule for
+// the two crates unpack archives independently — but the rule for
 // which entry names may become paths has exactly one definition.
 use teamclu_skillpack::sanitize_zip_path;
 
@@ -310,7 +310,10 @@ pub(crate) fn extract_zip_to_dir(
             .by_index(i)
             .map_err(|e| format!("Failed to read zip entry {}: {}", i, e))?;
 
-        let raw_name = file.name().to_string();
+        let raw_name = file
+            .name()
+            .map_err(|e| format!("Invalid zip entry name {i}: {e}"))?
+            .into_owned();
         let safe_path = match sanitize_zip_path(&raw_name) {
             Some(p) => p,
             None => continue,
@@ -723,6 +726,21 @@ pub async fn clawhub_update(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn extraction_preserves_legacy_cp437_filenames() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes: Vec<u8> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/archive-cp437.json"
+        )))
+        .unwrap();
+        extract_zip_to_dir(&bytes, temp.path()).unwrap();
+        assert_eq!(
+            std::fs::read(temp.path().join("éad.txt")).unwrap(),
+            b"fixture"
+        );
+    }
+
     use super::*;
     use crate::test_home::HomeGuard;
     use tempfile::tempdir;

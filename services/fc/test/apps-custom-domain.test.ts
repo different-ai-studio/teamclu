@@ -174,3 +174,18 @@ test("a hanging resolver does not hang the request", async () => {
   assert.equal(await verifyDomainOwnership("app.example.com", "t", never, 30), false);
   assert.ok(Date.now() - started < 2000, "must give up on its own");
 });
+
+test("custom domain DNS uses the code address", () => {
+  const records = customDomainRecords({ id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "门店大盘", appCode: "k7m2q9vx4n8p", usesAppCodeDomain: true }, "shop.example.org", "token", ENV);
+  assert.deepEqual(records[0], { type: "CNAME", name: "shop.example.org", value: "a-k7m2q9vx4n8p.apps.example.com" });
+});
+
+
+for (const storedCode of ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"]) {
+  test(`custom-domain CNAME for ${storedCode} remains legacy until explicit activation`, () => {
+    for (const mode of [undefined, false, true]) {
+      const records = customDomainRecords({ id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", appCode: storedCode, usesAppCodeDomain: mode }, "shop.example.org", "token", ENV);
+      assert.equal(records[0].value, mode === true ? "a-k7m2q9vx4n8p.apps.example.com" : "shop-18e4ecad.apps.example.com");
+    }
+  });
+}

@@ -3,7 +3,7 @@
 import WebSocket from "ws";
 
 import { ApiError } from "../http-utils.js";
-import { appPublicUrl } from "../apps-public-host.js";
+import { appPublicUrl, normalizeAppCode } from "../apps-public-host.js";
 import { typeChangeNeedsRedeploy } from "../validation/app-type.js";
 
 // FC runtime is Node 20 which lacks native WebSocket. supabase-js v2.45+ tries
@@ -119,7 +119,7 @@ export function mapSetTeamMemberRoleError(error: any) {
 // the client contract. Selecting it keeps finalizeDeploy and the data browser
 // from needing a second round trip.
 export const APP_COLUMNS =
-  "id, team_id, org_id, created_by_actor_id, name, slug, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, start_spec, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, undeploy_operation, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
+  "id, team_id, org_id, created_by_actor_id, name, slug, app_code, uses_app_code_domain, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, start_spec, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, undeploy_operation, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
 
 export function slugify(name: string): string {
   return (
@@ -163,12 +163,17 @@ export function appRelationshipFor(
 // Exposes EXACTLY the canonical app fields. Reads snake_case DB columns
 // (PostgREST returns the table's native column names).
 export function mapApp(r: any) {
+  const appCode = normalizeAppCode(r.app_code);
+  if (!appCode) throw new ApiError(502, "upstream_unavailable", "apps.mapApp returned invalid app_code");
   return {
     id: r.id,
     ...(r.undeploy_operation ? { undeployOperation: r.undeploy_operation } : {}),
     teamId: r.team_id,
     name: r.name,
     slug: r.slug,
+    appCode,
+    usesAppCodeDomain: r.uses_app_code_domain === true,
+    appCodeUrl: appPublicUrl(r.slug, r.id, process.env, appCode),
     type: r.type,
     visibility: r.visibility,
     workspaceId: r.workspace_id ?? null,
@@ -233,10 +238,8 @@ export function mapApp(r: any) {
     provisionStatus: r.provision_status,
     fcStatus: r.fc_status ?? null,
     fcEndpoint: r.fc_endpoint ?? null,
-    // Derived, never stored: the vanity host is a pure function of slug + id,
-    // and a deployment without an apps domain has none. Storing it would let a
-    // renamed app keep a hostname that no longer routes.
-    publicUrl: appPublicUrl(r.slug, r.id),
+    // Only an active code domain is canonical; the candidate alone changes no URL.
+    publicUrl: appPublicUrl(r.slug, r.id, process.env, r.uses_app_code_domain === true ? appCode : null),
     fcFunctionName: r.fc_function_name ?? null,
     fcRegion: r.fc_region ?? null,
     createdAt: appIso(r.created_at)!,

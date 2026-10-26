@@ -1193,6 +1193,7 @@ function fakeSupabase({
   onInsert = null,
   onUpsert = null,
   upsertData = null,
+  upsertSelectData = undefined,
 } = {}) {
   const client: any = {
     auth: auth ?? {
@@ -1210,6 +1211,7 @@ function fakeSupabase({
         onInsert,
         onUpsert,
         upsertData,
+        upsertSelectData,
       });
     },
     schema(name) {
@@ -1227,7 +1229,7 @@ function fakeSupabase({
 }
 
 function createTableQuery(table: any, calls: any, data: any, error: any, hooks: any = {}) {
-  const { onInsert, onUpsert, upsertData } = hooks;
+  const { onInsert, onUpsert, upsertData, upsertSelectData } = hooks;
   return {
     select(columns) {
       calls.push({ table, op: "select", columns });
@@ -1259,6 +1261,9 @@ function createTableQuery(table: any, calls: any, data: any, error: any, hooks: 
       calls.push({ table, op: "upsert", row, options });
       if (onUpsert) onUpsert(table, row);
       const resolvedData = upsertData ?? data[0] ?? null;
+      const selectData = upsertSelectData !== undefined
+        ? upsertSelectData
+        : (resolvedData == null ? [] : [resolvedData]);
       return {
         select(columns) {
           calls.push({ table, op: "upsert.select", columns });
@@ -1266,6 +1271,9 @@ function createTableQuery(table: any, calls: any, data: any, error: any, hooks: 
             async single() {
               calls.push({ table, op: "upsert.single" });
               return { data: resolvedData, error };
+            },
+            then(resolve, reject) {
+              return Promise.resolve({ data: selectData, error }).then(resolve, reject);
             },
           };
         },
@@ -1779,6 +1787,7 @@ test("ensureGatewaySession returns gatewaySessionId (daemon-required field) = ac
   // acp_session_id so a later getSessionByAcp lookup finds the row.
   assert.equal(out.gatewaySessionId, "acp-hex-1");
   assert.equal(out.created, true);
+  assert.equal("insertedActorIds" in out, false);
 });
 
 test("getSessionByAcp returns the {sessionId, gatewaySessionId} shape the daemon deserializes", async () => {
@@ -1888,6 +1897,10 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
       // names its own type must answer only the matching lookup; one that does
       // not (most tests) still answers both, as it always has.
       const matchActor = () => {
+        if (ctx.filters.id) {
+          const seeded = (state.actors ?? []).find((r: any) => r.id === ctx.filters.id);
+          if (seeded) return seeded;
+        }
         if (!actorRow) return null;
         const wanted = ctx.filters.actor_type;
         if (wanted && actorRow.actor_type && actorRow.actor_type !== wanted) return null;
@@ -1918,7 +1931,10 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
           ctx.op = "insert";
           calls.push({ table, op: "insert", row });
           // mutate state so the inserted row is what subsequent .single() returns
-          const inserted = { ...row, id: row.id ?? `${table}-id-1` };
+          const inserted = {
+            ...(table === "apps" ? { app_code: "a-k7m2q9vx4n8p" } : {}),
+            ...row, id: row.id ?? `${table}-id-1`,
+          };
           state[table] = [inserted];
           ctx.inserted = inserted;
           return builder;
@@ -2020,7 +2036,8 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         },
         then(resolve: any, reject: any) {
           if (ctx.op === "update") {
-            for (const row of matchRows()) Object.assign(row, ctx.update);
+            const matched = matchRows();
+            state[table] = state[table].map((row: any) => matched.includes(row) ? { ...row, ...ctx.update } : row);
           }
           return Promise.resolve({ data: matchRows(), error: null }).then(resolve, reject);
         },
@@ -2073,6 +2090,7 @@ function appsRepo(supabase: any, extra: any = {}) {
 }
 
 const APP_ROW = {
+  app_code: "a-k7m2q9vx4n8p",
   id: "app-1",
   team_id: "team-1",
   created_by_actor_id: "actor-app-1",
@@ -2206,6 +2224,9 @@ function removeParticipantFixture({
     { session_id: "session-1", actor_id: "member-2" },
   ],
   sessionVisible = true,
+  actors = [] as any[],
+  callerActors = [] as any[],
+  publish = null as null | ((topic: string, body: string) => Promise<void>),
 } = {}) {
   const callerCalls: any[] = [];
   const adminCalls: any[] = [];
@@ -2216,6 +2237,8 @@ function removeParticipantFixture({
       sessions: sessionVisible
         ? [{ id: "session-1", team_id: "team-1", created_by_actor_id: createdBy }]
         : [],
+      session_participants: seats,
+      actors: callerActors,
     },
   });
   const admin = appsSupabase({
@@ -2224,9 +2247,13 @@ function removeParticipantFixture({
       agents: [{ id: "agent-1", owner_member_id: agentOwner }],
       agent_member_access: grants,
       session_participants: seats,
+      actors,
     },
   });
-  const repo = createRepo(caller, { createServiceRoleClient: () => admin });
+  const repo = createRepo(caller, {
+    createServiceRoleClient: () => admin,
+    ...(publish ? { publishSessionParticipantInbox: publish } : {}),
+  });
   const deletes = (calls: any[]) =>
     calls.filter((c) => c.table === "session_participants" && c.op === "delete");
   return { repo, callerCalls, adminCalls, deletes };
@@ -2298,11 +2325,226 @@ test("removeSessionParticipant answers 404 when nothing was deleted", async () =
   );
 });
 
+function flushMicrotasks() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test("upsertSessionParticipant notifies human members only when this call inserts a row", async () => {
+  const published: { topic: string; body: string }[] = [];
+  const repo = createRepo(fakeSupabase({
+    upsertSelectData: [{ session_id: "session-1", actor_id: "member-2" }],
+    tableData: {
+      session_participants: [{ session_id: "session-1", actor_id: "member-2", role: "member", joined_at: null }],
+      sessions: [{ id: "session-1", team_id: "team-1" }],
+      actors: [{ user_id: "user-2" }],
+    },
+  }), {
+    publishSessionParticipantInbox: async (topic: string, body: string) => {
+      published.push({ topic, body });
+    },
+  });
+
+  const out = await repo.upsertSessionParticipant("session-1", { actorId: "member-2", role: "member" });
+  await flushMicrotasks();
+
+  assert.equal(out.actorId, "member-2");
+  assert.equal(published.length, 1);
+  assert.equal(published[0].topic, "inbox/user-2");
+  const payload = JSON.parse(published[0].body);
+  assert.equal(payload.type, "session.participants");
+  assert.equal(payload.team_id, "team-1");
+  assert.equal(payload.session_id, "session-1");
+  assert.equal(payload.v, 2);
+  assert.equal("message_id" in payload, false);
+});
+
+test("upsertSessionParticipant does not notify when the seat already exists", async () => {
+  const published: string[] = [];
+  const repo = createRepo(fakeSupabase({
+    upsertSelectData: [],
+    tableData: {
+      session_participants: [{ session_id: "session-1", actor_id: "member-2", role: "member", joined_at: null }],
+    },
+  }), {
+    publishSessionParticipantInbox: async (topic: string) => { published.push(topic); },
+  });
+
+  const out = await repo.upsertSessionParticipant("session-1", { actorId: "member-2", role: "member" });
+  await flushMicrotasks();
+
+  assert.equal(out.actorId, "member-2");
+  assert.deepEqual(published, []);
+});
+
+test("upsertSessionParticipant returns before a failing inbox publish settles", async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let started = false;
+  const repo = createRepo(fakeSupabase({
+    upsertSelectData: [{ session_id: "session-1", actor_id: "member-2" }],
+    tableData: {
+      session_participants: [{ session_id: "session-1", actor_id: "member-2", role: "member", joined_at: null }],
+      sessions: [{ id: "session-1", team_id: "team-1" }],
+      actors: [{ user_id: "user-2" }],
+    },
+  }), {
+    publishSessionParticipantInbox: async () => {
+      started = true;
+      await gate;
+      throw new Error("mqtt down");
+    },
+  });
+  const logged: unknown[] = [];
+  const orig = console.error;
+  console.error = (...args: unknown[]) => { logged.push(args[0]); };
+
+  try {
+    const out = await repo.upsertSessionParticipant("session-1", { actorId: "member-2" });
+    await flushMicrotasks();
+    assert.equal(out.actorId, "member-2");
+    assert.equal(started, true);
+    assert.equal(logged.length, 0);
+    release();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    assert.equal(logged.some((line) => String(line).includes("notify failed")), true);
+  } finally {
+    console.error = orig;
+  }
+});
+
+test("joinSession notifies on the first insert and not on a repeat", async () => {
+  const published: string[] = [];
+  const make = (inserted: boolean) => createRepo(fakeSupabase({
+    rpcData: { join_session: inserted },
+    tableData: {
+      sessions: [{ id: "session-1", team_id: "team-1" }],
+      session_participants: [{ actor_id: "member-1" }],
+      actors: [{ user_id: "user-1" }],
+    },
+  }), {
+    publishSessionParticipantInbox: async (topic: string) => { published.push(topic); },
+  });
+
+  const first = await make(true).joinSession("session-1");
+  await flushMicrotasks();
+  assert.equal(first.id, "session-1");
+  assert.deepEqual(published, ["inbox/user-1"]);
+
+  await make(false).joinSession("session-1");
+  await flushMicrotasks();
+  assert.deepEqual(published, ["inbox/user-1"]);
+});
+
+test("ensureGatewaySession notifies when seats were inserted, including a new session", async () => {
+  const published: string[] = [];
+  const notifyRepo = (insertedActorIds: string[], created: boolean) => createRepo(fakeSupabase({
+    rpcData: {
+      ensure_gateway_session: [{
+        session_id: "sess-1",
+        acp_session_id: "acp-1",
+        created,
+        inserted_actor_ids: insertedActorIds,
+      }],
+    },
+    tableData: {
+      sessions: [{ id: "sess-1", team_id: "team-9" }],
+      session_participants: [{ actor_id: "member-1" }],
+      actors: [{ user_id: "user-9" }],
+    },
+  }), {
+    publishSessionParticipantInbox: async (topic: string) => { published.push(topic); },
+  });
+
+  const created = await notifyRepo(["member-1"], true).ensureGatewaySession({
+    teamId: "team-9",
+    binding: "wecom://room",
+    title: "Room",
+    primaryAgentActorId: "agent-1",
+  });
+  await flushMicrotasks();
+  assert.equal(created.created, true);
+  assert.equal(created.gatewaySessionId, "acp-1");
+  assert.equal("insertedActorIds" in created, false);
+  assert.deepEqual(published, ["inbox/user-9"]);
+
+  const repeat = await notifyRepo([], false).ensureGatewaySession({
+    teamId: "team-9",
+    binding: "wecom://room",
+    title: "Room",
+    primaryAgentActorId: "agent-1",
+  });
+  await flushMicrotasks();
+  assert.equal(repeat.created, false);
+  assert.deepEqual(published, ["inbox/user-9"]);
+
+  // created is not the publish switch. An existing session that seated
+  // someone still notifies; a brand-new session that inserted nobody does not.
+  const seatedExisting = await notifyRepo(["member-1"], false).ensureGatewaySession({
+    teamId: "team-9",
+    binding: "wecom://room",
+    title: "Room",
+    primaryAgentActorId: "agent-1",
+  });
+  await flushMicrotasks();
+  assert.equal(seatedExisting.created, false);
+  assert.deepEqual(published, ["inbox/user-9", "inbox/user-9"]);
+
+  const createdEmpty = await notifyRepo([], true).ensureGatewaySession({
+    teamId: "team-9",
+    binding: "wecom://room",
+    title: "Room",
+    primaryAgentActorId: "agent-1",
+  });
+  await flushMicrotasks();
+  assert.equal(createdEmpty.created, true);
+  assert.equal("insertedActorIds" in createdEmpty, false);
+  assert.deepEqual(published, ["inbox/user-9", "inbox/user-9"]);
+});
+
+test("removeSessionParticipant notifies remaining humans and the removed human", async () => {
+  const published: string[] = [];
+  const f = removeParticipantFixture({
+    seats: [
+      { session_id: "session-1", actor_id: "member-1" },
+      { session_id: "session-1", actor_id: "member-2" },
+    ],
+    actors: [{ id: "member-2", actor_type: "member", user_id: "user-removed" }],
+    callerActors: [{ id: "member-1", actor_type: "member", user_id: "user-remaining" }],
+    publish: async (topic: string) => { published.push(topic); },
+  });
+
+  await f.repo.removeSessionParticipant("session-1", "member-2");
+  await flushMicrotasks();
+
+  assert.deepEqual(published.sort(), ["inbox/user-remaining", "inbox/user-removed"]);
+});
+
+test("removeSessionParticipant does not notify an agent's user id", async () => {
+  const published: string[] = [];
+  const f = removeParticipantFixture({
+    callerId: "member-creator",
+    seats: [
+      { session_id: "session-1", actor_id: "agent-1" },
+      { session_id: "session-1", actor_id: "member-1" },
+    ],
+    actors: [{ id: "agent-1", actor_type: "agent", user_id: "user-agent" }],
+    callerActors: [{ id: "member-1", actor_type: "member", user_id: "user-remaining" }],
+    publish: async (topic: string) => { published.push(topic); },
+  });
+
+  await f.repo.removeSessionParticipant("session-1", "agent-1");
+  await flushMicrotasks();
+
+  assert.deepEqual(published, ["inbox/user-remaining"]);
+});
+
 test("apps: mapApp exposes exactly the canonical keys", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }));
   const items = await repo.listApps({ teamId: "team-1", limit: 100 });
   assert.equal(items.length, 1);
   assert.deepEqual(Object.keys(items[0]).sort(), [
+    "appCode", "appCodeUrl", "usesAppCodeDomain",
     "authMode", "authAudience", "authScope", "authRules", "authModePendingRedeploy",
     "envPendingRedeploy", "typePendingRedeploy",
     "createdAt", "createdByActorId",
@@ -5318,6 +5560,387 @@ test(
   }),
 );
 
+function appInsertErrors(errors: { code: string; message: string }[]) {
+  const calls: any[] = [];
+  const base = appsSupabase({ calls });
+  let inserts = 0;
+  const client = { ...base, from(table: string) {
+    const query = base.from(table);
+    if (table !== "apps") return query;
+    const insert = query.insert;
+    query.insert = (row: any) => {
+      const error = errors[inserts++];
+      if (error) return { select: () => ({ single: async () => ({ data: null, error }) }) };
+      return insert(row);
+    };
+    return query;
+  } };
+  return { repo: appsRepo(client), calls, inserts: () => inserts };
+}
+
+const appCodeCollision = () => ({
+  code: "23505", message: 'duplicate key value violates unique constraint "apps_app_code_key"',
+});
+const localApp = { teamId: "team-1", name: "Local", type: "static_web", localOnly: true };
+
+test("apps: code collisions retry app insertion without duplicating the workspace", async () => {
+  const { repo, calls, inserts } = appInsertErrors(Array.from({ length: 4 }, appCodeCollision));
+  const app = await repo.createApp(localApp);
+  assert.ok(app.id);
+  assert.equal(inserts(), 5);
+  assert.equal(calls.filter((c) => c.table === "workspaces" && c.op === "insert").length, 1);
+  const insertedApp = calls.find((c) => c.table === "apps" && c.op === "insert");
+  assert.ok(insertedApp.row.workspace_id);
+});
+
+test("apps: code collision exhaustion never attempts a sixth insert", async () => {
+  const errors = Array.from({ length: 5 }, appCodeCollision);
+  const { repo, calls, inserts } = appInsertErrors(errors);
+  await assert.rejects(() => repo.createApp(localApp), (error) => error === errors[4]);
+  assert.equal(inserts(), 5);
+  assert.equal(calls.filter((c) => c.table === "workspaces" && c.op === "insert").length, 1);
+});
+
+test("apps: slug conflict is not retried", async () => {
+  const conflict = { code: "23505", message: 'duplicate key value violates unique constraint "apps_team_id_slug_key"' };
+  const { repo, calls, inserts } = appInsertErrors([conflict]);
+  await assert.rejects(() => repo.createApp(localApp), (error) => error === conflict);
+  assert.equal(inserts(), 1);
+  assert.equal(calls.filter((c) => c.table === "workspaces" && c.op === "insert").length, 1);
+});
+
+test("apps: code collision constraint with another error code is not retried", async () => {
+  const failure = { code: "42501", message: 'permission denied for "apps_app_code_key"' };
+  const { repo, inserts } = appInsertErrors([failure]);
+  await assert.rejects(() => repo.createApp(localApp), (error) => error === failure);
+  assert.equal(inserts(), 1);
+});
+
+
+function appCodeDeployHarness(overrides: Record<string, unknown> = {}, extra: any = {}) {
+  const app = {
+    ...APP_ROW, provision_status: "ready", fc_status: "live",
+    fc_endpoint: "https://existing.fcapp.run", fc_function_name: "existing-function",
+    start_spec: APP_DECLARATION.start, deploy_token: null,
+    app_code: "k7m2q9vx4n8p", uses_app_code_domain: false, ...overrides,
+  };
+  const db = appsSupabase({ seed: { apps: [app] } });
+  const repo = appsRepo(db, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { officialLayers: { complete: true } } }),
+    readAppFunction: async () => ({
+      runtime: "custom.debian10", customRuntimeConfig: APP_DECLARATION.start,
+      layers: ["acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3"],
+    }),
+    startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: `apps/${app.id}/code.zip` }),
+    finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
+    ...extra,
+  });
+  const start = async (useAppCodeDomain?: boolean) => {
+    const preflight = await repo.preflightAppDeploy(app.id, { revision: APP_REVISION, declaration: APP_DECLARATION });
+    return repo.deployApp(app.id, { ...APP_DEPLOY, preflightToken: preflight.token, useAppCodeDomain });
+  };
+  return { db, repo, start };
+}
+
+test("apps: existing domains change only after an explicitly opted-in successful deploy", async () => {
+  for (const optIn of [undefined, false, true]) {
+    const { repo, start } = appCodeDeployHarness();
+    const started = await start(optIn);
+    assert.equal(started.usesAppCodeDomain, false, "starting a build must keep the current address");
+    const finished = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+    assert.equal(finished.usesAppCodeDomain, optIn === true);
+    assert.equal(finished.fcEndpoint, "https://existing.fcapp.run");
+  }
+});
+
+
+test("apps: failed opted-in deploy preserves the legacy domain", async () => {
+  const { repo, start } = appCodeDeployHarness({}, {
+    finalizeDeploy: async () => { throw new Error("deployment failed"); },
+  });
+  const started = await start(true);
+  await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(started.deployToken)), /deployment failed/);
+  const app = await repo.getApp("app-1");
+  assert.equal(app.usesAppCodeDomain, false);
+  assert.equal(app.fcEndpoint, "https://existing.fcapp.run");
+});
+
+test("apps: existing undeployed apps do not silently opt into code domains", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
+    provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
+    fc_endpoint: null,
+  }] } }), {
+    startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+    finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
+  });
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const finished = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+  assert.equal(finished.usesAppCodeDomain, false);
+});
+
+test("apps: unchecked retry does not inherit a failed domain switch", async () => {
+  let attempts = 0;
+  const { repo, db, start } = appCodeDeployHarness({}, {
+    finalizeDeploy: async () => {
+      if (++attempts === 1) throw new Error("first attempt failed");
+      return { fcEndpoint: "https://existing.fcapp.run" };
+    },
+  });
+  const first = await start(true);
+  assert.equal((await db.from("apps").select("*").eq("id", "app-1").maybeSingle()).data.deploy_use_app_code_domain, true);
+  await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(first.deployToken)), /first attempt failed/);
+  // The in-memory query double does not run clear_failed_app_deploy. Apply
+  // that database trigger's cleanup before exercising a fresh preflight.
+  await db.from("apps").update({ deploy_token: null, deploy_started_at: null }).eq("id", "app-1");
+  const retry = await start(false);
+  await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(first.deployToken)),
+    (e: any) => e.code === "deploy_token_mismatch" && e.statusCode === 409);
+  const live = await repo.finalizeDeploy("app-1", appFinalize(retry.deployToken));
+  assert.equal(live.usesAppCodeDomain, false);
+  assert.equal((await db.from("apps").select("*").eq("id", "app-1").maybeSingle()).data.deploy_use_app_code_domain, null);
+  await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(retry.deployToken)),
+    (e: any) => e.code === "deploy_token_mismatch" && e.statusCode === 409);
+});
+
+test("apps: code domain choice rejects non-booleans before provisioning", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+    startDeploy: async () => { assert.fail("invalid choice reached provisioning"); },
+  });
+  for (const value of ["true", "false", 1, null]) {
+    await assert.rejects(() => repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: value as any }),
+      (e: any) => e.code === "validation_failed" && e.statusCode === 400);
+  }
+});
+
+test("apps: already active code domain never reverts on unchecked or omitted deploys", async () => {
+  for (const choice of [undefined, false]) {
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW,
+      provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: true,
+    }] } });
+    const repo = appsRepo(db, {
+      startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+      finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
+    });
+    const started = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: choice });
+    assert.equal(started.usesAppCodeDomain, true);
+    const live = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+    assert.equal(live.usesAppCodeDomain, true);
+  }
+});
+
+test("apps: platform auth env follows the persisted attempt domain choice", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  const authBase = process.env.AUTH_BASE_URL;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  process.env.AUTH_BASE_URL = "https://login.example.com";
+  try {
+    for (const choice of [false, true]) {
+      const db = appsSupabase({ seed: { apps: [{ ...APP_ROW,
+        provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false, auth_mode: "platform",
+      }] } });
+      let deployedEnv: any;
+      const repo = appsRepo(db, {
+        startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+        finalizeDeploy: async ({ platformAuthEnv }: any) => {
+          deployedEnv = platformAuthEnv;
+          assert.equal((await repo.getApp("app-1")).usesAppCodeDomain, false);
+          return { fcEndpoint: "https://existing.fcapp.run" };
+        },
+      });
+      const started = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: choice });
+      // A finalize body cannot override the native-approved choice on the token.
+      await repo.finalizeDeploy("app-1", { ...appFinalize(started.deployToken), useAppCodeDomain: !choice } as any);
+      assert.equal(deployedEnv.APP_PUBLIC_URL, choice
+        ? "https://a-k7m2q9vx4n8p.apps.example.com"
+        : "https://my-app-app-1.apps.example.com");
+    }
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+    if (authBase === undefined) delete process.env.AUTH_BASE_URL;
+    else process.env.AUTH_BASE_URL = authBase;
+  }
+});
+
+test("apps: domain gate treats absent mode as legacy even when a raw code is present", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  const authBase = process.env.AUTH_BASE_URL;
+  process.env.AUTH_BASE_URL = "https://login.example.com";
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  try {
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
+      provision_status: "ready", app_code: "k7m2q9vx4n8p", auth_mode: "platform",
+    }] } }), {
+      startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+      finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
+    });
+    const started = await repo.deployApp("app-1", APP_DEPLOY);
+    const live = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+    assert.equal(live.usesAppCodeDomain, false);
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+    if (authBase === undefined) delete process.env.AUTH_BASE_URL;
+    else process.env.AUTH_BASE_URL = authBase;
+  }
+});
+
+test("apps: code domain finalize cannot overwrite a replacement deployToken", async () => {
+  for (const fails of [false, true]) {
+    const db = appsSupabase({ seed: { apps: [{ ...APP_ROW,
+      provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
+    }] } });
+    const repo = appsRepo(db, {
+      startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip" }),
+      finalizeDeploy: async () => {
+        // A timed-out finalizer can finish after a newer attempt owns the row.
+        await db.from("apps").update({ deploy_token: "replacement-token", deploy_use_app_code_domain: false,
+          fc_status: "awaiting_build" }).eq("id", "app-1").select("*").maybeSingle();
+        if (fails) throw new Error("old finalizer failed");
+        return { fcEndpoint: "https://existing.fcapp.run" };
+      },
+    });
+    const started = await repo.deployApp("app-1", { ...APP_DEPLOY, useAppCodeDomain: true });
+    await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(started.deployToken)));
+    const row = (await db.from("apps").select("*").eq("id", "app-1").maybeSingle()).data;
+    assert.equal(row.deploy_token, "replacement-token");
+    assert.equal(row.deploy_use_app_code_domain, false);
+    assert.equal(row.fc_status, "awaiting_build");
+    assert.equal(row.uses_app_code_domain, false);
+  }
+});
+
+test("apps: code domain remains active when finalizing an older attempt without a choice", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  const authBase = process.env.AUTH_BASE_URL;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  process.env.AUTH_BASE_URL = "https://login.example.com";
+  try {
+    for (const requested of [null, false]) {
+      let deployedEnv: any;
+      const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW,
+        provision_status: "ready", app_code: "k7m2q9vx4n8p", uses_app_code_domain: true,
+        deploy_use_app_code_domain: requested, deploy_token: APP_PREFLIGHT_TOKEN, fc_status: "awaiting_build",
+        fc_function_name: "existing-function", auth_mode: "platform",
+      }] } }), {
+        finalizeDeploy: async ({ platformAuthEnv }: any) => {
+          deployedEnv = platformAuthEnv;
+          return { fcEndpoint: "https://existing.fcapp.run" };
+        },
+      });
+      const live = await repo.finalizeDeploy("app-1", appFinalize(APP_PREFLIGHT_TOKEN));
+      assert.equal(live.usesAppCodeDomain, true);
+      assert.equal(deployedEnv.APP_PUBLIC_URL, "https://a-k7m2q9vx4n8p.apps.example.com");
+    }
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+    if (authBase === undefined) delete process.env.AUTH_BASE_URL;
+    else process.env.AUTH_BASE_URL = authBase;
+  }
+});
+
+test("apps: successful domain activation invalidates both cached host aliases", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  __resetVanityCache();
+  try {
+    const id = "18e4ecad-6189-495b-a873-7fe09179a5f5";
+    const { db, repo, start } = appCodeDeployHarness({ id, slug: "shop", fc_endpoint: "https://old.fcapp.run" }, {
+      finalizeDeploy: async () => ({ fcEndpoint: "https://new.fcapp.run" }),
+    });
+    const lookup = makeVanityLookup({ getServiceRoleClient: () => db });
+    assert.equal((await lookup("shop-18e4ecad.apps.example.com"))?.fcEndpoint, "https://old.fcapp.run");
+    assert.equal(await lookup("a-k7m2q9vx4n8p.apps.example.com"), null);
+    const started = await start(true);
+    await repo.finalizeDeploy(id, appFinalize(started.deployToken));
+    for (const host of ["shop-18e4ecad.apps.example.com", "a-k7m2q9vx4n8p.apps.example.com"]) {
+      assert.equal((await lookup(host))?.fcEndpoint, "https://new.fcapp.run");
+    }
+  } finally {
+    __resetVanityCache();
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+  }
+});
+
+test("apps: app responses expose a candidate code URL while publicUrl follows active mode", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  try {
+    for (const [mode, storedCode] of [false, true, undefined].flatMap(mode => ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"].map(code => [mode, code] as const))) {
+      const calls: any[] = [];
+      const row = { ...APP_ROW, id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", app_code: storedCode, uses_app_code_domain: mode };
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [row] } }));
+      const app = await repo.getApp(row.id);
+      assert.equal(app.appCode, "a-k7m2q9vx4n8p");
+      assert.equal(app.usesAppCodeDomain, mode === true);
+      assert.equal(app.appCodeUrl, "https://a-k7m2q9vx4n8p.apps.example.com");
+      assert.equal(app.publicUrl, mode ? "https://a-k7m2q9vx4n8p.apps.example.com" : "https://shop-18e4ecad.apps.example.com");
+      const columns = calls.find((call) => call.table === "apps" && call.op === "select").columns.split(",").map((column: string) => column.trim());
+      assert.ok(columns.includes("app_code"));
+      assert.ok(columns.includes("uses_app_code_domain"));
+    }
+    delete process.env.APPS_PUBLIC_DOMAIN;
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, app_code: "k7m2q9vx4n8p", uses_app_code_domain: true }] } }));
+    const app = await repo.getApp(APP_ROW.id);
+    assert.equal(app.appCode, "a-k7m2q9vx4n8p");
+    assert.equal(app.appCodeUrl, null);
+    assert.equal(app.publicUrl, null);
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+  }
+});
+
+
+// Task 3: repository read and cache boundaries.
+import { makeVanityLookup, __resetVanityCache } from "../src/lib/apps-vanity.js";
+
+test("apps: saving auth settings invalidates the active code and legacy aliases", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  const id = "18e4ecad-6189-495b-a873-7fe09179a5f5";
+  const calls: any[] = [];
+  const db = appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id, slug: "shop", app_code: "k7m2q9vx4n8p", uses_app_code_domain: true }] } });
+  const repo = appsRepo(db, { createServiceRoleClient: () => db });
+  const lookup = makeVanityLookup({ getServiceRoleClient: () => db });
+  __resetVanityCache();
+  try {
+    const hosts = ["shop-18e4ecad.apps.example.com", "a-k7m2q9vx4n8p.apps.example.com"];
+    for (const host of hosts) assert.equal((await lookup(host))?.authMode, "none");
+    await repo.updateApp(id, { authMode: "platform" });
+    for (const host of hosts) assert.equal((await lookup(host))?.authMode, "platform", "no stale auth settings on either alias");
+    const selected = calls.find(c => c.table === "apps" && c.op === "select" && c.columns.includes("provision_status"));
+    assert.ok(selected.columns.includes("app_code"));
+    assert.ok(selected.columns.includes("uses_app_code_domain"));
+  } finally {
+    __resetVanityCache();
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+  }
+});
+
+test("apps: custom-domain responses propagate the stored code mode into CNAME records", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  try {
+    for (const mode of [undefined, false, true]) {
+      const calls: any[] = [];
+      const db = appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id: "18e4ecad-6189-495b-a873-7fe09179a5f5", slug: "shop", app_code: "k7m2q9vx4n8p", uses_app_code_domain: mode }] } });
+      const repo = appsRepo(db);
+      const result = await repo.setAppCustomDomain("18e4ecad-6189-495b-a873-7fe09179a5f5", "shop.example.org");
+      assert.equal(result.dns[0].value, mode === true ? "a-k7m2q9vx4n8p.apps.example.com" : "shop-18e4ecad.apps.example.com");
+      for (const call of calls.filter(c => c.table === "apps" && ["select", "update.select"].includes(c.op) && c.columns !== "*")) {
+        assert.ok(call.columns.includes("app_code"));
+        assert.ok(call.columns.includes("uses_app_code_domain"));
+      }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+  }
+});
 // ── getHomeOrgId: the login chooser's narrowing hint ─────────────────────────
 
 function homeOrgRepo(row: any, { uid = "u1", sharedOrg = "org-shared" } = {}) {
@@ -5360,7 +5983,7 @@ test("getHomeOrgId is null when there is no users row", async () => {
 
 function authInfoRepo({appOrg="org-1", teamOrg="org-1", member=true, rolesError=null, appVisible=true, authRules: authRules = [{path:"/staff",auth:"required",audience:"org"}]}={}) {
  const calls=[];
- const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
+ const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{app_code:"a-k7m2q9vx4n8p",id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
  return {repo,calls};
 }
 test("auth_info_checks_app_and_catalog_visibility",async()=>{
@@ -5618,4 +6241,35 @@ test("runtime info does not hide FC recreated by a partially failed restoration"
  assert.equal(info.currentDeployment.uninstallOperationId,undefined);
  assert.equal(info.currentDeployment.historical,undefined);
  assert.equal(info.currentDeployment.drift,true);
+});
+
+
+test("apps: list and get normalize both stored code forms without changing ids", async () => {
+  for (const app_code of ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p", "ak7m2q9vx4n8"]) {
+    const row = { ...APP_ROW, app_code };
+    const repo = appsRepo(appsSupabase({ seed: { apps: [row] } }));
+    const expected = app_code === "ak7m2q9vx4n8" ? "a-ak7m2q9vx4n8" : "a-k7m2q9vx4n8p";
+    const listed = await repo.listApps({ teamId: row.team_id, limit: 100 });
+    const fetched = await repo.getApp(row.id);
+    for (const app of [listed[0], fetched]) {
+      assert.equal(app.id, "app-1");
+      assert.equal(app.appCode, expected);
+    }
+  }
+});
+
+test("apps: list and get reject corrupt stored codes without leaking their value", async () => {
+  for (const app_code of [undefined, null, "", "bad-secret-code", "K7M2Q9VX4N8P", "a-a-k7m2q9vx4n8p", "a-k7m2q9vx4n8p "]) {
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, app_code }] } }));
+    for (const read of [() => repo.listApps({ teamId: "team-1", limit: 100 }), () => repo.getApp("app-1")]) {
+      await assert.rejects(read, (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.statusCode, 502);
+        assert.equal(error.code, "upstream_unavailable");
+        assert.match(error.message, /invalid app_code/);
+        if (app_code) assert.ok(!error.message.includes(app_code));
+        return true;
+      });
+    }
+  }
 });

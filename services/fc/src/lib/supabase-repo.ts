@@ -12,6 +12,11 @@ import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
+import {
+  lookupMemberInboxRecipients,
+  publishSessionParticipantsChanged,
+  removedMemberUserId,
+} from "./session-participant-notify.js";
 import { ADMIN_LIST_CAP, clampPage, IN_FILTER_BATCH, isPlatformOperator, safeSearch } from "./platform-operators.js";
 import {
   DEFAULT_LIST_LIMIT,
@@ -169,7 +174,7 @@ import {
   verificationTxtName,
   verifyDomainOwnership,
 } from "./apps-custom-domain.js";
-import { invalidateAppHosts, invalidateVanityHost } from "./apps-vanity.js";
+import { invalidateAppHosts } from "./apps-vanity.js";
 
 /**
  * The client-facing shape of an app's custom domain.
@@ -185,7 +190,7 @@ function customDomainView(row: any) {
     verified: Boolean(row.custom_domain_verified_at),
     verifiedAt: row.custom_domain_verified_at ?? null,
     dns: domain
-      ? customDomainRecords({ id: row.id, slug: row.slug }, domain, row.custom_domain_token ?? "")
+      ? customDomainRecords({ id: row.id, slug: row.slug, appCode: row.app_code, usesAppCodeDomain: row.uses_app_code_domain }, domain, row.custom_domain_token ?? "")
       : [],
   };
 }
@@ -685,6 +690,10 @@ export function createSupabaseBusinessRepository(options) {
     // never affected. It delivers to agent inboxes as well as sending the
     // notifications, hence the name change from `dispatchPush`.
     fanoutMessage,
+    // Optional inbox publish for a roster change. Absent in tests and in
+    // processes that have no MQTT publisher. Failures are logged and do not
+    // change the HTTP result of the seat write.
+    publishSessionParticipantInbox,
   } = options;
 
   if (!supabaseUrl) throw new Error("SUPABASE_URL is required");
@@ -841,6 +850,18 @@ export function createSupabaseBusinessRepository(options) {
     }
     const { createServiceRoleClient } = await import("./supabase.js");
     return createServiceRoleClient();
+  }
+
+  function scheduleSessionParticipantsChanged(sessionId: string, removedUserId: string | null = null) {
+    if (!publishSessionParticipantInbox) return;
+    void publishSessionParticipantsChanged({
+      sessionId,
+      removedUserId,
+      lookup: () => lookupMemberInboxRecipients(supabase, sessionId),
+      publish: publishSessionParticipantInbox,
+    }).catch((err: unknown) => {
+      console.error("[session-participants] notify failed (swallowed):", err);
+    });
   }
 
   async function findAgent(admin, agentId) {
@@ -3625,7 +3646,7 @@ export function createSupabaseBusinessRepository(options) {
       // SECURITY DEFINER RPC: verifies team membership and inserts the caller as
       // a participant, bypassing the participant-only RLS that would otherwise
       // hide the session and block self-insert. Idempotent.
-      const { error } = await supabase.rpc("join_session", { p_session_id: sessionId });
+      const { data, error } = await supabase.rpc("join_session", { p_session_id: sessionId });
       if (error) {
         if (error.code === "P0002") throw new ApiError(404, "not_found", "session not found");
         if (error.code === "42501") throw new ApiError(403, "forbidden", "not a member of this session's team");
@@ -3634,6 +3655,7 @@ export function createSupabaseBusinessRepository(options) {
       // The caller is now a participant, so RLS lets getSession read the row.
       const session = await this.getSession(sessionId);
       if (!session) throw new ApiError(404, "not_found", "session not found");
+      if (data === true) scheduleSessionParticipantsChanged(sessionId);
       return session;
     },
 
@@ -3795,8 +3817,13 @@ export function createSupabaseBusinessRepository(options) {
       const row = Array.isArray(data) ? data[0] : data;
       if (!row) throw new ApiError(502, "upstream_unavailable", "ensure_gateway_session returned no row");
       const acpSessionId = row.acp_session_id ?? row.acpSessionId ?? null;
+      const sessionId = row.session_id ?? row.sessionId ?? null;
+      const insertedActorIds = row.inserted_actor_ids ?? row.insertedActorIds ?? [];
+      if (sessionId && Array.isArray(insertedActorIds) && insertedActorIds.length > 0) {
+        scheduleSessionParticipantsChanged(sessionId);
+      }
       return {
-        sessionId: row.session_id ?? row.sessionId ?? null,
+        sessionId,
         // The amuxd daemon deserializes `gatewaySessionId` as a REQUIRED field
         // and uses it as the logical ACP session id it later looks up via
         // getSessionByAcp (which queries the acp_session_id column) — so it must
@@ -4194,12 +4221,16 @@ export function createSupabaseBusinessRepository(options) {
       // Re-joining no longer rewrites `role`. That is the safer half of the
       // change: the caller always sends "member", so the old path quietly
       // demoted an owner on every message they sent through a channel.
-      const { error: insertError } = await supabase
+      // `ignoreDuplicates` plus `select` returns only the row this call inserted.
+      // An empty array is a conflict, not an error — do not chain `.single()`,
+      // which turns zero rows into a PostgREST error. The read below still
+      // returns the existing seat for the HTTP body.
+      const { data: insertedRows, error: insertError } = await supabase
         .from("session_participants")
-        .upsert(row, { onConflict: "session_id,actor_id", ignoreDuplicates: true });
+        .upsert(row, { onConflict: "session_id,actor_id", ignoreDuplicates: true })
+        .select("session_id, actor_id, role, joined_at");
       if (insertError) throw insertError;
-      // `ignoreDuplicates` returns no rows for the conflict case, so the read
-      // is separate rather than chained off the write.
+      const inserted = Array.isArray(insertedRows) && insertedRows.length > 0;
       const { data, error } = await supabase
         .from("session_participants")
         .select("session_id, actor_id, role, joined_at")
@@ -4207,6 +4238,7 @@ export function createSupabaseBusinessRepository(options) {
         .eq("actor_id", input.actorId)
         .single();
       if (error) throw error;
+      if (inserted) scheduleSessionParticipantsChanged(sessionId);
       return {
         sessionId: data.session_id,
         actorId: data.actor_id,
@@ -4341,6 +4373,16 @@ export function createSupabaseBusinessRepository(options) {
         );
       }
 
+      // Remember a removed human's login before the row is gone. Agents are
+      // not inbox recipients even when they carry a user_id.
+      const { data: seatActor, error: seatActorErr } = await admin
+        .from("actors")
+        .select("actor_type, user_id")
+        .eq("id", actorId)
+        .maybeSingle();
+      if (seatActorErr) throw seatActorErr;
+      const removedUserId = removedMemberUserId(seatActor);
+
       // Asking for the deleted rows back is what tells a removal apart from a
       // miss; without it a wrong id is as silent as the RLS denial was.
       const { data: removed, error } = await admin
@@ -4351,6 +4393,7 @@ export function createSupabaseBusinessRepository(options) {
         .select("actor_id");
       if (error) throw error;
       if (!removed?.length) throw new ApiError(404, "not_found", "participant not found");
+      scheduleSessionParticipantsChanged(sessionId, removedUserId);
     },
 
     // --- Actor reads + external + access (member-access table) ---
@@ -4866,27 +4909,42 @@ export function createSupabaseBusinessRepository(options) {
         .single();
       if (wsErr) throw wsErr;
 
-      const { data: row, error: appErr } = await supabase
-        .from("apps")
-        .insert({
-          team_id: input.teamId,
-          created_by_actor_id: createdByActorId,
-          org_id: appOrgId,
-          name: input.name,
-          slug,
-          type: input.type,
-          visibility,
-          workspace_id: ws.id,
-          git_remote_url: importUrl,
-          // A local checkout needs no provisioning at all — the files are
-          // already there. Leaving it `pending` would send the desktop down
-          // the seed path, which writes the starter template over whatever the
-          // user pointed us at.
-          provision_status: localOnly ? "ready" : "pending",
-        })
-        .select(APP_COLUMNS)
-        .single();
-      if (appErr) throw appErr;
+      let row: any;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const result = await supabase
+          .from("apps")
+          .insert({
+            team_id: input.teamId,
+            created_by_actor_id: createdByActorId,
+            org_id: appOrgId,
+            name: input.name,
+            slug,
+            type: input.type,
+            visibility,
+            workspace_id: ws.id,
+            git_remote_url: importUrl,
+            // A local checkout needs no provisioning at all — the files are
+            // already there. Leaving it `pending` would send the desktop down
+            // the seed path, which writes the starter template over whatever the
+            // user pointed us at.
+            provision_status: localOnly ? "ready" : "pending",
+          })
+          .select(APP_COLUMNS)
+          .single();
+        if (!result.error) {
+          row = result.data;
+          break;
+        }
+        // Retry only the random-code collision; name/slug and other errors
+        // must still reach the caller. Reuse the workspace already created.
+        if (
+          result.error.code !== "23505" ||
+          !String(result.error.message).includes('"apps_app_code_key"') ||
+          attempt === 4
+        ) {
+          throw result.error;
+        }
+      }
 
       // Both import paths stop here: the app's code lives somewhere we did not
       // provision, so there is no repo of ours to create and no deploy key to
@@ -4960,7 +5018,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain, deploy_token, deploy_started_at",
+          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain, deploy_token, deploy_started_at",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -5040,6 +5098,8 @@ export function createSupabaseBusinessRepository(options) {
               appId,
               name: cur.name,
               slug: cur.slug,
+              appCode: cur.app_code,
+              usesAppCodeDomain: cur.uses_app_code_domain,
               from: fromAuthMode,
               to: nextAuthMode,
               oauthClientId: cur.oauth_client_id ?? null,
@@ -5147,7 +5207,7 @@ export function createSupabaseBusinessRepository(options) {
         return null;
       }
       // The proxy caches auth settings per host; without this a saved rule waits out the TTL.
-      invalidateAppHosts({ id: appId, slug: cur.slug, customDomain: cur.custom_domain });
+      invalidateAppHosts({ id: appId, slug: cur.slug, appCode: cur.app_code, usesAppCodeDomain: cur.uses_app_code_domain, customDomain: cur.custom_domain });
       return mapApp(data);
     },
 
@@ -5165,7 +5225,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "id, slug, team_id, created_by_actor_id, custom_domain, custom_domain_token, custom_domain_verified_at",
+          "id, slug, app_code, uses_app_code_domain, team_id, created_by_actor_id, custom_domain, custom_domain_token, custom_domain_verified_at",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -5210,7 +5270,7 @@ export function createSupabaseBusinessRepository(options) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", appId)
-        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .select("id, slug, app_code, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
         .maybeSingle();
       if (error) {
         // 23505 is the unique index on lower(custom_domain): another app has
@@ -5223,8 +5283,8 @@ export function createSupabaseBusinessRepository(options) {
       if (!data) return null;
       // The old name must stop resolving here immediately, and the new one must
       // not be remembered as a miss from before it existed.
-      invalidateVanityHost(gate.cur.custom_domain);
-      invalidateVanityHost(domain);
+      invalidateAppHosts({ id: appId, slug: gate.cur.slug, appCode: gate.cur.app_code, usesAppCodeDomain: gate.cur.uses_app_code_domain, customDomain: gate.cur.custom_domain });
+      invalidateAppHosts({ id: appId, slug: data.slug, appCode: data.app_code, usesAppCodeDomain: data.uses_app_code_domain, customDomain: domain });
       return customDomainView(data);
     },
 
@@ -5252,13 +5312,13 @@ export function createSupabaseBusinessRepository(options) {
         .from("apps")
         .update({ custom_domain_verified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
         .eq("id", appId)
-        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .select("id, slug, app_code, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
       // Until this drops, the hostname is cached as "not an app" from the
       // requests made while it was still unverified.
-      invalidateVanityHost(domain);
+      invalidateAppHosts({ id: appId, slug: data.slug, appCode: data.app_code, usesAppCodeDomain: data.uses_app_code_domain, customDomain: domain });
       return customDomainView(data);
     },
 
@@ -5274,11 +5334,11 @@ export function createSupabaseBusinessRepository(options) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", appId)
-        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .select("id, slug, app_code, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at")
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
-      invalidateVanityHost(gate.cur.custom_domain);
+      invalidateAppHosts({ id: appId, slug: gate.cur.slug, appCode: gate.cur.app_code, usesAppCodeDomain: gate.cur.uses_app_code_domain, customDomain: gate.cur.custom_domain });
       return customDomainView(data);
     },
 
@@ -5350,20 +5410,23 @@ export function createSupabaseBusinessRepository(options) {
       return { cancelled: cancelled === true };
     },
 
-    async deployApp(appId: string, input: { gitCommitSha?: string; revision?: string; declaration?: unknown; preflightToken?: string }) {
+    async deployApp(appId: string, input: { gitCommitSha?: string; revision?: string; declaration?: unknown; preflightToken?: string; useAppCodeDomain?: boolean }) {
       // Optional: only a Gitea-managed app pins its deploy to a forge commit.
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
       // What the checkout declares, read by the daemon before it asked for a
       // deploy. It decides which handle this deploy carries — an OSS upload or
       // a registry to push an image to — so it has to arrive here, not at
       // finalize where the rest of the declaration does.
+      if (input?.useAppCodeDomain !== undefined && typeof input.useAppCodeDomain !== "boolean") {
+        throw new ApiError(400, "validation_failed", "useAppCodeDomain must be a boolean");
+      }
       const declaration = parseAppDeployDeclaration(input?.declaration);
       const declaredBuildKind = declaration.build.kind;
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind")
+        .select("id, slug, app_code, uses_app_code_domain, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -5384,7 +5447,7 @@ export function createSupabaseBusinessRepository(options) {
       if (existing.provision_status !== "ready") {
         throw new ApiError(409, "app_not_ready", "app must be seeded (provision_status=ready) before deploy");
       }
-      assertDeployAllowed({ id: existing.id, slug: existing.slug, auth_mode: existing.auth_mode, runtime: existing.runtime });
+      assertDeployAllowed({ id: existing.id, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: existing.uses_app_code_domain, auth_mode: existing.auth_mode, runtime: existing.runtime });
       const progress = checkDeployInProgress({
         fc_status: existing.fc_status,
         deploy_started_at: existing.deploy_started_at,
@@ -5422,6 +5485,7 @@ export function createSupabaseBusinessRepository(options) {
             fc_status: "awaiting_build",
             provision_error: null,
             deploy_token: deployToken,
+            deploy_use_app_code_domain: existing.uses_app_code_domain === true || input?.useAppCodeDomain === true,
             deploy_started_at: deployStartedAt,
             // runtime and git_commit_sha are the last successful deployment.
             // The proposal travels in this response and is committed at finalize.
@@ -5450,6 +5514,7 @@ export function createSupabaseBusinessRepository(options) {
           .update({
             fc_status: "deploy_error",
             provision_error: String(e?.message ?? e),
+            deploy_use_app_code_domain: null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId).eq("deploy_token", deployToken);
@@ -5474,7 +5539,7 @@ export function createSupabaseBusinessRepository(options) {
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, git_auth_kind")
+        .select("id, slug, app_code, uses_app_code_domain, deploy_use_app_code_domain, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, git_auth_kind")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -5484,12 +5549,15 @@ export function createSupabaseBusinessRepository(options) {
       if (!existing.deploy_token || existing.deploy_token !== deployToken) {
         throw new ApiError(409, "deploy_token_mismatch", "deployToken does not match the in-progress deploy");
       }
-      assertDeployAllowed({ id: existing.id, slug: existing.slug, auth_mode: existing.auth_mode, runtime: existing.runtime });
+      assertDeployAllowed({ id: existing.id, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: existing.uses_app_code_domain, auth_mode: existing.auth_mode, runtime: existing.runtime });
       if (!existing.fc_function_name) throw new ApiError(409, "not_deploying", "app has no function; call deploy first");
       if (!isLegalFcTransition(existing.fc_status, "deploying")) {
         throw new ApiError(409, "invalid_deploy_state", `cannot finalize from fc_status ${existing.fc_status}`);
       }
       if (!finalizeDeploy) throw deployUnavailable(deployUnavailableReason);
+      // The approved choice belongs to this token. Older in-flight attempts
+      // may have no choice recorded; an already active app never reverts.
+      const usesAppCodeDomain = existing.uses_app_code_domain === true || existing.deploy_use_app_code_domain === true;
       const revision = String(input?.revision ?? "");
       validateAppOrigin({ appId: existing.id, slug: existing.slug });
       const info = await this.getAppRuntimeInfo(appId);
@@ -5503,7 +5571,8 @@ export function createSupabaseBusinessRepository(options) {
       if (lifecycleError) throw lifecycleError;
       if (!lifecycle) lifecycle = await lifecycleRpc(lifecycleAdmin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "deploy", p_token: deployToken });
       if (!lifecycle || lifecycle.kind !== "deploy" || lifecycle.token !== deployToken) throw new ApiError(409, "lifecycle_conflict", "this deploy no longer owns the app lifecycle");
-      // Claim this specific token and state atomically before FC or storage mutation.
+      // This supersedes the feature's token-only claim: retain that token check
+      // AND main's state/lifecycle checks before FC or storage mutation.
       const { data: claimed, error: claimError } = await supabase.from("apps")
         .update({ fc_status: "deploying", updated_at: new Date().toISOString() })
         .eq("id", appId).eq("deploy_token", deployToken).eq("fc_status", existing.fc_status)
@@ -5519,7 +5588,7 @@ export function createSupabaseBusinessRepository(options) {
         // is still protected the moment auth_mode flips.
         let platformAuthEnv: Record<string, string> | undefined;
         if ((existing.auth_mode ?? "none") === "platform") {
-          platformAuthEnv = buildPlatformAuthEnv({ appId, slug: existing.slug });
+          platformAuthEnv = buildPlatformAuthEnv({ appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain });
         }
         // Which database this app's data lives in is a fact decided once, at
         // the first successful finalize — not a property re-derived from the
@@ -5561,6 +5630,7 @@ export function createSupabaseBusinessRepository(options) {
           .from("apps")
           .update({
             fc_status: "live",
+            uses_app_code_domain: usesAppCodeDomain,
             fc_endpoint: r.fcEndpoint,
             ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
             // What is now running, as opposed to what the deploy set out to
@@ -5597,6 +5667,7 @@ export function createSupabaseBusinessRepository(options) {
             ...(orgId ? { org_id: orgId } : {}),
             provision_error: null,
             deploy_token: null,
+            deploy_use_app_code_domain: null,
             deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
@@ -5604,10 +5675,10 @@ export function createSupabaseBusinessRepository(options) {
           .select(APP_COLUMNS)
           .maybeSingle();
         if (updErr) throw updErr;
-        if (!row) return null;
+        if (!row) throw new ApiError(409, "deploy_token_mismatch", "deployToken no longer owns the in-progress deploy");
         await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: deployToken });
         // The proxy caches fc_endpoint/fc_status per host.
-        invalidateAppHosts({ id: appId, slug: existing.slug, customDomain: existing.custom_domain });
+        invalidateAppHosts({ id: appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: row.uses_app_code_domain, customDomain: existing.custom_domain });
         return mapApp(row);
       } catch (e: any) {
         await supabase
@@ -5615,6 +5686,7 @@ export function createSupabaseBusinessRepository(options) {
           .update({
             fc_status: "deploy_error",
             provision_error: String(e?.message ?? e),
+            deploy_use_app_code_domain: null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId).eq("deploy_token", deployToken).eq("fc_status", "deploying");
@@ -6931,7 +7003,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
         .select(
-          "id, team_id, workspace_id, slug, name, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id, custom_domain",
+          "id, team_id, workspace_id, slug, name, app_code, uses_app_code_domain, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id, custom_domain",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -7000,7 +7072,7 @@ export function createSupabaseBusinessRepository(options) {
 
       const { error: delErr } = await admin.from("apps").delete().eq("id", appId);
       if (delErr) throw delErr;
-      invalidateAppHosts({ id: appId, slug: existing.slug, customDomain: existing.custom_domain });
+      invalidateAppHosts({ id: appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: existing.uses_app_code_domain, customDomain: existing.custom_domain });
       return true;
       } catch (error: any) {
         // A known failure can be retried. A transport failure remains fenced.

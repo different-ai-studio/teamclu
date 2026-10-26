@@ -104,10 +104,14 @@ impl MqttClient {
             opts.set_transport(Transport::Ws);
         } else if broker.use_tls && std::env::var("AMUXD_MQTT_INSECURE_TLS").as_deref() == Ok("1") {
             warn!("AMUXD_MQTT_INSECURE_TLS=1: MQTT TLS certificate verification is disabled");
-            let mut tls_config = rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(client_danger::NoCertVerifier))
-                .with_no_client_auth();
+            let mut tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .expect("ring supports the default TLS protocol versions")
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(client_danger::NoCertVerifier))
+            .with_no_client_auth();
             tls_config.alpn_protocols = vec![];
 
             opts.set_transport(Transport::tls_with_config(
@@ -236,9 +240,121 @@ mod tests {
             client.eventloop.mqtt_options.max_packet_size(),
             4 * 1024 * 1024
         );
-        assert_eq!(
-            client.eventloop.state.max_outgoing_packet_size,
-            4 * 1024 * 1024
-        );
+        // The outgoing cap moved from public MqttState into the network
+        // codec in rumqttc 0.25; the loopback tests below exercise that path.
+    }
+
+    enum LoopbackWire {
+        Tcp(tokio::net::TcpStream),
+        WebSocket(Box<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>>),
+    }
+
+    impl LoopbackWire {
+        async fn receive(&mut self) -> Vec<u8> {
+            use futures_util::StreamExt;
+            use tokio::io::AsyncReadExt;
+            match self {
+                Self::Tcp(stream) => {
+                    let mut bytes = vec![stream.read_u8().await.unwrap()];
+                    let mut remaining = 0usize;
+                    let mut shift = 0;
+                    loop {
+                        let byte = stream.read_u8().await.unwrap();
+                        bytes.push(byte);
+                        remaining |= usize::from(byte & 127) << shift;
+                        if byte & 128 == 0 {
+                            break;
+                        }
+                        shift += 7;
+                    }
+                    let header_len = bytes.len();
+                    bytes.resize(header_len + remaining, 0);
+                    stream.read_exact(&mut bytes[header_len..]).await.unwrap();
+                    bytes
+                }
+                Self::WebSocket(stream) => {
+                    stream.next().await.unwrap().unwrap().into_data().to_vec()
+                }
+            }
+        }
+
+        async fn send(&mut self, bytes: Vec<u8>) {
+            use futures_util::SinkExt;
+            use tokio::io::AsyncWriteExt;
+            match self {
+                Self::Tcp(stream) => stream.write_all(&bytes).await.unwrap(),
+                Self::WebSocket(stream) => stream
+                    .send(tokio_tungstenite::tungstenite::Message::Binary(
+                        bytes.into(),
+                    ))
+                    .await
+                    .unwrap(),
+            }
+        }
+    }
+
+    async fn large_live_event_roundtrip(websocket: bool) {
+        use rumqttc::{Event, Packet};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (received, wait_received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut wire = if websocket {
+                let stream = tokio_tungstenite::accept_hdr_async(stream, |request: &tokio_tungstenite::tungstenite::handshake::server::Request, mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    assert_eq!(request.uri().path(), "/mqtt");
+                    response.headers_mut().insert("Sec-WebSocket-Protocol", "mqtt".parse().unwrap());
+                    Ok(response)
+                }).await.unwrap();
+                LoopbackWire::WebSocket(Box::new(stream))
+            } else {
+                LoopbackWire::Tcp(stream)
+            };
+            assert_eq!(wire.receive().await[0], 0x10, "MQTT CONNECT");
+            wire.send(vec![0x20, 2, 0, 0]).await;
+            let publish = wire.receive().await;
+            assert_eq!(publish[0], 0x30, "QoS 0 PUBLISH");
+            assert!(publish.len() > 64 * 1024);
+            wire.send(publish).await;
+            // A broker stays connected after delivering a message. Closing here
+            // can race the client read and turn the test into an EOF test.
+            wait_received.await.unwrap();
+        });
+        let mut config = test_config();
+        config.mqtt.broker_url = if websocket {
+            format!("ws://{address}/mqtt")
+        } else {
+            format!("mqtt://{address}")
+        };
+        let mut mqtt = MqttClient::new(&config, "actor", "token").unwrap();
+        let payload = vec![b'x'; 64 * 1024];
+        mqtt.client
+            .publish("amux/team/live", QoS::AtMostOnce, false, payload.clone())
+            .await
+            .unwrap();
+        loop {
+            if let Event::Incoming(Packet::Publish(message)) = mqtt.eventloop.poll().await.unwrap()
+            {
+                assert_eq!(message.topic, "amux/team/live");
+                assert_eq!(message.payload.as_ref(), payload);
+                break;
+            }
+        }
+        received.send(()).unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn large_live_events_roundtrip_over_mqtt_tcp() {
+        tokio::time::timeout(Duration::from_secs(5), large_live_event_roundtrip(false))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn large_live_events_roundtrip_over_mqtt_websocket() {
+        tokio::time::timeout(Duration::from_secs(5), large_live_event_roundtrip(true))
+            .await
+            .unwrap();
     }
 }

@@ -1,5 +1,5 @@
 import { computeNextRun } from "./app-cron-schedule.js";
-import { appPublicUrl } from "./apps-public-host.js";
+import { appCurrentPublicUrl } from "./apps-public-host.js";
 
 /**
  * The tick: claim every job that is due, send its request, record what happened.
@@ -254,7 +254,7 @@ async function executeJob(
 
   const { data: app, error } = await db
     .from("apps")
-    .select("id, slug, fc_status")
+    .select("id, slug, fc_status, app_code, uses_app_code_domain")
     .eq("id", job.app_id)
     .maybeSingle();
   if (error) throw error;
@@ -262,7 +262,7 @@ async function executeJob(
   if (app && ["uninstalling", "uninstall_failed", "uninstalled"].includes(app.fc_status)) {
     return finish(db, job, { startedAt, finishedAt: new Date(), status: "failed", responseStatus: null, error: "应用已下线，未执行定时任务。" });
   }
-  const base = app ? appPublicUrl(app.slug, app.id, ctx.env) : null;
+  const base = app ? appCurrentPublicUrl({ id: app.id, slug: app.slug, appCode: app.app_code, usesAppCodeDomain: app.uses_app_code_domain }, ctx.env) : null;
   if (!base) {
     return finish(db, job, {
       startedAt,
