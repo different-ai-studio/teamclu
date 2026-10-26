@@ -64,6 +64,8 @@ interface AgentSelectorDockProps {
   onRemoveAgent: (agentId: string) => void
   /** Solo session: agent pill is mandatory and cannot be removed. */
   agentMentionLocked?: boolean
+  /** One-line cue after an @. Display only. */
+  mentionCue?: string | null
 }
 
 export { resolveAgentAvailableModels } from '@/lib/agent/agent-available-models'
@@ -80,6 +82,7 @@ export function AgentSelectorDock({
   agentToBackendType,
   onRemoveAgent,
   agentMentionLocked = false,
+  mentionCue = null,
 }: AgentSelectorDockProps) {
   const runtimeStates = useRuntimeStateStore((s) => s.byRuntimeId)
   const uiEntryByAgentId = React.useMemo(
@@ -90,7 +93,8 @@ export function AgentSelectorDock({
   if (engagedAgents.length === 0) return null
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+    <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+      <div className="flex min-w-0 items-center gap-1 overflow-hidden">
       {engagedAgents.map((agent) => {
         const dbRuntimeId = agentToRuntimeId.get(agent.id)
         const runtimeEntry = resolveRuntimeStateEntryForAgent(
@@ -122,6 +126,10 @@ export function AgentSelectorDock({
           />
         )
       })}
+      </div>
+      {mentionCue ? (
+        <p className="min-w-0 truncate text-[12px] text-faint">{mentionCue}</p>
+      ) : null}
     </div>
   )
 }
@@ -445,6 +453,7 @@ function AgentPill({
           type="button"
           variant="ghost"
           size="sm"
+          data-agent-pill={agent.id}
           className={cn(
             'h-7 min-w-0 max-w-full gap-1 overflow-hidden rounded-full bg-muted/40 px-2 text-xs font-medium',
             effectiveUiState === 'stale' && 'border border-dashed border-border',

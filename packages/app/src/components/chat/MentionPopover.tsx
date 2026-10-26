@@ -31,6 +31,8 @@ interface MentionPopoverProps {
   sessionId?: string | null
   /** Engaged agent pill in the composer footer — triggers E2 confirm when @-mentioning a human. */
   engagedAgent?: AttachedAgent | null
+  /** Agents already shown as pills. Label only — does not change selection. */
+  engagedAgentIds?: readonly string[]
   onSelectMember: (person: MentionedPerson, options?: MemberMentionSelectOptions) => void
   onSelectAgent: (agent: AttachedAgent) => void
 }
@@ -117,6 +119,7 @@ export function MentionPopover({
   searchQuery,
   sessionId: sessionIdProp,
   engagedAgent = null,
+  engagedAgentIds,
   onSelectMember,
   onSelectAgent,
 }: MentionPopoverProps) {
@@ -152,6 +155,10 @@ export function MentionPopover({
   // composer owns it — the "clear" branch cannot remove it and the "keep"
   // branch promises routing that the message's own mentions decide.
   const needsAgentClearConfirm = Boolean(engagedAgent?.id && !engagedAgent.auto)
+  const engagedAgentIdSet = React.useMemo(
+    () => new Set(engagedAgentIds ?? (engagedAgent ? [engagedAgent.id] : [])),
+    [engagedAgentIds, engagedAgent],
+  )
 
   React.useEffect(() => {
     if (!open || !sessionId) return
@@ -433,6 +440,7 @@ export function MentionPopover({
                   <div
                     key={m.id}
                     data-index={index}
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={() => handleSelect({ ...m, itemType: 'member' })}
                     onMouseEnter={() => {
                       setHighlightedIndex(index)
@@ -468,10 +476,14 @@ export function MentionPopover({
                     : online === true
                       ? null
                       : t('chat.sessionAgent.mentionConnecting')
+                const trailingLabel = engagedAgentIdSet.has(a.id)
+                  ? t('chat.sessionAgent.mentionAlready', 'Mentioned')
+                  : statusLabel
                 return (
                   <div
                     key={a.id}
                     data-index={index}
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={() => handleSelect({ ...a, itemType: 'agent' })}
                     onMouseEnter={() => {
                       setHighlightedIndex(index)
@@ -486,8 +498,8 @@ export function MentionPopover({
                   >
                     <Sparkles className="h-4 w-4 text-orange-500 shrink-0" />
                     <span className="text-xs font-medium truncate flex-1">{a.display_name}</span>
-                    {statusLabel ? (
-                      <span className="text-[10px] text-faint shrink-0">{statusLabel}</span>
+                    {trailingLabel ? (
+                      <span className="text-[10px] text-faint shrink-0">{trailingLabel}</span>
                     ) : null}
                   </div>
                 )
@@ -505,6 +517,7 @@ export function MentionPopover({
                   <div
                     key={e.id}
                     data-index={index}
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={() => handleSelect({ ...e, itemType: 'external' })}
                     onMouseEnter={() => {
                       setHighlightedIndex(index)

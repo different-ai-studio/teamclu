@@ -25,6 +25,7 @@ import {
 } from "@/packages/ai/prompt-input-insert-hooks";
 import { FileMentionPopover } from "./FileMentionPopover";
 import { MentionPopover } from "./MentionPopover";
+import { playAgentMentionFly } from "./agent-mention-fly";
 import { AgentSelectorDock } from "./AgentSelectorDock";
 import { EngagedAgentOfflineBanner } from "./EngagedAgentOfflineBanner";
 import { OfflineSendConfirmDialog } from "./OfflineSendConfirmDialog";
@@ -103,6 +104,7 @@ function MentionPopoverWrapper({
   engagedAgents,
   onEngageAgent,
   onRemoveAgent,
+  onAgentPlaced,
 }: {
   open: boolean;
   onOpenChange: (next: boolean) => void;
@@ -111,12 +113,13 @@ function MentionPopoverWrapper({
   engagedAgents: AttachedAgent[];
   onEngageAgent: (agent: AttachedAgent) => void;
   onRemoveAgent: (agentId: string) => void;
+  onAgentPlaced: (agent: AttachedAgent, placement: { fromRect: DOMRect | null }) => void;
 }) {
   const context = usePromptInputContext();
   const insertMember = React.useMemo(() => createInsertMention(context), [context]);
   const insertAgent = React.useMemo(
-    () => createInsertAgentMention(context, onEngageAgent),
-    [context, onEngageAgent],
+    () => createInsertAgentMention(context, onEngageAgent, onAgentPlaced),
+    [context, onEngageAgent, onAgentPlaced],
   );
   const engagedAgent = engagedAgents[0] ?? null;
   return (
@@ -126,6 +129,7 @@ function MentionPopoverWrapper({
       searchQuery={searchQuery}
       sessionId={mentionSessionId}
       engagedAgent={engagedAgent}
+      engagedAgentIds={engagedAgents.map((agent) => agent.id)}
       onSelectMember={(person, options) => {
         if (options?.clearEngagedAgent && engagedAgent) {
           onRemoveAgent(engagedAgent.id);
@@ -303,15 +307,39 @@ export function ChatInputArea({
   draftOverride,
   inputLayout = "overlay",
 }: ChatInputAreaProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const mentionSessionId = mentionSessionIdProp ?? activeSessionId;
+  const agentDockRef = React.useRef<HTMLDivElement>(null);
+  const draftPreselectedActor = useUIStore((s) => s.draftPreselectedActor);
+  const mentionCue = React.useMemo(() => {
+    const names = engagedAgents
+      .map((agent) => agent.displayName.trim())
+      .filter(Boolean);
+    if (names.length === 0) return null;
+    const name = new Intl.ListFormat(i18n.language, {
+      type: "conjunction",
+      style: "narrow",
+    }).format(names);
+    return t(
+      "chat.sessionAgent.mentionKeptHint",
+      "Later messages automatically mention {{name}}",
+      { name },
+    );
+  }, [engagedAgents, i18n.language, t]);
+  const handleAgentPlaced = React.useCallback((agent: AttachedAgent, placement: { fromRect: DOMRect | null }) => {
+    playAgentMentionFly({
+      name: agent.displayName,
+      from: placement.fromRect,
+      dock: agentDockRef.current,
+      agentId: agent.id,
+    });
+  }, []);
   const permissionSessionId = permissionSessionIdProp ?? activeSessionId;
 
   // Subscribe here — not in ChatPanel — so keystrokes do not re-render MessageList.
   const storeDraft = useSessionStore((s) => s.draftInput);
   const setDraftInput = useSessionStore.getState().setDraftInput;
   const inputValue = draftOverride?.value ?? storeDraft;
-  const draftPreselectedActor = useUIStore((s) => s.draftPreselectedActor);
 
   const handleInputChange = React.useCallback(
     (nextValue: string) => {
@@ -687,6 +715,7 @@ export function ChatInputArea({
               engagedAgents={engagedAgents}
               onEngageAgent={onEngageAgent}
               onRemoveAgent={onRemoveAgent}
+              onAgentPlaced={handleAgentPlaced}
             />
           )}
           <CommandPopoverWrapper
@@ -710,15 +739,18 @@ export function ChatInputArea({
               />
 
               {/* Engaged agent pills — model is chosen per agent on each pill. */}
-              <AgentSelectorDock
-                activeSessionId={activeSessionId}
-                engagedAgents={engagedAgents}
-                engagedUiEntries={engagedUiEntries}
-                agentToRuntimeId={agentToRuntimeId}
-                agentToBackendType={agentToBackendType}
-                onRemoveAgent={onRemoveAgent}
-                agentMentionLocked={agentMentionLocked}
-              />
+              <div ref={agentDockRef} className="contents">
+                <AgentSelectorDock
+                  activeSessionId={activeSessionId}
+                  engagedAgents={engagedAgents}
+                  engagedUiEntries={engagedUiEntries}
+                  agentToRuntimeId={agentToRuntimeId}
+                  agentToBackendType={agentToBackendType}
+                  onRemoveAgent={onRemoveAgent}
+                  agentMentionLocked={agentMentionLocked}
+                  mentionCue={mentionCue}
+                />
+              </div>
             </PromptInputTools>
 
             <div className="flex shrink-0 items-center gap-2">

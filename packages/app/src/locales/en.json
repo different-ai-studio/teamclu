@@ -958,6 +958,8 @@
       "pillCatalogError": "Model list unavailable",
       "pillRuntimeError": "Agent start failed",
       "pillSyncDegraded": "Team sync interrupted",
+      "mentionAlready": "Mentioned",
+      "mentionKeptHint": "Later messages automatically mention {{name}}",
       "mentionOffline": "Offline",
       "mentionStale": "Rebind required",
       "mentionConnecting": "Connecting…",

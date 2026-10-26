@@ -25,6 +25,7 @@ const STRINGS: Record<string, string> = {
   'chat.mentionAgentClearConfirm.clearTitle': 'Clear {{agent}}, @{{name}}',
   'chat.mentionAgentClearConfirm.clearSubtitle': 'Remove the agent pill below; mention the human only',
   'common.loading': 'Loading...',
+  'chat.sessionAgent.mentionAlready': '已提及',
 }
 
 vi.mock('@/stores/session-selection-store', () => ({
@@ -110,6 +111,25 @@ describe('MentionPopover', () => {
     expect(screen.getByText('Agents')).toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
     expect(mockEnsureParticipants).toHaveBeenCalledWith(['sess-1'])
+  })
+
+  it('marks an agent that is already a pill', () => {
+    seedParticipants(toStoreRows([
+      { id: 'a-1', actor_type: 'agent', display_name: 'Reviewer Bot' },
+      { id: 'a-2', actor_type: 'agent', display_name: 'Other Bot' },
+    ]))
+    render(
+      <MentionPopover
+        open={true}
+        onOpenChange={() => {}}
+        searchQuery=""
+        engagedAgentIds={['a-1']}
+        onSelectMember={vi.fn()}
+        onSelectAgent={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('Mentioned')).toBeInTheDocument()
+    expect(screen.getAllByText('Mentioned')).toHaveLength(1)
   })
 
   it('reflects store updates without reopening the popover', async () => {

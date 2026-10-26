@@ -444,13 +444,34 @@ export type AttachedAgent = {
   auto?: boolean
 }
 
+/** Caret rectangle of the `@query` still in the editor, for the fly-to-pill cue. */
+function mentionQueryClientRect(editor: HTMLElement | null): DOMRect | null {
+  if (!editor || typeof document === "undefined") return null
+  const selection = window.getSelection()
+  if (!selection?.rangeCount || !selection.isCollapsed) return null
+  const node = selection.anchorNode
+  if (!node || node.nodeType !== Node.TEXT_NODE || !editor.contains(node)) return null
+  const textNode = node as Text
+  const upto = textNode.data.slice(0, selection.anchorOffset)
+  const match = upto.match(/@([^\s@]*)$/)
+  if (!match) return null
+  const range = document.createRange()
+  range.setStart(textNode, selection.anchorOffset - match[0].length)
+  range.setEnd(textNode, selection.anchorOffset)
+  const rect = range.getBoundingClientRect()
+  if (rect.width === 0 && rect.height === 0) return null
+  return rect
+}
+
 export function createInsertAgentMention(
   context: PromptInputContextValue,
   onAttachAgent: (agent: AttachedAgent) => void,
+  onPlaced?: (agent: AttachedAgent, placement: { fromRect: DOMRect | null }) => void,
 ) {
   const { text, setText, onMentionClose, textareaRef, mentionStartRef } = context
 
   return (agent: AttachedAgent) => {
+    const fromRect = mentionQueryClientRect(textareaRef.current)
     let lastValidAtIndex = -1
     for (let i = text.length - 1; i >= 0; i--) {
       if (text[i] === '@') {
@@ -480,6 +501,11 @@ export function createInsertAgentMention(
       }, 10)
     }
 
+    try {
+      onPlaced?.(agent, { fromRect })
+    } catch (err) {
+      console.warn("[agent-mention] placement cue failed", err)
+    }
     onAttachAgent(agent)
     mentionStartRef.current = null
     onMentionClose?.()

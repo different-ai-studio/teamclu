@@ -961,6 +961,8 @@
       "mentionOffline": "离线",
       "mentionStale": "需重新绑定",
       "mentionConnecting": "连接中…",
+      "mentionAlready": "已提及",
+      "mentionKeptHint": "后续消息会自动提及{{name}}",
       "dropdownStale": "Agent 需重新绑定本机身份",
       "dropdownOffline": "Agent 离线 — 可选模型将在上线后可用",
       "dropdownUnconfigured": "尚未配置模型供应商 — 在设置中添加后即可开始对话",
