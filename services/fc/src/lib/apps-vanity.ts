@@ -1,3 +1,4 @@
+import { readFunctionNamingMode, type FunctionNamingMode } from "./apps-function-identity.js";
 import { classifyOriginEndpoint, signOriginToken, ORIGIN_VERSION_HEADER, type OriginAuthConfig, type OriginTarget } from "./apps-origin-auth.js";
 import { appCodeStorageCandidates, appPublicUrl, parseAppPublicHost } from "./apps-public-host.js";
 
@@ -23,6 +24,7 @@ export interface VanityApp {
   id: string;
   slug: string;
   appCode?: string | null;
+  functionNamingMode?: FunctionNamingMode;
   usesAppCodeDomain?: boolean;
   fcEndpoint: string | null;
   fcStatus: string | null;
@@ -91,13 +93,14 @@ export function selectByIdPrefix(rows: VanityApp[], idPrefix: string): VanityApp
  * result. At most one row per team shares a slug, so the list is tiny.
  */
 const LOOKUP_COLUMNS =
-  "id, slug, app_code, uses_app_code_domain, fc_endpoint, fc_status, team_id, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
+  "id, slug, app_code, function_naming_mode, uses_app_code_domain, fc_endpoint, fc_status, team_id, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
 
 function mapVanityRow(r: any): VanityApp {
   return {
     id: r.id,
     slug: r.slug,
     appCode: r.app_code ?? null,
+    functionNamingMode: readFunctionNamingMode(r.function_naming_mode),
     usesAppCodeDomain: r.uses_app_code_domain,
     fcEndpoint: r.fc_endpoint ?? null,
     fcStatus: r.fc_status ?? null,

@@ -806,7 +806,7 @@ for (const storedCode of ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"]) {
     const lookup = makeSupabaseVanityLookup(() => client);
     const found = await withDomain(() => lookup(`A-K7M2Q9VX4N8P.${DOMAIN}:443`));
     assert.deepEqual(found, {
-      id: APP_ID, slug: "shop", appCode: storedCode, usesAppCodeDomain: true,
+      id: APP_ID, slug: "shop", appCode: storedCode, functionNamingMode: "legacy", usesAppCodeDomain: true,
       teamId: "team-right", orgId: null, fcEndpoint: "https://right.example", fcStatus: "live",
       authMode: "platform", authAudience: "org", authScope: "paths",
       authRules: [{ path: "/private/*", access: "authenticated" }],
@@ -1149,3 +1149,59 @@ test('uninstalled site responds offline without reaching the origin',async()=>{
  const app=createApp(deps(async()=>({id:APP_ID,slug:'website',fcEndpoint:'http://old',fcStatus:'uninstalled'})));
  await withDomain(async()=>{const res=await app.request('/',{headers:{host:`website-18e4ecad.${DOMAIN}`}});assert.equal(res.status,503);assert.equal(res.headers.get('cache-control'),'no-store');assert.match(await res.text(),/应用尚未上线或已下线/);});
 });
+
+
+test("code origin is signed with UUID key and unsafe endpoints never fetch", async () => {
+  const target = { ...originTarget, appCode: "a-p35cg2kk6bh3", functionNamingMode: "app_code" as const };
+  const origin = { target, config: originConfig() };
+  let calls = 0;
+  const fetcher = (async (_url: any, init: any) => {
+    calls++;
+    await verifyOriginHeader(new Headers(init.headers), "a-p35cg2kk6bh3.origins.test");
+    return new Response("ok");
+  }) as typeof fetch;
+  assert.equal((await proxyToApp(new Request("https://public.example/"), "http://a-p35cg2kk6bh3.origins.test", fetcher, null, origin)).status, 200);
+  for (const endpoint of ["http://a-000000000000.origins.test", "http://website-18e4ecad.origins.test", "http://a-p35cg2kk6bh3.other.test", "https://legacy.fcapp.run", "http://a-p35cg2kk6bh3.origins.test/path"]) {
+    assert.equal((await proxyToApp(new Request("https://public.example/"), endpoint, fetcher, null, origin)).status, 503);
+  }
+  assert.equal(calls, 1);
+});
+
+test("raw lookup retains trusted function identity through public aliases and custom host", async () => withDomain(async () => {
+  const row = { ...CODE_ROW, app_code: "a-k7m2q9vx4n8p", function_naming_mode: "app_code", fc_endpoint: "http://a-k7m2q9vx4n8p.origins.test" };
+  const { client } = codeHostClient([row]);
+  __resetVanityCache();
+  const lookup = makeVanityLookup({ getServiceRoleClient: () => client });
+  const results = await Promise.all([`a-k7m2q9vx4n8p.${DOMAIN}`, `shop-18e4ecad.${DOMAIN}`, "shop.example.org"].map(host => lookup(host)));
+  const warmed = await lookup(`a-k7m2q9vx4n8p.${DOMAIN}`);
+  assert.deepEqual(warmed, results[0]);
+  for (const result of results) {
+    assert.ok(result);
+    assert.equal(result.functionNamingMode, "app_code");
+    assert.equal(result.appCode, row.app_code);
+    assert.equal(result.fcEndpoint, row.fc_endpoint);
+    assert.equal(result.authMode, "platform");
+    assert.equal(result.authAudience, "org");
+  }
+}));
+
+test("gateway carries code identity for public, legacy alias and custom hosts", async () => withOriginEnv(async () => {
+  const oldFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async (_url: any, init: any) => {
+    calls++;
+    await verifyOriginHeader(new Headers(init.headers), "a-p35cg2kk6bh3.origins.test");
+    return new Response("ok");
+  }) as typeof fetch;
+  try {
+    let endpoint = "http://a-p35cg2kk6bh3.origins.test";
+    const application = createApp(deps(async () => deployedTarget({ appCode: "a-p35cg2kk6bh3", functionNamingMode: "app_code", fcEndpoint: endpoint })));
+    for (const host of [`a-p35cg2kk6bh3.${DOMAIN}`, `website-18e4ecad.${DOMAIN}`, "custom.example.org"]) {
+      assert.equal((await application.request(`https://${host}/`)).status, 200);
+    }
+    for (endpoint of ["https://legacy.fcapp.run", "http://a-000000000000.origins.test", `http://${ORIGIN_HOST}`]) {
+      assert.equal((await application.request(`https://website-18e4ecad.${DOMAIN}/`)).status, 503);
+    }
+    assert.equal(calls, 3);
+  } finally { globalThis.fetch = oldFetch; }
+}));
