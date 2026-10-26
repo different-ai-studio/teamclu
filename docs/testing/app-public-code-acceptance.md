@@ -2,10 +2,11 @@
 
 ## New-App function identity — local acceptance, 2026-10-26
 
-**Local automated checks pass; live acceptance and independent final whole-branch
-fix re-review remain pending.** This section concerns `codex/app-code-function-identity`,
+**Local automated checks and independent whole-branch review pass; live acceptance
+remains pending.** This section concerns `codex/app-code-function-identity`,
 base `c6743220`, Tasks 1–6 plus the final-review stale-recovery correction. The
-whole-branch review at `12d15d6a` found P2/P3 issues; their fix re-review is pending.
+whole-branch review at `12d15d6a` found P2/P3 issues; independent scoped review
+approved both corrections through `f104e9e6`, with no residual findings.
 Older sections retain their dated scope and do not establish this feature's live
 or review acceptance.
 
@@ -78,9 +79,8 @@ origin credential classification and resource cleanup against the approved spec.
 Independent Task 6 fix review approved the shared fixture correction. Final
 whole-branch review at `12d15d6a` required P2 identity validation before stale
 recovery and P3 EOF cleanup. Both are corrected with projected regressions;
-independent fix re-review is **pending**. Self-review and green suites do not
-replace it. No real
-UI/provider mapping, live credential rejection, deployed auth/custom-domain/cron,
+independent fix re-review **approved both through `f104e9e6`**, with no new or
+residual findings. No real UI/provider mapping, live credential rejection, deployed auth/custom-domain/cron,
 new desktop binary or native platform acceptance was executed in Task 6.
 
 ### Authorized-live rollout order (all steps pending for this feature)
