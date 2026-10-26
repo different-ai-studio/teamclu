@@ -347,6 +347,7 @@ dependencies = [
  "sha2 0.10.9",
  "subtle",
  "tar",
+ "teamclu-apps",
  "teamclu-binpath",
  "teamclu-gateway",
  "teamclu-proto",
@@ -9695,6 +9696,7 @@ version = "0.4.1-beta.103"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "block2",
@@ -9752,6 +9754,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-shell",
  "tauri-plugin-window-state",
+ "teamclu-apps",
  "teamclu-binpath",
  "teamclu-gateway",
  "teamclu-proto",
@@ -9776,6 +9779,16 @@ dependencies = [
  "windows-sys 0.61.2",
  "wiremock 0.5.22",
  "zip",
+]
+
+[[package]]
+name = "teamclu-apps"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde_json",
+ "tokio",
+ "urlencoding",
 ]
 
 [[package]]

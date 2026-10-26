@@ -1,0 +1,16 @@
+[package]
+name = "teamclu-apps"
+version = "0.1.0"
+edition = "2021"
+
+# No HTTP client here on purpose. Each caller already has one, built the way
+# its process needs (the desktop's honours the system proxy, amuxd's must stay
+# rustls-only — see the reqwest note in apps/daemon/Cargo.toml), and each holds
+# a different bearer. They plug in through `Cloud` and `LocalDaemon`.
+[dependencies]
+async-trait = "0.1"
+serde_json = "1"
+urlencoding = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "sync"] }

@@ -6,7 +6,9 @@
 use std::path::{Path, PathBuf};
 
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::Deserialize;
+
+use super::daemon_http::LocalDaemonClient;
 
 use crate::backend::TeamSkillRow;
 use crate::config::{
@@ -25,94 +27,6 @@ struct RegisteredWorkspace {
     is_default: bool,
     #[allow(dead_code)]
     workspace_id: String,
-}
-
-/// Small loopback client for the running daemon's management surface.
-/// Cloud credentials stay owned by that process; this CLI only holds a
-/// short-lived local session token.
-struct ManageDaemonClient {
-    client: reqwest::Client,
-    base: String,
-    session_token: String,
-}
-
-impl ManageDaemonClient {
-    async fn connect() -> anyhow::Result<Self> {
-        let port_path = DaemonConfig::http_port_path();
-        let token_path = DaemonConfig::http_token_path();
-        let port = std::fs::read_to_string(&port_path)
-            .map_err(|e| {
-                anyhow::anyhow!("read {} ({e}). Is the daemon running?", port_path.display())
-            })?
-            .trim()
-            .to_string();
-        let root_token = std::fs::read_to_string(&token_path)
-            .map_err(|e| anyhow::anyhow!("read {} ({e})", token_path.display()))?
-            .trim()
-            .to_string();
-        if port.is_empty() || root_token.is_empty() {
-            anyhow::bail!("daemon HTTP control files are empty; restart amuxd");
-        }
-
-        let client = reqwest::Client::new();
-        let base = format!("http://127.0.0.1:{port}");
-        let exchange: serde_json::Value = client
-            .post(format!("{base}/v1/auth/exchange"))
-            .bearer_auth(&root_token)
-            .json(&serde_json::json!({
-                "scopes": ["workspace:read", "workspace:write"],
-                "ttl_seconds": 300,
-                "label": "manage-cli",
-            }))
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("connect to running daemon: {e}"))?
-            .error_for_status()
-            .map_err(|e| anyhow::anyhow!("authenticate to running daemon: {e}"))?
-            .json()
-            .await?;
-        let session_token = exchange["token"]
-            .as_str()
-            .filter(|token| !token.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("daemon auth response missing token"))?
-            .to_string();
-
-        Ok(Self {
-            client,
-            base,
-            session_token,
-        })
-    }
-
-    async fn json<T: DeserializeOwned>(
-        &self,
-        method: reqwest::Method,
-        path: &str,
-        body: Option<serde_json::Value>,
-    ) -> anyhow::Result<T> {
-        let mut request = self
-            .client
-            .request(method, format!("{}{}", self.base, path))
-            .bearer_auth(&self.session_token);
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("daemon request {path}: {e}"))?;
-        let status = response.status();
-        let bytes = response.bytes().await?;
-        if !status.is_success() {
-            let detail = serde_json::from_slice::<serde_json::Value>(&bytes)
-                .ok()
-                .and_then(|body| body["detail"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
-            anyhow::bail!("daemon request {path} returned {status}: {detail}");
-        }
-        serde_json::from_slice(&bytes)
-            .map_err(|e| anyhow::anyhow!("decode daemon response {path}: {e}"))
-    }
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -187,12 +101,7 @@ fn list_registered_workspaces() -> anyhow::Result<()> {
     println!("Registered workspaces:");
     for ws in &workspaces {
         let tag = if ws.is_default { " [default]" } else { "" };
-        println!(
-            "  - {}{}: {}",
-            ws.display_name,
-            tag,
-            ws.path.display()
-        );
+        println!("  - {}{}: {}", ws.display_name, tag, ws.path.display());
         println!("    id: {}", ws.workspace_id);
     }
     Ok(())
@@ -252,7 +161,7 @@ async fn register_workspace_async(path: &Path) -> anyhow::Result<RegisteredWorks
         display_name: String,
     }
 
-    let daemon = ManageDaemonClient::connect().await?;
+    let daemon = LocalDaemonClient::connect("manage-cli").await?;
     let body = daemon
         .json::<RegisterResponse>(
             reqwest::Method::POST,
@@ -757,7 +666,7 @@ struct HttpTeamSkillReconcileResponse {
 
 fn fetch_team_skills() -> anyhow::Result<(String, Vec<TeamSkillRow>)> {
     tokio::runtime::Runtime::new()?.block_on(async {
-        let daemon = ManageDaemonClient::connect().await?;
+        let daemon = LocalDaemonClient::connect("manage-cli").await?;
         let response: HttpTeamSkillsResponse = daemon
             .json(reqwest::Method::GET, "/v1/team/skills", None)
             .await?;
@@ -771,7 +680,7 @@ fn install_and_sync_team_skill(
     version: i64,
 ) -> anyhow::Result<crate::runtime::team_skills::TeamSkillReconcileOutcome> {
     tokio::runtime::Runtime::new()?.block_on(async {
-        let daemon = ManageDaemonClient::connect().await?;
+        let daemon = LocalDaemonClient::connect("manage-cli").await?;
         let path = format!("/v1/team/skills/{slug}/install");
         let response: HttpTeamSkillReconcileResponse = daemon
             .json(
@@ -791,7 +700,7 @@ fn reconcile_team_skills(
     team_id: &str,
 ) -> anyhow::Result<crate::runtime::team_skills::TeamSkillReconcileOutcome> {
     tokio::runtime::Runtime::new()?.block_on(async {
-        let daemon = ManageDaemonClient::connect().await?;
+        let daemon = LocalDaemonClient::connect("manage-cli").await?;
         let response: HttpTeamSkillReconcileResponse = daemon
             .json(reqwest::Method::POST, "/v1/team/skills/reconcile", None)
             .await?;
@@ -999,7 +908,7 @@ async fn fetch_registered_workspaces_async() -> anyhow::Result<Vec<RegisteredWor
         workspaces: Vec<RegisteredWorkspace>,
     }
 
-    let daemon = ManageDaemonClient::connect().await?;
+    let daemon = LocalDaemonClient::connect("manage-cli").await?;
     let mut out = daemon
         .json::<Response>(reqwest::Method::GET, "/v1/workspaces", None)
         .await?
@@ -1149,7 +1058,7 @@ fn trigger_sync_via_http(
 ) -> anyhow::Result<HttpSyncStatus> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let daemon = ManageDaemonClient::connect().await?;
+        let daemon = LocalDaemonClient::connect("manage-cli").await?;
         let workspace_path = workspace.to_string_lossy().to_string();
         let sync: HttpSyncStatus = daemon
             .json(

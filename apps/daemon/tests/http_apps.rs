@@ -299,3 +299,197 @@ async fn seed_app_requires_scope() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["code"], "forbidden");
 }
+
+// ─── /v1/app-ops ────────────────────────────────────────────────────────────
+
+/// A Cloud API that knows one live app, `a1` ("Notes"), and one that was
+/// never deployed, `a2`. Every route insists on the mock backend's token, so a
+/// call that went out on anything else fails loudly.
+async fn fake_cloud() -> String {
+    use axum::{extract::Path, http::HeaderMap, http::StatusCode, routing::get, Json, Router};
+
+    fn authed(headers: &HeaderMap) -> Result<(), StatusCode> {
+        (headers["authorization"] == "Bearer mock-token")
+            .then_some(())
+            .ok_or(StatusCode::UNAUTHORIZED)
+    }
+    fn row(id: &str) -> Value {
+        match id {
+            "a1" => serde_json::json!({
+                "id": "a1", "teamId": "team-mock", "name": "Notes", "slug": "notes",
+                "fcStatus": "live", "provisionStatus": "ready",
+                "publicUrl": "https://notes.apps.test",
+            }),
+            _ => serde_json::json!({
+                "id": id, "teamId": "team-mock", "name": "Draft", "slug": "draft",
+                "fcStatus": "not_deployed", "provisionStatus": "ready",
+            }),
+        }
+    }
+
+    let router = Router::new()
+        .route(
+            "/v1/apps",
+            get(|headers: HeaderMap, axum::extract::RawQuery(q): axum::extract::RawQuery| async move {
+                authed(&headers)?;
+                assert_eq!(q.as_deref(), Some("teamId=team-mock&limit=100"));
+                Ok::<_, StatusCode>(Json(serde_json::json!({ "items": [row("a1"), row("a2")] })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id",
+            get(|headers: HeaderMap, Path(id): Path<String>| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(row(&id)))
+            })
+            .patch(
+                |headers: HeaderMap, Path(id): Path<String>, Json(patch): Json<Value>| async move {
+                    authed(&headers)?;
+                    let mut updated = row(&id);
+                    for (k, v) in patch.as_object().cloned().unwrap_or_default() {
+                        updated[k] = v;
+                    }
+                    Ok::<_, StatusCode>(Json(updated))
+                },
+            )
+            .delete(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(StatusCode::NO_CONTENT)
+            }),
+        )
+        .route(
+            "/v1/apps/:id/logs",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(
+                    serde_json::json!({ "items": [{ "message": "listening on :9000" }], "truncated": false }),
+                ))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    format!("http://{addr}")
+}
+
+async fn app_ops(app: &TestApp, body: Value) -> (u16, Value) {
+    let resp = app
+        .client
+        .post(format!("{}/v1/app-ops", app.base))
+        .bearer_auth(&app.session_token)
+        .json(&body)
+        .send()
+        .await
+        .expect("app-ops response");
+    let status = resp.status().as_u16();
+    (status, resp.json().await.expect("app-ops body"))
+}
+
+/// `amuxd app list` / `logs` run the shared flows on the daemon's own token.
+#[tokio::test]
+async fn app_ops_runs_the_shared_flows_as_the_daemon_agent() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+
+    let (status, listed) = app_ops(&app, serde_json::json!({ "action": "list" })).await;
+    assert_eq!(status, 200, "{listed}");
+    assert_eq!(listed["team_id"], "team-mock");
+    assert_eq!(listed["apps"][0]["url"], "https://notes.apps.test");
+
+    let (status, logs) = app_ops(
+        &app,
+        serde_json::json!({ "action": "logs", "appName": "notes", "sinceMinutes": 5 }),
+    )
+    .await;
+    assert_eq!(status, 200, "{logs}");
+    assert_eq!(logs["app_id"], "a1");
+    assert_eq!(logs["since_minutes"], 5);
+    assert_eq!(logs["entries"][0]["message"], "listening on :9000");
+}
+
+/// A flow that says no answers 422 with its whole sentence as `detail`, and
+/// names the next step as a CLI command rather than an MCP tool.
+#[tokio::test]
+async fn app_ops_refusals_carry_the_cli_next_step() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+
+    let (status, body) =
+        app_ops(&app, serde_json::json!({ "action": "logs", "appId": "a2" })).await;
+    assert_eq!(status, 422, "{body}");
+    let detail = body["detail"].as_str().unwrap();
+    assert!(detail.contains("never been deployed"), "{detail}");
+    assert!(detail.contains("`amuxd app deploy`"), "{detail}");
+
+    let (status, body) = app_ops(&app, serde_json::json!({ "action": "publish" })).await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("unknown action"));
+}
+
+/// No cloud session to act on: a daemon that was never onboarded says so
+/// instead of failing on the first request.
+#[tokio::test]
+async fn app_ops_needs_an_onboarded_daemon() {
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend::mock::MockBackend::new()))).await;
+    let (status, body) = app_ops(&app, serde_json::json!({ "action": "list" })).await;
+    assert_eq!(status, 503, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("amuxd init"));
+}
+
+/// `update` reaches the row; `delete` refuses an app inferred from a directory
+/// and one not confirmed, and goes through only when both are given.
+#[tokio::test]
+async fn app_ops_update_and_the_delete_guards() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "update", "appId": "a1", "visibility": "team" }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["app"]["visibility"], "team");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "update", "appId": "a1", "authMode": "third" }),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "delete", "workspacePath": "/work/notes", "confirm": true }),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("explicit"));
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "undeploy", "workspacePath": "/work/notes" }),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("explicit"));
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "delete", "appId": "a1" }),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("--yes"));
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "delete", "appId": "a1", "confirm": true }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["action"], "delete");
+}

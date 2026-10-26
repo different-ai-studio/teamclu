@@ -15,6 +15,7 @@ futures-util = "0.3"
 prost = { workspace = true }
 prost-types = { workspace = true }
 teamclu-gateway = { path = "../../crates/teamclu-gateway" }
+teamclu-apps = { path = "../../crates/teamclu-apps" }
 teamclu-proto = { path = "../../crates/teamclu-proto" }
 teamclu-runtime-env = { path = "../../crates/teamclu-runtime-env" }
 teamclu-transport = { path = "../../crates/teamclu-transport" }

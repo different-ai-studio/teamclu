@@ -170,6 +170,9 @@ pub struct MockState {
     /// Response for `fetch_bootstrap_mqtt`. `None` models the real failure mode
     /// behind issue #634: a cloud API that answers 200 with no `mqtt` block.
     pub bootstrap_mqtt: Option<BootstrapMqttOverride>,
+    /// What `cloud_base_url` answers. `None` (the default) is the mock's
+    /// "no HTTP surface"; a test standing up a fake Cloud API sets its address.
+    pub cloud_base_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -221,6 +224,10 @@ impl Backend for MockBackend {
 
     async fn auth_token(&self) -> BackendResult<String> {
         Ok(self.auth_token.clone())
+    }
+
+    fn cloud_base_url(&self) -> Option<String> {
+        self.state().cloud_base_url.clone()
     }
 
     /// Enough for `DeferredBackend` to prove it forwards rather than falling

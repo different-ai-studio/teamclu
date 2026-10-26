@@ -3147,16 +3147,16 @@ export function createSupabaseBusinessRepository(options) {
     // `actors_team_user_idx` guarantees at most one actor per (team, user), so
     // this is unambiguous: a human resolves to their member actor, a daemon
     // resolves to its agent actor.
-    async resolveCurrentActor(teamId, userId) {
+    async resolveCurrentActor(teamId, userId): Promise<{ id: string; actorType: string | null } | null> {
       const { data, error } = await supabase
         .from("actors")
-        .select("id")
+        .select("id, actor_type")
         .eq("team_id", teamId)
         .eq("user_id", userId)
         .limit(1)
         .maybeSingle();
       if (error) throw error;
-      return data ? { id: data.id } : null;
+      return data ? { id: data.id, actorType: data.actor_type ?? null } : null;
     },
 
     async resolveCurrentMemberActor(teamId, userId) {
@@ -4826,7 +4826,8 @@ export function createSupabaseBusinessRepository(options) {
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      const actorId = (await this.resolveCurrentMemberActor(teamId, userId))?.id ?? null;
+      // Member or agent, so an agent's own apps read as its own.
+      const actorId = (await this.resolveCurrentActor(teamId, userId))?.id ?? null;
       if (!actorId || appIds.length === 0) return { actorId, grants: null };
       try {
         const admin = await serviceRoleClient("read the caller's app grants");
@@ -4867,16 +4868,19 @@ export function createSupabaseBusinessRepository(options) {
       localOnly?: boolean;
     }) {
       // Resolve the caller's actor in this team — the RLS insert policy
-      // (created_by_actor_id = app.current_actor_id_for_team(team_id)) requires
-      // it. Reuse the same mechanism createSession uses (auth.getUser +
-      // resolveCurrentMemberActor) so both paths satisfy the same policy.
+      // (created_by_actor_id = amux.current_actor_id_for_team(team_id)) requires
+      // it. A member or an agent: a daemon's agent creates apps for the agents
+      // on its machine (`amuxd app create`), and that policy takes any actor.
       const { data: userData, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      const resolved = await this.resolveCurrentMemberActor(input.teamId, userId);
+      const resolved = await this.resolveCurrentActor(input.teamId, userId);
       if (!resolved?.id) throw new ApiError(403, "forbidden", "not a member of this team");
       const createdByActorId = resolved.id;
+      // `workspaces.created_by_member_id` references `amux.members`, which an
+      // agent is not; its insert policy takes null.
+      const createdByMemberId = resolved.actorType === "agent" ? null : createdByActorId;
       const slug = slugify(input.name);
       const visibility = input.visibility === "team" ? "team" : "personal";
       const importUrl = input.gitRemoteUrl?.trim() || null;
@@ -4913,7 +4917,7 @@ export function createSupabaseBusinessRepository(options) {
         .from("workspaces")
         .insert({
           team_id: input.teamId,
-          created_by_member_id: createdByActorId,
+          created_by_member_id: createdByMemberId,
           name: `app-${slug}-${Math.random().toString(36).slice(2, 8)}`,
         })
         .select("id")
@@ -6017,7 +6021,8 @@ export function createSupabaseBusinessRepository(options) {
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      const resolved = await this.resolveCurrentMemberActor(teamId, userId);
+      // Member or agent: a daemon's agent creates apps too, and is their creator.
+      const resolved = await this.resolveCurrentActor(teamId, userId);
       return Boolean(resolved?.id) && createdByActorId === resolved!.id;
     },
 
@@ -6040,34 +6045,45 @@ export function createSupabaseBusinessRepository(options) {
     /**
      * Effective per-app permission for the caller. Creator → admin; no access row
      * and not creator → null. Used for git credentials and deploy gates.
+     *
+     * The creator may be an agent actor — a daemon creating apps for the agents
+     * on its machine (`amuxd app`) — and administers its own apps like anyone
+     * else. It is never a grantee: `app_member_access` is keyed on
+     * `amux.members`, so an agent holds no grant on an app it did not create.
+     * `callerMemberId` is null for an agent, because the `*_member_id` columns
+     * it is written to (who granted, who set an env var, who made a cron job)
+     * reference `amux.members` too; `callerActorId` is the caller either way.
      */
     async resolveAppCallerPermissionForApp(app: {
       id: string;
       team_id: string;
       created_by_actor_id: string | null;
-    }): Promise<{ level: "view" | "prompt" | "admin"; callerMemberId: string } | null> {
+    }): Promise<{ level: "view" | "prompt" | "admin"; callerActorId: string; callerMemberId: string | null } | null> {
       const { data: userData, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
 
-      const resolved = await this.resolveCurrentMemberActor(app.team_id, userId);
+      const resolved = await this.resolveCurrentActor(app.team_id, userId);
       if (!resolved?.id) return null;
+      const callerActorId = resolved.id;
+      const callerMemberId = resolved.actorType === "agent" ? null : resolved.id;
 
-      if (await this.isAppCreator(app.team_id, app.created_by_actor_id)) {
-        return { level: "admin", callerMemberId: resolved.id };
+      if (app.created_by_actor_id === callerActorId) {
+        return { level: "admin", callerActorId, callerMemberId };
       }
+      if (!callerMemberId) return null;
 
       const { data: access, error: accErr } = await supabase
         .from("app_member_access")
         .select("permission_level")
         .eq("app_id", app.id)
-        .eq("member_id", resolved.id)
+        .eq("member_id", callerMemberId)
         .maybeSingle();
       if (accErr) throw accErr;
       const level = access?.permission_level;
       if (level === "view" || level === "prompt" || level === "admin") {
-        return { level, callerMemberId: resolved.id };
+        return { level, callerActorId, callerMemberId };
       }
       return null;
     },
@@ -6094,7 +6110,7 @@ export function createSupabaseBusinessRepository(options) {
         // the code but not push to it, so its key cannot push.
         if (permission) {
           return {
-            actorId: permission.callerMemberId,
+            actorId: permission.callerActorId,
             app: visible,
             readOnly: permission.level === "view",
           };
@@ -6333,7 +6349,7 @@ export function createSupabaseBusinessRepository(options) {
      * Returns null when the app is not visible or the caller lacks manage rights
      * (routes surface 404 to avoid leaking app existence).
      */
-    async resolveAppAccessManager(appId: string): Promise<{ callerMemberId: string } | null> {
+    async resolveAppAccessManager(appId: string): Promise<{ callerMemberId: string | null } | null> {
       const { data: app, error } = await supabase
         .from("apps")
         .select("id, team_id, created_by_actor_id")
