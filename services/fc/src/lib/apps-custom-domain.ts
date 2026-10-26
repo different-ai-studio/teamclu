@@ -1,8 +1,9 @@
+import { appManagedOriginHost, type FunctionNamingMode } from "./apps-function-identity.js";
 import { randomBytes } from "node:crypto";
 import { promises as dns } from "node:dns";
 import { domainToASCII } from "node:url";
 import { ApiError } from "./http-utils.js";
-import { appFcRouteHost, appCurrentPublicUrl, appsFcRouteDomain, appsPublicDomain } from "./apps-public-host.js";
+import { appCurrentPublicUrl, appsFcRouteDomain, appsPublicDomain } from "./apps-public-host.js";
 
 /**
  * Binding a domain the app's owner controls
@@ -171,7 +172,7 @@ export function normalizeCustomDomain(raw: unknown, env: NodeJS.ProcessEnv = pro
  * would otherwise have to remember across requests.
  */
 export function customDomainRecords(
-  app: { id: string; slug: string; appCode?: string | null; usesAppCodeDomain?: boolean },
+  app: { id: string; slug: string; appCode?: string | null; usesAppCodeDomain?: boolean; functionNamingMode?: FunctionNamingMode },
   domain: string,
   token: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -188,7 +189,7 @@ export function customDomainRecords(
   } else {
     // No apps domain configured — the FC route host is the only stable name
     // this deployment can offer to point at.
-    const route = appFcRouteHost(app.slug, app.id, env);
+    const route = appManagedOriginHost({ appId: app.id, slug: app.slug, appCode: app.appCode, functionNamingMode: app.functionNamingMode }, env);
     if (route) records.unshift({ type: "CNAME", name: domain, value: route });
   }
   return records;

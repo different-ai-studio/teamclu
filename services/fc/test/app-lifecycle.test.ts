@@ -147,3 +147,18 @@ test('a rejected failure write rolls back token and lifecycle cleanup together',
   assert.equal((await pg.query<any>('select status from amux.app_lifecycle_operations')).rows[0].status,'pending');
  } finally {await pg.close();}
 });
+
+test('completed uninstall keeps immutable naming mode and exact code cleanup snapshot', async () => {
+ const pg=await db();try {
+  await pg.exec(await readFile(new URL('../../../services/supabase/migrations/20261026060936_apps_function_naming_mode.sql',import.meta.url),'utf8'));
+  await pg.query(`delete from amux.apps where id=$1`,[app]);
+  await pg.query(`insert into amux.apps(id,slug,fc_status,fc_function_name,function_naming_mode) values ($1,'renamed','live','a-p35cg2kk6bh3','app_code')`,[app]);
+  const op=(await pg.query<any>(`select amux.begin_app_lifecycle($1,'undeploy',null,'a-p35cg2kk6bh3.origins.test') as op`,[app])).rows[0].op;
+  assert.equal(op.snapshot.functionName,'a-p35cg2kk6bh3');assert.equal(op.snapshot.originDomain,'a-p35cg2kk6bh3.origins.test');
+  const claim=(await pg.query<any>(`select amux.claim_app_undeploy($1) as op`,[op.id])).rows[0].op;
+  const steps=Object.fromEntries(['httpTrigger','originDomain','function','artifact','oauthClient'].map(k=>[k,{status:'succeeded'}]));
+  await pg.query(`select amux.finish_app_undeploy($1,$2,$3)`,[op.id,claim.lease_owner,steps]);
+  const row=(await pg.query<any>('select * from amux.apps')).rows[0];
+  assert.equal(row.fc_status,'uninstalled');assert.equal(row.function_naming_mode,'app_code');assert.equal(row.fc_function_name,'a-p35cg2kk6bh3');
+ }finally{await pg.close();}
+});

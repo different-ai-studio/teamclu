@@ -73,3 +73,20 @@ test('invalid UUID rejects before deriving or signing', async () => { for (const
   assert.throws(() => originJwks(config(), appId));
   await assert.rejects(signOriginToken(config(), { ...appA, appId }, hostA, now));
 } });
+
+test('code mode accepts only its exact managed origin', async () => {
+  const { classifyOriginEndpoint } = await import('../src/lib/apps-origin-auth.js');
+  const target = { ...appA, appCode: 'a-p35cg2kk6bh3', functionNamingMode: 'app_code' as const };
+  assert.equal(classifyOriginEndpoint('http://a-p35cg2kk6bh3.origins.test', target, 'origins.test'), 'protected');
+  for (const endpoint of ['http://a-000000000000.origins.test', 'http://app-a-76af539e.origins.test', 'http://a-p35cg2kk6bh3.other.test', 'http://arbitrary.origins.test', 'https://old.fcapp.run', 'http://a-p35cg2kk6bh3.origins.test/secret', 'http://user@a-p35cg2kk6bh3.origins.test', 'http://a-p35cg2kk6bh3.origins.test?x=1', 'http://a-p35cg2kk6bh3.origins.test:8080']) assert.throws(() => classifyOriginEndpoint(endpoint, target, 'origins.test'));
+  assert.throws(() => classifyOriginEndpoint('http://a-p35cg2kk6bh3.origins.test', target, ''));
+  for (const bad of [{ ...target, appCode: null }, { ...target, functionNamingMode: null }, { ...target, functionNamingMode: 'unknown' }]) assert.throws(() => classifyOriginEndpoint('https://old.fcapp.run', bad as any, 'origins.test'));
+});
+
+test('mixed-case route domains preserve canonical origins in both naming modes', async () => {
+  const { classifyOriginEndpoint } = await import('../src/lib/apps-origin-auth.js');
+  for (const domain of ['Origins.Test', ' ORIGINS.TEST ']) {
+    assert.equal(classifyOriginEndpoint('http://app-a-76af539e.origins.test', appA, domain), 'protected');
+    assert.equal(classifyOriginEndpoint('http://a-p35cg2kk6bh3.origins.test', { ...appA, appCode: 'a-p35cg2kk6bh3', functionNamingMode: 'app_code' }, domain), 'protected');
+  }
+});

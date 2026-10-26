@@ -1,4 +1,5 @@
-import { appCurrentPublicUrl, appPublicLabel } from "../apps-public-host.js";
+import { resolveAppFunctionName, type FunctionNamingMode } from "../apps-function-identity.js";
+import { appCurrentPublicUrl } from "../apps-public-host.js";
 import { validateAppOrigin, projectOriginSecurity } from "./app-runtime-info.js";
 import type { OriginAuthConfig, OriginTarget } from "../apps-origin-auth.js";
 import { randomBytes } from "node:crypto";
@@ -206,9 +207,7 @@ export function checkDeployInProgress(row: DeployProgressRow): "ok" | "stale" | 
  * with one falls back too.
  */
 export function appFunctionName(appId: string, slug?: string | null): string {
-  const label = slug ? appPublicLabel(slug, appId) : null;
-  if (label && /^[A-Za-z_]/.test(label)) return label;
-  return `tc-app-${appId}`;
+  return resolveAppFunctionName({ appId, slug: slug ?? null });
 }
 export function appOssObjectName(appId: string): string { return `apps/${appId}/code.zip`; }
 
@@ -268,6 +267,8 @@ export interface ImagePushHandle {
 }
 
 export interface StartDeployInput {
+  appCode?: string | null;
+  functionNamingMode?: FunctionNamingMode;
   appId: string;
   region: string;
   /** Reuse the function already serving a successful deployment. */
@@ -301,11 +302,10 @@ export interface StartDeployResult {
  * deploy it is finishing.
  */
 export async function startDeploy(deps: StartDeployDeps, input: StartDeployInput): Promise<StartDeployResult> {
-  // The slug is what makes the function's name match the app's hostname. It is
-  // only consulted here, where a function is first minted; everything later
-  // reads `apps.fc_function_name` off the row.
+  // Validate identity before minting upload/image credentials. Historical
+  // callers without persisted mode retain the legacy allocation rule.
   const base = {
-    fcFunctionName: input.fcFunctionName || appFunctionName(input.appId, input.slug),
+    fcFunctionName: resolveAppFunctionName({ ...input, slug: input.slug ?? null }),
     fcRegion: input.region,
   };
   if (isContainerKind(input.buildKind ?? "")) {
@@ -372,6 +372,8 @@ export interface FinalizeDeps {
   ensureLogStore?: () => Promise<void>;
 }
 export interface FinalizeInput {
+  appCode?: string | null;
+  functionNamingMode?: FunctionNamingMode;
   appId: string;
   slug: string;
   /** `public.orgs.id` — required when the app needs a database. */
@@ -448,7 +450,11 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     );
   }
 
-  const target = { appId: input.appId, slug: input.slug };
+  const target = { appId: input.appId, slug: input.slug,
+    ...(input.appCode !== undefined ? { appCode: input.appCode } : {}),
+    ...(input.functionNamingMode !== undefined ? { functionNamingMode: input.functionNamingMode } : {}),
+  };
+  resolveAppFunctionName({ ...target, fcFunctionName: input.fcFunctionName });
   const { host: routeHost } = validateAppOrigin(target, deps.readOriginAuth);
   if (!deps.fcOps.ensureCustomDomain) throw new ApiError(503, "origin_security_unavailable", "origin security unavailable: routeConfig");
 

@@ -1,3 +1,5 @@
+import { appsSupabase, appsRepo, fakeGitea } from "./fixtures/apps-repository.js";
+import { startDeploy as provisionStartDeploy, finalizeDeploy as provisionFinalizeDeploy } from "../src/lib/provisioning/app-deploy.js";
 import { ApiError } from "../src/lib/http-utils.js";
 import { installOriginEnv, ORIGIN_ENV } from "./fixtures/apps-origin-auth/config.js";
 import { test } from "node:test";
@@ -1856,238 +1858,6 @@ test("listAgentDefaults selects + maps default_workspace_id alongside default_ag
 // chains used by createApp, so these tests use a small purpose-built stateful
 // supabase double. It records calls and serves per-table rows for select /
 // insert.select.single / update.select.single|maybeSingle.
-
-function appsAuth(userId = "user-app-1") {
-  return {
-    async getUser() {
-      return { data: { user: { id: userId } }, error: null };
-    },
-  };
-}
-
-// Stateful supabase double for apps tests. `seed` provides rows keyed by table.
-// `actorRow` is what the actors lookup (resolveCurrentMemberActor) returns.
-// Select filters (eq / is / in) are applied so workspace upsert dedup lookups
-// can find seeded rows the same way PostgREST would.
-function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] }: any = {}) {
-  const state: any = {
-    apps: [...(seed.apps ?? [])],
-    actors: [...(seed.actors ?? [])],
-    workspaces: [...(seed.workspaces ?? [])],
-    sessions: [...(seed.sessions ?? [])],
-    app_member_access: [...(seed.app_member_access ?? [])],
-    app_env_vars: [...(seed.app_env_vars ?? [])],
-    app_secrets: [...(seed.app_secrets ?? [])],
-    app_cron_jobs: [...(seed.app_cron_jobs ?? [])],
-    // resolveTeamOrgId reads this. It defaults to a team WITH an org because
-    // createApp now refuses a team without one (409 team_has_no_org) — the
-    // app's tenant is settled at creation so `apps.org_id` can be NOT NULL.
-    // A test that wants the no-org case seeds `teams: []` explicitly.
-    teams: [...(seed.teams ?? [{ id: "team-1", oid: "org-1" }])],
-    agents: [...(seed.agents ?? [])],
-    session_participants: [...(seed.session_participants ?? [])],
-    agent_member_access: [...(seed.agent_member_access ?? [])],
-  };
-  return {
-    auth: appsAuth(),
-    from(table: string) {
-      const ctx: any = { table, op: null, filters: {}, isFilters: {}, neqFilters: {}, inFilters: {}, limitCount: null };
-      // `resolveCurrentMemberActor` filters `actor_type = 'member'` and the
-      // agent git-credential path filters `'agent'`. A seeded `actorRow` that
-      // names its own type must answer only the matching lookup; one that does
-      // not (most tests) still answers both, as it always has.
-      const matchActor = () => {
-        if (ctx.filters.id) {
-          const seeded = (state.actors ?? []).find((r: any) => r.id === ctx.filters.id);
-          if (seeded) return seeded;
-        }
-        if (!actorRow) return null;
-        const wanted = ctx.filters.actor_type;
-        if (wanted && actorRow.actor_type && actorRow.actor_type !== wanted) return null;
-        return actorRow;
-      };
-      const matchRows = () => {
-        let rows = [...(state[table] ?? [])];
-        for (const [col, val] of Object.entries(ctx.filters)) {
-          rows = rows.filter((r) => r[col as string] === val);
-        }
-        for (const [col, val] of Object.entries(ctx.neqFilters)) rows = rows.filter(r => r[col] !== val);
-        for (const [col, val] of Object.entries(ctx.isFilters)) {
-          rows = rows.filter((r) => (val === null ? r[col as string] == null : r[col as string] === val));
-        }
-        for (const [col, vals] of Object.entries(ctx.inFilters)) {
-          rows = rows.filter((r) => (vals as any[]).includes(r[col as string]));
-        }
-        if (typeof ctx.limitCount === "number") rows = rows.slice(0, ctx.limitCount);
-        return rows;
-      };
-      const builder: any = {
-        neq(col: string, val: any) { ctx.neqFilters[col] = val; return builder; },
-        select(columns: string) {
-          calls.push({ table, op: ctx.op ? `${ctx.op}.select` : "select", columns });
-          return builder;
-        },
-        insert(row: any) {
-          ctx.op = "insert";
-          calls.push({ table, op: "insert", row });
-          // mutate state so the inserted row is what subsequent .single() returns
-          const inserted = {
-            ...(table === "apps" ? { app_code: "a-k7m2q9vx4n8p" } : {}),
-            ...row, id: row.id ?? `${table}-id-1`,
-          };
-          state[table] = [inserted];
-          ctx.inserted = inserted;
-          return builder;
-        },
-        update(row: any) {
-          ctx.op = "update";
-          calls.push({ table, op: "update", row });
-          ctx.update = row;
-          return builder;
-        },
-        upsert(row: any, options?: any) {
-          ctx.op = "upsert";
-          calls.push({ table, op: "upsert", row, options });
-          const upserted = { ...row, id: row.id ?? `${table}-id-${(state[table]?.length ?? 0) + 1}` };
-          if (!upserted.created_at) upserted.created_at = new Date().toISOString();
-          if (!upserted.updated_at) upserted.updated_at = new Date().toISOString();
-          if (!state[table]) state[table] = [];
-          let idx = -1;
-          if (table === "app_member_access" && options?.onConflict === "app_id,member_id") {
-            idx = state[table].findIndex(
-              (r: any) => r.app_id === upserted.app_id && r.member_id === upserted.member_id,
-            );
-          } else {
-            idx = state[table].findIndex((r: any) => r.id === upserted.id);
-          }
-          if (idx >= 0) state[table][idx] = { ...state[table][idx], ...upserted };
-          else state[table].push(upserted);
-          ctx.inserted = state[table].find(
-            (r: any) => (table === "app_member_access" && options?.onConflict === "app_id,member_id")
-              ? r.app_id === upserted.app_id && r.member_id === upserted.member_id
-              : r.id === upserted.id,
-          );
-          return builder;
-        },
-        delete() {
-          ctx.op = "delete";
-          calls.push({ table, op: "delete" });
-          return builder;
-        },
-        eq(column: string, value: any) {
-          ctx.filters[column] = value;
-          calls.push({ table, op: `${ctx.op ?? "select"}.eq`, column, value });
-          return builder;
-        },
-        is(column: string, value: any) {
-          ctx.isFilters[column] = value;
-          calls.push({ table, op: `${ctx.op ?? "select"}.is`, column, value });
-          return builder;
-        },
-        in(column: string, values: any[]) {
-          ctx.inFilters[column] = values;
-          calls.push({ table, op: `${ctx.op ?? "select"}.in`, column, values });
-          return builder;
-        },
-        order() { return builder; },
-        // Chainable like supabase-js: limit() returns the (thenable) builder so
-        // a trailing .maybeSingle()/.single() still works; awaiting it yields the
-        // table rows (used by listApps / workspace dedup lookups).
-        limit(count: number) {
-          ctx.limitCount = count;
-          return builder;
-        },
-        single() {
-          if (ctx.op === "insert" || ctx.op === "upsert") return Promise.resolve({ data: ctx.inserted, error: null });
-          if (ctx.op === "update") {
-            const matched = matchRows();
-            const base = matched[0] ?? state[table]?.[0] ?? {};
-            const merged = { ...base, ...ctx.update };
-            if (base?.id) {
-              const idx = state[table].findIndex((r: any) => r.id === base.id);
-              if (idx >= 0) state[table][idx] = merged;
-              else state[table] = [merged];
-            } else {
-              state[table] = [merged];
-            }
-            return Promise.resolve({ data: merged, error: null });
-          }
-          // plain select: actors lookup returns the actor row
-          if (table === "actors") return Promise.resolve({ data: matchActor(), error: null });
-          return Promise.resolve({ data: matchRows()[0] ?? null, error: null });
-        },
-        maybeSingle() {
-          if (table === "actors") return Promise.resolve({ data: matchActor(), error: null });
-          if (ctx.op === "delete") {
-            const matched = matchRows();
-            state[table] = (state[table] ?? []).filter((r: any) => !matched.includes(r));
-            return Promise.resolve({ data: null, error: null });
-          }
-          if (ctx.op === "update") {
-            const matched = matchRows();
-            const base = matched[0];
-            if (!base) return Promise.resolve({ data: null, error: null });
-            const merged = { ...base, ...ctx.update };
-            const idx = state[table].findIndex((r: any) => r.id === base.id);
-            if (idx >= 0) state[table][idx] = merged;
-            return Promise.resolve({ data: merged, error: null });
-          }
-          return Promise.resolve({ data: matchRows()[0] ?? null, error: null });
-        },
-        then(resolve: any, reject: any) {
-          if (ctx.op === "update") {
-            const matched = matchRows();
-            state[table] = state[table].map((row: any) => matched.includes(row) ? { ...row, ...ctx.update } : row);
-          }
-          return Promise.resolve({ data: matchRows(), error: null }).then(resolve, reject);
-        },
-      };
-      return builder;
-    },
-    async rpc(name, args) {
-      state.app_lifecycle_operations ??= [];
-      const active=state.app_lifecycle_operations.find(r=>r.app_id===args.p_app_id && r.status!=='succeeded');
-      if (name==='begin_app_lifecycle') {
-        if(active) return {data:null,error:{code:'55000'}};
-        const op={id:'operation-'+(state.app_lifecycle_operations.length+1),app_id:args.p_app_id,kind:args.p_kind,token:args.p_token,status:'pending',in_flight:false,steps:{},snapshot:{}};
-        state.app_lifecycle_operations.push(op);return {data:op,error:null};
-      }
-      if(name==='finish_app_lifecycle') {const op=state.app_lifecycle_operations.find(r=>r.id===args.p_operation_id);if(op)op.status='succeeded';return {data:null,error:null};}
-      return { data: [], error: null };
-    },
-  };
-}
-
-function fakeGitea(over: Record<string, unknown> = {}) {
-  return {
-    createAppRepo: async (appId: string) => ({
-      cloneUrl: `https://gitea.example/teamclaw-apps/tc-app-${appId}.git`,
-      sshUrl: `git@gitea.example:teamclaw-apps/tc-app-${appId}.git`,
-    }),
-    createDeployKey: async () => ({ id: 1 }),
-    listDeployKeys: async () => [],
-    deleteDeployKey: async () => {},
-    archiveAndRenameAppRepo: async (appId: string) => ({
-      sshUrl: `git@gitea.example:teamclaw-apps/deleted-tc-app-${appId}.git`,
-    }),
-    getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
-    compareCommits: async () => 4,
-    ...over,
-  };
-}
-
-function appsRepo(supabase: any, extra: any = {}) {
-  return createSupabaseBusinessRepository({
-    supabaseUrl: "https://example.supabase.co",
-    publishableKey: "publishable-key",
-    accessToken: "caller-token",
-    createClient: () => supabase,
-    createServiceRoleClient: () => supabase,
-    gitea: fakeGitea(),
-    validateAppOrigin: () => ({}),
-    ...extra,
-  });
-}
 
 const APP_ROW = {
   app_code: "a-k7m2q9vx4n8p",
@@ -5591,6 +5361,7 @@ test("apps: code collisions retry app insertion without duplicating the workspac
   assert.equal(calls.filter((c) => c.table === "workspaces" && c.op === "insert").length, 1);
   const insertedApp = calls.find((c) => c.table === "apps" && c.op === "insert");
   assert.ok(insertedApp.row.workspace_id);
+  assert.equal(insertedApp.row.function_naming_mode, "app_code");
 });
 
 test("apps: code collision exhaustion never attempts a sixth insert", async () => {
@@ -6272,4 +6043,182 @@ test("apps: list and get reject corrupt stored codes without leaking their value
       });
     }
   }
+});
+
+test("apps: every canonical creation path overrides caller naming mode without exposing it", async () => {
+  for (const extra of [{}, { gitRemoteUrl: "https://github.com/owner/repo.git" }, { localOnly: true }]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls }));
+    const app = await repo.createApp({ teamId: "team-1", name: "New", type: "static_web", ...extra, functionNamingMode: "legacy", function_naming_mode: "legacy" } as any);
+    assert.equal(calls.find(c => c.table === "apps" && c.op === "insert").row.function_naming_mode, "app_code");
+    assert.equal("functionNamingMode" in app, false);
+    assert.equal("function_naming_mode" in app, false);
+  }
+});
+
+test("apps: deploy and finalize pass only trusted stored code identity through provisioners", async () => {
+  const code = "a-p35cg2kk6bh3";
+  const seen: any[] = [];
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready", function_naming_mode: "app_code", app_code: code }] } }), {
+    startDeploy: async (input: any) => { seen.push(input); return { fcFunctionName: code, fcRegion: input.region, ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put" }; },
+    finalizeDeploy: async (input: any) => { seen.push(input); return { fcEndpoint: `http://${code}.origins.test` }; },
+  });
+  const started = await repo.deployApp("app-1", { ...APP_DEPLOY, functionNamingMode: "legacy", appCode: "a-000000000000" } as any);
+  await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+  assert.equal(seen.length, 2);
+  for (const input of seen) {
+    assert.equal(input.functionNamingMode, "app_code");
+    assert.equal(input.appCode, code);
+  }
+});
+
+test("apps: corrupt code identity fails preflight, start, finalize and runtime before provisioners", async () => {
+  for (const corrupt of [{ function_naming_mode: null }, { function_naming_mode: "unknown" }, { function_naming_mode: "app_code", app_code: "bad" }, { function_naming_mode: "app_code", fc_function_name: "foreign" }]) {
+    let calls = 0;
+    const row = { ...APP_ROW, provision_status: "ready", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", ...corrupt };
+    const repo = appsRepo(appsSupabase({ seed: { apps: [row] } }), { startDeploy: async () => { calls++; throw Error("unexpected"); }, finalizeDeploy: async () => { calls++; throw Error("unexpected"); }, readAppFunction: async () => { calls++; throw Error("unexpected"); } });
+    await assert.rejects(() => repo.preflightAppDeploy("app-1", APP_DEPLOY), /invalid app function identity/);
+    await assert.rejects(() => repo.deployApp("app-1", APP_DEPLOY), /invalid app function identity/);
+    await assert.rejects(() => repo.getAppRuntimeInfo("app-1"), /invalid app function identity/);
+    const finalizeRepo = appsRepo(appsSupabase({ seed: { apps: [{ ...row, fc_status: "awaiting_build", fc_function_name: "a-p35cg2kk6bh3", ...corrupt }] } }), { finalizeDeploy: async () => { calls++; throw Error("unexpected"); } });
+    await assert.rejects(() => finalizeRepo.finalizeDeploy("app-1", appFinalize(APP_PREFLIGHT_TOKEN)), /invalid app function identity/);
+    assert.equal(calls, 0);
+  }
+});
+
+
+test("apps: real provisioners preserve code identity from preflight through verified Live publication", async () => {
+  const restore = installOriginEnv();
+  try {
+    const id = "76af539e-5341-4e96-bda7-6c8dacf2b092";
+    const code = "a-p35cg2kk6bh3";
+    const calls: any[] = [];
+    const provider: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id, type: "static_web", slug: "renamed", app_code: code, function_naming_mode: "app_code", provision_status: "ready", deploy_token: null, fc_function_name: null, fc_endpoint: null, start_spec: null }] } }), {
+      validateAppOrigin: undefined,
+      readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+      startDeploy: (input: any) => provisionStartDeploy({ mintUploadUrl: async () => "https://oss/put" }, input),
+      finalizeDeploy: (input: any) => provisionFinalizeDeploy({ fcOps: {
+        ensureFunction: async name => { provider.push(["function", name]); },
+        ensureHttpTrigger: async name => { provider.push(["trigger", name]); return { internetUrlDisabled: true }; },
+        ensureCustomDomain: async (name, host) => { provider.push(["domain", name, host]); return `http://${host}`; },
+      } }, input),
+    });
+    const preflight = await repo.preflightAppDeploy(id, { revision: APP_REVISION, declaration: APP_DECLARATION });
+    const started = await repo.deployApp(id, { ...APP_DEPLOY, preflightToken: preflight.token });
+    assert.equal(started.fcFunctionName, code);
+    await repo.finalizeDeploy(id, appFinalize(preflight.token));
+    assert.deepEqual(provider, [["function", code], ["trigger", code], ["domain", code, `${code}.origins.test`]]);
+    const live = calls.find(c => c.table === "apps" && c.op === "update" && c.row.fc_status === "live");
+    assert.equal(live.row.fc_endpoint, `http://${code}.origins.test`);
+  } finally { restore(); }
+});
+
+test("apps: stale corrupt identity rejects before recovery, lifecycle or provider mutations", async () => {
+  const restore = installOriginEnv();
+  try {
+    for (const corrupt of [{ function_naming_mode: null }, { function_naming_mode: "unknown" }, { app_code: "bad" }, { fc_function_name: "foreign" }, { fc_endpoint: "http://a-000000000000.origins.test" }, { fc_function_name: null, fc_endpoint: null, start_spec: null, env_deployed_at: null }]) {
+      const calls: any[] = [];
+      let lifecycleCalls = 0;
+      let providerCalls = 0;
+      const db = appsSupabase({ projectSelects: true, calls, seed: { apps: [{ ...APP_ROW, id: "76af539e-5341-4e96-bda7-6c8dacf2b092", provision_status: "ready", fc_status: "building", deploy_started_at: "2000-01-01T00:00:00Z", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", fc_function_name: "a-p35cg2kk6bh3", ...corrupt }] } });
+      const originalRpc = db.rpc;
+      db.rpc = async (name, args) => { lifecycleCalls++; return originalRpc(name, args); };
+      const repo = appsRepo(db, {
+        startDeploy: async () => { providerCalls++; throw Error("unexpected provider mutation"); },
+        finalizeDeploy: async () => { providerCalls++; throw Error("unexpected provider mutation"); },
+        readAppFunction: async () => { providerCalls++; throw Error("unexpected provider read"); },
+      });
+      await assert.rejects(() => repo.preflightAppDeploy("76af539e-5341-4e96-bda7-6c8dacf2b092", APP_DEPLOY), /invalid app function identity|Invalid apps origin configuration/);
+      assert.deepEqual(calls.filter(c => ["update", "insert", "delete", "upsert"].includes(c.op)), []);
+      assert.equal(lifecycleCalls, 0);
+      assert.equal(providerCalls, 0);
+    }
+  } finally { restore(); }
+});
+
+const CODE_RESOURCE_ROW = { ...APP_ROW, id: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "renamed", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", fc_function_name: "a-p35cg2kk6bh3", fc_endpoint: "http://a-p35cg2kk6bh3.origins.test", fc_status: "live", provision_status: "ready" };
+
+test("code logs and runtime select trusted actual function and metadata", async () => {
+ const prev=process.env.APPS_FC_ROUTE_DOMAIN;process.env.APPS_FC_ROUTE_DOMAIN="origins.test";
+ try {
+  const calls:any[]=[];const seen:string[]=[];
+  const db=appsSupabase({calls,seed:{apps:[CODE_RESOURCE_ROW]}});
+  const repo=appsRepo(db,{appLogs:async(input:any)=>{seen.push(input.functionName);return {items:[]};},readAppFunction:async(name:string)=>{seen.push(name);return {};},readAppOriginSecurity:async()=>({})});
+  await repo.getAppLogs(CODE_RESOURCE_ROW.id);const runtime=await repo.getAppRuntimeInfo(CODE_RESOURCE_ROW.id);
+  assert.deepEqual(seen,["a-p35cg2kk6bh3","a-p35cg2kk6bh3"]);
+  assert.equal(runtime.currentDeployment.functionName,"a-p35cg2kk6bh3");
+  assert.ok(calls.filter(c=>c.table==='apps'&&c.op==='select').every(c=>c.columns.includes('function_naming_mode')&&c.columns.includes('app_code')));
+ } finally {if(prev===undefined)delete process.env.APPS_FC_ROUTE_DOMAIN;else process.env.APPS_FC_ROUTE_DOMAIN=prev;}
+});
+
+test("code uninstall captures exact validated code host before queuing cleanup", async () => {
+ const prev=process.env.APPS_FC_ROUTE_DOMAIN;process.env.APPS_FC_ROUTE_DOMAIN="origins.test";
+ try {
+  for(const fc_endpoint of [CODE_RESOURCE_ROW.fc_endpoint,null]) {
+   const db=appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,fc_endpoint}]}});const rpc=db.rpc.bind(db);const queued:any[]=[];
+   db.rpc=async(name,args)=>{queued.push([name,args]);return rpc(name,args);};
+   const result=await appsRepo(db).undeployApp(CODE_RESOURCE_ROW.id);
+   assert.equal(result.operation.status,"pending");
+   assert.equal(queued[0][1].p_origin_domain,"a-p35cg2kk6bh3.origins.test");
+  }
+ } finally {if(prev===undefined)delete process.env.APPS_FC_ROUTE_DOMAIN;else process.env.APPS_FC_ROUTE_DOMAIN=prev;}
+});
+
+test("damaged allocated code resources reject logs runtime uninstall and delete before external operations", async () => {
+ const prev=process.env.APPS_FC_ROUTE_DOMAIN;process.env.APPS_FC_ROUTE_DOMAIN="origins.test";
+ try {
+  for(const corrupt of [{fc_function_name:"foreign"},{fc_function_name:null},{app_code:"p35cg2kk6bh3"},{function_naming_mode:null},{fc_endpoint:"http://a-000000000000.origins.test"},{fc_endpoint:"https://foreign.example"}]) {
+   let external=0;const db=appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,...corrupt}]}});
+   const repo=appsRepo(db,{createServiceRoleClient:()=>{external++;return db;},appLogs:async()=>{external++;return {};},readAppFunction:async()=>{external++;return {};}});
+   for(const read of [()=>repo.getAppLogs(CODE_RESOURCE_ROW.id),()=>repo.getAppRuntimeInfo(CODE_RESOURCE_ROW.id),()=>repo.undeployApp(CODE_RESOURCE_ROW.id)])await assert.rejects(read);
+   const deleted=appsRepo(appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,fc_status:"uninstalled",undeploy_operation:{status:"succeeded"},...corrupt}]}}),{createServiceRoleClient:()=>{external++;return db;}});
+   await assert.rejects(()=>deleted.deleteApp(CODE_RESOURCE_ROW.id));
+   assert.equal(external,0);
+  }
+ } finally {if(prev===undefined)delete process.env.APPS_FC_ROUTE_DOMAIN;else process.env.APPS_FC_ROUTE_DOMAIN=prev;}
+});
+
+test("never allocated code deployment failure still permits runtime inspection for retry", async () => {
+ const repo=appsRepo(appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,fc_status:"deploy_error",fc_function_name:null,fc_endpoint:null,start_spec:null,env_deployed_at:null}]}}),{readAppOriginSecurity:async()=>({})});
+ assert.equal((await repo.getAppRuntimeInfo(CODE_RESOURCE_ROW.id)).currentDeployment,null);
+});
+
+test("completed uninstall retains naming mode and next deploy reuses actual identity", async () => {
+ const restore=installOriginEnv();
+ try {
+  for(const [mode,name] of [["app_code","a-p35cg2kk6bh3"],["legacy","older-function"]]) {
+   const row={...CODE_RESOURCE_ROW,id:"app-1",function_naming_mode:mode,fc_function_name:name,fc_endpoint:null,fc_status:"uninstalled",undeploy_operation:{id:"completed",status:"succeeded"}};
+   const db=appsSupabase({seed:{apps:[row]}});let seen:any;
+   const repo=appsRepo(db,{startDeploy:async(input:any)=>{seen=input;return provisionStartDeploy({mintUploadUrl:async()=>"https://oss/put"},input);}});
+   const deployed=await repo.deployApp(row.id,APP_DEPLOY);
+   assert.equal(deployed.fcFunctionName,name);assert.equal(seen.functionNamingMode,mode);
+   const fetched=await repo.getApp(row.id);assert.equal("functionNamingMode" in fetched,false);
+  }
+ } finally {restore();}
+});
+
+test("failed redeploy with retained successful configuration requires its allocated code function", async () => {
+ const repo=appsRepo(appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,fc_status:"deploy_error",fc_function_name:null,fc_endpoint:null,env_deployed_at:null,start_spec:APP_DECLARATION.start}]}}));
+ await assert.rejects(()=>repo.getAppRuntimeInfo(CODE_RESOURCE_ROW.id),/invalid app function identity/);
+});
+
+test("apps: valid stale recovery proceeds and never allocated failure permits a fresh preflight", async () => {
+  const restore = installOriginEnv();
+  try {
+    for (const state of [
+      { fc_status: "building", fc_function_name: "a-p35cg2kk6bh3", fc_endpoint: null, start_spec: null, env_deployed_at: null, deploy_started_at: "2000-01-01T00:00:00Z", deploy_token: APP_PREFLIGHT_TOKEN },
+      { fc_status: "deploy_error", fc_function_name: null, fc_endpoint: null, start_spec: null, env_deployed_at: null },
+    ]) {
+      const calls: any[] = [];
+      const repo = appsRepo(appsSupabase({ projectSelects: true, calls, seed: { apps: [{ ...APP_ROW, id: "76af539e-5341-4e96-bda7-6c8dacf2b092", provision_status: "ready", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", deploy_token: null, ...state }] } }), { readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }) });
+      if (state.fc_status === "building") {
+        await assert.rejects(() => repo.preflightAppDeploy("76af539e-5341-4e96-bda7-6c8dacf2b092", { revision: "bad", declaration: APP_DECLARATION }), /imported deploy requires a content digest/);
+      } else {
+        const result = await repo.preflightAppDeploy("76af539e-5341-4e96-bda7-6c8dacf2b092", { revision: APP_REVISION, declaration: APP_DECLARATION });
+        assert.ok(result.token);
+      }
+      assert.equal(calls.filter(c => c.op === "update" && c.row.fc_status === "deploy_error").length, state.fc_status === "building" ? 1 : 0);
+    }
+  } finally { restore(); }
 });

@@ -713,3 +713,17 @@ for (const mapping of [undefined, '', null, [], 'header:sub:X-Teamclu-Origin-Ver
     assert.ok(result.driftFields.includes('authConfig.ClaimPassBy'));
   });
 }
+
+test("code identity verifies exact route, JWT and entrypoints before publishing domain", async () => {
+  const target = { ...TARGET, appCode: "a-p35cg2kk6bh3", functionNamingMode: "app_code" as const };
+  const host = `${target.appCode}.origins.test`;
+  const domain = protectedDomain(host, target.appCode);
+  const { client, calls } = fakeClient({ getCustomDomain: async () => ({ body: domain }), listCustomDomains: async () => ({ body: { customDomains: [domain] } }) });
+  const ops = makeFcOps(client, OPS_CONFIG);
+  assert.equal(await ops.ensureCustomDomain(target.appCode, host, target), `http://${host}`);
+  const before = calls.length;
+  for (const [name, route] of [["foreign", host], [target.appCode, DOMAIN], [target.appCode, "a-000000000000.origins.test"]]) {
+    await assert.rejects(() => ops.ensureCustomDomain(name, route, target));
+  }
+  assert.equal(calls.length, before);
+});

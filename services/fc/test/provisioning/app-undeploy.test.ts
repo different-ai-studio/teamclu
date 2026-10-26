@@ -24,3 +24,22 @@ test('bounded ambiguous provider outcome keeps in-flight fence instead of allowi
  await assert.rejects(cleanupAppDeployment({callTimeoutMs:5,deleteHttpTrigger:async()=>new Promise(()=>{})},snapshot,{},async(_s,p)=>{if(p)phases.push(p)}), /provider outcome unknown/);
  assert.equal(phases.at(-1).inFlight,true);
 });
+
+test('cleanup uses explicit code snapshot despite a changed slug; null skips and historical omission falls back', async () => {
+ const prev=process.env.APPS_FC_ROUTE_DOMAIN;process.env.APPS_FC_ROUTE_DOMAIN='origins.test';
+ try {
+  for (const [originDomain,want] of [['a-p35cg2kk6bh3.origins.test','a-p35cg2kk6bh3.origins.test'],[null,null],[undefined,'renamed-00000000.origins.test']] as const) {
+   const calls:string[]=[];
+   const out=await cleanupAppDeployment({deleteHttpTrigger:async n=>{calls.push('trigger:'+n);},deleteFunction:async n=>{calls.push('function:'+n);},deleteCustomDomain:async n=>{calls.push('domain:'+n);}}, {...snapshot,slug:'renamed',functionName:'a-p35cg2kk6bh3',originDomain}, {},async()=>{});
+   assert.ok(calls.includes('function:a-p35cg2kk6bh3'));
+   assert.deepEqual(calls.filter(c=>c.startsWith('domain:')),want?['domain:'+want]:[]);
+   if(originDomain===null)assert.equal(out.originDomain.status,'skipped');
+  }
+ } finally {if(prev===undefined)delete process.env.APPS_FC_ROUTE_DOMAIN;else process.env.APPS_FC_ROUTE_DOMAIN=prev;}
+});
+
+test('historical queued snapshot without function name uses UUID despite slug', async () => {
+ const names:string[]=[];
+ await cleanupAppDeployment({deleteHttpTrigger:async n=>{names.push(n);},deleteFunction:async n=>{names.push(n);}}, {...snapshot,functionName:null,originDomain:null,oauthClientId:null},{},async()=>{});
+ assert.deepEqual(names,['tc-app-00000000-0000-0000-0000-000000000001','tc-app-00000000-0000-0000-0000-000000000001']);
+});

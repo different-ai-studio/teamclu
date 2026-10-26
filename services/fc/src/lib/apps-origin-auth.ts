@@ -1,6 +1,6 @@
+import { appManagedOriginHost, readFunctionNamingMode, type AppFunctionTarget, type FunctionNamingMode } from "./apps-function-identity.js";
 import { createHmac } from 'node:crypto';
 import { SignJWT } from 'jose';
-import { appPublicLabel } from './apps-public-host.js';
 // FC requires a nonempty claim mapping. This metadata is never a user identity
 // or an authorization signal; only FC may populate it from the signed token.
 export const ORIGIN_VERSION_HEADER = 'X-Teamclu-Origin-Version';
@@ -15,6 +15,8 @@ export type OriginAuthConfig = {
   routeDomain: string;
 };
 export type OriginTarget = {
+  appCode?: string | null;
+  functionNamingMode?: FunctionNamingMode;
   appId: string;
   slug: string;
 };
@@ -115,31 +117,43 @@ export async function signOriginToken(config: OriginAuthConfig, target: OriginTa
 
 /**
  * Only the exact managed HTTP/HTTPS origin can receive a platform credential.
- * Other existing endpoints retain unsigned forwarding. A canonical legacy
+ * Other existing legacy-mode endpoints retain unsigned forwarding. A canonical legacy
  * HTTP origin may be signed, but FC protection is established by readback.
  */
 export function classifyOriginEndpoint(endpoint: string, target: OriginTarget, routeDomain: string): 'protected' | 'legacy' {
+  const mode = readFunctionNamingMode(target.functionNamingMode);
+  const domain = routeDomain.trim().toLowerCase();
+  // Validate trusted identity before considering any legacy forwarding escape.
+  const expectedHost = appManagedOriginHost(target, { APPS_FC_ROUTE_DOMAIN: domain });
   let url: URL;
   try { url = new URL(endpoint); } catch { invalid('origin endpoint'); }
   // URL normalizes backslashes, whitespace and dot segments. None may turn an
   // unusual stored endpoint into an authenticated destination.
   if (!/^https?:\/\//i.test(endpoint) || /[\s\\]/.test(endpoint) || url.username || url.password || !['http:', 'https:'].includes(url.protocol))
     invalid('origin endpoint');
-  const domain = routeDomain.trim().toLowerCase();
   if (!domain) {
-    if (url.hostname.endsWith('.fcapp.run')) return 'legacy';
+    if (mode === 'legacy' && url.hostname.endsWith('.fcapp.run')) return 'legacy';
     invalid('route domain');
   }
   if (!hostnameValid(domain)) invalid('route domain');
   const host = url.hostname.replace(/\.$/, '');
-  if (host !== domain && !host.endsWith(`.${domain}`)) return 'legacy';
-  const appId = normalizedAppId(target.appId);
-  const label = appPublicLabel(target.slug, appId);
-  if (!label || !hostnameValid(`${label}.${domain}`)) invalid('origin hostname');
+  if (mode === 'legacy' && host !== domain && !host.endsWith(`.${domain}`)) return 'legacy';
+  normalizedAppId(target.appId);
+  if (!expectedHost || !hostnameValid(expectedHost)) invalid('origin hostname');
   // Raw shape rejects paths that URL would normalize back to '/'. The
   // canonical origin has no nondefault port, query, fragment or path.
   // Keep signing existing HTTPS origins until their next normal deployment.
-  if (url.hostname !== `${label}.${domain}` || url.port || !/^https?:\/\/[^/?#]+\/?$/i.test(endpoint))
+  if (url.hostname !== expectedHost || url.port || !/^https?:\/\/[^/?#]+\/?$/i.test(endpoint))
     invalid('origin endpoint');
   return 'protected';
+}
+
+/** Capture only a validated managed resource; historical external endpoints have no managed domain. */
+export function appDeploymentOriginHost(target: AppFunctionTarget, endpoint?: string | null, env: NodeJS.ProcessEnv = process.env): string | null {
+  const host = appManagedOriginHost(target, env);
+  if (!endpoint) return host;
+  // Config-absent legacy installations never had a managed domain to clean up.
+  if (!host && readFunctionNamingMode(target.functionNamingMode) === "legacy") return null;
+  const kind = classifyOriginEndpoint(endpoint, { ...target, slug: target.slug ?? "" }, env.APPS_FC_ROUTE_DOMAIN ?? "");
+  return kind === "protected" ? new URL(endpoint).hostname : null;
 }

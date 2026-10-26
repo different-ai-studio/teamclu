@@ -676,3 +676,59 @@ test("origin config is validated before provisioning and no default URL is publi
   (error: any) => error.statusCode === 503 && error.code === "origin_security_unavailable");
   assert.deepEqual(calls, []);
 });
+
+
+test("canonical code allocation rejects corrupt identity before mint", async () => {
+  let minted = 0;
+  const deps = { mintUploadUrl: async () => { minted++; return "https://upload.test"; } };
+  const target = { appId: "app-1", slug: "renamed", appCode: "a-p35cg2kk6bh3", functionNamingMode: "app_code" as const, region: "cn-hangzhou" };
+  assert.equal((await startDeploy(deps, target)).fcFunctionName, target.appCode);
+  for (const bad of [{ fcFunctionName: "foreign" }, { appCode: "invalid" }, { functionNamingMode: null }, { functionNamingMode: "unknown" }]) {
+    await assert.rejects(() => startDeploy(deps, { ...target, ...bad } as any), /invalid app function identity/);
+  }
+  assert.equal(minted, 1);
+});
+
+test("canonical code finalize rejects mismatch before provider writes", async () => {
+  const calls: any[] = [];
+  const deps = { fcOps: {
+    ensureFunction: async (name: string) => { calls.push(name); },
+    ensureHttpTrigger: async () => ({ internetUrlDisabled: true as const }),
+    ensureCustomDomain: async (name: string, host: string, target: any) => { calls.push([name, host, target.appCode]); return `http://${host}`; },
+  } };
+  const input = { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "renamed", appCode: "a-p35cg2kk6bh3", functionNamingMode: "app_code" as const, appType: "static_web", fcFunctionName: "a-p35cg2kk6bh3", ossObjectName: "apps/app-1/code.zip" };
+  await assert.rejects(() => finalizeDeploy(deps, { ...input, fcFunctionName: "foreign" }), /invalid app function identity/);
+  assert.deepEqual(calls, []);
+  assert.equal((await finalizeDeploy(deps, input)).fcEndpoint, "http://a-p35cg2kk6bh3.origins.test");
+  assert.deepEqual(calls, [input.appCode, [input.appCode, "a-p35cg2kk6bh3.origins.test", input.appCode]]);
+});
+
+test("teardown selects code function and exact origin before any destructive call", async () => {
+  const prev = process.env.APPS_FC_ROUTE_DOMAIN;
+  process.env.APPS_FC_ROUTE_DOMAIN = "origins.test";
+  try {
+    const { teardownAppResources } = await import("../../src/lib/provisioning/app-delete.js");
+    const calls: string[] = [];
+    const deps = { fcOps: { deleteHttpTrigger: async (n: string) => { calls.push("trigger:" + n); }, deleteFunction: async (n: string) => { calls.push("function:" + n); }, deleteCustomDomain: async (n: string) => { calls.push("domain:" + n); } }, deleteOssObject: async (n: string) => { calls.push("artifact:" + n); } };
+    const input = { appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "renamed", appCode: "a-p35cg2kk6bh3", functionNamingMode: "app_code" as const, fcFunctionName: "a-p35cg2kk6bh3", fcEndpoint: "http://a-p35cg2kk6bh3.origins.test" };
+    await teardownAppResources(deps, input);
+    assert.deepEqual(calls, ["trigger:a-p35cg2kk6bh3", "function:a-p35cg2kk6bh3", "domain:a-p35cg2kk6bh3.origins.test", "artifact:apps/3f1c9a2e-0000-4000-8000-000000000abc/code.zip"]);
+    for (const corrupt of [{ fcFunctionName: "foreign" }, { appCode: "p35cg2kk6bh3" }, { fcEndpoint: "http://a-000000000000.origins.test" }, { fcEndpoint: "https://external.example" }]) {
+      calls.length = 0;
+      await assert.rejects(() => teardownAppResources(deps, { ...input, ...corrupt }));
+      assert.deepEqual(calls, []);
+    }
+    calls.length = 0;
+    await teardownAppResources(deps, { appId: input.appId, slug: "renamed" });
+    assert.equal(calls[1], "function:tc-app-3f1c9a2e-0000-4000-8000-000000000abc");
+  } finally { if (prev === undefined) delete process.env.APPS_FC_ROUTE_DOMAIN; else process.env.APPS_FC_ROUTE_DOMAIN = prev; }
+});
+
+test("legacy external endpoint teardown never deletes a guessed managed domain", async () => {
+ const prev=process.env.APPS_FC_ROUTE_DOMAIN;process.env.APPS_FC_ROUTE_DOMAIN="origins.test";
+ try {
+  const {teardownAppResources}=await import("../../src/lib/provisioning/app-delete.js");const calls:string[]=[];
+  await teardownAppResources({fcOps:{deleteFunction:async n=>{calls.push(n);},deleteCustomDomain:async n=>{calls.push(n);}}},{appId:"3f1c9a2e-0000-4000-8000-000000000abc",slug:"renamed",fcEndpoint:"https://old.fcapp.run"});
+  assert.deepEqual(calls,["tc-app-3f1c9a2e-0000-4000-8000-000000000abc"]);
+ }finally{if(prev===undefined)delete process.env.APPS_FC_ROUTE_DOMAIN;else process.env.APPS_FC_ROUTE_DOMAIN=prev;}
+});

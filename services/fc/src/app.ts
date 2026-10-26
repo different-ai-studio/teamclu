@@ -212,7 +212,7 @@ export function createApp(deps: AppDeps): Hono {
       });
       if (gate.response) return gate.response;
 
-      const originTarget = { appId: target.id, slug: target.slug };
+      const originTarget = { appId: target.id, slug: target.slug, appCode: target.appCode, functionNamingMode: target.functionNamingMode };
       let origin: { target: typeof originTarget; config: OriginAuthConfig } | undefined;
       try {
         if (classifyOriginEndpoint(target.fcEndpoint, originTarget, appsFcRouteDomain()) === "protected") {
