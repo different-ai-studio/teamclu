@@ -82,3 +82,11 @@ test('code mode accepts only its exact managed origin', async () => {
   assert.throws(() => classifyOriginEndpoint('http://a-p35cg2kk6bh3.origins.test', target, ''));
   for (const bad of [{ ...target, appCode: null }, { ...target, functionNamingMode: null }, { ...target, functionNamingMode: 'unknown' }]) assert.throws(() => classifyOriginEndpoint('https://old.fcapp.run', bad as any, 'origins.test'));
 });
+
+test('mixed-case route domains preserve canonical origins in both naming modes', async () => {
+  const { classifyOriginEndpoint } = await import('../src/lib/apps-origin-auth.js');
+  for (const domain of ['Origins.Test', ' ORIGINS.TEST ']) {
+    assert.equal(classifyOriginEndpoint('http://app-a-76af539e.origins.test', appA, domain), 'protected');
+    assert.equal(classifyOriginEndpoint('http://a-p35cg2kk6bh3.origins.test', { ...appA, appCode: 'a-p35cg2kk6bh3', functionNamingMode: 'app_code' }, domain), 'protected');
+  }
+});

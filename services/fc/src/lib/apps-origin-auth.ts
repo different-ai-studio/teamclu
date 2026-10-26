@@ -122,15 +122,15 @@ export async function signOriginToken(config: OriginAuthConfig, target: OriginTa
  */
 export function classifyOriginEndpoint(endpoint: string, target: OriginTarget, routeDomain: string): 'protected' | 'legacy' {
   const mode = readFunctionNamingMode(target.functionNamingMode);
+  const domain = routeDomain.trim().toLowerCase();
   // Validate trusted identity before considering any legacy forwarding escape.
-  const expectedHost = appManagedOriginHost(target, { APPS_FC_ROUTE_DOMAIN: routeDomain });
+  const expectedHost = appManagedOriginHost(target, { APPS_FC_ROUTE_DOMAIN: domain });
   let url: URL;
   try { url = new URL(endpoint); } catch { invalid('origin endpoint'); }
   // URL normalizes backslashes, whitespace and dot segments. None may turn an
   // unusual stored endpoint into an authenticated destination.
   if (!/^https?:\/\//i.test(endpoint) || /[\s\\]/.test(endpoint) || url.username || url.password || !['http:', 'https:'].includes(url.protocol))
     invalid('origin endpoint');
-  const domain = routeDomain.trim().toLowerCase();
   if (!domain) {
     if (mode === 'legacy' && url.hostname.endsWith('.fcapp.run')) return 'legacy';
     invalid('route domain');
