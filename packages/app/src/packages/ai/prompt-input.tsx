@@ -95,6 +95,7 @@ export function PromptInput({
   multiple = false,
   value,
   onValueChange,
+  undoScope,
   ...props
 }: React.ComponentProps<"form"> & {
   onSubmit?: (message: PromptInputMessage) => void
@@ -110,6 +111,7 @@ export function PromptInput({
   globalDrop?: boolean
   value?: string
   onValueChange?: (value: string) => void
+  undoScope?: string
 }) {
   const [internalText, setInternalText] = React.useState("")
   const [files, setFilesState] = React.useState<File[]>([])
@@ -367,7 +369,8 @@ export function PromptInput({
       textareaRef: textareaRefState, setTextareaRef: setTextareaRefState,
       mentionStartRef: mentionStartRefState,
       commandStartRef: commandStartRefState,
-      hashStartRef: hashStartRefState
+      hashStartRef: hashStartRefState,
+      undoScope,
     }}>
       <form
         ref={formRef}
@@ -439,7 +442,8 @@ export function PromptInputTextarea({
     onCommandTrigger, onCommandClose, onHashTrigger, onHashClose, setTextareaRef,
     mentionStartRef,
     commandStartRef,
-    hashStartRef
+    hashStartRef,
+    undoScope,
   } = usePromptInputContext()
 
   const textareaRef = React.useRef<HTMLDivElement>(null)
@@ -907,6 +911,7 @@ export function PromptInputTextarea({
       onCompositionEnd={handleCompositionEnd}
       onPaste={handlePaste}
       placeholder={placeholder}
+      undoScope={undoScope}
       testId="v2-composer-editor"
       className={cn(
         "min-h-[36px] max-h-[200px] resize-none border-0 bg-transparent px-0 py-0.5 text-sm leading-normal shadow-none focus-visible:ring-0 focus-visible:ring-offset-0",

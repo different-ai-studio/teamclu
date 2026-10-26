@@ -1299,6 +1299,44 @@ input,
     }
 }
 
+/* @-agent name flying from the caret down to the composer pill. */
+.agent-mention-flyer {
+    position: fixed;
+    z-index: 80;
+    left: 0;
+    top: 0;
+    pointer-events: none;
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--foreground);
+    font-size: 12px;
+    line-height: 1.4;
+    padding: 3px 8px;
+    transition: transform 560ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.agent-mention-settle {
+    animation: agent-mention-settle 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes agent-mention-settle {
+    from {
+        transform: translateY(-6px) scale(0.96);
+    }
+    to {
+        transform: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .agent-mention-flyer {
+        transition: none;
+    }
+    .agent-mention-settle {
+        animation: none;
+    }
+}
+
 /* Terminal-style block caret — sharp on/off blink */
 @keyframes terminal-caret-blink {
     0%,

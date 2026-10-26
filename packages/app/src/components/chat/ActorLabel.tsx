@@ -1,21 +1,26 @@
 import { cn } from "@/lib/utils";
 import { useActorDisplayName, useAgentModelByActor } from "@/hooks/use-actor-display-name";
+import { formatMessageBubbleTime } from "@/lib/ui/date-format";
 
 /** Subtle "actor name [· model]" label rendered above each message bubble.
- * Right-aligned for user messages, left-aligned for assistant. Skipped
- * when no senderActorId is available (legacy v1 messages).
- * Model slides out left→right on hover; slides back on leave. */
+ * Right-aligned for user messages, left-aligned for assistant.
+ * A settled message shows its clock on the outer side of the name: after the
+ * name on the left, before the name on the right. Model slides out
+ * left→right on hover; slides back on leave. */
 export function ActorLabel({
   senderActorId,
   modelOverride,
   isUser,
   nameOverride,
+  timestamp,
 }: {
   senderActorId: string | undefined;
   modelOverride?: string | undefined;
   isUser: boolean;
   /** Display-only label override (e.g. localized "你"). */
   nameOverride?: string;
+  /** Omitted while the message is still streaming. */
+  timestamp?: Date;
 }) {
   const name = useActorDisplayName(senderActorId);
   const displayName = nameOverride ?? name;
@@ -24,7 +29,20 @@ export function ActorLabel({
   // the model column or wasn't stamped.
   const liveModel = useAgentModelByActor(isUser ? null : senderActorId);
   const model = modelOverride || liveModel;
-  if (!senderActorId || !displayName) return null;
+  const bubbleTime = timestamp ? formatMessageBubbleTime(timestamp) : null;
+  if (!displayName && !bubbleTime) return null;
+  if (!senderActorId && !bubbleTime) return null;
+  const nameNode = displayName ? <span className="shrink-0">{displayName}</span> : null;
+  const timeNode = bubbleTime ? (
+    <time
+      dateTime={bubbleTime.iso}
+      title={bubbleTime.title}
+      data-testid="message-time"
+      className="shrink-0 font-mono text-[11px] tabular-nums text-faint"
+    >
+      {bubbleTime.label}
+    </time>
+  ) : null;
   return (
     <div
       className={cn(
@@ -32,7 +50,10 @@ export function ActorLabel({
         isUser ? "justify-end" : "justify-start",
       )}
     >
-      <span className="shrink-0">{displayName}</span>
+      <span className="inline-flex min-w-0 items-baseline gap-1.5">
+        {isUser ? timeNode : nameNode}
+        {isUser ? nameNode : timeNode}
+      </span>
       {!isUser && model ? (
         <span
           className={cn(

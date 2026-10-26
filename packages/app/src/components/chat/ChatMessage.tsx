@@ -391,6 +391,7 @@ export const ChatMessage = React.memo(function ChatMessage({
         nameOverride={
           isSelfUser ? t("chat.you", "你") : undefined
         }
+        timestamp={latestMessage.isStreaming ? undefined : latestMessage.timestamp}
       />
       {!isUser && replyToMessage ? (
         <AgentReplyQuote

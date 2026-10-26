@@ -84,6 +84,26 @@ describe('createInsertAgentMention', () => {
     expect(mentionStartRef.current).toBeNull()
     expect(onMentionClose).toHaveBeenCalledTimes(1)
   })
+
+  it('still attaches the agent when the placement cue throws', () => {
+    let text = 'Hi @qu'
+    const setText = vi.fn((next: string) => { text = next })
+    const onAttachAgent = vi.fn()
+    const onPlaced = vi.fn(() => { throw new Error('visual failed') })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const insert = createInsertAgentMention({
+      get text() { return text },
+      setText,
+      onMentionClose: vi.fn(),
+      mentionStartRef: { current: 3 },
+      textareaRef: { current: null },
+    } as any, onAttachAgent, onPlaced)
+    insert({ id: 'actor-1', displayName: 'Reviewer Agent' })
+    expect(setText).toHaveBeenCalledWith('Hi ')
+    expect(onPlaced).toHaveBeenCalled()
+    expect(onAttachAgent).toHaveBeenCalledWith({ id: 'actor-1', displayName: 'Reviewer Agent' })
+    warn.mockRestore()
+  })
 })
 
 describe('createInsertMention', () => {
