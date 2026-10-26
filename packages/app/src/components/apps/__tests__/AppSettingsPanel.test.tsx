@@ -295,6 +295,15 @@ describe('AppSettingsPanel', () => {
   })
 
   describe('deployment', () => {
+    it.each([
+      ['a-p35cg2kk6bh3', 'http://a-p35cg2kk6bh3.origins.test'],
+      ['keep-old-function', 'https://older.fcapp.run'],
+    ])('displays actual provider fields for %s without rebuilding them from App Code', (functionName, endpoint) => {
+      render(<AppSettingsPanel app={{ ...baseApp, appCode: 'a-p35cg2kk6bh3', slug: 'renamed', fcFunctionName: functionName, fcEndpoint: endpoint }} />)
+      expect(screen.getByTestId('app-settings-function').textContent).toContain(functionName)
+      expect(screen.getByTestId('app-settings-endpoint').textContent).toBe(endpoint)
+    })
+
     it('shows where the app answers and what runs it', () => {
       render(<AppSettingsPanel app={baseApp} />)
       expect(screen.getByTestId('app-settings-address').textContent).toBe(baseApp.publicUrl)

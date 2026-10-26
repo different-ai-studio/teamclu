@@ -1,5 +1,112 @@
 # App public-code migration acceptance
 
+## New-App function identity — local acceptance, 2026-10-26
+
+**Local automated checks pass; live acceptance and independent final whole-branch
+review remain pending.** This section concerns `codex/app-code-function-identity`,
+base `c6743220`, Tasks 1–5 through `8f6c9475` plus the Task 6 test/document changes.
+Older sections retain their dated scope and do not establish this feature's live
+or review acceptance.
+
+Only Apps created through the upgraded Cloud API get immutable internal
+`function_naming_mode=app_code`. Their actual function is the complete code,
+for example `a-p35cg2kk6bh3`, and their configured managed origin is
+`http://a-p35cg2kk6bh3.<route-domain>`. Existing Apps remain legacy, including
+never-deployed, failed, uninstalled and already-public-code-domain Apps. Internal
+UUIDs, origin key derivation, data/storage/Git ownership and public-domain opt-in
+rules remain unchanged. No public DTO field or client-side identity substitution
+was added.
+
+### Executed local verification
+
+| Exact command (from repository root unless stated) | Result | Local log |
+| --- | --- | --- |
+| `cd services/fc && node --import tsx --test test/app-function-identity-integration.test.ts` | 4 passed, 0 failed/skipped | `/private/tmp/function-task6-targeted.log` |
+| `pnpm --filter @teamclu/app exec vitest run src/components/apps/__tests__/AppSettingsPanel.test.tsx` | 1 file, 56 passed | `/private/tmp/function-task6-settings.log` |
+| `cd services/fc && npm test` | 2,050 passed, 13 skipped, 0 failed; 2,063 tests; five additional gated suites skipped | `/private/tmp/function-task6-fc.log` |
+| `cd services/fc && npm run typecheck` | Exit 0, no diagnostics | `/private/tmp/function-task6-fc-typecheck.log` |
+| `pnpm test:unit` | 624 files passed / 1 skipped; 4,440 tests passed / 10 skipped / 0 failed | `/private/tmp/function-task6-frontend-final.log` |
+| `pnpm typecheck` | Exit 0, no diagnostics | `/private/tmp/function-task6-root-typecheck.log` |
+| `python3 /private/tmp/teamclu-function-mode-task1/local-db.py --exec bash services/supabase/tests/run.sh` | 65 files run, 0 failed, 0 quarantined | `/private/tmp/function-task6-pgtap.log` |
+| `git diff --check` | Exit 0 | Task 6 report |
+
+The new integration executes real repository creation/preflight/start/finalize,
+identity resolution, persisted-row public/custom-domain lookup, endpoint
+classification, proxy signing and cleanup functions. External DB/provider adapters
+retain state; DB selected-column projection is honored so missing mode/code
+columns cannot hide at the lookup boundary. Literal assertions cover the exact
+function/host and UUID-bound JWT claims through first deploy, display-name rename,
+redeploy, failed finalize, recovery, explicit uninstall snapshot and reinstall.
+Historical never-deployed/live/uninstalled fixtures retain legacy allocation or
+stored names despite public code-domain mode. Settings render actual returned
+function/endpoint values for both code and legacy fixtures.
+
+This is controlled integration verification of existing implementation, **not a
+fabricated missing-feature RED**. Early fixture setup errors exposed missing
+adapter readiness, provider read and completion evidence; no production wiring
+correction was needed. SQL trigger/worker persistence effects are explicitly
+adapted in the integration test and separately checked by native pgTAP; no real
+HTTP Supabase service, provider or user account participates in that test.
+
+Native SQL ran only on the guarded task-owned loopback PostgreSQL at
+`127.0.0.1:30591`, data directory
+`/private/tmp/teamclu-function-mode-task1/data`, Supabase PostgreSQL **17.11,
+aarch64 Darwin**. This differs from CI's **17.6.1.106** image; no Docker/exact-CI
+runtime result is claimed. FC's 13 environment skips and five gated suites remain
+unexecuted integration, including unavailable HTTP Supabase fetches; Node prints
+some skipped fetch errors under a misleading failing-tests footer, but final
+fail=0 and exit=0. Frontend output retains the existing Vite `__dirname` native
+loader warning, jsdom canvas/navigation diagnostics and performance suggestion.
+The initial pre-settings full run had 4,438 passed / 10 skipped; the final run
+above includes both new settings cases. Initial restricted cache/loopback access
+attempts were rerun successfully with narrow task access.
+
+### Review-focus coverage and remaining gates
+
+| Review focus | Automated evidence / limit |
+| --- | --- |
+| Historical never-deployed/uninstalled Apps stay legacy | Naming-mode pgTAP preservation/default tests; repository creation cases; three new historical cross-boundary fixtures |
+| Corrupt code identity cannot mutate another function or forward unsigned | Identity, repository, provider-client, origin-auth and vanity negative tests; logs/runtime/uninstall/delete corruption cases |
+| Rename/failure/retry retain exact function/origin | New full lifecycle test plus provisioner and stale-recovery cases; no live provider execution |
+| Trusted mode/code cross projections/cache and aliases | New selected-column lookup→JWT test for public/custom domain; existing vanity cache/public/legacy-alias/custom-host gateway cases |
+| Old queued snapshots retain fallback; explicit new snapshots survive rename/reinstall | Cleanup omitted/null/explicit snapshot regressions and new lifecycle cleanup/reinstall |
+
+Implementer self-review inspected schema/creation, identity propagation, strict
+origin credential classification and resource cleanup against the approved spec.
+Independent Task 6 review and the controller-owned whole-branch security/spec/code
+review are **pending**; self-review and green suites do not replace them. No real
+UI/provider mapping, live credential rejection, deployed auth/custom-domain/cron,
+new desktop binary or native platform acceptance was executed in Task 6.
+
+### Authorized-live rollout order (all steps pending for this feature)
+
+1. Obtain the relevant authorization, expand schema through configured Supabase
+   MCP, then read back the column/default/constraint/trigger and audit preservation
+   of existing UUIDs, codes, resources/endpoints, modes, lifecycle state and access
+   references. Keep the matching versioned migration and pgTAP. No CLI/psql live
+   fallback.
+2. Release the **whole compatible backend** only after branch review and explicit
+   release authorization. Do not publish intermediate commits missing dual-mode
+   routing/readback/cleanup.
+3. With separate new-fixture authorization, create and deploy a disposable **new**
+   App through upgraded Cloud API; an old QA App is not proof of the creation
+   boundary. Compare actual provider function/origin with returned fields.
+4. Read-only compare historical live/never-deployed/failed/uninstalled Apps and
+   public-code-domain legacy Apps; do not redeploy, rename or clean up their
+   resources for acceptance.
+5. Check actual settings/provider fields, public/custom-domain origin routing and
+   credentials (wrong App, expired and absent credentials fail), plus authorized
+   failure/retry behavior.
+6. Separately authorize the disposable fixture's uninstall/reinstall, inspect the
+   explicit snapshot, verify exact cleanup and stable identity after reinstall.
+
+Once any code-mode origin exists, rollback must retain dual-mode readers,
+routing/security and cleanup. Turning off new code-mode creation may be a
+compatible rollback; removing the column or restoring a pre-feature backend is
+not. No live migration, App creation/deploy/uninstall, existing-resource mutation,
+push, PR, merge, service/client release or publication occurred in this task.
+
+
 ## Complete App Code integration — 2026-10-25
 
 **Current outcome: local implementation checks pass; complete-format release
