@@ -1,4 +1,5 @@
-import { appCurrentPublicUrl, appPublicLabel } from "../apps-public-host.js";
+import { resolveAppFunctionName } from "../apps-function-identity.js";
+import { appCurrentPublicUrl } from "../apps-public-host.js";
 import { validateAppOrigin, projectOriginSecurity } from "./app-runtime-info.js";
 import type { OriginAuthConfig, OriginTarget } from "../apps-origin-auth.js";
 import { randomBytes } from "node:crypto";
@@ -206,9 +207,7 @@ export function checkDeployInProgress(row: DeployProgressRow): "ok" | "stale" | 
  * with one falls back too.
  */
 export function appFunctionName(appId: string, slug?: string | null): string {
-  const label = slug ? appPublicLabel(slug, appId) : null;
-  if (label && /^[A-Za-z_]/.test(label)) return label;
-  return `tc-app-${appId}`;
+  return resolveAppFunctionName({ appId, slug: slug ?? null });
 }
 export function appOssObjectName(appId: string): string { return `apps/${appId}/code.zip`; }
 
