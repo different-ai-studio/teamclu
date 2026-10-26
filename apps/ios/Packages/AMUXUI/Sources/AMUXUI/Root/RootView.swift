@@ -1,7 +1,10 @@
 import SwiftUI
 import AMUXCore
 
-public struct RootTabView: View {
+/// The signed-in app: the session list as the single root screen, plus the
+/// app-wide work that has to outlive it — team runtime bring-up, the
+/// session-list subscriptions, deep links, invites, and voice capture.
+public struct RootView: View {
     let mqtt: MQTTService
     let hub: MQTTMessageHub
     let pairing: PairingManager
@@ -19,8 +22,14 @@ public struct RootTabView: View {
     /// previews and tests, where the defaults (everything on) apply.
     @Environment(FeatureFlagsStore.self) private var featureFlags: FeatureFlagsStore?
     @State private var viewModel = SessionListViewModel()
-    @SceneStorage("rootTab") private var selection: AppTab = .sessions
     @State private var sessionsPath: [String] = []
+    /// Shared by the ideas list and the idea detail, which are separate
+    /// pushes on the session stack.
+    @State private var ideaStore: IdeaStore?
+    @State private var ideaStoreTeamID: String?
+    /// Whether the voice capture screen is up. It covers the whole app, so
+    /// it's drawn here rather than pushed.
+    @State private var isCapturingVoice = false
     @State private var voiceRecorder = VoiceRecorder()
     @State private var isStartingVoiceSession = false
     @State private var voiceErrorMessage: String?
@@ -35,16 +44,16 @@ public struct RootTabView: View {
     @State private var voiceAgentChoice: VoiceAgentChoice?
 
     /// Reduces `session/{id}/live` into the session list's leading dots.
-    /// Owned here, not by SessionsTab, so its MQTT subscriptions survive the
-    /// tab's view identity being torn down and rebuilt.
+    /// Owned here, not by SessionsHome, so its MQTT subscriptions survive
+    /// that screen's view identity being torn down and rebuilt.
     @State private var liveActivityStore = SessionLiveActivityStore()
 
     /// Drives the "add the team's first agent" reminder. Set once per app
     /// launch when we observe a team with zero agents; soft-dismissible so it
     /// doesn't reappear after the user closes it.
     @State private var showFirstAgentReminder: Bool = false
-    /// Set when the user taps "Add agent" in the reminder sheet. Triggers the
-    /// existing MemberInviteSheet on the Actors tab after the reminder closes.
+    /// Set when the user taps "Add agent" in the reminder sheet. Opens the
+    /// actors list with its MemberInviteSheet after the reminder closes.
     @State private var showInviteAfterReminder: Bool = false
     /// Tracks teams we've already shown the reminder for, persisted across
     /// launches so the zero-agent nag only fires once per team.
@@ -93,79 +102,46 @@ public struct RootTabView: View {
     // that failed the release archive in SessionDetailView, one feature away
     // from doing it here. Each `some View` boundary is its own problem.
 
-    private var tabs: some View {
-        TabView(selection: $selection) {
-            Tab("Sessions", systemImage: "bubble.left.and.bubble.right", value: AppTab.sessions) {
-                SessionsTab(mqtt: mqtt,
-                            hub: hub,
-                            pairing: pairing,
-                            teamcluService: teamcluService,
-                            activeTeam: activeTeam,
-                            currentActorID: currentActorID,
-                            viewModel: viewModel,
-                            refreshSessionsFromBackend: refreshSessionsFromBackend,
-                            navigationPath: $sessionsPath,
-                            connectedAgentsStore: teamRuntime?.connectedAgentsStore,
-                            actorStore: teamRuntime?.actorStore,
-                            agentPresenceStore: teamRuntime?.agentPresenceStore,
-                            shortcutsStore: teamRuntime?.shortcutsStore,
-                            teamAppsStore: appsEnabled ? teamRuntime?.teamAppsStore : nil,
-                            messagesRepository: teamRuntime?.messagesRepo,
-                            workspacesRepository: teamRuntime?.workspacesRepo,
-                            sessionsRepository: teamRuntime?.sessionRepo,
-                            sessionsListRepository: teamRuntime?.sessionsRepo,
-                            teamRepository: teamRuntime?.teamRepo,
-                            actorRepository: teamRuntime?.actorRepo,
-                            onReconnect: onReconnect,
-                            onSignOut: onSignOut,
-                            preferencesAPI: preferencesAPI,
-                            notificationPrefsStore: teamRuntime?.notificationPrefsStore,
-                            liveActivityStore: liveActivityStore)
-            }
-            Tab(IdeaUIPresentation.pluralTitle, systemImage: IdeaUIPresentation.systemImage, value: AppTab.ideas) {
-                IdeasTab(mqtt: mqtt,
-                         hub: hub,
-                         pairing: pairing,
-                         teamcluService: teamcluService,
-                         activeTeam: activeTeam,
-                         sessionViewModel: viewModel,
-                         connectedAgentsStore: teamRuntime?.connectedAgentsStore,
-                         messagesRepository: teamRuntime?.messagesRepo,
-                         workspacesRepository: teamRuntime?.workspacesRepo,
-                         sessionsRepository: teamRuntime?.sessionRepo,
-                         ideasRepository: teamRuntime?.ideasRepo,
-                         currentActorID: currentActorID,
-                         actorStore: teamRuntime?.actorStore,
-                         agentPresenceStore: teamRuntime?.agentPresenceStore)
-            }
-            Tab("Actors", systemImage: "person.2", value: AppTab.members) {
-                if let actorStore = teamRuntime?.actorStore {
-                    MembersTab(pairing: pairing,
-                               mqtt: mqtt,
-                               sessionViewModel: viewModel,
-                               teamcluService: teamcluService,
-                               activeTeam: activeTeam,
-                               currentActorID: currentActorID,
-                               store: actorStore,
-                               connectedAgentsStore: teamRuntime?.connectedAgentsStore,
-                               agentPresenceStore: teamRuntime?.agentPresenceStore,
-                               workspacesRepository: teamRuntime?.workspacesRepo,
-                               agentAccessRepository: teamRuntime?.agentAccessRepo,
-                               teamResourceRepository: teamRuntime?.teamResourceRepo,
-                               showInvite: $showInviteAfterReminder)
-                } else {
-                    ContentUnavailableView("No Team Selected",
-                                          systemImage: "person.2",
-                                          description: Text("Create or join a team to see actors."))
-                }
-            }
-            // `role: .search` is what gives the bottom bar its two-segment
-            // shape: the pill above plus the system's detached glass circle
-            // on the right. We keep the role for that presentation and the
-            // hit target, and supply our own label so the circle shows the
-            // mic rather than a magnifier — selecting it starts voice
-            // capture instead of search.
-            Tab(value: AppTab.search, role: .search) {
+    private var home: some View {
+        SessionsHome(mqtt: mqtt,
+                     hub: hub,
+                     pairing: pairing,
+                     teamcluService: teamcluService,
+                     activeTeam: activeTeam,
+                     currentActorID: currentActorID,
+                     viewModel: viewModel,
+                     refreshSessionsFromBackend: refreshSessionsFromBackend,
+                     navigationPath: $sessionsPath,
+                     showMembersInvite: $showInviteAfterReminder,
+                     connectedAgentsStore: teamRuntime?.connectedAgentsStore,
+                     actorStore: teamRuntime?.actorStore,
+                     agentPresenceStore: teamRuntime?.agentPresenceStore,
+                     shortcutsStore: teamRuntime?.shortcutsStore,
+                     teamAppsStore: appsEnabled ? teamRuntime?.teamAppsStore : nil,
+                     ideaStore: ideaStore,
+                     messagesRepository: teamRuntime?.messagesRepo,
+                     workspacesRepository: teamRuntime?.workspacesRepo,
+                     sessionsRepository: teamRuntime?.sessionRepo,
+                     sessionsListRepository: teamRuntime?.sessionsRepo,
+                     teamRepository: teamRuntime?.teamRepo,
+                     actorRepository: teamRuntime?.actorRepo,
+                     agentAccessRepository: teamRuntime?.agentAccessRepo,
+                     teamResourceRepository: teamRuntime?.teamResourceRepo,
+                     onReconnect: onReconnect,
+                     onSignOut: onSignOut,
+                     onStartVoice: startVoiceCapture,
+                     preferencesAPI: preferencesAPI,
+                     notificationPrefsStore: teamRuntime?.notificationPrefsStore,
+                     liveActivityStore: liveActivityStore)
+    }
+
+    /// The home screen, with the voice capture laid over it while a take is
+    /// running. An overlay rather than a cover, so the agent picker and the
+    /// error alert below can present over it without a second modal layer.
+    private var screens: some View {
+        ZStack {
+            home
+            if isCapturingVoice {
                 VoiceCaptureView(
                     phase: voicePhase,
                     level: voiceRecorder.audioLevel,
@@ -174,34 +150,24 @@ public struct RootTabView: View {
                     onDone: voiceRecorder.stopRecording,
                     onCancel: cancelVoiceCapture
                 )
-                // On the tab content, not on the TabView: the modifier only
-                // takes effect from inside the tab whose bar it hides.
-                .toolbarVisibility(.hidden, for: .tabBar)
-            } label: {
-                Label("Voice", systemImage: "mic")
+                .transition(.move(edge: .bottom))
+                .zIndex(1)
             }
         }
+        .animation(.spring(response: 0.38, dampingFraction: 0.9), value: isCapturingVoice)
     }
 
-    /// The tabs, plus what reacts to a tab change or the team loading.
-    private var wiredTabs: some View {
-        tabs
-        .tabViewStyle(.sidebarAdaptable)
-        .onChange(of: selection) { previous, tab in
-            if previous == .search, tab != .search {
-                // Belt and braces: the iPad sidebar can switch away mid-take,
-                // and a running engine with no visible surface is the worst
-                // outcome. Finished takes are already `.done` here, so this
-                // only catches a genuine abandon.
-                if voiceRecorder.state == .recording { voiceRecorder.cancel() }
-                recordingStartedAt = nil
-                return
-            }
-            guard tab == .search,
-                  voiceRecorder.state != .recording,
-                  !isStartingVoiceSession
-            else { return }
-            voiceRecorder.startRecording()
+    /// The screens, plus what reacts to a voice take or the team loading.
+    private var wiredScreens: some View {
+        screens
+        .onChange(of: isCapturingVoice) { _, capturing in
+            // Belt and braces: whatever takes the capture screen down, a
+            // running engine with no visible surface is the worst outcome.
+            // Finished takes are already `.done` here, so this only catches a
+            // genuine abandon.
+            guard !capturing else { return }
+            if voiceRecorder.state == .recording { voiceRecorder.cancel() }
+            recordingStartedAt = nil
         }
         .onChange(of: voiceRecorder.state) { _, state in
             switch state {
@@ -209,7 +175,7 @@ public struct RootTabView: View {
                 let transcript = voiceRecorder.transcribedText ?? ""
                 voiceRecorder.reset()
                 guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    selection = .sessions
+                    isCapturingVoice = false
                     voiceErrorMessage = String(localized: "No speech was recognized. Try recording again.")
                     return
                 }
@@ -217,10 +183,10 @@ public struct RootTabView: View {
                 isStartingVoiceSession = true
                 Task { await startVoiceSession(transcript) }
             case .denied:
-                selection = .sessions
+                isCapturingVoice = false
                 voiceErrorMessage = String(localized: "Microphone and speech recognition access are required for voice chat.")
             case .error(let message):
-                selection = .sessions
+                isCapturingVoice = false
                 voiceErrorMessage = message
             case .recording:
                 recordingStartedAt = Date()
@@ -235,6 +201,13 @@ public struct RootTabView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(voiceErrorMessage ?? "")
+        }
+        .task(id: IdeaStoreKey(teamID: activeTeam?.id, isConnected: teamRuntime?.ideasRepo != nil)) {
+            // Keyed on the repository arriving too, not just the team: at a
+            // cold launch the ideas list can be on screen before the team
+            // runtime exists, and keyed on the team alone this ran once with
+            // no repository and never again.
+            await configureIdeaStore()
         }
         .task(id: activeTeam?.id) {
             await coordinator?.prepareTeamRuntime(modelContext: modelContext)
@@ -280,7 +253,7 @@ public struct RootTabView: View {
                     liveActivityStore: liveActivityStore
                 )
             } else {
-                NSLog("[RootTabView] inbox: no access token subject; unread dot disabled")
+                NSLog("[RootView] inbox: no access token subject; unread dot disabled")
             }
             await refreshSessionsFromBackend()
             if let team = activeTeam {
@@ -290,8 +263,8 @@ public struct RootTabView: View {
     }
 
     /// …plus the invite, deep-link and lifecycle observers.
-    private var observedTabs: some View {
-        wiredTabs
+    private var observedScreens: some View {
+        wiredScreens
         .onReceive(NotificationCenter.default.publisher(for: .amuxInviteTokenReceived)) { note in
             guard let token = note.userInfo?["token"] as? String,
                   let store = teamRuntime?.actorStore else { return }
@@ -305,10 +278,6 @@ public struct RootTabView: View {
             if ready { replayPendingInviteIfNeeded() }
         }
         .onAppear {
-            // The voice tab is an action, not a place. `@SceneStorage` will
-            // happily restore it, which would strand the user on a capture
-            // screen with nothing recording — so bounce to Sessions.
-            if selection == .search { selection = .sessions }
             // Cold launch from a push: the intent may have been recorded
             // before this view mounted, so `onChange` never sees the
             // transition. Consume any already-pending session here.
@@ -317,18 +286,17 @@ public struct RootTabView: View {
             }
         }
         .onChange(of: navigationRouter?.pendingSessionID) { _, sessionID in
-            // A push notification / deep link asked to open a session. Switch
-            // to the Sessions tab and push it onto the NavigationStack using
-            // the same `"session:<id>"` path element that in-app navigation
-            // (SearchTab, session list) uses, then clear the intent so the
-            // next deep link to the same session fires again.
+            // A push notification / deep link asked to open a session. Push
+            // it onto the NavigationStack using the same `"session:<id>"`
+            // path element that in-app navigation uses, then clear the
+            // intent so the next deep link to the same session fires again.
             guard let sessionID, !sessionID.isEmpty else { return }
             openSessionFromDeepLink(sessionID)
         }
     }
 
     public var body: some View {
-        observedTabs
+        observedScreens
         .modifier(AppIconBadgeSync(teamID: activeTeam?.id ?? ""))
         .sheet(item: $voiceAgentChoice) {
             // Swipe-dismiss and the picker's own Cancel both land here. A
@@ -345,11 +313,9 @@ public struct RootTabView: View {
         }
         .sheet(isPresented: $showFirstAgentReminder) {
             ZeroAgentReminderSheet {
-                // Switch to the Actors tab and present its existing
-                // invite sheet on the next runloop tick. Doing the switch
-                // here keeps the reminder copy short while sending the
-                // user to the canonical invite UI.
-                selection = .members
+                // SessionsHome pushes the actors list, which presents its
+                // existing invite sheet. Keeps the reminder copy short while
+                // sending the user to the canonical invite UI.
                 showInviteAfterReminder = true
             }
         }
@@ -361,22 +327,39 @@ public struct RootTabView: View {
         return voiceRecorder.state == .recording ? .recording : .preparing
     }
 
+    /// The bottom bar's mic: bring up the capture screen and start the take.
+    @MainActor
+    private func startVoiceCapture() {
+        guard !isCapturingVoice,
+              voiceRecorder.state != .recording,
+              !isStartingVoiceSession
+        else { return }
+        // A refused or failed take leaves the recorder parked in that
+        // state; a second refusal would then be no change at all, and the
+        // capture screen would wait on `.onChange` forever.
+        switch voiceRecorder.state {
+        case .denied, .error: voiceRecorder.reset()
+        default: break
+        }
+        isCapturingVoice = true
+        voiceRecorder.startRecording()
+    }
+
     @MainActor
     private func cancelVoiceCapture() {
         voiceRecorder.cancel()
         recordingStartedAt = nil
         pendingVoiceTranscript = ""
         voiceAgentChoice = nil
-        selection = .sessions
+        isCapturingVoice = false
     }
 
-    /// Push/deep-link entry point: reveal the Sessions tab and push the given
-    /// session, mirroring the `"session:<id>"` path convention that
-    /// `SessionsTab.navigationDestination` resolves. Idempotent — skips the
-    /// push if the session is already on top of the stack.
+    /// Push/deep-link entry point: push the given session, mirroring the
+    /// `"session:<id>"` path convention that `SessionsHome` resolves.
+    /// Idempotent — skips the push if the session is already on top of the
+    /// stack.
     @MainActor
     private func openSessionFromDeepLink(_ sessionID: String) {
-        selection = .sessions
         let element = "session:\(sessionID)"
         if sessionsPath.last != element {
             sessionsPath.append(element)
@@ -430,7 +413,7 @@ public struct RootTabView: View {
         )
         isStartingVoiceSession = false
         pendingVoiceTranscript = ""
-        selection = .sessions
+        isCapturingVoice = false
         sessionsPath = ["session:\(sessionID)"]
     }
 
@@ -439,7 +422,7 @@ public struct RootTabView: View {
         isStartingVoiceSession = false
         pendingVoiceTranscript = ""
         voiceAgentChoice = nil
-        selection = .sessions
+        isCapturingVoice = false
         voiceErrorMessage = error.localizedDescription
     }
 
@@ -552,7 +535,34 @@ public struct RootTabView: View {
     }
 }
 
-extension RootTabView {
+extension RootView {
+    fileprivate struct IdeaStoreKey: Equatable {
+        let teamID: String?
+        let isConnected: Bool
+    }
+
+    @MainActor
+    fileprivate func configureIdeaStore() async {
+        guard let activeTeam else {
+            ideaStore = nil
+            ideaStoreTeamID = nil
+            return
+        }
+
+        if ideaStore == nil || ideaStoreTeamID != activeTeam.id {
+            // Made before the repository is here, so the cached list shows at
+            // once; a missing repository at this point means "not up yet".
+            ideaStore = IdeaStore(
+                teamID: activeTeam.id,
+                repository: teamRuntime?.ideasRepo,
+                modelContext: modelContext
+            )
+            ideaStoreTeamID = activeTeam.id
+        } else if let repository = teamRuntime?.ideasRepo, ideaStore?.isConnected == false {
+            ideaStore?.attach(repository: repository)
+        }
+    }
+
     /// Fills the names on the session list's third line: the app a session
     /// was created from, or its idea. Both are cached on the session, so this
     /// only reaches the network for what the cache can't answer — the apps
@@ -579,7 +589,7 @@ extension RootTabView {
         if let ideasRepo = runtime.ideasRepo,
            !viewModel.ideaIDsMissingTitle(modelContext: modelContext).isEmpty,
            let ideas = try? await ideasRepo.listIdeas(teamID: teamID) {
-            // Upsert only: the Ideas tab owns pruning its cache.
+            // Upsert only: the ideas list owns pruning its cache.
             IdeaCacheSynchronizer.upsert(ideas, modelContext: modelContext)
             viewModel.fillIdeaTitlesFromCache(modelContext: modelContext)
         }

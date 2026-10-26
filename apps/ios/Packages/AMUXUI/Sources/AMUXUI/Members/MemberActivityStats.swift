@@ -76,7 +76,7 @@ func formattedTokenCount(_ n: Int) -> String {
 /// Built on demand rather than injected, the way `TeamStatsSheet` builds its
 /// own telemetry repository: this stat row and the list it pushes into are the
 /// only things that want them, and threading two more repositories from
-/// MembersTab down to a stat block is a lot of public surface for two numbers.
+/// MembersScreen down to a stat block is a lot of public surface for two numbers.
 struct MemberStatsRepositories {
     let telemetry: any TelemetryRepository
     let ideas: any IdeaRepository

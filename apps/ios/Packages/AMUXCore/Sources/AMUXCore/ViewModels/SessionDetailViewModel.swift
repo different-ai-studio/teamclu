@@ -1570,7 +1570,7 @@ public final class SessionDetailViewModel {
         // replay in via incremental sync.)
         if task != nil { return }
         startModelContext = modelContext
-        // M1 normally starts at the push (SessionsTab); this is the fallback
+        // M1 normally starts at the push (SessionsHome); this is the fallback
         // for any other way in. A begin for an open interval is a no-op.
         let metricKey = session?.sessionId ?? ""
         ChatMetrics.shared.begin(.openSession, key: metricKey)

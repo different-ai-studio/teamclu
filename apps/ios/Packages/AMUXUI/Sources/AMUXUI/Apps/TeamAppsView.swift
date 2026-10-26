@@ -28,9 +28,14 @@ public struct TeamAppsView: View {
                 .navigationBarTitleDisplayMode(.large)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
-                        Button("关闭") { dismiss() }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(Color.amux.basalt)
+                        Button { dismiss() } label: {
+                            Image(systemName: "xmark")
+                                .font(.title3)
+                                .foregroundStyle(Color.amux.basalt)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Close")
+                        .accessibilityIdentifier("apps.closeButton")
                     }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button { showNewApp = true } label: {

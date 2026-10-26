@@ -54,7 +54,7 @@ public final class SessionListViewModel {
                       teamcluService: TeamcluService? = nil,
                       agentPresenceStore: AgentPresenceStore? = nil) {
         // Never clobber a live store with nil: start() is called from both
-        // RootTabView and SessionsTab, and whichever ran last would otherwise
+        // RootView and SessionsHome, and whichever ran last would otherwise
         // decide whether presence is recorded at all.
         if let agentPresenceStore { self.agentPresenceStore = agentPresenceStore }
         // Create a dedicated context from the same container for async work

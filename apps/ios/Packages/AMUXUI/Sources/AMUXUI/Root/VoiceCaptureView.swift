@@ -1,9 +1,9 @@
 import SwiftUI
 import AMUXSharedUI
 
-/// Full-bleed capture surface behind the tab bar's mic control.
+/// Full-bleed capture surface behind the session list's mic button.
 ///
-/// Selecting that tab starts the recorder immediately, so this is never a
+/// Tapping the mic starts the recorder immediately, so this is never a
 /// landing page — it *is* the take: a live level meter, the partial transcript
 /// as it lands, and one verb. Done hands the transcript to
 /// `VoiceSessionStarter`, which creates the session and navigates into it.

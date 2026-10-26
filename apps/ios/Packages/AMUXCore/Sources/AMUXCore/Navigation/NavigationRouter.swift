@@ -5,9 +5,9 @@ import Observation
 ///
 /// Push notifications and `teamclu://session/<id>` deep links are received in
 /// `AMUXApp` (`ContentView`), but the session `NavigationStack` path is owned by
-/// `RootTabView` in the AMUXUI package. This `@Observable` router bridges the two:
-/// the receiver records a *pending* session intent here, and `RootTabView`
-/// observes it, switches to the Sessions tab, and pushes the session onto its
+/// `RootView` in the AMUXUI package. This `@Observable` router bridges the two:
+/// the receiver records a *pending* session intent here, and `RootView`
+/// observes it and pushes the session onto its
 /// path — then clears the intent so the next deep link to the same session fires
 /// again.
 ///
@@ -18,7 +18,7 @@ import Observation
 @Observable
 public final class NavigationRouter {
     /// Session id the app wants to navigate to, or `nil` when there is nothing
-    /// pending. `RootTabView` consumes this and resets it to `nil`.
+    /// pending. `RootView` consumes this and resets it to `nil`.
     public var pendingSessionID: String?
 
     /// Session id → the message a push pointed at, waiting for that session's

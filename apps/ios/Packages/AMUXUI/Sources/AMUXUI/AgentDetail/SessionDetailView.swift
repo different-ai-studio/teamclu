@@ -93,7 +93,7 @@ public struct SessionDetailView: View {
     /// How far the resting composer is pulled back into the home-indicator
     /// reserve. That reserve (34pt on current iPhones) plus the composer's own
     /// 8pt stacks to 42pt off the screen edge — a band of empty paper next to
-    /// the 22pt the tab bar's pill sits at elsewhere in the app. Taking 12pt
+    /// the 22pt the session list's bottom bar sits at. Taking 12pt
     /// back lands on the same 22pt. Where the reserve is shorter the card just
     /// ends up nearer the edge, never past it.
     private static let composerRestingBottomPullback: CGFloat = -12
@@ -1314,7 +1314,7 @@ public struct SessionDetailView: View {
         case .activeStream(_, let agentID, let runtimeEvents):
             // NavigationLink(destination:) instead of value-based push
             // because the parent NavigationStack uses a `[String]`-typed
-            // path (SessionsTab / IdeasTab) — value-based pushes of
+            // path (SessionsHome) — value-based pushes of
             // `TurnRoute` would be silently dropped by SwiftUI when the
             // type doesn't match the path's element type.
             //
