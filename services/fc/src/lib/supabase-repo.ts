@@ -5352,6 +5352,8 @@ export function createSupabaseBusinessRepository(options) {
       if (!existing) return null;
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return null;
+      const target = appFunctionTargetFromRow(existing);
+      resolveAppFunctionName({ ...target, fcFunctionName: existing.fc_function_name });
       if (existing.provision_status !== "ready") throw new ApiError(409, "app_not_ready", "app must be seeded before deploy");
       assertLifecycleAvailable(existing.fc_status);
       const progress = checkDeployInProgress({ fc_status: existing.fc_status, deploy_started_at: existing.deploy_started_at });
@@ -5372,8 +5374,7 @@ export function createSupabaseBusinessRepository(options) {
       } else if (!revision.startsWith("sha256:")) {
         throw new ApiError(400, "validation_failed", "imported deploy requires a content digest");
       }
-      resolveAppFunctionName({ ...appFunctionTargetFromRow(existing), fcFunctionName: existing.fc_function_name });
-      validateAppOrigin({ ...appFunctionTargetFromRow(existing), slug: existing.slug });
+      validateAppOrigin({ ...target, slug: existing.slug });
       const info = await this.getAppRuntimeInfo(appId);
       if (!info) return null;
       assertNoUnexpectedOriginEntries(info.originSecurity);

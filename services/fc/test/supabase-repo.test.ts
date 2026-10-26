@@ -6344,3 +6344,23 @@ test("apps: real provisioners preserve code identity from preflight through veri
     assert.equal(live.row.fc_endpoint, `http://${code}.origins.test`);
   } finally { restore(); }
 });
+
+test("apps: stale corrupt identity rejects before recovery, lifecycle or provider mutations", async () => {
+  for (const corrupt of [{ function_naming_mode: null }, { function_naming_mode: "unknown" }, { app_code: "bad" }, { fc_function_name: "foreign" }]) {
+    const calls: any[] = [];
+    let lifecycleCalls = 0;
+    let providerCalls = 0;
+    const db = appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "building", deploy_started_at: "2000-01-01T00:00:00Z", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", fc_function_name: "a-p35cg2kk6bh3", ...corrupt }] } });
+    const originalRpc = db.rpc;
+    db.rpc = async (name, args) => { lifecycleCalls++; return originalRpc(name, args); };
+    const repo = appsRepo(db, {
+      startDeploy: async () => { providerCalls++; throw Error("unexpected provider mutation"); },
+      finalizeDeploy: async () => { providerCalls++; throw Error("unexpected provider mutation"); },
+      readAppFunction: async () => { providerCalls++; throw Error("unexpected provider read"); },
+    });
+    await assert.rejects(() => repo.preflightAppDeploy("app-1", APP_DEPLOY), /invalid app function identity/);
+    assert.deepEqual(calls.filter(c => ["update", "insert", "delete", "upsert"].includes(c.op)), []);
+    assert.equal(lifecycleCalls, 0);
+    assert.equal(providerCalls, 0);
+  }
+});
