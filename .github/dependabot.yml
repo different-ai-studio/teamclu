@@ -15,6 +15,13 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
+    # apps/expo's native packages are pinned by the Expo SDK's
+    # bundledNativeModules matrix; majors move with a deliberate SDK upgrade.
+    ignore:
+      - dependency-name: "expo*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-native*"
+        update-types: ["version-update:semver-major"]
 
   # Rust dependencies
   - package-ecosystem: "cargo"
