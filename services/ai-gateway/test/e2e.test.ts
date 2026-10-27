@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * End-to-end: the real Hono app, against a real Postgres carrying the real
  * migrations, talking to the real upstream.
@@ -26,6 +27,7 @@ const DB = process.env.DATABASE_URL;
 const ADMIN_DB = process.env.ADMIN_DATABASE_URL ?? DB;
 const KEY = process.env.DEEPSEEK_API_KEY;
 const SERVICE_TOKEN = "svc-test-token";
+const PLATFORM_TOKEN = "platform-test-token";
 
 const MEMBER_SUB = "11111111-1111-4111-8111-111111111111";
 const OUTSIDER_SUB = "22222222-2222-4222-8222-222222222222";
@@ -59,7 +61,7 @@ before(async () => {
             values (${teamId}::uuid, 'member', 'E2E Member', ${MEMBER_SUB})`;
 
   cfg = {
-    port: 0, databaseUrl: DB, catalogPath: "", serviceToken: SERVICE_TOKEN,
+    port: 0, databaseUrl: DB, catalogPath: "", serviceToken: SERVICE_TOKEN, platformToken: PLATFORM_TOKEN,
     backendKind: "supabase", supabaseUrl: "", supabaseAnonKey: "",
     authBaseUrl: "", tokenCacheTtlMs: 60_000,
   } as Config;
@@ -226,6 +228,45 @@ test("the sign has to match the kind", { skip: !DB }, async () => {
 
   const zero = await post({ amountCredits: 0, kind: "adjustment", idempotencyKey: `z-${Date.now()}` });
   assert.equal(zero.status, 400);
+});
+
+test("org endpoints sum an org's teams and top up only a team that belongs to it", { skip: !DB }, async () => {
+  const svc = { Authorization: `Bearer ${PLATFORM_TOKEN}`, "Content-Type": "application/json" };
+  // teams.oid is a foreign key to public.orgs, so the org has to exist.
+  const [{ id: orgId }] = await admin<{ id: string }[]>`
+    insert into public.orgs (name) values (${`e2e-org-${Date.now()}`}) returning id`;
+  await admin`update amux.teams set oid = ${orgId}::uuid where id = ${teamId}::uuid`;
+  await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+  await admin`
+    insert into amux.team_credit_balance (team_id, balance_credits)
+    values (${teamId}::uuid, 1000)
+    on conflict (team_id) do update set balance_credits = 1000`;
+
+  assert.equal((await req(`/platform/orgs/${orgId}/credits/summary`)).status, 401);
+  // The FC service token is a different credential and must not open this surface,
+  // nor may the platform token open /internal.
+  const fc = { Authorization: `Bearer ${SERVICE_TOKEN}` };
+  assert.equal((await req(`/platform/orgs/${orgId}/credits/summary`, { headers: fc })).status, 401);
+  assert.equal((await req(`/internal/models`, { headers: { Authorization: `Bearer ${PLATFORM_TOKEN}` } })).status, 401);
+
+  const get = async () => (await req(`/platform/orgs/${orgId}/credits/summary`, { headers: svc })).json() as Promise<any>;
+  assert.equal((await get()).balanceCredits, 1000);
+
+  const post = (b: unknown) =>
+    req(`/platform/orgs/${orgId}/credits/top-up`, { method: "POST", headers: svc, body: JSON.stringify(b) });
+  const key = `org-topup-${Date.now()}`;
+  const ok = await post({ teamId, amountCredits: 500, kind: "grant", idempotencyKey: key });
+  assert.equal(ok.status, 200);
+  assert.equal((await ok.json() as any).applied, true);
+  assert.equal((await get()).balanceCredits, 1500);
+  assert.equal((await (await post({ teamId, amountCredits: 500, kind: "grant", idempotencyKey: key })).json() as any).applied, false);
+
+  // otherTeamId is in no org, so naming it under this org must be refused.
+  assert.equal((await post({ teamId: otherTeamId, amountCredits: 1, kind: "grant", idempotencyKey: `${key}-b` })).status, 404);
+  assert.equal((await post({ amountCredits: 1, kind: "grant", idempotencyKey: `${key}-c` })).status, 400);
+  assert.equal((await req(`/platform/orgs/${randomUUID()}/credits/summary`, { headers: svc })).status, 404);
+  await admin`update amux.teams set oid = null where id = ${teamId}::uuid`;
+  await admin`delete from public.orgs where id = ${orgId}::uuid`;
 });
 
 test("non-streaming completion round-trips and writes a usage row", { skip: !DB || !KEY }, async () => {

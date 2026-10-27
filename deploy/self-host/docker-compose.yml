@@ -185,6 +185,7 @@ services:
       DATABASE_URL: "${AI_GATEWAY_DB_URL}"
       CATALOG_PATH: /app/catalog.yaml
       AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN}"
+      AI_GATEWAY_PLATFORM_TOKEN: "${AI_GATEWAY_PLATFORM_TOKEN:-}"
       BACKEND_KIND: "${BACKEND_KIND:-supabase}"
       # supabase path: identity is established by asking GoTrue, exactly as FC
       # does. The gateway holds no signing key.
