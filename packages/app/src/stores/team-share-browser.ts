@@ -94,6 +94,7 @@ import { AgentCapabilityAction, AgentCapabilityKind } from '@/lib/proto/teamclu_
 import { manageAgentCapability } from '@/lib/daemon/teamclu-rpc'
 import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
 import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
+import { isSkillsMarketplaceDetail } from '@/lib/skills/default-subject-actor'
 
 function requireAgentOnline(actorId: string): void {
   if (resolveAgentDevicePresenceSync(actorId) === 'offline') {
@@ -1305,7 +1306,16 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
   },
 
   setSubjectActor: async (actorId) => {
-    set({ subjectActorId: actorId, detailTarget: null })
+    if (get().subjectActorId === actorId) return
+    // The marketplace is the Skills column's browse view, not a row that
+    // belongs to the previous agent. Selecting an agent — including the
+    // default on entry — has to leave it open so the store icon still shows
+    // the catalog. A skill detail does belong to the previous agent.
+    const detail = get().detailTarget
+    set({
+      subjectActorId: actorId,
+      detailTarget: isSkillsMarketplaceDetail(detail) ? detail : null,
+    })
     await Promise.all([
       get().loadSection('skills', { force: true }),
       // Probe after the actor is known. Opening MCP fires withTools while
