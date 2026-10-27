@@ -563,11 +563,17 @@ export function ChatInputArea({
         inputLayout === "inline"
           ? "relative shrink-0 px-0 py-0"
           : compact
-            ? "absolute bottom-0 left-0 right-0 px-2 pb-2 pt-2 bg-background"
-            : "absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background from-[42%] via-background/92 to-transparent px-4 pb-6 pt-8",
+            ? "pointer-events-none absolute bottom-0 left-0 right-0 bg-background px-2 pb-2 pt-2"
+            : "pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background from-[42%] via-background/92 to-transparent px-4 pb-6 pt-8",
       )}
     >
-      <div className={cn("relative z-10 w-full", compact ? "" : "mx-auto max-w-3xl")}>
+      <div
+        className={cn(
+          "relative z-10 w-full",
+          inputLayout === "overlay" && "pointer-events-auto",
+          compact ? "" : "mx-auto max-w-3xl",
+        )}
+      >
         {!compact ? (
           <div
             aria-hidden

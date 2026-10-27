@@ -17,7 +17,11 @@ import {
   useV2StreamingStore,
   type AgentStreamEntry,
 } from '@/stores/v2-streaming-store';
-import { MessageList } from '../MessageList';
+import { MessageList, type MessageListHandle } from '../MessageList';
+import {
+  DEFAULT_INPUT_AREA_HEIGHT,
+  SCROLL_TO_LATEST_CLEARANCE,
+} from '../layout-constants';
 import {
   LOAD_EARLIER_HOLD_MS,
   LOAD_EARLIER_TOP_DEBOUNCE_MS,
@@ -457,6 +461,127 @@ describe('MessageList', () => {
       await waitFor(() => expect(scrollToMock).toHaveBeenCalled());
     } finally {
       HTMLElement.prototype.scrollTo = originalScrollTo;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps the jump-to-latest button above the measured composer', () => {
+    const ref = React.createRef<MessageListHandle>();
+    const messages = [
+      makeMessage({
+        id: 'm1',
+        content: 'hello',
+        timestamp: new Date('2024-01-01T10:00:00Z'),
+      }),
+      makeMessage({
+        id: 'm2',
+        role: 'assistant',
+        content: 'world',
+        timestamp: new Date('2024-01-01T10:01:00Z'),
+      }),
+    ];
+    const { container } = render(
+      <MessageList
+        ref={ref}
+        messages={messages}
+        activeSessionId="sess-1"
+        isStreaming={false}
+        streamingMessageId={null}
+      />,
+    );
+
+    const scrollEl = container.querySelector(
+      '[data-testid="v2-message-list"]',
+    ) as HTMLDivElement;
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      value: 0,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'scrollHeight', {
+      value: 4000,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'clientHeight', {
+      value: 600,
+      writable: true,
+      configurable: true,
+    });
+
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    try {
+      act(() => {
+        fireEvent.scroll(scrollEl);
+      });
+
+      const button = screen.getByTestId('scroll-to-latest');
+      expect(button.style.bottom).toBe(
+        `${DEFAULT_INPUT_AREA_HEIGHT + SCROLL_TO_LATEST_CLEARANCE}px`,
+      );
+
+      act(() => {
+        ref.current?.handleInputHeightChange(220);
+      });
+      expect(screen.getByTestId('scroll-to-latest').style.bottom).toBe(
+        `${220 + SCROLL_TO_LATEST_CLEARANCE}px`,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('pins the jump-to-latest button to the pane when the composer is inline', () => {
+    const messages = [
+      makeMessage({
+        id: 'm1',
+        content: 'hello',
+        timestamp: new Date('2024-01-01T10:00:00Z'),
+      }),
+    ];
+    const { container } = render(
+      <MessageList
+        messages={messages}
+        activeSessionId="sess-1"
+        isStreaming={false}
+        streamingMessageId={null}
+        externalComposer
+      />,
+    );
+    const scrollEl = container.querySelector(
+      '[data-testid="v2-message-list"]',
+    ) as HTMLDivElement;
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      value: 0,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'scrollHeight', {
+      value: 4000,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'clientHeight', {
+      value: 600,
+      writable: true,
+      configurable: true,
+    });
+
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    try {
+      act(() => {
+        fireEvent.scroll(scrollEl);
+      });
+      const button = screen.getByTestId('scroll-to-latest');
+      expect(button.className).toContain('bottom-4');
+      expect(button.style.bottom).toBe('');
+    } finally {
       vi.unstubAllGlobals();
     }
   });

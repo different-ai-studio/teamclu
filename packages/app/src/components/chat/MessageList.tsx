@@ -19,7 +19,11 @@ import {
   scrollChatMessageIntoView,
   type ChatScrollToMessageDetail,
 } from "@/lib/ui/chat-scroll-to-message";
-import { DEFAULT_INPUT_AREA_HEIGHT, SAFE_BOTTOM_SPACING } from "./layout-constants";
+import {
+  DEFAULT_INPUT_AREA_HEIGHT,
+  SAFE_BOTTOM_SPACING,
+  SCROLL_TO_LATEST_CLEARANCE,
+} from "./layout-constants";
 import { canStartThreadFromNewestIndex } from "@/lib/session/thread-fork";
 import {
   expandVisibleMessageCount,
@@ -922,7 +926,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
     // ── Render ───────────────────────────────────────────────────────────
 
     return (
-      <>
+      <div className="relative flex min-h-0 flex-1 flex-col">
         {/* ─── Conversation Area ───────────────────────────────────────── */}
         <div
           ref={scrollRef}
@@ -1141,9 +1145,23 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
           </div>
         )}
 
-        {/* Scroll to bottom button */}
+        {/* Scroll to bottom button. Anchored to this pane, not the column,
+            so a terminal below the thread does not pull it under the composer.
+            Overlay composers are cleared by their measured height; an inline
+            composer sits outside this pane, so a small inset is enough. */}
         {showScrollButton && (
-          <div className="pointer-events-none absolute bottom-32 right-6 z-20">
+          <div
+            data-testid="scroll-to-latest"
+            className={cn(
+              "pointer-events-none absolute right-6 z-20",
+              externalComposer && "bottom-4",
+            )}
+            style={
+              externalComposer
+                ? undefined
+                : { bottom: inputAreaHeight + SCROLL_TO_LATEST_CLEARANCE }
+            }
+          >
             <Button
               type="button"
               size="icon"
@@ -1155,7 +1173,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
             </Button>
           </div>
         )}
-      </>
+      </div>
     );
   },
 );
