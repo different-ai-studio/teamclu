@@ -50,7 +50,7 @@ mod workspace_runtime;
 pub use acp_event_frame::{forward_checked_out_turn_event, CheckedOutTurnEvent};
 pub use backend::{create_backend, AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 pub use context_service::RuntimeContextService;
-pub use handle::{InjectedContextItem, PendingMessage, RuntimeHandle};
+pub use handle::{silent_context_prefix, InjectedContextItem, PendingMessage, RuntimeHandle};
 pub use instruction_delivery::{
     resolve_instruction_delivery, skips_buffered_inject, InstructionDelivery,
 };

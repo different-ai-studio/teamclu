@@ -6,6 +6,7 @@ type ChannelPlatform =
   | "feishu"
   | "kook"
   | "wechat"
+  | "wechatpad"
   | "email"
   | "seatalk";
 
@@ -176,6 +177,19 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
         ilink_token: String(config.botToken ?? ""),
         ...runtimeToDaemon(config),
       };
+    case "wechatpad":
+      return {
+        enabled: Boolean(config.enabled),
+        server_url: String(config.serverUrl ?? ""),
+        callback_port: Number(config.callbackPort ?? 0) || 0,
+        account_wxid: String(config.accountWxid ?? "").trim(),
+        ...(typeof config.loginAt === "number" ? { login_at: config.loginAt } : {}),
+        dm_policy: String(config.dmPolicy ?? "allowlist"),
+        allow_from: stringList(config.allowFrom),
+        group_policy: String(config.groupPolicy ?? "allowlist"),
+        group_allow_from: stringList(config.groupAllowFrom),
+        ...runtimeToDaemon(config),
+      };
     case "email":
       return {
         enabled: Boolean(config.enabled),
@@ -193,6 +207,12 @@ function toDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Chann
         ...runtimeToDaemon(config),
       };
   }
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((v) => String(v).trim()).filter(Boolean)
+    : [];
 }
 
 function seatalkPrompt(value: unknown): string | undefined {
@@ -295,6 +315,19 @@ function fromDaemonConfig(platform: ChannelPlatform, config: ChannelConfig): Cha
         enabled: Boolean(config.enabled),
         accountId: String(config.ilink_account ?? ""),
         botToken: String(config.ilink_token ?? ""),
+        ...runtimeFromDaemon(config),
+      };
+    case "wechatpad":
+      return {
+        enabled: Boolean(config.enabled),
+        serverUrl: String(config.server_url || "http://127.0.0.1:3010"),
+        callbackPort: Number(config.callback_port) || 9101,
+        accountWxid: String(config.account_wxid ?? ""),
+        ...(typeof config.login_at === "number" ? { loginAt: config.login_at } : {}),
+        dmPolicy: String(config.dm_policy ?? "allowlist"),
+        allowFrom: stringList(config.allow_from),
+        groupPolicy: String(config.group_policy ?? "allowlist"),
+        groupAllowFrom: stringList(config.group_allow_from),
         ...runtimeFromDaemon(config),
       };
     case "email":

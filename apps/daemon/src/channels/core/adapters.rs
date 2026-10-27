@@ -288,6 +288,17 @@ impl TurnRunner for AgentTurns {
             .map_err(|e| CoreError::Turn(e.to_string()))
     }
 
+    async fn queue_silent(
+        &self,
+        acp_session_id: &str,
+        context: teamclu_gateway::SilentContext,
+    ) -> Result<(), CoreError> {
+        self.agent
+            .queue_silent(&acp_session_id.to_string(), context)
+            .await
+            .map_err(|e| CoreError::Turn(e.to_string()))
+    }
+
     async fn run(
         &self,
         acp_session_id: &str,

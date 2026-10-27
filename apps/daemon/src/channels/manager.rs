@@ -15,12 +15,13 @@ use teamclu_gateway::{
     EmailGatewayStatus, EmailProvider, FeishuConfig, FeishuGateway, FeishuGatewayStatus,
     GatewayStatus, KookConfig, KookDmConfig, KookGateway, KookGatewayStatus, SeaTalkConfig,
     SeaTalkGateway, SeaTalkGatewayStatus, WeChatConfig, WeChatGateway, WeChatGatewayStatus,
-    WeComConfig, WeComGateway, WeComGatewayStatus,
+    WeChatPadConfig, WeChatPadGateway, WeChatPadGatewayStatus, WeComConfig, WeComGateway,
+    WeComGatewayStatus,
 };
 
 use crate::config::{
     DaemonConfig, DiscordChannel, EmailChannel, FeishuChannel, KookChannel, SeaTalkChannel,
-    WeChatChannel, WeComChannel,
+    WeChatChannel, WeChatPadChannel, WeComChannel,
 };
 
 #[derive(Default)]
@@ -30,6 +31,10 @@ struct RunningChannels {
     feishu: Option<FeishuGateway>,
     kook: Option<KookGateway>,
     wechat: Option<WeChatGateway>,
+    wechatpad: Option<WeChatPadGateway>,
+    /// Why wechatpad was enabled but did not start (no account wxid, callback
+    /// port taken). Without it the UI shows "connecting" forever.
+    wechatpad_start_error: Option<String>,
     email: Option<EmailGateway>,
     seatalk: Vec<SeaTalkGateway>,
     /// Bots that were enabled but did not connect. Kept off the send path.
@@ -233,6 +238,21 @@ impl ChannelManager {
             }
         }
 
+        if let Some(c) = &self.cfg.channels.wechatpad {
+            if c.enabled {
+                match self.start_wechatpad(c).await {
+                    Ok(g) => {
+                        println!("[ChannelManager] wechatpad started");
+                        running.wechatpad = Some(g);
+                    }
+                    Err(e) => {
+                        eprintln!("[ChannelManager] wechatpad start failed: {e}");
+                        running.wechatpad_start_error = Some(e.to_string());
+                    }
+                }
+            }
+        }
+
         if let Some(c) = &self.cfg.channels.email {
             if c.enabled {
                 match self.start_email(c).await {
@@ -342,7 +362,7 @@ impl ChannelManager {
                 };
                 result.map_err(|e| anyhow::anyhow!("seatalk send: {e}"))
             }
-            "feishu" | "discord" | "kook" | "wechat" | "email" => {
+            "feishu" | "discord" | "kook" | "wechat" | "wechatpad" | "email" => {
                 anyhow::bail!(
                     "{channel}: send not yet implemented in v2; only WeCom/SeaTalk are wired"
                 )
@@ -410,6 +430,16 @@ impl ChannelManager {
             }
             None => (false, None),
         };
+        let wechatpad = match running.wechatpad.as_ref() {
+            Some(g) => {
+                let status = g.get_status().await;
+                (
+                    status.status == WeChatPadGatewayStatus::Connected,
+                    status.error_message,
+                )
+            }
+            None => (false, running.wechatpad_start_error.clone()),
+        };
         let email = match running.email.as_ref() {
             Some(g) => {
                 let status = g.get_status().await;
@@ -439,6 +469,7 @@ impl ChannelManager {
             ("feishu", feishu.0, feishu.1),
             ("kook", kook.0, kook.1),
             ("wechat", wechat.0, wechat.1),
+            ("wechatpad", wechatpad.0, wechatpad.1),
             ("email", email.0, email.1),
             ("seatalk", seatalk.0, seatalk.1),
         ]
@@ -494,6 +525,9 @@ impl ChannelManager {
             g.shutdown().await;
         }
         if let Some(g) = running.wechat.take() {
+            g.shutdown().await;
+        }
+        if let Some(g) = running.wechatpad.take() {
             g.shutdown().await;
         }
         if let Some(g) = running.email.take() {
@@ -658,6 +692,35 @@ impl ChannelManager {
         gw.set_config(cfg).await;
         // WeChat gains dedup (it had none — iLink redelivery meant a repeat
         // turn), commands and a per-channel turn timeout.
+        gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
+            .await;
+        gw.start().await.map_err(|e| anyhow::anyhow!(e))?;
+        Ok(gw)
+    }
+
+    async fn start_wechatpad(&self, c: &WeChatPadChannel) -> anyhow::Result<WeChatPadGateway> {
+        let mut gw = WeChatPadGateway::new();
+        let defaults = WeChatPadConfig::default();
+        gw.set_config(WeChatPadConfig {
+            enabled: true,
+            server_url: if c.server_url.trim().is_empty() {
+                defaults.server_url
+            } else {
+                c.server_url.clone()
+            },
+            callback_port: if c.callback_port == 0 {
+                defaults.callback_port
+            } else {
+                c.callback_port
+            },
+            account_wxid: c.account_wxid.clone(),
+            login_at: c.login_at,
+            dm_policy: c.dm_policy.clone(),
+            allow_from: c.allow_from.clone(),
+            group_policy: c.group_policy.clone(),
+            group_allow_from: c.group_allow_from.clone(),
+        })
+        .await;
         gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver().await)))
             .await;
         gw.start().await.map_err(|e| anyhow::anyhow!(e))?;

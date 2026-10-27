@@ -43,6 +43,7 @@ pub(crate) fn parse_binding_to_target(
         "discord" => Ok(("discord", None)),
         "kook" => Ok(("kook", None)),
         "wechat" => Ok(("wechat", None)),
+        "wechatpad" => Ok(("wechatpad", None)),
         "email" => Ok(("email", None)),
         "seatalk" => {
             // seatalk://{app}/group|single/{id}[/thread/{tid}]
@@ -181,6 +182,20 @@ fn normalize_dispatch_target(channel: &str, target: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wechatpad_bindings_resolve_to_their_own_channel() {
+        // Not to the iLink `wechat` channel: the two share a name prefix and
+        // nothing else.
+        for b in [
+            "wechatpad://wxid_bot/single/wxid_me",
+            "wechatpad://wxid_bot/group/123@chatroom",
+        ] {
+            let (channel, target) = parse_binding_to_target(b).unwrap();
+            assert_eq!(channel, "wechatpad");
+            assert_eq!(target, None);
+        }
+    }
 
     #[test]
     fn wecom_single_maps_to_user_target() {

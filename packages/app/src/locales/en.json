@@ -2786,6 +2786,29 @@
         "inviteAdminNote": "You need server admin permissions to invite bots.",
         "nextStepConfigure": "Configure server/channel settings if needed"
       },
+      "wechatpad": {
+        "gateway": "WeChat (iPad protocol)",
+        "account": "Account",
+        "setupTitle": "Before you start",
+        "setupServer": "Run the protocol server: deploy/wechatpad/docker-compose.yml",
+        "setupLogin": "Log a secondary account in: scripts/wechatpad-login.py prints the account wxid",
+        "setupRisk": "The protocol is unofficial and accounts on it can be restricted — never use your main account",
+        "server": "Protocol server",
+        "serverUrl": "Server URL",
+        "callbackPort": "Callback port",
+        "accountWxid": "Account wxid",
+        "access": "Who can talk to the agent",
+        "dmAllowlist": "Allowlist — only the wxids below",
+        "dmOpen": "Open — anyone who messages the account",
+        "allowFrom": "Allowed wxids (one per line)",
+        "nobodyAllowed": "Nobody is on the list yet, so the agent will not answer anyone.",
+        "groupPolicy": "Groups",
+        "groupAllowlist": "Allowlist — allowed wxids, in the groups below (empty = any group)",
+        "groupOpen": "Open — anyone in any group",
+        "groupDisabled": "Disabled — ignore groups",
+        "groupAllowFrom": "Allowed groups (…@chatroom, one per line)",
+        "groupHint": "Every message in an allowed group is kept in its session; the agent answers only an @mention, a /command, or a quote of its own message."
+      },
       "wechat": {
         "wizardIntroTitle": "Welcome to WeChat Setup",
         "wizardIntroDesc": "Connect your personal WeChat to TeamClu via ClawBot.",
@@ -3836,6 +3859,7 @@
     "source": {
       "wecom": "WeCom",
       "wechat": "WeChat",
+      "wechatpad": "WeChat (iPad)",
       "feishu": "Feishu",
       "discord": "Discord",
       "kook": "KOOK",

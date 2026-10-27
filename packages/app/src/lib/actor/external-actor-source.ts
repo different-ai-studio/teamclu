@@ -8,6 +8,7 @@ import type { TFunction } from 'i18next'
 const EXTERNAL_ACTOR_SOURCES = [
   'wecom',
   'wechat',
+  'wechatpad',
   'feishu',
   'discord',
   'kook',

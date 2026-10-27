@@ -8,6 +8,8 @@
 //!   discord://{application_id}/{channel_id}
 //!   kook://{guild_id_or_dm}/{channel_id}
 //!   wechat://{ilink_account}/single/{from_user_id}
+//!   wechatpad://{account_wxid}/single/{wxid}
+//!   wechatpad://{account_wxid}/group/{chatroom_id}
 //!   email://{account_key}/thread/{thread_key}
 
 pub fn wecom_dm(corp_id: &str, agent_id: &str, userid: &str) -> String {
@@ -30,6 +32,12 @@ pub fn kook(scope: &str, channel_id: &str) -> String {
 }
 pub fn wechat_dm(ilink_account: &str, from_user_id: &str) -> String {
     format!("wechat://{ilink_account}/single/{from_user_id}")
+}
+pub fn wechatpad_dm(account_wxid: &str, wxid: &str) -> String {
+    format!("wechatpad://{account_wxid}/single/{wxid}")
+}
+pub fn wechatpad_group(account_wxid: &str, chatroom_id: &str) -> String {
+    format!("wechatpad://{account_wxid}/group/{chatroom_id}")
 }
 pub fn email_thread(account_key: &str, thread_key: &str) -> String {
     format!("email://{account_key}/thread/{thread_key}")
@@ -64,6 +72,9 @@ pub fn urn_kook_user(user_id: &str) -> String {
 }
 pub fn urn_wechat_user(ilink_account: &str, from_user_id: &str) -> String {
     format!("wechat-user:{ilink_account}:{from_user_id}")
+}
+pub fn urn_wechatpad_user(account_wxid: &str, wxid: &str) -> String {
+    format!("wechatpad-user:{account_wxid}:{wxid}")
 }
 pub fn urn_email_user(addr: &str) -> String {
     format!("email-user:{}", addr.to_lowercase())

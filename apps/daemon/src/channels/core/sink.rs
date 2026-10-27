@@ -173,6 +173,15 @@ impl InboundSink for CoreSink {
             return;
         }
 
+        // Awaited, not spawned: a picture posted just before "@bot what is
+        // this" has to be in the silent queue before that turn reads it.
+        if !msg.addressed_to_bot && driver.records_unaddressed() {
+            match core.record_silent(driver.as_ref(), msg).await {
+                Ok(outcome) => tracing::debug!(?outcome, "gateway: recorded without a turn"),
+                Err(error) => tracing::warn!(%error, "gateway: unaddressed message not recorded"),
+            }
+            return;
+        }
         if let Some(outcome) = core.claim_message(&msg).await {
             tracing::debug!(external_id = %msg.external_message_id, ?outcome, "gateway: message not a turn");
             return;

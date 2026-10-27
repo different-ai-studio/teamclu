@@ -4,7 +4,7 @@ pub mod agent;
 pub mod commands;
 pub use agent::{
     AgentCommand, AgentError, AgentHandle, AmuxSessionId, ModelInfo, ParticipantInfo, SessionInfo,
-    TurnOutcome, TurnUpdate, WorkspaceInfo,
+    SilentContext, TurnOutcome, TurnUpdate, WorkspaceInfo,
 };
 
 pub mod binding;
@@ -27,6 +27,8 @@ pub mod seatalk;
 pub mod seatalk_config;
 pub mod wechat;
 pub mod wechat_config;
+pub mod wechatpad;
+pub mod wechatpad_config;
 pub mod wecom;
 pub mod wecom_config;
 mod wecom_delivery;
@@ -48,6 +50,8 @@ pub use seatalk::SeaTalkGateway;
 pub use seatalk_config::*;
 pub use wechat::WeChatGateway;
 pub use wechat_config::*;
+pub use wechatpad::WeChatPadGateway;
+pub use wechatpad_config::*;
 pub use wecom::WeComGateway;
 pub use wecom_config::*;
 

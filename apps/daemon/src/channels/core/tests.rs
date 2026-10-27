@@ -178,6 +178,20 @@ impl TurnRunner for FakeTurns {
         }
         Ok(self.reply.to_string())
     }
+
+    async fn queue_silent(
+        &self,
+        acp: &str,
+        context: teamclu_gateway::SilentContext,
+    ) -> Result<(), CoreError> {
+        self.log.lock().unwrap().push(format!(
+            "silent:{acp}:{}:{}:{}",
+            context.sender_display,
+            context.content,
+            context.attachment_urls.join(",")
+        ));
+        Ok(())
+    }
 }
 
 struct FailingTurns;
@@ -234,6 +248,8 @@ impl CommandRunner for FakeCommands {
 #[derive(Default)]
 struct FakeDriver {
     caps: Option<ChannelCaps>,
+    /// `ChannelDriver::records_unaddressed`.
+    records_unaddressed: bool,
     delivered: Mutex<Vec<(String, Option<String>)>>, // (text, reply_context)
     /// Choice cards that came with a delivery.
     cards: Mutex<Vec<teamclu_gateway::driver::InteractiveQuestion>>,
@@ -276,6 +292,9 @@ impl ChannelDriver for FakeDriver {
     }
     fn caps(&self) -> ChannelCaps {
         self.caps.unwrap_or(IM)
+    }
+    fn records_unaddressed(&self) -> bool {
+        self.records_unaddressed
     }
     fn binding(&self, c: &Conversation) -> String {
         format!(
@@ -513,6 +532,61 @@ async fn a_group_message_that_does_not_address_the_bot_is_ignored() {
     assert_eq!(f.core.handle(&d, msg).await.unwrap(), Outcome::NotAddressed);
     assert!(f.turn_log.lock().unwrap().is_empty(), "no turn, no write");
     assert!(f.writer.log.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_channel_that_follows_the_room_records_chatter_without_a_turn() {
+    let f = plain("done");
+    let d = FakeDriver {
+        records_unaddressed: true,
+        ..driver(IM)
+    };
+    let mut msg = inbound("小布丁喜欢吃 pizza");
+    msg.conversation.kind = ConversationKind::Group;
+    msg.sender.display_name = "Liz".into();
+    msg.addressed_to_bot = false;
+    msg.attachments.push(InboundAttachment {
+        filename: "wall.jpg".into(),
+        mime: "image/jpeg".into(),
+        size_hint: None,
+        source: AttachmentSource::Ready(vec![1, 2, 3]),
+    });
+
+    let outcome = f.core.handle(&d, msg).await.unwrap();
+    assert!(
+        matches!(outcome, Outcome::Recorded { .. }),
+        "got {outcome:?}"
+    );
+    // Written like any inbound message, files included...
+    assert_eq!(*f.writer.log.lock().unwrap(), vec!["write_inbound"]);
+    // ...and queued for the next turn instead of starting one.
+    let log = f.turn_log.lock().unwrap().clone();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(log[0].starts_with("silent:acp-for-"), "{log:?}");
+    assert!(
+        log[0].contains(":Liz:小布丁喜欢吃 pizza:bucket/wall.jpg"),
+        "{log:?}"
+    );
+    assert!(
+        d.delivered.lock().unwrap().is_empty(),
+        "nothing is said back"
+    );
+}
+
+#[tokio::test]
+async fn a_recorded_message_is_recorded_once() {
+    let f = plain("done");
+    let d = FakeDriver {
+        records_unaddressed: true,
+        ..driver(IM)
+    };
+    let mut msg = inbound("again");
+    msg.addressed_to_bot = false;
+    let mut again = inbound("again");
+    again.addressed_to_bot = false;
+    f.core.handle(&d, msg).await.unwrap();
+    assert_eq!(f.core.handle(&d, again).await.unwrap(), Outcome::Duplicate);
+    assert_eq!(f.writer.log.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

@@ -75,7 +75,7 @@ pub enum Commands {
         #[command(subcommand)]
         action: TestClientAction,
     },
-    /// Manage channel bindings (discord, wecom, feishu, kook, wechat, email).
+    /// Manage channel bindings (discord, wecom, feishu, kook, wechat, wechatpad, email).
     Channel(ChannelArgs),
     /// Read and edit daemon.toml values by dotted key.
     Config(ConfigArgs),

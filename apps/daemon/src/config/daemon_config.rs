@@ -537,6 +537,8 @@ pub struct ChannelsConfig {
     #[serde(default)]
     pub wechat: Option<WeChatChannel>,
     #[serde(default)]
+    pub wechatpad: Option<WeChatPadChannel>,
+    #[serde(default)]
     pub email: Option<EmailChannel>,
     #[serde(default)]
     pub seatalk: Option<SeaTalkChannel>,
@@ -705,6 +707,48 @@ pub struct WeChatChannel {
     /// `provider/model` this channel starts on. Empty inherits `channels.model`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+}
+
+/// Personal WeChat through a self-hosted iPad-protocol server — separate from
+/// the iLink `wechat` channel. The server runs beside the daemon and holds the
+/// account's login; nothing here is a credential (it is reached on loopback).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeChatPadChannel {
+    pub enabled: bool,
+    /// Protocol server base URL. Empty means `http://127.0.0.1:3010`.
+    #[serde(default)]
+    pub server_url: String,
+    /// Loopback port the server's pushes reach. 0 means 9101.
+    #[serde(default)]
+    pub callback_port: u16,
+    /// wxid of the logged-in account.
+    #[serde(default)]
+    pub account_wxid: String,
+    /// Unix seconds of the last QR login; sending is stricter for two days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_at: Option<i64>,
+    /// `allowlist` (default) | `open`.
+    #[serde(default = "default_wechatpad_policy")]
+    pub dm_policy: String,
+    /// wxids allowed to talk to the agent, in DMs and in groups.
+    #[serde(default)]
+    pub allow_from: Vec<String>,
+    /// `allowlist` (default) | `open` | `disabled`.
+    #[serde(default = "default_wechatpad_policy")]
+    pub group_policy: String,
+    /// `…@chatroom` ids the agent answers in. Empty = any group.
+    #[serde(default)]
+    pub group_allow_from: Vec<String>,
+    /// Workspace this channel's sessions run in. Empty inherits the agent default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// `provider/model` this channel starts on. Empty inherits `channels.model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+fn default_wechatpad_policy() -> String {
+    "allowlist".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1233,6 +1277,18 @@ broker_url = "tcp://localhost:1883"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_minimal_wechatpad_section_defaults_to_allowlists() {
+        // Gateway sessions auto-approve tools; a section that names no policy
+        // must not let a stranger's DM reach the agent.
+        let c: WeChatPadChannel =
+            toml::from_str("enabled = true\naccount_wxid = \"wxid_bot\"\n").unwrap();
+        assert_eq!(c.dm_policy, "allowlist");
+        assert_eq!(c.group_policy, "allowlist");
+        assert!(c.allow_from.is_empty());
+        assert_eq!(c.callback_port, 0, "0 = the gateway default port");
+    }
 
     #[test]
     fn http_config_default_binds_all_interfaces() {
