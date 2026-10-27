@@ -9,8 +9,9 @@ import { displayHost, getEffectiveServerConfigSync } from "@/lib/config/server-c
 import { useAppVersion } from "@/lib/config/version";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ExtensionServerSwitch } from "@/components/extension/ExtensionServerSwitch";
 import { isTauri } from "@/lib/utils";
-import { capabilities } from "@/lib/config/platform";
+import { capabilities, isChromeExtension } from "@/lib/config/platform";
 import { GoogleIcon, WechatIcon } from "./oauth-icons";
 import { WebSsoOverlay } from "./WebSsoOverlay";
 import type { OAuthProvider } from "@/lib/auth";
@@ -439,11 +440,15 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
           <p className="mt-6 font-mono text-[11px] text-faint">v{appVersion}</p>
           {/* Printed even when unset: rendering nothing is how a build with no
               backend baked in came to look exactly like a working one. */}
-          <p className="mt-0.5 font-mono text-[10px] text-faint/70">
-            {cloudApiUrl
-              ? displayHost(cloudApiUrl)
-              : t("auth.onboarding.serverUnset", "no server configured")}
-          </p>
+          {isChromeExtension() ? (
+            <ExtensionServerSwitch signedIn={false} variant="footer" />
+          ) : (
+            <p className="mt-0.5 font-mono text-[10px] text-faint/70">
+              {cloudApiUrl
+                ? displayHost(cloudApiUrl)
+                : t("auth.onboarding.serverUnset", "no server configured")}
+            </p>
+          )}
         </>
       )}
     </div>

@@ -87,6 +87,7 @@ describe('ExtensionGeneralSection', () => {
         'No domains configured — the quick-open button stays hidden on every site.',
       ),
     ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Server' })).toBeInTheDocument()
 
     fireEvent.change(screen.getByPlaceholderText('example.com'), {
       target: { value: 'example.com' },
