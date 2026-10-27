@@ -2786,6 +2786,29 @@
         "inviteAdminNote": "您需要服务器管理员权限才能邀请机器人。",
         "nextStepConfigure": "如需要，配置服务器/频道设置"
       },
+      "wechatpad": {
+        "gateway": "微信（iPad 协议）",
+        "account": "账号",
+        "setupTitle": "开始之前",
+        "setupServer": "先运行协议服务端：deploy/wechatpad/docker-compose.yml",
+        "setupLogin": "登录一个小号：scripts/wechatpad-login.py 会打印账号 wxid",
+        "setupRisk": "该协议是非官方的，账号有被限制的风险——不要使用主号",
+        "server": "协议服务端",
+        "serverUrl": "服务端地址",
+        "callbackPort": "回调端口",
+        "accountWxid": "账号 wxid",
+        "access": "谁可以和智能体对话",
+        "dmAllowlist": "白名单——仅限下面列出的 wxid",
+        "dmOpen": "开放——任何给该账号发消息的人",
+        "allowFrom": "允许的 wxid（每行一个）",
+        "nobodyAllowed": "名单还是空的，智能体不会回复任何人。",
+        "groupPolicy": "群聊",
+        "groupAllowlist": "白名单——名单内的 wxid，限下面的群（留空 = 所有群）",
+        "groupOpen": "开放——任何群里的任何人",
+        "groupDisabled": "关闭——忽略群聊",
+        "groupAllowFrom": "允许的群（…@chatroom，每行一个）",
+        "groupHint": "在群里，智能体只响应 @它、/命令，或引用它自己的消息。"
+      },
       "wechat": {
         "wizardIntroTitle": "欢迎使用微信设置",
         "wizardIntroDesc": "通过 ClawBot 将个人微信连接到 TeamClu。",
@@ -3836,6 +3859,7 @@
     "source": {
       "wecom": "企业微信",
       "wechat": "微信",
+      "wechatpad": "微信（iPad 协议）",
       "feishu": "飞书",
       "discord": "Discord",
       "kook": "KOOK",

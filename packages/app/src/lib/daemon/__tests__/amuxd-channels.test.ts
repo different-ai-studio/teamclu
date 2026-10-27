@@ -162,6 +162,51 @@ describe("amuxd-channels", () => {
     });
   });
 
+  it("maps the iPad-protocol WeChat channel separately from iLink WeChat", async () => {
+    vi.mocked(tauri.invoke).mockResolvedValue(undefined);
+
+    await saveChannelConfig("wechatpad", {
+      enabled: true,
+      serverUrl: "http://127.0.0.1:3010",
+      callbackPort: 9101,
+      accountWxid: " wxid_bot ",
+      loginAt: 1793089469,
+      dmPolicy: "allowlist",
+      allowFrom: ["wxid_me", "  ", " wxid_two "],
+      groupPolicy: "allowlist",
+      groupAllowFrom: [],
+      model: "anthropic/claude",
+    });
+    const [command, args] = vi.mocked(tauri.invoke).mock.calls[0]!;
+    expect(command).toBe("save_channel_config");
+    expect((args as { platform: string }).platform).toBe("wechatpad");
+    expect(JSON.parse((args as { configJson: string }).configJson)).toEqual({
+      enabled: true,
+      server_url: "http://127.0.0.1:3010",
+      callback_port: 9101,
+      account_wxid: "wxid_bot",
+      login_at: 1793089469,
+      dm_policy: "allowlist",
+      allow_from: ["wxid_me", "wxid_two"],
+      group_policy: "allowlist",
+      group_allow_from: [],
+      model: "anthropic/claude",
+    });
+
+    // A section that names no policy loads as allowlists, never as open.
+    vi.mocked(tauri.invoke).mockResolvedValue({ enabled: false, account_wxid: "wxid_bot" });
+    await expect(loadChannelConfig("wechatpad")).resolves.toEqual({
+      enabled: false,
+      serverUrl: "http://127.0.0.1:3010",
+      callbackPort: 9101,
+      accountWxid: "wxid_bot",
+      dmPolicy: "allowlist",
+      allowFrom: [],
+      groupPolicy: "allowlist",
+      groupAllowFrom: [],
+    });
+  });
+
   it("maps daemon WeCom multi-bot config back to app field names on load", async () => {
     vi.mocked(tauri.invoke).mockResolvedValue({
       enabled: true,

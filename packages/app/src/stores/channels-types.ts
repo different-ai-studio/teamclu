@@ -271,6 +271,24 @@ export interface WeChatGatewayStatusResponse {
   accountId?: string
 }
 
+// WeChat (iPad protocol) types — a self-hosted protocol server, separate from
+// the iLink `wechat` channel above.
+export interface WeChatPadConfig {
+  enabled: boolean
+  serverUrl: string
+  callbackPort: number
+  accountWxid: string
+  loginAt?: number
+  dmPolicy: 'allowlist' | 'open'
+  allowFrom: string[]
+  groupPolicy: 'allowlist' | 'open' | 'disabled'
+  groupAllowFrom: string[]
+  workspaceId?: string
+  model?: string
+}
+
+export type WeChatPadGatewayStatusResponse = WeChatGatewayStatusResponse
+
 // Channels configuration
 export interface ChannelsConfig {
   discord?: DiscordConfig
@@ -279,6 +297,7 @@ export interface ChannelsConfig {
   kook?: KookConfig
   wecom?: WeComConfig
   wechat?: WeChatConfig
+  wechatpad?: WeChatPadConfig
   seatalk?: SeaTalkConfig
 }
 
@@ -302,6 +321,17 @@ export const defaultWeChatConfig: WeChatConfig = {
   botToken: '',
   accountId: '',
   baseUrl: 'https://ilinkai.weixin.qq.com',
+}
+
+export const defaultWeChatPadConfig: WeChatPadConfig = {
+  enabled: false,
+  serverUrl: 'http://127.0.0.1:3010',
+  callbackPort: 9101,
+  accountWxid: '',
+  dmPolicy: 'allowlist',
+  allowFrom: [],
+  groupPolicy: 'allowlist',
+  groupAllowFrom: [],
 }
 
 export const defaultDmConfig: DmConfig = {
@@ -424,6 +454,12 @@ export interface ChannelsState {
   wechatIsTesting: boolean
   wechatTestResult: { success: boolean; message: string } | null
 
+  // WeChat (iPad protocol) state
+  wechatpad: WeChatPadConfig | null
+  wechatpadIsLoading: boolean
+  wechatpadGatewayStatus: WeChatPadGatewayStatusResponse
+  wechatpadHasChanges: boolean
+
   // SeaTalk state
   seatalk: SeaTalkConfig | null
   seatalkIsLoading: boolean
@@ -497,6 +533,15 @@ export interface ChannelsState {
   testWechatConnection: (botToken: string) => Promise<boolean>
   clearWechatTestResult: () => void
   setWechatHasChanges: (hasChanges: boolean) => void
+
+  // WeChat (iPad protocol) actions
+  loadWechatpadConfig: () => Promise<void>
+  saveWechatpadConfig: (config: WeChatPadConfig) => Promise<void>
+  startWechatpadGateway: () => Promise<void>
+  stopWechatpadGateway: () => Promise<void>
+  refreshWechatpadStatus: () => Promise<void>
+  setWechatpadHasChanges: (hasChanges: boolean) => void
+  toggleWechatpadEnabled: (enabled: boolean, config: WeChatPadConfig) => Promise<void>
 
   // SeaTalk actions
   loadSeaTalkConfig: () => Promise<void>

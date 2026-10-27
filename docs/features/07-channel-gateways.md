@@ -359,6 +359,7 @@ WeCom 是「能力最全的渠道」，所以它是第一个被拆分验证的�
 
 - 与 WeCom 不同，是个人的微信生态。
 - 连接形态与风控更敏感。
+- 另有一个独立平台 `wechatpad`：通过自部署的 iPad 协议服务端接个人微信小号，支持群聊，有出站节奏控制和默认白名单。它与 iLink `wechat` 不共用任何代码，见 [wechatpad.md](wechatpad.md)。
 
 ### 13.7 SeaTalk
 

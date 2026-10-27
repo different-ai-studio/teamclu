@@ -6,6 +6,7 @@ import type {
   KookConfig,
   WeComConfig,
   WeChatConfig,
+  WeChatPadConfig,
   SeaTalkConfig,
   GatewayStatusResponse,
   FeishuGatewayStatusResponse,
@@ -23,6 +24,7 @@ import {
   defaultEmailConfig,
   defaultWeComConfig,
   defaultWeChatConfig,
+  defaultWeChatPadConfig,
   defaultSeaTalkConfig,
 } from './channels-types'
 import { createDiscordActions } from './channels/discord'
@@ -31,6 +33,7 @@ import { createEmailActions } from './channels/email'
 import { createKookActions } from './channels/kook'
 import { createWecomActions } from './channels/wecom'
 import { createWechatActions } from './channels/wechat'
+import { createWechatpadActions, wechatpadStatus } from './channels/wechatpad'
 import { createSeaTalkActions } from './channels/seatalk'
 import {
   listChannels,
@@ -161,6 +164,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   wechatIsTesting: false,
   wechatTestResult: null,
 
+  // WeChat (iPad protocol) initial state
+  wechatpad: null,
+  wechatpadIsLoading: false,
+  wechatpadGatewayStatus: { status: 'disconnected' },
+  wechatpadHasChanges: false,
+
   // Email initial state
   email: null,
   emailIsLoading: false,
@@ -187,6 +196,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   ...createKookActions(set),
   ...createWecomActions(set),
   ...createWechatActions(set),
+  ...createWechatpadActions(set),
   ...createSeaTalkActions(set),
 
   // ========== Shared gateway logic ==========
@@ -205,6 +215,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         kookConfig,
         wecomConfig,
         wechatConfig,
+        wechatpadConfig,
         seatalkConfig,
       ] = await Promise.all([
         listChannels(),
@@ -214,6 +225,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         loadChannelConfig<KookConfig>('kook'),
         loadChannelConfig<WeComConfig>('wecom'),
         loadChannelConfig<WeChatConfig>('wechat'),
+        loadChannelConfig<WeChatPadConfig>('wechatpad'),
         loadChannelConfig<SeaTalkConfig>('seatalk'),
       ])
       set({
@@ -229,6 +241,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         wecomGatewayStatus: wecomStatus(list),
         wechat: { ...defaultWeChatConfig, ...wechatConfig },
         wechatGatewayStatus: wechatStatus(list),
+        wechatpad: { ...defaultWeChatPadConfig, ...wechatpadConfig },
+        wechatpadGatewayStatus: wechatpadStatus(list),
         seatalk: { ...defaultSeaTalkConfig, ...seatalkConfig },
         seatalkGatewayStatus: seatalkStatus(list),
         error: null,
@@ -238,6 +252,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         emailHasChanges: false,
         wecomHasChanges: false,
         wechatHasChanges: false,
+        wechatpadHasChanges: false,
         seatalkHasChanges: false,
       })
     } catch (error) {
@@ -295,6 +310,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       wechatHasChanges: false,
       wechatIsTesting: false,
       wechatTestResult: null,
+      wechatpad: null,
+      wechatpadIsLoading: false,
+      wechatpadGatewayStatus: { status: 'disconnected' },
+      wechatpadHasChanges: false,
       seatalk: null,
       seatalkIsLoading: false,
       seatalkGatewayStatus: { status: 'disconnected' },
@@ -319,6 +338,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         kookGatewayStatus: kookStatus(list),
         wecomGatewayStatus: wecomStatus(list),
         wechatGatewayStatus: wechatStatus(list),
+        wechatpadGatewayStatus: wechatpadStatus(list),
         error: null,
       })
     } catch (error) {
@@ -341,6 +361,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         kookGatewayStatus: kookStatus(list),
         wecomGatewayStatus: wecomStatus(list),
         wechatGatewayStatus: wechatStatus(list),
+        wechatpadGatewayStatus: wechatpadStatus(list),
         error: null,
       }
       // PERF-12: every `*Status` helper builds a fresh object, so setting them

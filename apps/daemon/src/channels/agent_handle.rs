@@ -822,7 +822,7 @@ pub fn runtime_config_key(binding: &str) -> Option<String> {
         return Some(seatalk_persona_key(app_id));
     }
     match channel_name_from_binding(binding) {
-        "discord" | "feishu" | "kook" | "wechat" | "email" => {
+        "discord" | "feishu" | "kook" | "wechat" | "wechatpad" | "email" => {
             Some(format!("channel:{}", channel_name_from_binding(binding)))
         }
         _ => None,

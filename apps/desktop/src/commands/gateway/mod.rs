@@ -129,7 +129,7 @@ pub async fn load_channel_config(platform: String) -> Result<Option<serde_json::
 fn load_channel_config_blocking(platform: String) -> Result<Option<serde_json::Value>, String> {
     if !matches!(
         platform.as_str(),
-        "discord" | "wecom" | "feishu" | "kook" | "wechat" | "email" | "seatalk"
+        "discord" | "wecom" | "feishu" | "kook" | "wechat" | "wechatpad" | "email" | "seatalk"
     ) {
         return Err(format!("unknown platform: {platform}"));
     }

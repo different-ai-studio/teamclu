@@ -32,6 +32,11 @@ export interface ChannelFeatureFlags {
   kook?: boolean;
   wecom?: boolean;
   wechat?: boolean;
+  /**
+   * Personal WeChat over a self-hosted iPad-protocol server. Unofficial and
+   * risky for the account, so off unless a deployment opts in.
+   */
+  wechatpad?: boolean;
   seatalk?: boolean;
 }
 
@@ -127,7 +132,9 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   "self-host": {
     auth: { google: true, wechat: false, phone: false, password: false, webSSO: false },
     // SeaTalk is Copilot 361 only — official TeamClu never shipped it.
-    channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: false },
+    // WeChat over the iPad protocol is self-host only: it needs a protocol
+    // server beside the daemon, which only a self-hosted operator runs.
+    channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, wechatpad: true, seatalk: false },
     // Entry point only. Creating an app needs GITEA_* (see makeGiteaDeps in
     // src/index.ts); deploy needs ACCESS_KEY_ID + APPS_FC_ENDPOINT (see
     // makeDeployDeps). With those unset this box answers 503 naming the empty
@@ -143,7 +150,7 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   // deployment, not from anything baked into the build.
   belayo: {
     auth: { google: true, wechat: false, phone: true, password: false, webSSO: true },
-    channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: false },
+    channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, wechatpad: false, seatalk: false },
     // Entry point only, same as self-host. Creating an app needs GITEA_*, which
     // this deployment now has (its own Gitea, reached over the VPC). Deploying
     // one additionally needs ACCESS_KEY_ID + APPS_FC_ENDPOINT, which it does
@@ -164,7 +171,7 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   // SeaTalk is this brand's channel: self-host and belayo keep it off.
   copilot361: {
     auth: { google: false, wechat: false, phone: false, password: false, webSSO: false },
-    channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: true },
+    channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, wechatpad: false, seatalk: true },
     apps: false,
     lockLlmConfig: false,
     allowNewOrg: true,

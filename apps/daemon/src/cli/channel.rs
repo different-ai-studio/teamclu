@@ -57,6 +57,10 @@ fn list(cfg: &DaemonConfig) {
         cfg.channels.wechat.as_ref().is_some_and(|c| c.enabled),
     );
     line(
+        "wechatpad",
+        cfg.channels.wechatpad.as_ref().is_some_and(|c| c.enabled),
+    );
+    line(
         "email",
         cfg.channels.email.as_ref().is_some_and(|c| c.enabled),
     );
@@ -196,6 +200,9 @@ fn unbind(cfg: &mut DaemonConfig, platform: &str) -> anyhow::Result<()> {
         "wechat" => {
             cfg.channels.wechat = None;
         }
+        "wechatpad" => {
+            cfg.channels.wechatpad = None;
+        }
         "email" => {
             cfg.channels.email = None;
         }
@@ -214,6 +221,7 @@ fn test_channel(cfg: &DaemonConfig, platform: &str) -> anyhow::Result<()> {
         "feishu" => cfg.channels.feishu.is_some(),
         "kook" => cfg.channels.kook.is_some(),
         "wechat" => cfg.channels.wechat.is_some(),
+        "wechatpad" => cfg.channels.wechatpad.is_some(),
         "email" => cfg.channels.email.is_some(),
         "seatalk" => cfg.channels.seatalk.is_some(),
         other => anyhow::bail!("unknown platform: {other}"),

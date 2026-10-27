@@ -67,7 +67,7 @@ interface ResolvedFeatures {
 // as well as the UI, so a remote `false` would strand the fleet with no way to
 // update out of it. It stays build-time.
 const AUTH_KEYS = ["google", "wechat", "phone", "password", "webSSO"] as const;
-const CHANNEL_KEYS = ["discord", "feishu", "email", "kook", "wecom", "wechat", "seatalk"] as const;
+const CHANNEL_KEYS = ["discord", "feishu", "email", "kook", "wecom", "wechat", "wechatpad", "seatalk"] as const;
 const BOOL_KEYS = ["apps", "lockLlmConfig", "autoRestartPaused"] as const;
 
 interface RemoteFeaturePatch {
@@ -208,6 +208,7 @@ function resolveFrom(patches: RemoteFeaturePatch[]): ResolvedFeatures {
       kook: merged.channels?.kook ?? false,
       wecom: merged.channels?.wecom ?? false,
       wechat: merged.channels?.wechat ?? false,
+      wechatpad: merged.channels?.wechatpad ?? false,
       seatalk: merged.channels?.seatalk ?? false,
     },
     apps: merged.apps ?? false,

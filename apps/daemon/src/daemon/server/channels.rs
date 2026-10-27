@@ -244,6 +244,18 @@ impl DaemonServer {
                         .and_then(|c| c.model.as_deref()),
                 ),
                 (
+                    "channel:wechatpad",
+                    "wechatpad",
+                    cfg.channels
+                        .wechatpad
+                        .as_ref()
+                        .and_then(|c| c.workspace_id.as_deref()),
+                    cfg.channels
+                        .wechatpad
+                        .as_ref()
+                        .and_then(|c| c.model.as_deref()),
+                ),
+                (
                     "channel:email",
                     "email",
                     cfg.channels
@@ -514,6 +526,7 @@ impl DaemonServer {
                 "feishu" => cfg.feishu.as_ref().map(|c| c.enabled).unwrap_or(false),
                 "kook" => cfg.kook.as_ref().map(|c| c.enabled).unwrap_or(false),
                 "wechat" => cfg.wechat.as_ref().map(|c| c.enabled).unwrap_or(false),
+                "wechatpad" => cfg.wechatpad.as_ref().map(|c| c.enabled).unwrap_or(false),
                 "email" => cfg.email.as_ref().map(|c| c.enabled).unwrap_or(false),
                 "seatalk" => cfg.seatalk.as_ref().map(|c| c.enabled).unwrap_or(false),
                 _ => false,
@@ -528,6 +541,7 @@ impl DaemonServer {
                 ("feishu", false, None),
                 ("kook", false, None),
                 ("wechat", false, None),
+                ("wechatpad", false, None),
                 ("email", false, None),
                 ("seatalk", false, None),
             ],
@@ -1053,6 +1067,11 @@ impl DaemonServer {
                     let v: crate::config::WeChatChannel = serde_json::from_str(config_json)
                         .map_err(|e| format!("parse wechat: {e}"))?;
                     self.config.channels.wechat = Some(v);
+                }
+                "wechatpad" => {
+                    let v: crate::config::WeChatPadChannel = serde_json::from_str(config_json)
+                        .map_err(|e| format!("parse wechatpad: {e}"))?;
+                    self.config.channels.wechatpad = Some(v);
                 }
                 "email" => {
                     let v: crate::config::EmailChannel = serde_json::from_str(config_json)
