@@ -5358,6 +5358,18 @@ export function createSupabaseBusinessRepository(options) {
       return customDomainView(data);
     },
 
+    // Who writes the deploy state. The creator uses their own token so RLS
+    // stays a second gate; an `admin` grantee cannot, because
+    // `apps_update_if_creator` turns their UPDATE into a zero-row match that
+    // the conditional writes below read as a lost race. Same escalation as
+    // updateApp and authorizeCustomDomainWrite. Only called after the caller
+    // was resolved as `admin`.
+    async appDeployWriter(app: { team_id: string; created_by_actor_id: string | null }) {
+      return (await this.isAppCreator(app.team_id, app.created_by_actor_id))
+        ? supabase
+        : await serviceRoleClient("write app deploy state authorized by an admin grant");
+    },
+
     async preflightAppDeploy(appId: string, input: { revision?: string; gitCommitSha?: string; declaration?: unknown; migrationIntent?: boolean }) {
       const { data: existing, error } = await supabase.from("apps")
         .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, team_id, created_by_actor_id, provision_status, git_auth_kind, fc_status, deploy_started_at, deploy_token")
@@ -5404,7 +5416,8 @@ export function createSupabaseBusinessRepository(options) {
           throw new ApiError(409, "preflight_in_progress", "another approved preflight is still valid; retry after ten minutes");
         }
       }
-      let update = supabase.from("apps").update({ deploy_token: result.token }).eq("id", appId);
+      const writer = await this.appDeployWriter(existing);
+      let update = writer.from("apps").update({ deploy_token: result.token }).eq("id", appId);
       update = existing.deploy_token === null || existing.deploy_token === undefined
         ? update.is("deploy_token", null) : update.eq("deploy_token", existing.deploy_token);
       update = existing.fc_status === null || existing.fc_status === undefined
@@ -5482,6 +5495,7 @@ export function createSupabaseBusinessRepository(options) {
       verifyAppDeployPreflight(input.preflightToken, appId, revision, declaration, info.currentDeployment);
       if (progress === "stale") throw new ApiError(409, "deploy_in_progress", "stale deployment must be reconciled before starting; request a new preflight");
       if (!startDeploy) throw deployUnavailable(deployUnavailableReason);
+      const writer = await this.appDeployWriter(existing);
       const lifecycleAdmin = await serviceRoleClient("app deployment lifecycle");
       await lifecycleRpc(lifecycleAdmin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "deploy", p_token: input.preflightToken });
       const deployToken = input.preflightToken;
@@ -5498,7 +5512,7 @@ export function createSupabaseBusinessRepository(options) {
           // already deployed keeps the name stored on its row.
           slug: existing.slug,
         });
-        let update = supabase
+        let update = writer
           .from("apps")
           .update({
             fc_function_name: existing.fc_function_name || r.fcFunctionName,
@@ -5530,7 +5544,7 @@ export function createSupabaseBusinessRepository(options) {
           revision,
         };
       } catch (e: any) {
-        let failure = supabase
+        let failure = writer
           .from("apps")
           .update({
             fc_status: "deploy_error",
@@ -5587,6 +5601,7 @@ export function createSupabaseBusinessRepository(options) {
       assertNoUnexpectedOriginEntries(info.originSecurity);
       verifyAppDeployPreflight(deployToken, appId, revision, declaration, info.currentDeployment);
       if (existing.git_auth_kind === GITEA_AUTH_KIND && gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "built SHA differs from preflight revision");
+      const writer = await this.appDeployWriter(existing);
       const lifecycleAdmin = await serviceRoleClient("app deployment lifecycle");
       let { data: lifecycle, error: lifecycleError } = await lifecycleAdmin.from("app_lifecycle_operations")
         .select("id, token, kind, status").eq("app_id", appId).neq("status", "succeeded").maybeSingle();
@@ -5595,7 +5610,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!lifecycle || lifecycle.kind !== "deploy" || lifecycle.token !== deployToken) throw new ApiError(409, "lifecycle_conflict", "this deploy no longer owns the app lifecycle");
       // This supersedes the feature's token-only claim: retain that token check
       // AND main's state/lifecycle checks before FC or storage mutation.
-      const { data: claimed, error: claimError } = await supabase.from("apps")
+      const { data: claimed, error: claimError } = await writer.from("apps")
         .update({ fc_status: "deploying", updated_at: new Date().toISOString() })
         .eq("id", appId).eq("deploy_token", deployToken).eq("fc_status", existing.fc_status)
         .select("id").maybeSingle();
@@ -5649,7 +5664,7 @@ export function createSupabaseBusinessRepository(options) {
           // previous deploy happened to leave in OSS.
           image: parseDeployedImage(input?.image, declaration),
         });
-        const { data: row, error: updErr } = await supabase
+        const { data: row, error: updErr } = await writer
           .from("apps")
           .update({
             fc_status: "live",
@@ -5704,7 +5719,7 @@ export function createSupabaseBusinessRepository(options) {
         invalidateAppHosts({ id: appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: row.uses_app_code_domain, customDomain: existing.custom_domain });
         return mapApp(row);
       } catch (e: any) {
-        await supabase
+        await writer
           .from("apps")
           .update({
             fc_status: "deploy_error",
