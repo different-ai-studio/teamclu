@@ -36,6 +36,13 @@ export const SAFE_BOTTOM_SPACING = 32;
 export const DEFAULT_INPUT_AREA_HEIGHT = 160;
 
 /**
+ * Gap between the jump-to-latest button and the top of the floating composer.
+ * The button is offset by the measured composer height, so it stays above the
+ * overlay instead of sitting in the transparent fade that covers the pane.
+ */
+export const SCROLL_TO_LATEST_CLEARANCE = 12;
+
+/**
  * Threshold for "near bottom" detection in scroll behavior.
  * Used to determine if user has scrolled up or is at the bottom.
  * 
