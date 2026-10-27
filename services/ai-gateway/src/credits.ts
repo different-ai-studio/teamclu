@@ -432,3 +432,29 @@ export async function pruneUsage(sql: Sql, months = 13, batch = 5000): Promise<n
     if (rows.length < batch) return total;
   }
 }
+
+export type OrgCredits = {
+  orgId: string;
+  balanceCredits: number;
+  teams: Array<{ teamId: string; name: string; balanceCredits: number }>;
+};
+
+/** Teams of an org with their balances; a team with no balance row is zero. */
+export async function orgCredits(sql: Sql, orgId: string): Promise<OrgCredits> {
+  const rows = await sql<{ team_id: string; team_name: string; balance: string }[]>`
+    select t.team_id, t.team_name, coalesce(b.balance_credits, 0)::text as balance
+      from amux.ai_gateway_org_teams(${orgId}::uuid) t
+      left join amux.team_credit_balance b on b.team_id = t.team_id`;
+  const teams = rows.map((r) => ({
+    teamId: r.team_id,
+    name: r.team_name,
+    balanceCredits: Number(r.balance),
+  }));
+  return { orgId, balanceCredits: teams.reduce((s, t) => s + t.balanceCredits, 0), teams };
+}
+
+export async function orgOwnsTeam(sql: Sql, orgId: string, teamId: string): Promise<boolean> {
+  const rows = await sql<{ team_id: string }[]>`
+    select team_id from amux.ai_gateway_org_teams(${orgId}::uuid) where team_id = ${teamId}::uuid`;
+  return rows.length > 0;
+}

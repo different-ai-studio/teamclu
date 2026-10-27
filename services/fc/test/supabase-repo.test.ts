@@ -5482,6 +5482,54 @@ test("apps: existing domains change only after an explicitly opted-in successful
 });
 
 
+// belayo 2026-10-27: a member the creator granted `admin` got
+// `409 deploy_in_progress: app deploy state changed during preflight` on every
+// try. The preflight token write ran with the caller's token, and
+// `apps_update_if_creator` turned it into a zero-row UPDATE.
+function adminGranteeDeployHarness(extra: any = {}) {
+  const app = {
+    ...APP_ROW, provision_status: "ready", fc_status: "live",
+    fc_endpoint: "https://existing.fcapp.run", fc_function_name: "existing-function",
+    start_spec: APP_DECLARATION.start, deploy_token: null,
+    app_code: "k7m2q9vx4n8p", uses_app_code_domain: false,
+  };
+  const access = [{ app_id: app.id, member_id: "admin-member", permission_level: "admin", granted_by_member_id: "actor-app-1" }];
+  const db = appsSupabase({ seed: { apps: [app], app_member_access: access }, actorRow: { id: "admin-member" }, creatorOnlyAppUpdates: true });
+  const repo = appsRepo(db, {
+    createServiceRoleClient: () => db.serviceRole(),
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { officialLayers: { complete: true } } }),
+    readAppFunction: async () => ({
+      runtime: "custom.debian10", customRuntimeConfig: APP_DECLARATION.start,
+      layers: ["acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3"],
+    }),
+    startDeploy: async () => ({ fcFunctionName: "existing-function", fcRegion: "cn-hangzhou", ossObjectName: `apps/${app.id}/code.zip` }),
+    finalizeDeploy: async () => ({ fcEndpoint: "https://existing.fcapp.run" }),
+    ...extra,
+  });
+  return { app, repo };
+}
+
+test("apps: an admin grantee who is not the creator can deploy end to end", async () => {
+  const { app, repo } = adminGranteeDeployHarness();
+  const preflight = await repo.preflightAppDeploy(app.id, { revision: APP_REVISION, declaration: APP_DECLARATION });
+  assert.ok(preflight?.token, "preflight must record its token");
+  const started = await repo.deployApp(app.id, { ...APP_DEPLOY, preflightToken: preflight.token });
+  assert.equal(started.fcStatus, "awaiting_build");
+  const finished = await repo.finalizeDeploy(app.id, appFinalize(started.deployToken));
+  assert.equal(finished.fcStatus, "live");
+  assert.equal((await repo.getApp(app.id)).fcStatus, "live");
+});
+
+test("apps: an admin grantee's failed deploy is recorded, not stranded", async () => {
+  const { app, repo } = adminGranteeDeployHarness({
+    finalizeDeploy: async () => { throw new Error("deployment failed"); },
+  });
+  const preflight = await repo.preflightAppDeploy(app.id, { revision: APP_REVISION, declaration: APP_DECLARATION });
+  const started = await repo.deployApp(app.id, { ...APP_DEPLOY, preflightToken: preflight.token });
+  await assert.rejects(() => repo.finalizeDeploy(app.id, appFinalize(started.deployToken)), /deployment failed/);
+  assert.equal((await repo.getApp(app.id)).fcStatus, "deploy_error");
+});
+
 test("apps: failed opted-in deploy preserves the legacy domain", async () => {
   const { repo, start } = appCodeDeployHarness({}, {
     finalizeDeploy: async () => { throw new Error("deployment failed"); },

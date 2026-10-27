@@ -14,10 +14,16 @@ function appsAuth(userId = "user-app-1") {
 // `actorRow` is what the actors lookup (resolveCurrentMemberActor) returns.
 // Select filters (eq / is / in) are applied so workspace upsert dedup lookups
 // can find seeded rows the same way PostgREST would.
+//
+// `creatorOnlyAppUpdates` mimics RLS `apps_update_if_creator` on a caller-scoped
+// client: an `apps` UPDATE matches no row unless the caller (`actorRow`) created
+// it. `serviceRole()` is a second double over the same rows with no RLS, for
+// writes the repository escalates.
 export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [],
   projectSelects = false, appInsertDefaults = { app_code: "a-k7m2q9vx4n8p" }, appInsertId,
-}: any = {}) {
-  const state: any = {
+  creatorOnlyAppUpdates = false, sharedState,
+}: any = {}): any {
+  const state: any = sharedState ?? {
     apps: [...(seed.apps ?? [])],
     actors: [...(seed.actors ?? [])],
     workspaces: [...(seed.workspaces ?? [])],
@@ -37,6 +43,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
   };
   return {
     auth: appsAuth(),
+    serviceRole: () => appsSupabase({ actorRow, calls, projectSelects, appInsertDefaults, appInsertId, sharedState: state }),
     from(table: string) {
       const ctx: any = { table, op: null, filters: {}, isFilters: {}, neqFilters: {}, inFilters: {}, limitCount: null };
       // `resolveCurrentMemberActor` filters `actor_type = 'member'` and the
@@ -64,6 +71,9 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         }
         for (const [col, vals] of Object.entries(ctx.inFilters)) {
           rows = rows.filter((r) => (vals as any[]).includes(r[col as string]));
+        }
+        if (creatorOnlyAppUpdates && table === "apps" && ctx.op === "update") {
+          rows = rows.filter((r) => r.created_by_actor_id === actorRow?.id);
         }
         if (typeof ctx.limitCount === "number") rows = rows.slice(0, ctx.limitCount);
         return rows;
