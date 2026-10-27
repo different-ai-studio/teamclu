@@ -305,6 +305,7 @@ impl DaemonServer {
             live_event_tx: Some(self.cron_turn_event_tx.clone()),
             approvals: Some(approvals.clone()),
             cold_attach: Some(self.cold_attach_tx.clone()),
+            silent_context: Arc::new(AsyncMutex::new(HashMap::new())),
         });
         // Everything this store writes gets announced on `session/{id}/live`.
         // Without it a gateway conversation exists only in the cloud table, and

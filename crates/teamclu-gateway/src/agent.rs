@@ -5,6 +5,20 @@ use tokio::sync::mpsc;
 /// Opaque to the gateway; resolved against amuxd's runtime manager.
 pub type AmuxSessionId = String;
 
+/// A message recorded in a session without starting a turn — see
+/// [`AgentHandle::queue_silent`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SilentContext {
+    /// The stored message's id.
+    pub message_id: String,
+    pub sender_display: String,
+    pub content: String,
+    /// Unix seconds, for ordering.
+    pub created_at: i64,
+    /// Files it carried, handed to the turn that reads it.
+    pub attachment_urls: Vec<String>,
+}
+
 /// Describes a model the daemon can drive, returned by `list_models`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelInfo {
@@ -164,6 +178,18 @@ pub trait AgentHandle: Send + Sync + 'static {
         _message_id: &str,
     ) -> Result<bool, AgentError> {
         Ok(false)
+    }
+
+    /// Keep a message the bot was not addressed in, for the next turn of this
+    /// session to read as context. It must not start a turn or spawn a
+    /// runtime: a busy group sends far more of these than prompts. The
+    /// default drops it, which is what a session without silent context did.
+    async fn queue_silent(
+        &self,
+        _session: &AmuxSessionId,
+        _context: SilentContext,
+    ) -> Result<(), AgentError> {
+        Ok(())
     }
 
     /// Inject context without triggering a reply (v1 `noReply: true`).

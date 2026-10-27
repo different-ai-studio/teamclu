@@ -200,6 +200,44 @@ pub struct AmuxdAgentHandle {
     /// reports the one it spawns otherwise. `None` in unit tests that do not
     /// exercise a cold start.
     pub cold_attach: Option<tokio::sync::mpsc::Sender<ColdAttach>>,
+    /// Messages recorded in a session without starting a turn (`queue_silent`),
+    /// keyed by logical session id, read as a context prefix by that
+    /// session's next turn. Here rather than on the runtime handle: a chat
+    /// with no runtime yet still collects them, and an idle eviction must not
+    /// throw them away. In-memory only, like `logical_to_acp`.
+    pub silent_context: Arc<Mutex<HashMap<String, Vec<teamclu_gateway::SilentContext>>>>,
+}
+
+/// Silent messages kept per session; the oldest go first past this. A group
+/// that talks for days without mentioning the bot must not grow a prompt
+/// without bound.
+const MAX_SILENT_PER_SESSION: usize = 200;
+/// Files from silent messages handed to one turn, newest first.
+const MAX_SILENT_ATTACHMENTS: usize = 8;
+
+/// The prompt prefix and files one turn reads from its session's silent
+/// messages. Same `[Context …]` wording as a session runtime's silent queue.
+fn silent_prefix(queued: &[teamclu_gateway::SilentContext]) -> (String, Vec<String>) {
+    let mut sorted: Vec<crate::runtime::PendingMessage> = queued
+        .iter()
+        .map(|c| crate::runtime::PendingMessage {
+            message_id: c.message_id.clone(),
+            sender_display: c.sender_display.clone(),
+            content: c.content.clone(),
+            created_at: c.created_at,
+        })
+        .collect();
+    sorted.sort_by_key(|m| m.created_at);
+    let mut by_time: Vec<&teamclu_gateway::SilentContext> = queued.iter().collect();
+    by_time.sort_by_key(|c| c.created_at);
+    let mut urls: Vec<String> = by_time
+        .iter()
+        .rev()
+        .flat_map(|c| c.attachment_urls.iter().rev().cloned())
+        .take(MAX_SILENT_ATTACHMENTS)
+        .collect();
+    urls.reverse();
+    (crate::runtime::silent_context_prefix(&sorted), urls)
 }
 
 /// Returned by `resolve_or_spawn`. `spawned` is true iff this call was
@@ -980,6 +1018,18 @@ impl AmuxdAgentHandle {
     ) -> Result<TurnOutcome, AgentError> {
         let outcome = self.resolve_or_spawn(session).await?;
 
+        // What the chat said without addressing the bot since its last turn.
+        // Taken now and put back if the prompt never reaches the runtime.
+        let silent = self
+            .silent_context
+            .lock()
+            .await
+            .remove(session.as_str())
+            .unwrap_or_default();
+        let (silent_text, silent_urls) = silent_prefix(&silent);
+        let mut attachment_urls = attachment_urls.to_vec();
+        attachment_urls.extend(silent_urls);
+
         // First prompt after a fresh spawn gets a one-shot system preamble
         // explaining the `send` MCP tool and its defaults. `resolve_or_spawn`
         // tells us whether this call did the spawning, but a concurrent
@@ -1001,6 +1051,7 @@ impl AmuxdAgentHandle {
         // Registering here rather than at spawn is what makes the send tool
         // survive a reused attachment: this runs on every turn, including the
         // ones whose session was attached by somebody else.
+        let body = format!("{silent_text}{body}");
         let prompt = if outcome.binding.is_empty() {
             body
         } else {
@@ -1072,6 +1123,14 @@ impl AmuxdAgentHandle {
                 .await
             {
                 mgr.checkin_turn(turn);
+                drop(mgr);
+                if !silent.is_empty() {
+                    let mut map = self.silent_context.lock().await;
+                    let queued = map.entry(session.to_string()).or_default();
+                    let later = std::mem::take(queued);
+                    *queued = silent;
+                    queued.extend(later);
+                }
                 return Err(AgentError::Send(e.to_string()));
             }
             (turn.agent_id, turn.event_rx)
@@ -1474,6 +1533,21 @@ impl AgentHandle for AmuxdAgentHandle {
             timeout,
         )
         .await
+    }
+
+    async fn queue_silent(
+        &self,
+        session: &AmuxSessionId,
+        context: teamclu_gateway::SilentContext,
+    ) -> Result<(), AgentError> {
+        let mut map = self.silent_context.lock().await;
+        let queued = map.entry(session.clone()).or_default();
+        queued.push(context);
+        if queued.len() > MAX_SILENT_PER_SESSION {
+            let excess = queued.len() - MAX_SILENT_PER_SESSION;
+            queued.drain(..excess);
+        }
+        Ok(())
     }
 
     async fn inject_context(
@@ -1971,6 +2045,35 @@ pub(crate) mod tests {
     use crate::backend::{mock::MockBackend, ManagedLlmConfig, ManagedLlmModelInfo, WorkspaceRow};
     use crate::runtime::RuntimeManager;
 
+    #[test]
+    fn silent_messages_read_in_arrival_order_with_their_newest_files() {
+        let ctx = |id: &str, at: i64, files: &[&str]| teamclu_gateway::SilentContext {
+            message_id: id.into(),
+            sender_display: format!("p{id}"),
+            content: format!("said {id}"),
+            created_at: at,
+            attachment_urls: files.iter().map(|f| f.to_string()).collect(),
+        };
+        let many: Vec<String> = (0..10).map(|i| format!("old{i}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        let queued = vec![ctx("2", 20, &["new.jpg"]), ctx("1", 10, &many)];
+        let (text, urls) = super::silent_prefix(&queued);
+        assert!(text.starts_with(
+            "[Context — messages received in this session while you were not mentioned."
+        ));
+        let first = text.find("p1: said 1").unwrap();
+        let second = text.find("p2: said 2").unwrap();
+        assert!(first < second, "arrival order: {text}");
+        assert!(text.ends_with("[End context]\n\n"));
+        assert_eq!(urls.len(), super::MAX_SILENT_ATTACHMENTS);
+        assert_eq!(
+            urls.last().map(String::as_str),
+            Some("new.jpg"),
+            "the newest file is kept"
+        );
+        assert_eq!(super::silent_prefix(&[]), (String::new(), Vec::new()));
+    }
+
     fn make_handle() -> AmuxdAgentHandle {
         make_handle_with_backend(Arc::new(MockBackend::default()))
     }
@@ -2009,6 +2112,7 @@ pub(crate) mod tests {
             live_event_tx: None,
             approvals: None,
             cold_attach: None,
+            silent_context: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

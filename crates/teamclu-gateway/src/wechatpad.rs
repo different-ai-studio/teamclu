@@ -64,9 +64,18 @@ pub enum PadKind {
         /// Only for a quoted text message; anything else quotes as XML.
         quoted_text: Option<String>,
     },
-    Image,
+    /// `aeskey` + CDN url from the `<img>` element, enough to download it.
+    Image {
+        aes_key: String,
+        cdn_url: String,
+    },
     File {
         name: String,
+        attach_id: String,
+        total_len: u64,
+        app_id: String,
+        /// `<fromusername>`: the download is addressed to the uploader.
+        from_user: String,
     },
     /// Voice, video, links, stickers, …
     Other {
@@ -177,7 +186,19 @@ fn decode_message(raw: AddMsg) -> Option<PadMessage> {
 
     let (kind, text) = match raw.msg_type {
         1 => (PadKind::Text, content),
-        3 => (PadKind::Image, String::new()),
+        3 => {
+            let attr = |name: &str| xml_attr(&content, "img", name).unwrap_or_default();
+            let cdn_url = Some(attr("cdnbigimgurl"))
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| attr("cdnmidimgurl"));
+            (
+                PadKind::Image {
+                    aes_key: attr("aeskey"),
+                    cdn_url,
+                },
+                String::new(),
+            )
+        }
         49 => {
             let app = AppMsg::parse(&content);
             match app.app_type {
@@ -194,6 +215,12 @@ fn decode_message(raw: AddMsg) -> Option<PadMessage> {
                 Some(6) => (
                     PadKind::File {
                         name: app.title.unwrap_or_default(),
+                        attach_id: xml_element(&content, "attachid").unwrap_or_default(),
+                        total_len: xml_element(&content, "totallen")
+                            .and_then(|t| t.trim().parse().ok())
+                            .unwrap_or(0),
+                        app_id: xml_attr(&content, "appmsg", "appid").unwrap_or_default(),
+                        from_user: xml_element(&content, "fromusername").unwrap_or_default(),
                     },
                     String::new(),
                 ),
@@ -290,6 +317,17 @@ fn xml_element(xml: &str, name: &str) -> Option<String> {
     Some(unescape(raw))
 }
 
+/// `name="…"` on the first `<tag …>`, unescaped.
+fn xml_attr(xml: &str, tag: &str, name: &str) -> Option<String> {
+    let start = xml.find(&format!("<{tag} "))?;
+    let end = start + xml[start..].find('>')?;
+    let element = &xml[start..end];
+    let key = format!(" {name}=\"");
+    let at = element.find(&key)? + key.len();
+    let len = element[at..].find('"')?;
+    Some(unescape(&element[at..at + len]))
+}
+
 fn unescape(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -325,37 +363,47 @@ pub struct Admitted {
 ///
 /// Gateway sessions auto-approve tools, so this allowlist is the only thing
 /// between a WeChat contact and the agent; that is why both policies default
-/// to `allowlist`. In a group the bot is addressed by an `@mention`, a slash
-/// command, or a quote of something it said — bare chatter in a shared group
-/// never starts a turn.
+/// to `allowlist`.
+///
+/// In a group the room decides whether a message is kept, and everyone's is:
+/// what is said without addressing the bot reaches the core unaddressed, to
+/// be recorded as silent context. Whether it starts a turn takes an
+/// `@mention`, a slash command or a quote of the bot — and, under
+/// `allowlist`, a sender on `allow_from`.
 pub fn admit(cfg: &WeChatPadConfig, msg: &PadMessage) -> Option<Admitted> {
     let bot = cfg.account_wxid.as_str();
     if msg.sender_id == bot {
         return None;
     }
-    let quotes_bot = match &msg.kind {
-        PadKind::Text => false,
-        PadKind::Quote { quoted_sender, .. } => quoted_sender == bot,
-        // Media is not carried yet; text-only for now.
-        _ => return None,
+    let (quotes_bot, has_media) = match &msg.kind {
+        PadKind::Text => (false, false),
+        PadKind::Quote { quoted_sender, .. } => (quoted_sender == bot, false),
+        PadKind::Image { .. } | PadKind::File { .. } => (false, true),
+        // Voice, video, stickers: nothing to carry yet.
+        PadKind::Other { .. } => return None,
     };
 
     let sender_listed = listed(&cfg.allow_from, &msg.sender_id);
-    if msg.is_group {
-        match cfg.group_policy.as_str() {
-            "open" => {}
+    // Who may start a turn. In a group the room decides whether the message
+    // is kept at all; this decides only whether it gets an answer.
+    let may_trigger = if msg.is_group {
+        let room_ok = match cfg.group_policy.as_str() {
+            "open" => true,
             "allowlist" => {
-                let group_ok =
-                    cfg.group_allow_from.is_empty() || listed(&cfg.group_allow_from, &msg.chat_id);
-                if !group_ok || !sender_listed {
-                    return None;
-                }
+                cfg.group_allow_from.is_empty() || listed(&cfg.group_allow_from, &msg.chat_id)
             }
-            _ => return None,
+            _ => false,
+        };
+        if !room_ok {
+            return None;
         }
-    } else if cfg.dm_policy != "open" && !sender_listed {
-        return None;
-    }
+        cfg.group_policy == "open" || sender_listed
+    } else {
+        if cfg.dm_policy != "open" && !sender_listed {
+            return None;
+        }
+        true
+    };
 
     let mentioned = msg.mentions.iter().any(|m| m == bot);
     let text = if mentioned {
@@ -363,11 +411,14 @@ pub fn admit(cfg: &WeChatPadConfig, msg: &PadMessage) -> Option<Admitted> {
     } else {
         msg.text.trim().to_string()
     };
-    if text.is_empty() {
+    if text.is_empty() && !has_media {
         return None;
     }
-    let addressed = !msg.is_group || mentioned || quotes_bot || text.starts_with('/');
-    Some(Admitted { text, addressed })
+    let aimed = !msg.is_group || mentioned || quotes_bot || text.starts_with('/');
+    Some(Admitted {
+        text,
+        addressed: aimed && may_trigger,
+    })
 }
 
 fn listed(list: &[String], id: &str) -> bool {
@@ -827,6 +878,78 @@ impl PadApi {
             .map_err(|(_, e)| e)
     }
 
+    /// An image someone sent. The server picks the resolution it returns,
+    /// whichever CDN url is asked for.
+    pub async fn download_image(
+        &self,
+        wxid: &str,
+        aes_key: &str,
+        cdn_url: &str,
+    ) -> Result<Vec<u8>, String> {
+        use base64::Engine;
+        let data = self
+            .call(
+                "/Tools/CdnDownloadImage",
+                &[],
+                Some(serde_json::json!({"Wxid": wxid, "FileNo": cdn_url, "FileAesKey": aes_key})),
+            )
+            .await
+            .map_err(|(_, e)| e)?;
+        let b64 = data
+            .get("Image")
+            .and_then(|v| v.as_str())
+            .ok_or("no image in response")?;
+        let b64 = b64.split_once(',').map(|(_, b)| b).unwrap_or(b64);
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| e.to_string())
+    }
+
+    /// A file someone sent, in sections. The server answers every section
+    /// with 64KB whatever length is asked for, so the next one starts where
+    /// the bytes actually ended.
+    pub async fn download_file(
+        &self,
+        wxid: &str,
+        attach_id: &str,
+        app_id: &str,
+        from_user: &str,
+        total: u64,
+    ) -> Result<Vec<u8>, String> {
+        use base64::Engine;
+        const SECTION: u64 = 64 * 1024;
+        let mut out = Vec::with_capacity(total as usize);
+        while (out.len() as u64) < total {
+            let start = out.len() as u64;
+            let data = self
+                .call(
+                    "/Tools/DownloadFile",
+                    &[],
+                    Some(serde_json::json!({
+                        "Wxid": wxid, "AttachId": attach_id, "AppID": app_id,
+                        "UserName": from_user, "DataLen": total,
+                        "Section": {"StartPos": start, "DataLen": SECTION.min(total - start)},
+                    })),
+                )
+                .await
+                .map_err(|(_, e)| e)?;
+            let b64 = data
+                .get("data")
+                .and_then(|d| d.get("buffer"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let piece = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| e.to_string())?;
+            if piece.is_empty() {
+                return Err(format!("download stalled at {start} of {total} bytes"));
+            }
+            out.extend_from_slice(&piece);
+        }
+        out.truncate(total as usize);
+        Ok(out)
+    }
+
     /// Upload and send an image in one call.
     pub async fn send_image(&self, wxid: &str, to: &str, bytes: &[u8]) -> Result<(), String> {
         use base64::Engine;
@@ -1094,6 +1217,10 @@ pub struct WeChatPadGateway {
     inbound_sink: Arc<RwLock<Option<Arc<dyn InboundSink>>>>,
     outbox: Arc<Outbox>,
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    /// Pushes are handled one at a time, in arrival order: a picture posted
+    /// just before "@bot what is this" must be recorded before that turn
+    /// starts reading the chat.
+    callback_order: Arc<Mutex<()>>,
 }
 
 /// The planner plus the callers waiting on it.
@@ -1235,6 +1362,7 @@ impl WeChatPadGateway {
             inbound_sink: Arc::new(RwLock::new(None)),
             outbox: Arc::new(Outbox::new(None)),
             shutdown_tx: Arc::new(Mutex::new(None)),
+            callback_order: Arc::new(Mutex::new(())),
         }
     }
 
@@ -1388,7 +1516,9 @@ impl WeChatPadGateway {
         let Some(sink) = self.inbound_sink.read().await.clone() else {
             return;
         };
+        let _in_order = self.callback_order.lock().await;
         let cfg = self.config.read().await.clone();
+        let api = PadApi::new(&cfg.server_url);
         for msg in decode_push(&req.body) {
             if msg.create_time < started_at {
                 continue;
@@ -1396,8 +1526,11 @@ impl WeChatPadGateway {
             let Some(admitted) = admit(&cfg, &msg) else {
                 continue;
             };
-            sink.accept(normalize(&cfg.account_wxid, &msg, admitted))
-                .await;
+            let mut inbound = normalize(&cfg.account_wxid, &msg, admitted);
+            inbound
+                .attachments
+                .extend(attachment_for(&api, &cfg.account_wxid, &msg));
+            sink.accept(inbound).await;
         }
     }
 
@@ -1414,6 +1547,82 @@ impl Default for WeChatPadGateway {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Fetches an inbound image or file when the core asks for it, not before:
+/// a text message never waits on someone else's download.
+struct PadFetch {
+    api: PadApi,
+    wxid: String,
+    kind: PadKind,
+}
+
+#[async_trait::async_trait]
+impl crate::driver::FetchAttachment for PadFetch {
+    async fn fetch(&self) -> Result<Vec<u8>, DriverError> {
+        let result = match &self.kind {
+            PadKind::Image { aes_key, cdn_url } => {
+                self.api.download_image(&self.wxid, aes_key, cdn_url).await
+            }
+            PadKind::File {
+                attach_id,
+                total_len,
+                app_id,
+                from_user,
+                ..
+            } => {
+                if *total_len > MAX_ATTACHMENT_BYTES {
+                    Err(format!(
+                        "{total_len} bytes is over the {MAX_ATTACHMENT_BYTES}-byte limit"
+                    ))
+                } else {
+                    self.api
+                        .download_file(&self.wxid, attach_id, app_id, from_user, *total_len)
+                        .await
+                }
+            }
+            _ => Err("nothing to download".into()),
+        };
+        result.map_err(DriverError::Transport)
+    }
+}
+
+/// The attachment an image or file message carries, fetched on demand.
+fn attachment_for(
+    api: &PadApi,
+    wxid: &str,
+    msg: &PadMessage,
+) -> Option<crate::driver::InboundAttachment> {
+    let (filename, mime, size_hint) = match &msg.kind {
+        PadKind::Image { .. } => (
+            format!("image-{}.jpg", msg.new_msg_id),
+            "image/jpeg".to_string(),
+            None,
+        ),
+        PadKind::File {
+            name, total_len, ..
+        } => (
+            if name.is_empty() {
+                format!("file-{}", msg.new_msg_id)
+            } else {
+                name.clone()
+            },
+            // Settled from the bytes by the core.
+            String::new(),
+            Some(*total_len as usize),
+        ),
+        _ => return None,
+    };
+    Some(crate::driver::InboundAttachment {
+        filename,
+        mime,
+        size_hint,
+        source: crate::driver::AttachmentSource::Deferred(Arc::new(PadFetch {
+            api: api.clone(),
+            wxid: wxid.to_string(),
+            kind: msg.kind.clone(),
+        })),
+    })
 }
 
 /// Turn an admitted message into what the core consumes.
@@ -1505,6 +1714,12 @@ impl ChannelDriver for WeChatPadDriver {
 
     fn caps(&self) -> ChannelCaps {
         caps()
+    }
+
+    /// A group the bot is in is followed, not just answered: what is said
+    /// without @ is kept in the session and read by the next turn.
+    fn records_unaddressed(&self) -> bool {
+        true
     }
 
     fn binding(&self, conversation: &Conversation) -> String {

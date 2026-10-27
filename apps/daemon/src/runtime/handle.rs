@@ -16,6 +16,24 @@ pub struct PendingMessage {
     pub created_at: i64, // unix ts; preserved for ordering after coalescing
 }
 
+/// The `[Context …]` block silent messages become on the next prompt. Shared
+/// by session runtimes (`flush_pending_silent`) and gateway sessions, so the
+/// agent reads unmentioned chatter the same way wherever it came from.
+/// `sorted` is in arrival order; empty gives an empty string.
+pub fn silent_context_prefix(sorted: &[PendingMessage]) -> String {
+    if sorted.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from(
+        "[Context — messages received in this session while you were not mentioned. Read for context but do not reply to them. Reply only to the user prompt that follows.]\n",
+    );
+    for m in sorted {
+        text.push_str(&format!("{}: {}\n", m.sender_display, m.content));
+    }
+    text.push_str("[End context]\n\n");
+    text
+}
+
 /// Buffered context from `inject_context` — flushed on the next `send_prompt`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InjectedContextItem {
@@ -356,15 +374,7 @@ impl RuntimeHandle {
         let mut sorted = std::mem::take(&mut self.pending_silent);
         sorted.sort_by_key(|m| m.created_at);
         let ids: Vec<String> = sorted.iter().map(|m| m.message_id.clone()).collect();
-
-        let mut text = String::from(
-            "[Context — messages received in this session while you were not mentioned. Read for context but do not reply to them. Reply only to the user prompt that follows.]\n",
-        );
-        for m in &sorted {
-            text.push_str(&format!("{}: {}\n", m.sender_display, m.content));
-        }
-        text.push_str("[End context]\n\n");
-        (text, ids)
+        (silent_context_prefix(&sorted), ids)
     }
 
     pub fn push_injected_context(&mut self, sender_display: &str, content: &str) {

@@ -147,7 +147,9 @@ fn a_quote_carries_the_reply_text_and_the_quoted_message() {
 #[test]
 fn a_file_placeholder_is_dropped_and_the_file_kept() {
     let placeholder = "<?xml version=\"1.0\"?>\n<msg><appmsg appid=\"\"><title>a.zip</title><type>74</type></appmsg></msg>";
-    let file = "<?xml version=\"1.0\"?>\n<msg><appmsg appid=\"wx6618f1cfc6c132f8\"><title>a.zip</title><type>6</type></appmsg></msg>";
+    let file = "<?xml version=\"1.0\"?>\n<msg><appmsg appid=\"wx6618f1cfc6c132f8\" sdkver=\"0\"><title>a.zip</title><type>6</type>\
+                <appattach><totallen>231445</totallen><attachid>@cdn_abc_1</attachid><fileext>zip</fileext></appattach>\
+                </appmsg><fromusername>wxid_me</fromusername></msg>";
     let out = decode_push(&push(serde_json::json!([
         add_msg(1, 49, ME, BOT, placeholder, ""),
         add_msg(2, 49, ME, BOT, file, ""),
@@ -156,7 +158,11 @@ fn a_file_placeholder_is_dropped_and_the_file_kept() {
     assert_eq!(
         out[0].kind,
         PadKind::File {
-            name: "a.zip".into()
+            name: "a.zip".into(),
+            attach_id: "@cdn_abc_1".into(),
+            total_len: 231445,
+            app_id: "wx6618f1cfc6c132f8".into(),
+            from_user: ME.into(),
         }
     );
 }
@@ -279,14 +285,42 @@ fn a_group_is_addressed_by_mention_slash_or_quoting_the_bot() {
 }
 
 #[test]
-fn group_policy_limits_rooms_and_senders() {
+fn group_policy_limits_rooms_and_who_may_trigger() {
     let c = cfg();
+    // Everyone in an allowed room is recorded; only the allowlist starts turns.
     assert_eq!(
         admit(
             &c,
-            &text_msg("/status", "wxid_other", true, &[], PadKind::Text)
+            &text_msg(
+                "@亮亮bot\u{2005}/status",
+                "wxid_other",
+                true,
+                &[BOT],
+                PadKind::Text
+            )
         ),
-        None
+        Some(Admitted {
+            text: "/status".into(),
+            addressed: false
+        })
+    );
+    let open = WeChatPadConfig {
+        group_policy: "open".into(),
+        ..cfg()
+    };
+    assert!(
+        admit(
+            &open,
+            &text_msg(
+                "@亮亮bot\u{2005}/status",
+                "wxid_other",
+                true,
+                &[BOT],
+                PadKind::Text
+            )
+        )
+        .unwrap()
+        .addressed
     );
 
     let rooms = WeChatPadConfig {
@@ -312,7 +346,7 @@ fn group_policy_limits_rooms_and_senders() {
 }
 
 #[test]
-fn a_bare_mention_and_media_are_not_admitted() {
+fn a_bare_mention_is_not_admitted_but_a_bare_image_is() {
     assert_eq!(
         admit(
             &cfg(),
@@ -320,10 +354,78 @@ fn a_bare_mention_and_media_are_not_admitted() {
         ),
         None
     );
+    let image = PadKind::Image {
+        aes_key: "k".into(),
+        cdn_url: "u".into(),
+    };
+    // A picture posted in the room is kept, unaddressed, for the next turn.
     assert_eq!(
-        admit(&cfg(), &text_msg("", ME, false, &[], PadKind::Image)),
-        None
+        admit(
+            &cfg(),
+            &text_msg("", "wxid_other", true, &[], image.clone())
+        ),
+        Some(Admitted {
+            text: String::new(),
+            addressed: false
+        })
     );
+    let voice = PadKind::Other {
+        msg_type: 34,
+        app_type: None,
+    };
+    assert_eq!(admit(&cfg(), &text_msg("", ME, true, &[], voice)), None);
+}
+
+#[test]
+fn an_image_push_carries_what_its_download_needs() {
+    let xml = "<?xml version=\"1.0\"?>\n<msg>\n\t<img aeskey=\"9b70\" encryver=\"1\" cdnthumburl=\"thumb\" \
+               cdnmidimgurl=\"mid\" cdnbigimgurl=\"big\" length=\"59896\" md5=\"x\" />\n</msg>\n";
+    let out = decode_push(&push(serde_json::json!([add_msg(
+        5,
+        3,
+        GROUP,
+        BOT,
+        &format!("wxid_other:\n{xml}"),
+        ""
+    )])));
+    assert_eq!(out[0].sender_id, "wxid_other");
+    assert_eq!(
+        out[0].kind,
+        PadKind::Image {
+            aes_key: "9b70".into(),
+            cdn_url: "big".into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_file_downloads_section_by_section_from_where_the_bytes_ended() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    // The server hands back 64KB per section whatever length is asked for.
+    let file: Vec<u8> = (0..150_000u32).map(|i| (i % 251) as u8).collect();
+    let served = file.clone();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/Tools/DownloadFile"))
+        .respond_with(move |req: &Request| {
+            use base64::Engine;
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            let start = body["Section"]["StartPos"].as_u64().unwrap() as usize;
+            let end = (start + 65536).min(served.len());
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Success": true, "Code": 0,
+                "Data": {"data": {"buffer": base64::engine::general_purpose::STANDARD.encode(&served[start..end])}}
+            }))
+        })
+        .mount(&server)
+        .await;
+    let got = PadApi::new(&server.uri())
+        .download_file(BOT, "@cdn", "wx", ME, file.len() as u64)
+        .await
+        .unwrap();
+    assert_eq!(got, file);
 }
 
 #[test]

@@ -2807,7 +2807,7 @@
         "groupOpen": "开放——任何群里的任何人",
         "groupDisabled": "关闭——忽略群聊",
         "groupAllowFrom": "允许的群（…@chatroom，每行一个）",
-        "groupHint": "在群里，智能体只响应 @它、/命令，或引用它自己的消息。"
+        "groupHint": "被允许的群里，所有消息都会记进会话；智能体只回应 @它、/命令，或引用它自己的消息。"
       },
       "wechat": {
         "wizardIntroTitle": "欢迎使用微信设置",

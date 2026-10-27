@@ -197,6 +197,15 @@ pub trait TurnRunner: Send + Sync {
         attachment_urls: &[String],
         on_delta: Option<tokio::sync::mpsc::Sender<TurnUpdate>>,
     ) -> Result<String, CoreError>;
+
+    /// Keep a recorded-but-unaddressed message for the session's next turn.
+    async fn queue_silent(
+        &self,
+        _acp_session_id: &str,
+        _context: teamclu_gateway::SilentContext,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
 }
 
 /// Slash commands, dispatched from one place instead of per channel.
@@ -228,6 +237,11 @@ pub enum Outcome {
         handled: bool,
     },
     ContextAppended {
+        session_id: String,
+    },
+    /// Not addressed, but written to the session and queued as silent
+    /// context (`ChannelDriver::records_unaddressed`).
+    Recorded {
         session_id: String,
     },
     Handled {
@@ -275,11 +289,81 @@ impl Core {
         driver: &dyn ChannelDriver,
         msg: InboundMessage,
     ) -> Result<Outcome, CoreError> {
+        if !msg.addressed_to_bot && driver.records_unaddressed() {
+            return self.record_silent(driver, msg).await;
+        }
         if let Some(outcome) = self.claim_message(&msg).await {
             return Ok(outcome);
         }
         let prepared = self.prepare_buffered_reply(driver, &msg).await;
         self.handle_prepared(driver, msg, prepared).await
+    }
+
+    /// A message the bot was not addressed in, for a channel that follows the
+    /// conversation: written to the session like any other, then queued as
+    /// silent context for the session's next turn. Nothing is said back and
+    /// no turn starts.
+    pub async fn record_silent(
+        &self,
+        driver: &dyn ChannelDriver,
+        msg: InboundMessage,
+    ) -> Result<Outcome, CoreError> {
+        if !self
+            .dedup
+            .claim(msg.conversation.channel, &msg.external_message_id)
+            .await
+        {
+            return Ok(Outcome::Duplicate);
+        }
+        if msg.text.trim().is_empty() && msg.attachments.is_empty() {
+            return Ok(Outcome::Empty);
+        }
+        let urn = driver.sender_urn(&msg.conversation, &msg.sender);
+        let display = display_name(&msg.sender);
+        let actor_id = self.identity.actor_for(&urn, &display).await?;
+        let binding = driver.binding(&msg.conversation);
+        let title = driver.session_title(&msg.conversation, &msg.sender);
+        let session = self.router.resolve(&binding, &title, &actor_id).await?;
+        self.identity.join(&session.session_id, &actor_id).await?;
+
+        let quoted_text = match &msg.quoted_text {
+            Some(QuotedText::Ready(text)) => Some(text.clone()),
+            _ => None,
+        };
+        let uploads = resolve_uploads(&msg).await?;
+        let content = compose_prompt(&msg, quoted_text.as_deref());
+        let written = self
+            .writer
+            .write_inbound(
+                &session.session_id,
+                &actor_id,
+                &content,
+                uploads,
+                &msg.external_message_id,
+            )
+            .await?;
+        if let Some(hook) = &msg.after_persisted {
+            hook.persisted().await;
+        }
+        let content = match unretrieved_note(&written.failed_uploads) {
+            Some(note) => format!("{content}\n{note}"),
+            None => content,
+        };
+        self.turns
+            .queue_silent(
+                &session.acp_session_id,
+                teamclu_gateway::SilentContext {
+                    message_id: written.message_id.clone(),
+                    sender_display: display,
+                    content,
+                    created_at: chrono::Utc::now().timestamp(),
+                    attachment_urls: written.attachment_urls.clone(),
+                },
+            )
+            .await?;
+        Ok(Outcome::Recorded {
+            session_id: session.session_id,
+        })
     }
 
     /// Claim before creating any placeholder, including while a turn queues.
@@ -469,31 +553,7 @@ impl Core {
         // Resolve attachments. Deferred by construction, so a text-only
         //    message spends nothing here — which is what keeps the common case
         //    starting its turn immediately.
-        let mut uploads = Vec::new();
-        for att in &msg.attachments {
-            let bytes = match &att.source {
-                AttachmentSource::Ready(b) => b.clone(),
-                AttachmentSource::Deferred(f) => f
-                    .fetch()
-                    .await
-                    .map_err(|e| CoreError::Write(format!("attachment fetch: {e}")))?,
-            };
-            // A driver that cannot tell a file's type (WeCom) leaves the type
-            // empty and the name bare; both are settled here from the bytes.
-            // The attachment store refuses an empty content type, and the agent
-            // is shown a picture only when the stored name ends like one.
-            let mime = if att.mime.is_empty() {
-                teamclu_gateway::wecom::resolve_mime(&bytes, Some(&att.filename))
-            } else {
-                att.mime.clone()
-            };
-            uploads.push(PendingUpload {
-                filename: teamclu_gateway::wecom::name_with_extension(&att.filename, &mime),
-                mime,
-                bytes,
-                local_path: None,
-            });
-        }
+        let uploads = resolve_uploads(&msg).await?;
 
         // 6. Write BEFORE the turn, always. Writing after is what made a
         //    three-minute turn look like a frozen client everywhere else, then
@@ -1113,6 +1173,36 @@ fn render(
         text: format!("{reply}\n{names}"),
         ..Default::default()
     }
+}
+
+/// Fetch a message's attachments into uploads.
+async fn resolve_uploads(msg: &InboundMessage) -> Result<Vec<PendingUpload>, CoreError> {
+    let mut uploads = Vec::new();
+    for att in &msg.attachments {
+        let bytes = match &att.source {
+            AttachmentSource::Ready(b) => b.clone(),
+            AttachmentSource::Deferred(f) => f
+                .fetch()
+                .await
+                .map_err(|e| CoreError::Write(format!("attachment fetch: {e}")))?,
+        };
+        // A driver that cannot tell a file's type (WeCom) leaves the type
+        // empty and the name bare; both are settled here from the bytes.
+        // The attachment store refuses an empty content type, and the agent
+        // is shown a picture only when the stored name ends like one.
+        let mime = if att.mime.is_empty() {
+            teamclu_gateway::wecom::resolve_mime(&bytes, Some(&att.filename))
+        } else {
+            att.mime.clone()
+        };
+        uploads.push(PendingUpload {
+            filename: teamclu_gateway::wecom::name_with_extension(&att.filename, &mime),
+            mime,
+            bytes,
+            local_path: None,
+        });
+    }
+    Ok(uploads)
 }
 
 /// What the agent is told the sender is called. Channels that carry no display

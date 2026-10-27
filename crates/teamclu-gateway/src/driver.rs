@@ -306,6 +306,14 @@ pub trait ChannelDriver: Send + Sync {
         false
     }
 
+    /// Record messages not addressed to the bot instead of dropping them:
+    /// they are written to the session and queued as silent context for its
+    /// next turn, without starting one. For a group the bot should follow,
+    /// not just answer. Opt-in: the other channels keep dropping them.
+    fn records_unaddressed(&self) -> bool {
+        false
+    }
+
     /// Prepare a placeholder for a buffered agent turn. Ordinary deliveries,
     /// commands and live-streaming channels continue through `deliver`.
     async fn prepare_buffered_reply(

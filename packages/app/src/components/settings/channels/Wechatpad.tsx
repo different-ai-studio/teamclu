@@ -278,7 +278,7 @@ export function WeChatPadChannel() {
         <p className="text-[11px] text-muted-foreground">
           {t(
             'settings.channels.wechatpad.groupHint',
-            'In a group the agent answers an @mention, a /command, or a quote of its own message.',
+            'Every message in an allowed group is kept in its session; the agent answers only an @mention, a /command, or a quote of its own message.',
           )}
         </p>
       </div>

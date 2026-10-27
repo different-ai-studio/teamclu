@@ -2807,7 +2807,7 @@
         "groupOpen": "Open — anyone in any group",
         "groupDisabled": "Disabled — ignore groups",
         "groupAllowFrom": "Allowed groups (…@chatroom, one per line)",
-        "groupHint": "In a group the agent answers an @mention, a /command, or a quote of its own message."
+        "groupHint": "Every message in an allowed group is kept in its session; the agent answers only an @mention, a /command, or a quote of its own message."
       },
       "wechat": {
         "wizardIntroTitle": "Welcome to WeChat Setup",
