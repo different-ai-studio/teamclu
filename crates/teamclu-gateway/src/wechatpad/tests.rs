@@ -601,3 +601,149 @@ async fn a_push_over_the_callback_port_reaches_the_sink() {
     assert_eq!(*sink.0.lock().unwrap(), vec![("/status".to_string(), true)]);
     gw.shutdown().await;
 }
+
+// ---------- attachments ----------
+
+#[test]
+fn files_are_paced_and_never_merged_into_notices() {
+    let t0 = Instant::now();
+    let mut p = planner(t0, None);
+    p.enqueue(ME, "done", SendKind::Notice, 1, t0);
+    p.enqueue_media(ME, Media::Image(vec![1, 2, 3]), SendKind::Notice, 2, t0);
+    p.enqueue(ME, "also done", SendKind::Notice, 3, t0);
+    let mut now = t0;
+    let mut sends = Vec::new();
+    loop {
+        match p.next(now).0 {
+            SendAction::Send { text, media, .. } => {
+                sends.push((now.duration_since(t0).as_secs(), text, media));
+                p.did_send(now);
+            }
+            SendAction::Wait(at) => now = at,
+            SendAction::Idle => break,
+        }
+    }
+    assert_eq!(
+        sends.len(),
+        2,
+        "two notices merge; the image stays its own send"
+    );
+    assert_eq!(sends[0].1, format!("done{NOTICE_SEPARATOR}also done"));
+    assert_eq!(sends[1].2, Some(Media::Image(vec![1, 2, 3])));
+    assert!(sends[1].0 >= 3, "the image waits out the gap like any send");
+}
+
+#[test]
+fn the_multipart_body_carries_the_chunk_and_every_field() {
+    let (ct, body) = multipart(
+        "a\"b.txt",
+        b"DATA",
+        &[("Wxid", "wxid_bot".into()), ("TotalLen", "4".into())],
+    );
+    let boundary = ct.strip_prefix("multipart/form-data; boundary=").unwrap();
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.starts_with(&format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"chunk\"; filename=\"a_b.txt\""
+    )));
+    assert!(text.contains("\r\n\r\nDATA\r\n"));
+    assert!(text.contains("name=\"Wxid\"\r\n\r\nwxid_bot\r\n"));
+    assert!(text.ends_with(&format!("--{boundary}--\r\n")));
+}
+
+#[test]
+fn images_go_inline_and_everything_else_as_a_file() {
+    assert!(is_inline_image("image/png", "x"));
+    assert!(is_inline_image("application/octet-stream", "horse.JPG"));
+    assert!(!is_inline_image("application/pdf", "report.pdf"));
+    assert!(!is_inline_image("image/svg+xml", "logo.svg"));
+}
+
+#[tokio::test]
+async fn deliver_sends_the_text_then_the_image() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let ok = ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "Success": true, "Code": 0, "Message": "", "Data": {"List": [{"NewMsgId": 9}]}
+    }));
+    for p in [
+        "/api/User/GetContractProfile",
+        "/api/Login/AutoHeartBeat",
+        "/api/Msg/SendTxt",
+        "/api/Msg/UploadImg",
+    ] {
+        Mock::given(method("POST"))
+            .and(path(p))
+            .respond_with(ok.clone())
+            .mount(&server)
+            .await;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("horse.png");
+    std::fs::write(&png, b"\x89PNG fake").unwrap();
+
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let mut gw = WeChatPadGateway::new();
+    gw.set_config(WeChatPadConfig {
+        callback_port: port,
+        server_url: server.uri(),
+        ..cfg()
+    })
+    .await;
+    gw.start().await.unwrap();
+    let driver = gw.as_driver().await;
+
+    let to = Conversation {
+        channel: CHANNEL,
+        bot_id: Some(BOT.into()),
+        kind: ConversationKind::Direct,
+        id: ME.into(),
+    };
+    driver
+        .deliver(
+            &to,
+            Some("1"),
+            &OutboundMessage {
+                text: "马画好啦".into(),
+                attachments: vec![crate::driver::SessionAttachment {
+                    filename: "horse.png".into(),
+                    mime: "image/png".into(),
+                    bucket_path: "b/horse.png".into(),
+                    local_path: Some(png.to_string_lossy().into_owned()),
+                }],
+                question: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sends: Vec<(String, serde_json::Value)> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path().starts_with("/api/Msg/"))
+        .map(|r| {
+            (
+                r.url.path().to_string(),
+                serde_json::from_slice(&r.body).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(sends.len(), 2);
+    assert_eq!(sends[0].0, "/api/Msg/SendTxt");
+    assert_eq!(sends[0].1["Content"], "马画好啦");
+    assert_eq!(sends[1].0, "/api/Msg/UploadImg");
+    assert_eq!(sends[1].1["ToWxid"], ME);
+    use base64::Engine;
+    assert_eq!(
+        sends[1].1["Base64"],
+        base64::engine::general_purpose::STANDARD.encode(b"\x89PNG fake")
+    );
+    gw.shutdown().await;
+}

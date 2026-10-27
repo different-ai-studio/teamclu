@@ -422,7 +422,9 @@ pub const NOTICE_SEPARATOR: &str = "\n\n———\n\n";
 pub enum SendAction {
     Send {
         chat_id: String,
+        /// Empty when this send is a file.
         text: String,
+        media: Option<Media>,
         /// Ticket of every caller this send answers.
         tickets: Vec<u64>,
     },
@@ -431,9 +433,27 @@ pub enum SendAction {
     Idle,
 }
 
+/// A file on its way out. Sent through its own endpoint, never merged or
+/// chunked, but paced like any text.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Media {
+    Image(Vec<u8>),
+    File { name: String, bytes: Vec<u8> },
+}
+
+impl std::fmt::Debug for Media {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Media::Image(b) => write!(f, "Image({} bytes)", b.len()),
+            Media::File { name, bytes } => write!(f, "File({name}, {} bytes)", bytes.len()),
+        }
+    }
+}
+
 struct Pending {
     chat_id: String,
     text: String,
+    media: Option<Media>,
     kind: SendKind,
     ready_at: Instant,
     tickets: Vec<u64>,
@@ -517,16 +537,15 @@ impl SendPlanner {
             SendKind::Reply => self.queue.push_back(Pending {
                 chat_id: chat_id.to_string(),
                 text: text.to_string(),
+                media: None,
                 kind,
                 ready_at: now,
                 tickets: vec![ticket],
             }),
             SendKind::Notice => {
-                if let Some(p) = self
-                    .queue
-                    .iter_mut()
-                    .find(|p| p.kind == SendKind::Notice && p.chat_id == chat_id)
-                {
+                if let Some(p) = self.queue.iter_mut().find(|p| {
+                    p.kind == SendKind::Notice && p.chat_id == chat_id && p.media.is_none()
+                }) {
                     p.text.push_str(NOTICE_SEPARATOR);
                     p.text.push_str(text);
                     p.tickets.push(ticket);
@@ -541,6 +560,7 @@ impl SendPlanner {
                 self.queue.push_back(Pending {
                     chat_id: chat_id.to_string(),
                     text: text.to_string(),
+                    media: None,
                     kind,
                     ready_at,
                     tickets: vec![ticket],
@@ -548,6 +568,26 @@ impl SendPlanner {
             }
         }
         true
+    }
+
+    /// Queue a file. Files are never merged, so a notice's file waits for its
+    /// own turn like a reply does; only the hourly quota can drop it.
+    pub fn enqueue_media(
+        &mut self,
+        chat_id: &str,
+        media: Media,
+        kind: SendKind,
+        ticket: u64,
+        now: Instant,
+    ) {
+        self.queue.push_back(Pending {
+            chat_id: chat_id.to_string(),
+            text: String::new(),
+            media: Some(media),
+            kind,
+            ready_at: now,
+            tickets: vec![ticket],
+        });
     }
 
     /// What to do now, plus any tickets whose notice was dropped. `Send`
@@ -616,6 +656,17 @@ impl SendPlanner {
             if p.kind == SendKind::Notice {
                 self.last_notice.insert(p.chat_id.clone(), now);
             }
+            if let Some(media) = p.media {
+                return (
+                    SendAction::Send {
+                        chat_id: p.chat_id,
+                        text: String::new(),
+                        media: Some(media),
+                        tickets: p.tickets,
+                    },
+                    dropped,
+                );
+            }
             let mut text = p.text;
             if self.omitted > 0 {
                 text.push_str(&format!("\n\n（已省略 {} 条通知）", self.omitted));
@@ -632,6 +683,7 @@ impl SendPlanner {
                 self.queue.push_front(Pending {
                     chat_id: p.chat_id.clone(),
                     text: c,
+                    media: None,
                     kind: SendKind::Reply,
                     ready_at: now,
                     tickets: if Some(i) == last {
@@ -645,6 +697,7 @@ impl SendPlanner {
                 SendAction::Send {
                     chat_id: p.chat_id,
                     text: first,
+                    media: None,
                     tickets,
                 },
                 dropped,
@@ -774,6 +827,102 @@ impl PadApi {
             .map_err(|(_, e)| e)
     }
 
+    /// Upload and send an image in one call.
+    pub async fn send_image(&self, wxid: &str, to: &str, bytes: &[u8]) -> Result<(), String> {
+        use base64::Engine;
+        self.call(
+            "/Msg/UploadImg",
+            &[],
+            Some(serde_json::json!({
+                "Wxid": wxid, "ToWxid": to,
+                "Base64": base64::engine::general_purpose::STANDARD.encode(bytes),
+            })),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|(_, e)| e)
+    }
+
+    /// Upload a file in 200KB chunks (multipart), then send it as an
+    /// `appmsg type 6` pointing at the upload.
+    pub async fn send_file(
+        &self,
+        wxid: &str,
+        to: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        const CHUNK: usize = 200 * 1000;
+        let md5 = format!("{:x}", md5::compute(bytes));
+        let total = bytes.len();
+        let chunks = total.div_ceil(CHUNK).max(1);
+        let client_id = format!(
+            "{wxid}_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let mut media_id = None;
+        let mut app_id = String::new();
+        for i in 0..chunks {
+            let start = i * CHUNK;
+            let piece = &bytes[start..(start + CHUNK).min(total)];
+            let (content_type, body) = multipart(
+                name,
+                piece,
+                &[
+                    ("Wxid", wxid.to_string()),
+                    ("ClientAppDataId", client_id.clone()),
+                    ("FileMD5", md5.clone()),
+                    ("TotalLen", total.to_string()),
+                    ("StartPos", start.to_string()),
+                    ("TotalChunks", chunks.to_string()),
+                ],
+            );
+            let resp = self
+                .client
+                .post(format!("{}/Tools/UploadAppAttachStream", self.base))
+                .header("Content-Type", content_type)
+                .body(body)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+            if json.get("Success").and_then(|v| v.as_bool()) != Some(true) {
+                return Err(json
+                    .get("Message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("upload failed")
+                    .to_string());
+            }
+            let data = json.get("Data").cloned().unwrap_or_default();
+            if let Some(id) = data.get("mediaId").and_then(|v| v.as_str()) {
+                media_id = Some(id.to_string());
+            }
+            if let Some(id) = data.get("appId").and_then(|v| v.as_str()) {
+                app_id = id.to_string();
+            }
+        }
+        let media_id = media_id.ok_or("upload returned no mediaId")?;
+        let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+        let xml = format!(
+            "<appmsg appid=\"{}\" sdkver=\"0\"><title>{}</title><des></des><action></action>\
+             <type>6</type><showtype>0</showtype><soundtype>0</soundtype><contentattr>0</contentattr>\
+             <url></url><appattach><totallen>{total}</totallen><attachid>{}</attachid>\
+             <fileext>{}</fileext></appattach><md5>{md5}</md5></appmsg>",
+            xml_escape(&app_id),
+            xml_escape(name),
+            xml_escape(&media_id),
+            xml_escape(ext),
+        );
+        self.call(
+            "/Msg/SendApp",
+            &[],
+            Some(serde_json::json!({"Wxid": wxid, "ToWxid": to, "Type": 6, "Xml": xml})),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|(_, e)| e)
+    }
+
     /// Returns the sent message's `NewMsgId`.
     pub async fn send_text(
         &self,
@@ -801,6 +950,67 @@ impl PadApi {
             .and_then(|v| v.as_i64()))
     }
 }
+
+/// One file part plus text fields, the way `UploadAppAttachStream` reads
+/// them (the file field is `chunk`). Built by hand: one request shape does
+/// not justify a multipart dependency.
+fn multipart(filename: &str, piece: &[u8], fields: &[(&str, String)]) -> (String, Vec<u8>) {
+    let boundary = format!("----teamclu{:016x}", {
+        let mut b = [0u8; 8];
+        getrandom::getrandom(&mut b).unwrap_or_default();
+        u64::from_le_bytes(b)
+    });
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"chunk\"; filename=\"{}\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n",
+            filename.replace('"', "_")
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(piece);
+    body.extend_from_slice(b"\r\n");
+    for (k, v) in fields {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n")
+                .as_bytes(),
+        );
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Images WeChat shows inline; anything else goes as a file.
+fn is_inline_image(mime: &str, filename: &str) -> bool {
+    let mime = mime.to_ascii_lowercase();
+    if [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/gif",
+        "image/webp",
+    ]
+    .contains(&mime.as_str())
+    {
+        return true;
+    }
+    let lower = filename.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+        .iter()
+        .any(|e| lower.ends_with(e))
+}
+
+/// The largest file this driver will push; WeChat itself takes more, but a
+/// bigger upload through an unofficial server is a risk for little gain.
+const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 
 // ==================== Callback listener ====================
 
@@ -944,6 +1154,25 @@ impl Outbox {
         rx
     }
 
+    async fn enqueue_media(
+        &self,
+        chat_id: &str,
+        media: Media,
+        kind: SendKind,
+    ) -> oneshot::Receiver<Result<(), String>> {
+        let ticket = self
+            .next_ticket
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.waiters.lock().await.insert(ticket, tx);
+        self.planner
+            .lock()
+            .await
+            .enqueue_media(chat_id, media, kind, ticket, Instant::now());
+        self.wake.notify_one();
+        rx
+    }
+
     async fn settle(&self, tickets: &[u64], result: &Result<(), String>) {
         let mut waiters = self.waiters.lock().await;
         for t in tickets {
@@ -962,9 +1191,16 @@ impl Outbox {
                 SendAction::Send {
                     chat_id,
                     text,
+                    media,
                     tickets,
                 } => {
-                    let result = api.send_text(&wxid, &chat_id, &text).await.map(|_| ());
+                    let result = match &media {
+                        None => api.send_text(&wxid, &chat_id, &text).await.map(|_| ()),
+                        Some(Media::Image(bytes)) => api.send_image(&wxid, &chat_id, bytes).await,
+                        Some(Media::File { name, bytes }) => {
+                            api.send_file(&wxid, &chat_id, name, bytes).await
+                        }
+                    };
                     if let Err(e) = &result {
                         eprintln!("[WeChatPad] send to {chat_id} failed: {e}");
                     }
@@ -1229,6 +1465,21 @@ pub fn normalize(account_wxid: &str, msg: &PadMessage, admitted: Admitted) -> In
     }
 }
 
+async fn read_attachment(att: &crate::driver::SessionAttachment) -> Result<Vec<u8>, String> {
+    let path = att
+        .local_path
+        .as_deref()
+        .ok_or("no local copy of this attachment")?;
+    let meta = tokio::fs::metadata(path).await.map_err(|e| e.to_string())?;
+    if meta.len() > MAX_ATTACHMENT_BYTES {
+        return Err(format!(
+            "{} bytes is over the {MAX_ATTACHMENT_BYTES}-byte limit",
+            meta.len()
+        ));
+    }
+    tokio::fs::read(path).await.map_err(|e| e.to_string())
+}
+
 /// WeChat (iPad protocol) as a transport driver.
 pub struct WeChatPadDriver {
     account_wxid: String,
@@ -1238,7 +1489,7 @@ pub struct WeChatPadDriver {
 pub fn caps() -> ChannelCaps {
     ChannelCaps {
         streaming_edit: false,
-        media_upload: false,
+        media_upload: true,
         interactive: false,
         threading: Threading::Inline,
         max_chars: MAX_CHARS,
@@ -1289,25 +1540,55 @@ impl ChannelDriver for WeChatPadDriver {
         msg: &OutboundMessage,
     ) -> Result<DeliveryId, DriverError> {
         let id = DeliveryId(to.id.clone());
-        if msg.text.trim().is_empty() {
-            return Ok(id);
-        }
         let kind = if reply_context.is_some() || msg.question.is_some() {
             SendKind::Reply
         } else {
             SendKind::Notice
         };
-        let rx = self.outbox.enqueue(&to.id, &msg.text, kind).await;
+
+        // Files this driver cannot read go by name, as the core would have
+        // rendered them for a channel without uploads.
+        let mut text = msg.text.clone();
+        let mut media = Vec::new();
+        for att in &msg.attachments {
+            match read_attachment(att).await {
+                Ok(bytes) if is_inline_image(&att.mime, &att.filename) => {
+                    media.push(Media::Image(bytes))
+                }
+                Ok(bytes) => media.push(Media::File {
+                    name: att.filename.clone(),
+                    bytes,
+                }),
+                Err(e) => {
+                    eprintln!("[WeChatPad] attachment {}: {e}", att.filename);
+                    text.push_str(&format!("\n[附件: {}]", att.filename));
+                }
+            }
+        }
+
+        // The reply's words first, then its files, each paced like any send.
+        let mut pending = Vec::new();
+        if !text.trim().is_empty() {
+            pending.push(self.outbox.enqueue(&to.id, &text, kind).await);
+        }
+        for m in media {
+            pending.push(self.outbox.enqueue_media(&to.id, m, kind).await);
+        }
         if kind == SendKind::Notice {
             return Ok(id);
         }
-        match rx.await {
-            Ok(Ok(())) => Ok(id),
-            Ok(Err(e)) => Err(DriverError::Transport(e)),
-            Err(_) => Err(DriverError::Transport(
-                "WeChat (iPad) gateway stopped".into(),
-            )),
+        for rx in pending {
+            match rx.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(DriverError::Transport(e)),
+                Err(_) => {
+                    return Err(DriverError::Transport(
+                        "WeChat (iPad) gateway stopped".into(),
+                    ))
+                }
+            }
         }
+        Ok(id)
     }
 }
 

@@ -32,6 +32,9 @@ struct RunningChannels {
     kook: Option<KookGateway>,
     wechat: Option<WeChatGateway>,
     wechatpad: Option<WeChatPadGateway>,
+    /// Why wechatpad was enabled but did not start (no account wxid, callback
+    /// port taken). Without it the UI shows "connecting" forever.
+    wechatpad_start_error: Option<String>,
     email: Option<EmailGateway>,
     seatalk: Vec<SeaTalkGateway>,
     /// Bots that were enabled but did not connect. Kept off the send path.
@@ -242,7 +245,10 @@ impl ChannelManager {
                         println!("[ChannelManager] wechatpad started");
                         running.wechatpad = Some(g);
                     }
-                    Err(e) => eprintln!("[ChannelManager] wechatpad start failed: {e}"),
+                    Err(e) => {
+                        eprintln!("[ChannelManager] wechatpad start failed: {e}");
+                        running.wechatpad_start_error = Some(e.to_string());
+                    }
                 }
             }
         }
@@ -432,7 +438,7 @@ impl ChannelManager {
                     status.error_message,
                 )
             }
-            None => (false, None),
+            None => (false, running.wechatpad_start_error.clone()),
         };
         let email = match running.email.as_ref() {
             Some(g) => {

@@ -114,6 +114,12 @@ export function WeChatPadChannel() {
       onToggleExpanded={() => setExpanded(!expanded)}
       enabled={localConfig.enabled}
       onToggleEnabled={(enabled) => {
+        // Nothing to attach to yet: open the form instead of enabling a
+        // channel the daemon can only fail to start.
+        if (enabled && !hasAccount) {
+          setExpanded(true)
+          return
+        }
         const next = pinChannelRuntime({ ...localConfig, enabled }, inheritedRuntime(runtimeDefaults))
         updateLocalConfig(next)
         toggleWechatpadEnabled(enabled, next)
