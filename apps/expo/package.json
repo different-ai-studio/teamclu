@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.15.0",
+    "@bufbuild/protobuf": "^2.16.0",
     "@expo/vector-icons": "^15.1.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@sentry/cli": "3.6.2",
@@ -22,7 +22,7 @@
     "expo": "~57.0.24",
     "expo-application": "~57.0.3",
     "expo-audio": "^57.0.5",
-    "expo-blur": "~57.0.2",
+    "expo-blur": "~57.0.3",
     "expo-clipboard": "^57.0.2",
     "expo-constants": "~57.0.9",
     "expo-dev-client": "~57.0.10",
@@ -42,7 +42,7 @@
     "expo-web-browser": "~57.0.2",
     "fflate": "^0.8.3",
     "i18next": "^26.4.2",
-    "mqtt": "5.15.2",
+    "mqtt": "5.16.1",
     "react": "19.2.8",
     "react-i18next": "^17.0.13",
     "react-native": "0.86.2",
