@@ -849,3 +849,319 @@ async fn deliver_sends_the_text_then_the_image() {
     );
     gw.shutdown().await;
 }
+
+// ---------- 拍一拍 ----------
+
+fn pat_xml(patter: &str, patted: &str, suffix: &str) -> String {
+    format!(
+        "<sysmsg type=\"pat\">\n<pat>\n\t<fromusername>{patter}</fromusername>\n\t<chatusername>{GROUP}</chatusername>\n\
+         \t<pattedusername>{patted}</pattedusername>\n\t<patsuffix><![CDATA[{suffix}]]></patsuffix>\n\
+         \t<patsuffixversion>0</patsuffixversion>\n\t<template><![CDATA[\"${{{patter}}}\" 拍了拍 \"${{{patted}}}\"]]></template>\n</pat>\n</sysmsg>"
+    )
+}
+
+#[test]
+fn a_pat_decodes_with_the_nudger_as_sender_and_other_system_messages_stay_out() {
+    let out = decode_push(&push(serde_json::json!([
+        add_msg(
+            1,
+            10002,
+            GROUP,
+            BOT,
+            &format!("{GROUP}:\n{}", pat_xml(ME, BOT, "的脑袋")),
+            ""
+        ),
+        add_msg(
+            2,
+            10002,
+            GROUP,
+            BOT,
+            "<sysmsg type=\"revokemsg\"><revokemsg/></sysmsg>",
+            ""
+        ),
+    ])));
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].sender_id, ME);
+    assert_eq!(out[0].chat_id, GROUP);
+    assert_eq!(
+        out[0].kind,
+        PadKind::Pat {
+            patter: ME.into(),
+            patted: BOT.into(),
+            suffix: "的脑袋".into()
+        }
+    );
+}
+
+#[test]
+fn nudging_the_bot_calls_it_and_nudging_anyone_else_is_only_recorded() {
+    let pat = |patted: &str| PadKind::Pat {
+        patter: ME.into(),
+        patted: patted.into(),
+        suffix: String::new(),
+    };
+    assert!(
+        admit(&cfg(), &text_msg("", ME, true, &[], pat(BOT)))
+            .unwrap()
+            .addressed
+    );
+    assert!(
+        !admit(&cfg(), &text_msg("", ME, true, &[], pat("wxid_z")))
+            .unwrap()
+            .addressed
+    );
+    // Under the allowlist a stranger's nudge is kept but does not call the bot.
+    assert!(
+        !admit(&cfg(), &text_msg("", "wxid_other", true, &[], pat(BOT)))
+            .unwrap()
+            .addressed
+    );
+    // A nudge is not a message in the chat, so a reply to it quotes nothing.
+    let m = text_msg("", ME, true, &[], pat(BOT));
+    assert!(serde_json::from_str::<QuoteRef>(&reply_context_for(&m, "亮亮")).is_err());
+}
+
+// ---------- quotes ----------
+
+#[test]
+fn a_reply_context_carries_what_quoting_needs() {
+    let mut m = text_msg(
+        "@亮亮bot\u{2005}你看看这个图片是什么",
+        ME,
+        true,
+        &[BOT],
+        PadKind::Text,
+    );
+    m.new_msg_id = 99;
+    let q: QuoteRef = serde_json::from_str(&reply_context_for(&m, "亮亮")).unwrap();
+    assert_eq!(
+        q,
+        QuoteRef {
+            svrid: 99,
+            from: ME.into(),
+            name: "亮亮".into(),
+            text: "@亮亮bot\u{2005}你看看这个图片是什么".into()
+        }
+    );
+}
+
+#[test]
+fn only_the_first_piece_of_a_long_reply_is_a_quote() {
+    let t0 = Instant::now();
+    let mut p = planner(t0, None);
+    let q = QuoteRef {
+        svrid: 1,
+        from: ME.into(),
+        name: "亮亮".into(),
+        text: "q".into(),
+    };
+    let long = vec!["字".repeat(1000); 2].join("\n");
+    p.enqueue_quoted(GROUP, &long, SendKind::Reply, Some(q.clone()), 1, t0);
+    let mut now = t0;
+    let mut quotes = Vec::new();
+    loop {
+        match p.next(now).0 {
+            SendAction::Send { quote, .. } => {
+                quotes.push(quote);
+                p.did_send(now);
+            }
+            SendAction::Wait(at) => now = at,
+            SendAction::Idle => break,
+        }
+    }
+    assert_eq!(quotes, vec![Some(q), None]);
+}
+
+/// A gateway on a mock server, started, with its driver.
+async fn mock_gateway(server: &wiremock::MockServer) -> (WeChatPadGateway, WeChatPadDriver) {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, ResponseTemplate};
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Success": true, "Code": 0, "Message": "",
+            "Data": {
+                "List": [{"NewMsgId": 9}],
+                "NewChatroomData": {"ChatRoomMember": [
+                    {"UserName": ME, "NickName": "亮亮"},
+                    {"UserName": "wxid_liz", "NickName": "Liz", "DisplayName": "小布丁妈妈"}
+                ]},
+                "ContactList": [{"NickName": {"string": "家里人"}}]
+            }
+        })))
+        .mount(server)
+        .await;
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let mut gw = WeChatPadGateway::new();
+    gw.set_config(WeChatPadConfig {
+        callback_port: port,
+        server_url: server.uri(),
+        ..cfg()
+    })
+    .await;
+    gw.start().await.unwrap();
+    let driver = gw.as_driver().await;
+    (gw, driver)
+}
+
+#[tokio::test]
+async fn a_group_reply_quotes_its_question_and_a_dm_reply_does_not() {
+    let server = wiremock::MockServer::start().await;
+    let (gw, driver) = mock_gateway(&server).await;
+    let q = serde_json::to_string(&QuoteRef {
+        svrid: 4256605562471456572,
+        from: ME.into(),
+        name: "亮亮".into(),
+        text: "画一匹马 <快>".into(),
+    })
+    .unwrap();
+    let conv = |kind, id: &str| Conversation {
+        channel: CHANNEL,
+        bot_id: Some(BOT.into()),
+        kind,
+        id: id.into(),
+    };
+    let reply = OutboundMessage {
+        text: "马画好啦".into(),
+        ..Default::default()
+    };
+    driver
+        .deliver(&conv(ConversationKind::Group, GROUP), Some(&q), &reply)
+        .await
+        .unwrap();
+    driver
+        .deliver(&conv(ConversationKind::Direct, ME), Some(&q), &reply)
+        .await
+        .unwrap();
+
+    let sends: Vec<(String, serde_json::Value)> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path().starts_with("/api/Msg/"))
+        .map(|r| {
+            (
+                r.url.path().to_string(),
+                serde_json::from_slice(&r.body).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(sends.len(), 2);
+    assert_eq!(sends[0].0, "/api/Msg/SendApp");
+    assert_eq!(sends[0].1["Type"], 57);
+    let xml = sends[0].1["Xml"].as_str().unwrap();
+    assert!(xml.contains("<title>马画好啦</title>"), "{xml}");
+    assert!(xml.contains("<svrid>4256605562471456572</svrid>"), "{xml}");
+    assert!(
+        xml.contains(&format!("<chatusr>{GROUP}</chatusr>")),
+        "{xml}"
+    );
+    assert!(
+        xml.contains("<content>画一匹马 &lt;快&gt;</content>"),
+        "escaped: {xml}"
+    );
+    assert_eq!(sends[1].0, "/api/Msg/SendTxt", "a DM has one person in it");
+    gw.shutdown().await;
+}
+
+// ---------- names ----------
+
+#[tokio::test]
+async fn group_members_are_named_the_way_the_group_names_them() {
+    let server = wiremock::MockServer::start().await;
+    let (gw, driver) = mock_gateway(&server).await;
+    let api = PadApi::new(&server.uri());
+    assert_eq!(
+        gw.names.member(&api, BOT, GROUP, ME).await.as_deref(),
+        Some("亮亮")
+    );
+    assert_eq!(
+        gw.names
+            .member(&api, BOT, GROUP, "wxid_liz")
+            .await
+            .as_deref(),
+        Some("小布丁妈妈"),
+        "a group nickname wins over the WeChat one"
+    );
+    let fetches = server.received_requests().await.unwrap().len();
+    assert_eq!(
+        gw.names
+            .member(&api, BOT, GROUP, "wxid_liz")
+            .await
+            .as_deref(),
+        Some("小布丁妈妈")
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        fetches,
+        "served from the cache"
+    );
+    // Someone who is not on the list right after a fetch waits out the retry
+    // instead of refetching on every message.
+    assert_eq!(gw.names.member(&api, BOT, GROUP, "wxid_new").await, None);
+    assert_eq!(server.received_requests().await.unwrap().len(), fetches);
+
+    let title = driver.session_title(
+        &Conversation {
+            channel: CHANNEL,
+            bot_id: Some(BOT.into()),
+            kind: ConversationKind::Group,
+            id: GROUP.into(),
+        },
+        &ExternalSender::default(),
+    );
+    assert_eq!(title, "WeChat group: 家里人");
+    gw.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_pushed_pat_reaches_the_sink_worded_with_names() {
+    use std::sync::Mutex as StdMutex;
+    struct Collect(StdMutex<Vec<(String, String, bool)>>);
+    #[async_trait::async_trait]
+    impl InboundSink for Collect {
+        async fn accept(&self, msg: InboundMessage) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((msg.text, msg.sender.display_name, msg.addressed_to_bot));
+        }
+    }
+    let server = wiremock::MockServer::start().await;
+    let (gw, _driver) = mock_gateway(&server).await;
+    let sink = Arc::new(Collect(StdMutex::new(Vec::new())));
+    gw.use_core_pipeline(sink.clone()).await;
+    let port = gw.config.read().await.callback_port;
+
+    let mut m = add_msg(7, 10002, GROUP, BOT, &pat_xml(ME, BOT, "的脑袋"), "");
+    m["CreateTime"] = (chrono::Utc::now().timestamp() + 5).into();
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!(
+            "http://127.0.0.1:{port}/api/v1/wechat-client/{BOT}/sync-message"
+        ))
+        .body(push(serde_json::json!([m])))
+        .send()
+        .await
+        .unwrap();
+    for _ in 0..50 {
+        if !sink.0.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        vec![(
+            "（亮亮 拍了拍你的脑袋）".to_string(),
+            "亮亮".to_string(),
+            true
+        )]
+    );
+    gw.shutdown().await;
+}

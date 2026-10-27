@@ -29,7 +29,7 @@
 //! The account is unofficial on an unofficial protocol, and risk control
 //! reads volume and rhythm. Everything outbound goes through [`SendPlanner`].
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -76,6 +76,13 @@ pub enum PadKind {
         app_id: String,
         /// `<fromusername>`: the download is addressed to the uploader.
         from_user: String,
+    },
+    /// 拍一拍: `patter` nudged `patted`. Both are wxids; names come later.
+    Pat {
+        patter: String,
+        patted: String,
+        /// The patted person's own suffix ("的脑袋"), shown after the verb.
+        suffix: String,
     },
     /// Voice, video, links, stickers, …
     Other {
@@ -157,7 +164,8 @@ fn decode_message(raw: AddMsg) -> Option<PadMessage> {
         .from_user_name
         .and_then(|s| s.string)
         .unwrap_or_default();
-    if from.is_empty() || SYSTEM_MSG_TYPES.contains(&raw.msg_type) {
+    // 10002 is system XML; the one kind of it worth keeping is a 拍一拍.
+    if from.is_empty() || (SYSTEM_MSG_TYPES.contains(&raw.msg_type) && raw.msg_type != 10002) {
         return None;
     }
     let to = raw.to_user_name.and_then(|s| s.string).unwrap_or_default();
@@ -185,6 +193,19 @@ fn decode_message(raw: AddMsg) -> Option<PadMessage> {
     }
 
     let (kind, text) = match raw.msg_type {
+        10002 => {
+            let pat = parse_pat(&content)?;
+            // The nudger, not whatever the group prefix said.
+            sender = pat.0.clone();
+            (
+                PadKind::Pat {
+                    patter: pat.0,
+                    patted: pat.1,
+                    suffix: pat.2,
+                },
+                String::new(),
+            )
+        }
         1 => (PadKind::Text, content),
         3 => {
             let attr = |name: &str| xml_attr(&content, "img", name).unwrap_or_default();
@@ -317,6 +338,23 @@ fn xml_element(xml: &str, name: &str) -> Option<String> {
     Some(unescape(raw))
 }
 
+/// `(patter, patted, suffix)` out of `<sysmsg type="pat">`; `None` for any
+/// other system message (revokes, joins, templates).
+fn parse_pat(content: &str) -> Option<(String, String, String)> {
+    let at = content.find("<sysmsg")?;
+    let xml = &content[at..];
+    if !xml.contains("type=\"pat\"") {
+        return None;
+    }
+    let patter = xml_element(xml, "fromusername")?.trim().to_string();
+    let patted = xml_element(xml, "pattedusername")?.trim().to_string();
+    let suffix = xml_element(xml, "patsuffix")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    (!patter.is_empty() && !patted.is_empty()).then_some((patter, patted, suffix))
+}
+
 /// `name="…"` on the first `<tag …>`, unescaped.
 fn xml_attr(xml: &str, tag: &str, name: &str) -> Option<String> {
     let start = xml.find(&format!("<{tag} "))?;
@@ -379,8 +417,14 @@ pub fn admit(cfg: &WeChatPadConfig, msg: &PadMessage) -> Option<Admitted> {
         PadKind::Text => (false, false),
         PadKind::Quote { quoted_sender, .. } => (quoted_sender == bot, false),
         PadKind::Image { .. } | PadKind::File { .. } => (false, true),
+        // A nudge has no text of its own; it is worded once names are known.
+        PadKind::Pat { .. } => (false, false),
         // Voice, video, stickers: nothing to carry yet.
         PadKind::Other { .. } => return None,
+    };
+    let pat = match &msg.kind {
+        PadKind::Pat { patted, .. } => Some(patted == bot),
+        _ => None,
     };
 
     let sender_listed = listed(&cfg.allow_from, &msg.sender_id);
@@ -411,6 +455,14 @@ pub fn admit(cfg: &WeChatPadConfig, msg: &PadMessage) -> Option<Admitted> {
     } else {
         msg.text.trim().to_string()
     };
+    if let Some(patted_me) = pat {
+        // Nudging the bot is calling it, like an @; anyone else's nudge is
+        // just something that happened in the room.
+        return Some(Admitted {
+            text: String::new(),
+            addressed: patted_me && may_trigger,
+        });
+    }
     if text.is_empty() && !has_media {
         return None;
     }
@@ -476,6 +528,8 @@ pub enum SendAction {
         /// Empty when this send is a file.
         text: String,
         media: Option<Media>,
+        /// Sent as a quote of this message instead of plain text.
+        quote: Option<QuoteRef>,
         /// Ticket of every caller this send answers.
         tickets: Vec<u64>,
     },
@@ -505,6 +559,7 @@ struct Pending {
     chat_id: String,
     text: String,
     media: Option<Media>,
+    quote: Option<QuoteRef>,
     kind: SendKind,
     ready_at: Instant,
     tickets: Vec<u64>,
@@ -580,6 +635,20 @@ impl SendPlanner {
         ticket: u64,
         now: Instant,
     ) -> bool {
+        self.enqueue_quoted(chat_id, text, kind, None, ticket, now)
+    }
+
+    /// Like [`enqueue`](Self::enqueue), but the first piece of a reply goes
+    /// out as a quote of the message it answers. Only replies quote.
+    pub fn enqueue_quoted(
+        &mut self,
+        chat_id: &str,
+        text: &str,
+        kind: SendKind,
+        quote: Option<QuoteRef>,
+        ticket: u64,
+        now: Instant,
+    ) -> bool {
         let text = text.trim();
         if text.is_empty() {
             return false;
@@ -589,6 +658,7 @@ impl SendPlanner {
                 chat_id: chat_id.to_string(),
                 text: text.to_string(),
                 media: None,
+                quote,
                 kind,
                 ready_at: now,
                 tickets: vec![ticket],
@@ -612,6 +682,7 @@ impl SendPlanner {
                     chat_id: chat_id.to_string(),
                     text: text.to_string(),
                     media: None,
+                    quote: None,
                     kind,
                     ready_at,
                     tickets: vec![ticket],
@@ -635,6 +706,7 @@ impl SendPlanner {
             chat_id: chat_id.to_string(),
             text: String::new(),
             media: Some(media),
+            quote: None,
             kind,
             ready_at: now,
             tickets: vec![ticket],
@@ -713,6 +785,7 @@ impl SendPlanner {
                         chat_id: p.chat_id,
                         text: String::new(),
                         media: Some(media),
+                        quote: None,
                         tickets: p.tickets,
                     },
                     dropped,
@@ -735,6 +808,7 @@ impl SendPlanner {
                     chat_id: p.chat_id.clone(),
                     text: c,
                     media: None,
+                    quote: None,
                     kind: SendKind::Reply,
                     ready_at: now,
                     tickets: if Some(i) == last {
@@ -749,6 +823,8 @@ impl SendPlanner {
                     chat_id: p.chat_id,
                     text: first,
                     media: None,
+                    // The rest of a long reply follows as plain text.
+                    quote: p.quote,
                     tickets,
                 },
                 dropped,
@@ -1046,6 +1122,95 @@ impl PadApi {
         .map_err(|(_, e)| e)
     }
 
+    /// Send `text` as a reply quoting another message (`appmsg type 57`).
+    pub async fn send_quote(
+        &self,
+        wxid: &str,
+        to: &str,
+        text: &str,
+        quote: &QuoteRef,
+    ) -> Result<(), String> {
+        let xml = format!(
+            "<appmsg appid=\"\" sdkver=\"0\"><title>{}</title><des></des><action></action><type>57</type>\
+             <showtype>0</showtype><soundtype>0</soundtype><contentattr>0</contentattr><url></url>\
+             <appattach><totallen>0</totallen></appattach><refermsg><type>1</type><svrid>{}</svrid>\
+             <fromusr>{}</fromusr><chatusr>{}</chatusr><displayname>{}</displayname><content>{}</content>\
+             </refermsg></appmsg>",
+            xml_escape(text),
+            quote.svrid,
+            xml_escape(&quote.from),
+            xml_escape(to),
+            xml_escape(&quote.name),
+            xml_escape(&quote.text),
+        );
+        self.call(
+            "/Msg/SendApp",
+            &[],
+            Some(serde_json::json!({"Wxid": wxid, "ToWxid": to, "Type": 57, "Xml": xml})),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|(_, e)| e)
+    }
+
+    /// wxid → what the group calls them: their group nickname when they
+    /// set one, else their WeChat nickname.
+    pub async fn group_members(
+        &self,
+        wxid: &str,
+        room: &str,
+    ) -> Result<HashMap<String, String>, String> {
+        let data = self
+            .call(
+                "/Group/GetChatRoomMemberDetail",
+                &[],
+                Some(serde_json::json!({"Wxid": wxid, "QID": room})),
+            )
+            .await
+            .map_err(|(_, e)| e)?;
+        let members = data
+            .get("NewChatroomData")
+            .and_then(|d| d.get("ChatRoomMember"))
+            .and_then(|m| m.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(members
+            .iter()
+            .filter_map(|m| {
+                let id = m.get("UserName")?.as_str()?.to_string();
+                let pick = |k: &str| {
+                    m.get(k)
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                };
+                Some((id, pick("DisplayName").or_else(|| pick("NickName"))?))
+            })
+            .collect())
+    }
+
+    /// A contact's or group's own name.
+    pub async fn contact_name(&self, wxid: &str, id: &str) -> Result<Option<String>, String> {
+        let data = self
+            .call(
+                "/Friend/GetContractDetail",
+                &[],
+                Some(serde_json::json!({"Wxid": wxid, "Towxids": id, "ChatRoom": ""})),
+            )
+            .await
+            .map_err(|(_, e)| e)?;
+        Ok(data
+            .get("ContactList")
+            .and_then(|l| l.get(0))
+            .and_then(|c| c.get("NickName"))
+            .and_then(|n| n.get("string"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string))
+    }
+
     /// Returns the sent message's `NewMsgId`.
     pub async fn send_text(
         &self,
@@ -1208,6 +1373,84 @@ async fn serve_connection(mut stream: tokio::net::TcpStream) -> Option<CallbackR
     Some(request)
 }
 
+// ==================== Names ====================
+
+/// What WeChat calls people and groups, so the session and the agent read
+/// "Liz", not `wxid_…`. Per room: its members and its own name, fetched on
+/// first sight and again when stale or when someone new speaks.
+#[derive(Default)]
+pub struct Names {
+    rooms: std::sync::Mutex<HashMap<String, RoomNames>>,
+}
+
+struct RoomNames {
+    fetched: Instant,
+    members: HashMap<String, String>,
+    title: Option<String>,
+}
+
+const NAMES_TTL: Duration = Duration::from_secs(30 * 60);
+/// A stranger in the room triggers a refresh, but not more often than this.
+const NAMES_RETRY: Duration = Duration::from_secs(60);
+
+impl Names {
+    /// The name a member goes by in `room`, refreshing the room if needed.
+    pub async fn member(
+        &self,
+        api: &PadApi,
+        wxid: &str,
+        room: &str,
+        member: &str,
+    ) -> Option<String> {
+        if let Some(name) = self.lookup(room, member, NAMES_TTL) {
+            return Some(name);
+        }
+        let stale = self.age(room).is_none_or(|age| age >= NAMES_RETRY);
+        if stale {
+            self.refresh(api, wxid, room).await;
+        }
+        self.lookup(room, member, Duration::MAX)
+    }
+
+    /// The group's own name, if known. Sync, for `session_title`.
+    pub fn room_title(&self, room: &str) -> Option<String> {
+        self.rooms.lock().ok()?.get(room)?.title.clone()
+    }
+
+    fn lookup(&self, room: &str, member: &str, max_age: Duration) -> Option<String> {
+        let rooms = self.rooms.lock().ok()?;
+        let r = rooms.get(room)?;
+        (r.fetched.elapsed() < max_age)
+            .then(|| r.members.get(member).cloned())
+            .flatten()
+    }
+
+    fn age(&self, room: &str) -> Option<Duration> {
+        Some(self.rooms.lock().ok()?.get(room)?.fetched.elapsed())
+    }
+
+    async fn refresh(&self, api: &PadApi, wxid: &str, room: &str) {
+        let members = api.group_members(wxid, room).await;
+        let title = api.contact_name(wxid, room).await.ok().flatten();
+        let Ok(mut rooms) = self.rooms.lock() else {
+            return;
+        };
+        let entry = rooms.entry(room.to_string()).or_insert_with(|| RoomNames {
+            fetched: Instant::now(),
+            members: HashMap::new(),
+            title: None,
+        });
+        // A failed fetch keeps what was known and waits out the retry.
+        entry.fetched = Instant::now();
+        if let Ok(members) = members {
+            entry.members = members;
+        }
+        if title.is_some() {
+            entry.title = title;
+        }
+    }
+}
+
 // ==================== Gateway ====================
 
 #[derive(Clone)]
@@ -1221,6 +1464,7 @@ pub struct WeChatPadGateway {
     /// just before "@bot what is this" must be recorded before that turn
     /// starts reading the chat.
     callback_order: Arc<Mutex<()>>,
+    names: Arc<Names>,
 }
 
 /// The planner plus the callers waiting on it.
@@ -1260,6 +1504,7 @@ impl Outbox {
         chat_id: &str,
         text: &str,
         kind: SendKind,
+        quote: Option<QuoteRef>,
     ) -> oneshot::Receiver<Result<(), String>> {
         let ticket = self
             .next_ticket
@@ -1268,11 +1513,14 @@ impl Outbox {
         // Registered before queuing: the send loop may settle the ticket the
         // moment it is in the planner.
         self.waiters.lock().await.insert(ticket, tx);
-        let queued = self
-            .planner
-            .lock()
-            .await
-            .enqueue(chat_id, text, kind, ticket, Instant::now());
+        let queued = self.planner.lock().await.enqueue_quoted(
+            chat_id,
+            text,
+            kind,
+            quote,
+            ticket,
+            Instant::now(),
+        );
         if queued {
             self.wake.notify_one();
         } else {
@@ -1319,12 +1567,16 @@ impl Outbox {
                     chat_id,
                     text,
                     media,
+                    quote,
                     tickets,
                 } => {
-                    let result = match &media {
-                        None => api.send_text(&wxid, &chat_id, &text).await.map(|_| ()),
-                        Some(Media::Image(bytes)) => api.send_image(&wxid, &chat_id, bytes).await,
-                        Some(Media::File { name, bytes }) => {
+                    let result = match (&media, &quote) {
+                        (None, Some(q)) => api.send_quote(&wxid, &chat_id, &text, q).await,
+                        (None, None) => api.send_text(&wxid, &chat_id, &text).await.map(|_| ()),
+                        (Some(Media::Image(bytes)), _) => {
+                            api.send_image(&wxid, &chat_id, bytes).await
+                        }
+                        (Some(Media::File { name, bytes }), _) => {
                             api.send_file(&wxid, &chat_id, name, bytes).await
                         }
                     };
@@ -1363,6 +1615,7 @@ impl WeChatPadGateway {
             outbox: Arc::new(Outbox::new(None)),
             shutdown_tx: Arc::new(Mutex::new(None)),
             callback_order: Arc::new(Mutex::new(())),
+            names: Arc::new(Names::default()),
         }
     }
 
@@ -1393,6 +1646,7 @@ impl WeChatPadGateway {
         WeChatPadDriver {
             account_wxid: self.config.read().await.account_wxid.clone(),
             outbox: Arc::clone(&self.outbox),
+            names: Arc::clone(&self.names),
         }
     }
 
@@ -1526,6 +1780,33 @@ impl WeChatPadGateway {
             let Some(admitted) = admit(&cfg, &msg) else {
                 continue;
             };
+            let mut msg = msg;
+            let mut admitted = admitted;
+            if msg.is_group {
+                let bot = &cfg.account_wxid;
+                let name_of = |who: String| {
+                    let (api, names, room) = (&api, &self.names, msg.chat_id.clone());
+                    async move { names.member(api, bot, &room, &who).await.unwrap_or(who) }
+                };
+                if let PadKind::Pat {
+                    patter,
+                    patted,
+                    suffix,
+                } = &msg.kind
+                {
+                    let patter_name = name_of(patter.clone()).await;
+                    admitted.text = if patted == bot {
+                        format!("（{patter_name} 拍了拍你{suffix}）")
+                    } else {
+                        let patted_name = name_of(patted.clone()).await;
+                        format!("（{patter_name} 拍了拍 {patted_name}{suffix}）")
+                    };
+                }
+                let sender_name = name_of(msg.sender_id.clone()).await;
+                msg.push_content = Some(format!("{sender_name} : "));
+            } else if let PadKind::Pat { suffix, .. } = &msg.kind {
+                admitted.text = format!("（拍了拍你{suffix}）");
+            }
             let mut inbound = normalize(&cfg.account_wxid, &msg, admitted);
             inbound
                 .attachments
@@ -1625,16 +1906,50 @@ fn attachment_for(
     })
 }
 
+/// What a reply needs to quote the message it answers. Rides in
+/// `reply_context`, which the core hands back to `deliver` untouched.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QuoteRef {
+    /// `NewMsgId` of the message being answered.
+    pub svrid: i64,
+    /// Its sender's wxid.
+    pub from: String,
+    pub name: String,
+    pub text: String,
+}
+
+/// `reply_context` for a message: its id, plus how to quote it when it can
+/// be quoted. A nudge cannot — it is not a message in the chat.
+pub fn reply_context_for(msg: &PadMessage, sender_name: &str) -> String {
+    let quote = match &msg.kind {
+        PadKind::Text | PadKind::Quote { .. } => Some(msg.text.clone()),
+        PadKind::Image { .. } => Some("[图片]".to_string()),
+        PadKind::File { name, .. } => Some(format!("[文件] {name}")),
+        PadKind::Pat { .. } | PadKind::Other { .. } => None,
+    };
+    match quote {
+        Some(text) => serde_json::to_string(&QuoteRef {
+            svrid: msg.new_msg_id,
+            from: msg.sender_id.clone(),
+            name: sender_name.to_string(),
+            text: text.chars().take(200).collect(),
+        })
+        .unwrap_or_else(|_| msg.new_msg_id.to_string()),
+        None => msg.new_msg_id.to_string(),
+    }
+}
+
 /// Turn an admitted message into what the core consumes.
 ///
 /// `NewMsgId` is the server's per-message id and survives redelivery, so it
 /// is the dedup key. The display name comes from `PushContent` in a DM; a
 /// group's push names nobody, so the wxid stands in.
 pub fn normalize(account_wxid: &str, msg: &PadMessage, admitted: Admitted) -> InboundMessage {
+    // A DM's push reads "<nickname> : <text>"; a group's is filled in from
+    // the member list before this runs, in the same shape.
     let display_name = msg
         .push_content
         .as_deref()
-        .filter(|_| !msg.is_group)
         .and_then(|p| p.split_once(" : ").map(|(name, _)| name.trim().to_string()))
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| msg.sender_id.clone());
@@ -1645,6 +1960,7 @@ pub fn normalize(account_wxid: &str, msg: &PadMessage, admitted: Admitted) -> In
         } => Some(QuotedText::Ready(t.clone())),
         _ => None,
     };
+    let reply_context = reply_context_for(msg, &display_name);
     InboundMessage {
         conversation: Conversation {
             channel: CHANNEL,
@@ -1669,8 +1985,8 @@ pub fn normalize(account_wxid: &str, msg: &PadMessage, admitted: Admitted) -> In
         context_prefix: None,
         after_persisted: None,
         // Marks a delivery as an answer to someone (paced, never dropped)
-        // rather than an unprompted notice.
-        reply_context: Some(msg.new_msg_id.to_string()),
+        // rather than an unprompted notice, and says what to quote.
+        reply_context: Some(reply_context),
     }
 }
 
@@ -1693,6 +2009,7 @@ async fn read_attachment(att: &crate::driver::SessionAttachment) -> Result<Vec<u
 pub struct WeChatPadDriver {
     account_wxid: String,
     outbox: Arc<Outbox>,
+    names: Arc<Names>,
 }
 
 pub fn caps() -> ChannelCaps {
@@ -1739,7 +2056,12 @@ impl ChannelDriver for WeChatPadDriver {
 
     fn session_title(&self, conversation: &Conversation, sender: &ExternalSender) -> String {
         match conversation.kind {
-            ConversationKind::Group => format!("WeChat group: {}", conversation.id),
+            ConversationKind::Group => format!(
+                "WeChat group: {}",
+                self.names
+                    .room_title(&conversation.id)
+                    .unwrap_or_else(|| conversation.id.clone())
+            ),
             _ => format!("WeChat DM: {}", sender.display_name),
         }
     }
@@ -1783,8 +2105,13 @@ impl ChannelDriver for WeChatPadDriver {
 
         // The reply's words first, then its files, each paced like any send.
         let mut pending = Vec::new();
+        // In a group, an answer quotes the message it answers: several people
+        // talk at once, and a bare reply says nothing about whom it is for.
+        let quote = reply_context
+            .filter(|_| to.kind == ConversationKind::Group && kind == SendKind::Reply)
+            .and_then(|c| serde_json::from_str::<QuoteRef>(c).ok());
         if !text.trim().is_empty() {
-            pending.push(self.outbox.enqueue(&to.id, &text, kind).await);
+            pending.push(self.outbox.enqueue(&to.id, &text, kind, quote).await);
         }
         for m in media {
             pending.push(self.outbox.enqueue_media(&to.id, m, kind).await);
