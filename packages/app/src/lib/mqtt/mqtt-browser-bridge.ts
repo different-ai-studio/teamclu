@@ -12,6 +12,9 @@ let connected = false
 let activeConnectionKey: string | null = null
 let connectingKey: string | null = null
 let connectingPromise: Promise<void> | null = null
+// Non-null only while a connect call is between its checks and having started
+// the adapter connect; see mqttConnect.
+let connectSetup: Promise<void> | null = null
 let connectGeneration = 0
 const subscribedTopics = new Set<string>()
 
@@ -76,6 +79,7 @@ export function __resetBrowserMqttForTest(opts?: { adapter?: BrowserMqttAdapter 
   activeConnectionKey = null
   connectingKey = null
   connectingPromise = null
+  connectSetup = null
   connectGeneration = 0
   subscribedTopics.clear()
   stateSubscribers.clear()
@@ -133,67 +137,88 @@ export async function mqttConnect(args: {
     username: args.username,
     password: args.password,
   })
-  if (connected && activeConnectionKey === key) return
-  if (connectingPromise && connectingKey === key) {
-    await connectingPromise
-    return
-  }
-
-  const currentAdapter = ensureAdapter()
-  if (connected || activeConnectionKey || connectingPromise) {
-    recordMqttDiag('mqtt-bridge', 'connect:replace-client', {
-      wasConnected: connected,
-      hasActiveConnection: Boolean(activeConnectionKey),
-      hasConnectingPromise: Boolean(connectingPromise),
-    })
-    try {
-      await currentAdapter.disconnect()
-    } catch (error) {
-      recordMqttDiag('mqtt-bridge', 'connect:replace-disconnect-error', {
-        error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
-      })
+  // Check -> replace -> start must not interleave across calls. Two refreshes
+  // landing in the same tick both saw the old connection, both awaited
+  // disconnect(), and both then called adapter.connect(); the second hit
+  // "MQTT client is already connected" and the app fell back to local-only
+  // events. The gate is released once connect() has been *started*, not when it
+  // settles, so a connect that hangs on a dead socket cannot block a retry.
+  // Only wait when another call actually holds the gate, so an uncontended call
+  // still starts its connect synchronously.
+  while (connectSetup) await connectSetup
+  let releaseSetup!: () => void
+  const gate = new Promise<void>((resolve) => {
+    releaseSetup = resolve
+  })
+  connectSetup = gate
+  let connectPromise: Promise<void>
+  let generation: number
+  try {
+    if (connected && activeConnectionKey === key) return
+    if (connectingPromise && connectingKey === key) {
+      await connectingPromise
+      return
     }
-    connected = false
-    activeConnectionKey = null
-    connectingKey = null
-    connectingPromise = null
-    connectGeneration++
-  }
-  recordMqttDiag('mqtt-bridge', 'connect:begin', {
-    url,
-    brokerHost: args.brokerHost,
-    brokerPort: args.brokerPort,
-    useTls: args.useTls,
-    clientId,
-    requestedClientId: args.clientId,
-    username: args.username,
-    teamId: args.teamId,
-    password: describeJwt(args.password),
-  })
-  connectingKey = key
-  const generation = ++connectGeneration
-  const connectPromise = currentAdapter.connect({
-    url,
-    options: {
+
+    const currentAdapter = ensureAdapter()
+    if (connected || activeConnectionKey || connectingPromise) {
+      recordMqttDiag('mqtt-bridge', 'connect:replace-client', {
+        wasConnected: connected,
+        hasActiveConnection: Boolean(activeConnectionKey),
+        hasConnectingPromise: Boolean(connectingPromise),
+      })
+      try {
+        await currentAdapter.disconnect()
+      } catch (error) {
+        recordMqttDiag('mqtt-bridge', 'connect:replace-disconnect-error', {
+          error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+        })
+      }
+      connected = false
+      activeConnectionKey = null
+      connectingKey = null
+      connectingPromise = null
+      connectGeneration++
+    }
+    recordMqttDiag('mqtt-bridge', 'connect:begin', {
+      url,
+      brokerHost: args.brokerHost,
+      brokerPort: args.brokerPort,
+      useTls: args.useTls,
       clientId,
+      requestedClientId: args.clientId,
       username: args.username,
-      password: args.password,
-      // Persistent session within this page lifetime: the clientId is stable
-      // per page load (random suffix, never shared across tabs), so on an
-      // automatic reconnect the broker resumes subscriptions and replays
-      // QoS1 messages queued during the offline window. Intentional
-      // disconnect() still ends with sessionExpiryInterval:0 to purge.
-      clean: false,
-      protocolVersion: 5,
-      properties: { sessionExpiryInterval: 300 },
-      keepalive: 30,
-      // mqtt.js auto-reconnect as the transport-level safety net; the
-      // mqtt-reconnect store stays on top for credential refresh.
-      reconnectPeriod: 3000,
-      connectTimeout: 15000,
-    },
-  })
-  connectingPromise = connectPromise
+      teamId: args.teamId,
+      password: describeJwt(args.password),
+    })
+    connectingKey = key
+    generation = ++connectGeneration
+    connectPromise = currentAdapter.connect({
+      url,
+      options: {
+        clientId,
+        username: args.username,
+        password: args.password,
+        // Persistent session within this page lifetime: the clientId is stable
+        // per page load (random suffix, never shared across tabs), so on an
+        // automatic reconnect the broker resumes subscriptions and replays
+        // QoS1 messages queued during the offline window. Intentional
+        // disconnect() still ends with sessionExpiryInterval:0 to purge.
+        clean: false,
+        protocolVersion: 5,
+        properties: { sessionExpiryInterval: 300 },
+        keepalive: 30,
+        // mqtt.js auto-reconnect as the transport-level safety net; the
+        // mqtt-reconnect store stays on top for credential refresh.
+        reconnectPeriod: 3000,
+        connectTimeout: 15000,
+      },
+    })
+    connectingPromise = connectPromise
+  } finally {
+    if (connectSetup === gate) connectSetup = null
+    releaseSetup()
+  }
   try {
     await connectPromise
   } catch (err) {

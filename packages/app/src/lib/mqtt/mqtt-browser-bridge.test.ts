@@ -154,6 +154,38 @@ describe('mqtt-browser-bridge', () => {
   })
 
 
+  it('serialises concurrent credential-refresh connects instead of double-connecting the adapter', async () => {
+    // Mirrors the real adapter: connect() refuses while a client exists and
+    // disconnect() only releases it after an async end().
+    let client = false
+    const connect = vi.fn(async () => {
+      if (client) throw new Error('MQTT client is already connected')
+      client = true
+    })
+    const disconnect = vi.fn(async () => {
+      client = false
+      await new Promise((r) => setTimeout(r, 5))
+    })
+    const mod = await import('@/lib/mqtt/mqtt-browser-bridge')
+    mod.__resetBrowserMqttForTest({
+      adapter: { connect, subscribe: vi.fn(), publish: vi.fn(), disconnect, onMessage: () => () => {}, onConnectionState: () => () => {} },
+    })
+    const args = { brokerHost: 'b', brokerPort: 443, username: 'u', clientId: 'c', teamId: 't', useTls: true }
+    await mod.mqttConnect({ ...args, password: 'old-token' })
+
+    // Two refreshes land in the same tick (reconnectNonce 4 and 5 in the field).
+    const results = await Promise.allSettled([
+      mod.mqttConnect({ ...args, password: 'fresh-a' }),
+      mod.mqttConnect({ ...args, password: 'fresh-b' }),
+    ])
+
+    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled'])
+    expect(connect).toHaveBeenLastCalledWith(expect.objectContaining({
+      options: expect.objectContaining({ password: 'fresh-b' }),
+    }))
+    expect((await mod.mqttStatus()).connected).toBe(true)
+  })
+
   it('mqttStatus reflects disconnected state after onConnectionState fires disconnected', async () => {
     let connStateCb: ((s: 'connecting' | 'connected' | 'disconnected') => void) | null = null
     const mod = await import('@/lib/mqtt/mqtt-browser-bridge')
