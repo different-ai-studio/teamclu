@@ -232,7 +232,9 @@ test("the sign has to match the kind", { skip: !DB }, async () => {
 
 test("org endpoints sum an org's teams and top up only a team that belongs to it", { skip: !DB }, async () => {
   const svc = { Authorization: `Bearer ${PLATFORM_TOKEN}`, "Content-Type": "application/json" };
-  const orgId = randomUUID();
+  // teams.oid is a foreign key to public.orgs, so the org has to exist.
+  const [{ id: orgId }] = await admin<{ id: string }[]>`
+    insert into public.orgs (name) values (${`e2e-org-${Date.now()}`}) returning id`;
   await admin`update amux.teams set oid = ${orgId}::uuid where id = ${teamId}::uuid`;
   await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
   await admin`
@@ -263,6 +265,8 @@ test("org endpoints sum an org's teams and top up only a team that belongs to it
   assert.equal((await post({ teamId: otherTeamId, amountCredits: 1, kind: "grant", idempotencyKey: `${key}-b` })).status, 404);
   assert.equal((await post({ amountCredits: 1, kind: "grant", idempotencyKey: `${key}-c` })).status, 400);
   assert.equal((await req(`/platform/orgs/${randomUUID()}/credits/summary`, { headers: svc })).status, 404);
+  await admin`update amux.teams set oid = null where id = ${teamId}::uuid`;
+  await admin`delete from public.orgs where id = ${orgId}::uuid`;
 });
 
 test("non-streaming completion round-trips and writes a usage row", { skip: !DB || !KEY }, async () => {
