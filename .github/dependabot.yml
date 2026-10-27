@@ -15,6 +15,12 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
+    # One PR a week for the routine bumps. Separately, every one of them
+    # rewrote pnpm-lock.yaml, so merging one conflicted all the others and
+    # each had to be rebased and re-run in turn. Majors still come alone.
+    groups:
+      npm-minor-and-patch:
+        update-types: ["minor", "patch"]
     # apps/expo's native packages are pinned by the Expo SDK's
     # bundledNativeModules matrix; majors move with a deliberate SDK upgrade.
     ignore:
@@ -22,6 +28,15 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "react-native*"
         update-types: ["version-update:semver-major"]
+      # 13.17.0 broke the Expo typecheck (every <WebView> prop typed `never`,
+      # #1757); it moves with the SDK, not on its own.
+      - dependency-name: "react-native-webview"
+        update-types: ["version-update:semver-minor"]
+      # The Tauri CLI refuses to build when an npm package and its Rust crate
+      # differ in major.minor, and the crate side drags a Tauri core upgrade
+      # (#1759). These move together, in a Tauri upgrade.
+      - dependency-name: "@tauri-apps/*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   # Rust dependencies
   - package-ecosystem: "cargo"
@@ -38,6 +53,9 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
+    groups:
+      cargo-minor-and-patch:
+        update-types: ["minor", "patch"]
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
