@@ -28,6 +28,7 @@ describe('selecting an MCP subject agent', () => {
   beforeEach(() => {
     useTeamShareBrowserStore.setState({
       subjectActorId: null,
+      detailTarget: null,
       mcp: { items: [], loading: false, loaded: false, error: null },
     })
   })
@@ -40,5 +41,46 @@ describe('selecting an MCP subject agent', () => {
 
     expect(store().subjectActorId).toBe('actor-1')
     expect(loadSection).toHaveBeenCalledWith('mcp', { force: true, withTools: true })
+  })
+
+  test('keeps the skills marketplace open when the agent changes', async () => {
+    const loadSection = vi.fn(async () => {})
+    useTeamShareBrowserStore.setState({
+      loadSection,
+      subjectActorId: null,
+      detailTarget: { kind: 'marketplace' },
+    })
+
+    await store().setSubjectActor('actor-1')
+
+    expect(store().detailTarget).toEqual({ kind: 'marketplace' })
+  })
+
+  test('closes a skill detail that belonged to the previous agent', async () => {
+    const loadSection = vi.fn(async () => {})
+    useTeamShareBrowserStore.setState({
+      loadSection,
+      subjectActorId: 'actor-1',
+      detailTarget: { kind: 'skill', id: 'deploy' },
+    })
+
+    await store().setSubjectActor('actor-2')
+
+    expect(store().subjectActorId).toBe('actor-2')
+    expect(store().detailTarget).toBeNull()
+  })
+
+  test('re-selecting the same agent leaves the marketplace in place', async () => {
+    const loadSection = vi.fn(async () => {})
+    useTeamShareBrowserStore.setState({
+      loadSection,
+      subjectActorId: 'actor-1',
+      detailTarget: { kind: 'marketplace-item', slug: 'deploy' },
+    })
+
+    await store().setSubjectActor('actor-1')
+
+    expect(loadSection).not.toHaveBeenCalled()
+    expect(store().detailTarget).toEqual({ kind: 'marketplace-item', slug: 'deploy' })
   })
 })

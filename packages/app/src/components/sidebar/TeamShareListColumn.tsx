@@ -77,7 +77,18 @@ import {
 import { detailSelectionForSection } from '@/lib/tabs/teamshare-target'
 import type { ConnectedAgentRow } from '@/lib/backend/types'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
-import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
+import {
+  getKnownLocalDaemonActorId,
+  subscribeLocalDaemonActorId,
+} from '@/lib/daemon/local-daemon-identity'
+import {
+  pickDefaultSubjectActor,
+  skillsDetailOccupiesPane,
+} from '@/lib/skills/default-subject-actor'
+import { useSessionSelectionStore } from '@/stores/session-selection-store'
+import { useEngagedAgentStore } from '@/stores/engaged-agent-store'
+import { useSessionParticipantStore } from '@/stores/session-participant-store'
+import { useUIStore } from '@/stores/ui'
 import { encodeWorkspaceId, notifyDaemonSkillsChanged } from '@/lib/daemon/daemon-local-client'
 import { SkillScanPaths } from './SkillScanPaths'
 import { KnowledgeSyncFooter } from '@/components/teamshare/KnowledgeSyncFooter'
@@ -95,6 +106,31 @@ import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
 import { toastSkillMutationRefreshFailed } from '@/components/teamshare/skillMutationRefreshToast'
 import { useTeamPermissions } from '@/lib/team/team-permissions'
 import { teamSkillDeletableSlug } from '@/lib/skills/registry-deletable'
+
+/**
+ * Agent the Skills column should land on: whoever the current conversation is
+ * with, then this machine's daemon. Read at selection time — the engaged pill
+ * and the daemon id are both filled in after first paint.
+ */
+function readPreferredSkillsAgentIds(): string[] {
+  const selection = useSessionSelectionStore.getState()
+  const sessionId = selection.currentSessionId ?? selection.activeSessionId
+  const ids: string[] = []
+  if (sessionId) {
+    const engaged = useEngagedAgentStore.getState().get(sessionId)
+    if (engaged?.id) ids.push(engaged.id)
+    const participant = useSessionParticipantStore
+      .getState()
+      .participantsBySession[sessionId]?.find((row) => row.isAgent)
+    if (participant) ids.push(participant.actorId)
+  } else {
+    const draft = useUIStore.getState().draftPreselectedActor
+    if (draft?.kind === 'agent') ids.push(draft.id)
+  }
+  const localId = getKnownLocalDaemonActorId()
+  if (localId) ids.push(localId)
+  return ids
+}
 
 const SECTION_META: Record<
   TeamShareSection,
@@ -467,8 +503,20 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   // listConnectedAgents — and, through setSubjectActor, mint two more grants
   // and do two more MQTT round trips — for nothing, on every mount, team
   // switch, and skills/mcp toggle.
+  //
+  // The local daemon id arrives after mount. Re-running for that one change
+  // fills an empty selection; it does not override a pick made on this visit.
+  const [localActorEpoch, setLocalActorEpoch] = React.useState(0)
+  React.useEffect(() => subscribeLocalDaemonActorId(() => setLocalActorEpoch((n) => n + 1)), [])
+  // Previous section, written after a Skills entry has applied. Leaving Skills
+  // clears it immediately so the next visit prefers the current agent again.
+  const skillsEntrySectionRef = React.useRef<TeamShareSection | null>(null)
+
   React.useEffect(() => {
+    const enteredSkills = section === 'skills' && skillsEntrySectionRef.current !== 'skills'
+    if (section !== 'skills') skillsEntrySectionRef.current = section
     if ((section !== 'skills' && section !== 'mcp') || !currentTeamId) return
+    const selectedAtStart = useTeamShareBrowserStore.getState().subjectActorId
     let cancelled = false
     ;(async () => {
       try {
@@ -479,19 +527,31 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         )
         if (cancelled) return
         setManageableAgents(rows)
-        const selected = useTeamShareBrowserStore.getState().subjectActorId
-        const selectedStillValid = rows.some((row) => row.id === selected)
-        if (rows.length === 1 && !selectedStillValid) {
-          await setSubjectActor(rows[0].id)
-        } else if (!selectedStillValid && selected) {
-          await setSubjectActor(null)
+        const selectedNow = useTeamShareBrowserStore.getState().subjectActorId
+        const userPickedWhileLoading =
+          selectedNow !== selectedAtStart && rows.some((row) => row.id === selectedNow)
+        const next = pickDefaultSubjectActor({
+          agents: rows,
+          selectedId: selectedNow,
+          preferredIds: readPreferredSkillsAgentIds(),
+          preferCurrent: enteredSkills && !userPickedWhileLoading,
+        })
+        if (next !== selectedNow) await setSubjectActor(next)
+        if (cancelled) return
+        skillsEntrySectionRef.current = section
+        if (section !== 'skills') return
+        // Selecting an agent used to blank the main column. The store icon is
+        // the way back to the catalog; show it when nothing else is open.
+        const detail = useTeamShareBrowserStore.getState().detailTarget
+        if (!skillsDetailOccupiesPane(detail)) {
+          useTeamShareBrowserStore.getState().openDetail({ kind: 'marketplace' })
         }
       } catch {
         if (!cancelled) setManageableAgents([])
       }
     })()
     return () => { cancelled = true }
-  }, [section, currentTeamId, setSubjectActor])
+  }, [section, currentTeamId, setSubjectActor, localActorEpoch])
 
   const { available: syncAvailable, syncing, syncNow } = useTeamCloudSync()
   const loadConflicts = useTeamConflictsStore((s) => s.load)
