@@ -596,6 +596,9 @@
       "submit": "创建并迁移",
       "submitting": "创建中…",
       "noTeam": "没有可升级的当前团队。"
+    },
+    "serverSwitch": {
+      "change": "切换服务器"
     }
   },
   "session": {
@@ -2972,6 +2975,13 @@
         "confirmTitle": "清除链接映射？",
         "confirmDescription": "将删除当前团队所有已保存的链接与会话关联，此操作无法撤销。",
         "confirmAction": "确认清除"
+      },
+      "server": {
+        "title": "服务器",
+        "description": "这个插件用来登录的 Cloud API。下次登录后，实时消息使用该服务器下发的地址。",
+        "current": "当前",
+        "signOutHint": "切换会退出当前账号，之后登录到你选的服务器。",
+        "saveError": "无法切换服务器"
       }
     },
     "envVars": {

@@ -23,6 +23,8 @@ export type SignOutReason =
   | "identity_picker"
   /** Settings → Diagnostics → sign in again. */
   | "diagnostics_relogin"
+  /** Extension login or settings: the user pointed the side panel at another Cloud API. */
+  | "extension_server_switch"
   /** Team bootstrap got a 401 and the token refresh after it failed too. */
   | "team_bootstrap_auth_rejected"
   /** The stored session was issued by a different backend than the one configured. */

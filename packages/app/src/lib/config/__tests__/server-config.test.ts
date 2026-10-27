@@ -25,6 +25,53 @@ describe("server config", () => {
     expect((await getEffectiveServerConfig()).cloudApiUrl).toBe("https://build.example.com");
   });
 
+  it("a cloud API override ignores the baked MQTT broker until bootstrap names one", async () => {
+    vi.stubEnv("VITE_CLOUD_API_URL", "https://build.example.com");
+    vi.stubEnv("VITE_MQTT_WS_URL", "wss://official.example.com/mqtt");
+    vi.stubEnv("VITE_MQTT_HOST", "env-broker.example.com");
+    vi.stubEnv("VITE_MQTT_USERNAME", "official-user");
+    vi.stubEnv("VITE_WEBSSO_LOGIN_URL", "https://sso.official.example.com");
+
+    localStorage.setItem(
+      "teamclu.serverConfig",
+      JSON.stringify({
+        mqttHost: "custom-broker.example.com",
+        mqttPort: 443,
+        mqttUseTls: true,
+        mqttUrl: "wss://custom-broker.example.com/mqtt",
+        mqttUsername: "custom-user",
+        webSsoLoginUrl: "https://sso.custom.example.com",
+      }),
+    );
+
+    const { getEffectiveServerConfigSync, setCloudApiUrlOverride } = await import(
+      "@/lib/config/server-config"
+    );
+
+    setCloudApiUrlOverride("https://custom.example.com");
+    const custom = getEffectiveServerConfigSync();
+    expect(custom.cloudApiUrl).toBe("https://custom.example.com");
+    expect(custom.mqttHost).toBe("custom-broker.example.com");
+    expect(custom.mqttPort).toBe(443);
+    expect(custom.mqttUrl).toBe("wss://custom-broker.example.com/mqtt");
+    expect(custom.mqttUsername).toBe("custom-user");
+    expect(custom.webSsoLoginUrl).toBe("https://sso.custom.example.com");
+
+    localStorage.removeItem("teamclu.serverConfig");
+    const pending = getEffectiveServerConfigSync();
+    expect(pending.mqttHost).toBeUndefined();
+    expect(pending.mqttUrl).toBeUndefined();
+    expect(pending.mqttUsername).toBeUndefined();
+    expect(pending.webSsoLoginUrl).toBeUndefined();
+
+    setCloudApiUrlOverride(null);
+    const official = getEffectiveServerConfigSync();
+    expect(official.cloudApiUrl).toBe("https://build.example.com");
+    expect(official.mqttHost).toBe("official.example.com");
+    expect(official.mqttPort).toBe(443);
+    expect(official.mqttUsername).toBe("official-user");
+  });
+
   it("an explicit cloudApiUrl override wins over the build config / env", async () => {
     vi.stubEnv("VITE_CLOUD_API_URL", "https://build.example.com");
 

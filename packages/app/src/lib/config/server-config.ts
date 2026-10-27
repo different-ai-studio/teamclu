@@ -139,6 +139,19 @@ export function setCloudApiUrlOverride(raw: string | null): string | null {
   return normalized;
 }
 
+/**
+ * Drop the bootstrap cache (broker address, credentials, Web SSO target).
+ *
+ * Ordinary sign-out keeps the broker address: it is deployment topology, and
+ * wiping it stranded clients when bootstrap later omitted `mqtt` (#634).
+ * Switching Cloud API is the opposite case — that cache belongs to the
+ * deployment being left, and the next bootstrap must be the only source.
+ */
+export function clearCachedBootstrapConfig(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(STORAGE_KEY);
+}
+
 function notifyCloudApiUrlChanged(url: string | null): void {
   if (typeof window === "undefined") return;
   try {
@@ -224,24 +237,47 @@ function hasOwn(config: ServerConfig, key: keyof ServerConfig): boolean {
 function resolve(rawSaved: ServerConfig): ServerConfig {
   const saved = normalizeCachedConfig(rawSaved);
   const env = envConfig();
-  // When VITE_MQTT_WS_URL is set it wins over both bootstrap and env for
-  // connection params (host/port/tls). Credentials still come from bootstrap.
-  const wsOverride = parseMqttWsUrlOverride();
+  const cloudOverride = getCloudApiUrlOverride();
+  // A custom Cloud API is another deployment. The MQTT URL and Web SSO target
+  // baked into this build belong to the official one; letting them win after
+  // the API has moved leaves realtime on a broker that does not know the user
+  // (`transport_offline`). Until that deployment's bootstrap lands, an empty
+  // broker is the safe state. With no override, VITE_MQTT_WS_URL still wins
+  // over both bootstrap and env for host/port/tls, and credentials still come
+  // from bootstrap.
+  const wsOverride = cloudOverride ? undefined : parseMqttWsUrlOverride();
+  const bakedTransport = !cloudOverride;
   return {
     backendKind: "cloud_api",
     // An explicit user override wins over the build config; otherwise the build
     // config (or its env var) is the source of truth. The `saved` bootstrap
     // cache never contributes a cloudApiUrl — only CLOUD_API_OVERRIDE_KEY does.
-    cloudApiUrl: getCloudApiUrlOverride() ?? env.cloudApiUrl,
-    mqttUrl: wsOverride?.mqttUrl ?? saved.mqttUrl ?? env.mqttUrl,
-    mqttHost: wsOverride ? wsOverride.mqttHost : (saved.mqttHost ?? env.mqttHost),
-    mqttPort: wsOverride ? wsOverride.mqttPort : (saved.mqttPort ?? env.mqttPort),
-    mqttUseTls: wsOverride ? wsOverride.mqttUseTls : (saved.mqttUseTls ?? env.mqttUseTls),
-    mqttUsername: hasOwn(rawSaved, "mqttUsername") ? saved.mqttUsername : env.mqttUsername,
-    mqttPassword: hasOwn(rawSaved, "mqttPassword") ? saved.mqttPassword : env.mqttPassword,
-    // Web SSO target: bootstrap cache wins, dev env var as fallback.
-    webSsoLoginUrl: saved.webSsoLoginUrl ?? env.webSsoLoginUrl,
-    webSsoStorageKey: saved.webSsoStorageKey ?? env.webSsoStorageKey,
+    cloudApiUrl: cloudOverride ?? env.cloudApiUrl,
+    mqttUrl: wsOverride?.mqttUrl ?? saved.mqttUrl ?? (bakedTransport ? env.mqttUrl : undefined),
+    mqttHost: wsOverride
+      ? wsOverride.mqttHost
+      : (saved.mqttHost ?? (bakedTransport ? env.mqttHost : undefined)),
+    mqttPort: wsOverride
+      ? wsOverride.mqttPort
+      : (saved.mqttPort ?? (bakedTransport ? env.mqttPort : undefined)),
+    mqttUseTls: wsOverride
+      ? wsOverride.mqttUseTls
+      : (saved.mqttUseTls ?? (bakedTransport ? env.mqttUseTls : undefined)),
+    mqttUsername: hasOwn(rawSaved, "mqttUsername")
+      ? saved.mqttUsername
+      : bakedTransport
+        ? env.mqttUsername
+        : undefined,
+    mqttPassword: hasOwn(rawSaved, "mqttPassword")
+      ? saved.mqttPassword
+      : bakedTransport
+        ? env.mqttPassword
+        : undefined,
+    // Web SSO target: bootstrap cache wins, dev env var as fallback — unless
+    // the Cloud API itself has been pointed elsewhere, in which case the env
+    // target is the official deployment's and must not leak across.
+    webSsoLoginUrl: saved.webSsoLoginUrl ?? (bakedTransport ? env.webSsoLoginUrl : undefined),
+    webSsoStorageKey: saved.webSsoStorageKey ?? (bakedTransport ? env.webSsoStorageKey : undefined),
   };
 }
 

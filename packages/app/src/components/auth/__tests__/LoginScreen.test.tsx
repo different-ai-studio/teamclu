@@ -107,6 +107,21 @@ describe("LoginScreen", () => {
 
 
 
+  it("offers a server switch on the extension login screen", () => {
+    extensionPolicy.isExtension = true;
+
+    render(<LoginScreen />);
+
+    expect(screen.getByRole("button", { name: /switch server/i })).toBeInTheDocument();
+  });
+
+  it("leaves the server line read-only outside the extension", () => {
+    render(<LoginScreen />);
+
+    expect(screen.getByText("api.example.com")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /switch server/i })).not.toBeInTheDocument();
+  });
+
   it("hides anonymous trial only in extension builds that disable automatic team creation", () => {
     extensionPolicy.isExtension = true;
     extensionPolicy.autoCreateTeam = false;

@@ -596,6 +596,9 @@
       "submit": "Create and migrate",
       "submitting": "Creating…",
       "noTeam": "No active team to upgrade."
+    },
+    "serverSwitch": {
+      "change": "Switch server"
     }
   },
   "session": {
@@ -2972,6 +2975,13 @@
         "confirmTitle": "Clear link mappings?",
         "confirmDescription": "This removes all saved link-to-session associations for the current team. You cannot undo this.",
         "confirmAction": "Clear mappings"
+      },
+      "server": {
+        "title": "Server",
+        "description": "The Cloud API this extension signs in to. After the next sign-in, realtime uses the broker that server provides.",
+        "current": "Current",
+        "signOutHint": "Switching signs you out. Sign in again on the server you pick.",
+        "saveError": "Could not switch server"
       }
     },
     "envVars": {

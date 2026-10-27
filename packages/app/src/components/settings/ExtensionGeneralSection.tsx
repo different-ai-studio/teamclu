@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link2, Plus, Puzzle, ShieldCheck, X } from 'lucide-react'
+import { Link2, Plus, Puzzle, Server, ShieldCheck, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -33,6 +33,7 @@ import {
   writeLinkHoverConfig,
   type LinkHoverConfig,
 } from '@/lib/extension/link-hover'
+import { ExtensionServerSwitch } from '@/components/extension/ExtensionServerSwitch'
 import { clearLinkSessionMapForTeam } from '@/lib/extension/link-session'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { SettingCard, SectionHeader } from './shared'
@@ -181,6 +182,26 @@ export const ExtensionGeneralSection = React.memo(function ExtensionGeneralSecti
           'Extension settings for the browser side panel.',
         )}
       />
+
+      <SettingCard>
+        <div className="mb-4 flex items-start gap-3">
+          <div className="rounded-[10px] border border-border-soft bg-panel p-2.5">
+            <Server className="h-4 w-4 text-muted-foreground" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h4 className="text-[13px] font-semibold text-foreground">
+              {t('settings.extension.server.title', 'Server')}
+            </h4>
+            <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">
+              {t(
+                'settings.extension.server.description',
+                'The Cloud API this extension signs in to. After the next sign-in, realtime uses the broker that server provides.',
+              )}
+            </p>
+          </div>
+        </div>
+        <ExtensionServerSwitch signedIn variant="panel" />
+      </SettingCard>
 
       <SettingCard>
         <div className="mb-4 flex items-start gap-3">
