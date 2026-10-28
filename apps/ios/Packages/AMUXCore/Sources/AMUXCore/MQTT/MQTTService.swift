@@ -171,6 +171,20 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Hands a rotated access token to the live client without touching the
+    /// socket. CocoaMQTT reads `password` when it builds each CONNECT, so the
+    /// next auto-reconnect — including the one after EMQX drops the
+    /// connection at the old JWT's expiry — signs in with it. Returns false
+    /// when there is no client to update, or the last attempt was refused
+    /// (CocoaMQTT does not redial after a refusal), so the caller has to
+    /// dial afresh.
+    @discardableResult
+    public func updatePassword(_ password: String) -> Bool {
+        guard let mqtt, !lastConnectRefused, connectionState != .disconnected else { return false }
+        mqtt.password = password
+        return true
+    }
+
     public func disconnect() async {
         isExplicitDisconnect = true
         // Stop the old client from redialling: it shares our client id, so a

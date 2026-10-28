@@ -225,18 +225,20 @@ struct ContentView: View {
             await onboarding.bootstrap()
         }
         .task(id: backendEpoch) {
-            // Reconnect MQTT every time the auth provider rotates the
-            // access token. MQTT uses the JWT as its CONNECT password
-            // and the broker stops accepting publishes once the token
-            // hits its ~1h expiry — without a reconnect the socket
-            // appears live but every publish is silently dropped and
-            // the user has no clue until they sign out + sign back in.
-            // Supabase-swift auto-refreshes the session in the
-            // background; this loop just listens for the resulting
-            // `.tokenRefreshed` event and rebuilds the connection.
+            // MQTT signs in with the access token as its CONNECT password,
+            // and EMQX drops the connection once that JWT expires. Rebuilding
+            // the socket on every refresh flashed the "Reconnecting…" banner
+            // about once an hour, so the new token goes to the live client
+            // instead: the redial CocoaMQTT makes after the expiry drop uses
+            // it. Only a client that cannot redial on its own (none yet, or
+            // the last CONNECT was refused) is rebuilt here.
             for await _ in onboarding.store.tokenRefreshes() {
-                logger.info("Auth token refreshed; reconnecting MQTT")
                 guard pairing.isPaired, onboarding.route == .ready else { continue }
+                if let token = try? await onboarding.accessToken(), mqtt.updatePassword(token) {
+                    logger.info("Auth token refreshed; handed to the live MQTT client")
+                    continue
+                }
+                logger.info("Auth token refreshed; reconnecting MQTT")
                 forceReconnect()
             }
         }
@@ -430,6 +432,15 @@ struct ContentView: View {
         }
     }
 
+    /// Random, generated on first use and kept for the life of the install.
+    private static var mqttInstallID: String {
+        let key = "teamclu.mqtt.installID"
+        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
+        let id = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).lowercased()
+        UserDefaults.standard.set(id, forKey: key)
+        return id
+    }
+
     private func connectMQTT() async {
         guard onboarding.route == .ready, pairing.isPaired, !isConnecting else { return }
         isConnecting = true
@@ -444,7 +455,10 @@ struct ContentView: View {
         }
 
         let userID = onboarding.currentContext?.memberActorID ?? "teamclu-ios"
-        let clientId = "teamclu-ios-\(userID.prefix(8))"
+        // Per install, not per account: two devices on one account sharing
+        // a client id made the broker kick one whenever the other connected,
+        // and both auto-reconnecting kept the "Reconnecting…" banner up.
+        let clientId = "teamclu-ios-\(userID.prefix(8))-\(Self.mqttInstallID)"
         logger.info("Connecting to \(pairing.brokerHost):\(pairing.brokerPort) tls=\(pairing.useTLS)")
         do {
             try await mqtt.connect(

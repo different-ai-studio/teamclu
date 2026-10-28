@@ -41,14 +41,17 @@ struct HomeComposerBar: View {
                     Haptics.tap()
                     onVoice()
                 } label: {
-                    Image(systemName: "mic")
+                    // The seal on the home screen's primary verb: a filled
+                    // cinnabar disc, so the voice entry doesn't read as just
+                    // another glass control.
+                    Image(systemName: "mic.fill")
                         .font(.title3)
-                        .foregroundStyle(Color.amux.onyx)
+                        .foregroundStyle(.white)
                         .frame(width: 44, height: 44)
+                        .background(Color.amux.cinnabar, in: Circle())
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .liquidGlass(in: Circle())
                 .accessibilityLabel("Voice")
                 .accessibilityIdentifier("sessions.voiceButton")
             }
