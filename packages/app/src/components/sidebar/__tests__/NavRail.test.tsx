@@ -91,38 +91,42 @@ describe('NavRail', () => {
     expect(screen.getByText('3')).toBeInTheDocument()
   })
 
-  it('shows only Sessions, Contacts, Skills and Knowledge by default', () => {
+  it('shows only Sessions, Contacts, Skills and Apps by default', () => {
     render(<NavRail />)
     expect(screen.getByRole('button', { name: /会话|Sessions/ })).toBeInTheDocument()
     expect(screen.getByTestId('contacts-nav-entry')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /技能|Skills/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /知识库|Knowledge/ })).toBeInTheDocument()
+    expect(screen.getByTestId('apps-nav-section')).toBeInTheDocument()
 
+    expect(screen.queryByRole('button', { name: /知识库|Knowledge/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Ideas|想法/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /快捷方式|Shortcuts/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /MCP/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /密钥保险箱|Secret Vault/ })).not.toBeInTheDocument()
   })
 
-  it('reveals Ideas, Shortcuts, MCP and 密钥保险箱 once 更多 is expanded', () => {
+  it('reveals Knowledge, Ideas, Shortcuts, MCP and 密钥保险箱 once 更多 is expanded', () => {
     render(<NavRail />)
     expandMore()
+    expect(screen.getByRole('button', { name: /知识库|Knowledge/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Ideas|想法/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /快捷方式|Shortcuts/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /MCP/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /密钥保险箱|Secret Vault/ })).toBeInTheDocument()
   })
 
-  it('puts 应用 last in 更多, after the 密钥保险箱 row', () => {
-    // Pinned here for muscle memory. The row used to unfold an app list, which
-    // is why it went last; the list moved to column two but the position is
-    // deliberately unchanged.
+  it('puts 知识库 first in 更多, before 想法', () => {
     render(<NavRail />)
     expandMore()
-    const vault = screen.getByRole('button', { name: /密钥保险箱|Secret Vault/ })
-    const apps = screen.getByTestId('apps-nav-section')
-    // DOCUMENT_POSITION_FOLLOWING — apps comes after the vault row in the DOM.
-    expect(vault.compareDocumentPosition(apps) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const knowledge = screen.getByRole('button', { name: /知识库|Knowledge/ })
+    const ideas = screen.getByRole('button', { name: /Ideas|想法/ })
+    expect(knowledge.compareDocumentPosition(ideas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('auto-expands 更多 when Knowledge is already selected', () => {
+    useUIStore.setState({ sidebarFilter: { kind: 'teamShare', section: 'knowledge' } })
+    render(<NavRail />)
+    expect(useUIStore.getState().moreNavExpanded).toBe(true)
   })
 
   it('clicking Shortcuts inside 更多 sets filter to { kind: "shortcuts" }', () => {
@@ -148,16 +152,9 @@ describe('NavRail', () => {
     expect(screen.getByRole('button', { name: /会话|Sessions/ })).toBeInTheDocument()
   })
 
-  it('renders AppsNavSection inside 更多 when apps feature is on', () => {
-    render(<NavRail />)
-    expandMore()
-    expect(screen.getByTestId('apps-nav-section')).toBeInTheDocument()
-  })
-
-  it('auto-expands 更多 when apps filter is active', () => {
-    useUIStore.setState({ sidebarFilter: { kind: 'apps' } })
+  it('renders AppsNavSection without expanding 更多', () => {
     render(<NavRail />)
     expect(screen.getByTestId('apps-nav-section')).toBeInTheDocument()
-    expect(useUIStore.getState().moreNavExpanded).toBe(true)
+    expect(useUIStore.getState().moreNavExpanded).toBe(false)
   })
 })

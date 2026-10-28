@@ -102,9 +102,9 @@ export function NavRail() {
   // active row is never hidden behind a collapsed rule.
   const moreFilterActive =
     filter.kind === 'ideas' ||
-    filter.kind === 'apps' ||
     filter.kind === 'shortcuts' ||
-    (filter.kind === 'teamShare' && (filter.section === 'mcp' || filter.section === 'env'))
+    (filter.kind === 'teamShare' &&
+      (filter.section === 'knowledge' || filter.section === 'mcp' || filter.section === 'env'))
 
   React.useEffect(() => {
     if (moreFilterActive) setMoreExpanded(true)
@@ -176,7 +176,8 @@ export function NavRail() {
           }}
         />
         <ContactsNavEntry />
-        <TeamShareNavSection sections={['skills', 'knowledge']} />
+        <TeamShareNavSection sections={['skills']} />
+        {features.apps && <AppsNavSection />}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
@@ -216,6 +217,7 @@ export function NavRail() {
             overflow-hidden. */}
         {moreExpanded && (
           <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto overflow-x-hidden">
+            <TeamShareNavSection sections={['knowledge']} />
             {!embedMode ? (
               <TopEntry
                 label={t('sidebar.ideas', 'Ideas')}
@@ -233,7 +235,6 @@ export function NavRail() {
               />
             ) : null}
             <TeamShareNavSection sections={['mcp', 'env']} />
-            {features.apps && <AppsNavSection />}
           </div>
         )}
       </div>
