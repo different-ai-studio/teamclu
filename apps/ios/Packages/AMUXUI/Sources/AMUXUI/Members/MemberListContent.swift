@@ -500,7 +500,6 @@ struct ActorDetailView: View {
     @State private var showDeleteConfirm = false
     @State private var isDeleting = false
     @State private var deleteErrorMessage: String?
-    @State private var autoApprovedOverrides: [String: Bool] = [:]
     @State private var isSavingDefaults = false
     @State private var defaultsErrorMessage: String?
     @State private var myDefaultAgentID: String?
@@ -549,7 +548,6 @@ struct ActorDetailView: View {
             if actor.isAgent {
                 toolsUsedSection
                 recentSessionsSection
-                autoApprovedToolsSection
             }
             Section("Info") {
                 Group {
@@ -974,14 +972,6 @@ struct ActorDetailView: View {
         return allSessions.filter { sessionIds.contains($0.sessionId) }
     }
 
-    private struct AutoApprovedRow { let name: String; let defaultOn: Bool }
-    private static let autoApprovedRows: [AutoApprovedRow] = [
-        AutoApprovedRow(name: "Read · any path", defaultOn: true),
-        AutoApprovedRow(name: "Edit · within worktree", defaultOn: true),
-        AutoApprovedRow(name: "Bash · npm test, cargo test", defaultOn: true),
-        AutoApprovedRow(name: "Write · new files only", defaultOn: false),
-    ]
-
     @ViewBuilder
     private var heroSection: some View {
         Section {
@@ -1270,37 +1260,6 @@ struct ActorDetailView: View {
                 .foregroundStyle(.secondary)
                 .textCase(nil)
         }
-    }
-
-    @ViewBuilder
-    private var autoApprovedToolsSection: some View {
-        Section {
-            ForEach(Self.autoApprovedRows, id: \.name) { row in
-                Toggle(isOn: autoApprovedBinding(for: row)) {
-                    Text(row.name)
-                        .font(.subheadline)
-                }
-                .tint(Color.amux.cinnabar)
-                .listRowBackground(Color.amux.paper)
-            }
-        } header: {
-            Text("Auto-approved tools".uppercased())
-                .font(.caption.weight(.semibold))
-                .tracking(0.3)
-                .foregroundStyle(.secondary)
-                .textCase(nil)
-        } footer: {
-            Text("These tools run without a prompt. Real persistence will land alongside the per-agent permission spec.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-    }
-
-    private func autoApprovedBinding(for row: AutoApprovedRow) -> Binding<Bool> {
-        Binding(
-            get: { autoApprovedOverrides[row.name] ?? row.defaultOn },
-            set: { autoApprovedOverrides[row.name] = $0 }
-        )
     }
 
     // MARK: - My default agent
