@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActionSheetIOS,
@@ -17,29 +17,21 @@ import {
 import { isAgentActor, type Actor } from "../../actors/actor-types";
 import { teamAppNeedsDesktopSetup, type TeamApp } from "../../apps/team-app-types";
 import { orderActorsForPicker, type LastContactByActor } from "../actor-picker-ordering";
-import { appSessionBlocker, type AppSessionBlocker } from "../app-session";
-import { Hairline } from "../../../ui/atoms/Hairline";
+import {
+  appCheckoutWorkspace,
+  appSessionBlocker,
+  type AppSessionBlocker,
+} from "../app-session";
 import { SectionEyebrow } from "../../../ui/atoms/SectionEyebrow";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../../ui/GlassHeader";
 import { colors, radii, spacing, typography } from "../../../ui/theme";
-import {
-  AgentConfigSheet,
-  type AgentConfigSelection,
-  type AgentType,
-} from "../components/AgentConfigSheet";
+import type { AgentConfigSelection } from "../components/AgentConfigSheet";
 import {
   agentConfigWorkspaceChoices,
   normalizeStoredAgentType,
 } from "../components/agent-config-helpers";
 import { MemberPickerSheet } from "./MemberPickerSheet";
 import { SheetModal } from "../../../ui/SheetModal";
-
-const AGENT_TYPE_LABELS: Record<AgentType, string> = {
-  pi: "Pi",
-  claude: "Claude",
-  opencode: "OpenCode",
-  codex: "Codex",
-};
 
 export type AgentWorkspaceChoice = {
   id: string;
@@ -126,8 +118,9 @@ export function NewSessionScreen({
   const [agentWorkspacesForApp, setAgentWorkspacesForApp] = useState<AgentWorkspaceChoice[]>([]);
   const [isCheckingAppCheckout, setIsCheckingAppCheckout] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [agentConfigOpen, setAgentConfigOpen] = useState(false);
   const [agentConfig, setAgentConfig] = useState<AgentConfigSelection | null>(null);
+  /** Set once the user picks (or clears) the agent, so the default stops applying. */
+  const didChooseAgent = useRef(false);
 
   const actorById = useMemo(() => {
     const map = new Map<string, Actor>();
@@ -137,24 +130,39 @@ export function NewSessionScreen({
     return map;
   }, [actors]);
 
-  const collaborators = useMemo(() => {
+  // Everyone besides the primary agent (iOS `otherCollaborators`): people,
+  // and any further agents brought in alongside it.
+  const otherCollaborators = useMemo(() => {
     return collaboratorIds
+      .filter((id) => id !== primaryAgentId)
       .map((id) => actorById.get(id))
       .filter((actor): actor is Actor => Boolean(actor));
-  }, [collaboratorIds, actorById]);
+  }, [collaboratorIds, actorById, primaryAgentId]);
+
+  const primaryAgent = primaryAgentId ? actorById.get(primaryAgentId) ?? null : null;
+
+  // Primary agent first, as the session sees it.
+  const collaborators = useMemo(
+    () => (primaryAgent ? [primaryAgent, ...otherCollaborators] : otherCollaborators),
+    [otherCollaborators, primaryAgent],
+  );
 
   const pickedAgentIds = useMemo(
     () => collaborators.filter(isAgentActor).map((actor) => actor.actorId),
     [collaborators],
   );
 
-  const effectivePrimaryAgentId = useMemo(() => {
-    if (pickedAgentIds.length === 0) return null;
-    if (primaryAgentId && pickedAgentIds.includes(primaryAgentId)) {
-      return primaryAgentId;
-    }
-    return pickedAgentIds[0];
-  }, [pickedAgentIds, primaryAgentId]);
+  const effectivePrimaryAgentId = primaryAgent?.actorId ?? pickedAgentIds[0] ?? null;
+
+  // Start with the viewer's default agent (iOS `selectDefaultAgent`), unless
+  // they already picked one or brought agents in some other way.
+  useEffect(() => {
+    if (didChooseAgent.current || primaryAgentId) return;
+    if (!defaultAgentId) return;
+    const agent = actorById.get(defaultAgentId);
+    if (!agent || !isAgentActor(agent)) return;
+    setPrimaryAgentId(defaultAgentId);
+  }, [actorById, defaultAgentId, primaryAgentId]);
 
   const pickedApp = useMemo(
     () => (pickedAppId ? apps?.find((app) => app.id === pickedAppId) ?? null : null),
@@ -214,38 +222,62 @@ export function NewSessionScreen({
     [actors, defaultAgentId, lastContactByActorId],
   );
 
-  const configuredAgent = useMemo(
+  const agentChoices = useMemo(() => pickerActors.filter(isAgentActor), [pickerActors]);
+
+  // The primary agent's own workspaces, its default first — the seat it gets
+  // when nothing is picked (iOS #1681).
+  const workspaceChoices = useMemo(
     () =>
-      actors.find((actor) => actor.actorId === effectivePrimaryAgentId) ?? null,
-    [actors, effectivePrimaryAgentId],
+      primaryAgent
+        ? agentConfigWorkspaceChoices(
+            primaryAgent.actorId,
+            primaryAgent.defaultWorkspaceId ?? null,
+            workspaces,
+          )
+        : [],
+    [primaryAgent, workspaces],
   );
 
-  const workspaceLabelById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const workspace of workspaces) {
-      map.set(workspace.id, workspace.path || workspace.id);
+  const workspaceRowValue = useMemo((): { text: string; muted: boolean } => {
+    if (!primaryAgent) return { text: t("None"), muted: true };
+    // An app session runs in the agent's checkout of the app, whatever is
+    // picked here.
+    if (pickedApp) {
+      const checkout = appCheckoutWorkspace(pickedApp, primaryAgent.actorId, appWorkspaceRows);
+      return checkout
+        ? { text: checkout.path, muted: false }
+        : { text: t("None"), muted: true };
     }
-    return map;
-  }, [workspaces]);
+    const picked = agentConfig
+      ? workspaceChoices.find((workspace) => workspace.id === agentConfig.workspaceId)
+      : workspaceChoices[0];
+    return picked
+      ? { text: picked.path || picked.id, muted: false }
+      : { text: t("None"), muted: true };
+  }, [agentConfig, appWorkspaceRows, pickedApp, primaryAgent, t, workspaceChoices]);
 
   const excludedFromPicker = useMemo(() => {
     const set = new Set<string>();
     if (currentMemberActorId) set.add(currentMemberActorId);
+    if (primaryAgentId) set.add(primaryAgentId);
     return set;
-  }, [currentMemberActorId]);
+  }, [currentMemberActorId, primaryAgentId]);
+
+  const selectPrimaryAgent = useCallback((agentId: string | null) => {
+    didChooseAgent.current = true;
+    setPrimaryAgentId(agentId);
+    // The workspace belongs to the old agent; the new one starts on its default.
+    setAgentConfig(null);
+    if (agentId) setCollaboratorIds((prev) => prev.filter((id) => id !== agentId));
+  }, []);
 
   const removeCollaborator = useCallback((actorId: string) => {
     setCollaboratorIds((prev) => prev.filter((id) => id !== actorId));
-    setPrimaryAgentId((prev) => (prev === actorId ? null : prev));
-  }, []);
-
-  const cyclePrimaryAgent = useCallback((actorId: string) => {
-    setPrimaryAgentId(actorId);
   }, []);
 
   const canSubmit =
     firstMessage.trim().length > 0 &&
-    collaboratorIds.length > 0 &&
+    collaborators.length > 0 &&
     !isBusy &&
     appBlocker === null;
 
@@ -253,12 +285,69 @@ export function NewSessionScreen({
     if (!canSubmit) return;
     void onCreate({
       firstMessage: firstMessage.trim(),
-      collaboratorActorIds: collaboratorIds,
+      collaboratorActorIds: collaborators.map((actor) => actor.actorId),
       primaryAgentActorId: effectivePrimaryAgentId,
       agentConfig,
       ideaId: selectedIdeaId,
       app: pickedApp,
       agentWorkspaces: agentWorkspacesForApp,
+    });
+  };
+
+  /** One action-sheet picker for the agent and workspace rows, as the app row already does. */
+  const showChoices = (
+    title: string,
+    labels: string[],
+    onPick: (index: number) => void,
+  ) => {
+    const options = [...labels, t("Cancel")];
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options, cancelButtonIndex: options.length - 1, title },
+        (index) => {
+          if (index < labels.length) onPick(index);
+        },
+      );
+      return;
+    }
+    Alert.alert(
+      title,
+      undefined,
+      options.map((label, index) =>
+        index === labels.length
+          ? { text: label, style: "cancel" as const }
+          : { text: label, onPress: () => onPick(index) },
+      ),
+    );
+  };
+
+  const showAgentPicker = () => {
+    const labels = agentChoices.map((agent) =>
+      agent.actorId === primaryAgentId ? `✓ ${agent.displayName}` : agent.displayName,
+    );
+    if (primaryAgentId) labels.push(t("No agent"));
+    showChoices(t("Agent"), labels, (index) => {
+      selectPrimaryAgent(index < agentChoices.length ? agentChoices[index].actorId : null);
+    });
+  };
+
+  const showWorkspacePicker = () => {
+    if (!primaryAgent) return;
+    const selectedId = agentConfig?.workspaceId ?? workspaceChoices[0]?.id;
+    const labels = workspaceChoices.map((workspace) => {
+      const label = workspace.path || workspace.id;
+      return workspace.id === selectedId ? `✓ ${label}` : label;
+    });
+    showChoices(t("Working directory"), labels, (index) => {
+      const workspace = workspaceChoices[index];
+      if (!workspace) return;
+      setAgentConfig({
+        workspaceId: workspace.id,
+        agentType:
+          agentConfig?.agentType ??
+          normalizeStoredAgentType(primaryAgent.defaultAgentType) ??
+          "pi",
+      });
     });
   };
 
@@ -310,6 +399,9 @@ export function NewSessionScreen({
   };
 
   const showAppSection = apps !== null;
+  const eyebrow = showAppSection
+    ? { agent: "01", collaborators: "02", app: "03", workspace: "04", firstMessage: "05" }
+    : { agent: "01", collaborators: "02", app: "", workspace: "03", firstMessage: "04" };
 
   return (
     <View style={styles.screen}>
@@ -329,8 +421,36 @@ export function NewSessionScreen({
           contentContainerStyle={styles.bodyContent}
           keyboardShouldPersistTaps="handled"
         >
+          {/* Same order as iOS: who answers, who else is in, what app, and
+              where the agent works. Ideas have no picker; a session is tied to
+              one only when started from that idea's page. */}
           <View style={styles.section}>
-            <SectionEyebrow label={`01 · ${t("COLLABORATORS")}`} />
+            <SectionEyebrow label={`${eyebrow.agent} · ${t("AGENT")}`} />
+            <Pressable
+              accessibilityRole="button"
+              disabled={agentChoices.length === 0}
+              onPress={showAgentPicker}
+              style={({ pressed }) => [
+                styles.paperCard,
+                styles.pickerRow,
+                pressed ? styles.rowPressed : null,
+              ]}
+            >
+              <Text style={styles.cardTitle}>{t("Agent")}</Text>
+              <View style={styles.pickerValue}>
+                <Text
+                  numberOfLines={1}
+                  style={[styles.cardBody, primaryAgent ? null : styles.valueMuted]}
+                >
+                  {primaryAgent?.displayName ?? t("Choose agent")}
+                </Text>
+                <Ionicons color={colors.slate} name="chevron-down" size={14} />
+              </View>
+            </Pressable>
+          </View>
+
+          <View style={styles.section}>
+            <SectionEyebrow label={`${eyebrow.collaborators} · ${t("COLLABORATORS")}`} />
             <Pressable
               accessibilityRole="button"
               onPress={() => setPickerOpen(true)}
@@ -341,30 +461,21 @@ export function NewSessionScreen({
               ]}
             >
               <View style={styles.collaboratorsBody}>
-                {collaborators.length === 0 ? (
-                  <Text style={styles.collaboratorsPlaceholder}>{t("Just you")}</Text>
+                {otherCollaborators.length === 0 ? (
+                  <Text style={styles.collaboratorsPlaceholder}>{t("None")}</Text>
                 ) : (
                   <ScrollView
                     contentContainerStyle={styles.chipRow}
                     horizontal
                     showsHorizontalScrollIndicator={false}
                   >
-                    {collaborators.map((actor) => {
-                      const isAgent = isAgentActor(actor);
-                      const isPrimary =
-                        isAgent && actor.actorId === effectivePrimaryAgentId;
-                      return (
-                        <CollaboratorChip
-                          actor={actor}
-                          isPrimary={isPrimary}
-                          key={actor.actorId}
-                          onMakePrimary={
-                            isAgent ? () => cyclePrimaryAgent(actor.actorId) : undefined
-                          }
-                          onRemove={() => removeCollaborator(actor.actorId)}
-                        />
-                      );
-                    })}
+                    {otherCollaborators.map((actor) => (
+                      <CollaboratorChip
+                        actor={actor}
+                        key={actor.actorId}
+                        onRemove={() => removeCollaborator(actor.actorId)}
+                      />
+                    ))}
                   </ScrollView>
                 )}
               </View>
@@ -372,52 +483,26 @@ export function NewSessionScreen({
             </Pressable>
           </View>
 
-          <View style={styles.section}>
-            <SectionEyebrow label={`02 · ${t("AGENT")}`} />
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setAgentConfigOpen(true)}
-              style={({ pressed }) => [
-                styles.paperCard,
-                styles.agentRow,
-                pressed ? styles.rowPressed : null,
-              ]}
-            >
-              <Text style={styles.cardTitle}>{t("Configure agent")}</Text>
-              <View style={styles.agentValue}>
-                <Text numberOfLines={1} style={styles.cardBody}>
-                  {agentConfig
-                    ? `${AGENT_TYPE_LABELS[agentConfig.agentType]} · ${
-                        workspaceLabelById.get(agentConfig.workspaceId) ??
-                        agentConfig.workspaceId
-                      }`
-                    : t("Default")}
-                </Text>
-                <Ionicons color={colors.slate} name="chevron-forward" size={14} />
-              </View>
-            </Pressable>
-          </View>
-
           {showAppSection ? (
             <View style={styles.section}>
-              <SectionEyebrow label={`03 · ${t("APP")}`} />
+              <SectionEyebrow label={`${eyebrow.app} · ${t("APP")}`} />
               <Pressable
                 accessibilityRole="button"
                 disabled={appChoices.length === 0}
                 onPress={showAppPicker}
                 style={({ pressed }) => [
                   styles.paperCard,
-                  styles.ideaRow,
+                  styles.pickerRow,
                   pressed ? styles.rowPressed : null,
                 ]}
               >
                 <Text style={styles.cardTitle}>{t("Link to app")}</Text>
-                <View style={styles.ideaValue}>
+                <View style={styles.pickerValue}>
                   <Text
                     numberOfLines={1}
                     style={[
                       styles.cardBody,
-                      pickedApp === null ? styles.ideaValueMuted : null,
+                      pickedApp === null ? styles.valueMuted : null,
                     ]}
                   >
                     {appLabel}
@@ -432,8 +517,35 @@ export function NewSessionScreen({
           ) : null}
 
           <View style={styles.section}>
+            <SectionEyebrow label={`${eyebrow.workspace} · ${t("WORKING DIRECTORY")}`} />
+            <Pressable
+              accessibilityRole="button"
+              // An app session always runs in the app's checkout.
+              disabled={workspaceChoices.length === 0 || pickedApp !== null}
+              onPress={showWorkspacePicker}
+              style={({ pressed }) => [
+                styles.paperCard,
+                styles.pickerRow,
+                pressed ? styles.rowPressed : null,
+              ]}
+            >
+              <Text style={styles.cardTitle}>{t("Working directory")}</Text>
+              <View style={styles.pickerValue}>
+                <Text
+                  ellipsizeMode="head"
+                  numberOfLines={1}
+                  style={[styles.cardBody, workspaceRowValue.muted ? styles.valueMuted : null]}
+                >
+                  {workspaceRowValue.text}
+                </Text>
+                <Ionicons color={colors.slate} name="chevron-down" size={14} />
+              </View>
+            </Pressable>
+          </View>
+
+          <View style={styles.section}>
             <SectionEyebrow
-              label={`${showAppSection ? "04" : "03"} · ${t("FIRST MESSAGE")}`}
+              label={`${eyebrow.firstMessage} · ${t("FIRST MESSAGE")}`}
             />
             <View style={styles.paperCard}>
               <TextInput
@@ -482,95 +594,25 @@ export function NewSessionScreen({
           onCancel={() => setPickerOpen(false)}
           onConfirm={(picked) => {
             setCollaboratorIds(picked);
-            const stillPicked = primaryAgentId && picked.includes(primaryAgentId);
-            if (!stillPicked) setPrimaryAgentId(null);
             setPickerOpen(false);
           }}
-          primaryAgentId={effectivePrimaryAgentId}
         />
       </SheetModal>
 
-      <SheetModal
-        onRequestClose={() => setAgentConfigOpen(false)}
-        presentationStyle="formSheet"
-        visible={agentConfigOpen}
-      >
-        <AgentConfigSheet
-          // The agent this configures is the session's primary one. It used to
-          // say "Agent" and offer all three backends regardless of what that
-          // agent can actually run — picking an unsupported one sends a
-          // `runtime_start` the daemon cannot honour.
-          actorDisplayName={configuredAgent?.displayName ?? t("Agent")}
-          agentTypes={configuredAgent?.agentTypes}
-          defaultType={
-            agentConfig?.agentType ??
-            normalizeStoredAgentType(configuredAgent?.defaultAgentType) ??
-            "pi"
-          }
-          onCancel={() => setAgentConfigOpen(false)}
-          onConfirm={(selection) => {
-            setAgentConfig(selection);
-            setAgentConfigOpen(false);
-          }}
-          // The configured agent's own workspaces, its default first — the
-          // seat it gets when the sheet is never opened (iOS #1681).
-          workspaces={agentConfigWorkspaceChoices(
-            configuredAgent?.actorId ?? null,
-            configuredAgent?.defaultWorkspaceId ?? null,
-            workspaces,
-          ).map((workspace) => ({
-            id: workspace.id,
-            path: workspace.path,
-          }))}
-        />
-      </SheetModal>
     </View>
   );
 }
 
 type CollaboratorChipProps = {
   actor: Actor;
-  isPrimary: boolean;
-  onMakePrimary?: () => void;
   onRemove: () => void;
 };
 
-function CollaboratorChip({
-  actor,
-  isPrimary,
-  onMakePrimary,
-  onRemove,
-}: CollaboratorChipProps) {
+function CollaboratorChip({ actor, onRemove }: CollaboratorChipProps) {
   const { t } = useTranslation();
   return (
-    <View
-      style={[
-        styles.chip,
-        isPrimary ? styles.chipPrimary : null,
-      ]}
-    >
-      {onMakePrimary ? (
-        <Pressable
-          accessibilityLabel={isPrimary ? t("Primary agent") : t("Make primary agent")}
-          accessibilityRole="button"
-          hitSlop={6}
-          onPress={onMakePrimary}
-          style={styles.chipStar}
-        >
-          <Ionicons
-            color={isPrimary ? colors.cinnabar : colors.slate}
-            name={isPrimary ? "star" : "star-outline"}
-            size={12}
-          />
-        </Pressable>
-      ) : null}
-      <Text
-        numberOfLines={1}
-        style={[
-          styles.chipText,
-          isPrimary ? styles.chipTextPrimary : null,
-        ]}
-      >
+    <View style={styles.chip}>
+      <Text numberOfLines={1} style={styles.chipText}>
         {actor.displayName}
       </Text>
       <Pressable
@@ -589,18 +631,6 @@ function CollaboratorChip({
 const styles = StyleSheet.create({
   actionsBar: {
     padding: spacing.lg,
-  },
-  agentRow: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: spacing.sm,
-    justifyContent: "space-between",
-  },
-  agentValue: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 4,
-    maxWidth: 200,
   },
   appBlocker: {
     color: colors.cinnabarDeep,
@@ -637,28 +667,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingLeft: 2,
   },
-  chipPrimary: {
-    backgroundColor: "rgba(184,75,54,0.10)",
-  },
   chipRow: {
     alignItems: "center",
     flexDirection: "row",
     gap: 6,
     paddingVertical: 1,
   },
-  chipStar: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingRight: 2,
-  },
   chipText: {
     color: colors.onyx,
     ...typography.body,
     fontSize: 13.5,
     fontWeight: "600",
-  },
-  chipTextPrimary: {
-    color: colors.cinnabarDeep,
   },
   collaboratorsBody: {
     flex: 1,
@@ -706,21 +725,6 @@ const styles = StyleSheet.create({
     color: colors.onyx,
     ...typography.sectionTitle,
   },
-  ideaRow: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: spacing.sm,
-    justifyContent: "space-between",
-  },
-  ideaValue: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 4,
-    maxWidth: 200,
-  },
-  ideaValueMuted: {
-    color: colors.slate,
-  },
   input: {
     color: colors.onyx,
     minHeight: 96,
@@ -736,6 +740,18 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.md,
   },
+  pickerRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.sm,
+    justifyContent: "space-between",
+  },
+  pickerValue: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 4,
+    maxWidth: 200,
+  },
   rowPressed: {
     opacity: 0.8,
   },
@@ -745,5 +761,8 @@ const styles = StyleSheet.create({
   },
   section: {
     gap: spacing.sm,
+  },
+  valueMuted: {
+    color: colors.slate,
   },
 });
