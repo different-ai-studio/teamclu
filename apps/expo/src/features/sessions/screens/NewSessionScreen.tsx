@@ -32,6 +32,7 @@ import {
 } from "../components/agent-config-helpers";
 import { MemberPickerSheet } from "./MemberPickerSheet";
 import { SheetModal } from "../../../ui/SheetModal";
+import { showActionSheet, type SheetAction } from "../../../ui/action-sheet";
 
 export type AgentWorkspaceChoice = {
   id: string;
@@ -294,61 +295,29 @@ export function NewSessionScreen({
     });
   };
 
-  /** One action-sheet picker for the agent and workspace rows, as the app row already does. */
-  const showChoices = (
-    title: string,
-    labels: string[],
-    onPick: (index: number) => void,
-  ) => {
-    const options = [...labels, t("Cancel")];
-    if (Platform.OS === "ios") {
-      ActionSheetIOS.showActionSheetWithOptions(
-        { options, cancelButtonIndex: options.length - 1, title },
-        (index) => {
-          if (index < labels.length) onPick(index);
-        },
-      );
-      return;
-    }
-    Alert.alert(
-      title,
-      undefined,
-      options.map((label, index) =>
-        index === labels.length
-          ? { text: label, style: "cancel" as const }
-          : { text: label, onPress: () => onPick(index) },
-      ),
-    );
-  };
-
   const showAgentPicker = () => {
-    const labels = agentChoices.map((agent) =>
-      agent.actorId === primaryAgentId ? `✓ ${agent.displayName}` : agent.displayName,
-    );
-    if (primaryAgentId) labels.push(t("No agent"));
-    showChoices(t("Agent"), labels, (index) => {
-      selectPrimaryAgent(index < agentChoices.length ? agentChoices[index].actorId : null);
-    });
+    const actions: SheetAction[] = agentChoices.map((agent) => ({
+      label: agent.displayName,
+      checked: agent.actorId === primaryAgentId,
+      run: () => selectPrimaryAgent(agent.actorId),
+    }));
+    if (primaryAgentId) actions.push({ label: t("No agent"), run: () => selectPrimaryAgent(null) });
+    showActionSheet(actions, { cancelLabel: t("Cancel"), title: t("Agent") });
   };
 
   const showWorkspacePicker = () => {
     if (!primaryAgent) return;
     const selectedId = agentConfig?.workspaceId ?? workspaceChoices[0]?.id;
-    const labels = workspaceChoices.map((workspace) => {
-      const label = workspace.path || workspace.id;
-      return workspace.id === selectedId ? `✓ ${label}` : label;
-    });
-    showChoices(t("Working directory"), labels, (index) => {
-      const workspace = workspaceChoices[index];
-      if (!workspace) return;
-      setAgentConfig({
-        workspaceId: workspace.id,
-        agentType:
-          agentConfig?.agentType ??
-          normalizeStoredAgentType(primaryAgent.defaultAgentType) ??
-          "pi",
-      });
-    });
+    const agentType =
+      agentConfig?.agentType ?? normalizeStoredAgentType(primaryAgent.defaultAgentType) ?? "pi";
+    showActionSheet(
+      workspaceChoices.map((workspace) => ({
+        label: workspace.path || workspace.id,
+        checked: workspace.id === selectedId,
+        run: () => setAgentConfig({ workspaceId: workspace.id, agentType }),
+      })),
+      { cancelLabel: t("Cancel"), title: t("Working directory") },
+    );
   };
 
   const appChoices = apps ?? [];
