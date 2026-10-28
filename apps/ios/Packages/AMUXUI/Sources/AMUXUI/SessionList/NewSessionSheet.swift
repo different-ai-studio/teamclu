@@ -748,8 +748,11 @@ public struct NewSessionSheet: View {
         errorMessage = nil
         debugStatusMessage = nil
 
-        if !isAgentAvailable {
-            createLocalSession(text: text, title: userText)
+        // Not connected yet: say so and keep the draft. This used to save a
+        // device-only session that the server never heard of, so the next
+        // session sync pruned it — and its first message — without a trace.
+        guard isAgentAvailable else {
+            errorMessage = String(localized: "Not connected yet. Your message is kept — try again in a moment.")
             return
         }
         createSession(text: text, title: userText)
@@ -871,44 +874,6 @@ public struct NewSessionSheet: View {
                 errorMessage = failure.userFacingMessage
             }
         }
-    }
-
-    private func createLocalSession(text: String, title: String) {
-        guard let currentActorID else {
-            errorMessage = String(localized: "Current actor is not ready yet.")
-            return
-        }
-
-        let createdAt = Date()
-        let sessionID = UUID().uuidString.lowercased()
-        let session = Session(
-            sessionId: sessionID,
-            teamId: teamID,
-            title: String((title.split(separator: "\n").first.map(String.init) ?? title).trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)),
-            createdBy: currentActorID,
-            createdAt: createdAt,
-            summary: text,
-            participantCount: max(collaborators.count + 1, 1),
-            lastMessagePreview: text,
-            lastMessageAt: createdAt,
-            ideaId: selectedIdeaId ?? ""
-        )
-
-        let message = SessionMessage(
-            messageId: UUID().uuidString.lowercased(),
-            sessionId: sessionID,
-            senderActorId: currentActorID,
-            kind: "text",
-            content: text,
-            createdAt: createdAt
-        )
-
-        modelContext.insert(session)
-        modelContext.insert(message)
-        try? modelContext.save()
-        viewModel.adoptCreatedSession(sessionID, modelContext: modelContext)
-        onSessionCreated?("session:\(sessionID)")
-        dismiss()
     }
 
     private func sessionParticipants(currentActorID: String) -> [CachedActor] {
