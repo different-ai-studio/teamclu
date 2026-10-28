@@ -270,22 +270,22 @@ public struct NewSessionSheet: View {
 
     // MARK: - Context card
 
-    /// Who the session is with and what it is about: the agent (the
-    /// viewer's default to start with), where it works, an optional idea and
-    /// app, and anyone else to bring in.
+    /// Who the session is with and where it works: the agent (the viewer's
+    /// default to start with), anyone else to bring in, an optional app, and
+    /// the working directory. There is no idea picker; a session is tied to
+    /// an idea only when it is started from that idea's page
+    /// (`preselectedIdeaId`).
     private var contextCard: some View {
         HaiPaperCard {
             agentRow
             hairline
-            workspaceRow
-            hairline
-            ideaRow
+            collaboratorsRow
             if teamAppsStore != nil {
                 hairline
                 appRow
             }
             hairline
-            collaboratorsRow
+            workspaceRow
         }
     }
 
@@ -396,45 +396,6 @@ public struct NewSessionSheet: View {
         .buttonStyle(.plain)
         .disabled(primaryWorkspaces.isEmpty || selectedApp != nil)
         .accessibilityIdentifier("newSession.workspaceRow")
-    }
-
-    private var selectedIdea: SessionIdea? {
-        guard let selectedIdeaId else { return nil }
-        return ideas.first { $0.ideaId == selectedIdeaId }
-    }
-
-    private var ideaRow: some View {
-        Menu {
-            Button {
-                selectedIdeaId = nil
-            } label: {
-                Label(String(localized: "None"), systemImage: selectedIdeaId == nil ? "checkmark" : "circle")
-            }
-            if !ideas.isEmpty {
-                Divider()
-                ForEach(ideas, id: \.ideaId) { idea in
-                    Button {
-                        selectedIdeaId = idea.ideaId
-                    } label: {
-                        if idea.ideaId == selectedIdeaId {
-                            Label(idea.displayTitle, systemImage: "checkmark")
-                        } else {
-                            Text(idea.displayTitle)
-                        }
-                    }
-                }
-            }
-        } label: {
-            HaiSheetRow(
-                label: String(localized: "Idea"),
-                value: selectedIdea?.displayTitle ?? String(localized: "None"),
-                valueIsMuted: selectedIdea == nil,
-                showsChevron: true
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("newSession.ideaRow")
     }
 
     /// The session's app. Picking one seats every agent in its checkout of
