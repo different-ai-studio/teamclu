@@ -26,6 +26,12 @@ struct ComposerStateTests {
         #expect(ComposerState.rightButton(hasText: true, voiceState: .recording) == .stopRecording)
     }
 
+    @Test("attachments without text show send")
+    func attachmentsOnlyShowsSend() {
+        #expect(ComposerState.rightButton(hasText: false, hasAttachments: true, voiceState: .idle) == .send)
+        #expect(ComposerState.rightButton(hasText: false, hasAttachments: true, voiceState: .recording) == .stopRecording)
+    }
+
     @Test("non-empty text shows send")
     func withTextShowsSend() {
         #expect(ComposerState.rightButton(hasText: true, voiceState: .idle) == .send)

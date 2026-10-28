@@ -65,6 +65,7 @@ struct SessionComposer: View {
     private var rightButton: ComposerRightButton {
         ComposerState.rightButton(
             hasText: hasText,
+            hasAttachments: !attachments.isEmpty,
             voiceState: voiceRecorder.state
         )
     }
@@ -166,6 +167,7 @@ struct SessionComposer: View {
                             AttachmentThumbnailTile(
                                 url: url,
                                 upload: uploadingAttachments[url.absoluteString],
+                                onRetry: { retryAttachment(url) },
                                 onRemove: { discardAttachment(url) }
                             )
                             .accessibilityIdentifier("composer.attachmentTile")
@@ -173,6 +175,13 @@ struct SessionComposer: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 4)
+                }
+                if uploadingAttachments.values.contains(where: { $0.uploadState == .failed }) {
+                    Text("An attachment failed to upload. Tap it to retry, or remove it.")
+                        .font(.caption)
+                        .foregroundStyle(Color.amux.cinnabarDeep)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
                 }
             }
 
@@ -202,7 +211,10 @@ struct SessionComposer: View {
             if newState == .done {
                 let text = voiceRecorder.transcribedText ?? ""
                 if !text.isEmpty {
-                    promptText = text
+                    // Appended, not assigned: dictating after typing used to
+                    // wipe what was already in the field.
+                    let draft = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    promptText = draft.isEmpty ? text : draft + " " + text
                 }
                 voiceRecorder.reset()
             }
@@ -356,7 +368,7 @@ struct SessionComposer: View {
             let hasUploadingAttachments = uploadingAttachments.values.contains { $0.uploadState == .uploading }
 
             Button {
-                if !hasUploadingAttachments {
+                if !hasUploadingAttachments, !hasFailedAttachments {
                     let storageURLs = uploadingAttachments.values
                         .compactMap { $0.storageURL }
                         .compactMap { URL(string: $0) }
@@ -384,7 +396,9 @@ struct SessionComposer: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .disabled(hasUploadingAttachments)
+            // A failed upload blocks sending rather than going out silently
+            // without that file; its tile retries on tap or can be removed.
+            .disabled(hasUploadingAttachments || hasFailedAttachments)
             .modifier(SendButtonGlassModifier(
                 emphasized: hasPendingSlashCommand && !hasUploadingAttachments
             ))
@@ -456,6 +470,20 @@ struct SessionComposer: View {
         }
     }
 
+    private func retryAttachment(_ url: URL) {
+        guard let upload = uploadingAttachments[url.absoluteString],
+              upload.uploadState == .failed,
+              let uploadManager = ensureUploadManager()
+        else { return }
+        Haptics.tap()
+        let attachmentID = upload.attachmentID
+        Task {
+            try? await uploadManager.retryUpload(
+                attachmentID: attachmentID, filePath: url, teamID: teamID
+            )
+        }
+    }
+
     /// Forget an attachment the user pulled out of the tray. The tray binding
     /// is only half of it: the send button builds its storage URLs from
     /// `uploadingAttachments`, so a record left behind re-attaches a file that
@@ -524,6 +552,7 @@ struct SessionComposer: View {
 private struct AttachmentThumbnailTile: View {
     let url: URL
     let upload: AttachmentUpload?
+    let onRetry: () -> Void
     let onRemove: () -> Void
 
     private static let imageExts: Set<String> = [
@@ -549,6 +578,9 @@ private struct AttachmentThumbnailTile: View {
                         .stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
                 )
                 .overlay(progressOverlay)
+                .onTapGesture { if uploadState == .failed { onRetry() } }
+                .accessibilityAddTraits(uploadState == .failed ? .isButton : [])
+                .accessibilityLabel(uploadState == .failed ? Text("Upload failed, tap to retry") : Text(url.lastPathComponent))
 
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
