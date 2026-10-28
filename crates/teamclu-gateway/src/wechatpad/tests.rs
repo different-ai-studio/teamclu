@@ -145,6 +145,86 @@ fn a_quote_carries_the_reply_text_and_the_quoted_message() {
 }
 
 #[test]
+fn a_shared_article_reaches_the_agent_as_its_title_summary_and_link() {
+    let xml = "<?xml version=\"1.0\"?>\n<msg>\n\t<appmsg appid=\"\" sdkver=\"0\">\n\t\t<title>TikTok Shop在泰国GMV超过Shopee了？</title>\n\
+               \t\t<des>东南亚电商格局</des>\n\t\t<action>view</action>\n\t\t<type>5</type>\n\
+               \t\t<url>http://mp.weixin.qq.com/s?__biz=MzA&amp;mid=1&amp;idx=1</url>\n\
+               \t\t<sourcedisplayname>墨腾创投</sourcedisplayname>\n\
+               \t\t<mmreader><category type=\"20\" count=\"1\"><name>墨腾创投</name></category></mmreader>\n\
+               \t</appmsg>\n\t<fromusername>wxid_me</fromusername>\n</msg>";
+    let out = decode_push(&push(serde_json::json!([add_msg(
+        7,
+        49,
+        GROUP,
+        BOT,
+        &format!("{ME}:\n{xml}"),
+        PLAIN_SOURCE
+    )])));
+    assert_eq!(out[0].kind, PadKind::Text);
+    assert_eq!(
+        out[0].text,
+        "[链接] TikTok Shop在泰国GMV超过Shopee了？\n东南亚电商格局\n来源：墨腾创投\n\
+         http://mp.weixin.qq.com/s?__biz=MzA&mid=1&idx=1"
+    );
+    // Not addressed, so it waits in the group's silent context for the @.
+    let admitted = admit(&cfg(), &out[0]).unwrap();
+    assert!(!admitted.addressed);
+    assert!(admitted.text.starts_with("[链接]"));
+}
+
+#[test]
+fn a_forwarded_chat_record_lists_who_said_what() {
+    let record = "<recordinfo><title>群聊的聊天记录</title><datalist count=\"3\">\
+                  <dataitem datatype=\"1\" dataid=\"a\"><sourcename>亮亮</sourcename><datadesc>明天几点？</datadesc></dataitem>\
+                  <dataitem datatype=\"2\" dataid=\"b\"><sourcename>布丁</sourcename></dataitem>\
+                  <dataitem datatype=\"1\" dataid=\"c\"><sourcename>布丁</sourcename><datadesc>九点 &amp; 别迟到</datadesc></dataitem>\
+                  </datalist></recordinfo>";
+    let xml = format!(
+        "<msg><appmsg appid=\"\" sdkver=\"0\"><title>群聊的聊天记录</title><des>亮亮: 明天几点？</des>\
+         <type>19</type><recorditem><![CDATA[{record}]]></recorditem></appmsg></msg>"
+    );
+    let out = decode_push(&push(serde_json::json!([add_msg(
+        8, 49, ME, BOT, &xml, ""
+    )])));
+    assert_eq!(
+        out[0].text,
+        "[聊天记录] 群聊的聊天记录\n亮亮: 明天几点？\n布丁: [图片]\n布丁: 九点 & 别迟到"
+    );
+}
+
+#[test]
+fn quoting_an_article_hands_the_agent_the_article() {
+    let inner = "&lt;msg&gt;&lt;appmsg appid=\"\" sdkver=\"0\"&gt;&lt;title&gt;一篇文章&lt;/title&gt;\
+                 &lt;type&gt;5&lt;/type&gt;&lt;url&gt;https://mp.weixin.qq.com/s/x&lt;/url&gt;&lt;/appmsg&gt;&lt;/msg&gt;";
+    let xml = format!(
+        "<msg><appmsg appid=\"\" sdkver=\"0\"><title>总结一下</title><type>57</type>\
+         <refermsg><type>49</type><svrid>42</svrid><fromusr>{ME}</fromusr><content>{inner}</content></refermsg>\
+         </appmsg></msg>"
+    );
+    let out = decode_push(&push(serde_json::json!([add_msg(
+        9, 49, ME, BOT, &xml, ""
+    )])));
+    assert_eq!(
+        out[0].kind,
+        PadKind::Quote {
+            quoted_msg_id: Some(42),
+            quoted_sender: ME.into(),
+            quoted_text: Some("[链接] 一篇文章\nhttps://mp.weixin.qq.com/s/x".into()),
+        }
+    );
+}
+
+#[test]
+fn a_card_with_nothing_readable_is_still_dropped() {
+    let xml = "<msg><appmsg appid=\"\" sdkver=\"0\"><title></title><type>8</type></appmsg></msg>";
+    let out = decode_push(&push(serde_json::json!([add_msg(
+        10, 49, ME, BOT, xml, ""
+    )])));
+    assert!(matches!(out[0].kind, PadKind::Other { .. }));
+    assert_eq!(admit(&cfg(), &out[0]), None);
+}
+
+#[test]
 fn a_file_placeholder_is_dropped_and_the_file_kept() {
     let placeholder = "<?xml version=\"1.0\"?>\n<msg><appmsg appid=\"\"><title>a.zip</title><type>74</type></appmsg></msg>";
     let file = "<?xml version=\"1.0\"?>\n<msg><appmsg appid=\"wx6618f1cfc6c132f8\" sdkver=\"0\"><title>a.zip</title><type>6</type>\
