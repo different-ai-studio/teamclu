@@ -21,6 +21,7 @@ import {
 } from "../../actors/components/SegmentedFilter";
 import { Hairline } from "../../../ui/atoms/Hairline";
 import { PrimaryButton } from "../../../ui/button";
+import { HeaderBackButton } from "../../../ui/HeaderBackButton";
 import { PageHeader } from "../../../ui/PageHeader";
 import { SwipeableRow } from "../../../ui/SwipeableRow";
 import { impactLight, selectionTick } from "../../../lib/haptics";
@@ -37,8 +38,10 @@ import {
 type Filter = "all" | "mine" | "open" | "done";
 
 export type IdeasListScreenProps = {
-  /** Extra bottom inset so content clears the floating tab bar. */
+  /** Extra bottom inset for anything floating over the list. */
   bottomInset?: number;
+  /** Shown as a back chevron: the screen is pushed from the session home menu. */
+  onBack?: () => void;
   actorNames?: ReadonlyMap<string, string>;
   currentActorId: string | null;
   onArchiveBatch?: (ideaIds: string[]) => Promise<void>;
@@ -57,11 +60,13 @@ export type IdeasListScreenProps = {
 
 function HeaderBar({
   count,
+  onBack,
   onCreate,
   onOpenArchived,
   onOpenStats,
 }: {
   count: number;
+  onBack?: () => void;
   onCreate?: () => void;
   onOpenArchived?: () => void;
   onOpenStats?: () => void;
@@ -70,6 +75,7 @@ function HeaderBar({
   return (
     <PageHeader
       count={count}
+      left={onBack ? <HeaderBackButton onPress={onBack} /> : undefined}
       right={
         <View style={styles.toolbarGroup}>
           {onOpenStats ? (
@@ -117,6 +123,7 @@ function HeaderBar({
 
 export function IdeasListScreen({
   bottomInset = 0,
+  onBack,
   actorNames,
   currentActorId,
   onArchiveBatch,
@@ -265,6 +272,7 @@ export function IdeasListScreen({
   const headerBar = (
     <HeaderBar
       count={state.ideas.length}
+      onBack={onBack}
       onCreate={onCreate}
       onOpenArchived={onOpenArchived}
       onOpenStats={onOpenStats}

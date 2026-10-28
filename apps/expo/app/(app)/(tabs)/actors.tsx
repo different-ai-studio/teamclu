@@ -79,6 +79,7 @@ export default function ActorsIndexRoute() {
 
   return (
     <ActorsListScreen
+      onBack={() => (router.canGoBack() ? router.back() : router.replace("/(app)/sessions"))}
       currentActorId={state.currentMemberActorId}
       onInvite={() => router.push("/(app)/invite")}
       onLoad={() => {

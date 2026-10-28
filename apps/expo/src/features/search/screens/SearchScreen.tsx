@@ -21,6 +21,7 @@ import type { Idea } from "../../ideas/idea-types";
 import { SessionRow } from "../../sessions/components/SessionRow";
 import type { SessionSummary } from "../../sessions/session-types";
 import { Hairline } from "../../../ui/atoms/Hairline";
+import { HeaderBackButton } from "../../../ui/HeaderBackButton";
 import { PageHeader } from "../../../ui/PageHeader";
 import { SectionEyebrow } from "../../../ui/atoms/SectionEyebrow";
 import { colors, radii, spacing, typography } from "../../../ui/theme";
@@ -32,8 +33,10 @@ import {
 import { matchesAnyField, matchesQuery } from "../search-matcher";
 
 export type SearchScreenProps = {
-  /** Extra bottom inset so content clears the floating tab bar. */
+  /** Extra bottom inset for anything floating over the list. */
   bottomInset?: number;
+  /** Shown as a back chevron: the screen is pushed from the session home menu. */
+  onBack?: () => void;
   actors: Actor[];
   ideas: Idea[];
   isLoading: boolean;
@@ -43,13 +46,19 @@ export type SearchScreenProps = {
   sessions: SessionSummary[];
 };
 
-function HeaderBar() {
+function HeaderBar({ onBack }: { onBack?: () => void }) {
   const { t } = useTranslation();
-  return <PageHeader title={t("Search")} />;
+  return (
+    <PageHeader
+      left={onBack ? <HeaderBackButton onPress={onBack} /> : undefined}
+      title={t("Search")}
+    />
+  );
 }
 
 export function SearchScreen({
   bottomInset = 0,
+  onBack,
   actors,
   ideas,
   isLoading,
@@ -118,7 +127,7 @@ export function SearchScreen({
       keyboardShouldPersistTaps="handled"
       style={styles.screen}
     >
-      <HeaderBar />
+      <HeaderBar onBack={onBack} />
 
       <View style={styles.searchField}>
         <Ionicons color={colors.slate} name="search" size={16} />

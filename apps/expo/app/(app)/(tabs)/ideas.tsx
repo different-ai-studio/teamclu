@@ -114,6 +114,7 @@ export default function IdeasIndexRoute() {
 
   return (
     <IdeasListScreen
+      onBack={() => (router.canGoBack() ? router.back() : router.replace("/(app)/sessions"))}
       actorNames={actorNames}
       currentActorId={state.currentMemberActorId}
       onCreate={() => router.push("/(app)/new-idea")}

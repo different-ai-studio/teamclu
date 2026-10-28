@@ -1,4 +1,5 @@
 import { Redirect, useFocusEffect, useRouter } from "expo-router";
+import { StyleSheet, View } from "react-native";
 import { rememberOpeningSession } from "../../../../src/features/sessions/opening-session";
 import { prefetchSessionMessages } from "../../../../src/features/sessions/session-detail-cache";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -30,6 +31,7 @@ import {
 import { buildSessionRuntimeMaps } from "../../../../src/features/sessions/session-row-runtime";
 import type { ConnectedAgentsStoreState } from "../../../../src/features/actors/connected-agents-store";
 import { SessionsListScreen } from "../../../../src/features/sessions/screens/SessionsListScreen";
+import { HomeComposerBar } from "../../../../src/features/sessions/components/HomeComposerBar";
 import { ZeroAgentReminderSheet } from "../../../../src/features/sessions/screens/ZeroAgentReminderSheet";
 import {
   hasShownZeroAgentReminder,
@@ -362,6 +364,25 @@ export default function SessionsIndexRoute() {
     agentsStore?.getState ?? emptyAgentsState,
   );
 
+  // The composer bar's placeholder names the viewer's default agent, as iOS.
+  // A hint only: a failed lookup just says "Message".
+  const [defaultAgentId, setDefaultAgentId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeTeamId) return;
+    let cancelled = false;
+    void createActorsApi({ getAccessToken: supabaseAccessToken(supabase) })
+      .getEffectiveDefaultAgent(activeTeamId)
+      .then((id) => {
+        if (!cancelled) setDefaultAgentId(id);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTeamId]);
+  const defaultAgentName =
+    agentsState.agents.find((agent) => agent.agentId === defaultAgentId)?.displayName ?? null;
+
   const searchMessageContent = useCallback(
     async (query: string) => {
       const rows = await loadSearchableMessages(await openCacheDb(), activeTeamId);
@@ -385,7 +406,7 @@ export default function SessionsIndexRoute() {
   });
 
   return (
-    <>
+    <View style={styles.home}>
     <SessionsListScreen
       searchMessageContent={searchMessageContent}
       actorGlyphById={actorGlyphById}
@@ -435,9 +456,9 @@ export default function SessionsIndexRoute() {
         }
         await controller.refresh();
       }}
-      onNewSession={() => {
-        router.push("/(app)/new-session");
-      }}
+      onOpenActors={() => router.push("/(app)/(tabs)/actors")}
+      onOpenIdeas={() => router.push("/(app)/(tabs)/ideas")}
+      onOpenSearch={() => router.push("/(app)/(tabs)/search")}
       onTogglePin={async (sessionId) => {
         selectionTick();
         await togglePinnedSession(sessionId);
@@ -489,6 +510,11 @@ export default function SessionsIndexRoute() {
       }}
       state={listState}
     />
+    <HomeComposerBar
+      agentName={defaultAgentName}
+      onCompose={() => router.push("/(app)/new-session")}
+      onVoice={() => router.push("/(app)/voice-capture")}
+    />
     <SheetModal
       onRequestClose={dismissZeroAgentSheet}
       visible={zeroAgentSheetOpen}
@@ -516,6 +542,12 @@ export default function SessionsIndexRoute() {
       }
       teamId={activeTeamId}
     />
-    </>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  home: {
+    flex: 1,
+  },
+});

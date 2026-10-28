@@ -19,7 +19,7 @@ import { SkeletonRow } from "../../../ui/atoms/SkeletonRow";
 import { PrimaryButton } from "../../../ui/button";
 import { AppCard } from "../../../ui/card";
 import { PageHeader } from "../../../ui/PageHeader";
-import { showActionSheet } from "../../../ui/action-sheet";
+import { showActionSheet, type SheetAction } from "../../../ui/action-sheet";
 import { TextPromptModal } from "../../../ui/TextPromptModal";
 import { impactLight, selectionTick } from "../../../lib/haptics";
 import { t } from "../../../lib/i18n";
@@ -47,7 +47,6 @@ type SessionsListScreenProps = {
   onLoad: () => void;
   onMarkBatchRead?: (sessionIds: string[]) => Promise<void>;
   onMarkBatchUnread?: (sessionIds: string[]) => Promise<void>;
-  onNewSession?: () => void;
   onRefresh: () => void;
   onSelectSession: (sessionId: string) => void;
   onTogglePin?: (sessionId: string) => Promise<void> | void;
@@ -64,6 +63,13 @@ type SessionsListScreenProps = {
   /** "Agent working" / "waiting for you" per session (iOS #1567). */
   activityBySessionId?: ReadonlyMap<string, SessionLiveActivity>;
   onShortcuts?: () => void;
+  /**
+   * The team's other places, from the header menu (iOS #1752 dropped the tab
+   * bar for one session home). A missing handler leaves its entry out.
+   */
+  onOpenIdeas?: () => void;
+  onOpenActors?: () => void;
+  onOpenSearch?: () => void;
   selectedSessionId?: string | null;
   state: SessionsListState;
   /**
@@ -219,24 +225,42 @@ function renderSessionListRow(
 }
 
 function HeaderBar({
-  onNewSession,
+  menuActions,
   onShortcuts,
 }: {
-  onNewSession: () => void;
+  menuActions: SheetAction[];
   onShortcuts: () => void;
 }) {
   const { t } = useTranslation();
+  // New sessions start from the composer bar under the list now, so the
+  // right slot is the menu to the places the tab bar used to hold (iOS
+  // `SessionsHome.menu`): none is somewhere you stay.
   return (
     <PageHeader
       left={
-        <Pressable onPress={onShortcuts} hitSlop={8} style={styles.toolbarButton}>
+        <Pressable
+          accessibilityLabel={t("Shortcuts")}
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={onShortcuts}
+          style={styles.toolbarButton}
+        >
           <Ionicons name="grid-outline" size={22} color={colors.onyx} />
         </Pressable>
       }
       right={
-        <Pressable onPress={onNewSession} hitSlop={8} style={styles.toolbarButton}>
-          <Ionicons name="create-outline" size={24} color={colors.onyx} />
-        </Pressable>
+        menuActions.length > 0 ? (
+          <Pressable
+            accessibilityLabel={t("Menu")}
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={() => showActionSheet(menuActions, { cancelLabel: t("Cancel") })}
+            style={styles.toolbarButton}
+            testID="sessions.menuButton"
+          >
+            <Ionicons name="ellipsis-horizontal" size={22} color={colors.onyx} />
+          </Pressable>
+        ) : null
       }
       title={t("Sessions")}
     />
@@ -252,10 +276,12 @@ export function SessionsListScreen({
   onLoad,
   onMarkBatchRead,
   onMarkBatchUnread,
-  onNewSession,
   onRefresh,
   onSelectSession,
   onShortcuts,
+  onOpenIdeas,
+  onOpenActors,
+  onOpenSearch,
   onTogglePin,
   onRenameSession,
   onToggleMute,
@@ -497,14 +523,6 @@ export function SessionsListScreen({
     selectionMode,
   };
 
-  const handleNewSession = () => {
-    if (onNewSession) {
-      onNewSession();
-      return;
-    }
-    setPlaceholderMessage(t("New session — coming next."));
-  };
-
   const handleShortcuts = () => {
     if (onShortcuts) {
       onShortcuts();
@@ -529,12 +547,13 @@ export function SessionsListScreen({
     return () => clearTimeout(timer);
   }, [isWaitingForRows]);
 
-  const headerBar = (
-    <HeaderBar
-      onNewSession={handleNewSession}
-      onShortcuts={handleShortcuts}
-    />
-  );
+  const menuActions: SheetAction[] = [
+    ...(onOpenIdeas ? [{ label: t("Ideas"), run: onOpenIdeas }] : []),
+    ...(onOpenActors ? [{ label: t("Actors"), run: onOpenActors }] : []),
+    ...(onOpenSearch ? [{ label: t("Search"), run: onOpenSearch }] : []),
+  ];
+
+  const headerBar = <HeaderBar menuActions={menuActions} onShortcuts={handleShortcuts} />;
 
   if (isWaitingForRows) {
     return (
