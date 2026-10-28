@@ -1,3 +1,4 @@
+pub(crate) mod bootstrap;
 mod client;
 mod durable_queue;
 pub mod publisher;

@@ -6,6 +6,7 @@
 //! `SessionManager` or `LivePublisher` holding a dead client generation.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex, OnceLock,
@@ -45,6 +46,14 @@ const RECOVERY_SIGNAL_TIMEOUT: Duration = Duration::from_secs(2);
 const WAKE_GAP_THRESHOLD: Duration = Duration::from_secs(120);
 const INBOUND_RETRY_MAX: Duration = Duration::from_secs(30);
 const DURABLE_STORE_FAILURE_PREFIX: &str = "durable_store:";
+/// Consecutive failed generations before the supervisor asks the Cloud API
+/// whether the broker moved. Each failure is a worker that spent
+/// `RECOVERY_DEADLINE` unable to connect, so two is roughly a minute down.
+const BOOTSTRAP_REFRESH_AFTER_FAILURES: u32 = 2;
+/// At most one bootstrap fetch per interval while the broker stays down, so a
+/// broker outage across every daemon does not turn into load on the Cloud API.
+const BOOTSTRAP_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+const BOOTSTRAP_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Tracked MQTT subscription restored after every CONNACK.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -607,6 +616,19 @@ fn connect_refusal_is_credential_failure(code: &rumqttc::mqttbytes::v4::ConnectR
     )
 }
 
+/// Whether a failing supervisor should re-fetch `/v1/config/bootstrap` before
+/// building the next worker. The daemon otherwise resolves the broker only at
+/// startup, so an operator moving the broker left running daemons retrying the
+/// old address until someone restarted them.
+fn bootstrap_refresh_due(
+    restart_failures: u32,
+    last_refresh: Option<Instant>,
+    now: Instant,
+) -> bool {
+    restart_failures >= BOOTSTRAP_REFRESH_AFTER_FAILURES
+        && last_refresh.is_none_or(|at| now.duration_since(at) >= BOOTSTRAP_REFRESH_INTERVAL)
+}
+
 fn inbound_retry_delay(attempt: u32) -> Duration {
     let exponent = attempt.saturating_sub(1).min(5);
     Duration::from_secs(1_u64 << exponent).min(INBOUND_RETRY_MAX)
@@ -689,6 +711,7 @@ impl MqttSupervisor {
         recovery_rx: mpsc::Receiver<MqttRecoveryRequest>,
         connected: Arc<AtomicBool>,
         snapshot: MqttSnapshotHandle,
+        config_path: PathBuf,
     ) -> Self {
         // Lifecycle events are low-volume and must never be dropped: losing
         // SubscriptionsReady would leave the daemon permanently below the
@@ -711,6 +734,7 @@ impl MqttSupervisor {
         let join = tokio::spawn(async move {
             run_supervisor(
                 config,
+                config_path,
                 actor_id,
                 initial_token,
                 backend,
@@ -833,7 +857,8 @@ struct WorkerHandle {
 }
 
 async fn run_supervisor(
-    config: DaemonConfig,
+    mut config: DaemonConfig,
+    config_path: PathBuf,
     actor_id: String,
     initial_token: String,
     backend: Arc<dyn Backend>,
@@ -875,6 +900,7 @@ async fn run_supervisor(
     let mut ready_connection_generation = None::<u64>;
     let mut last_observed_ms = MqttHeartbeat::now_ms();
     let mut credential_attempt = 0_u64;
+    let mut last_bootstrap_refresh = None::<Instant>;
     let mut recovery_signal_count = 0_u64;
     let mut storage_blocked = false;
     // A recovery signal is an edge, not a command to repeatedly tear down the
@@ -930,6 +956,31 @@ async fn run_supervisor(
             let reason = restart_reason
                 .take()
                 .unwrap_or_else(|| "MQTT worker exited".to_string());
+            if bootstrap_refresh_due(restart_failures, last_bootstrap_refresh, Instant::now()) {
+                last_bootstrap_refresh = Some(Instant::now());
+                let previous_broker = config.mqtt.broker_url.clone();
+                // Never fails: a fetch error or a reply without an mqtt block
+                // keeps the current broker, which is what a plain outage needs.
+                let refresh = crate::mqtt::bootstrap::apply_bootstrap_overrides(
+                    &backend,
+                    &mut config,
+                    &config_path,
+                );
+                if tokio::time::timeout(BOOTSTRAP_REFRESH_TIMEOUT, refresh)
+                    .await
+                    .is_err()
+                {
+                    warn!("timed out re-fetching the MQTT broker from bootstrap; keeping the current broker");
+                }
+                if config.mqtt.broker_url != previous_broker {
+                    info!(
+                        previous_broker = %previous_broker,
+                        broker = %config.mqtt.broker_url,
+                        restart_failures,
+                        "MQTT broker moved; the next worker connects to the new address"
+                    );
+                }
+            }
             credential_attempt = credential_attempt.saturating_add(1);
             let credential_started = Instant::now();
             info!(
@@ -2641,6 +2692,36 @@ mod tests {
         assert_eq!(restart_delay(3), Duration::from_secs(20));
         assert_eq!(restart_delay(4), Duration::from_secs(30));
         assert_eq!(restart_delay(20), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn bootstrap_refresh_waits_for_repeated_failures() {
+        let now = Instant::now();
+        // A single failed generation is a blip, not evidence the broker moved.
+        assert!(!bootstrap_refresh_due(0, None, now));
+        assert!(!bootstrap_refresh_due(1, None, now));
+        assert!(bootstrap_refresh_due(
+            BOOTSTRAP_REFRESH_AFTER_FAILURES,
+            None,
+            now
+        ));
+    }
+
+    #[test]
+    fn bootstrap_refresh_is_throttled_while_the_broker_stays_down() {
+        let now = Instant::now();
+        let failures = BOOTSTRAP_REFRESH_AFTER_FAILURES + 5;
+        assert!(!bootstrap_refresh_due(failures, Some(now), now));
+        assert!(!bootstrap_refresh_due(
+            failures,
+            Some(now),
+            now + BOOTSTRAP_REFRESH_INTERVAL - Duration::from_secs(1)
+        ));
+        assert!(bootstrap_refresh_due(
+            failures,
+            Some(now),
+            now + BOOTSTRAP_REFRESH_INTERVAL
+        ));
     }
 
     #[test]
