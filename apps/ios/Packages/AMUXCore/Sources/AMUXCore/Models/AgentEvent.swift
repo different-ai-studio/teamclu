@@ -102,9 +102,8 @@ public extension AgentEvent {
     /// Returns the human display name for `model` resolved against the
     /// available models, or nil if no model is stamped. Falls back to the raw
     /// model id when no display name is registered (e.g. proto-only model id
-    /// from a future daemon).
-    func modelDisplayName(via attachment: AgentAttachment) -> String? {
-        guard let modelId = self.model, !modelId.isEmpty else { return nil }
-        return attachment.availableModels.first(where: { $0.id == modelId })?.displayName ?? modelId
+    /// from a future daemon) or when the agent is no longer attached here.
+    func modelDisplayName(via attachment: AgentAttachment?) -> String? {
+        AgentAttachment.modelDisplayName(for: model, via: attachment)
     }
 }

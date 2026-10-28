@@ -76,6 +76,11 @@ public struct StreamingDetailView: View {
     /// Last feedItems fingerprint we used to build `resolvedSnapshot`.
     @State private var lastFeedFingerprint = ""
     @State private var fullscreenAttachment: MessageAttachment?
+    /// Follow the stream only while the reader sits at the bottom: scrolling
+    /// up to read earlier steps used to be yanked back on every token.
+    @State private var isAtBottom = true
+    @State private var isUserScrolling = false
+    private let nearBottomThreshold: CGFloat = 80
 
     /// Every file the turn produced, in the order its events did, with the
     /// same attachment never listed twice — a multi-segment turn can repeat
@@ -190,7 +195,7 @@ public struct StreamingDetailView: View {
     /// event in the turn has a model (legacy rows, or the daemon hasn't
     /// stamped current_model yet).
     private func modelDisplayName(for events: [AgentEvent]) -> String? {
-        guard let attachment = viewModel.attachment(forAgentActorID: route.agentID) else { return nil }
+        let attachment = viewModel.attachment(forAgentActorID: route.agentID)
         for event in events.reversed() {
             if let name = event.modelDisplayName(via: attachment) {
                 return name
@@ -249,8 +254,8 @@ public struct StreamingDetailView: View {
                                 Task { try? await viewModel.grantPermission(requestId: id, agentActorID: agentID ?? route.agentID, optionID: optionID) }
                             },
                             permissionOptions: { viewModel.permissionOptions(for: $0) },
-                            // The nav-bar title already shows
-                            // "{agent} · {model}" for the whole turn;
+                            // The nav-bar title already shows the agent
+                            // and model for the whole turn;
                             // suppressing the per-bubble caption keeps
                             // this view's left margin clean and avoids
                             // repeating identity on every assistant row.
@@ -311,8 +316,28 @@ public struct StreamingDetailView: View {
             // Start long turns at the bottom without bottom-aligning short
             // turns inside the viewport.
             .defaultScrollAnchor(.bottom, for: .initialOffset)
+            // Same bookkeeping as the chat screen: content growing under a
+            // reader at the bottom is not the reader leaving it, so only a
+            // change with the same content height rewrites the flag.
+            .onScrollGeometryChange(for: ProcessScrollMetrics.self) { geo in
+                ProcessScrollMetrics(
+                    distanceFromBottom: (geo.contentSize.height + geo.contentInsets.bottom)
+                        - geo.visibleRect.maxY,
+                    contentHeight: geo.contentSize.height
+                )
+            } action: { old, new in
+                if new.contentHeight != old.contentHeight, isAtBottom, !isUserScrolling {
+                    proxy.scrollTo("detail-bottom", anchor: .bottom)
+                    return
+                }
+                isAtBottom = new.distanceFromBottom < nearBottomThreshold
+            }
+            .onScrollPhaseChange { _, phase in
+                isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+            }
             .onChange(of: snapshot.events.count) {
                 // New event arrived in this turn — gentle animation to anchor.
+                guard isAtBottom, !isUserScrolling else { return }
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("detail-bottom", anchor: .bottom) }
             }
             .onChange(of: liveText) { _, _ in
@@ -321,7 +346,7 @@ public struct StreamingDetailView: View {
                 // layout work at 30–60 deltas/sec. Plain scrollTo is instant
                 // and SwiftUI's scroll view still animates the position change
                 // smoothly via its own momentum tracking.
-                guard stillStreaming else { return }
+                guard stillStreaming, isAtBottom, !isUserScrolling else { return }
                 proxy.scrollTo("detail-bottom", anchor: .bottom)
             }
         }
@@ -376,4 +401,9 @@ public struct StreamingDetailView: View {
         }
         .modifier(TurnHistoryFetcher(viewModel: viewModel, route: route))
     }
+}
+
+private struct ProcessScrollMetrics: Equatable {
+    let distanceFromBottom: CGFloat
+    let contentHeight: CGFloat
 }

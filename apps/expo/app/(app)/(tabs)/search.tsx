@@ -65,6 +65,7 @@ export default function SearchIndexRoute() {
 
   return (
     <SearchScreen
+      onBack={() => (router.canGoBack() ? router.back() : router.replace("/(app)/sessions"))}
       actors={actors}
       ideas={ideas}
       isLoading={isLoading}

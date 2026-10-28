@@ -15,6 +15,7 @@ import { Hairline } from "../../../ui/atoms/Hairline";
 import { SectionEyebrow } from "../../../ui/atoms/SectionEyebrow";
 import { SkeletonRow } from "../../../ui/atoms/SkeletonRow";
 import { PrimaryButton } from "../../../ui/button";
+import { HeaderBackButton } from "../../../ui/HeaderBackButton";
 import { PageHeader } from "../../../ui/PageHeader";
 import { colors, radii, spacing, typography } from "../../../ui/theme";
 import { ActorRow } from "../components/ActorRow";
@@ -33,8 +34,10 @@ import { matchesQuery } from "../../search/search-matcher";
 type Filter = "all" | "humans" | "agents";
 
 export type ActorsListScreenProps = {
-  /** Extra bottom inset so content clears the floating tab bar. */
+  /** Extra bottom inset for anything floating over the list. */
   bottomInset?: number;
+  /** Shown as a back chevron: the screen is pushed from the session home menu. */
+  onBack?: () => void;
   currentActorId: string | null;
   onInvite?: () => void;
   onLoad: () => void;
@@ -48,10 +51,12 @@ export type ActorsListScreenProps = {
 
 function HeaderBar({
   count,
+  onBack,
   onInvite,
   onOpenStats,
 }: {
   count: number;
+  onBack?: () => void;
   onInvite?: () => void;
   onOpenStats?: () => void;
 }) {
@@ -59,6 +64,7 @@ function HeaderBar({
   return (
     <PageHeader
       count={count}
+      left={onBack ? <HeaderBackButton onPress={onBack} /> : undefined}
       right={
         <View style={styles.toolbarGroup}>
           {onOpenStats ? (
@@ -125,6 +131,7 @@ function Section({
 
 export function ActorsListScreen({
   bottomInset = 0,
+  onBack,
   currentActorId,
   onInvite,
   onLoad,
@@ -165,6 +172,7 @@ export function ActorsListScreen({
   const headerBar = (
     <HeaderBar
       count={humans.length + agents.length}
+      onBack={onBack}
       onInvite={onInvite}
       onOpenStats={onOpenStats}
     />

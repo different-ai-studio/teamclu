@@ -143,4 +143,12 @@ public extension AgentAttachment {
         else { return [] }
         return cmds
     }
+
+    /// Display name for `modelId` as `attachment` lists it, else the raw id;
+    /// nil when no model is given. A nil attachment (agent no longer attached
+    /// here) still yields the raw id so older replies keep their model label.
+    static func modelDisplayName(for modelId: String?, via attachment: AgentAttachment?) -> String? {
+        guard let modelId, !modelId.isEmpty else { return nil }
+        return attachment?.availableModels.first(where: { $0.id == modelId })?.displayName ?? modelId
+    }
 }

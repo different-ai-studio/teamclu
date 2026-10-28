@@ -1,7 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from "react-native";
 
 import { propsEqualIgnoringFunctions } from "../../../lib/memo-props";
 import { Hairline } from "../../../ui/atoms/Hairline";
@@ -13,6 +21,9 @@ import type { AgentTurnFeedItem } from "../session-feed-items";
 import type { SessionMessage } from "../session-types";
 import { foldToolResults } from "../tool-display";
 import { sortTurnEvents, turnModelName } from "../turn-detail-events";
+
+/** Same as the chat screen's: within this many points counts as "at the bottom". */
+const NEAR_BOTTOM_THRESHOLD = 80;
 
 export type TurnDetailScreenProps = {
   turn: AgentTurnFeedItem;
@@ -75,14 +86,26 @@ export function TurnDetailScreen({
   const isStreaming = Boolean(turn.isActive && turn.stream && !turn.stream.isComplete);
   const modelName = turnModelName(events) ?? turn.stream?.model ?? null;
 
-  // Anchor to the newest event. Long turns open at the bottom, and a token
-  // arriving while you read keeps the tail in view.
-  useEffect(() => {
+  // Anchor to the newest event, but only while the reader is at the bottom:
+  // every token used to scroll back down, so earlier steps could not be read
+  // while the agent was still running (iOS `StreamingDetailView`). Refs, not
+  // state — scroll position changes far too often to re-render on.
+  const isAtBottom = useRef(true);
+  const isDragging = useRef(false);
+  const followTail = () => {
+    if (!isAtBottom.current || isDragging.current) return;
     scrollRef.current?.scrollToEnd({ animated: false });
-  }, [visibleEvents.length]);
+  };
+  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const distanceFromBottom =
+      contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    isAtBottom.current = distanceFromBottom < NEAR_BOTTOM_THRESHOLD;
+  };
+  useEffect(followTail, [visibleEvents.length]);
   useEffect(() => {
     if (!isStreaming) return;
-    scrollRef.current?.scrollToEnd({ animated: false });
+    followTail();
   }, [isStreaming, liveText]);
 
   const isEmpty = visibleEvents.length === 0 && liveText.length === 0;
@@ -125,7 +148,22 @@ export function TurnDetailScreen({
       </View>
       <Hairline />
 
-      <ScrollView contentContainerStyle={styles.content} ref={scrollRef}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        onMomentumScrollEnd={() => {
+          isDragging.current = false;
+        }}
+        onScroll={handleScroll}
+        onScrollBeginDrag={() => {
+          isDragging.current = true;
+        }}
+        onScrollEndDrag={(event) => {
+          // No momentum to wait for when the finger lifts without a fling.
+          if (!event.nativeEvent.velocity?.y) isDragging.current = false;
+        }}
+        ref={scrollRef}
+        scrollEventThrottle={64}
+      >
         {isEmpty ? (
           <View style={styles.emptyBlock}>
             <Ionicons color={colors.slate} name="sparkles-outline" size={36} />

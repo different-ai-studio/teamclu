@@ -270,22 +270,22 @@ public struct NewSessionSheet: View {
 
     // MARK: - Context card
 
-    /// Who the session is with and what it is about: the agent (the
-    /// viewer's default to start with), where it works, an optional idea and
-    /// app, and anyone else to bring in.
+    /// Who the session is with and where it works: the agent (the viewer's
+    /// default to start with), anyone else to bring in, an optional app, and
+    /// the working directory. There is no idea picker; a session is tied to
+    /// an idea only when it is started from that idea's page
+    /// (`preselectedIdeaId`).
     private var contextCard: some View {
         HaiPaperCard {
             agentRow
             hairline
-            workspaceRow
-            hairline
-            ideaRow
+            collaboratorsRow
             if teamAppsStore != nil {
                 hairline
                 appRow
             }
             hairline
-            collaboratorsRow
+            workspaceRow
         }
     }
 
@@ -396,45 +396,6 @@ public struct NewSessionSheet: View {
         .buttonStyle(.plain)
         .disabled(primaryWorkspaces.isEmpty || selectedApp != nil)
         .accessibilityIdentifier("newSession.workspaceRow")
-    }
-
-    private var selectedIdea: SessionIdea? {
-        guard let selectedIdeaId else { return nil }
-        return ideas.first { $0.ideaId == selectedIdeaId }
-    }
-
-    private var ideaRow: some View {
-        Menu {
-            Button {
-                selectedIdeaId = nil
-            } label: {
-                Label(String(localized: "None"), systemImage: selectedIdeaId == nil ? "checkmark" : "circle")
-            }
-            if !ideas.isEmpty {
-                Divider()
-                ForEach(ideas, id: \.ideaId) { idea in
-                    Button {
-                        selectedIdeaId = idea.ideaId
-                    } label: {
-                        if idea.ideaId == selectedIdeaId {
-                            Label(idea.displayTitle, systemImage: "checkmark")
-                        } else {
-                            Text(idea.displayTitle)
-                        }
-                    }
-                }
-            }
-        } label: {
-            HaiSheetRow(
-                label: String(localized: "Idea"),
-                value: selectedIdea?.displayTitle ?? String(localized: "None"),
-                valueIsMuted: selectedIdea == nil,
-                showsChevron: true
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("newSession.ideaRow")
     }
 
     /// The session's app. Picking one seats every agent in its checkout of
@@ -748,8 +709,11 @@ public struct NewSessionSheet: View {
         errorMessage = nil
         debugStatusMessage = nil
 
-        if !isAgentAvailable {
-            createLocalSession(text: text, title: userText)
+        // Not connected yet: say so and keep the draft. This used to save a
+        // device-only session that the server never heard of, so the next
+        // session sync pruned it — and its first message — without a trace.
+        guard isAgentAvailable else {
+            errorMessage = String(localized: "Not connected yet. Your message is kept — try again in a moment.")
             return
         }
         createSession(text: text, title: userText)
@@ -871,44 +835,6 @@ public struct NewSessionSheet: View {
                 errorMessage = failure.userFacingMessage
             }
         }
-    }
-
-    private func createLocalSession(text: String, title: String) {
-        guard let currentActorID else {
-            errorMessage = String(localized: "Current actor is not ready yet.")
-            return
-        }
-
-        let createdAt = Date()
-        let sessionID = UUID().uuidString.lowercased()
-        let session = Session(
-            sessionId: sessionID,
-            teamId: teamID,
-            title: String((title.split(separator: "\n").first.map(String.init) ?? title).trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)),
-            createdBy: currentActorID,
-            createdAt: createdAt,
-            summary: text,
-            participantCount: max(collaborators.count + 1, 1),
-            lastMessagePreview: text,
-            lastMessageAt: createdAt,
-            ideaId: selectedIdeaId ?? ""
-        )
-
-        let message = SessionMessage(
-            messageId: UUID().uuidString.lowercased(),
-            sessionId: sessionID,
-            senderActorId: currentActorID,
-            kind: "text",
-            content: text,
-            createdAt: createdAt
-        )
-
-        modelContext.insert(session)
-        modelContext.insert(message)
-        try? modelContext.save()
-        viewModel.adoptCreatedSession(sessionID, modelContext: modelContext)
-        onSessionCreated?("session:\(sessionID)")
-        dismiss()
     }
 
     private func sessionParticipants(currentActorID: String) -> [CachedActor] {

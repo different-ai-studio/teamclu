@@ -492,6 +492,7 @@ function AgentTurnCard({
   const time = agentTurnTime(turn);
   const detailCount = agentTurnDetailCount(turn);
   const isWorking = turn.isActive && !turn.stream?.isComplete;
+  const modelName = turn.finalMessage?.model || turn.stream?.model || null;
   return (
     <View style={[styles.row, styles.rowOther]}>
       <View style={styles.senderAvatar}>
@@ -523,6 +524,14 @@ function AgentTurnCard({
             <Text numberOfLines={1} style={styles.turnTitle}>
               {displayName}
             </Text>
+            {/* The model sits right after the agent name, as iOS
+                AgentReplyHeader (#1698): who answered and with what read as
+                one line instead of a second line under the title. */}
+            {modelName ? (
+              <Text numberOfLines={1} style={styles.turnModel}>
+                · {modelName}
+              </Text>
+            ) : null}
             <Text style={styles.turnBadge}>
               {turn.isActive
                 ? turn.stream?.isComplete
@@ -547,13 +556,6 @@ function AgentTurnCard({
             </Pressable>
           ) : null}
         </View>
-        {turn.finalMessage?.model || turn.stream?.model || !turn.finalMessage ? (
-          // A live card holds the line before the model name arrives, so the
-          // name landing does not push the card taller.
-          <Text numberOfLines={1} style={styles.turnModel}>
-            {turn.finalMessage?.model || turn.stream?.model || " "}
-          </Text>
-        ) : null}
         {turn.finalMessage ? (
           <MessageMarkdown
             definiteWidth
@@ -2009,6 +2011,7 @@ const styles = StyleSheet.create({
   },
   turnModel: {
     color: colors.slate,
+    flexShrink: 2,
     ...typography.monoMeta,
   },
   turnStopButton: {

@@ -573,6 +573,16 @@
         }
       }
     },
+    "An attachment failed to upload. Tap it to retry, or remove it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有附件上传失败，点它重试，或移除。"
+          }
+        }
+      }
+    },
     "Answer each question before submitting.": {
       "localizations": {
         "zh-Hans": {
@@ -719,16 +729,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "自动批准权限"
-          }
-        }
-      }
-    },
-    "Auto-approved tools": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "自动批准的工具"
           }
         }
       }
@@ -2736,6 +2736,16 @@
         }
       }
     },
+    "Not connected yet. Your message is kept — try again in a moment.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未连接，消息已保留，请稍后再试。"
+          }
+        }
+      }
+    },
     "Not connected · Tap to reconnect": {
       "localizations": {
         "zh-Hans": {
@@ -4567,16 +4577,6 @@
         }
       }
     },
-    "These tools run without a prompt. Real persistence will land alongside the per-agent permission spec.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这些工具运行时不再询问。真实的持久化将随每 Agent 权限规范一起上线。"
-          }
-        }
-      }
-    },
     "They will lose access to all of this team's ideas and sessions.": {
       "localizations": {
         "zh-Hans": {
@@ -4853,6 +4853,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "升级失败，请重试。"
+          }
+        }
+      }
+    },
+    "Upload failed, tap to retry": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上传失败，点击重试"
           }
         }
       }

@@ -84,21 +84,34 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     }
 
     // Tap: post deep-link event for ContentView to handle.
+    // Completion-handler form, not `async`: the async form's bridge calls the
+    // system completion handler on whatever thread the task ends on, and the
+    // state-restoration snapshot UIKit takes inside it throws off the main
+    // thread — tapping a notification crashed the app (TestFlight 1.2 (37)).
+    // The payload is parsed here because it can't cross to the main actor.
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                 didReceive response: UNNotificationResponse) async {
+                                 didReceive response: UNNotificationResponse,
+                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
-        if response.actionIdentifier == NotificationReply.replyActionID,
-           let reply = response as? UNTextInputNotificationResponse {
-            // Parsed here: the payload dictionary can't cross to the main actor.
-            if let target = NotificationReply.target(from: info) {
-                await NotificationReplySender.send(reply.userText, to: target)
+        let replyText = (response.actionIdentifier == NotificationReply.replyActionID)
+            ? (response as? UNTextInputNotificationResponse)?.userText
+            : nil
+        let replyTarget = replyText == nil ? nil : NotificationReply.target(from: info)
+        let sid = info["session_id"] as? String
+        let mid = info["message_id"] as? String
+        // Only ever called on the main actor below, which is what UIKit needs.
+        nonisolated(unsafe) let done = completionHandler
+        Task { @MainActor in
+            defer { done() }
+            if let replyText {
+                if let replyTarget {
+                    await NotificationReplySender.send(replyText, to: replyTarget)
+                }
+                return
             }
-            return
-        }
-        guard let sid = info["session_id"] as? String else { return }
-        var payload: [String: Any] = ["session_id": sid]
-        if let mid = info["message_id"] as? String { payload["message_id"] = mid }
-        await MainActor.run {
+            guard let sid else { return }
+            var payload: [String: Any] = ["session_id": sid]
+            if let mid { payload["message_id"] = mid }
             NotificationCenter.default.post(
                 name: .amuxOpenSession, object: nil, userInfo: payload)
         }
