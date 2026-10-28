@@ -1,3 +1,28 @@
+; Refuse to install on Windows we cannot run on: anything older than Windows 10,
+; or a 32-bit OS (we only ship x64 / arm64 builds). WebView2 dropped Windows 7 /
+; 8.1, and the template's WebView2 section runs before NSIS_HOOK_PREINSTALL — on
+; Windows 7 its bootstrapper dies with "无法定位程序输入点 PackageIdFromFullName
+; 于 KERNEL32.dll", which tells the user nothing. The template has no 32-bit
+; guard either.
+;
+; The template offers no .onInit hook, but this file is included before any MUI
+; page is declared, so MUI2's .onGUIInit picks up MUI_CUSTOMFUNCTION_GUIINIT and
+; we run before the welcome page. Silent installs (/S, the updater) never reach
+; .onGUIInit; they only come from an app that is already running, so the OS is
+; already known to be fine.
+!include WinVer.nsh
+!include x64.nsh
+
+!define MUI_CUSTOMFUNCTION_GUIINIT TeamCluCheckWindowsVersion
+
+Function TeamCluCheckWindowsVersion
+  ${IfNot} ${AtLeastWin10}
+  ${OrIfNot} ${RunningX64}
+    MessageBox MB_ICONSTOP|MB_OK "$(^Name) 需要 64 位 Windows 10 或 Windows 11，当前系统无法安装。$\r$\n$\r$\n$(^Name) requires 64-bit Windows 10 or Windows 11 and cannot be installed on this system."
+    Quit
+  ${EndIf}
+FunctionEnd
+
 ; Kill sidecars that NSIS does not know about before it copies or deletes
 ; install-dir files. Tauri's CheckIfAppIsRunning only closes ${MAINBINARYNAME}.exe;
 ; amuxd / teamclu-introspect are externalBin children with kill_on_drop(false), so
