@@ -1337,6 +1337,7 @@ public struct SessionDetailView: View {
                     viewModel: viewModel,
                     agentID: agentID,
                     agentName: agentDisplayName(for: agentID),
+                    runtime: attachmentsByActor[agentID],
                     runtimeEvents: runtimeEvents
                 )
             }
@@ -1453,12 +1454,16 @@ private struct ActiveStreamRow: View {
     let viewModel: SessionDetailViewModel
     let agentID: String
     let agentName: String
+    let runtime: AgentAttachment?
     let runtimeEvents: [AgentEvent]
 
     var body: some View {
         let liveText = viewModel.streamingTextByAgent[agentID] ?? ""
         ActiveStreamCardView(
             agentName: agentName,
+            modelName: AgentAttachment.modelDisplayName(
+                for: viewModel.streamingModelByAgent[agentID], via: runtime
+            ),
             lastLine: lastLine,
             isPending: runtimeEvents.isEmpty && liveText.isEmpty
         )

@@ -112,8 +112,9 @@ public final class SessionDetailViewModel {
     }
     /// Per-agent model id stamped by the daemon on the most recent streaming
     /// `output` delta. Used so the synthesized event in stop()/idle flush
-    /// carries the model that produced the partial text.
-    private var streamingModelByAgent: [String: String] = [:]
+    /// carries the model that produced the partial text. Also read by the
+    /// active-stream card's "{agent} · {model}" header.
+    public private(set) var streamingModelByAgent: [String: String] = [:]
     /// Set of agents whose `output` stream is in flight (first delta seen,
     /// no `isComplete` yet). Drives the active-stream-card visibility and
     /// the legacy `isStreaming` / `streamingText` shims.

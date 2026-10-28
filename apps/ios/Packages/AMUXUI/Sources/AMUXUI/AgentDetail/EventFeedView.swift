@@ -132,25 +132,7 @@ public struct EventBubbleView: View {
     /// types only). Returns nil for non-stamped events or when no runtime is
     /// available to resolve the display name.
     private var modelDisplayName: String? {
-        guard let runtime else { return nil }
-        return event.modelDisplayName(via: runtime)
-    }
-
-    /// Header label shown above an assistant bubble: "{Agent name} · {Model}"
-    /// when both are resolvable, the agent name alone when the model isn't
-    /// stamped, the model alone when the agent identity can't be resolved
-    /// (e.g. event was stamped with a runtime_id before the runtime→actor
-    /// mapping was available), nil when neither resolves. Caption-style at
-    /// the call site.
-    private var assistantHeaderLabel: String? {
-        let agent = senderDisplayName.isEmpty ? nil : senderDisplayName
-        let model = modelDisplayName
-        switch (agent, model) {
-        case let (.some(a), .some(m)): return "\(a) · \(m)"
-        case let (.some(a), .none): return a
-        case let (.none, .some(m)): return m
-        case (.none, .none): return nil
-        }
+        event.modelDisplayName(via: runtime)
     }
 
     public var body: some View {
@@ -372,11 +354,8 @@ public struct EventBubbleView: View {
 
     private var assistantBubble: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if showsAssistantHeader, let header = assistantHeaderLabel {
-                Text(header)
-                    .font(.caption)
-                    .foregroundStyle(Color.amux.basalt)
-                    .padding(.leading, 4)
+            if showsAssistantHeader {
+                AgentReplyHeader(agentName: senderDisplayName, modelName: modelDisplayName)
             }
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -454,6 +433,8 @@ public struct EventBubbleView: View {
 
 public struct ActiveStreamCardView: View {
     public let agentName: String
+    /// Model stamped on the stream's deltas so far; nil until the first one.
+    public let modelName: String?
     /// Latest single-line text drawn from (in priority): live streaming
     /// text buffer, the most recent runtime event's text, or "Working…"
     /// when nothing readable has arrived yet. Ignored when `isPending`
@@ -477,8 +458,9 @@ public struct ActiveStreamCardView: View {
     /// is the point where the user starts to wonder if anything is happening.
     private static let patienceThreshold: TimeInterval = 15
 
-    public init(agentName: String, lastLine: String, isPending: Bool = false) {
+    public init(agentName: String, modelName: String? = nil, lastLine: String, isPending: Bool = false) {
         self.agentName = agentName
+        self.modelName = modelName
         self.lastLine = lastLine
         self.isPending = isPending
     }
@@ -499,10 +481,7 @@ public struct ActiveStreamCardView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(agentName)
-                .font(.caption)
-                .foregroundStyle(Color.amux.basalt)
-                .padding(.leading, 4)
+            AgentReplyHeader(agentName: agentName, modelName: modelName)
 
             HStack(alignment: .center, spacing: 10) {
                 Circle()
@@ -565,10 +544,41 @@ public struct ActiveStreamCardView: View {
     }
 }
 
+// MARK: - AgentReplyHeader
+//
+// The caption line above every agent reply: the agent's name with the model
+// right after it ("Coder · Sonnet 4.6"), so who answered and with what read
+// together (#1698). Either half may be missing; nothing renders when both are.
+
+struct AgentReplyHeader: View {
+    let agentName: String?
+    let modelName: String?
+
+    var body: some View {
+        let agent = agentName.flatMap { $0.isEmpty ? nil : $0 }
+        if agent != nil || modelName != nil {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                if let agent {
+                    Text(agent)
+                        .font(.caption)
+                        .foregroundStyle(Color.amux.basalt)
+                }
+                if let modelName {
+                    Text(agent == nil ? modelName : "· \(modelName)")
+                        .font(.caption2)
+                        .foregroundStyle(Color.amux.slate)
+                }
+            }
+            .lineLimit(1)
+            .padding(.leading, 4)
+        }
+    }
+}
+
 // MARK: - CompletedTurnBubbleView
 //
 // Final assistant bubble for a completed turn. Same look as
-// `EventBubbleView.assistantBubble` (gray glass, markdown, model caption)
+// `EventBubbleView.assistantBubble` (gray glass, markdown, agent · model header)
 // but with an extra detail-icon overlay bottom-right that pushes the
 // streaming detail when the turn produced any thinking / tool runs the
 // user might want to inspect. The turn's files sit directly under the
@@ -627,18 +637,12 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
     }
 
     private var modelDisplayName: String? {
-        guard let runtime else { return nil }
-        return finalEvent.modelDisplayName(via: runtime)
+        finalEvent.modelDisplayName(via: runtime)
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if let agentName, !agentName.isEmpty {
-                Text(agentName)
-                    .font(.caption)
-                    .foregroundStyle(Color.amux.basalt)
-                    .padding(.leading, 4)
-            }
+            AgentReplyHeader(agentName: agentName, modelName: modelDisplayName)
 
             ZStack(alignment: .bottomTrailing) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -703,20 +707,13 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
                 .padding(.top, 4)
             }
 
-            HStack(spacing: 6) {
-                if let modelName = modelDisplayName {
-                    Text(modelName)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                if let feedbackKind {
-                    Image(systemName: feedbackKind == "positive" ? "hand.thumbsup.fill" : "hand.thumbsdown.fill")
-                        .font(.system(size: 9))
-                        .foregroundStyle(feedbackKind == "positive" ? Color.amux.sage : Color.amux.cinnabarDeep)
-                        .accessibilityLabel(feedbackKind == "positive" ? "Marked helpful" : "Marked not helpful")
-                }
+            if let feedbackKind {
+                Image(systemName: feedbackKind == "positive" ? "hand.thumbsup.fill" : "hand.thumbsdown.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(feedbackKind == "positive" ? Color.amux.sage : Color.amux.cinnabarDeep)
+                    .accessibilityLabel(feedbackKind == "positive" ? "Marked helpful" : "Marked not helpful")
+                    .padding(.leading, 18)
             }
-            .padding(.leading, 18)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
