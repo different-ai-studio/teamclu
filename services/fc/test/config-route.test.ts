@@ -502,3 +502,13 @@ test("no shipped profile tries to control the updater", () => {
     assert.equal("updater" in profile, false, `profile ${name} must not set updater`);
   }
 });
+
+test("belayo offers quick sign-in and phone, never Google", () => {
+  assert.deepEqual(FEATURE_PROFILES.belayo.auth, {
+    google: false,
+    wechat: false,
+    phone: true,
+    password: false,
+    webSSO: true,
+  });
+});
