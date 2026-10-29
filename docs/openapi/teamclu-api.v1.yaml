@@ -816,11 +816,14 @@ paths:
         - name: kind
           in: query
           description: >-
-            Session type to paginate. The filter is applied before LIMIT so
-            regular and scheduled sessions have independent page boundaries.
+            Session type to paginate. The filter is applied before LIMIT so each
+            kind has independent page boundaries. Values map to
+            `sessions.list_kind` (`user` / `gateway` / `app` / `cron`).
+            `regular` is the legacy "everything except cron" page (daemon
+            catch-up); the sidebar's default tab uses `user`.
           schema:
             type: string
-            enum: [all, regular, cron]
+            enum: [all, regular, user, gateway, app, cron]
             default: all
       responses:
         "200":
@@ -11072,6 +11075,14 @@ components:
           type:
             - string
             - "null"
+        listKind:
+          description: >-
+            Exclusive list bucket derived from `source` and `app_id`
+            (`amux.sessions.list_kind`, generated). Order: cron → gateway →
+            app → thread → user. The sidebar filter pages by this value;
+            `thread` rows stay out of the main list via `parent_session_id`.
+          type: string
+          enum: [user, gateway, app, cron, thread]
         source:
           description: >-
             How the session was created. 'user' for normal sessions, 'cron' for
