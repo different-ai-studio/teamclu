@@ -6,12 +6,12 @@ import AMUXSharedUI
 // cards, hairlines, mono initials, agent badges, the breathing status dot —
 // built from the theme tokens. No shadows, 2–6px radii, one touch of cinnabar.
 
-/// Card 1 — teammates and an agent in one conversation.
+/// Card 1 — teammates and an agent in one conversation; the agent's part is done.
 struct SharedSessionIllustration: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             IntroMessageRow(speaker: .member("LM"), lines: [148, 92])
-            IntroMessageRow(speaker: .agent, lines: [176, 150, 64], working: true)
+            IntroMessageRow(speaker: .agent, lines: [176, 150, 64], done: true)
             IntroMessageRow(speaker: .member("QY"), lines: [112], unread: true)
         }
         .padding(20)
@@ -20,123 +20,126 @@ struct SharedSessionIllustration: View {
     }
 }
 
-/// Card 2 — one body of knowledge, shared with every member and agent.
+/// Card 2 — what the team keeps (knowledge, skills, keys, memory), shared
+/// with every member and agent.
 struct TeamKnowledgeIllustration: View {
-    // Satellites around the document stack, as offsets from its centre.
+    // Satellites around the ledger, as offsets from its centre.
     private let nodes: [(IntroSpeaker, CGSize)] = [
-        (.member("LM"), CGSize(width: -118, height: -64)),
-        (.agent, CGSize(width: 112, height: -70)),
-        (.agent, CGSize(width: -112, height: 62)),
-        (.member("QY"), CGSize(width: 118, height: 58)),
+        (.member("LM"), CGSize(width: -128, height: -70)),
+        (.agent, CGSize(width: 118, height: -76)),
+        (.agent, CGSize(width: -122, height: 70)),
+        (.member("QY"), CGSize(width: 128, height: 66)),
     ]
 
     var body: some View {
         ZStack {
-            // Dashed hairlines from each satellite into the stack.
+            // Dashed hairlines from each satellite into the ledger.
             Canvas { context, size in
                 let c = CGPoint(x: size.width / 2, y: size.height / 2)
                 var path = Path()
                 for (_, off) in nodes {
-                    path.move(to: CGPoint(x: c.x + off.width * 0.78, y: c.y + off.height * 0.78))
-                    path.addLine(to: CGPoint(x: c.x + off.width * 0.46, y: c.y + off.height * 0.46))
+                    path.move(to: CGPoint(x: c.x + off.width * 0.80, y: c.y + off.height * 0.80))
+                    path.addLine(to: CGPoint(x: c.x + off.width * 0.56, y: c.y + off.height * 0.56))
                 }
                 context.stroke(path, with: .color(Color.amux.slate.opacity(0.8)),
                                style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
             }
 
-            ZStack {
-                IntroSheet(showsTitle: false).offset(x: -10, y: 10)
-                IntroSheet(showsTitle: false).offset(x: -5, y: 5)
-                IntroSheet(showsTitle: true)
-            }
+            ledger
 
             ForEach(nodes.indices, id: \.self) { i in
                 IntroSpeakerMark(speaker: nodes[i].0)
                     .offset(nodes[i].1)
             }
-
-            HStack(spacing: 6) {
-                IntroStatusDot(color: Color.amux.sage, breathes: false)
-                IntroMonoLabel("SYNCED")
-            }
-            .offset(y: 108)
         }
         .frame(width: 320, height: 240)
+    }
+
+    private var ledger: some View {
+        VStack(spacing: 0) {
+            ledgerRow("KNOWLEDGE") { IntroMonoLabel("12") }
+            Rectangle().fill(Color.amux.hairline).frame(height: 0.5)
+            ledgerRow("SKILLS") { IntroMonoLabel("5") }
+            Rectangle().fill(Color.amux.hairline).frame(height: 0.5)
+            ledgerRow("KEYS") { IntroMonoLabel("••••") }
+            Rectangle().fill(Color.amux.hairline).frame(height: 0.5)
+            ledgerRow("MEMORY") { IntroStatusDot(color: Color.amux.sage, breathes: false) }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+        .frame(width: 150)
+        .introPaper()
+    }
+
+    private func ledgerRow(_ label: String, @ViewBuilder trailing: () -> some View) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .tracking(1.8)
+                .foregroundStyle(Color.amux.onyx)
+            Spacer(minLength: 8)
+            trailing()
+        }
+        .frame(height: 30)
     }
 }
 
-/// Card 3 — the agent works on the computer; the phone gets the one decision.
-struct DesktopPhoneIllustration: View {
+/// Card 3 — a workflow run once becomes an app anyone can open again.
+struct WorkflowToAppIllustration: View {
     var body: some View {
-        ZStack {
-            laptop.offset(x: -26, y: -6)
-            phone.offset(x: 104, y: 36)
+        HStack(spacing: 14) {
+            steps
+            Image(systemName: "arrow.right")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(Color.amux.slate)
+            app
         }
         .frame(width: 320, height: 240)
     }
 
-    private var laptop: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 11) {
-                HStack(spacing: 5) {
-                    ForEach(0..<3, id: \.self) { _ in
-                        Circle().fill(Color.amux.pebble).frame(width: 6, height: 6)
-                    }
-                }
-                .padding(.bottom, 4)
-                IntroTextLine(width: 150, strong: true)
-                IntroTextLine(width: 120)
-                IntroTextLine(width: 164)
-                IntroTextLine(width: 96)
-                HStack(spacing: 6) {
-                    IntroStatusDot(color: Color.amux.sage, breathes: true)
-                    IntroMonoLabel("RUNNING")
-                }
-                .padding(.top, 4)
-            }
-            .padding(16)
-            .frame(width: 232, height: 158, alignment: .topLeading)
-            .introPaper()
+    private let stepWidths: [CGFloat] = [70, 52, 80]
 
-            Capsule()
-                .fill(Color.amux.pebble)
-                .frame(width: 262, height: 6)
-                .padding(.top, 3)
+    private var steps: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(stepWidths.indices, id: \.self) { i in
+                HStack(spacing: 8) {
+                    Text("\(i + 1)")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.amux.slate)
+                    IntroTextLine(width: stepWidths[i], strong: i == 0)
+                }
+            }
         }
+        .padding(14)
+        .frame(width: 128, alignment: .leading)
+        .introPaper()
     }
 
-    private var phone: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Capsule()
-                .fill(Color.amux.onyx.opacity(0.85))
-                .frame(width: 22, height: 5)
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 6)
-
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 5) {
-                    IntroStatusDot(color: Color.amux.cinnabar, breathes: false)
-                    IntroTextLine(width: 34, strong: true)
-                }
-                IntroTextLine(width: 50)
-                IntroTextLine(width: 38)
+    private var app: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(Color.amux.onyx.opacity(0.85))
+                    .frame(width: 14, height: 14)
+                IntroMonoLabel("APP")
             }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .introPaper()
-
-            IntroTextLine(width: 44)
-            IntroTextLine(width: 30)
-            Spacer(minLength: 0)
+            IntroTextLine(width: 72, strong: true)
+            IntroTextLine(width: 56)
+            Text("RUN")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .tracking(1.8)
+                .foregroundStyle(Color.amux.mist)
+                .frame(maxWidth: .infinity)
+                .frame(height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(Color.amux.cinnabar)
+                )
+                .padding(.top, 4)
         }
-        .padding(8)
-        .frame(width: 84, height: 150)
-        .background(Color.amux.mist)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(Color.amux.onyx.opacity(0.35), lineWidth: 1)
-        )
+        .padding(14)
+        .frame(width: 118, alignment: .leading)
+        .introPaper()
     }
 }
 
@@ -151,6 +154,7 @@ private struct IntroMessageRow: View {
     let speaker: IntroSpeaker
     let lines: [CGFloat]
     var working = false
+    var done = false
     var unread = false
 
     var body: some View {
@@ -164,6 +168,15 @@ private struct IntroMessageRow: View {
                     HStack(spacing: 6) {
                         IntroStatusDot(color: Color.amux.sage, breathes: true)
                         IntroMonoLabel("WORKING")
+                    }
+                    .padding(.top, 2)
+                }
+                if done {
+                    HStack(spacing: 5) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(Color.amux.sage)
+                        IntroMonoLabel("DONE")
                     }
                     .padding(.top, 2)
                 }
@@ -204,26 +217,6 @@ private struct IntroSpeakerMark: View {
                     .fill(Color.amux.sage.opacity(0.14))
             )
         }
-    }
-}
-
-private struct IntroSheet: View {
-    let showsTitle: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if showsTitle {
-                IntroTextLine(width: 58, strong: true).padding(.bottom, 4)
-                IntroTextLine(width: 80)
-                IntroTextLine(width: 66)
-                IntroTextLine(width: 76)
-                IntroTextLine(width: 44)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .frame(width: 112, height: 136, alignment: .topLeading)
-        .introPaper()
     }
 }
 

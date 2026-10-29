@@ -6,18 +6,28 @@ extension XCUIApplication {
     /// because the app is already signed in.
     @discardableResult
     func openLoginFromOnboarding(timeout: TimeInterval = 6) -> Bool {
-        let getStarted = buttons["welcome.getStartedButton"]
+        skipIntroIfShown(timeout: timeout)
         let join = buttons["onboarding.joinButton"]
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline, !getStarted.exists, !join.exists {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        }
-        if getStarted.exists {
-            getStarted.tap()
-        }
         guard join.waitForExistence(timeout: 3) else { return false }
         join.tap()
         return true
+    }
+
+    /// First install only: "Skip" leaves the intro from any card but the
+    /// last, which offers "Get Started" instead.
+    func skipIntroIfShown(timeout: TimeInterval = 6) {
+        let skip = buttons["welcome.skipButton"]
+        let getStarted = buttons["welcome.getStartedButton"]
+        let join = buttons["onboarding.joinButton"]
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, !skip.exists, !getStarted.exists, !join.exists {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        if skip.exists {
+            skip.tap()
+        } else if getStarted.exists {
+            getStarted.tap()
+        }
     }
 }
 

@@ -44,33 +44,48 @@ enum OnboardingFlags {
 
 private struct IntroCard: Identifiable {
     let id: Int
-    let eyebrow: String
+    let eyebrow: LocalizedStringKey
     let title: LocalizedStringKey
     let body: LocalizedStringKey
 }
 
+/// The three cards spell the product line: 协作 → 共享 → 创造
+/// (work together, keep the know-how, turn workflows into apps).
 private struct IntroView: View {
     let onFinish: () -> Void
     @State private var page = 0
 
     private let cards: [IntroCard] = [
-        IntroCard(id: 0, eyebrow: "01",
-                  title: "Work alongside your AI allies",
-                  body: "Teammates and AI allies share one conversation — discuss, split the work, ship it."),
-        IntroCard(id: 1, eyebrow: "02",
-                  title: "Team knowledge stays in sync",
-                  body: "The docs and know-how your team builds up are there for every member and every agent."),
-        IntroCard(id: 2, eyebrow: "03",
-                  title: "Your computer works, your phone follows",
-                  body: "Agents do the work on your computer. Follow along and make the call from your phone."),
+        IntroCard(id: 0, eyebrow: "COLLABORATE",
+                  title: "Get it done with your AI partners",
+                  body: "Teammates and AI partners share one conversation — talk it through, split the work, ship it. You make the call; they do the legwork."),
+        IntroCard(id: 1, eyebrow: "SHARE",
+                  title: "Your team's know-how, kept for everyone",
+                  body: "Knowledge, skills, keys and memory live with the team — every new member and every AI partner can use them from day one."),
+        IntroCard(id: 2, eyebrow: "CREATE",
+                  title: "Turn repeat work into your own apps",
+                  body: "Run a workflow once, and your AI partner can build it into an app. Next time just open it — and so can the whole team."),
     ]
+
+    private var isLastPage: Bool { page == cards.count - 1 }
 
     var body: some View {
         VStack(spacing: 0) {
-            Text(BrandInfo.appName)
-                .font(.amuxSerif(22, weight: .regular))
-                .foregroundStyle(Color.amux.onyx)
-                .padding(.top, 24)
+            ZStack {
+                Text(BrandInfo.appName)
+                    .font(.amuxSerif(22, weight: .regular))
+                    .foregroundStyle(Color.amux.onyx)
+
+                if !isLastPage {
+                    Button("Skip", action: onFinish)
+                        .font(.subheadline)
+                        .foregroundStyle(Color.amux.slate)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal, 24)
+                        .accessibilityIdentifier("welcome.skipButton")
+                }
+            }
+            .padding(.top, 24)
 
             TabView(selection: $page) {
                 ForEach(cards) { card in
@@ -82,8 +97,16 @@ private struct IntroView: View {
             pageDots
                 .padding(.bottom, 24)
 
-            Button(action: onFinish) {
-                Text("Get Started")
+            // Two identities so UI tests can tell "advance" from "finish";
+            // `welcome.getStartedButton` only exists on the last card.
+            Button {
+                if isLastPage {
+                    onFinish()
+                } else {
+                    withAnimation(.easeOut(duration: 0.25)) { page += 1 }
+                }
+            } label: {
+                Text(isLastPage ? "Get Started" : "Continue")
                     .fontWeight(.semibold)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
@@ -91,8 +114,9 @@ private struct IntroView: View {
             .glassProminentButtonStyle()
             .padding(.horizontal, 24)
             .padding(.bottom, 48)
-            .accessibilityIdentifier("welcome.getStartedButton")
+            .accessibilityIdentifier(isLastPage ? "welcome.getStartedButton" : "welcome.continueButton")
         }
+        .animation(.easeOut(duration: 0.2), value: isLastPage)
         .background(Color.amux.mist)
         .toolbar(.hidden, for: .navigationBar)
     }
@@ -121,7 +145,7 @@ private struct IntroCardView: View {
                 .accessibilityHidden(true)
                 .padding(.bottom, 36)
 
-            Text(card.eyebrow)
+            (Text(String(format: "%02d·", card.id + 1)) + Text(card.eyebrow))
                 .font(.system(size: 11, design: .monospaced))
                 .tracking(3)
                 .foregroundStyle(Color.amux.slate)
@@ -149,7 +173,7 @@ private struct IntroCardView: View {
         switch card.id {
         case 0: SharedSessionIllustration()
         case 1: TeamKnowledgeIllustration()
-        default: DesktopPhoneIllustration()
+        default: WorkflowToAppIllustration()
         }
     }
 }
