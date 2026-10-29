@@ -17,6 +17,12 @@ import { removeLinkSessionEntriesForSession } from "@/lib/extension/link-session
 import { reportLocalCacheFailure } from "@/lib/telemetry/local-cache-error-report";
 import type { SessionListCursor, SessionListPage } from "@/lib/backend/types";
 import { sortSessionListRows } from "@/lib/session/session-list-sort";
+import {
+  deriveSessionListKind,
+  type SessionListKind,
+} from "@/lib/session/session-list-kind";
+
+export type { SessionListKind };
 
 const ARCHIVED_SESSION_IDS_KEY = "teamclu.sessionList.archivedIds";
 
@@ -99,6 +105,8 @@ export interface SessionListEntry {
   app_id?: string | null;
   /** How the session was created: 'user' | 'cron' | 'gateway'. */
   source?: string | null;
+  /** Exclusive sidebar bucket; mirrors `sessions.list_kind`. */
+  list_kind?: SessionListKind | "thread" | null;
   /** For source='cron', the cron job id that created it. */
   cron_job_id?: string | null;
   created_at: string | null;
@@ -106,6 +114,8 @@ export interface SessionListEntry {
 }
 
 function mapCacheToEntry(r: SessionRow): SessionListEntry {
+  const appId = r.appId ?? null;
+  const source = r.source ?? null;
   return {
     id: r.id,
     title: r.title ?? "",
@@ -115,8 +125,9 @@ function mapCacheToEntry(r: SessionRow): SessionListEntry {
     mode: (r.mode as SessionListEntry["mode"]) ?? "solo",
     idea_id: r.ideaId ?? null,
     has_unread: false,
-    app_id: null,
-    source: r.source ?? null,
+    app_id: appId,
+    source,
+    list_kind: deriveSessionListKind({ source, app_id: appId }),
     cron_job_id: r.cronJobId ?? null,
     created_at: r.createdAt ?? null,
     updated_at: r.updatedAt ?? null,
@@ -197,10 +208,8 @@ interface State {
   hasMore: boolean;
   nextCursor: SessionListCursor | null;
   listKind: SessionListKind;
-  regularHasMore: boolean;
-  regularNextCursor: SessionListCursor | null;
-  cronHasMore: boolean;
-  cronNextCursor: SessionListCursor | null;
+  /** Independent cursors per exclusive list bucket. */
+  paginationByKind: Record<SessionListKind, KindPagination>;
   /**
    * Teams the server has returned at least one session row for since sign-in.
    * Gates the empty-response guard in `loadFirstPage` — see the comment there.
@@ -253,10 +262,29 @@ interface State {
   archiveSessionQuiet: (sessionId: string) => Promise<boolean>;
 }
 
-type SessionListKind = "regular" | "cron";
+type KindPagination = {
+  hasMore: boolean;
+  nextCursor: SessionListCursor | null;
+};
+
+const EMPTY_KIND_PAGINATION: Record<SessionListKind, KindPagination> = {
+  user: { hasMore: false, nextCursor: null },
+  gateway: { hasMore: false, nextCursor: null },
+  app: { hasMore: false, nextCursor: null },
+  cron: { hasMore: false, nextCursor: null },
+};
+
+function emptyPaginationByKind(): Record<SessionListKind, KindPagination> {
+  return {
+    user: { ...EMPTY_KIND_PAGINATION.user },
+    gateway: { ...EMPTY_KIND_PAGINATION.gateway },
+    app: { ...EMPTY_KIND_PAGINATION.app },
+    cron: { ...EMPTY_KIND_PAGINATION.cron },
+  };
+}
 
 function isKind(row: SessionListEntry, kind: SessionListKind): boolean {
-  return kind === "cron" ? row.source === "cron" : row.source !== "cron";
+  return deriveSessionListKind(row) === kind;
 }
 
 function filterToKind(rows: SessionListEntry[], kind: SessionListKind): SessionListEntry[] {
@@ -272,13 +300,19 @@ function replaceKindRows(
 }
 
 function paginationPatch(
+  state: State,
   kind: SessionListKind,
   nextCursor: SessionListCursor | null,
 ): Partial<State> {
   const hasMore = nextCursor != null;
-  return kind === "cron"
-    ? { cronHasMore: hasMore, cronNextCursor: nextCursor, hasMore, nextCursor }
-    : { regularHasMore: hasMore, regularNextCursor: nextCursor, hasMore, nextCursor };
+  return {
+    paginationByKind: {
+      ...state.paginationByKind,
+      [kind]: { hasMore, nextCursor },
+    },
+    hasMore,
+    nextCursor,
+  };
 }
 
 function mergeRows(existing: SessionListEntry[], incoming: SessionListEntry[]): SessionListEntry[] {
@@ -381,10 +415,7 @@ async function loadFirstPageForTeam(
       rows: [],
       hasMore: false,
       nextCursor: null,
-      regularHasMore: false,
-      regularNextCursor: null,
-      cronHasMore: false,
-      cronNextCursor: null,
+      paginationByKind: emptyPaginationByKind(),
     });
   }
   set({ loading: true, error: null, scopeTeamId: teamId });
@@ -468,9 +499,9 @@ async function loadFirstPageForTeam(
   // that were archived on another device would stay in the sidebar forever.
   // Keeping them through one refresh is the hedge against a fail-closed
   // visibility gate; keeping them through every refresh is just a stale list.
-  // Preserve the historical regular-session key; cron needs its own proof so
-  // one type cannot disable the empty-page safety guard for the other.
-  const confirmationKey = kind === "regular" ? teamId : `${teamId}:cron`;
+  // Each exclusive kind keeps its own confirmation proof so one empty page
+  // cannot disarm the empty-page safety guard for another kind.
+  const confirmationKey = kind === "user" ? teamId : `${teamId}:${kind}`;
   const teamConfirmed = get().serverConfirmedTeams.includes(confirmationKey);
   const alreadyKeptOnce = get().emptyPageKeptTeams.includes(confirmationKey);
   const visibleKindRows = filterToKind(get().rows, kind);
@@ -480,7 +511,7 @@ async function loadFirstPageForTeam(
     );
     set({
       loading: false,
-      ...paginationPatch(kind, null),
+      ...paginationPatch(get(), kind, null),
       // Kept rows are cache rows; narrow them to this team so a row seeded for
       // another team before the first load cannot survive here.
       rows: replaceKindRows(
@@ -509,6 +540,7 @@ async function loadFirstPageForTeam(
       createdBy: null,
       metadataJson: null,
       source: r.source ?? null,
+      appId: r.app_id ?? null,
       cronJobId: r.cron_job_id ?? null,
       createdAt: r.created_at ?? new Date().toISOString(),
       updatedAt: r.updated_at ?? new Date().toISOString(),
@@ -535,7 +567,7 @@ async function loadFirstPageForTeam(
   set({
     rows: replaceKindRows(get().rows, filterArchivedEntries(sortEntries(rows)), kind),
     loading: false,
-    ...paginationPatch(kind, nextCursor),
+    ...paginationPatch(get(), kind, nextCursor),
     // Re-asserted, not assumed: resetClientChatState nulls the scope on the
     // same team switch that started this run, and its follow-up loadFirstPage
     // is swallowed by the in-flight de-dupe — so this commit is the only thing
@@ -560,11 +592,8 @@ export const useSessionListStore = create<State>((set, get) => ({
   highlightedSessionIds: [],
   hasMore: false,
   nextCursor: null,
-  listKind: "regular",
-  regularHasMore: false,
-  regularNextCursor: null,
-  cronHasMore: false,
-  cronNextCursor: null,
+  listKind: "user",
+  paginationByKind: emptyPaginationByKind(),
   serverConfirmedTeams: [],
   emptyPageKeptTeams: [],
   scopeTeamId: null,
@@ -582,11 +611,8 @@ export const useSessionListStore = create<State>((set, get) => ({
         error: null,
         hasMore: false,
         nextCursor: null,
-        listKind: "regular",
-        regularHasMore: false,
-        regularNextCursor: null,
-        cronHasMore: false,
-        cronNextCursor: null,
+        listKind: "user",
+        paginationByKind: emptyPaginationByKind(),
         // Signing out re-arms the empty-response guard: the next account's
         // first page has proven nothing yet, in any team.
         serverConfirmedTeams: [],
@@ -633,7 +659,7 @@ export const useSessionListStore = create<State>((set, get) => ({
     const session = useAuthStore.getState().session;
     if (!session) return;
     const kind = get().listKind;
-    const cursor = kind === "cron" ? get().cronNextCursor : get().regularNextCursor;
+    const cursor = get().paginationByKind[kind]?.nextCursor ?? null;
     if (!cursor) return;
 
     // Page 2+ must carry the same scope as page 1 — otherwise scrolling pulls
@@ -665,14 +691,17 @@ export const useSessionListStore = create<State>((set, get) => ({
     set({
       rows: nextRows,
       loading: false,
-      ...paginationPatch(kind, nextCursor),
+      ...paginationPatch(get(), kind, nextCursor),
     });
   },
-  setListKind: (kind) => set((state) => ({
-    listKind: kind,
-    hasMore: kind === "cron" ? state.cronHasMore : state.regularHasMore,
-    nextCursor: kind === "cron" ? state.cronNextCursor : state.regularNextCursor,
-  })),
+  setListKind: (kind) => set((state) => {
+    const page = state.paginationByKind[kind] ?? EMPTY_KIND_PAGINATION[kind];
+    return {
+      listKind: kind,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor,
+    };
+  }),
   upsertRows: (rows) =>
     set((state) => ({
       rows: mergeRows(state.rows, filterToScope(rows, state.scopeTeamId)),

@@ -114,6 +114,7 @@ impl LocalCacheStore {
                 created_by           TEXT,
                 metadata_json        TEXT,
                 source               TEXT,
+                app_id               TEXT,
                 cron_job_id          TEXT,
                 created_at           TEXT NOT NULL,
                 updated_at           TEXT NOT NULL,
@@ -127,6 +128,9 @@ impl LocalCacheStore {
 
         // Additive migrations for existing DBs (idempotent; ignore errors).
         conn.execute("ALTER TABLE session ADD COLUMN source TEXT", ())
+            .await
+            .ok();
+        conn.execute("ALTER TABLE session ADD COLUMN app_id TEXT", ())
             .await
             .ok();
         conn.execute("ALTER TABLE session ADD COLUMN cron_job_id TEXT", ())

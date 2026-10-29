@@ -70,11 +70,15 @@ describe('NavRail', () => {
     expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'all' })
   })
 
-  it('clicking Sessions exits the clock-only session view', () => {
-    useCronStore.setState({ showCronSessions: true })
+  it('clicking Sessions reloads the user session page', () => {
+    useSessionListStore.setState({ listKind: 'cron' })
+    const loadFirstPage = vi
+      .spyOn(useSessionListStore.getState(), 'loadFirstPage')
+      .mockResolvedValue()
     render(<NavRail />)
     fireEvent.click(screen.getByRole('button', { name: /会话/ }))
-    expect(useCronStore.getState().showCronSessions).toBe(false)
+    expect(loadFirstPage).toHaveBeenCalledWith(50, 'user')
+    loadFirstPage.mockRestore()
   })
 
   it('shows session count badge in Sessions row', () => {

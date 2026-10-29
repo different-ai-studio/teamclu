@@ -12,9 +12,8 @@ function refreshSessionListThrottled(): void {
   const now = Date.now()
   if (now - lastSessionListRefreshAt < 5_000) return
   lastSessionListRefreshAt = now
-  void useSessionListStore.getState().loadFirstPage(50, 'regular').catch(() => {})
+  void useSessionListStore.getState().loadFirstPage(50, 'user').catch(() => {})
 }
-import { useCronStore } from '@/stores/cron'
 import { createQuickSession, describeQuickSessionFailure } from '@/lib/session/create-quick-session'
 import { useQuickChatReadiness } from '@/hooks/use-quick-chat-readiness'
 import { ContactsNavEntry } from '@/components/sidebar/ContactsNavEntry'
@@ -26,7 +25,7 @@ import { NewChatSplitButton } from '@/components/sidebar/NewChatSplitButton'
 import { AppsNavSection } from '@/components/sidebar/AppsNavSection'
 import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 import { useFeatures } from '@/lib/config/remote-features'
-import { isScheduledSession } from '@/lib/session/session-origin'
+import { deriveSessionListKind } from '@/lib/session/session-list-kind'
 import { cn } from '@/lib/utils'
 
 interface TopEntryProps {
@@ -82,9 +81,7 @@ export function NavRail() {
   const toggleMore = useUIStore((s) => s.toggleMoreNav)
   const setMoreExpanded = useUIStore((s) => s.setMoreNavExpanded)
   const listRows = useSessionListStore((s) => s.rows)
-  const cronSessionIds = useCronStore((s) => s.cronSessionIds)
-  const showCronSessions = useCronStore((s) => s.showCronSessions)
-  const setShowCronSessions = useCronStore((s) => s.setShowCronSessions)
+  const listKind = useSessionListStore((s) => s.listKind)
   const quickChatState = useQuickChatReadiness()
   const [creating, setCreating] = React.useState(false)
 
@@ -93,8 +90,8 @@ export function NavRail() {
   useTeamShareCountsLoader()
 
   const sessionsCount = React.useMemo(
-    () => listRows.filter((r) => !isScheduledSession(r, cronSessionIds)).length,
-    [listRows, cronSessionIds],
+    () => listRows.filter((r) => deriveSessionListKind(r) === 'user').length,
+    [listRows],
   )
 
   // Something else can select one of the folded destinations (default-tab
@@ -167,12 +164,15 @@ export function NavRail() {
         <TopEntry
           label={t('sidebar.sessions', 'Sessions')}
           icon={Inbox}
-          active={filter.kind === 'all' && !showCronSessions}
+          active={filter.kind === 'all' && listKind === 'user'}
           badge={sessionsCount}
           onClick={() => {
-            setShowCronSessions(false)
             setFilter({ kind: 'all' })
-            refreshSessionListThrottled()
+            if (listKind !== 'user') {
+              void useSessionListStore.getState().loadFirstPage(50, 'user').catch(() => {})
+            } else {
+              refreshSessionListThrottled()
+            }
           }}
         />
         <ContactsNavEntry />

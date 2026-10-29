@@ -28,6 +28,7 @@ function mapRow(r: SessionSyncRow): cache.SessionRow {
     createdBy: r.created_by_actor_id ?? null,
     metadataJson: null,
     source: r.source ?? null,
+    appId: r.app_id ?? null,
     cronJobId: r.cron_job_id ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

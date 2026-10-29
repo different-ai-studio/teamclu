@@ -391,7 +391,23 @@ export function mapSession(row) {
     // 20260907000000. `null` covers both "not an app session" and a database
     // that predates the migration — the client draws nothing either way.
     appId: row?.app_id ?? null,
+    // Exclusive sidebar bucket from the generated column
+    // (20261029100000). Missing on a stale database → derive from source/appId
+    // so clients still page correctly before the migration lands.
+    listKind: row?.list_kind ?? deriveSessionListKind(row),
   };
+}
+
+function deriveSessionListKind(row: {
+  source?: string | null;
+  app_id?: string | null;
+} | null | undefined): "user" | "gateway" | "app" | "cron" | "thread" {
+  const source = row?.source ?? "user";
+  if (source === "cron") return "cron";
+  if (source === "gateway") return "gateway";
+  if (row?.app_id) return "app";
+  if (source === "thread") return "thread";
+  return "user";
 }
 
 export function mapMessage(row) {

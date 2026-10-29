@@ -137,6 +137,10 @@ export interface SessionListEntry {
   has_unread: boolean;
   /** How the session was created: 'user' | 'cron' | 'gateway'. */
   source?: string | null;
+  /** App this session belongs to, when created from one. */
+  app_id?: string | null;
+  /** Exclusive sidebar bucket; mirrors `sessions.list_kind`. */
+  list_kind?: "user" | "gateway" | "app" | "cron" | "thread" | null;
   /** For source='cron', the cron job id that created it. */
   cron_job_id?: string | null;
   created_at: string | null;
@@ -155,6 +159,7 @@ export interface SessionSyncRow {
   last_message_at?: string | null;
   created_by_actor_id?: string | null;
   source?: string | null;
+  app_id?: string | null;
   cron_job_id?: string | null;
   created_at: string;
   updated_at: string;
@@ -242,7 +247,7 @@ export interface SessionsBackend {
     limit: number;
     cursor: SessionListCursor | null;
     teamId: string;
-    kind?: "all" | "regular" | "cron";
+    kind?: "all" | "regular" | "user" | "gateway" | "app" | "cron";
   }): Promise<SessionListPage>;
   markCurrentActorSessionViewed(sessionId: string, lastReadMessageId?: string | null): Promise<void>;
   createSessionShell(input: SessionCreateInput): Promise<{

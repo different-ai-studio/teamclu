@@ -83,6 +83,7 @@ export type SessionRow = {
   createdBy?: string | null;
   metadataJson?: string | null;
   source?: string | null;
+  appId?: string | null;
   cronJobId?: string | null;
   createdAt: string;
   updatedAt: string;

@@ -106,6 +106,7 @@ test("listSessions maps current actor session rpc rows", async () => {
     createdByActorId: null,
     participantCount: 0,
     appId: null,
+    listKind: "user",
     createdAt: "2026-05-26T01:00:00Z",
     updatedAt: "2026-05-27T01:00:00Z",
   }]);
@@ -132,6 +133,28 @@ test("listSessions carries the app a session belongs to", async () => {
 
   const rows = await repo.listSessions({ limit: 10, teamId: "team-1" });
   assert.equal(rows[0].appId, "app-9");
+  assert.equal(rows[0].listKind, "app");
+});
+
+test("listSessions carries listKind from the RPC when present", async () => {
+  const repo = createRepo(fakeSupabase({
+    rpcData: {
+      list_current_actor_sessions: [{
+        id: "session-1",
+        team_id: "team-1",
+        title: "WeCom",
+        mode: "collab",
+        source: "gateway",
+        list_kind: "gateway",
+        created_at: "2026-05-26T01:00:00Z",
+        updated_at: "2026-05-27T01:00:00Z",
+      }],
+    },
+  }));
+
+  const rows = await repo.listSessions({ limit: 10, teamId: "team-1", kind: "gateway" });
+  assert.equal(rows[0].listKind, "gateway");
+  assert.equal(rows[0].source, "gateway");
 });
 
 test("insertMessage writes a messages row and maps response", async () => {

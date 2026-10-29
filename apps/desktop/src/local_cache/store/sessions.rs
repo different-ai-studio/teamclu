@@ -13,9 +13,9 @@ impl LocalCacheStore {
             "INSERT INTO session
                 (id, team_id, title, mode, primary_agent_id, idea_id, summary,
                  last_message_preview, last_message_at, created_by, metadata_json,
-                 source, cron_job_id,
+                 source, app_id, cron_job_id,
                  created_at, updated_at, deleted_at, synced_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
              ON CONFLICT(id) DO UPDATE SET
                 team_id              = excluded.team_id,
                 title                = excluded.title,
@@ -28,6 +28,7 @@ impl LocalCacheStore {
                 created_by           = excluded.created_by,
                 metadata_json        = excluded.metadata_json,
                 source               = excluded.source,
+                app_id               = excluded.app_id,
                 cron_job_id          = excluded.cron_job_id,
                 created_at           = excluded.created_at,
                 updated_at           = excluded.updated_at,
@@ -49,6 +50,7 @@ impl LocalCacheStore {
                     opt_val(&r.created_by),
                     opt_val(&r.metadata_json),
                     opt_val(&r.source),
+                    opt_val(&r.app_id),
                     opt_val(&r.cron_job_id),
                     text(&r.created_at),
                     text(&r.updated_at),
@@ -69,13 +71,13 @@ impl LocalCacheStore {
         let sql = if include_deleted {
             "SELECT id, team_id, title, mode, primary_agent_id, idea_id, summary,
                     last_message_preview, last_message_at, created_by, metadata_json,
-                    source, cron_job_id,
+                    source, app_id, cron_job_id,
                     created_at, updated_at, deleted_at, synced_at
              FROM session WHERE team_id = ?1 ORDER BY last_message_at DESC"
         } else {
             "SELECT id, team_id, title, mode, primary_agent_id, idea_id, summary,
                     last_message_preview, last_message_at, created_by, metadata_json,
-                    source, cron_job_id,
+                    source, app_id, cron_job_id,
                     created_at, updated_at, deleted_at, synced_at
              FROM session WHERE team_id = ?1 AND deleted_at IS NULL ORDER BY last_message_at DESC"
         };
@@ -102,11 +104,12 @@ impl LocalCacheStore {
                 created_by: row.get::<String>(9).ok().filter(|s| !s.is_empty()),
                 metadata_json: row.get::<String>(10).ok().filter(|s| !s.is_empty()),
                 source: row.get::<String>(11).ok().filter(|s| !s.is_empty()),
-                cron_job_id: row.get::<String>(12).ok().filter(|s| !s.is_empty()),
-                created_at: row.get::<String>(13).unwrap_or_default(),
-                updated_at: row.get::<String>(14).unwrap_or_default(),
-                deleted_at: row.get::<String>(15).ok().filter(|s| !s.is_empty()),
-                synced_at: row.get::<String>(16).unwrap_or_default(),
+                app_id: row.get::<String>(12).ok().filter(|s| !s.is_empty()),
+                cron_job_id: row.get::<String>(13).ok().filter(|s| !s.is_empty()),
+                created_at: row.get::<String>(14).unwrap_or_default(),
+                updated_at: row.get::<String>(15).unwrap_or_default(),
+                deleted_at: row.get::<String>(16).ok().filter(|s| !s.is_empty()),
+                synced_at: row.get::<String>(17).unwrap_or_default(),
             });
         }
         Ok(result)
@@ -394,8 +397,10 @@ mod tests {
         let mut cron = session("s-cron", "teamA");
         cron.source = Some("cron".to_string());
         cron.cron_job_id = Some("job-42".to_string());
+        let mut app = session("s-app", "teamA");
+        app.app_id = Some("app-9".to_string());
         store
-            .session_upsert_batch(&[cron, session("s-user", "teamA")])
+            .session_upsert_batch(&[cron, app, session("s-user", "teamA")])
             .await
             .unwrap();
 
@@ -404,9 +409,13 @@ mod tests {
         assert_eq!(loaded_cron.source.as_deref(), Some("cron"));
         assert_eq!(loaded_cron.cron_job_id.as_deref(), Some("job-42"));
 
+        let loaded_app = rows.iter().find(|r| r.id == "s-app").unwrap();
+        assert_eq!(loaded_app.app_id.as_deref(), Some("app-9"));
+
         // A plain session has no source/cron marker after the round-trip.
         let loaded_user = rows.iter().find(|r| r.id == "s-user").unwrap();
         assert_eq!(loaded_user.source, None);
+        assert_eq!(loaded_user.app_id, None);
         assert_eq!(loaded_user.cron_job_id, None);
     }
 

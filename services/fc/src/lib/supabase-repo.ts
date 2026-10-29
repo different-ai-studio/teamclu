@@ -3336,7 +3336,7 @@ export function createSupabaseBusinessRepository(options) {
 
     async listSessionsForTeamSince(teamId, updatedAfter, { limit = DEFAULT_LIST_LIMIT, cursor = null }: any = {}) {
       const SESSION_SYNC_COLUMNS =
-        "id, team_id, title, mode, primary_agent_id, idea_id, summary, last_message_preview, last_message_at, created_by_actor_id, source, cron_job_id, created_at, updated_at";
+        "id, team_id, title, mode, primary_agent_id, idea_id, summary, last_message_preview, last_message_at, created_by_actor_id, source, app_id, cron_job_id, created_at, updated_at";
       let q = supabase
         .from("sessions")
         .select(SESSION_SYNC_COLUMNS)

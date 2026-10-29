@@ -84,6 +84,8 @@ const mkSessionRow = (over: Partial<{
   has_unread: boolean
   last_message_at: string | null
   app_id: string | null
+  source: string | null
+  list_kind: 'user' | 'gateway' | 'app' | 'cron' | 'thread' | null
 }>) => ({
   id: 's1',
   title: 't',
@@ -93,6 +95,8 @@ const mkSessionRow = (over: Partial<{
   mode: 'collab' as const,
   idea_id: null as string | null,
   has_unread: false,
+  source: null as string | null,
+  list_kind: null as 'user' | 'gateway' | 'app' | 'cron' | 'thread' | null,
   ...over,
 })
 
@@ -150,11 +154,13 @@ describe('SessionListColumn', () => {
       error: null,
       hasMore: false,
       nextCursor: null,
-      listKind: 'regular',
-      regularHasMore: false,
-      regularNextCursor: null,
-      cronHasMore: false,
-      cronNextCursor: null,
+      listKind: 'user',
+      paginationByKind: {
+        user: { hasMore: false, nextCursor: null },
+        gateway: { hasMore: false, nextCursor: null },
+        app: { hasMore: false, nextCursor: null },
+        cron: { hasMore: false, nextCursor: null },
+      },
     })
   })
 
@@ -166,7 +172,15 @@ describe('SessionListColumn', () => {
   })
 
   it('keeps cron sessions out of the regular Sessions view', () => {
-    useCronStore.setState({ cronSessionIds: new Set(['s2']), showCronSessions: false })
+    useSessionListStore.setState({
+      rows: [
+        mkSessionRow({ id: 's1', title: 'Alpha' }),
+        mkSessionRow({ id: 's2', title: 'Beta', source: 'cron', list_kind: 'cron' }),
+        mkSessionRow({ id: 's3', title: 'Gamma' }),
+      ],
+      listKind: 'user',
+    })
+    useCronStore.setState({ cronSessionIds: new Set(['s2']) })
 
     render(<SessionListColumn />)
 
@@ -176,8 +190,16 @@ describe('SessionListColumn', () => {
     expect(screen.getByTestId('v2-session-list-count')).toHaveTextContent('· 2')
   })
 
-  it('shows only cron sessions when the clock view is active', () => {
-    useCronStore.setState({ cronSessionIds: new Set(['s2']), showCronSessions: true })
+  it('shows only cron sessions when the cron filter is active', () => {
+    useSessionListStore.setState({
+      rows: [
+        mkSessionRow({ id: 's1', title: 'Alpha' }),
+        mkSessionRow({ id: 's2', title: 'Beta', source: 'cron', list_kind: 'cron' }),
+        mkSessionRow({ id: 's3', title: 'Gamma' }),
+      ],
+      listKind: 'cron',
+    })
+    useCronStore.setState({ cronSessionIds: new Set(['s2']) })
 
     render(<SessionListColumn />)
 
@@ -187,23 +209,24 @@ describe('SessionListColumn', () => {
     expect(screen.getByTestId('v2-session-list-count')).toHaveTextContent('· 1')
   })
 
-  it('does not let the clock view leak into the Pinned filter', () => {
+  it('does not let the list-kind filter leak into the Pinned filter', () => {
     setPinnedStorage({ 'team-1': ['s1', 's2'] })
     useSessionListStore.setState({
       rows: [
         mkSessionRow({ id: 's1', title: 'Pinned regular' }),
-        mkSessionRow({ id: 's2', title: 'Pinned cron' }),
+        mkSessionRow({ id: 's2', title: 'Pinned cron', source: 'cron', list_kind: 'cron' }),
       ],
       pinnedSessionIds: ['s1', 's2'],
+      listKind: 'cron',
       loading: false,
     })
     useUIStore.setState({ sidebarFilter: { kind: 'pinned' } })
-    useCronStore.setState({ cronSessionIds: new Set(['s2']), showCronSessions: true })
+    useCronStore.setState({ cronSessionIds: new Set(['s2']) })
 
     render(<SessionListColumn />)
 
     expect(screen.getByText('Pinned regular')).toBeInTheDocument()
-    expect(screen.queryByText('Pinned cron')).not.toBeInTheDocument()
+    expect(screen.getByText('Pinned cron')).toBeInTheDocument()
   })
 
   it('shows a quiet unread indicator for unread inactive sessions', () => {
@@ -305,22 +328,31 @@ describe('SessionListColumn', () => {
     expect(screen.getByText('Gamma')).toBeInTheDocument()
   })
 
-  it('shows cron filter button only in "all" mode', () => {
+  it('shows session-kind filter only in "all" mode', () => {
     const { rerender } = render(<SessionListColumn />)
-    expect(screen.getByRole('button', { name: /显示定时会话|显示全部会话/ })).toBeInTheDocument()
+    expect(screen.getByTestId('v2-session-list-kind')).toBeInTheDocument()
     useUIStore.setState({ sidebarFilter: { kind: 'pinned' } })
     rerender(<SessionListColumn />)
-    expect(screen.queryByRole('button', { name: /显示定时会话|显示全部会话/ })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('v2-session-list-kind')).not.toBeInTheDocument()
   })
 
-  it('starts a separate cron page when opening scheduled sessions', () => {
+  it('starts a separate cron page when picking scheduled sessions', async () => {
     useWorkspaceStore.setState({ workspacePath: '/tmp/ws' })
     const loadFirstPage = vi
       .spyOn(useSessionListStore.getState(), 'loadFirstPage')
       .mockResolvedValue()
     render(<SessionListColumn />)
 
-    fireEvent.click(screen.getByRole('button', { name: /显示定时会话|Show scheduled sessions/ }))
+    const trigger = screen.getByTestId('v2-session-list-kind')
+    fireEvent.pointerDown(trigger)
+    fireEvent.click(trigger)
+    const option = await waitFor(() => {
+      const matches = screen.getAllByText(/定时|Scheduled/)
+      const menuItem = matches.find((el) => el.closest('[role="menuitem"]'))
+      if (!menuItem) throw new Error('cron menu item not open')
+      return menuItem
+    })
+    fireEvent.click(option)
 
     expect(loadFirstPage).toHaveBeenCalledWith(50, 'cron')
     loadFirstPage.mockRestore()
@@ -332,7 +364,8 @@ describe('SessionListColumn', () => {
     // an app session it rendered the app's own uuid.
     useAppsStore.setState({ items: [mkAppRow('app-1', 'teamclu 官网')] })
     useSessionListStore.setState({
-      rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1' })],
+      rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1', list_kind: 'app' })],
+      listKind: 'app',
     })
     render(<SessionListColumn />)
     expect(screen.getByTestId('v2-session-row-app')).toHaveTextContent('teamclu 官网')
@@ -350,7 +383,8 @@ describe('SessionListColumn', () => {
     // fresh launch nothing mounted it, so every app session rendered with no
     // subline until the user happened to open that group.
     useSessionListStore.setState({
-      rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1' })],
+      rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1', list_kind: 'app' })],
+      listKind: 'app',
     })
     render(<SessionListColumn />)
     await waitFor(() =>

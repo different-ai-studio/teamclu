@@ -750,6 +750,7 @@ mod tests {
             created_by: None,
             metadata_json: None,
             source: None,
+            app_id: None,
             cron_job_id: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),

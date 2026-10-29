@@ -1,12 +1,13 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Search, Loader2, MessageSquare, Pin, Archive, Pencil, Ellipsis, Info, SquarePen, SlidersHorizontal, X, ListChecks, Check, HelpCircle, Stamp, Clock } from 'lucide-react'
+import { Search, Loader2, MessageSquare, Pin, Archive, Pencil, Ellipsis, Info, SquarePen, SlidersHorizontal, X, ListChecks, Check, HelpCircle, Stamp, Clock, ChevronDown } from 'lucide-react'
 import { useSessionStore } from '@/stores/session-store'
 import { useUIStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useCronStore } from '@/stores/cron'
-import { useSessionListStore, type SessionListEntry } from '@/stores/session-list-store'
+import { useSessionListStore, type SessionListEntry, type SessionListKind } from '@/stores/session-list-store'
+import { sessionMatchesListKind } from '@/lib/session/session-list-kind'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
 import { useSessionParticipantStore } from '@/stores/session-participant-store'
@@ -18,7 +19,12 @@ import { TrafficLights } from '@/components/ui/traffic-lights'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { AnimatedClock } from '@/components/ui/animated-clock'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { SessionSearchDialog } from '@/components/sidebar/session-search-dialog'
 import { SessionDetailDialog, type SessionDetailListHints } from '@/components/sidebar/SessionDetailDialog'
 import { SessionLiquidGlass } from '@/components/sidebar/SessionLiquidGlass'
@@ -47,7 +53,6 @@ import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { resolveAppLocality } from '@/lib/apps/app-locality'
 import { compareSessionListByRecency } from '@/lib/session/session-list-sort'
 import { buildSessionListGlassLayoutKey } from '@/lib/ui/session-list-glass-layout-key'
-import { isScheduledSession } from '@/lib/session/session-origin'
 
 /**
  * Merged row shape consumed by the rendering pipeline. Combines list-canonical
@@ -66,6 +71,7 @@ type ListRow = {
   hasUnread: boolean
   source: string | null
   appId: string | null
+  list_kind: SessionListKind | 'thread' | null
 }
 
 function entryToRow(entry: SessionListEntry, isPinned: boolean): ListRow {
@@ -81,6 +87,7 @@ function entryToRow(entry: SessionListEntry, isPinned: boolean): ListRow {
     hasUnread: entry.has_unread,
     source: entry.source ?? null,
     appId: entry.app_id ?? null,
+    list_kind: entry.list_kind ?? null,
   }
 }
 
@@ -239,11 +246,8 @@ export function SessionListColumn({
   const toggleSessionPinned = useSessionListStore((s) => s.toggleSessionPinned)
   const initPinnedSessionIds = useSessionListStore((s) => s.initPinnedSessionIds)
   const cronSessionIds = useCronStore((s) => s.cronSessionIds)
-  const showCronSessions = useCronStore((s) => s.showCronSessions)
-  const toggleShowCronSessions = useCronStore((s) => s.toggleShowCronSessions)
-  const listHasMore = useSessionListStore((s) =>
-    showCronSessions ? s.cronHasMore : s.regularHasMore,
-  )
+  const listKind = useSessionListStore((s) => s.listKind)
+  const listHasMore = useSessionListStore((s) => s.paginationByKind[s.listKind]?.hasMore ?? false)
 
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const hasWorkspace = !!workspacePath
@@ -338,16 +342,15 @@ export function SessionListColumn({
   }, [sessionHeaderActionsEnabled])
 
   /**
-   * Apply cron / pin / idea / actor filters and sort by last_message_at DESC.
+   * Apply list-kind / pin / idea / actor filters and sort by last_message_at DESC.
    * Pinned vs unpinned split happens at render time for the "all" filter.
    */
   const filteredRows = React.useMemo<ListRow[]>(() => {
     const pinnedSet = new Set(pinnedSessionIds)
     let base = listRows.map((r) => entryToRow(r, pinnedSet.has(r.id)))
-    const isClockView = filter.kind === 'all' && showCronSessions
-
-    const isCron = (r: ListRow) => isScheduledSession(r, cronSessionIds)
-    base = base.filter((r) => (isClockView ? isCron(r) : !isCron(r)))
+    if (filter.kind === 'all') {
+      base = base.filter((r) => sessionMatchesListKind(r, listKind, cronSessionIds))
+    }
 
     if (filter.kind === 'pinned') {
       base = base.filter((r) => r.isPinned)
@@ -359,7 +362,7 @@ export function SessionListColumn({
     }
 
     return base.sort(compareSessionListByRecency)
-  }, [listRows, pinnedSessionIds, cronSessionIds, showCronSessions, filter, actorSessionIds])
+  }, [listRows, pinnedSessionIds, cronSessionIds, listKind, filter, actorSessionIds])
 
   const { pinnedRows, regularRows } = React.useMemo(() => {
     if (filter.kind !== 'all') {
@@ -446,12 +449,15 @@ export function SessionListColumn({
     virtualRows,
   ])
 
+  const listKindLabel = (kind: SessionListKind) => {
+    if (kind === 'user') return t('sidebar.sessions', 'Sessions')
+    if (kind === 'gateway') return t('sidebar.channelSessions', 'Channels')
+    if (kind === 'app') return t('sidebar.appSessions', 'Apps')
+    return t('sidebar.scheduledSessions', 'Scheduled')
+  }
+
   const title = (() => {
-    if (filter.kind === 'all') {
-      return showCronSessions
-        ? t('sidebar.scheduledSessions', 'Scheduled sessions')
-        : t('sidebar.sessions', 'Sessions')
-    }
+    if (filter.kind === 'all') return t('sidebar.sessions', 'Sessions')
     if (filter.kind === 'pinned') return t('sidebar.pinned', 'Pinned')
     if (filter.kind === 'idea') return filter.title
     if (filter.kind === 'actor') return filter.displayName
@@ -1077,23 +1083,44 @@ export function SessionListColumn({
             </Button>
           ) : null}
           {!batchSelecting && !embedMode && filter.kind === 'all' && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                'h-7 w-7 transition-colors disabled:opacity-40',
-                showCronSessions ? 'text-foreground bg-muted' : 'text-muted-foreground hover:text-foreground',
-              )}
-              disabled={!sessionHeaderActionsEnabled}
-              onClick={() => {
-                const nextKind = showCronSessions ? 'regular' : 'cron'
-                toggleShowCronSessions()
-                void useSessionListStore.getState().loadFirstPage(50, nextKind)
-              }}
-              title={showCronSessions ? t('sidebar.showAllSessions', 'Show all sessions') : t('sidebar.showCronSessions', 'Show scheduled sessions')}
-            >
-              <AnimatedClock className="h-4 w-4" animate={showCronSessions} />
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    'h-7 gap-0.5 px-1.5 text-[12px] font-medium transition-colors disabled:opacity-40',
+                    listKind !== 'user'
+                      ? 'bg-muted text-foreground'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                  disabled={!sessionHeaderActionsEnabled}
+                  title={t('sidebar.filterSessionKind', 'Filter sessions')}
+                  aria-label={t('sidebar.filterSessionKind', 'Filter sessions')}
+                  data-testid="v2-session-list-kind"
+                >
+                  <span className="max-w-[4.5rem] truncate">{listKindLabel(listKind)}</span>
+                  <ChevronDown className="h-3 w-3 opacity-60" aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[9rem]">
+                {(['user', 'gateway', 'app', 'cron'] as const).map((kind) => (
+                  <DropdownMenuItem
+                    key={kind}
+                    className={cn(
+                      'text-[12.5px]',
+                      listKind === kind ? 'bg-selected text-foreground' : undefined,
+                    )}
+                    onSelect={() => {
+                      if (kind === listKind) return
+                      void useSessionListStore.getState().loadFirstPage(50, kind)
+                    }}
+                  >
+                    {listKindLabel(kind)}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
           <Button
             variant="ghost"

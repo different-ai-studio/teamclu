@@ -52,6 +52,8 @@ pub struct SessionRow {
     pub metadata_json: Option<String>,
     /// How the session was created: 'user' | 'cron' | 'gateway'.
     pub source: Option<String>,
+    /// App this session belongs to, when created from one.
+    pub app_id: Option<String>,
     /// For source='cron', the cron job id that created it.
     pub cron_job_id: Option<String>,
     pub created_at: String,

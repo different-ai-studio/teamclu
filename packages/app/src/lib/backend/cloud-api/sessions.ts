@@ -23,6 +23,7 @@ type CloudSession = {
   hasUnread: boolean;
   appId?: string | null;
   source?: string | null;
+  listKind?: string | null;
   cronJobId?: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -77,6 +78,14 @@ function mapSession(row: CloudSession) {
     has_unread: row.hasUnread,
     app_id: row.appId ?? null,
     source: row.source ?? null,
+    list_kind: (row.listKind as
+      | "user"
+      | "gateway"
+      | "app"
+      | "cron"
+      | "thread"
+      | null
+      | undefined) ?? null,
     cron_job_id: row.cronJobId ?? null,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
@@ -97,7 +106,7 @@ export function createSessionsModule(client: CloudApiClient): SessionsBackend {
       limit: number;
       cursor: SessionListCursor | null;
       teamId: string;
-      kind?: "all" | "regular" | "cron";
+      kind?: "all" | "regular" | "user" | "gateway" | "app" | "cron";
     }): Promise<SessionListPage> {
       // Without this an undefined teamId serializes to the literal string
       // "undefined", which sails past the server's truthiness check and reaches

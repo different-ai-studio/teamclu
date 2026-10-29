@@ -66,11 +66,13 @@ describe("session-list-store", () => {
       highlightedSessionIds: [],
       hasMore: false,
       nextCursor: null,
-      listKind: "regular",
-      regularHasMore: false,
-      regularNextCursor: null,
-      cronHasMore: false,
-      cronNextCursor: null,
+      listKind: "user",
+      paginationByKind: {
+        user: { hasMore: false, nextCursor: null },
+        gateway: { hasMore: false, nextCursor: null },
+        app: { hasMore: false, nextCursor: null },
+        cron: { hasMore: false, nextCursor: null },
+      },
       serverConfirmedTeams: [],
       emptyPageKeptTeams: [],
       scopeTeamId: null,
@@ -130,7 +132,7 @@ describe("session-list-store", () => {
       limit: 50,
       cursor: null,
       teamId: "team-1",
-      kind: "regular",
+      kind: "user",
     });
     expect(useSessionListStore.getState().rows[0]).toMatchObject({
       id: "session-1",
@@ -181,7 +183,7 @@ describe("session-list-store", () => {
         id: "session-2",
       },
       teamId: "team-1",
-      kind: "regular",
+      kind: "user",
     });
     expect(useSessionListStore.getState().rows.map((row) => row.id)).toEqual([
       "session-1",
@@ -190,27 +192,27 @@ describe("session-list-store", () => {
     ]);
   });
 
-  it("keeps independent cursors for regular and cron sessions", async () => {
-    const regularCursor = "regular-page-2";
+  it("keeps independent cursors for user and cron sessions", async () => {
+    const userCursor = "user-page-2";
     const cronCursor = "cron-page-2";
     mocks.listCurrentActorSessions
       .mockResolvedValueOnce({
-        rows: [sessionRow({ id: "regular-1" })],
-        nextCursor: regularCursor,
+        rows: [sessionRow({ id: "user-1" })],
+        nextCursor: userCursor,
       })
       .mockResolvedValueOnce({
-        rows: [{ ...sessionRow({ id: "cron-1" }), source: "cron" }],
+        rows: [{ ...sessionRow({ id: "cron-1" }), source: "cron", list_kind: "cron" }],
         nextCursor: cronCursor,
       })
       .mockResolvedValueOnce({ rows: [], nextCursor: null })
       .mockResolvedValueOnce({ rows: [], nextCursor: null });
 
     const { useSessionListStore } = await import("./session-list-store");
-    await useSessionListStore.getState().loadFirstPage(50, "regular");
+    await useSessionListStore.getState().loadFirstPage(50, "user");
     await useSessionListStore.getState().loadFirstPage(50, "cron");
 
     expect(useSessionListStore.getState().rows.map((row) => row.id)).toEqual([
-      "regular-1",
+      "user-1",
       "cron-1",
     ]);
 
@@ -219,10 +221,10 @@ describe("session-list-store", () => {
       expect.objectContaining({ cursor: cronCursor, kind: "cron" }),
     );
 
-    useSessionListStore.getState().setListKind("regular");
+    useSessionListStore.getState().setListKind("user");
     await useSessionListStore.getState().loadMore();
     expect(mocks.listCurrentActorSessions).toHaveBeenLastCalledWith(
-      expect.objectContaining({ cursor: regularCursor, kind: "regular" }),
+      expect.objectContaining({ cursor: userCursor, kind: "user" }),
     );
   });
 
