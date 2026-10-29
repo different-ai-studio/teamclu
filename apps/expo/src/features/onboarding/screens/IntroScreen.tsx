@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,44 +14,49 @@ import {
 import { PrimaryButton } from "../../../ui/button";
 import { colors, iosType, spacing, typography } from "../../../ui/theme";
 import {
-  DesktopPhoneIllustration,
   SharedSessionIllustration,
   TeamKnowledgeIllustration,
+  WorkflowToAppIllustration,
 } from "./IntroIllustrations";
 import { APP_NAME } from "./OnboardingParts";
 
+// The three cards spell the product line: 协作 → 共享 → 创造
+// (work together, keep the know-how, turn workflows into apps).
 const CARDS = [
   {
     id: 0,
-    eyebrow: "01",
-    title: "Work alongside your AI allies",
-    body: "Teammates and AI allies share one conversation — discuss, split the work, ship it.",
+    eyebrow: "COLLABORATE",
+    title: "Get it done with your AI partners",
+    body: "Teammates and AI partners share one conversation — talk it through, split the work, ship it. You make the call; they do the legwork.",
     Illustration: SharedSessionIllustration,
   },
   {
     id: 1,
-    eyebrow: "02",
-    title: "Team knowledge stays in sync",
-    body: "The docs and know-how your team builds up are there for every member and every agent.",
+    eyebrow: "SHARE",
+    title: "Your team's know-how, kept for everyone",
+    body: "Knowledge, skills, keys and memory live with the team — every new member and every AI partner can use them from day one.",
     Illustration: TeamKnowledgeIllustration,
   },
   {
     id: 2,
-    eyebrow: "03",
-    title: "Your computer works, your phone follows",
-    body: "Agents do the work on your computer. Follow along and make the call from your phone.",
-    Illustration: DesktopPhoneIllustration,
+    eyebrow: "CREATE",
+    title: "Turn repeat work into your own apps",
+    body: "Run a workflow once, and your AI partner can build it into an app. Next time just open it — and so can the whole team.",
+    Illustration: WorkflowToAppIllustration,
   },
 ] as const;
 
 /**
- * First-install intro: three swipeable cards, then "Get Started". Shown once
+ * First-install intro: three swipeable cards. "Continue" pages forward, the
+ * last card offers "Get Started", and "Skip" leaves from any earlier card. Shown once
  * (the caller persists the flag). Port of iOS `WelcomeView.IntroView` (#1589).
  */
 export function IntroScreen({ onFinish }: { onFinish: () => void }) {
   const { t } = useTranslation();
   const { width } = useWindowDimensions();
   const [page, setPage] = useState(0);
+  const pager = useRef<ScrollView>(null);
+  const isLastPage = page === CARDS.length - 1;
 
   const onScrollEnd = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     if (width <= 0) return;
@@ -58,11 +64,35 @@ export function IntroScreen({ onFinish }: { onFinish: () => void }) {
     setPage(Math.max(0, Math.min(CARDS.length - 1, next)));
   };
 
+  const advance = () => {
+    if (isLastPage) {
+      onFinish();
+      return;
+    }
+    const next = page + 1;
+    pager.current?.scrollTo({ animated: true, x: next * width });
+    setPage(next);
+  };
+
   return (
     <View style={styles.screen}>
-      <Text style={styles.brand}>{APP_NAME}</Text>
+      <View style={styles.header}>
+        <Text style={styles.brand}>{APP_NAME}</Text>
+        {isLastPage ? null : (
+          <Pressable
+            accessibilityRole="button"
+            hitSlop={12}
+            onPress={onFinish}
+            style={styles.skip}
+            testID="welcome.skipButton"
+          >
+            <Text style={styles.skipLabel}>{t("Skip")}</Text>
+          </Pressable>
+        )}
+      </View>
 
       <ScrollView
+        ref={pager}
         horizontal
         onMomentumScrollEnd={onScrollEnd}
         pagingEnabled
@@ -79,7 +109,9 @@ export function IntroScreen({ onFinish }: { onFinish: () => void }) {
             >
               <Illustration />
             </View>
-            <Text style={styles.eyebrow}>{eyebrow}</Text>
+            <Text style={styles.eyebrow}>
+              {`${String(id + 1).padStart(2, "0")}·${t(eyebrow)}`}
+            </Text>
             <Text style={styles.title}>{t(title)}</Text>
             <Text style={styles.body}>{t(body)}</Text>
           </View>
@@ -97,9 +129,9 @@ export function IntroScreen({ onFinish }: { onFinish: () => void }) {
 
       <View style={styles.actions}>
         <PrimaryButton
-          label={t("Get Started")}
-          onPress={onFinish}
-          testID="welcome.getStartedButton"
+          label={t(isLastPage ? "Get Started" : "Continue")}
+          onPress={advance}
+          testID={isLastPage ? "welcome.getStartedButton" : "welcome.continueButton"}
         />
       </View>
     </View>
@@ -119,7 +151,6 @@ const styles = StyleSheet.create({
     color: colors.onyx,
     fontFamily: typography.serif.fontFamily,
     fontSize: 22,
-    paddingTop: spacing.xxl,
     textAlign: "center",
   },
   card: {
@@ -150,6 +181,10 @@ const styles = StyleSheet.create({
     letterSpacing: 3,
     marginBottom: 10,
   },
+  header: {
+    justifyContent: "center",
+    paddingTop: spacing.xxl,
+  },
   illustration: {
     height: 260,
     marginBottom: 36,
@@ -160,6 +195,15 @@ const styles = StyleSheet.create({
   screen: {
     backgroundColor: colors.mist,
     flex: 1,
+  },
+  skip: {
+    position: "absolute",
+    right: spacing.xxl,
+    top: spacing.xxl,
+  },
+  skipLabel: {
+    color: colors.slate,
+    ...iosType.subheadline,
   },
   title: {
     color: colors.onyx,

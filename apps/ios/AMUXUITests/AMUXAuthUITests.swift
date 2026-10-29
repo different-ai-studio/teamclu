@@ -75,11 +75,8 @@ final class AMUXAuthUITests: XCTestCase {
     /// Choice → "Start a new team" → desktop-download guide → sign-in.
     @MainActor
     func testStartNewTeamPathReachesDesktopGuideThenLogin() throws {
-        let getStarted = app.buttons["welcome.getStartedButton"]
         let create = app.buttons["onboarding.createButton"]
-        if getStarted.waitForExistence(timeout: 6) {
-            getStarted.tap()
-        }
+        app.skipIntroIfShown()
         guard create.waitForExistence(timeout: 3) else {
             // Already authenticated; onboarding is not shown.
             return

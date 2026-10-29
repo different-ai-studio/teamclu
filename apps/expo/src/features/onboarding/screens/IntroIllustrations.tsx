@@ -25,7 +25,7 @@ function Bar({ width, strong }: { width: number; strong?: boolean }) {
   return <View style={[styles.bar, { width }, strong ? styles.barStrong : null]} />;
 }
 
-/** 01 — one conversation: two members and an agent at work, one unread dot. */
+/** 01 — one conversation: two members and an agent whose part is done, one unread dot. */
 export function SharedSessionIllustration() {
   return (
     <View style={styles.stage}>
@@ -43,7 +43,7 @@ export function SharedSessionIllustration() {
           <View style={styles.lines}>
             <View style={styles.tagRow}>
               <Text style={styles.tag}>AGENT</Text>
-              <StatusDot kind="working" size={7} />
+              <Text style={styles.done}>✓ DONE</Text>
             </View>
             <Bar width={140} />
           </View>
@@ -61,52 +61,73 @@ export function SharedSessionIllustration() {
   );
 }
 
-/** 02 — team knowledge: a stack of docs, members and agents linked to it. */
+const LEDGER = ["KNOWLEDGE", "SKILLS", "KEYS", "MEMORY"] as const;
+
+function LedgerValue({ label }: { label: (typeof LEDGER)[number] }) {
+  switch (label) {
+    case "KNOWLEDGE":
+      return <Text style={styles.tagMuted}>12</Text>;
+    case "SKILLS":
+      return <Text style={styles.tagMuted}>5</Text>;
+    case "KEYS":
+      return <Text style={styles.tagMuted}>••••</Text>;
+    case "MEMORY":
+      return <StatusDot kind="active" size={7} />;
+  }
+}
+
+/** 02 — what the team keeps (knowledge, skills, keys, memory), linked to members and agents. */
 export function TeamKnowledgeIllustration() {
   return (
     <View style={styles.stage}>
       <View style={styles.knowledgeRow}>
-        <Avatar initials="LN" />
-        <View style={styles.dashed} />
-        <View style={styles.docStack}>
-          <View style={[styles.card, styles.doc, styles.docBack]} />
-          <View style={[styles.card, styles.doc, styles.docMid]} />
-          <View style={[styles.card, styles.doc]}>
-            <Bar strong width={70} />
-            <Bar width={54} />
-            <Bar width={62} />
-          </View>
+        <View style={styles.satellites}>
+          <Avatar initials="LN" />
+          <Avatar agent initials="AI" />
         </View>
         <View style={styles.dashed} />
-        <Avatar agent initials="AI" />
+        <View style={[styles.card, styles.ledger]}>
+          {LEDGER.map((label, i) => (
+            <View key={label} style={[styles.ledgerRow, i > 0 ? styles.ledgerDivider : null]}>
+              <Text style={styles.tag}>{label}</Text>
+              <LedgerValue label={label} />
+            </View>
+          ))}
+        </View>
+        <View style={styles.dashed} />
+        <View style={styles.satellites}>
+          <Avatar agent initials="AI" />
+          <Avatar initials="WZ" />
+        </View>
       </View>
-      <Text style={styles.caption}>SYNCED</Text>
     </View>
   );
 }
 
-/** 03 — the computer works, the phone follows and makes the call. */
-export function DesktopPhoneIllustration() {
+/** 03 — a workflow run once becomes an app anyone can open again. */
+export function WorkflowToAppIllustration() {
   return (
     <View style={styles.stage}>
-      <View style={styles.devicesRow}>
-        <View style={[styles.card, styles.desktop]}>
-          <View style={styles.tagRow}>
-            <Text style={styles.tag}>AGENT</Text>
-            <Text style={styles.tagMuted}>RUNNING</Text>
-            <StatusDot kind="active" size={7} />
-          </View>
-          <Bar strong width={130} />
-          <Bar width={110} />
-          <Bar width={90} />
+      <View style={styles.flowRow}>
+        <View style={[styles.card, styles.steps]}>
+          {[70, 52, 80].map((w, i) => (
+            <View key={w} style={styles.tagRow}>
+              <Text style={styles.tagMuted}>{i + 1}</Text>
+              <Bar strong={i === 0} width={w} />
+            </View>
+          ))}
         </View>
-        <View style={[styles.card, styles.phone]}>
-          <View style={styles.notice}>
-            <View style={styles.unread} />
-            <Bar strong width={40} />
+        <Text style={styles.arrow}>→</Text>
+        <View style={[styles.card, styles.app]}>
+          <View style={styles.tagRow}>
+            <View style={styles.appIcon} />
+            <Text style={styles.tagMuted}>APP</Text>
           </View>
-          <Bar width={46} />
-          <View style={styles.approve} />
+          <Bar strong width={72} />
+          <Bar width={56} />
+          <View style={styles.run}>
+            <Text style={styles.runLabel}>RUN</Text>
+          </View>
         </View>
       </View>
     </View>
@@ -114,13 +135,20 @@ export function DesktopPhoneIllustration() {
 }
 
 const styles = StyleSheet.create({
-  approve: {
-    borderColor: colors.hairlineStrong,
+  app: {
+    gap: 9,
+    padding: 14,
+    width: 118,
+  },
+  appIcon: {
+    backgroundColor: colors.onyx,
     borderRadius: 3,
-    borderWidth: StyleSheet.hairlineWidth,
     height: 14,
-    marginTop: 6,
-    width: 46,
+    width: 14,
+  },
+  arrow: {
+    color: colors.slate,
+    fontSize: 15,
   },
   avatar: {
     alignItems: "center",
@@ -149,13 +177,6 @@ const styles = StyleSheet.create({
   barStrong: {
     backgroundColor: colors.slate,
   },
-  caption: {
-    color: colors.slate,
-    fontFamily: typography.mono.fontFamily,
-    fontSize: 10,
-    letterSpacing: 2.5,
-    marginTop: 18,
-  },
   card: {
     backgroundColor: colors.paper,
     borderColor: colors.hairline,
@@ -166,37 +187,18 @@ const styles = StyleSheet.create({
     borderColor: colors.slate,
     borderStyle: "dashed",
     borderTopWidth: 1,
-    width: 22,
+    width: 16,
   },
-  desktop: {
-    gap: 8,
-    height: 120,
-    padding: 14,
-    width: 190,
+  done: {
+    color: colors.sage,
+    fontFamily: typography.mono.fontFamily,
+    fontSize: 9,
+    letterSpacing: 1.5,
   },
-  devicesRow: {
-    alignItems: "flex-end",
+  flowRow: {
+    alignItems: "center",
     flexDirection: "row",
-    gap: 14,
-  },
-  doc: {
-    gap: 7,
-    height: 96,
-    padding: 12,
-    width: 92,
-  },
-  docBack: {
-    left: 12,
-    position: "absolute",
-    top: -12,
-  },
-  docMid: {
-    left: 6,
-    position: "absolute",
-    top: -6,
-  },
-  docStack: {
-    marginHorizontal: 6,
+    gap: 12,
   },
   hairline: {
     backgroundColor: colors.hairline,
@@ -206,26 +208,47 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
   },
+  ledger: {
+    paddingHorizontal: 12,
+    paddingVertical: 2,
+    width: 142,
+  },
+  ledgerDivider: {
+    borderTopColor: colors.hairline,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  ledgerRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    height: 30,
+    justifyContent: "space-between",
+  },
   lines: {
     flex: 1,
     gap: 6,
-  },
-  notice: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 5,
-  },
-  phone: {
-    gap: 7,
-    height: 132,
-    padding: 10,
-    width: 70,
   },
   row: {
     alignItems: "center",
     flexDirection: "row",
     gap: 10,
     paddingVertical: 10,
+  },
+  run: {
+    alignItems: "center",
+    backgroundColor: colors.cinnabar,
+    borderRadius: 4,
+    height: 24,
+    justifyContent: "center",
+    marginTop: 4,
+  },
+  runLabel: {
+    color: colors.paper,
+    fontFamily: typography.mono.fontFamily,
+    fontSize: 9,
+    letterSpacing: 1.8,
+  },
+  satellites: {
+    gap: 40,
   },
   sessionCard: {
     paddingHorizontal: 14,
@@ -235,6 +258,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flex: 1,
     justifyContent: "center",
+  },
+  steps: {
+    gap: 12,
+    padding: 14,
+    width: 128,
   },
   tag: {
     color: colors.onyx,
