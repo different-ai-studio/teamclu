@@ -31,6 +31,7 @@ import {
 } from "./session-attachments/aggregate-list.js";
 
 import { resolveFeatures } from "./routes/config.js";
+import { encodeStorageObjectKeyForUrl } from "./storage-object-key.js";
 
 /**
  * Self-registration switch, resolved per request from the deployment's feature
@@ -2955,9 +2956,10 @@ export function createSupabaseBusinessRepository(options) {
         .from(targetBucket)
         .upload(path, bytes, { contentType: mime, upsert: true });
       if (error) throw error;
+      const encodedPath = encodeStorageObjectKeyForUrl(path);
       return {
         path,
-        url: `${supabasePublicUrl}/storage/v1/object/public/${targetBucket}/${path}`,
+        url: `${supabasePublicUrl}/storage/v1/object/public/${targetBucket}/${encodedPath}`,
       };
     },
 

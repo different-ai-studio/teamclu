@@ -49,7 +49,7 @@ import { quickChatWelcomeAgent } from "@/hooks/use-quick-chat-readiness";
 import { toMentionDeliverySnapshot } from "@/lib/session/session-agent-ui-state";
 import { type MessageListHandle } from "./MessageList";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
-import { uploadAttachment } from "@/lib/attachments/attachment-upload";
+import { attachmentUploadFailureDetail, uploadAttachment } from "@/lib/attachments/attachment-upload";
 import {
   collectSessionAttachmentUrlsFromText,
   expandSessionAttachmentTokensInText,
@@ -317,8 +317,15 @@ export function useChatSend({
 
     const uploadPromise = (async (): Promise<string[]> => {
       const urls: string[] = collectSessionAttachmentUrlsFromText(text);
-      if (currentPendingFiles.length === 0 || !teamIdForSend) return urls;
+      if (currentPendingFiles.length === 0) return urls;
       try {
+        // Sending the text and dropping the files would look like a successful
+        // send that forgot the attachment. Keep the draft instead.
+        if (!teamIdForSend) {
+          throw new Error(
+            t("chat.toast.attachmentUploadNoTeam", "没有当前团队，附件无法上传"),
+          );
+        }
         sessionFlowLog("send.attachments_upload.begin", {
           sessionId: sid,
           teamId: teamIdForSend,
@@ -355,7 +362,15 @@ export function useChatSend({
         });
         console.error("[ChatPanel] attachment upload failed:", e);
         const { toast } = await import("sonner");
-        toast.error("Failed to upload attachment — message not sent");
+        const detail = attachmentUploadFailureDetail(e);
+        const hint = t(
+          "chat.toast.attachmentUploadFailedHint",
+          "草稿还在，消息没有发出。",
+        );
+        toast.error(
+          t("chat.toast.attachmentUploadFailed", "附件上传失败，消息未发送"),
+          { description: detail ? `${hint} ${detail}` : hint },
+        );
         throw e;
       }
       return urls;

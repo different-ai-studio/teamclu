@@ -1,11 +1,18 @@
 import type { AttachmentRef, AttachmentsBackend, AttachmentUploadInput } from "@/lib/backend/types";
 import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
+import {
+  attachmentStorageContentType,
+  safeObjectName,
+} from "@/lib/attachments/storage-object-key";
 
 export function createAttachmentsModule(client: CloudApiClient): AttachmentsBackend {
   return {
     async uploadAttachment(input: AttachmentUploadInput): Promise<AttachmentRef> {
       const attachmentId = crypto.randomUUID();
-      const storagePath = `${input.teamId}/${input.sessionId}/${attachmentId}/${input.file.name}`;
+      // The object key cannot carry the display name. Storage 1.54.1 rejects
+      // non-ASCII keys with InvalidKey, which surfaced as "Failed to upload
+      // attachment — message not sent". `fileName` below stays the original.
+      const storagePath = `${input.teamId}/${input.sessionId}/${attachmentId}/${safeObjectName(input.file.name)}`;
       const bytes: BodyInit = await input.file.arrayBuffer();
       const out = await client.postRaw<{
         path: string;
@@ -18,7 +25,7 @@ export function createAttachmentsModule(client: CloudApiClient): AttachmentsBack
       }>(
         `/v1/attachments?path=${encodeURIComponent(storagePath)}`,
         bytes,
-        { contentType: input.file.type },
+        { contentType: attachmentStorageContentType(input.file.type) },
       );
       const signedUrl = out.url ?? out.signedUrl;
       if (!signedUrl) {

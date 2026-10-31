@@ -5137,7 +5137,15 @@ paths:
           required: true
           schema:
             type: string
-          description: Storage path for the attachment (e.g. team-id/file.png)
+          description: >
+            Storage object path (e.g. team-id/session-id/attachment-id/file.png).
+            Each segment is rewritten to an ASCII object key before upload.
+            Supabase Storage 1.54.1 rejects non-ASCII keys with `InvalidKey`.
+            Spaces and other characters outside that safe alphabet are
+            rewritten as well, so the public URL stays a plain path. ASCII
+            names such as `photo.png` are unchanged. The response `path` and
+            `url` are the stored key. Clients keep the original filename on
+            the message for display and download.
         - in: query
           name: bucket
           required: false
@@ -5151,7 +5159,11 @@ paths:
           required: true
           schema:
             type: string
-          description: MIME type of the attachment
+          description: >
+            MIME type of the attachment. Types outside the `attachments`
+            bucket allowlist (including PowerPoint, Word, and Excel) are
+            stored as `application/octet-stream`. Avatar uploads are not
+            coerced. The `avatars` bucket still only accepts jpeg, png, and webp.
       requestBody:
         required: true
         content:
