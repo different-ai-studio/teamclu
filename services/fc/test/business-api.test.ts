@@ -2059,6 +2059,60 @@ test("POST /v1/attachments rejects unknown bucket with 400", async () => {
   assert.equal(repo.calls.length, 0);
 });
 
+test("POST /v1/attachments rewrites a non-ASCII filename before storage", async () => {
+  const repo = fakeRepo();
+  const body = Buffer.from("pdf-bytes");
+  const rawPath =
+    "30b7006d-4225-4160-8c12-0a057268a914/e8a6039b-602a-4102-a7c2-a0f0589ef049/78d65bb6-10dc-4646-a966-db0536c8cec0/AI升级能力地图方案.pdf";
+  const response = await handleBusinessApiRequest({
+    httpMethod: "POST",
+    path: "/v1/attachments",
+    headers: { Authorization: "Bearer token", "Content-Type": "application/pdf" },
+    queryStringParameters: { path: rawPath },
+    body: body.toString("base64"),
+    isBase64Encoded: true,
+  }, { createRepository: () => repo });
+  assert.equal(response.statusCode, 200);
+  const stored =
+    "30b7006d-4225-4160-8c12-0a057268a914/e8a6039b-602a-4102-a7c2-a0f0589ef049/78d65bb6-10dc-4646-a966-db0536c8cec0/AI.pdf";
+  const parsed = JSON.parse(response.body);
+  assert.equal(parsed.path, stored);
+  assert.equal(parsed.url.endsWith(`/${stored}`), true);
+  assert.equal(parsed.url.includes("升级"), false);
+  assert.deepEqual(repo.calls[0], {
+    method: "uploadAttachment",
+    input: { path: stored, mime: "application/pdf", bytes: body, bucket: "attachments" },
+  });
+});
+
+test("POST /v1/attachments stores a PowerPoint upload as octet-stream", async () => {
+  const repo = fakeRepo();
+  const body = Buffer.from("ppt-bytes");
+  const response = await handleBusinessApiRequest({
+    httpMethod: "POST",
+    path: "/v1/attachments",
+    headers: {
+      Authorization: "Bearer token",
+      "Content-Type": "application/vnd.ms-powerpoint",
+    },
+    queryStringParameters: {
+      path: "team/session/id/物流与云仓-TeamClu-AI升级方向方案-V0.1.ppt",
+    },
+    body: body.toString("base64"),
+    isBase64Encoded: true,
+  }, { createRepository: () => repo });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(repo.calls[0], {
+    method: "uploadAttachment",
+    input: {
+      path: "team/session/id/-TeamClu-AI_-V0.1.ppt",
+      mime: "application/octet-stream",
+      bytes: body,
+      bucket: "attachments",
+    },
+  });
+});
+
 test("POST /v1/attachments returns 400 when path query param is missing", async () => {
   const repo = fakeRepo();
   const response = await handleBusinessApiRequest({
