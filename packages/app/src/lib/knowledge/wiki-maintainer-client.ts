@@ -52,6 +52,36 @@ function prefixesOverlap(a: string, b: string): boolean {
   return a.startsWith(b) || b.startsWith(a)
 }
 
+function integerValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return value
+  if (typeof value === 'string' && /^(?:0|[1-9]\d*)$/.test(value.trim())) {
+    const parsed = Number(value.trim())
+    return Number.isSafeInteger(parsed) ? parsed : null
+  }
+  return null
+}
+
+function sameInteger(left: unknown, right: unknown): boolean {
+  const a = integerValue(left)
+  const b = integerValue(right)
+  return a !== null && a === b
+}
+
+/**
+ * `invoke()` rejects with the command's `Err(String)` — a bare string, never
+ * an Error. Dropping that string collapsed every desktop restore failure into
+ * "Wiki checkpoint download failed."
+ */
+function wikiError(error: unknown, fallback: string): Error {
+  if (error instanceof Error) return error
+  if (typeof error === 'string' && error.trim()) return new Error(error.trim())
+  if (error && typeof error === 'object') {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim()) return new Error(message.trim())
+  }
+  return new Error(fallback)
+}
+
 // Permissions can change between compile and publish. A folder restricted
 // after the compile may already be in the target pages, so publishing waits
 // for a recompile.
@@ -100,15 +130,26 @@ async function restoreCheckpointGeneration(
         source === 'latest' && attempt === 0
           ? await maintainer.downloadLatestCheckpoint(teamId)
           : await maintainer.downloadCheckpoint(teamId, generation)
-      if (remote.generation !== generation) {
+      const remoteGeneration = integerValue(remote.generation)
+      if (remoteGeneration === null || remoteGeneration !== generation) {
         throw new Error('Wiki checkpoint download returned another generation.')
+      }
+      const size = integerValue(remote.size)
+      if (size === null || size < 1) {
+        throw new Error('Wiki checkpoint download returned an invalid size.')
+      }
+      if (typeof remote.url !== 'string' || remote.url.trim() === '') {
+        throw new Error('Wiki checkpoint download returned no URL.')
+      }
+      if (typeof remote.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(remote.sha256)) {
+        throw new Error('Wiki checkpoint download returned an invalid hash.')
       }
       await invoke('kb_maintainer_restore_checkpoint', {
         request: {
           teamId,
           url: remote.url,
           sha256: remote.sha256,
-          size: remote.size,
+          size,
           publishedCommit,
         },
       })
@@ -117,9 +158,7 @@ async function restoreCheckpointGeneration(
       lastError = error
     }
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error('Wiki checkpoint download failed.')
+  throw wikiError(lastError, 'Wiki checkpoint download failed.')
 }
 
 async function restoreLatestCheckpoint(
@@ -127,6 +166,10 @@ async function restoreLatestCheckpoint(
   status: WikiMaintainerStatus,
 ): Promise<void> {
   if (!status.checkpoint) return
+  const generation = integerValue(status.checkpoint.generation)
+  if (generation === null || generation < 1) {
+    throw new Error('Wiki checkpoint has no generation.')
+  }
   const local = await invoke<{
     generation: number
     publishedCommit?: string | null
@@ -135,7 +178,7 @@ async function restoreLatestCheckpoint(
     { teamId },
   )
   if (
-    (local?.generation ?? 0) === status.checkpoint.generation &&
+    sameInteger(local?.generation ?? 0, generation) &&
     (local?.publishedCommit ?? null) === (status.publishedCommit ?? null)
   ) {
     return
@@ -143,16 +186,17 @@ async function restoreLatestCheckpoint(
   try {
     await restoreCheckpointGeneration(
       teamId,
-      status.checkpoint.generation,
+      generation,
       status.publishedCommit ?? null,
       'latest',
     )
   } catch (latestError) {
-    if (status.checkpoint.parentGeneration < 1) throw latestError
+    const parent = integerValue(status.checkpoint.parentGeneration)
+    if (parent === null || parent < 1) throw latestError
     try {
       await restoreCheckpointGeneration(
         teamId,
-        status.checkpoint.parentGeneration,
+        parent,
         null,
         'exact',
       )
@@ -488,8 +532,14 @@ export async function prepareWikiMaintenance(
     unlisten()
   }
   if (checkpointFailure) {
-    const latest = await maintainer.getStatus(teamId)
-    await restoreLatestCheckpoint(teamId, latest)
+    try {
+      const latest = await maintainer.getStatus(teamId)
+      await restoreLatestCheckpoint(teamId, latest)
+    } catch (restoreError) {
+      const uploadMessage = wikiError(checkpointFailure, 'Wiki checkpoint upload failed.').message
+      const restoreMessage = wikiError(restoreError, 'Wiki checkpoint could not be restored.').message
+      throw new Error(`${uploadMessage} ${restoreMessage}`, { cause: restoreError })
+    }
     throw checkpointFailure
   }
   if (prepareFailure) throw prepareFailure
