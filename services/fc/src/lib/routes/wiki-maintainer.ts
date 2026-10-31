@@ -80,7 +80,11 @@ export function registerWikiMaintainer(router) {
     return {
       body: {
         ...checkpoint,
-        url: await checkpointDownloadUrl(checkpoint.objectKey),
+        url: await checkpointDownloadUrl(
+          checkpoint.objectKey,
+          getTeamBlobStorage(),
+          checkpoint.size,
+        ),
       },
     };
   });
@@ -100,7 +104,11 @@ export function registerWikiMaintainer(router) {
     return {
       body: {
         ...checkpoint,
-        url: await checkpointDownloadUrl(checkpoint.objectKey),
+        url: await checkpointDownloadUrl(
+          checkpoint.objectKey,
+          getTeamBlobStorage(),
+          checkpoint.size,
+        ),
       },
     };
   });

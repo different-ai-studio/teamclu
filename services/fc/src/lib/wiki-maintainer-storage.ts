@@ -201,9 +201,25 @@ export async function verifyCheckpointObject(
 export async function checkpointDownloadUrl(
   objectKey: string,
   storage: BlobStorage = getTeamBlobStorage(),
+  expectedSize?: number,
 ): Promise<string> {
   if (!objectKey.startsWith("wiki-maintainer/teams/")) {
     throw new ApiError(500, "invalid_checkpoint", "checkpoint object key is invalid");
+  }
+  // Signing does not check that the bytes exist. A dangling row then hands the
+  // desktop a URL that 404s, and that failure used to collapse into
+  // "Wiki checkpoint download failed."
+  const stat = await storage.stat(objectKey);
+  if (!stat) {
+    throw new ApiError(404, "blob_missing", "Wiki checkpoint object is missing.");
+  }
+  if (
+    typeof expectedSize === "number" &&
+    expectedSize > 0 &&
+    stat.size > 0 &&
+    stat.size !== expectedSize
+  ) {
+    throw new ApiError(422, "blob_missing", "Wiki checkpoint object has the wrong size.");
   }
   return storage.createDownloadUrl(objectKey, 900);
 }

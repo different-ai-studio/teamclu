@@ -704,6 +704,131 @@ describe('wiki-maintainer-client', () => {
     expect(downloadCheckpoint).toHaveBeenCalledWith('team-1', 75)
   })
 
+  it('surfaces a native string rejection instead of the generic download failure', async () => {
+    getMaintainerStatus.mockResolvedValue({
+      config: { version: 1, config: { compilerModel: 'team/glm-4.6' }, updatedAt: '' },
+      generation: 2,
+      stage: 'idle',
+      publishedCommit: null,
+      checkpoint: {
+        generation: 2,
+        parentGeneration: 0,
+        manifest: { compilerModel: 'team/glm-4.6' },
+      },
+    })
+    downloadLatestCheckpoint.mockResolvedValue({
+      generation: 2,
+      url: 'https://objects.example/latest',
+      sha256: 'a'.repeat(64),
+      size: 10,
+    })
+    downloadCheckpoint.mockResolvedValue({
+      generation: 2,
+      url: 'https://objects.example/exact',
+      sha256: 'a'.repeat(64),
+      size: 10,
+    })
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'kb_maintainer_local_checkpoint_status') return { generation: 0 }
+      if (command === 'kb_maintainer_restore_checkpoint') {
+        throw 'Wiki checkpoint object is missing.'
+      }
+      if (command === 'kb_maintainer_list_local_documents') return []
+      if (command === 'kb_maintainer_imported_source_paths') return []
+      return { runId: 'run-1' }
+    })
+
+    await expect(
+      prepareWikiMaintenance('team-1', ['documents/TeamClu/'], 'team/glm-4.6'),
+    ).rejects.toThrow('Wiki checkpoint object is missing.')
+    expect(invoke).not.toHaveBeenCalledWith('kb_maintainer_prepare', expect.anything())
+  })
+
+  it('compiles without downloading when the team has no checkpoint', async () => {
+    listKnownDocuments.mockResolvedValue([])
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'kb_maintainer_list_local_documents') return []
+      if (command === 'kb_maintainer_imported_source_paths') return []
+      if (command === 'kb_maintainer_prepare') {
+        return {
+          runId: 'run-empty',
+          sourceCount: 1,
+          added: 0,
+          updated: 0,
+          deleted: 0,
+          failed: 0,
+          visionPages: 0,
+          estimatedCost: null,
+          currency: 'CNY',
+          canPublish: false,
+          blockers: [],
+        }
+      }
+      return null
+    })
+
+    await prepareWikiMaintenance('team-1', ['documents/TeamClu/'], 'team/glm-4.6')
+
+    expect(downloadLatestCheckpoint).not.toHaveBeenCalled()
+    expect(downloadCheckpoint).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalledWith(
+      'kb_maintainer_restore_checkpoint',
+      expect.anything(),
+    )
+    expect(invoke).toHaveBeenCalledWith('kb_maintainer_prepare', expect.anything())
+  })
+
+  it('skips the download when this computer already has that checkpoint generation', async () => {
+    getMaintainerStatus.mockResolvedValue({
+      config: {
+        version: 1,
+        config: {
+          schemaVersion: 1,
+          sourceDirectories: ['documents/TeamClu/'],
+          compilerModel: 'team/glm-4.6',
+        },
+        updatedAt: '',
+      },
+      generation: 3,
+      stage: 'idle',
+      publishedCommit: null,
+      checkpoint: { generation: '3', parentGeneration: 2 },
+    })
+    listKnownDocuments.mockResolvedValue([])
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'kb_maintainer_local_checkpoint_status') {
+        return { generation: 3, publishedCommit: null }
+      }
+      if (command === 'kb_maintainer_list_local_documents') return []
+      if (command === 'kb_maintainer_imported_source_paths') return []
+      if (command === 'kb_maintainer_prepare') {
+        return {
+          runId: 'run-local',
+          sourceCount: 1,
+          added: 0,
+          updated: 0,
+          deleted: 0,
+          failed: 0,
+          visionPages: 0,
+          estimatedCost: null,
+          currency: 'CNY',
+          canPublish: true,
+          blockers: [],
+        }
+      }
+      return null
+    })
+
+    await prepareWikiMaintenance('team-1', ['documents/TeamClu/'], 'team/glm-4.6')
+
+    expect(downloadLatestCheckpoint).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalledWith(
+      'kb_maintainer_restore_checkpoint',
+      expect.anything(),
+    )
+    expect(invoke).toHaveBeenCalledWith('kb_maintainer_prepare', expect.anything())
+  })
+
   it('uploads a compressed baseline after publish and still succeeds if that upload fails', async () => {
     getMaintainerStatus.mockResolvedValue({
       config: { version: 1, config: { compilerModel: 'team/glm-4.6' }, updatedAt: '' },
