@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Hoisted, mutable test state shared with the module mocks below.
 const h = vi.hoisted(() => ({
@@ -80,7 +80,11 @@ vi.mock('@tauri-apps/api/core', () => ({
   }),
 }))
 
-import { useDaemonOnboardingStore } from '../daemon-onboarding'
+import {
+  resetDaemonOnboardingPostReadyForTests,
+  useDaemonOnboardingStore,
+  waitForDaemonOnboardingPostReady,
+} from '../daemon-onboarding'
 
 const reset = () =>
   useDaemonOnboardingStore.setState({
@@ -104,7 +108,13 @@ beforeEach(() => {
   h.ensureCalls = []
   h.installServiceShouldThrow = false
   h.restartManagedShouldThrow = false
+  resetDaemonOnboardingPostReadyForTests()
   reset()
+})
+
+afterEach(async () => {
+  await waitForDaemonOnboardingPostReady()
+  resetDaemonOnboardingPostReadyForTests()
 })
 
 describe('daemon-onboarding checkCloudSession + autoHealCloudSession', () => {

@@ -84,7 +84,9 @@ function staleDaemonMessage(): string | null {
 
 /**
  * Make sure the managed runtime (Node.js + pi + the MCP SDK) is installed
- * before the gate opens onto the chat UI (#1250).
+ * (#1250). `refresh` opens the chat gate then schedules this in the background
+ * so a cold `amuxd doctor` does not block first paint (#1798); when something
+ * is missing this flips status to 'starting'/'error' and AuthGate shows the wizard.
  *
  * Cheap when it is: one `amuxd doctor` through the setup store, no install.
  * When something is missing — a first run, or a machine upgraded from a build
@@ -255,6 +257,47 @@ type DaemonOnboardingState = {
   checkCloudSession: (opts?: { allowRetryAfterHealError?: boolean }) => Promise<void>
   /** Re-onboard the local daemon in place (same actor) to restore credentials. */
   autoHealCloudSession: () => Promise<void>
+}
+
+/**
+ * Tail of `refresh` after the chat gate opens: doctor / install, then cloud
+ * heal + workspace register. Must not be awaited inside `refresh` — awaiting
+ * it on the same promise chain keeps React from committing `authgate:children`
+ * until doctor finishes (#1798).
+ */
+let postReadyTail: Promise<void> = Promise.resolve()
+let postReadyGeneration = 0
+
+/** @internal Tests wait for background doctor / workspace after refresh. */
+export function waitForDaemonOnboardingPostReady(): Promise<void> {
+  return postReadyTail
+}
+
+/** @internal Drop in-flight post-ready work between tests. */
+export function resetDaemonOnboardingPostReadyForTests(): void {
+  postReadyGeneration += 1
+  postReadyTail = Promise.resolve()
+}
+
+function schedulePostReadyWork(
+  get: () => DaemonOnboardingState,
+  teamId: string | null,
+): void {
+  const generation = ++postReadyGeneration
+  const work = (async () => {
+    if (!(await ensureRuntimeReady())) return
+    if (generation !== postReadyGeneration) return
+    // Install path leaves status at 'starting'; re-affirm ready for AuthGate.
+    useDaemonOnboardingStore.setState({ status: 'ready', loaded: true, error: null })
+    await get().checkCloudSession()
+    if (generation !== postReadyGeneration) return
+    await maybeRegisterDefaultWorkspace(teamId)
+  })()
+  postReadyTail = work.then(
+    () => undefined,
+    () => undefined,
+  )
+  void work
 }
 
 async function daemonTeamId(): Promise<string | null> {
@@ -492,9 +535,11 @@ async function ensureHealthy(): Promise<boolean> {
     }
   })
   // The long one: up to 6s per attempt, and `refresh` runs it twice.
+  // Probe first, then sleep — the spawn often answers within the first
+  // healthz; a fixed sleep(500) before every poll added ~0.5s for nothing
+  // (#1798).
   useDaemonOnboardingStore.setState({ step: 'await-daemon' })
   for (let i = 0; i < 12; i++) {
-    await sleep(500)
     invalidateDaemonConnection()
     probe = await probeDaemonHttp()
     if (probe.ok) {
@@ -506,6 +551,7 @@ async function ensureHealthy(): Promise<boolean> {
       }))
       return true
     }
+    if (i < 11) await sleep(500)
   }
   useDaemonOnboardingStore.setState({ failedStep: 'await-daemon', step: null })
   return false
@@ -778,34 +824,29 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
     const first = await probeDaemonHttp()
     markStartup('daemon-refresh:end')
     if (first.ok) {
-      // The gate must not open onto a machine that cannot run an agent.
-      if (!(await ensureRuntimeReady())) return
+      // Open the gate and return — doctor runs on postReadyTail so React can
+      // commit authgate:children before setup_list_requirements returns (#1798).
       set({ status: 'ready', loaded: true })
-      // Heal the daemon's cloud session before workspace upsert — otherwise
-      // `POST /v1/workspaces` fails with 500 while the refresh token is dead.
-      await get().checkCloudSession()
-      await maybeRegisterDefaultWorkspace(currentTeamId)
+      schedulePostReadyWork(get, currentTeamId)
       return
     }
     beginRun()
     set({ status: 'starting', loaded: true, error: null })
     let ok = await ensureHealthy()
     if (!ok) ok = await ensureHealthy()
-    if (ok && !(await ensureRuntimeReady())) return
-    set({
-      status: ok ? 'ready' : 'error',
-      loaded: true,
-      error: ok
-        ? null
-        : i18n.t(
-            'settings.daemonOnboarding.startFailed',
-            'Failed to start the local daemon. Make sure it can run on this machine, then retry.',
-          ),
-    })
-    if (ok) {
-      await get().checkCloudSession()
-      await maybeRegisterDefaultWorkspace(currentTeamId)
+    if (!ok) {
+      set({
+        status: 'error',
+        loaded: true,
+        error: i18n.t(
+          'settings.daemonOnboarding.startFailed',
+          'Failed to start the local daemon. Make sure it can run on this machine, then retry.',
+        ),
+      })
+      return
     }
+    set({ status: 'ready', loaded: true, error: null })
+    schedulePostReadyWork(get, currentTeamId)
   },
 
   forceReset: async () => {
