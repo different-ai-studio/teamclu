@@ -2207,6 +2207,29 @@ export function createSupabaseBusinessRepository(options) {
       return (data ?? []).map(mapSession);
     },
 
+    // Desktop session-list v2. Independent RPC so /v1/sessions keeps
+    // regular = non-cron. kind is required and partitioned:
+    // regular | channel | app | cron (see 20261102000000).
+    async listSessionsV2({ limit = 50, cursor = null, teamId = null, kind = null }: any = {}) {
+      if (!teamId) {
+        throw new ApiError(400, "validation_failed", "teamId is required");
+      }
+      if (!kind || !["regular", "channel", "app", "cron"].includes(kind)) {
+        throw new ApiError(400, "validation_failed", "kind must be regular, channel, app, or cron");
+      }
+      const { data, error } = await supabase.rpc("list_current_actor_sessions_v2", {
+        p_team_id: teamId,
+        p_kind: kind,
+        p_limit: limit,
+        p_before_last_message_at: cursor?.lastMessageAt ?? null,
+        p_before_created_at: cursor?.createdAt ?? null,
+        p_before_id: cursor?.id ?? null,
+        p_idea_id: null,
+      });
+      if (error) throw error;
+      return (data ?? []).map(mapSession);
+    },
+
     // Newest-first on the way out of Postgres so `limit` truncates the OLD end
     // of the history, then reversed so the page itself reads oldest-first — the
     // order every client already renders in. Fetching ascending and slicing

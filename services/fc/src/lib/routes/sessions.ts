@@ -43,6 +43,32 @@ export function registerSessions(router) {
     };
   });
 
+  // Desktop session list v2. kind is required and mutually exclusive
+  // (regular / channel / app / cron). Does not replace /v1/sessions.
+  router.get("/v2/sessions", async (ctx) => {
+    const limit = parseLimit(ctx.query.get("limit"));
+    const cursor = decodeCursor(ctx.query.get("cursor"));
+    const teamId = requireString(ctx.query.get("teamId"), "teamId");
+    const kind = requireString(ctx.query.get("kind"), "kind");
+    if (!["regular", "channel", "app", "cron"].includes(kind)) {
+      throw new ApiError(400, "validation_failed", "kind must be regular, channel, app, or cron");
+    }
+    const fetched = await ctx.repository.listSessionsV2({
+      limit: limit + 1,
+      cursor,
+      teamId,
+      kind,
+    });
+    const hasMore = fetched.length > limit;
+    const items = fetched.slice(0, limit);
+    return {
+      body: {
+        items,
+        nextCursor: hasMore ? nextSessionCursor(items, limit) : null,
+      },
+    };
+  });
+
   router.post("/v1/sessions", async (ctx) => {
     const body = ctx.json ?? {};
     requireString(body.teamId, "teamId");

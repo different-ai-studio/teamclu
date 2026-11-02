@@ -766,6 +766,71 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Error"
+  /v2/sessions:
+    get:
+      operationId: listSessionsV2
+      summary: List sessions (v2 kind partition)
+      description: |
+        Desktop session list. Same participation / non-archived / non-thread
+        rules as `/v1/sessions`, but `kind` is required and mutually exclusive:
+
+        - `regular` — `source=user` (or null) and no `app_id`
+        - `channel` — `source=gateway`
+        - `app` — `app_id` set and not cron/gateway
+        - `cron` — `source=cron`
+
+        Served by `amux.list_current_actor_sessions_v2`. Does not replace
+        `/v1/sessions` (iOS and other clients stay on v1).
+      tags: [Sessions]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: teamId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: kind
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [regular, channel, app, cron]
+      responses:
+        "200":
+          description: Current actor sessions for one kind.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Session"
+                  nextCursor:
+                    type:
+                      - string
+                      - "null"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
   /v1/sessions:
     get:
       operationId: listSessions

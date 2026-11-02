@@ -134,6 +134,62 @@ test("listSessions carries the app a session belongs to", async () => {
   assert.equal(rows[0].appId, "app-9");
 });
 
+test("listSessionsV2 calls list_current_actor_sessions_v2 with required kind", async () => {
+  const rpcCalls = [];
+  const repo = createRepo(fakeSupabase({
+    rpcCalls,
+    rpcData: {
+      list_current_actor_sessions_v2: [{
+        id: "session-1",
+        team_id: "team-1",
+        title: "Plan",
+        mode: "collab",
+        idea_id: null,
+        last_message_at: "2026-05-27T01:00:00Z",
+        last_message_preview: "hello",
+        has_unread: false,
+        created_at: "2026-05-26T01:00:00Z",
+        updated_at: "2026-05-27T01:00:00Z",
+        source: "user",
+        app_id: null,
+      }],
+    },
+  }));
+
+  const rows = await repo.listSessionsV2({
+    limit: 10,
+    teamId: "team-1",
+    kind: "channel",
+    cursor: { lastMessageAt: "2026-05-27T00:00:00Z", createdAt: "2026-05-26T00:00:00Z", id: "s0" },
+  });
+
+  assert.deepEqual(rpcCalls, [{
+    name: "list_current_actor_sessions_v2",
+    args: {
+      p_team_id: "team-1",
+      p_kind: "channel",
+      p_limit: 10,
+      p_before_last_message_at: "2026-05-27T00:00:00Z",
+      p_before_created_at: "2026-05-26T00:00:00Z",
+      p_before_id: "s0",
+      p_idea_id: null,
+    },
+  }]);
+  assert.equal(rows[0].id, "session-1");
+});
+
+test("listSessionsV2 refuses missing or invalid kind", async () => {
+  const repo = createRepo(fakeSupabase({ rpcData: {} }));
+  await assert.rejects(
+    () => repo.listSessionsV2({ limit: 10, teamId: "team-1" }),
+    (err: any) => err.statusCode === 400,
+  );
+  await assert.rejects(
+    () => repo.listSessionsV2({ limit: 10, teamId: "team-1", kind: "all" }),
+    (err: any) => err.statusCode === 400,
+  );
+});
+
 test("insertMessage writes a messages row and maps response", async () => {
   const tableCalls = [];
   const repo = createRepo(fakeSupabase({
