@@ -37,11 +37,22 @@ struct SupervisorInner {
     child: Option<tokio::process::Child>,
 }
 
+/// In-flight `ensure_started` shared across concurrent callers (#1798).
+/// Waiters clone the receiver and take the same `Result` instead of each
+/// re-entering `ensure_started_locked` after the leader finishes.
+type EnsureShared = (
+    tokio::sync::watch::Sender<Option<Result<(), String>>>,
+    tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+);
+
 pub struct AmuxdSupervisor {
     /// Serializes ensure / restart end-to-end (including the health wait), so
     /// two concurrent ensures cannot heal-stop each other's fresh child.
     /// `inner` alone is not enough: it is released during the health wait.
     ensure_lock: tokio::sync::Mutex<()>,
+    /// Single in-flight ensure; concurrent callers join this instead of
+    /// queueing another full start behind `ensure_lock`.
+    ensure_shared: tokio::sync::Mutex<Option<EnsureShared>>,
     /// Guards the child handle. Held only for short sections so
     /// `shutdown_blocking` (Cmd+Q) can grab it quickly.
     inner: tokio::sync::Mutex<SupervisorInner>,
@@ -69,6 +80,7 @@ impl AmuxdSupervisor {
     pub fn new() -> Self {
         Self {
             ensure_lock: tokio::sync::Mutex::new(()),
+            ensure_shared: tokio::sync::Mutex::new(None),
             inner: tokio::sync::Mutex::new(SupervisorInner { child: None }),
             app_exiting: AtomicBool::new(false),
             shutdown_done: AtomicBool::new(false),
@@ -687,8 +699,41 @@ fn stop_without_lock() {
 impl AmuxdSupervisor {
     pub async fn ensure_started<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         let state = app.state::<AmuxdSupervisor>();
-        let _ensure = state.ensure_lock.lock().await;
-        Self::ensure_started_locked(&state).await
+
+        // Join an in-flight ensure so N callers share one start, instead of
+        // serializing N full ensure_started_locked runs behind ensure_lock
+        // (#1798). Restart still takes ensure_lock directly and does not
+        // publish through this slot.
+        loop {
+            let leader_tx = {
+                let mut slot = state.ensure_shared.lock().await;
+                if let Some((_tx, rx)) = slot.as_ref() {
+                    let mut rx = rx.clone();
+                    drop(slot);
+                    loop {
+                        if let Some(result) = rx.borrow().clone() {
+                            return result;
+                        }
+                        if rx.changed().await.is_err() {
+                            // Leader dropped without publishing — retry as leader.
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                let (tx, rx) = tokio::sync::watch::channel(None);
+                *slot = Some((tx.clone(), rx));
+                tx
+            };
+
+            let result = {
+                let _ensure = state.ensure_lock.lock().await;
+                Self::ensure_started_locked(&state).await
+            };
+            let _ = leader_tx.send(Some(result.clone()));
+            *state.ensure_shared.lock().await = None;
+            return result;
+        }
     }
 
     /// Body of ensure; caller must hold `ensure_lock` for the whole call so

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mirrors the harness in daemon-onboarding-refresh.test.ts, trimmed to what the
 // step model needs. Binding is silent now, so the step trail is driven through
@@ -116,7 +116,11 @@ vi.mock('@tauri-apps/api/core', () => ({
   }),
 }))
 
-import { useDaemonOnboardingStore } from '../daemon-onboarding'
+import {
+  resetDaemonOnboardingPostReadyForTests,
+  useDaemonOnboardingStore,
+  waitForDaemonOnboardingPostReady,
+} from '../daemon-onboarding'
 
 beforeEach(() => {
   h.currentTeam = { id: 'team-1' }
@@ -130,6 +134,7 @@ beforeEach(() => {
   h.invokeCalls = []
   h.refreshAfterInstall.mockClear()
   localStorage.clear()
+  resetDaemonOnboardingPostReadyForTests()
   useDaemonOnboardingStore.setState({
     status: 'unknown',
     loaded: false,
@@ -145,6 +150,11 @@ beforeEach(() => {
     completedAgent: null,
     pendingName: null,
   })
+})
+
+afterEach(async () => {
+  await waitForDaemonOnboardingPostReady()
+  resetDaemonOnboardingPostReadyForTests()
 })
 
 describe('daemon-onboarding step model', () => {

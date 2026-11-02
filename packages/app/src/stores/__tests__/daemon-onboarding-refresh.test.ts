@@ -173,7 +173,11 @@ vi.mock('@tauri-apps/api/core', () => ({
   }),
 }))
 
-import { useDaemonOnboardingStore } from '../daemon-onboarding'
+import {
+  resetDaemonOnboardingPostReadyForTests,
+  useDaemonOnboardingStore,
+  waitForDaemonOnboardingPostReady,
+} from '../daemon-onboarding'
 import { useSetupStore } from '../setup'
 
 const reset = () =>
@@ -215,11 +219,14 @@ beforeEach(() => {
   h.installLeavesRuntimeMissing = false
   localStorage.clear()
   useSetupStore.setState({ requirements: [], loaded: false, installing: null, errors: {}, progress: {}, installRoute: null, probeError: null })
+  resetDaemonOnboardingPostReadyForTests()
   reset()
   vi.clearAllMocks()
 })
 
-afterEach(() => {
+afterEach(async () => {
+  await waitForDaemonOnboardingPostReady()
+  resetDaemonOnboardingPostReadyForTests()
   vi.useRealTimers()
 })
 
@@ -292,16 +299,18 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(h.invokeCalls).toContain('daemon_restart_managed')
   })
 
-  // The managed runtime (#1250): the gate must not open onto a machine that
-  // cannot run an agent, and a machine upgraded from a build that ran another
-  // runtime is exactly a machine with pi missing.
-  it('installs the managed runtime before opening the gate when doctor says it is missing', async () => {
+  // The managed runtime (#1250 / #1798): refresh may flip ready before doctor
+  // so first paint is not blocked, but a missing pi still runs install and
+  // ends ready (or error) once ensureRuntimeReady finishes.
+  it('installs the managed runtime when doctor says it is missing', async () => {
     h.runtimeRows = runtimeRows(false)
     h.currentTeam = { id: 't1' }
     h.daemonTeam = 't1'
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
 
     await useDaemonOnboardingStore.getState().refresh()
+    expect(useDaemonOnboardingStore.getState().status).toBe('ready')
+    await waitForDaemonOnboardingPostReady()
 
     const s = useDaemonOnboardingStore.getState()
     expect(h.installCalls).toEqual(['pi'])
@@ -316,6 +325,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
 
     await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
 
     expect(h.installCalls).toEqual([])
     expect(useDaemonOnboardingStore.getState().completedSteps).not.toContain('install-runtime')
@@ -338,6 +348,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
 
     await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
 
     const s = useDaemonOnboardingStore.getState()
     expect(h.installCalls).toEqual([])
@@ -356,6 +367,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
 
     await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
 
     const s = useDaemonOnboardingStore.getState()
     expect(h.installCalls).toEqual(['pi'])
@@ -373,6 +385,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
 
     await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
 
     const s = useDaemonOnboardingStore.getState()
     expect(s.status).toBe('error')
@@ -391,6 +404,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(h.installCalls).toEqual([])
 
     await useDaemonOnboardingStore.getState().nameDeviceAgent('小助手')
+    await waitForDaemonOnboardingPostReady()
 
     expect(h.installCalls).toEqual(['pi'])
     expect(useDaemonOnboardingStore.getState().status).toBe('ready')
@@ -590,6 +604,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
     await useDaemonOnboardingStore.getState().refresh()
     expect(useDaemonOnboardingStore.getState().status).toBe('ready')
+    await waitForDaemonOnboardingPostReady()
     expect(createDaemonWorkspace).toHaveBeenCalledWith(
       expect.objectContaining({
         teamId: 't1',
@@ -612,6 +627,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
     await useDaemonOnboardingStore.getState().refresh()
     expect(useDaemonOnboardingStore.getState().status).toBe('ready')
+    await waitForDaemonOnboardingPostReady()
     // Cloud row is written with the app JWT, so Settings and the advanced
     // new-session dialog can list it.
     expect(createDaemonWorkspace).toHaveBeenCalled()
@@ -642,16 +658,13 @@ describe('daemon-onboarding refresh() orchestration', () => {
     h.currentTeam = { id: 't1' }
     h.daemonTeam = 't1'
     // refresh first probe (down), ensureHealthy probe (still down → ensure_running),
-    // then the first poll iteration succeeds.
+    // then the first poll iteration succeeds immediately (probe-before-sleep, #1798).
     h.probeQueue = [
       { ok: false, reason: 'not_running' },
       { ok: false, reason: 'not_running' },
       { ok: true, baseUrl: 'http://127.0.0.1:1' },
     ]
-    vi.useFakeTimers()
-    const p = useDaemonOnboardingStore.getState().refresh()
-    await vi.advanceTimersByTimeAsync(600) // one sleep(500) poll tick
-    await p
+    await useDaemonOnboardingStore.getState().refresh()
     const s = useDaemonOnboardingStore.getState()
     expect(s.status).toBe('ready')
     expect(s.error).toBeNull()
@@ -665,7 +678,8 @@ describe('daemon-onboarding refresh() orchestration', () => {
     h.probeQueue = [{ ok: false, reason: 'token_invalid' }]
     vi.useFakeTimers()
     const p = useDaemonOnboardingStore.getState().refresh()
-    await vi.advanceTimersByTimeAsync(2 * 12 * 500 + 100) // drain both poll rounds
+    // Probe-before-sleep: 12 polls × 11 sleeps per ensureHealthy round (#1798).
+    await vi.advanceTimersByTimeAsync(2 * 11 * 500 + 100)
     await p
     const s = useDaemonOnboardingStore.getState()
     expect(s.status).toBe('error')
@@ -680,6 +694,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
     h.currentTeam = { id: 't1' }
     h.daemonTeam = 't1'
     // First ensureHealthy round exhausts all polls; second succeeds on first poll.
+    // Probe-before-sleep: 12 failed polls → 11 sleeps (not 12).
     h.probeQueue = [
       { ok: false, reason: 'not_running' },
       ...Array.from({ length: 13 }, () => ({ ok: false, reason: 'not_running' })),
@@ -688,7 +703,7 @@ describe('daemon-onboarding refresh() orchestration', () => {
     ]
     vi.useFakeTimers()
     const p = useDaemonOnboardingStore.getState().refresh()
-    await vi.advanceTimersByTimeAsync(13 * 500 + 100)
+    await vi.advanceTimersByTimeAsync(11 * 500 + 100)
     await p
     const s = useDaemonOnboardingStore.getState()
     expect(s.status).toBe('ready')
@@ -705,10 +720,8 @@ describe('daemon-onboarding refresh() orchestration', () => {
       { ok: false, reason: 'not_running' },
       { ok: true, baseUrl: 'http://127.0.0.1:1' },
     ]
-    vi.useFakeTimers()
-    const p = useDaemonOnboardingStore.getState().refresh()
-    await vi.advanceTimersByTimeAsync(600)
-    await p
+    // Probe-before-sleep: third probe succeeds with no sleep (#1798).
+    await useDaemonOnboardingStore.getState().refresh()
     expect(useDaemonOnboardingStore.getState().status).toBe('ready')
     expect(h.invokeCalls).toContain('daemon_ensure_running')
     expect(h.invokeCalls).toContain('daemon_restart_managed')
