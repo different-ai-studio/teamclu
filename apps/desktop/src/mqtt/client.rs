@@ -272,11 +272,24 @@ pub async fn probe_broker(cfg: ClientConfig, timeout: Duration) -> MqttProbeResu
             }
             Ok(Ok(_)) => continue,
             Ok(Err(e)) => {
+                let err = e.to_string();
+                // One DoH retry inside the probe window before giving up.
+                if event_loop.mqtt_options.tcp_connect_override().is_none() {
+                    if let Some(hint) = teamclu_transport::doh::try_apply_mqtt_doh_fallback(
+                        &mut event_loop.mqtt_options,
+                        &err,
+                    )
+                    .await
+                    {
+                        tracing::warn!("mqtt probe DoH fallback armed: {hint}");
+                        continue;
+                    }
+                }
                 let _ = client.disconnect().await;
                 return MqttProbeResult {
                     ok: false,
                     latency_ms: None,
-                    error: Some(e.to_string()),
+                    error: Some(err),
                     connack_code: None,
                     broker_url,
                 };
@@ -473,7 +486,20 @@ pub async fn run_event_loop(bus: Arc<super::MqttBusInner>, app: tauri::AppHandle
             Err(e) => {
                 recovery.connection_lost(&mut event_loop.pending);
                 bus.set_connected_for_generation(generation, false);
-                let msg = e.to_string();
+                let mut msg = e.to_string();
+                // System DNS first; only on a TLS/cert failure try one DoH
+                // answer and pin the next reconnect to that IP (SNI unchanged).
+                if let Some(hint) = teamclu_transport::doh::try_apply_mqtt_doh_fallback(
+                    &mut event_loop.mqtt_options,
+                    &msg,
+                )
+                .await
+                {
+                    tracing::warn!("mqtt DoH fallback armed: {hint}");
+                    msg = hint;
+                    // Retry promptly — the override is already on mqtt_options.
+                    backoff_secs = 1;
+                }
                 let _ = app.emit("mqtt:connected", false);
                 // Surface the connection failure (auth rejection, refused socket,
                 // TLS error, …) to the UI. Previously this only went to the log.

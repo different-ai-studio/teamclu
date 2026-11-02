@@ -105,56 +105,55 @@ impl FcClient {
     /// Generic DELETE helper. Returns raw JSON value on 2xx.
     pub async fn delete_json(&self, path: &str) -> Result<Value, SyncError> {
         let url = format!("{}{}", self.base_url, path);
-        let resp = self
-            .client
-            .delete(&url)
-            .header("Authorization", format!("Bearer {}", self.jwt))
-            .send()
-            .await
-            .map_err(|e| SyncError::Network(e.to_string()))?;
+        let jwt = self.jwt.clone();
+        let resp = crate::http_clients::send_with_doh_fallback(&self.client, &url, |c| {
+            c.delete(&url)
+                .header("Authorization", format!("Bearer {jwt}"))
+        })
+        .await
+        .map_err(|e| SyncError::Network(e.to_string()))?;
         map_fc_response(resp).await
     }
 
     /// Generic GET helper. Returns raw JSON value on 2xx.
     pub async fn get_json(&self, path: &str) -> Result<Value, SyncError> {
         let url = format!("{}{}", self.base_url, path);
-        let resp = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.jwt))
-            .send()
-            .await
-            .map_err(|e| SyncError::Network(e.to_string()))?;
+        let jwt = self.jwt.clone();
+        let resp = crate::http_clients::send_with_doh_fallback(&self.client, &url, |c| {
+            c.get(&url).header("Authorization", format!("Bearer {jwt}"))
+        })
+        .await
+        .map_err(|e| SyncError::Network(e.to_string()))?;
         map_fc_response(resp).await
     }
 
     /// Generic PUT helper. Returns raw JSON value on 2xx.
     pub async fn put_json(&self, path: &str, body: &Value) -> Result<Value, SyncError> {
         let url = format!("{}{}", self.base_url, path);
-        let resp = self
-            .client
-            .put(&url)
-            .header("Authorization", format!("Bearer {}", self.jwt))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| SyncError::Network(e.to_string()))?;
+        let jwt = self.jwt.clone();
+        let resp = crate::http_clients::send_with_doh_fallback(&self.client, &url, |c| {
+            c.put(&url)
+                .header("Authorization", format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .json(body)
+        })
+        .await
+        .map_err(|e| SyncError::Network(e.to_string()))?;
         map_fc_response(resp).await
     }
 
     /// Generic PATCH helper. Returns raw JSON value on 2xx (empty body → null).
     pub async fn patch_json(&self, path: &str, body: &Value) -> Result<Value, SyncError> {
         let url = format!("{}{}", self.base_url, path);
-        let resp = self
-            .client
-            .patch(&url)
-            .header("Authorization", format!("Bearer {}", self.jwt))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| SyncError::Network(e.to_string()))?;
+        let jwt = self.jwt.clone();
+        let resp = crate::http_clients::send_with_doh_fallback(&self.client, &url, |c| {
+            c.patch(&url)
+                .header("Authorization", format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .json(body)
+        })
+        .await
+        .map_err(|e| SyncError::Network(e.to_string()))?;
         map_fc_response(resp).await
     }
 
@@ -165,15 +164,15 @@ impl FcClient {
         body: &Value,
     ) -> Result<T, SyncError> {
         let url = format!("{}{}", self.base_url, path);
-        let resp = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.jwt))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| SyncError::Network(e.to_string()))?;
+        let jwt = self.jwt.clone();
+        let resp = crate::http_clients::send_with_doh_fallback(&self.client, &url, |c| {
+            c.post(&url)
+                .header("Authorization", format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .json(body)
+        })
+        .await
+        .map_err(|e| SyncError::Network(e.to_string()))?;
         map_fc_response(resp).await
     }
 }

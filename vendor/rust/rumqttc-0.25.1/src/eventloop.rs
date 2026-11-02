@@ -392,19 +392,26 @@ async fn network_connect(
         _ => options.broker_address(),
     };
 
+    // Prefer an explicit dial target (e.g. a DoH-resolved IP) for the TCP
+    // socket only. TLS SNI / the WebSocket handshake still use `domain` from
+    // `broker_addr` so certificate verification keeps the original hostname.
+    let dial_host = options
+        .tcp_connect_override()
+        .unwrap_or(domain.as_str());
+
     let tcp_stream: Box<dyn AsyncReadWrite> = {
         #[cfg(feature = "proxy")]
         match options.proxy() {
             Some(proxy) => proxy.connect(&domain, port, network_options).await?,
             None => {
-                let addr = format!("{domain}:{port}");
+                let addr = format!("{dial_host}:{port}");
                 let tcp = socket_connect(addr, network_options).await?;
                 Box::new(tcp)
             }
         }
         #[cfg(not(feature = "proxy"))]
         {
-            let addr = format!("{domain}:{port}");
+            let addr = format!("{dial_host}:{port}");
             let tcp = socket_connect(addr, network_options).await?;
             Box::new(tcp)
         }
