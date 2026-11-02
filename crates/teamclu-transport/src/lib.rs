@@ -13,7 +13,10 @@
 //! - [`encode_subject`] / [`decode_subject`]: MQTT topic ↔ NATS subject
 //! - [`tls::default_tls_config`]: panic-free replacement for rumqttc's
 //!   `TlsConfiguration::default()`
+//! - [`doh`]: system-DNS-first MQTT dial with a single DoH retry after a
+//!   TLS certificate failure (ISP hijack mitigation)
 
+pub mod doh;
 pub mod nats;
 pub mod publisher;
 pub mod tls;

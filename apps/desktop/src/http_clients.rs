@@ -83,3 +83,24 @@ pub fn cloud_api_blocking() -> Result<reqwest::blocking::Client, String> {
         .map_err(|e| format!("Failed to build Cloud API HTTP client: {}", e))?;
     Ok(CLOUD_API_BLOCKING.get_or_init(|| client).clone())
 }
+
+/// `send()` with system DNS first; on a TLS/certificate failure, pin one retry
+/// to a DoH A record for `url` (SNI / Host unchanged). Happy-path unchanged.
+pub async fn send_with_doh_fallback(
+    client: &reqwest::Client,
+    url: &str,
+    build: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, reqwest::Error> {
+    match build(client).send().await {
+        Ok(resp) => Ok(resp),
+        Err(err) => {
+            let Some((pinned, hint)) =
+                teamclu_transport::doh::try_http_client_after_cert_failure(url, &err).await
+            else {
+                return Err(err);
+            };
+            log::warn!("cloud_api DoH HTTP fallback: {hint}");
+            build(&pinned).send().await
+        }
+    }
+}

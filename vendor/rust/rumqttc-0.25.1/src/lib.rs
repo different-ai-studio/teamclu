@@ -492,6 +492,11 @@ pub struct MqttOptions {
     proxy: Option<Proxy>,
     #[cfg(feature = "websocket")]
     request_modifier: Option<RequestModifierFn>,
+    /// When set, the TCP/WebSocket dial targets this host (or IP) instead of the
+    /// hostname parsed from `broker_addr`. TLS SNI and the WebSocket request URL
+    /// still use `broker_addr`, so callers can recover from a poisoned system
+    /// DNS answer by dialing a DoH-resolved address without breaking cert checks.
+    tcp_connect_override: Option<String>,
 }
 
 impl MqttOptions {
@@ -525,6 +530,7 @@ impl MqttOptions {
             proxy: None,
             #[cfg(feature = "websocket")]
             request_modifier: None,
+            tcp_connect_override: None,
         }
     }
 
@@ -587,6 +593,22 @@ impl MqttOptions {
 
     pub fn transport(&self) -> Transport {
         self.transport.clone()
+    }
+
+    /// Dial this host/IP for the TCP (or WebSocket-upgrade) socket. Leave unset
+    /// to resolve `broker_addr` through the system DNS as usual.
+    pub fn set_tcp_connect_override<S: Into<String>>(&mut self, host: S) -> &mut Self {
+        self.tcp_connect_override = Some(host.into());
+        self
+    }
+
+    pub fn tcp_connect_override(&self) -> Option<&str> {
+        self.tcp_connect_override.as_deref()
+    }
+
+    pub fn clear_tcp_connect_override(&mut self) -> &mut Self {
+        self.tcp_connect_override = None;
+        self
     }
 
     /// Set number of seconds after which client should ping the broker
@@ -930,6 +952,7 @@ impl Debug for MqttOptions {
             .field("inflight", &self.inflight)
             .field("last_will", &self.last_will)
             .field("manual_acks", &self.manual_acks)
+            .field("tcp_connect_override", &self.tcp_connect_override)
             .finish()
     }
 }

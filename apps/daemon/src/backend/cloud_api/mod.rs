@@ -286,13 +286,11 @@ impl CloudApiBackend {
         // Belt-and-suspenders: even if the client-level timeout is ever removed,
         // wrap the refresh network call so `refresh_lock` is guaranteed to be
         // released and one stalled refresh can't wedge every cloud call.
-        let send_fut = self
-            .http
-            .post(url)
-            .json(&RefreshRequest {
+        let send_fut = self.send_with_doh_fallback(&url, |http| {
+            http.post(&url).json(&RefreshRequest {
                 refresh_token: &refresh_token,
             })
-            .send();
+        });
         let resp = match tokio::time::timeout(Duration::from_secs(30), send_fut).await {
             Ok(Ok(resp)) => resp,
             Ok(Err(error)) => {
@@ -453,18 +451,39 @@ impl CloudApiBackend {
         state.refresh_failure = None;
     }
 
+    /// System DNS first; on a TLS/certificate failure, one DoH-pinned retry.
+    async fn send_with_doh_fallback(
+        &self,
+        url: &str,
+        build: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        match build(&self.http).send().await {
+            Ok(resp) => Ok(resp),
+            Err(err) => {
+                let Some((pinned, hint)) =
+                    teamclu_transport::doh::try_http_client_after_cert_failure(url, &err).await
+                else {
+                    return Err(err);
+                };
+                tracing::warn!(%hint, "cloud_api DoH HTTP fallback");
+                build(&pinned).send().await
+            }
+        }
+    }
+
     pub(super) async fn get<T>(&self, path: &str) -> BackendResult<T>
     where
         T: for<'de> Deserialize<'de>,
     {
         for is_retry in [false, true] {
             let token = self.access_token().await?;
+            let url = self.cloud_url(path);
             let resp = self
-                .http
-                .get(self.cloud_url(path))
-                .bearer_auth(token)
-                .header("x-request-id", request_id())
-                .send()
+                .send_with_doh_fallback(&url, |http| {
+                    http.get(&url)
+                        .bearer_auth(&token)
+                        .header("x-request-id", request_id())
+                })
                 .await
                 .map_err(network_error)?;
             match decode_response(resp).await {
@@ -493,16 +512,21 @@ impl CloudApiBackend {
     {
         for is_retry in [false, true] {
             let token = self.access_token().await?;
-            let mut req = self
-                .http
-                .post(self.cloud_url(path))
-                .bearer_auth(token)
-                .header("x-request-id", request_id())
-                .json(body);
-            if let Some(key) = idempotency_key {
-                req = req.header("idempotency-key", key);
-            }
-            let resp = req.send().await.map_err(network_error)?;
+            let url = self.cloud_url(path);
+            let resp = self
+                .send_with_doh_fallback(&url, |http| {
+                    let mut req = http
+                        .post(&url)
+                        .bearer_auth(&token)
+                        .header("x-request-id", request_id())
+                        .json(body);
+                    if let Some(key) = idempotency_key {
+                        req = req.header("idempotency-key", key);
+                    }
+                    req
+                })
+                .await
+                .map_err(network_error)?;
             match decode_response(resp).await {
                 Err(BackendError::Auth(_)) if !is_retry => {
                     tracing::debug!(
@@ -523,13 +547,14 @@ impl CloudApiBackend {
     {
         for is_retry in [false, true] {
             let token = self.access_token().await?;
+            let url = self.cloud_url(path);
             let resp = self
-                .http
-                .patch(self.cloud_url(path))
-                .bearer_auth(token)
-                .header("x-request-id", request_id())
-                .json(body)
-                .send()
+                .send_with_doh_fallback(&url, |http| {
+                    http.patch(&url)
+                        .bearer_auth(&token)
+                        .header("x-request-id", request_id())
+                        .json(body)
+                })
                 .await
                 .map_err(network_error)?;
             if resp.status().is_success() {
@@ -560,13 +585,14 @@ impl CloudApiBackend {
     {
         for is_retry in [false, true] {
             let token = self.access_token().await?;
+            let url = self.cloud_url(path);
             let resp = self
-                .http
-                .put(self.cloud_url(path))
-                .bearer_auth(token)
-                .header("x-request-id", request_id())
-                .json(body)
-                .send()
+                .send_with_doh_fallback(&url, |http| {
+                    http.put(&url)
+                        .bearer_auth(&token)
+                        .header("x-request-id", request_id())
+                        .json(body)
+                })
                 .await
                 .map_err(network_error)?;
             if resp.status().is_success() {
@@ -598,12 +624,13 @@ impl CloudApiBackend {
     pub(super) async fn delete_no_content(&self, path: &str) -> BackendResult<()> {
         for is_retry in [false, true] {
             let token = self.access_token().await?;
+            let url = self.cloud_url(path);
             let resp = self
-                .http
-                .delete(self.cloud_url(path))
-                .bearer_auth(token)
-                .header("x-request-id", request_id())
-                .send()
+                .send_with_doh_fallback(&url, |http| {
+                    http.delete(&url)
+                        .bearer_auth(&token)
+                        .header("x-request-id", request_id())
+                })
                 .await
                 .map_err(network_error)?;
             if resp.status().is_success() {
