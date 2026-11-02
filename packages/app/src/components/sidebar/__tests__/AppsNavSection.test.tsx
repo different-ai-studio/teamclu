@@ -55,18 +55,11 @@ describe('AppsNavSection', () => {
     expect(screen.getAllByRole('button')).toHaveLength(1)
   })
 
-  it('counts the same set column two lists — every app, here or not', () => {
-    // It used to count only local ones, which put a badge saying 1 above a
-    // column showing 2 the moment that column stopped hiding the rest.
-    useAppsStore.setState({ localAppIds: ['app-2'] })
+  it('does not show an app count on the nav row', () => {
     render(<AppsNavSection />)
-    expect(screen.getByRole('button', { name: /^应用/ })).toHaveTextContent('2')
-  })
-
-  it('counts everything while the daemon has not answered yet', () => {
-    useAppsStore.setState({ localAppIds: null })
-    render(<AppsNavSection />)
-    expect(screen.getByRole('button', { name: /^应用/ })).toHaveTextContent('2')
+    const row = screen.getByRole('button', { name: /^应用/ })
+    expect(row).toBeInTheDocument()
+    expect(row.textContent).not.toMatch(/\d/)
   })
 
   it('opens the section on the list, not on the last app', () => {

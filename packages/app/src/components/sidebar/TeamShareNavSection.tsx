@@ -58,7 +58,7 @@ interface RowProps {
   label: string
   icon: React.ComponentType<{ className?: string }>
   active: boolean
-  /** Omit / null hides the trailing count (Sessions / Skills no longer show one). */
+  /** Trailing catalog size. Skills omit this — only conflict dots remain. */
   count?: number | null
   /** Items in this section that have stopped and need a decision. */
   needsAttention?: number
@@ -70,7 +70,7 @@ function SectionRow({
   label,
   icon: Icon,
   active,
-  count,
+  count = null,
   needsAttention = 0,
   attentionLabel,
   onClick,
@@ -114,7 +114,6 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
   const setFilter = useUIStore((s) => s.setSidebarFilter)
 
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
-  const skillsCount = useTeamShareBrowserStore((s) => s.skills.items.length)
   const mcpCount = useTeamShareBrowserStore((s) => s.mcp.items.length)
   const envCount = useTeamShareBrowserStore((s) => s.envCount)
   const knowledgeCount = useTeamShareBrowserStore((s) => s.knowledge.items.length)
@@ -154,13 +153,6 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
     }
   }, [conflictTeamId, loadConflicts])
 
-  const counts: Record<TeamShareSection, number> = {
-    skills: skillsCount,
-    mcp: mcpCount,
-    env: envCount,
-    knowledge: knowledgeCount,
-  }
-
   const handleSelect = React.useCallback(
     (section: TeamShareSection) => {
       setFilter({ kind: 'teamShare', section })
@@ -191,7 +183,15 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
           label={t(def.labelKey, def.fallback)}
           icon={def.icon}
           active={filter.kind === 'teamShare' && filter.section === def.section}
-          count={def.section === 'skills' ? null : counts[def.section]}
+          count={
+            def.section === 'skills'
+              ? null
+              : def.section === 'mcp'
+                ? mcpCount
+                : def.section === 'env'
+                  ? envCount
+                  : knowledgeCount
+          }
           needsAttention={
             def.section === 'skills'
               ? skillConflicts
