@@ -58,7 +58,8 @@ interface RowProps {
   label: string
   icon: React.ComponentType<{ className?: string }>
   active: boolean
-  count: number
+  /** Omit / null hides the trailing count (Sessions / Skills no longer show one). */
+  count?: number | null
   /** Items in this section that have stopped and need a decision. */
   needsAttention?: number
   attentionLabel?: string
@@ -90,8 +91,8 @@ function SectionRow({
       {/*
         The one thing in this panel that reaches out. Auto-follow means a member
         may never open the skills section, so a paused update has no other way
-        to be noticed — a full-ink dot against a faint count is enough contrast
-        to register without spending the brand accent on it.
+        to be noticed — a full-ink dot is enough contrast without spending the
+        brand accent on it.
       */}
       {needsAttention > 0 && (
         <span
@@ -100,8 +101,9 @@ function SectionRow({
           title={attentionLabel}
         />
       )}
-      {/* Same box as the Sessions badge / Contacts "+" — see NAV_ROW_TRAILING_SLOT. */}
-      <span className={cn(NAV_ROW_TRAILING_SLOT, 'text-[10.5px] tabular-nums text-faint')}>{count}</span>
+      {count != null ? (
+        <span className={cn(NAV_ROW_TRAILING_SLOT, 'text-[10.5px] tabular-nums text-faint')}>{count}</span>
+      ) : null}
     </button>
   )
 }
@@ -189,7 +191,7 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
           label={t(def.labelKey, def.fallback)}
           icon={def.icon}
           active={filter.kind === 'teamShare' && filter.section === def.section}
-          count={counts[def.section]}
+          count={def.section === 'skills' ? null : counts[def.section]}
           needsAttention={
             def.section === 'skills'
               ? skillConflicts
