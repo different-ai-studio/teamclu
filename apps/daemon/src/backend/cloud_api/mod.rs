@@ -1355,9 +1355,7 @@ impl Backend for CloudApiBackend {
                 last_message_at: row.last_message_at,
             })
             .collect();
-        let next = page
-            .next_cursor
-            .filter(|cursor| !cursor.is_empty());
+        let next = page.next_cursor.filter(|cursor| !cursor.is_empty());
         Ok((ids, next))
     }
 

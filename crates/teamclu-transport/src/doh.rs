@@ -38,10 +38,7 @@ pub fn hostname_from_broker_addr(broker_addr: &str) -> Option<String> {
     };
     let host = host.split('@').next_back().unwrap_or(host);
     let host = if host.starts_with('[') {
-        host.trim_start_matches('[')
-            .split(']')
-            .next()
-            .unwrap_or("")
+        host.trim_start_matches('[').split(']').next().unwrap_or("")
     } else {
         host.split(':').next().unwrap_or(host)
     };
@@ -97,10 +94,7 @@ pub async fn resolve_a(host: &str) -> Option<IpAddr> {
 /// If `error` looks like a cert failure and no override is set yet, resolve
 /// `host` via DoH and install a TCP dial override. Returns a user-facing hint
 /// when the override was applied.
-pub async fn try_apply_mqtt_doh_fallback(
-    options: &mut MqttOptions,
-    error: &str,
-) -> Option<String> {
+pub async fn try_apply_mqtt_doh_fallback(options: &mut MqttOptions, error: &str) -> Option<String> {
     if options.tcp_connect_override().is_some() {
         return None;
     }
@@ -194,7 +188,8 @@ mod tests {
 
     #[test]
     fn detects_ca_used_as_end_entity() {
-        let msg = "Websocket: IO error: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))";
+        let msg =
+            "Websocket: IO error: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))";
         assert!(looks_like_tls_cert_failure(msg));
     }
 

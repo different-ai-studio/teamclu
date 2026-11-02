@@ -120,8 +120,7 @@ impl FcClient {
         let url = format!("{}{}", self.base_url, path);
         let jwt = self.jwt.clone();
         let resp = crate::http_clients::send_with_doh_fallback(&self.client, &url, |c| {
-            c.get(&url)
-                .header("Authorization", format!("Bearer {jwt}"))
+            c.get(&url).header("Authorization", format!("Bearer {jwt}"))
         })
         .await
         .map_err(|e| SyncError::Network(e.to_string()))?;

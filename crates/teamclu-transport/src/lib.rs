@@ -250,7 +250,10 @@ mod tests {
         assert_eq!(broker.port, 443);
         assert!(broker.use_tls);
         assert!(broker.is_websocket());
-        assert_eq!(broker.connection_address(), "wss://copilot.example.test/mqtt");
+        assert_eq!(
+            broker.connection_address(),
+            "wss://copilot.example.test/mqtt"
+        );
     }
 
     #[test]
