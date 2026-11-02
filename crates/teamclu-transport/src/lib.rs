@@ -13,7 +13,10 @@
 //! - [`encode_subject`] / [`decode_subject`]: MQTT topic ↔ NATS subject
 //! - [`tls::default_tls_config`]: panic-free replacement for rumqttc's
 //!   `TlsConfiguration::default()`
+//! - [`doh`]: system-DNS-first MQTT dial with a single DoH retry after a
+//!   TLS certificate failure (ISP hijack mitigation)
 
+pub mod doh;
 pub mod nats;
 pub mod publisher;
 pub mod tls;
@@ -247,7 +250,10 @@ mod tests {
         assert_eq!(broker.port, 443);
         assert!(broker.use_tls);
         assert!(broker.is_websocket());
-        assert_eq!(broker.connection_address(), "wss://copilot.example.test/mqtt");
+        assert_eq!(
+            broker.connection_address(),
+            "wss://copilot.example.test/mqtt"
+        );
     }
 
     #[test]

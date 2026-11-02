@@ -1933,7 +1933,18 @@ impl MqttWorker {
                                     &mut publish_inflight,
                                     &store,
                                 );
-                                let reason = error.to_string();
+                                let mut reason = error.to_string();
+                                // Fail-closed on system DNS: only after a TLS/cert
+                                // failure do we pin the next dial to a DoH A record.
+                                if let Some(hint) = teamclu_transport::doh::try_apply_mqtt_doh_fallback(
+                                    &mut active.eventloop.mqtt_options,
+                                    &reason,
+                                )
+                                .await
+                                {
+                                    warn!(%hint, "MQTT DoH fallback armed after TLS failure");
+                                    reason = hint;
+                                }
                                 if let rumqttc::ConnectionError::ConnectionRefused(code) = &error {
                                     if connect_refusal_is_credential_failure(code) {
                                         self.backend.invalidate_cached_credential();
