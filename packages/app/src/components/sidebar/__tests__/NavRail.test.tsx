@@ -77,18 +77,11 @@ describe('NavRail', () => {
     expect(useCronStore.getState().showCronSessions).toBe(false)
   })
 
-  it('shows session count badge in Sessions row', () => {
+  it('does not show a session count badge on the Sessions row', () => {
     render(<NavRail />)
-    expect(screen.getByText('2')).toBeInTheDocument()
-  })
-
-  it('keeps session count when legacy session store is empty', () => {
-    useSessionStore.setState({ sessions: [] })
-    useSessionListStore.setState({
-      rows: [mkListRow('s1', 'A'), mkListRow('s2', 'B'), mkListRow('s3', 'C')],
-    })
-    render(<NavRail />)
-    expect(screen.getByText('3')).toBeInTheDocument()
+    const sessions = screen.getByRole('button', { name: /会话|Sessions/ })
+    expect(sessions).toBeInTheDocument()
+    expect(sessions.textContent).not.toMatch(/\d/)
   })
 
   it('shows only Sessions, Contacts, Skills and Apps by default', () => {

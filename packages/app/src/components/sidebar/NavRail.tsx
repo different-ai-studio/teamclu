@@ -26,7 +26,6 @@ import { NewChatSplitButton } from '@/components/sidebar/NewChatSplitButton'
 import { AppsNavSection } from '@/components/sidebar/AppsNavSection'
 import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 import { useFeatures } from '@/lib/config/remote-features'
-import { isScheduledSession } from '@/lib/session/session-origin'
 import { cn } from '@/lib/utils'
 
 interface TopEntryProps {
@@ -81,8 +80,6 @@ export function NavRail() {
   const moreExpanded = useUIStore((s) => s.moreNavExpanded)
   const toggleMore = useUIStore((s) => s.toggleMoreNav)
   const setMoreExpanded = useUIStore((s) => s.setMoreNavExpanded)
-  const listRows = useSessionListStore((s) => s.rows)
-  const cronSessionIds = useCronStore((s) => s.cronSessionIds)
   const showCronSessions = useCronStore((s) => s.showCronSessions)
   const setShowCronSessions = useCronStore((s) => s.setShowCronSessions)
   const quickChatState = useQuickChatReadiness()
@@ -91,11 +88,6 @@ export function NavRail() {
   // Counts feed rows in both groups, so the fetch lives here rather than in
   // either TeamShareNavSection instance.
   useTeamShareCountsLoader()
-
-  const sessionsCount = React.useMemo(
-    () => listRows.filter((r) => !isScheduledSession(r, cronSessionIds)).length,
-    [listRows, cronSessionIds],
-  )
 
   // Something else can select one of the folded destinations (default-tab
   // setting, deep link, a link from the chat pane) — unfold the group so the
@@ -168,7 +160,6 @@ export function NavRail() {
           label={t('sidebar.sessions', 'Sessions')}
           icon={Inbox}
           active={filter.kind === 'all' && !showCronSessions}
-          badge={sessionsCount}
           onClick={() => {
             setShowCronSessions(false)
             setFilter({ kind: 'all' })
