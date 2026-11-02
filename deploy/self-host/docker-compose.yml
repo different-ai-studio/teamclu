@@ -208,6 +208,9 @@ services:
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # Alibaba DashScope (qwen), the standby provider behind DeepSeek on
+      # Belayo. Unused until a catalog names a provider with this api_key_env.
+      DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
     volumes:
       # ai/catalog.yaml is PER DEPLOYMENT and deliberately not in git; the
       # deploy creates it from ai/catalog.example.yaml when absent.
