@@ -99,6 +99,60 @@ test("list sessions decodes cursor before calling repository", async () => {
   });
 });
 
+test("GET /v2/sessions requires kind and calls listSessionsV2", async () => {
+  const repo = fakeRepo({
+    sessions: [
+      session("s1", "2026-05-27T01:00:00Z"),
+      session("s2", "2026-05-27T00:00:00Z"),
+    ],
+  });
+  const response = await handleBusinessApiRequest({
+    httpMethod: "GET",
+    path: "/v2/sessions",
+    headers: { Authorization: "Bearer token" },
+    queryStringParameters: { teamId: "team-1", kind: "regular", limit: "1" },
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body);
+  assert.equal(body.items.length, 1);
+  assert.deepEqual(repo.calls[0], {
+    method: "listSessionsV2",
+    args: {
+      limit: 2,
+      cursor: null,
+      teamId: "team-1",
+      kind: "regular",
+    },
+  });
+});
+
+test("GET /v2/sessions rejects legacy all kind", async () => {
+  const repo = fakeRepo({ sessions: [] });
+  const response = await handleBusinessApiRequest({
+    httpMethod: "GET",
+    path: "/v2/sessions",
+    headers: { Authorization: "Bearer token" },
+    queryStringParameters: { teamId: "team-1", kind: "all" },
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(repo.calls.length, 0);
+});
+
+test("GET /v2/sessions requires kind", async () => {
+  const repo = fakeRepo({ sessions: [] });
+  const response = await handleBusinessApiRequest({
+    httpMethod: "GET",
+    path: "/v2/sessions",
+    headers: { Authorization: "Bearer token" },
+    queryStringParameters: { teamId: "team-1" },
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(repo.calls.length, 0);
+});
+
 // ── GET /v1/sessions/:id/messages pagination ─────────────────────────────────
 // This endpoint had no limit and returned `nextCursor: null` unconditionally, so
 // a long session shipped its entire history every time — 6k messages measured
@@ -2219,6 +2273,7 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async createTeam(input) { calls.push({ method: "createTeam", input }); if (error) throw error; return { id: "team-1", name: input.name, slug: input.slug ?? null, createdAt: null }; },
     async getTeam(teamId) { calls.push({ method: "getTeam", teamId }); if (error) throw error; return { id: teamId, name: "Team", slug: null, createdAt: null }; },
     async listSessions(args) { calls.push({ method: "listSessions", args }); if (error) throw error; return sessions.length > 0 ? sessions : sessionStore; },
+    async listSessionsV2(args) { calls.push({ method: "listSessionsV2", args }); if (error) throw error; return sessions.length > 0 ? sessions : sessionStore; },
     async getSession(sessionId, opts: { teamId?: string | null } = {}) { calls.push({ method: "getSession", sessionId, teamId: opts?.teamId ?? null }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; return store.find(s => s.id === sessionId) ?? null; },
     async patchSession(sessionId, patch) { calls.push({ method: "patchSession", sessionId, patch }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); if (!s) return null; if (patch.title !== undefined) s.title = patch.title; return s; },
     async createSession(input) { calls.push({ method: "createSession", input }); if (error) throw error; const id = input.id ?? "session-new"; const newS = { id, teamId: input.teamId, title: input.title, mode: input.mode, ideaId: null, lastMessageAt: null, lastMessagePreview: null, hasUnread: false, createdAt: "2026-05-27T03:00:00Z", updatedAt: "2026-05-27T03:00:00Z", participants: (input.participantActorIds ?? []).map(a => ({ sessionId: id, actorId: a, role: "member", joinedAt: null })) }; sessionStore.push(newS); return newS; },
