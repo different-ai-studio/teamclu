@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { SessionListColumn } from '../SessionListColumn'
 import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
@@ -84,6 +85,7 @@ const mkSessionRow = (over: Partial<{
   has_unread: boolean
   last_message_at: string | null
   app_id: string | null
+  source: string | null
 }>) => ({
   id: 's1',
   title: 't',
@@ -93,6 +95,8 @@ const mkSessionRow = (over: Partial<{
   mode: 'collab' as const,
   idea_id: null as string | null,
   has_unread: false,
+  source: 'user' as string | null,
+  app_id: null as string | null,
   ...over,
 })
 
@@ -166,39 +170,52 @@ describe('SessionListColumn', () => {
   })
 
   it('keeps cron sessions out of the regular Sessions view', () => {
-    useCronStore.setState({ cronSessionIds: new Set(['s2']), showCronSessions: false })
+    useSessionListStore.setState({
+      listKind: 'regular',
+      rows: [
+        mkSessionRow({ id: 's1', title: 'Alpha' }),
+        mkSessionRow({ id: 's2', title: 'Beta', source: 'cron' }),
+        mkSessionRow({ id: 's3', title: 'Gamma' }),
+      ],
+    })
 
     render(<SessionListColumn />)
 
     expect(screen.getByText('Alpha')).toBeInTheDocument()
     expect(screen.queryByText('Beta')).not.toBeInTheDocument()
     expect(screen.getByText('Gamma')).toBeInTheDocument()
-    expect(screen.getByTestId('v2-session-list-count')).toHaveTextContent('· 2')
+    expect(screen.getByTestId('v2-session-kind-dropdown')).toBeInTheDocument()
   })
 
-  it('shows only cron sessions when the clock view is active', () => {
-    useCronStore.setState({ cronSessionIds: new Set(['s2']), showCronSessions: true })
+  it('shows only cron sessions when listKind is cron', () => {
+    useSessionListStore.setState({
+      listKind: 'cron',
+      rows: [
+        mkSessionRow({ id: 's1', title: 'Alpha' }),
+        mkSessionRow({ id: 's2', title: 'Beta', source: 'cron' }),
+        mkSessionRow({ id: 's3', title: 'Gamma' }),
+      ],
+    })
 
     render(<SessionListColumn />)
 
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
     expect(screen.getByText('Beta')).toBeInTheDocument()
     expect(screen.queryByText('Gamma')).not.toBeInTheDocument()
-    expect(screen.getByTestId('v2-session-list-count')).toHaveTextContent('· 1')
   })
 
-  it('does not let the clock view leak into the Pinned filter', () => {
+  it('keeps pinned filter scoped to the active list kind', () => {
     setPinnedStorage({ 'team-1': ['s1', 's2'] })
     useSessionListStore.setState({
+      listKind: 'regular',
       rows: [
         mkSessionRow({ id: 's1', title: 'Pinned regular' }),
-        mkSessionRow({ id: 's2', title: 'Pinned cron' }),
+        mkSessionRow({ id: 's2', title: 'Pinned cron', source: 'cron' }),
       ],
       pinnedSessionIds: ['s1', 's2'],
       loading: false,
     })
     useUIStore.setState({ sidebarFilter: { kind: 'pinned' } })
-    useCronStore.setState({ cronSessionIds: new Set(['s2']), showCronSessions: true })
 
     render(<SessionListColumn />)
 
@@ -305,22 +322,24 @@ describe('SessionListColumn', () => {
     expect(screen.getByText('Gamma')).toBeInTheDocument()
   })
 
-  it('shows cron filter button only in "all" mode', () => {
+  it('shows kind dropdown only in "all" mode', () => {
     const { rerender } = render(<SessionListColumn />)
-    expect(screen.getByRole('button', { name: /显示定时会话|显示全部会话/ })).toBeInTheDocument()
+    expect(screen.getByTestId('v2-session-kind-dropdown')).toBeInTheDocument()
     useUIStore.setState({ sidebarFilter: { kind: 'pinned' } })
     rerender(<SessionListColumn />)
-    expect(screen.queryByRole('button', { name: /显示定时会话|显示全部会话/ })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('v2-session-kind-dropdown')).not.toBeInTheDocument()
   })
 
-  it('starts a separate cron page when opening scheduled sessions', () => {
+  it('loads the selected kind when switching via the dropdown', async () => {
     useWorkspaceStore.setState({ workspacePath: '/tmp/ws' })
+    const user = userEvent.setup()
     const loadFirstPage = vi
       .spyOn(useSessionListStore.getState(), 'loadFirstPage')
       .mockResolvedValue()
     render(<SessionListColumn />)
 
-    fireEvent.click(screen.getByRole('button', { name: /显示定时会话|Show scheduled sessions/ }))
+    await user.click(screen.getByTestId('v2-session-kind-dropdown'))
+    await user.click(await screen.findByTestId('v2-session-kind-cron'))
 
     expect(loadFirstPage).toHaveBeenCalledWith(50, 'cron')
     loadFirstPage.mockRestore()
@@ -332,6 +351,7 @@ describe('SessionListColumn', () => {
     // an app session it rendered the app's own uuid.
     useAppsStore.setState({ items: [mkAppRow('app-1', 'teamclu 官网')] })
     useSessionListStore.setState({
+      listKind: 'app',
       rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1' })],
     })
     render(<SessionListColumn />)
@@ -460,15 +480,13 @@ describe('SessionListColumn', () => {
     })
   })
 
-  it('enables search and hides cron filter in embed mode without a local workspace', () => {
+  it('enables search and hides kind dropdown in embed mode without a local workspace', () => {
     useUIStore.setState({ embedMode: true })
     useWorkspaceStore.setState({ workspacePath: null })
     render(<SessionListColumn onDismiss={() => {}} />)
 
     expect(screen.getByRole('button', { name: /Search|搜索/ })).not.toBeDisabled()
-    expect(
-      screen.queryByRole('button', { name: /Show scheduled sessions|Show all sessions|定时/ }),
-    ).not.toBeInTheDocument()
+    expect(screen.queryByTestId('v2-session-kind-dropdown')).not.toBeInTheDocument()
   })
 
   it('enters batch select mode and archives selected sessions', async () => {

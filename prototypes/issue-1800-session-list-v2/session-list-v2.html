@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Session List v2</title>
+  <style>
+    :root {
+      --background: #fbfaf7;
+      --paper: #ffffff;
+      --panel: #efece4;
+      --selected: #e7e2d6;
+      --foreground: #1a1a14;
+      --ink-2: #3d3c34;
+      --muted: #75736a;
+      --faint: #a8a6a0;
+      --border: rgba(26, 26, 20, 0.08);
+      --border-soft: rgba(26, 26, 20, 0.05);
+      --coral: #e85a4a;
+      --font: "PingFang SC", "Noto Sans SC", "Source Han Sans SC", -apple-system, BlinkMacSystemFont, "Microsoft YaHei", system-ui, sans-serif;
+      --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      color: var(--foreground);
+      background: #e8e4da;
+      display: grid;
+      place-items: center;
+    }
+    .shell {
+      width: min(1120px, 100vw - 24px);
+      height: min(720px, 100vh - 24px);
+      display: grid;
+      grid-template-columns: 196px 300px 1fr;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      background: var(--paper);
+      box-shadow: 0 20px 48px -28px rgba(20, 20, 15, 0.4);
+    }
+
+    /* rail */
+    .rail {
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      padding: 10px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .traffic { display: flex; gap: 6px; padding: 6px 8px 14px; }
+    .traffic i { width: 10px; height: 10px; border-radius: 50%; }
+    .traffic i:nth-child(1) { background: #ff5f57; }
+    .traffic i:nth-child(2) { background: #febc2e; }
+    .traffic i:nth-child(3) { background: #28c840; }
+    .brand {
+      text-align: right;
+      font: 11px/1 var(--mono);
+      color: var(--faint);
+      padding: 0 8px 12px;
+    }
+    .rail-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 9px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--ink-2);
+    }
+    .rail-item.active {
+      background: var(--selected);
+      color: var(--foreground);
+      font-weight: 600;
+    }
+    .rail-item .n { font: 11px/1 var(--mono); color: var(--faint); }
+    .rail-group {
+      margin-top: 14px;
+      padding: 0 9px;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+
+    /* sessions column */
+    .sessions {
+      background: var(--background);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      position: relative;
+    }
+    .sess-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+      padding: 12px 14px;
+      flex-shrink: 0;
+    }
+    .title-wrap {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .filter-trigger {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      margin: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      min-width: 0;
+      cursor: pointer;
+      font: inherit;
+      color: var(--foreground);
+      border-radius: 6px;
+    }
+    .filter-trigger:hover { opacity: 0.88; }
+    .filter-trigger:focus-visible {
+      outline: 2px solid rgba(26,26,20,0.16);
+      outline-offset: 2px;
+    }
+    .filter-label {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .filter-chevron {
+      width: 11px;
+      height: 11px;
+      color: var(--faint);
+      flex-shrink: 0;
+      transition: transform 140ms ease;
+      margin-top: 1px;
+    }
+    .filter-trigger[aria-expanded="true"] .filter-chevron { transform: rotate(180deg); }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+    }
+    .icon-btn:hover {
+      color: var(--foreground);
+      background: rgba(0,0,0,0.05);
+    }
+
+    .filter-menu {
+      position: absolute;
+      top: 48px;
+      left: 12px;
+      width: 168px;
+      background: var(--paper);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 10px 28px -14px rgba(20,20,15,0.4);
+      padding: 4px;
+      display: none;
+      z-index: 20;
+    }
+    .filter-menu.open { display: block; }
+    .filter-option {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      text-align: left;
+      padding: 8px 10px;
+      border-radius: 7px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--foreground);
+    }
+    .filter-option:hover { background: var(--background); }
+    .filter-option[aria-selected="true"] { background: var(--selected); }
+    .list {
+      flex: 1 1 0;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+      padding: 0 8px 8px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .pinned-label {
+      padding: 8px 8px 4px;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+    .divider {
+      height: 1px;
+      margin: 6px 8px;
+      background: var(--border-soft);
+    }
+
+    .card {
+      position: relative;
+      width: 100%;
+      border: 0;
+      background: transparent;
+      text-align: left;
+      padding: 10px 12px 10px 14px;
+      border-radius: 10px;
+      cursor: pointer;
+      font: inherit;
+      color: inherit;
+      display: block;
+    }
+    .card:hover { background: rgba(26,26,20,0.03); }
+    .card.active { background: var(--paper); }
+    .card.active::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 8px;
+      bottom: 8px;
+      width: 2px;
+      border-radius: 2px;
+      background: var(--coral);
+    }
+    .row1 {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .pin {
+      width: 12px;
+      height: 12px;
+      color: #d4a017;
+      flex-shrink: 0;
+    }
+    .title {
+      flex: 1;
+      min-width: 0;
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .unread-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--coral);
+    }
+    .time {
+      font: 11px/22px var(--mono);
+      color: var(--faint);
+      font-variant-numeric: tabular-nums;
+    }
+    .more {
+      width: 22px;
+      height: 22px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      display: none;
+      place-items: center;
+      cursor: pointer;
+      padding: 0;
+    }
+    .card:hover .more { display: grid; }
+    .more:hover { background: rgba(0,0,0,0.08); color: var(--foreground); }
+    .app-line {
+      margin-top: 4px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--faint);
+      min-width: 0;
+    }
+    .app-line svg { flex-shrink: 0; }
+    .app-line span {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .preview {
+      margin-top: 4px;
+      font-size: 12px;
+      line-height: 1.35;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .parts {
+      margin-top: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .avs { display: flex; }
+    .av {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      margin-left: -6px;
+      border: 1px solid var(--paper);
+      display: grid;
+      place-items: center;
+      font-size: 8px;
+      font-weight: 700;
+      color: #fff;
+    }
+    .av:first-child { margin-left: 0; }
+    .av.ai { border-radius: 3px; box-shadow: 0 0 0 1.5px var(--coral); }
+    .parts-n { font-size: 10.5px; color: var(--faint); }
+
+    .actions-dock {
+      display: none;
+      margin-top: 8px;
+      gap: 4px;
+    }
+    .card.dock-open .actions-dock { display: flex; }
+    .card.dock-open .more { display: grid; background: rgba(0,0,0,0.08); color: var(--foreground); }
+    .dock-btn {
+      height: 26px;
+      padding: 0 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--paper);
+      font: inherit;
+      font-size: 11.5px;
+      color: var(--ink-2);
+      cursor: pointer;
+    }
+    .dock-btn:hover { background: var(--selected); }
+
+    .load-more-wrap { padding: 12px 16px; }
+    .load-more {
+      width: 100%;
+      height: 32px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      font: inherit;
+      font-size: 12px;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .load-more:hover { color: var(--foreground); background: rgba(0,0,0,0.03); }
+
+    /* chat */
+    .chat {
+      background: var(--background);
+      display: flex;
+      flex-direction: column;
+      padding: 16px 26px;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .chat-h { font-size: 15px; font-weight: 700; }
+    .chat-m { margin-top: 4px; font-size: 12px; color: var(--muted); }
+    .thread {
+      margin-top: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding-bottom: 8px;
+    }
+    .bubble {
+      align-self: flex-end;
+      max-width: 65%;
+      background: var(--foreground);
+      color: #fefdfa;
+      padding: 10px 14px;
+      border-radius: 16px 16px 6px 16px;
+      font-size: 13.5px;
+      line-height: 1.6;
+    }
+    .note-h {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .ai-pill {
+      font: 600 9.5px/1.4 var(--mono);
+      color: var(--coral);
+      border: 1px solid var(--coral);
+      border-radius: 3px;
+      padding: 0 4px;
+    }
+    .note-b {
+      font-size: 13.5px;
+      line-height: 1.7;
+      color: var(--ink-2);
+      max-width: 78%;
+    }
+
+    @media (max-width: 900px) {
+      .shell { grid-template-columns: 1fr; width: min(360px, 100vw - 16px); }
+      .rail, .chat { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="traffic"><i></i><i></i><i></i></div>
+      <div class="brand">TeamClu · workspace</div>
+      <div class="rail-item active"><span>会话</span><span class="n">128</span></div>
+      <div class="rail-item"><span>@Mentions</span><span class="n">3</span></div>
+      <div class="rail-item"><span>等待我</span><span class="n">1</span></div>
+      <div class="rail-group">想法 · 4</div>
+      <div class="rail-group">团队 · 2</div>
+    </aside>
+
+    <section class="sessions">
+      <header class="sess-header">
+        <div class="title-wrap">
+          <button type="button" class="filter-trigger" id="filterTrigger" aria-haspopup="listbox" aria-expanded="false" aria-controls="filterMenu">
+            <span class="filter-label" id="filterLabel">Sessions</span>
+            <svg class="filter-chevron" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M4.5 6l3.5 3.5L11.5 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="header-actions">
+          <button class="icon-btn" title="Search (⌘K)" aria-label="Search">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          </button>
+          <button class="icon-btn" title="Batch manage" aria-label="Batch manage">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="filter-menu" id="filterMenu" role="listbox">
+        <button type="button" class="filter-option" role="option" data-kind="regular" aria-selected="true">
+          <span>Sessions</span>
+        </button>
+        <button type="button" class="filter-option" role="option" data-kind="channel" aria-selected="false">
+          <span>Channel</span>
+        </button>
+        <button type="button" class="filter-option" role="option" data-kind="app" aria-selected="false">
+          <span>App</span>
+        </button>
+        <button type="button" class="filter-option" role="option" data-kind="cron" aria-selected="false">
+          <span>Scheduled</span>
+        </button>
+      </div>
+
+      <div class="list" id="list"></div>
+    </section>
+
+    <section class="chat">
+      <div class="chat-h" id="chatTitle">产品周会跟进</div>
+      <div class="chat-m" id="chatMeta">3 位参与者 · 12 条消息 · 19:47 更新</div>
+      <div class="thread">
+        <div class="bubble">把本周未关闭的 issue 拉一下，优先 1800。</div>
+        <div>
+          <div class="note-h"><span>灰</span><span class="ai-pill">AI</span><span style="font:11px/1 var(--mono);color:var(--faint)">19:47</span></div>
+          <div class="note-b" id="chatBody">已按优先级排了三条。需要我先出接口草案吗？</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const PAGE_SIZE = 50;
+    const LABELS = {
+      regular: "Sessions",
+      channel: "Channel",
+      app: "App",
+      cron: "Scheduled",
+    };
+    const COLORS = ["#e85a4a", "#7c6cf0", "#2eb872", "#d4a017", "#3b82c4", "#9b5de5"];
+    const TIMES = ["19:47", "18:02", "16:40", "15:08", "11:20", "昨天", "昨天", "周一", "周一", "上周"];
+    const NAMES = ["你", "林", "灰", "周", "陈"];
+
+    function row(id, title, preview, opts = {}) {
+      const i = Number(String(id).replace(/\D/g, "")) || 0;
+      return {
+        id,
+        title,
+        preview,
+        time: opts.time || TIMES[i % TIMES.length],
+        unread: opts.unread ?? i % 7 === 0,
+        pinned: !!opts.pinned,
+        app: opts.app || null,
+        people: opts.people || (i % 3 === 0 ? ["你", "灰"] : ["你", NAMES[i % NAMES.length], "灰"].slice(0, 2 + (i % 2))),
+      };
+    }
+
+    function buildRegularCatalog() {
+      const head = [
+        row("r1", "产品周会跟进", "已按优先级排了三条。需要我先出接口草案吗？", { pinned: true, unread: true, time: "19:47", people: ["你", "林", "灰"] }),
+        row("r2", "Release 2.4 checklist", "mac 双架构包、daemon sidecar、迁移说明都齐了。", { pinned: true, time: "18:02", people: ["你", "周"] }),
+        row("r3", "belayo 延迟排查", "limit=1 也要 330ms，固定开销不在页大小。", { unread: true, time: "16:40", people: ["你", "灰"] }),
+      ];
+      const rest = Array.from({ length: 125 }, (_, i) => {
+        const n = i + 4;
+        return row(`r${n}`, `会话 ${n}`, `预览内容 ${n} · 最近一条消息摘要`, { time: TIMES[n % TIMES.length] });
+      });
+      return [...head, ...rest]; // 128
+    }
+
+    const CATALOG = {
+      regular: buildRegularCatalog(),
+      channel: [
+        row("c1", "企微 · 客户成功群", "[图片] 合同扫描件已发。", { unread: true, people: ["客", "你", "灰"] }),
+        row("c2", "飞书 · 值班机器人", "告警：api.teamclu-dev 5xx 升高。", { people: ["值", "灰"] }),
+        row("c3", "Discord · #ship", "nightly compose 已绿。", { unread: true, people: ["D", "你"] }),
+        row("c4", "SeaTalk · 内部通知", "部署完成通知。", { people: ["S"] }),
+        ...Array.from({ length: 7 }, (_, i) => row(`c${i + 5}`, `Channel ${i + 5}`, `通道消息 ${i + 5}`, { people: ["你", "灰"] })),
+      ],
+      app: [
+        row("a1", "本周对账", "已写入 12 条草稿待确认。", { app: "发票助手", people: ["你", "灰"] }),
+        row("a2", "知识库清理", "orphan 链接 4 个，建议合并。", { unread: true, app: "Wiki", people: ["你"] }),
+        ...Array.from({ length: 4 }, (_, i) => row(`a${i + 3}`, `App 会话 ${i + 3}`, `应用内对话 ${i + 3}`, { app: "App", people: ["你"] })),
+      ],
+      cron: [
+        row("k1", "每日站会摘要", "运行成功 · 42s", { people: ["灰"] }),
+        row("k2", "周报草稿", "运行成功 · 1m12s", { people: ["灰"] }),
+        row("k3", "凌晨备份巡检", "跳过：无变更", { people: ["灰"] }),
+        ...Array.from({ length: 15 }, (_, i) => row(`k${i + 4}`, `定时任务 ${i + 4}`, `运行成功 · ${20 + i}s`, { people: ["灰"] })),
+      ],
+    };
+
+    const state = {
+      kind: "regular",
+      rows: [],
+      remaining: [],
+      activeId: null,
+      dockId: null,
+      menuOpen: false,
+      loading: false,
+    };
+
+    const els = {
+      trigger: document.getElementById("filterTrigger"),
+      menu: document.getElementById("filterMenu"),
+      label: document.getElementById("filterLabel"),
+      list: document.getElementById("list"),
+      chatTitle: document.getElementById("chatTitle"),
+      chatMeta: document.getElementById("chatMeta"),
+      chatBody: document.getElementById("chatBody"),
+    };
+
+    function esc(s) {
+      return String(s)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function hasMore() {
+      return state.remaining.length > 0;
+    }
+
+    function takePage(from, size) {
+      return from.splice(0, size);
+    }
+
+    function resetKind(kind) {
+      const all = structuredClone(CATALOG[kind]);
+      state.kind = kind;
+      state.rows = takePage(all, PAGE_SIZE);
+      state.remaining = all;
+      state.activeId = state.rows[0]?.id ?? null;
+      state.dockId = null;
+      els.label.textContent = LABELS[kind];
+    }
+
+    function setMenu(open) {
+      state.menuOpen = open;
+      els.menu.classList.toggle("open", open);
+      els.trigger.setAttribute("aria-expanded", String(open));
+    }
+
+    function syncMenuSelected() {
+      els.menu.querySelectorAll(".filter-option").forEach((btn) => {
+        btn.setAttribute("aria-selected", String(btn.dataset.kind === state.kind));
+      });
+    }
+
+    function selectKind(kind) {
+      resetKind(kind);
+      setMenu(false);
+      syncMenuSelected();
+      render();
+    }
+
+    function renderCard(row) {
+      const active = row.id === state.activeId;
+      const dock = row.id === state.dockId;
+      const people = row.people || [];
+      return `
+        <article class="card ${active ? "active" : ""} ${dock ? "dock-open" : ""}" data-id="${row.id}">
+          <div class="row1">
+            ${row.pinned ? `<svg class="pin" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>` : ""}
+            <div class="title">${esc(row.title)}</div>
+            <div class="meta">
+              ${!active && row.unread ? `<span class="unread-dot"></span>` : ""}
+              <span class="time">${esc(row.time)}</span>
+              <button type="button" class="more" data-more="${row.id}" aria-label="More actions">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+              </button>
+            </div>
+          </div>
+          ${row.app ? `<div class="app-line"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg><span>${esc(row.app)}</span></div>` : ""}
+          <div class="preview">${esc(row.preview)}</div>
+          ${people.length > 1 || (people.length === 1 && people[0] !== "你") ? `
+            <div class="parts">
+              <div class="avs">
+                ${people.slice(0, 3).map((p, i) => `<span class="av ${p === "灰" ? "ai" : ""}" style="background:${COLORS[i % COLORS.length]}">${esc(p[0])}</span>`).join("")}
+              </div>
+              <span class="parts-n">${people.length} 位</span>
+            </div>` : ""}
+          <div class="actions-dock">
+            <button type="button" class="dock-btn" data-archive="${row.id}">归档</button>
+          </div>
+        </article>
+      `;
+    }
+
+    function render() {
+      const pinned = state.rows.filter((r) => r.pinned);
+      const rest = state.rows.filter((r) => !r.pinned);
+      let html = "";
+      if (pinned.length) {
+        html += `<div class="pinned-label">Pinned</div>`;
+        html += pinned.map(renderCard).join("");
+        if (rest.length) html += `<div class="divider"></div>`;
+      }
+      html += rest.map(renderCard).join("");
+      if (hasMore()) {
+        html += `<div class="load-more-wrap"><button type="button" class="load-more" id="loadMore"${state.loading ? " disabled" : ""}>${state.loading ? "…" : "Load more"}</button></div>`;
+      }
+      els.list.innerHTML = html;
+      syncMenuSelected();
+
+      els.list.querySelectorAll(".card").forEach((el) => {
+        el.addEventListener("click", (e) => {
+          if (e.target.closest("[data-more], [data-archive]")) return;
+          state.activeId = el.dataset.id;
+          state.dockId = null;
+          render();
+        });
+      });
+      els.list.querySelectorAll("[data-more]").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const id = btn.getAttribute("data-more");
+          state.dockId = state.dockId === id ? null : id;
+          render();
+        });
+      });
+      els.list.querySelectorAll("[data-archive]").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          archive(btn.getAttribute("data-archive"));
+        });
+      });
+      const loadBtn = document.getElementById("loadMore");
+      if (loadBtn) loadBtn.addEventListener("click", loadMore);
+      syncChat();
+    }
+
+    function syncChat() {
+      const row = state.rows.find((r) => r.id === state.activeId) || state.rows[0];
+      if (!row) {
+        els.chatTitle.textContent = "";
+        els.chatMeta.textContent = "";
+        els.chatBody.textContent = "";
+        return;
+      }
+      els.chatTitle.textContent = row.title;
+      const n = (row.people || []).length;
+      els.chatMeta.textContent = `${n} 位参与者 · 12 条消息 · ${row.time} 更新`;
+      els.chatBody.textContent = row.preview;
+    }
+
+    function archive(id) {
+      const idx = state.rows.findIndex((r) => r.id === id);
+      if (idx < 0) return;
+      state.rows.splice(idx, 1);
+      // 还有下一页时，归档后立刻补 1 条，保持当前窗口密度
+      if (state.remaining.length) {
+        state.rows.push(state.remaining.shift());
+      }
+      state.dockId = null;
+      if (!state.rows.some((r) => r.id === state.activeId)) {
+        state.activeId = state.rows[Math.min(idx, state.rows.length - 1)]?.id ?? null;
+      }
+      render();
+    }
+
+    function loadMore() {
+      if (!hasMore() || state.loading) return;
+      state.loading = true;
+      render();
+      // 模拟请求一页
+      setTimeout(() => {
+        state.rows.push(...takePage(state.remaining, PAGE_SIZE));
+        state.loading = false;
+        render();
+        // 滚到底部附近看 Load more / 新行
+        els.list.scrollTop = els.list.scrollHeight;
+      }, 280);
+    }
+
+    els.trigger.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setMenu(!state.menuOpen);
+    });
+    els.menu.querySelectorAll(".filter-option").forEach((btn) => {
+      btn.addEventListener("click", () => selectKind(btn.dataset.kind));
+    });
+    document.addEventListener("click", (e) => {
+      if (!els.menu.contains(e.target) && !els.trigger.contains(e.target)) setMenu(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") setMenu(false);
+    });
+
+    resetKind("regular");
+    render();
+  </script>
+</body>
+</html>

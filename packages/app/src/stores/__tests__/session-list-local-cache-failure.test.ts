@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const mocks = vi.hoisted(() => ({
-  listCurrentActorSessions: vi.fn(),
+  listCurrentActorSessionsV2: vi.fn(),
   loadSessionsForTeam: vi.fn(),
   loadSessionIdsForActor: vi.fn(),
   upsertSessionsBatch: vi.fn(),
@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/backend", () => ({
   getBackend: () => ({
     sessions: {
-      listCurrentActorSessions: mocks.listCurrentActorSessions,
+      listCurrentActorSessionsV2: mocks.listCurrentActorSessionsV2,
       markCurrentActorSessionViewed: vi.fn(),
       updateSessionTitle: vi.fn(),
       archiveSession: vi.fn(),
@@ -98,7 +98,7 @@ beforeEach(() => {
   mocks.loadSessionIdsForActor.mockResolvedValue([]);
   mocks.upsertSessionsBatch.mockResolvedValue(undefined);
   mocks.syncSessionWorkspaces.mockResolvedValue(undefined);
-  mocks.listCurrentActorSessions.mockResolvedValue({ rows: [serverRow], nextCursor: null });
+  mocks.listCurrentActorSessionsV2.mockResolvedValue({ rows: [serverRow], nextCursor: null });
 });
 
 describe("loadFirstPage local-cache resilience", () => {
@@ -133,7 +133,7 @@ describe("loadFirstPage local-cache resilience", () => {
   });
 
   it("keeps the RPC error path intact — a failing server call still surfaces", async () => {
-    mocks.listCurrentActorSessions.mockRejectedValueOnce(new Error("boom"));
+    mocks.listCurrentActorSessionsV2.mockRejectedValueOnce(new Error("boom"));
     const store = await freshStore();
 
     await store.getState().loadFirstPage();
@@ -166,7 +166,7 @@ describe("loadFirstPage local-cache resilience", () => {
       },
     ]);
     mocks.loadSessionIdsForActor.mockResolvedValueOnce(["mine"]);
-    mocks.listCurrentActorSessions.mockRejectedValueOnce(new Error("boom"));
+    mocks.listCurrentActorSessionsV2.mockRejectedValueOnce(new Error("boom"));
     const store = await freshStore();
 
     await store.getState().loadFirstPage();

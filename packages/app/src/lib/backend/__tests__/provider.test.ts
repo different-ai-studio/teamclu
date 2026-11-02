@@ -17,6 +17,7 @@ vi.mock("@/lib/backend/cloud-api", () => ({
     directory: {},
     sessions: {
       listCurrentActorSessions: () => Promise.resolve({ rows: [] }),
+      listCurrentActorSessionsV2: () => Promise.resolve({ rows: [], nextCursor: null }),
     },
     messages: {},
     runtime: {},

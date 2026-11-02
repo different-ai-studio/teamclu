@@ -113,6 +113,23 @@ export function createSessionsModule(client: CloudApiClient): SessionsBackend {
       const page = await client.get<Page<CloudSession>>(`/v1/sessions?${params.toString()}`);
       return { rows: page.items.map(mapSession), nextCursor: page.nextCursor };
     },
+    async listCurrentActorSessionsV2(args: {
+      limit: number;
+      cursor: SessionListCursor | null;
+      teamId: string;
+      kind: "regular" | "channel" | "app" | "cron";
+    }): Promise<SessionListPage> {
+      const teamId = args.teamId?.trim();
+      if (!teamId) throw new Error("listCurrentActorSessionsV2 requires teamId");
+      const params = new URLSearchParams({
+        limit: String(args.limit),
+        teamId,
+        kind: args.kind,
+      });
+      if (args.cursor) params.set("cursor", encodeCursor(args.cursor));
+      const page = await client.get<Page<CloudSession>>(`/v2/sessions?${params.toString()}`);
+      return { rows: page.items.map(mapSession), nextCursor: page.nextCursor };
+    },
     async markCurrentActorSessionViewed(sessionId: string, lastReadMessageId?: string | null) {
       await client.post<void>(`/v1/sessions/${encodeURIComponent(sessionId)}/mark-viewed`, { lastReadMessageId: lastReadMessageId ?? null });
     },
