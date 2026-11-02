@@ -678,6 +678,30 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
         bucket.put_object(f"{prefix}/amuxd/latest.json", amuxd_manifest_str.encode(),
                           headers={**short_cache, **json_ct})
 
+    # Everything index.html shows, as data, so another page (the brand's own
+    # website) can render its own download section without scraping the HTML.
+    # The Android APK keeps its own pointer (android/latest.json) because it
+    # ships on a different cadence.
+    def _dl(d):
+        return {k: d[k] for k in ("os", "arch", "filename", "url", "size", "sha256") if k in d}
+
+    downloads_manifest = {
+        "version": version,
+        "pub_date": pub_date,
+        "desktop": [_dl(d) for d in downloads],
+        "amuxd": [_dl(d) for d in amuxd_downloads],
+        "install": {
+            "macos": mac_cmd,
+            "windows": win_cmd,
+            "amuxd_unix": am_mac_cmd,
+            "amuxd_windows": am_win_cmd,
+        },
+        "quarantine": quarantine_cmd,
+    }
+    bucket.put_object(f"{prefix}/downloads.json",
+                      (json.dumps(downloads_manifest, indent=2) + "\n").encode(),
+                      headers={**short_cache, **json_ct})
+
     # Privacy policy — brand-generic template with {{APP_NAME}} substituted.
     # Published at {cdn}/{prefix}/privacy.html so the Chrome Web Store listing can
     # point its "Privacy policy URL" here (e.g. download.copilot361.com/releases/privacy.html).
