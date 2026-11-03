@@ -1,7 +1,7 @@
 name: Self-Host Deploy
 
-# Self-host ECS no longer deploys on every merge to main. Schedule matches
-# nightly-release-oss.yml: 16:00 UTC = 00:00 Asia/Shanghai. Manual runs stay
+# Self-host ECS no longer deploys on every merge to main. Scheduled nightly at
+# 16:00 UTC = 00:00 Asia/Shanghai. Manual runs stay
 # available via workflow_dispatch.
 
 on:
