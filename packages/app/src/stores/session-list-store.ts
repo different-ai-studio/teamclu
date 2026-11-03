@@ -795,21 +795,13 @@ export const useSessionListStore = create<State>((set, get) => ({
   })),
   upsertRows: (rows) =>
     set((state) => {
-      // Keep multi-kind rows in the store, but never let an uncertain/cross-bucket
-      // event silently widen the active kind's window without a refresh path.
-      const scoped = filterToScope(rows, state.scopeTeamId);
-      const matched = scoped.filter((row) => isKind(row, state.listKind));
-      const unmatched = scoped.filter((row) => !isKind(row, state.listKind));
-      const nextStale = { ...state.kindStale };
-      for (const row of unmatched) {
-        // Cross-bucket noise: mark stale so re-selecting that kind refetches.
-        const classified = classifySessionListKind(row);
-        if (classified) nextStale[classified] = true;
-      }
-      return {
-        rows: mergeRows(state.rows, matched),
-        kindStale: nextStale,
-      };
+      // Multi-kind cache: keep every classifiable row. The list UI still filters
+      // by `listKind`, so a cron upsert from run-history stays available when the
+      // user opens Automation without waiting on a refetch.
+      const scoped = filterToScope(rows, state.scopeTeamId).filter(
+        (row) => classifySessionListKind(row) != null,
+      );
+      return { rows: mergeRows(state.rows, scoped) };
     }),
   patchRow: (sessionId, patch) => set((state) => ({
     rows: state.rows.map((row) =>

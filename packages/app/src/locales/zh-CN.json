@@ -1297,7 +1297,6 @@
     "viewDetail": "查看详情",
     "showAllSessions": "显示全部会话",
     "showCronSessions": "显示定时会话",
-    "scheduledSessions": "自动化",
     "sessionKindMenu": "列表类型",
     "searchWithShortcut": "搜索 (⌘K)",
     "pinned": "已置顶",
