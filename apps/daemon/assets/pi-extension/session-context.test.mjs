@@ -939,7 +939,8 @@ test("before_agent_start strips pi docs but keeps project_context", async () => 
 });
 
 test("before_agent_start strips the tagged <docs> block of pi >= 0.99", async () => {
-  // Shape of pi 1.1.0 `buildSystemPrompt` output (every section tagged).
+  // Shape of pi 1.1.0–1.5.0 `buildSystemPrompt` output (every section tagged;
+  // the `<docs>` block is unchanged through 1.5.0).
   const taggedPrompt = [
     "You are an expert coding assistant operating inside pi, a coding agent harness.",
     "",

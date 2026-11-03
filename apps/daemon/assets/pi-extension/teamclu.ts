@@ -1924,9 +1924,13 @@ async function llmSessionTitle(ctx: TitleLlmCtx, prompt: string): Promise<string
 }
 
 function startSessionTitle(
-  event: { prompt?: string },
+  event: { prompt?: string; messageType?: string },
   ctx: ExtensionContext,
 ): void {
+  // pi >= 1.2 also fires `before_agent_start` for runs an extension starts
+  // with `pi.sendMessage(..., { triggerTurn: true })`; those carry
+  // `messageType: "custom"` and no prompt. Only a user prompt names a session.
+  if (event.messageType !== undefined && event.messageType !== "user") return;
   const sessionId = backendSessionIdFromContext(ctx);
   if (!sessionId) return;
   if (hasSessionTitleMarker(sessionId)) return;
