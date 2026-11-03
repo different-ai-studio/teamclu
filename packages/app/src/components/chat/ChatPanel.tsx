@@ -35,6 +35,8 @@ import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
 import { createQuickSession, describeQuickSessionFailure, type QuickSessionFailureReason } from "@/lib/session/create-quick-session";
 import { isSoloAgentSession } from "@/lib/session/session-empty-thread-starters";
 import { ChatInputArea } from "./ChatInputArea";
+import type { ActiveStreamingAgent } from "./ComposerStack";
+import { useSessionStreams } from "@/lib/stream/session-streams";
 import { useEngagedAgentRuntimeMap } from "@/hooks/use-engaged-agent-runtime-map";
 import { useEngagedAgentUiStates } from "@/hooks/use-engaged-agent-ui-states";
 import { useEnsureEngagedRuntimesOnSessionFocus } from "@/hooks/use-ensure-engaged-runtimes-on-session-focus";
@@ -145,24 +147,12 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   // them vanish the moment the turn finished. The bubble itself suppresses
   // the outputText after finalize so the persisted AGENT_REPLY ChatMessage
   // doesn't render the reply twice.
-  const v2ActiveSessionRevision = useV2StreamingStore((s) =>
-    activeSessionId ? (s.revisionBySession[activeSessionId] ?? 0) : 0,
-  );
+  // Outline-only subscription: a text delta does not re-render ChatPanel. The
+  // live dock reads its text through useLiveStreamEntry instead.
+  const v2Streams = useSessionStreams(activeSessionId);
   const persistedSessionPlan = useV2StreamingStore((s) =>
     selectPersistedPlanForSession(s, activeSessionId),
   );
-  const v2Streams = React.useMemo(() => {
-    const s = useV2StreamingStore.getState();
-    const current = Object.values(s.byKey).filter(
-      (e) => e.sessionId === activeSessionId,
-    );
-    const archived = s.archived.filter((e) => e.sessionId === activeSessionId);
-    return [...archived, ...current].sort((a, b) => a.lastUpdate - b.lastUpdate);
-    // v2ActiveSessionRevision is the change signal; byKey/archived are read via
-    // getState() to avoid re-subscribing to the whole store (perf). Do not add
-    // byKey/archived to deps — it reintroduces per-delta re-renders.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [v2ActiveSessionRevision, activeSessionId]);
 
   // Plan entries from the active agent's stream surface in the TodoList dock
   // above the prompt input (v1 style) rather than inline in the message
@@ -202,11 +192,10 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
         activeSessionId,
         useV2StreamingStore.getState().byKey,
       ),
-    // v2ActiveSessionRevision is the change signal; byKey is read via getState()
-    // to avoid re-subscribing to the whole store (perf). Do not add byKey to
-    // deps — it reintroduces per-delta re-renders.
+    // v2Streams changes whenever an entry's pending permissions do; byKey is
+    // read via getState() so a text delta does not recompute this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeSessionId, v2ActiveSessionRevision],
+    [activeSessionId, v2Streams],
   );
   const showInlineTodo = React.useMemo(() => {
     if (messageQueue.length === 0 && planTodos.length === 0) return false;
@@ -728,11 +717,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
 
   const activeStreamingAgents = React.useMemo(() => {
     const seen = new Set<string>();
-    const agents: Array<{
-      actorId: string;
-      displayName?: string;
-      entry: (typeof v2Streams)[number];
-    }> = [];
+    const agents: ActiveStreamingAgent[] = [];
     for (const entry of v2Streams) {
       if (!isStreamInterruptible(entry) || seen.has(entry.actorId)) continue;
       seen.add(entry.actorId);
@@ -740,7 +725,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
       agents.push({
         actorId: entry.actorId,
         displayName: engaged?.displayName,
-        entry,
+        sessionId: entry.sessionId,
       });
     }
     return agents;
@@ -1061,22 +1046,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
 
   // Live streams render in Composer Live Dock. Keep displayV2Streams for
   // timeline diagnostics only (inactive/archived still live in the store).
-  const v2DisplayRevision = useV2StreamingStore((s) =>
-    displaySessionId ? (s.revisionBySession[displaySessionId] ?? 0) : 0,
-  );
-  const displayV2Streams = React.useMemo(() => {
-    if (!displaySessionId) return [];
-    const s = useV2StreamingStore.getState();
-    const current = Object.values(s.byKey).filter(
-      (e) => e.sessionId === displaySessionId,
-    );
-    const archived = s.archived.filter((e) => e.sessionId === displaySessionId);
-    return [...archived, ...current].sort((a, b) => a.lastUpdate - b.lastUpdate);
-    // v2DisplayRevision is the change signal; byKey/archived are read via
-    // getState() to avoid re-subscribing to the whole store (perf). Do not add
-    // byKey/archived to deps — it reintroduces per-delta re-renders.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [v2DisplayRevision, displaySessionId]);
+  const displayV2Streams = useSessionStreams(displaySessionId);
 
   const lastTimelineDiagSigRef = React.useRef<string>("");
   React.useEffect(() => {

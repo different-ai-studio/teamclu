@@ -308,6 +308,9 @@ function k(sessionId: string, actorId: string): string {
   return `${sessionId}::${actorId}`;
 }
 
+/** The `byKey` key of one actor's live entry in a session. */
+export const streamEntryKey = k;
+
 function emptyEntry(sessionId: string, actorId: string): AgentStreamEntry {
   return {
     sessionId,
