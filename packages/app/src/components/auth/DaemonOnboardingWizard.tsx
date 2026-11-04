@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Loader2, AlertCircle, Check } from 'lucide-react'
+import { Loader2, AlertCircle, Check, Copy, ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -15,7 +15,10 @@ import { useShallow } from 'zustand/react/shallow'
 import {
   daemonHomeDisplayPath,
   daemonManagedLogDisplayPath,
+  installPiLogDisplayPath,
 } from '@/lib/daemon/daemon-paths'
+import { buildInstallDiagnostics, summarizeInstallFailure } from '@/lib/daemon/install-failure'
+import { fetchAppVersion } from '@/lib/config/version'
 
 /**
  * What to call each source amuxd can install the runtime from. The
@@ -174,8 +177,9 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
     refresh,
     forceReset,
     autoHealCloudSession,
+    runtimeInstallFailures,
   } = useDaemonOnboardingStore(
-    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, daemonOutdated: s.daemonOutdated, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession })),
+    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, daemonOutdated: s.daemonOutdated, runtimeInstallFailures: s.runtimeInstallFailures, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession })),
   )
   const elapsed = useElapsedSeconds(runStartedAt)
   const [name, setName] = React.useState('')
@@ -349,7 +353,13 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
         {failedStep && (
           <StepList current={null} completed={completedSteps} failed={failedStep} />
         )}
-        {error && <ErrorLine error={error} />}
+        {error && (
+          <FailureDetails
+            error={error}
+            failedStep={failedStep}
+            attempts={daemonOutdated ? 0 : runtimeInstallFailures}
+          />
+        )}
         <Button
           className="mt-1 h-10 w-full rounded-[10px] bg-coral text-coral-foreground hover:opacity-90"
           disabled={busy}
@@ -418,6 +428,128 @@ function Spinner({ label }: { label: string }) {
     <span className="flex items-center gap-2">
       <Loader2 className="h-4 w-4 animate-spin" /> {label}
     </span>
+  )
+}
+
+/** After this many runtime installs fail in a row, Retry has stopped helping. */
+const RESTART_HINT_AFTER = 2
+
+/**
+ * The failure screen's error: the line that names the cause, the rest behind a
+ * toggle, where the full log is, and one button that copies everything we
+ * would ask for. Users stuck here are usually somewhere we cannot reach, so
+ * what they can paste to us is the whole diagnosis.
+ *
+ * A runtime install that keeps failing also offers a restart: on 2026-11-04 a
+ * fresh machine failed every Retry and was fixed by quitting and reopening,
+ * which stops whatever install was left running.
+ */
+function FailureDetails({
+  error,
+  failedStep,
+  attempts,
+}: {
+  error: string
+  failedStep: OnboardingStep | null
+  attempts: number
+}) {
+  const { t } = useTranslation()
+  const isInstall = failedStep === 'install-runtime'
+  const { headline, detail } = React.useMemo(() => {
+    if (isInstall) return summarizeInstallFailure(error)
+    const lines = error.split('\n').filter((l) => l.trim())
+    return { headline: lines[0] ?? error, detail: lines.length > 1 ? error : null }
+  }, [error, isInstall])
+  const logPath = isInstall ? installPiLogDisplayPath : daemonManagedLogDisplayPath
+  const [expanded, setExpanded] = React.useState(false)
+  const [copied, setCopied] = React.useState(false)
+  const [restarting, setRestarting] = React.useState(false)
+
+  const copy = async () => {
+    const report = buildInstallDiagnostics({
+      error,
+      output: isInstall ? (useSetupStore.getState().output.pi ?? []) : [],
+      appVersion: await fetchAppVersion().catch(() => null),
+      platform: navigator.userAgent,
+      logPath,
+      attempts,
+    })
+    try {
+      await navigator.clipboard.writeText(report)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (e) {
+      console.error('[DaemonOnboardingWizard] copy failed:', e)
+    }
+  }
+
+  const restart = async () => {
+    setRestarting(true)
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      await invoke('restart_app')
+    } catch (e) {
+      console.error('[DaemonOnboardingWizard] restart failed:', e)
+      setRestarting(false)
+    }
+  }
+
+  const linkButton =
+    'flex items-center gap-1 rounded-[6px] text-[11.5px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline'
+  return (
+    <div className="flex flex-col gap-2">
+      <ErrorLine error={headline} />
+      <div className="flex items-center gap-3 pl-5">
+        {detail && (
+          <button type="button" className={linkButton} onClick={() => setExpanded((v) => !v)}>
+            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            {expanded
+              ? t('settings.daemonOnboarding.hideDetails', 'Hide details')
+              : t('settings.daemonOnboarding.showDetails', 'Show details')}
+          </button>
+        )}
+        <button type="button" className={linkButton} onClick={() => void copy()}>
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          {copied
+            ? t('settings.daemonOnboarding.detailsCopied', 'Copied')
+            : t('settings.daemonOnboarding.copyDetails', 'Copy details')}
+        </button>
+      </div>
+      {expanded && detail && (
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-[8px] border border-border-soft bg-background p-2 font-mono text-[10.5px] leading-4 text-muted-foreground">
+          {detail}
+        </pre>
+      )}
+      <span className="pl-5 text-[11px] leading-4 text-faint">
+        {t('settings.daemonOnboarding.fullLog', {
+          path: logPath,
+          defaultValue: 'Full log: {{path}}',
+        })}
+      </span>
+      {isInstall && attempts >= RESTART_HINT_AFTER && (
+        <div className="flex flex-col gap-2 rounded-[10px] border border-border-soft bg-background p-3">
+          <span className="text-[11.5px] leading-4 text-muted-foreground">
+            {t('settings.daemonOnboarding.restartHint', {
+              count: attempts,
+              defaultValue:
+                'This has failed {{count}} times in a row. Restarting the app usually fixes it: it stops any install left running and starts a clean one.',
+            })}
+          </span>
+          <Button
+            variant="outline"
+            className="h-9 rounded-[10px]"
+            disabled={restarting}
+            onClick={() => void restart()}
+          >
+            {restarting ? (
+              <Spinner label={t('settings.daemonOnboarding.restarting', 'Restarting…')} />
+            ) : (
+              t('settings.daemonOnboarding.restartApp', 'Restart the app')
+            )}
+          </Button>
+        </div>
+      )}
+    </div>
   )
 }
 
