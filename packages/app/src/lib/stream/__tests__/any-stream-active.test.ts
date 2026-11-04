@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { useAnyStreamActive } from "@/lib/stream/any-stream-active";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
@@ -55,5 +55,37 @@ describe("useAnyStreamActive", () => {
       byKey: { [`s1::${AGENT}`]: stream({ active: false }) },
     });
     expect(renderHook(() => useAnyStreamActive()).result.current).toBe(false);
+  });
+
+  it("does not re-render on a text-only delta — the update dialog used to re-render on every delta of every stream", () => {
+    useV2StreamingStore.setState({ byKey: { [`s1::${AGENT}`]: stream() } });
+    let renders = 0;
+    const { result } = renderHook(() => {
+      renders++;
+      return useAnyStreamActive();
+    });
+    expect(result.current).toBe(true);
+    const before = renders;
+    act(() => {
+      for (let i = 0; i < 20; i++) {
+        useV2StreamingStore.setState({
+          byKey: { [`s1::${AGENT}`]: stream({ outputText: `hello ${i}` }) },
+        });
+      }
+    });
+    expect(renders).toBe(before);
+    expect(result.current).toBe(true);
+  });
+
+  it("re-renders when the answer flips because the stream finalized", () => {
+    useV2StreamingStore.setState({ byKey: { [`s1::${AGENT}`]: stream() } });
+    const { result } = renderHook(() => useAnyStreamActive());
+    expect(result.current).toBe(true);
+    act(() => {
+      useV2StreamingStore.setState({
+        byKey: { [`s1::${AGENT}`]: stream({ active: false }) },
+      });
+    });
+    expect(result.current).toBe(false);
   });
 });

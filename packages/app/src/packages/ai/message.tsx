@@ -145,8 +145,15 @@ export function Message({
   /** User-message bubble skin only — does not affect layout or routing. */
   userBubble?: UserBubbleKind
 }) {
+  // PERF: a fresh value object re-renders every context consumer, which
+  // defeats StreamMarkdown's memoized StableBlocks — each streaming delta
+  // re-parsed every closed paragraph of the reply.
+  const value = React.useMemo(
+    () => ({ from, basePath, userBubble }),
+    [from, basePath, userBubble],
+  )
   return (
-    <MessageContext.Provider value={{ from, basePath, userBubble }}>
+    <MessageContext.Provider value={value}>
       <div
         className={cn("flex", from === "user" ? "justify-end" : "justify-start", className)}
         {...props}
