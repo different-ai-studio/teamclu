@@ -123,6 +123,8 @@ type RecoveryReason =
   | 'network_online'
   | 'user_requested'
   | 'credential_rejected'
+  /** The desktop client's own token expired before it reconnected (#1802). */
+  | 'credential_expired'
 
 async function runMqttRecovery(
   get: () => MqttReconnectState,
@@ -134,9 +136,14 @@ async function runMqttRecovery(
   // No local agent: the desktop client's own MQTT is the connection, same as
   // the extension. Do not adopt or restart the unclaimed daemon's broker.
   const localAgentAbsent = utils.isTauri() && (await currentTeamLocalAgentAbsent())
+  // An expired desktop token says nothing about the daemon's connection, and
+  // the daemon being connected must not stop the desktop client from getting
+  // its fresh token: the Rust side is parked until it does.
+  const desktopOnly = reason === 'credential_expired'
   if (
     utils.isTauri() &&
     !localAgentAbsent &&
+    !desktopOnly &&
     reason !== 'user_requested' &&
     reason !== 'credential_rejected'
   ) {
@@ -151,7 +158,7 @@ async function runMqttRecovery(
     }
   }
   const tasks: Promise<unknown>[] = []
-  if (utils.isTauri() && !localAgentAbsent) {
+  if (utils.isTauri() && !localAgentAbsent && !desktopOnly) {
     tasks.push(
       import('@/lib/daemon/daemon-local-client')
         .then(({ recoverDaemonMqtt }) => recoverDaemonMqtt(reason))
@@ -363,6 +370,13 @@ export const useMqttReconnectStore = create<MqttReconnectState>((set, get) => ({
           if (isMqttAuthFailure(msg)) {
             void recoverMqttCredentials(get, 'auto', 'credential_rejected')
           }
+        })
+        // The Rust client found its token expired and is holding the
+        // connection instead of replaying it (#1802). It repeats this every
+        // 15 s while it waits, so a request dropped by the cooldown is retried.
+        await listen('mqtt:credentials-expired', () => {
+          logMqttNetworkDiag('error', { message: 'credentials expired', transport: 'tauri' })
+          void recoverMqttCredentials(get, 'auto', 'credential_expired')
         })
         // Reconcile any change that landed while the listener was attaching.
         await probe()

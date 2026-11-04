@@ -46,6 +46,24 @@ pub fn credential_in_proactive_refresh_window(expires_at_epoch: Option<i64>) -> 
     expires_at_epoch.is_some() && proactive_reconnect_delay(expires_at_epoch) == Duration::ZERO
 }
 
+/// The credential to open an MQTT transport with: [`Backend::auth_token`],
+/// except that a cached token already inside [`PROACTIVE_CREDENTIAL_BUFFER`] is
+/// dropped first so the transport opens with a fresh one.
+///
+/// Without this, the proactive reconnect could not work (#1802). It fires
+/// [`PROACTIVE_CREDENTIAL_BUFFER`] (5 min) before expiry, but `auth_token`
+/// keeps serving its cache until about a minute before expiry. The new worker
+/// therefore reconnected with the token it was replacing, and having less than
+/// the buffer left, scheduled no further proactive reconnect. The token then
+/// expired on a live connection, rumqttc replayed it, and the broker refused
+/// it: one rejected connect per daemon per hour, on the hour of each token.
+pub async fn transport_credential(backend: &dyn Backend) -> BackendResult<String> {
+    if credential_in_proactive_refresh_window(backend.cached_credential_expiry_epoch()) {
+        backend.invalidate_cached_credential();
+    }
+    backend.auth_token().await
+}
+
 pub mod error;
 pub use error::{BackendError, BackendResult};
 

@@ -994,49 +994,53 @@ async fn run_supervisor(
                 current.connected = false;
                 current.ready_generation = None;
             });
-            let token =
-                match tokio::time::timeout(Duration::from_secs(10), backend.auth_token()).await {
-                    Ok(Ok(token)) => token,
-                    Ok(Err(error)) => {
-                        warn!(
-                            %error,
-                            credential_attempt,
-                            duration_ms = credential_started.elapsed().as_millis() as u64,
-                            "could not obtain MQTT credential while starting a new worker"
+            let token = match tokio::time::timeout(
+                Duration::from_secs(10),
+                crate::backend::transport_credential(backend.as_ref()),
+            )
+            .await
+            {
+                Ok(Ok(token)) => token,
+                Ok(Err(error)) => {
+                    warn!(
+                        %error,
+                        credential_attempt,
+                        duration_ms = credential_started.elapsed().as_millis() as u64,
+                        "could not obtain MQTT credential while starting a new worker"
+                    );
+                    schedule_restart(&mut next_restart, &mut restart_failures);
+                    snapshot_update(&snapshot, |current| {
+                        current.phase = "Backoff".to_string();
+                        current.last_error_code = Some("cloud_auth_failure".to_string());
+                        current.next_retry_at = Some(
+                            chrono::Utc::now()
+                                + chrono::Duration::seconds(
+                                    restart_delay(restart_failures).as_secs() as i64,
+                                ),
                         );
-                        schedule_restart(&mut next_restart, &mut restart_failures);
-                        snapshot_update(&snapshot, |current| {
-                            current.phase = "Backoff".to_string();
-                            current.last_error_code = Some("cloud_auth_failure".to_string());
-                            current.next_retry_at = Some(
-                                chrono::Utc::now()
-                                    + chrono::Duration::seconds(
-                                        restart_delay(restart_failures).as_secs() as i64,
-                                    ),
-                            );
-                        });
-                        continue;
-                    }
-                    Err(_) => {
-                        warn!(
-                            credential_attempt,
-                            duration_ms = credential_started.elapsed().as_millis() as u64,
-                            "timed out obtaining MQTT credential while starting a new worker"
+                    });
+                    continue;
+                }
+                Err(_) => {
+                    warn!(
+                        credential_attempt,
+                        duration_ms = credential_started.elapsed().as_millis() as u64,
+                        "timed out obtaining MQTT credential while starting a new worker"
+                    );
+                    schedule_restart(&mut next_restart, &mut restart_failures);
+                    snapshot_update(&snapshot, |current| {
+                        current.phase = "Backoff".to_string();
+                        current.last_error_code = Some("cloud_auth_timeout".to_string());
+                        current.next_retry_at = Some(
+                            chrono::Utc::now()
+                                + chrono::Duration::seconds(
+                                    restart_delay(restart_failures).as_secs() as i64,
+                                ),
                         );
-                        schedule_restart(&mut next_restart, &mut restart_failures);
-                        snapshot_update(&snapshot, |current| {
-                            current.phase = "Backoff".to_string();
-                            current.last_error_code = Some("cloud_auth_timeout".to_string());
-                            current.next_retry_at = Some(
-                                chrono::Utc::now()
-                                    + chrono::Duration::seconds(
-                                        restart_delay(restart_failures).as_secs() as i64,
-                                    ),
-                            );
-                        });
-                        continue;
-                    }
-                };
+                    });
+                    continue;
+                }
+            };
             info!(
                 credential_attempt,
                 duration_ms = credential_started.elapsed().as_millis() as u64,

@@ -2084,6 +2084,55 @@ mod tests {
         assert_eq!(refreshes_after, 2);
     }
 
+    fn refresh_count(requests: &[wiremock::Request]) -> usize {
+        requests
+            .iter()
+            .filter(|r| r.url.path() == "/v1/auth/refresh")
+            .count()
+    }
+
+    // #1802: the proactive reconnect fires 5 minutes before expiry, inside the
+    // window where `access_token` still serves its cache. The transport must
+    // not reopen with the token it is replacing.
+    #[tokio::test]
+    async fn transport_credential_refreshes_a_token_inside_the_proactive_window() {
+        let server = MockServer::start().await;
+        // 4 minutes left: past the proactive buffer, before the access leeway.
+        let expires_at = crate::backend::epoch_secs_now() + 240;
+        Mock::given(method("POST"))
+            .and(path("/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accessToken": "access-token",
+                "refreshToken": "refresh",
+                "expiresAt": expires_at
+            })))
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        backend.access_token().await.unwrap();
+        // The plain accessor still considers it good, which is the bug's half.
+        backend.access_token().await.unwrap();
+        assert_eq!(refresh_count(&server.received_requests().await.unwrap()), 1);
+
+        crate::backend::transport_credential(&backend)
+            .await
+            .unwrap();
+        assert_eq!(refresh_count(&server.received_requests().await.unwrap()), 2);
+    }
+
+    #[tokio::test]
+    async fn transport_credential_keeps_a_token_with_comfortable_headroom() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await; // expiresAt far in the future
+        let backend = CloudApiBackend::new(config(&server));
+        backend.access_token().await.unwrap();
+
+        crate::backend::transport_credential(&backend)
+            .await
+            .unwrap();
+        assert_eq!(refresh_count(&server.received_requests().await.unwrap()), 1);
+    }
+
     #[tokio::test]
     async fn access_token_refreshes_again_once_expired() {
         let server = MockServer::start().await;
