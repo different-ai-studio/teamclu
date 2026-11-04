@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useSessionStore } from "@/stores/session-store";
 import { resetSessionPermissionModesForTests } from "@/lib/session/session-permission-mode";
-import { ComposerStack } from "../ComposerStack";
+import { useV2StreamingStore } from "@/stores/v2-streaming-store";
+import { ComposerStack, type ActiveStreamingAgent } from "../ComposerStack";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -34,7 +35,7 @@ function makeEntry(actorId: string, lastUpdate: number) {
     outputText: "hello",
     thinkingText: "",
     parts: [],
-    toolCalls: [],
+    toolCalls: [] as unknown[],
     planEntries: [],
     pendingPermissionsByRequestId: {},
     errorMessage: null,
@@ -45,8 +46,21 @@ function makeEntry(actorId: string, lastUpdate: number) {
   };
 }
 
+/** Put an entry in the streaming store, where the dock strip reads it. */
+function seed(entry: ReturnType<typeof makeEntry>) {
+  useV2StreamingStore.setState((s) => ({
+    byKey: { ...s.byKey, [`${entry.sessionId}::${entry.actorId}`]: entry as never },
+  }));
+}
+
+function live(displayName: string, entry: ReturnType<typeof makeEntry>): ActiveStreamingAgent {
+  seed(entry);
+  return { actorId: entry.actorId, displayName, sessionId: entry.sessionId };
+}
+
 describe("ComposerStack", () => {
   beforeEach(() => {
+    useV2StreamingStore.setState({ byKey: {} });
     resetSessionPermissionModesForTests();
     useSessionStore.setState({
       activeSessionId: "sess-1",
@@ -102,8 +116,8 @@ describe("ComposerStack", () => {
     render(
       <ComposerStack
         agents={[
-          { actorId: "a1", displayName: "A1", entry: makeEntry("a1", 1) as never },
-          { actorId: "a2", displayName: "A2", entry: makeEntry("a2", 2) as never },
+          live("A1", makeEntry("a1", 1)),
+          live("A2", makeEntry("a2", 2)),
         ]}
         onInterrupt={vi.fn()}
       >
@@ -129,12 +143,8 @@ describe("ComposerStack", () => {
   });
 
   it("scrolls the live panel to bottom as stream content grows", async () => {
-    const entry = makeEntry("a1", 1) as never;
-    const { rerender } = render(
-      <ComposerStack
-        agents={[{ actorId: "a1", displayName: "A1", entry }]}
-        onInterrupt={vi.fn()}
-      >
+    render(
+      <ComposerStack agents={[live("A1", makeEntry("a1", 1))]} onInterrupt={vi.fn()}>
         <div>input</div>
       </ComposerStack>,
     );
@@ -144,15 +154,10 @@ describe("ComposerStack", () => {
     Object.defineProperty(scrollEl, "scrollHeight", { configurable: true, value: 400 });
     scrollEl.scrollTop = 0;
 
-    const taller = { ...makeEntry("a1", 2), outputText: "hello\n".repeat(40) } as never;
-    rerender(
-      <ComposerStack
-        agents={[{ actorId: "a1", displayName: "A1", entry: taller }]}
-        onInterrupt={vi.fn()}
-      >
-        <div>input</div>
-      </ComposerStack>,
-    );
+    // A delta lands in the store; the parent does not re-render.
+    act(() => {
+      seed({ ...makeEntry("a1", 2), outputText: "hello\n".repeat(40) });
+    });
 
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => resolve());
@@ -163,7 +168,7 @@ describe("ComposerStack", () => {
   it("enlarges live process into an out-of-flow float panel", () => {
     render(
       <ComposerStack
-        agents={[{ actorId: "a1", displayName: "A1", entry: makeEntry("a1", 1) as never }]}
+        agents={[live("A1", makeEntry("a1", 1))]}
         onInterrupt={vi.fn()}
       >
         <div>input</div>
@@ -203,7 +208,7 @@ describe("ComposerStack", () => {
   it("keeps live context visible with an in-stack question and hides text input", () => {
     render(
       <ComposerStack
-        agents={[{ actorId: "a1", displayName: "A1", entry: makeEntry("a1", 1) as never }]}
+        agents={[live("A1", makeEntry("a1", 1))]}
         onInterrupt={vi.fn()}
         pendingQuestion={{
           questionId: "q-event-1",
@@ -235,11 +240,8 @@ describe("ComposerStack", () => {
     render(
       <ComposerStack
         agents={[
-          { actorId: "a1", displayName: "A1", entry: makeEntry("a1", 2) as never },
-          {
-            actorId: "a2",
-            displayName: "A2",
-            entry: {
+          live("A1", makeEntry("a1", 2)),
+          live("A2", {
               ...makeEntry("a2", 1),
               toolCalls: [
                 {
@@ -250,8 +252,7 @@ describe("ComposerStack", () => {
                   startTime: new Date(),
                 },
               ],
-            } as never,
-          },
+            }),
         ]}
         onInterrupt={vi.fn()}
         pendingQuestion={{
@@ -301,7 +302,7 @@ describe("ComposerStack", () => {
 
     render(
       <ComposerStack
-        agents={[{ actorId: "a1", displayName: "A1", entry: makeEntry("a1", 1) as never }]}
+        agents={[live("A1", makeEntry("a1", 1))]}
         onInterrupt={vi.fn()}
         pendingQuestion={{
           questionId: "q-event-1",
@@ -335,7 +336,7 @@ describe("ComposerStack", () => {
   it("restores the enlarge float on Escape", () => {
     render(
       <ComposerStack
-        agents={[{ actorId: "a1", displayName: "A1", entry: makeEntry("a1", 1) as never }]}
+        agents={[live("A1", makeEntry("a1", 1))]}
         onInterrupt={vi.fn()}
       >
         <div>input</div>

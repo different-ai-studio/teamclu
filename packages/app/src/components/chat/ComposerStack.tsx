@@ -7,9 +7,11 @@ import { useActorDisplayName } from "@/hooks/use-actor-display-name";
 import { cn } from "@/lib/utils";
 import { type Todo, type QueuedMessage } from "@/stores/session-types";
 import {
+  streamEntryKey,
   useV2StreamingStore,
   type AgentStreamEntry,
 } from "@/stores/v2-streaming-store";
+import { useLiveStreamEntry } from "@/lib/stream/session-streams";
 import { PermissionApprovalPanel } from "./PermissionApprovalPanel";
 import { PermissionWaitingBanner } from "./PermissionWaitingBanner";
 import { ComposerPlanSlot } from "./ComposerPlanSlot";
@@ -30,9 +32,22 @@ import { usePendingPermissionsQueue } from "./use-pending-permissions-queue";
 export type ActiveStreamingAgent = {
   actorId: string;
   displayName?: string;
-  /** Live stream entry for expandable dock panel. */
-  entry?: AgentStreamEntry;
+  /**
+   * Session of the live stream entry for the expandable dock panel. The strip
+   * subscribes to that entry itself, so a text delta re-renders the strip and
+   * not the chat column that built this list.
+   */
+  sessionId?: string;
 };
+
+type StreamEntries = Record<string, AgentStreamEntry>;
+
+function agentEntry(
+  byKey: StreamEntries,
+  agent: ActiveStreamingAgent,
+): AgentStreamEntry | undefined {
+  return agent.sessionId ? byKey[streamEntryKey(agent.sessionId, agent.actorId)] : undefined;
+}
 
 const LIVE_INLINE_SCROLL_CLASS =
   "max-h-[220px] overflow-y-auto border-t border-border/50 bg-gradient-to-b from-[#fbf9f4] to-white px-3 py-2.5 dark:from-background dark:to-paper";
@@ -56,11 +71,12 @@ function agentEntryHasToolCall(
 function resolveQuestionAgentId(
   pendingQuestion: PendingQuestionState,
   agents: ReadonlyArray<ActiveStreamingAgent>,
+  byKey: StreamEntries,
 ): string | null {
   const { agentActorId, toolCallId } = pendingQuestion;
   if (toolCallId) {
     const byToolCall = agents.find((agent) =>
-      agentEntryHasToolCall(agent.entry, toolCallId),
+      agentEntryHasToolCall(agentEntry(byKey, agent), toolCallId),
     );
     if (byToolCall) return byToolCall.actorId;
   }
@@ -128,7 +144,7 @@ function ComposerAgentStrip({
   enlarged,
   onToggleExpand,
   onToggleEnlarge,
-  entry,
+  sessionId,
   suppressQuestionToolCallId,
 }: {
   actorId: string;
@@ -143,10 +159,11 @@ function ComposerAgentStrip({
   enlarged: boolean;
   onToggleExpand: () => void;
   onToggleEnlarge: () => void;
-  entry?: AgentStreamEntry;
+  sessionId?: string;
   suppressQuestionToolCallId?: string;
 }) {
   const { t } = useTranslation();
+  const entry = useLiveStreamEntry(sessionId, actorId);
   const resolvedName = useActorDisplayName(actorId);
   const displayName = displayNameHint || resolvedName || actorId.slice(0, 8);
   const colors = actorAvatarColor(actorId);
@@ -360,21 +377,29 @@ function ComposerAgentStrip({
   );
 }
 
-function LiveEnlargeFloat({
-  agent,
-  onRestore,
-  onInterrupt,
-  showInterrupt,
-  suppressQuestionToolCallId,
-}: {
+type LiveEnlargeFloatProps = {
   agent: ActiveStreamingAgent;
   onRestore: () => void;
   onInterrupt?: (agentId: string) => void;
   showInterrupt: boolean;
   suppressQuestionToolCallId?: string;
-}) {
+};
+
+function LiveEnlargeFloat(props: LiveEnlargeFloatProps) {
+  const entry = useLiveStreamEntry(props.agent.sessionId, props.agent.actorId);
+  if (!entry) return null;
+  return <LiveEnlargeFloatBody {...props} entry={entry} />;
+}
+
+function LiveEnlargeFloatBody({
+  agent,
+  entry,
+  onRestore,
+  onInterrupt,
+  showInterrupt,
+  suppressQuestionToolCallId,
+}: LiveEnlargeFloatProps & { entry: AgentStreamEntry }) {
   const { t } = useTranslation();
-  const entry = agent.entry!;
   const resolvedName = useActorDisplayName(agent.actorId);
   const displayName =
     agent.displayName || resolvedName || agent.actorId.slice(0, 8);
@@ -539,18 +564,20 @@ export function ComposerStack({
     [agents],
   );
 
-  const newestActorId = React.useMemo(() => {
+  // Selectors that reduce to an actor id: a delta re-runs them but re-renders
+  // the stack only when the answer changes.
+  const newestActorId = useV2StreamingStore((s) => {
     let bestId: string | null = null;
     let bestTs = -1;
     for (const agent of agents) {
-      const ts = agent.entry?.lastUpdate ?? 0;
+      const ts = agentEntry(s.byKey, agent)?.lastUpdate ?? 0;
       if (ts >= bestTs) {
         bestTs = ts;
         bestId = agent.actorId;
       }
     }
     return bestId ?? agents[0]?.actorId ?? null;
-  }, [agents]);
+  });
 
   const [expandedActorId, setExpandedActorId] = React.useState<string | null>(
     null,
@@ -561,10 +588,9 @@ export function ComposerStack({
   const [userPinnedExpand, setUserPinnedExpand] = React.useState(false);
 
   const hasPendingQuestion = pendingQuestion !== null;
-  const questionActorId = React.useMemo(() => {
-    if (!pendingQuestion) return null;
-    return resolveQuestionAgentId(pendingQuestion, agents);
-  }, [agents, pendingQuestion]);
+  const questionActorId = useV2StreamingStore((s) =>
+    pendingQuestion ? resolveQuestionAgentId(pendingQuestion, agents, s.byKey) : null,
+  );
 
   React.useEffect(() => {
     if (!hasPendingQuestion) return;
@@ -622,12 +648,11 @@ export function ComposerStack({
     setEnlargedActorId(null);
   }, []);
 
+  // LiveEnlargeFloat renders nothing while this agent has no live entry.
   const enlargedAgent = React.useMemo(
     () =>
       enlargedActorId
-        ? agents.find(
-            (agent) => agent.actorId === enlargedActorId && Boolean(agent.entry),
-          )
+        ? agents.find((agent) => agent.actorId === enlargedActorId)
         : undefined,
     [agents, enlargedActorId],
   );
@@ -769,7 +794,7 @@ export function ComposerStack({
                           enlarged={enlargedActorId === agent.actorId}
                           onToggleExpand={() => toggleExpand(agent.actorId)}
                           onToggleEnlarge={() => toggleEnlarge(agent.actorId)}
-                          entry={agent.entry}
+                          sessionId={agent.sessionId}
                           suppressQuestionToolCallId={
                             isQuestionAnchor ? pendingQuestion?.toolCallId : undefined
                           }

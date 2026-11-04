@@ -4,6 +4,8 @@ import { cn } from "@/lib/utils";
 import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
 import { MessageList, type MessageListHandle } from "./MessageList";
 import { ChatInputArea } from "./ChatInputArea";
+import type { ActiveStreamingAgent } from "./ComposerStack";
+import { useSessionStreams } from "@/lib/stream/session-streams";
 import { SessionErrorAlert } from "./SessionErrorAlert";
 import { useChatSend } from "./use-chat-send";
 import type { VoiceSendIntent } from "@/lib/messages/voice-send-intent";
@@ -112,20 +114,12 @@ export function SessionChatColumn({
   const errorSessionId = useSessionStore((s) => s.errorSessionId);
   const setError = useSessionStore.getState().setError;
 
-  const v2SessionRevision = useV2StreamingStore((s) =>
-    sessionId ? (s.revisionBySession[sessionId] ?? 0) : 0,
-  );
+  // Outline-only subscription: a text delta does not re-render the column. The
+  // live dock reads its text through useLiveStreamEntry instead.
+  const v2Streams = useSessionStreams(sessionId);
   const persistedSessionPlan = useV2StreamingStore((s) =>
     selectPersistedPlanForSession(s, sessionId),
   );
-  const v2Streams = React.useMemo(() => {
-    if (!sessionId) return [];
-    const s = useV2StreamingStore.getState();
-    const current = Object.values(s.byKey).filter((e) => e.sessionId === sessionId);
-    const archived = s.archived.filter((e) => e.sessionId === sessionId);
-    return [...archived, ...current].sort((a, b) => a.lastUpdate - b.lastUpdate);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [v2SessionRevision, sessionId]);
 
   const planTodos = React.useMemo((): Todo[] => {
     const mapPlan = (entries: StreamingPlanEntry[], actorId: string): Todo[] =>
@@ -145,8 +139,10 @@ export function SessionChatColumn({
 
   const acpPendingForTodo = React.useMemo(
     () => collectAcpStreamingPermissions(sessionId, useV2StreamingStore.getState().byKey),
+    // v2Streams changes whenever an entry's pending permissions do; byKey is
+    // read via getState() so a text delta does not recompute this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessionId, v2SessionRevision],
+    [sessionId, v2Streams],
   );
 
   const showInlineTodo = React.useMemo(() => {
@@ -469,18 +465,14 @@ export function SessionChatColumn({
 
   const activeStreamingAgents = React.useMemo(() => {
     const seen = new Set<string>();
-    const agents: Array<{
-      actorId: string;
-      displayName?: string;
-      entry: (typeof v2Streams)[number];
-    }> = [];
+    const agents: ActiveStreamingAgent[] = [];
     for (const entry of v2Streams) {
       if (!isStreamInterruptible(entry) || seen.has(entry.actorId)) continue;
       seen.add(entry.actorId);
       agents.push({
         actorId: entry.actorId,
         displayName: engagedAgents.find((agent) => agent.id === entry.actorId)?.displayName,
-        entry,
+        sessionId: entry.sessionId,
       });
     }
     return agents;
