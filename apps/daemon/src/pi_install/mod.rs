@@ -781,9 +781,60 @@ fn cleanup_legacy_layout() {
     let _ = std::fs::remove_file(extensions.join("package-lock.json"));
 }
 
+/// Held for the whole of one `install-pi`: two installs running `npm ci` in the
+/// same `<cache>/pi` delete each other's `node_modules`, and the desktop app can
+/// start one per daemon restart. A second install waits here, then finds the
+/// first one's result already in place and returns without touching the tree.
+///
+/// The lock file sits beside `pi/`, not in it, so nothing an install removes
+/// takes the lock with it. The OS releases it when the process exits, so a
+/// killed install never leaves it stuck.
+struct InstallLock {
+    _file: std::fs::File,
+}
+
+impl InstallLock {
+    fn acquire() -> anyhow::Result<Self> {
+        Self::acquire_at(&crate::config::layout::cache_dir().join("pi-install.lock"))
+    }
+
+    fn acquire_at(path: &std::path::Path) -> anyhow::Result<Self> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .map_err(|e| anyhow::anyhow!("open {}: {e}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                progress(
+                    "wait",
+                    "another pi install is running; waiting for it to finish",
+                );
+                file.lock()
+                    .map_err(|e| anyhow::anyhow!("lock {}: {e}", path.display()))?;
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                anyhow::bail!("lock {}: {e}", path.display())
+            }
+        }
+        Ok(Self { _file: file })
+    }
+}
+
 /// Install (or repair) the whole runtime: the managed Node, then pi and the MCP
 /// SDK on it. Idempotent; `force` reinstalls even when everything is in place.
+/// One at a time per amuxd home; see [`InstallLock`].
 pub fn run_install(force: bool) -> anyhow::Result<()> {
+    let _lock = InstallLock::acquire()?;
+    run_install_locked(force)
+}
+
+fn run_install_locked(force: bool) -> anyhow::Result<()> {
     if !is_managed() {
         let status = doctor();
         if status.satisfied {
@@ -854,6 +905,32 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_install_waits_for_the_first_to_release_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pi-install.lock");
+        let first = InstallLock::acquire_at(&path).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let _second = InstallLock::acquire_at(&path).unwrap();
+                tx.send(()).unwrap();
+            })
+        };
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "second install got the lock while the first still held it"
+        );
+
+        drop(first);
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("second install never got the lock after the first released it");
+        waiter.join().unwrap();
+    }
 
     #[test]
     fn lock_pins_pi_0_84_2_or_newer() {

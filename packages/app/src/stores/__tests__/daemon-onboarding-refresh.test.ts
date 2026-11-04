@@ -31,6 +31,8 @@ const h = vi.hoisted(() => ({
   runtimeRows: [] as Array<{ id: string; optional: boolean; present: boolean }>,
   installCalls: [] as string[],
   installShouldThrow: false,
+  // When set, setup_install waits on it — lets a test hold an install open.
+  installGate: null as Promise<void> | null,
   // Simulate the Copilot 361 split-brain: install-pi reports success but
   // doctor still looks at the branded home and says the runtime is missing.
   installLeavesRuntimeMissing: false,
@@ -151,6 +153,7 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (cmd === 'setup_list_requirements') return h.runtimeRows
     if (cmd === 'setup_install') {
       h.installCalls.push((args as { id: string }).id)
+      if (h.installGate) await h.installGate
       if (h.installShouldThrow) throw new Error('npm ci boom')
       if (!h.installLeavesRuntimeMissing) h.runtimeRows = runtimeRows(true)
       return undefined
@@ -216,6 +219,7 @@ beforeEach(() => {
   h.runtimeRows = runtimeRows(true)
   h.installCalls = []
   h.installShouldThrow = false
+  h.installGate = null
   h.installLeavesRuntimeMissing = false
   localStorage.clear()
   useSetupStore.setState({ requirements: [], loaded: false, installing: null, errors: {}, progress: {}, installRoute: null, probeError: null })
@@ -317,6 +321,35 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(s.status).toBe('ready')
     expect(s.completedSteps).toContain('install-runtime')
     expect(s.failedStep).toBeNull()
+  })
+
+  // Every install restarts the daemon, and every daemon start re-runs this
+  // check. A check that lands mid-install must join it: starting a second
+  // install there is how 23 overlapping `npm ci` runs piled up on 2026-11-04.
+  it('a check that arrives during an install joins it instead of starting another', async () => {
+    h.runtimeRows = runtimeRows(false)
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    let release!: () => void
+    h.installGate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    h.probeQueue = [
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+    ]
+
+    await useDaemonOnboardingStore.getState().refresh()
+    await vi.waitFor(() => expect(h.installCalls).toEqual(['pi']))
+    // The daemon comes back up while the install is still running, and its
+    // post-ready check gets as far as it can before the install finishes.
+    await useDaemonOnboardingStore.getState().refresh()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    release()
+    await waitForDaemonOnboardingPostReady()
+
+    expect(h.installCalls).toEqual(['pi'])
+    expect(useDaemonOnboardingStore.getState().status).toBe('ready')
   })
 
   it('does not run the install when the runtime is already in place', async () => {

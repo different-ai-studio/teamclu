@@ -99,7 +99,25 @@ function staleDaemonMessage(): string | null {
  * machine is asked for its agent's name first and downloads while the user
  * is not waiting on a prompt.
  */
-async function ensureRuntimeReady(): Promise<boolean> {
+let runtimeReadyInflight: Promise<boolean> | null = null
+
+/**
+ * Single-flight: post-ready work runs on every daemon (re)start, and an install
+ * restarts the daemon, so a second check would otherwise land mid-install, see
+ * the half-written tree as missing, and start another install (2026-11-04: 23
+ * overlapping installs, none able to finish). Callers that arrive while one
+ * runs share its answer.
+ */
+function ensureRuntimeReady(): Promise<boolean> {
+  if (!runtimeReadyInflight) {
+    runtimeReadyInflight = checkAndInstallRuntime().finally(() => {
+      runtimeReadyInflight = null
+    })
+  }
+  return runtimeReadyInflight
+}
+
+async function checkAndInstallRuntime(): Promise<boolean> {
   const setup = useSetupStore.getState()
   await setup.listRequirements()
   if (!useSetupStore.getState().loaded || !runtimeMissing()) return true
@@ -277,6 +295,7 @@ export function waitForDaemonOnboardingPostReady(): Promise<void> {
 export function resetDaemonOnboardingPostReadyForTests(): void {
   postReadyGeneration += 1
   postReadyTail = Promise.resolve()
+  runtimeReadyInflight = null
 }
 
 function schedulePostReadyWork(
