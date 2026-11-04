@@ -177,9 +177,6 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
 
     // ── Store selectors ──────────────────────────────────────────────────
     const isLoading = useSessionListStore((s) => s.loading);
-    const v2StreamScrollTrigger = useV2StreamingStore((s) =>
-      activeSessionId ? (s.revisionBySession[activeSessionId] ?? 0) : 0,
-    );
 
     // PERF: Return primitive string instead of session object.
     // Object references from .find() change on every sessions update → unnecessary re-renders.
@@ -785,12 +782,19 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       }
     }, [isStreaming, scrollToBottomIfAtBottom, useVirtualMessages]);
 
+    // Follow the session's stream revision without rendering on it: the list
+    // draws nothing from the stream (live text is in the composer dock), so
+    // subscribing in render re-rendered the whole list on every frame of a
+    // reply — and in virtual mode this effect does nothing at all.
     React.useEffect(() => {
-      if (useVirtualMessages) return;
-      if (v2StreamScrollTrigger > 0) {
-        scrollToBottomIfAtBottom();
-      }
-    }, [v2StreamScrollTrigger, scrollToBottomIfAtBottom, useVirtualMessages]);
+      if (useVirtualMessages || !activeSessionId) return;
+      const revisionOf = (state: ReturnType<typeof useV2StreamingStore.getState>) =>
+        state.revisionBySession[activeSessionId] ?? 0;
+      if (revisionOf(useV2StreamingStore.getState()) > 0) scrollToBottomIfAtBottom();
+      return useV2StreamingStore.subscribe((state, prev) => {
+        if (revisionOf(state) !== revisionOf(prev)) scrollToBottomIfAtBottom();
+      });
+    }, [activeSessionId, scrollToBottomIfAtBottom, useVirtualMessages]);
 
     // Non-virtual only. In virtual mode appends are handled by `followOnAppend`,
     // which follows the new tail only when the viewport was already at the end.
