@@ -32,6 +32,8 @@ import {
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
 import { useSessionMessageStore } from '@/stores/session-message-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
+import { useActorDirectoryStore } from '@/stores/actor-directory-store'
+import { resolveAgentBackendType } from '@/lib/agent/agent-backend-type'
 import { clientMruModels } from '@/stores/client-model-mru'
 import { useSessionListStore } from '@/stores/session-list-store'
 import { useLocalDaemonActorId } from '@/lib/daemon/daemon-agent-admin'
@@ -85,6 +87,12 @@ export function AgentSelectorDock({
   mentionCue = null,
 }: AgentSelectorDockProps) {
   const runtimeStates = useRuntimeStateStore((s) => s.byRuntimeId)
+  const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
+  // Subscribed so the pill re-resolves when the directory lands: on a cold
+  // start it is the only source of the backend type (see below).
+  const directoryActors = useActorDirectoryStore((s) =>
+    teamId ? s.byTeam[teamId]?.actors : undefined,
+  )
   const uiEntryByAgentId = React.useMemo(
     () => new Map(engagedUiEntries.map((e) => [e.agent.id, e])),
     [engagedUiEntries],
@@ -102,10 +110,16 @@ export function AgentSelectorDock({
           runtimeStates,
           dbRuntimeId,
         )
-        const backendType = backendTypeFromRuntimeEntry(
-          runtimeEntry,
-          agentToBackendType.get(agent.id),
-        )
+        // The same fallback the send path uses (`resolveAgentBackendType`):
+        // the live runtime first, then the team directory. With the runtime
+        // alone, a new chat whose agent had not reported a runtime yet got no
+        // backend, so no MRU key: the pill showed the catalog's first model
+        // while the send ran on the remembered one (#1799).
+        const backendType =
+          backendTypeFromRuntimeEntry(runtimeEntry, agentToBackendType.get(agent.id)) ??
+          (directoryActors
+            ? resolveAgentBackendType({ agentId: agent.id, teamId, byRuntimeId: runtimeStates })
+            : undefined)
         return (
           <AgentPill
             key={agent.id}
