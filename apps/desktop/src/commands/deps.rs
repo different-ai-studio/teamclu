@@ -568,7 +568,7 @@ fn restart_amuxd_after_update<R: Runtime>(app: &AppHandle<R>, name: &'static str
 /// Update buttons come through here.
 async fn install_pi_via_amuxd<R: Runtime>(app: &AppHandle<R>) -> bool {
     let emit_app = app.clone();
-    let ok = crate::commands::setup::run_amuxd_install_pi(app, move |status, line, error| {
+    let run = crate::commands::setup::run_amuxd_install_pi(app, move |status, line, error| {
         // amuxd emits "running"; the deps UI expects "installing".
         let status = if status == "running" {
             "installing"
@@ -585,12 +585,13 @@ async fn install_pi_via_amuxd<R: Runtime>(app: &AppHandle<R>) -> bool {
             },
         );
     })
-    .await
-    .is_ok();
-    if ok {
+    .await;
+    // The caller whose install ran owns the restart; a joined call that also
+    // restarted would bounce the daemon once per caller.
+    if run == Ok(crate::commands::setup::PiInstallRun::Ran) {
         restart_amuxd_after_update(app, "pi");
     }
-    ok
+    run.is_ok()
 }
 
 /// Execute the actual install command and stream output via events.

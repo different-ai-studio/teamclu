@@ -413,16 +413,98 @@ async fn install_amuxd<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     }
 }
 
+/// Whether a `run_amuxd_install_pi` call ran the install itself or waited on
+/// one that was already running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PiInstallRun {
+    Ran,
+    /// Another caller's install finished while this one waited, and this call
+    /// reports its result. That caller restarts amuxd; this one must not, or
+    /// every joined call bounces the daemon again.
+    Joined,
+}
+
+/// One install at a time, and callers that arrive mid-install share its result.
+///
+/// The frontend checks the runtime each time the daemon comes up, and every
+/// install restarts the daemon, so without this one install's restart starts
+/// the next; overlapping `npm ci` runs then delete each other's tree and the
+/// check never passes (23 concurrent installs on 2026-11-04). `amuxd install-pi`
+/// also serializes on a file lock; this gate keeps the app from queueing
+/// redundant installs and restarts behind it.
+pub(crate) struct SingleFlight {
+    finished: std::sync::atomic::AtomicU64,
+    last: tokio::sync::Mutex<Option<Result<(), String>>>,
+}
+
+impl SingleFlight {
+    pub(crate) const fn new() -> Self {
+        Self {
+            finished: std::sync::atomic::AtomicU64::new(0),
+            last: tokio::sync::Mutex::const_new(None),
+        }
+    }
+
+    /// Run `install`, or — when another one finished while this call waited for
+    /// the gate — return that one's result without running.
+    pub(crate) async fn run<Fut>(
+        &self,
+        install: impl FnOnce() -> Fut,
+    ) -> (PiInstallRun, Result<(), String>)
+    where
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        use std::sync::atomic::Ordering;
+        let seen = self.finished.load(Ordering::SeqCst);
+        let mut last = self.last.lock().await;
+        if self.finished.load(Ordering::SeqCst) != seen {
+            if let Some(result) = last.clone() {
+                return (PiInstallRun::Joined, result);
+            }
+        }
+        let result = install().await;
+        *last = Some(result.clone());
+        self.finished.fetch_add(1, Ordering::SeqCst);
+        (PiInstallRun::Ran, result)
+    }
+}
+
+static PI_INSTALL: SingleFlight = SingleFlight::new();
+
 /// Run `amuxd install-pi`, streaming progress through `emit`.
 ///
 /// `emit(status, line, error)` — status is "started" | "running" | "failed" |
 /// "done". Idempotent: installs the managed Node.js, then pi and the MCP SDK on
 /// it, or repairs whichever piece is missing. Shared by the first-run wizard
 /// and the settings Dependencies page so there is one install path, not two.
-pub(crate) async fn run_amuxd_install_pi<R, F>(app: &AppHandle<R>, emit: F) -> Result<(), String>
+///
+/// Single-flight (see [`SingleFlight`]): a call made while an install runs
+/// waits for it and reports its result as [`PiInstallRun::Joined`].
+pub(crate) async fn run_amuxd_install_pi<R, F>(
+    app: &AppHandle<R>,
+    emit: F,
+) -> Result<PiInstallRun, String>
 where
     R: Runtime,
-    F: Fn(&str, Option<String>, Option<String>) + Send,
+    F: Fn(&str, Option<String>, Option<String>) + Send + Sync,
+{
+    let emit = &emit;
+    let (run, result) = PI_INSTALL.run(|| spawn_amuxd_install_pi(app, emit)).await;
+    if run == PiInstallRun::Joined {
+        // This caller saw none of the progress; give its UI the outcome.
+        emit("started", None, None);
+        match &result {
+            Ok(()) => emit("done", None, None),
+            Err(e) => emit("failed", None, Some(e.clone())),
+        }
+    }
+    result.map(|()| run)
+}
+
+async fn spawn_amuxd_install_pi<R, F>(app: &AppHandle<R>, emit: &F) -> Result<(), String>
+where
+    R: Runtime,
+    F: Fn(&str, Option<String>, Option<String>) + Send + Sync,
 {
     use tauri_plugin_shell::process::CommandEvent;
 
@@ -499,7 +581,7 @@ where
 /// awaited, unlike the Dependencies panel's, because the wizard talks to the
 /// daemon right after this returns.
 async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    run_amuxd_install_pi(app, |status, line, error| {
+    let run = run_amuxd_install_pi(app, |status, line, error| {
         emit_progress(
             app,
             SetupProgress {
@@ -511,6 +593,10 @@ async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         );
     })
     .await?;
+    // The caller whose install ran owns the restart.
+    if run == PiInstallRun::Joined {
+        return Ok(());
+    }
     crate::commands::amuxd_supervisor::AmuxdSupervisor::restart_if_running(app)
         .await
         .map(|_| ())
@@ -541,6 +627,66 @@ pub async fn setup_install<R: Runtime>(app: AppHandle<R>, id: String) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn calls_made_during_an_install_share_it_instead_of_starting_another() {
+        let gate = std::sync::Arc::new(SingleFlight::new());
+        let runs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+
+        let first = {
+            let (gate, runs) = (gate.clone(), runs.clone());
+            tokio::spawn(async move {
+                gate.run(|| async move {
+                    runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let _ = released.await;
+                    Ok(())
+                })
+                .await
+            })
+        };
+        // Let the first install take the gate before the others arrive.
+        while runs.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        let waiters: Vec<_> = (0..3)
+            .map(|_| {
+                let (gate, runs) = (gate.clone(), runs.clone());
+                tokio::spawn(async move {
+                    gate.run(|| async move {
+                        runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    })
+                    .await
+                })
+            })
+            .collect();
+        // Let every waiter reach the gate while the first install still holds it.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        release.send(()).unwrap();
+
+        assert_eq!(first.await.unwrap(), (PiInstallRun::Ran, Ok(())));
+        for w in waiters {
+            assert_eq!(w.await.unwrap(), (PiInstallRun::Joined, Ok(())));
+        }
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_joined_call_reports_the_failure_and_a_later_call_retries() {
+        let gate = SingleFlight::new();
+        assert_eq!(
+            gate.run(|| async { Err("boom".to_string()) }).await,
+            (PiInstallRun::Ran, Err("boom".to_string()))
+        );
+        // Nothing in flight any more: the next call runs its own install.
+        assert_eq!(
+            gate.run(|| async { Ok(()) }).await,
+            (PiInstallRun::Ran, Ok(()))
+        );
+    }
 
     #[test]
     fn target_triple_has_dash() {
