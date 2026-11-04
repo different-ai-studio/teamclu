@@ -460,6 +460,54 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(useDaemonOnboardingStore.getState().runtimeInstallFailures).toBe(0)
   })
 
+  // Retry must hold the wizard: refresh would mark a healthy daemon 'ready'
+  // first, and AuthGate unmounts the wizard on 'ready', so the retried install
+  // would run and fail behind the app.
+  it('retrying a runtime install never passes through ready while it runs, and fails in place', async () => {
+    h.runtimeRows = runtimeRows(false)
+    h.installShouldThrow = true
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+    await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
+    expect(useDaemonOnboardingStore.getState().status).toBe('error')
+
+    const seen: string[] = []
+    const unsubscribe = useDaemonOnboardingStore.subscribe((st) => seen.push(st.status))
+    onTestFinished(unsubscribe)
+    await useDaemonOnboardingStore.getState().retryRuntimeInstall()
+
+    const s = useDaemonOnboardingStore.getState()
+    expect(seen).not.toContain('ready')
+    expect(s.status).toBe('error')
+    expect(s.failedStep).toBe('install-runtime')
+    expect(s.runtimeInstallFailures).toBe(2)
+    expect(h.installCalls).toEqual(['pi', 'pi'])
+  })
+
+  it('a retried runtime install that succeeds finishes through refresh to ready', async () => {
+    h.runtimeRows = runtimeRows(false)
+    h.installShouldThrow = true
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.probeQueue = [
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+    ]
+    await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
+
+    h.installShouldThrow = false
+    await useDaemonOnboardingStore.getState().retryRuntimeInstall()
+    await waitForDaemonOnboardingPostReady()
+
+    const s = useDaemonOnboardingStore.getState()
+    expect(s.status).toBe('ready')
+    expect(s.runtimeInstallFailures).toBe(0)
+    expect(h.installCalls).toEqual(['pi', 'pi'])
+  })
+
   it('installs the runtime for a freshly named machine before it is ready', async () => {
     h.runtimeRows = runtimeRows(false)
     h.currentTeam = { id: 't1' }

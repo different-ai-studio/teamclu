@@ -33,6 +33,7 @@ function seed(over: Record<string, unknown> = {}) {
     forceReset: noop,
     checkCloudSession: noop,
     autoHealCloudSession: noop,
+    retryRuntimeInstall: noop,
     ...over,
   })
 }
@@ -125,6 +126,37 @@ describe('DaemonOnboardingWizard', () => {
     })
     render(<DaemonOnboardingWizard onDone={() => {}} />)
     expect(screen.queryByRole('button', { name: '重启应用' })).not.toBeInTheDocument()
+  })
+
+  // AuthGate mounts the wizard whenever the status turns 'starting' or 'error'.
+  // A refresh on that mount marked a healthy daemon 'ready' over the failure,
+  // AuthGate unmounted the wizard, the post-ready check reinstalled, failed,
+  // and remounted it — every few seconds, error on screen for an instant.
+  it.each(['starting', 'error'] as const)(
+    'mounting on %s reports the work in flight instead of starting a refresh',
+    (status) => {
+      const refresh = vi.fn(noop)
+      seed({ status, failedStep: status === 'error' ? 'install-runtime' : null, error: 'x', refresh })
+      render(<DaemonOnboardingWizard onDone={() => {}} />)
+      expect(refresh).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(['unknown', 'needs-onboard', 'mismatch'] as const)('mounting on %s starts the work', (status) => {
+    const refresh = vi.fn(noop)
+    seed({ status, refresh })
+    render(<DaemonOnboardingWizard onDone={() => {}} />)
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries a failed runtime install in place rather than through refresh', () => {
+    const refresh = vi.fn(noop)
+    const retryRuntimeInstall = vi.fn(noop)
+    seed({ status: 'error', failedStep: 'install-runtime', error: 'boom', refresh, retryRuntimeInstall })
+    render(<DaemonOnboardingWizard onDone={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(retryRuntimeInstall).toHaveBeenCalledTimes(1)
+    expect(refresh).not.toHaveBeenCalled()
   })
 
   it('offers reconnect rather than retry when cloud auth is what failed', () => {

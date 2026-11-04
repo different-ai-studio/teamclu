@@ -177,14 +177,24 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
     refresh,
     forceReset,
     autoHealCloudSession,
+    retryRuntimeInstall,
     runtimeInstallFailures,
   } = useDaemonOnboardingStore(
-    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, daemonOutdated: s.daemonOutdated, runtimeInstallFailures: s.runtimeInstallFailures, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession })),
+    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, daemonOutdated: s.daemonOutdated, runtimeInstallFailures: s.runtimeInstallFailures, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession, retryRuntimeInstall: s.retryRuntimeInstall })),
   )
   const elapsed = useElapsedSeconds(runStartedAt)
   const [name, setName] = React.useState('')
 
+  // Mounting starts the work — unless there is already work to show. AuthGate
+  // mounts this wizard whenever the status turns 'starting' or 'error', so on
+  // those it is here to report, not to begin. A refresh then would find the
+  // daemon healthy and mark the store 'ready' over the failure: AuthGate unmounts
+  // the wizard, the post-ready check installs again, fails, remounts it — a
+  // loop that re-ran the install every few seconds with its error on screen for
+  // an instant (2026-11-04). Retrying is the buttons' job.
   React.useEffect(() => {
+    const { status: atMount } = useDaemonOnboardingStore.getState()
+    if (atMount === 'starting' || atMount === 'error') return
     void refresh()
   }, [refresh])
 
@@ -304,7 +314,7 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
                   variant="outline"
                   className="mt-1 h-9 rounded-[10px]"
                   disabled={busy}
-                  onClick={() => void refresh()}
+                  onClick={() => void (step === 'install-runtime' ? retryRuntimeInstall() : refresh())}
                 >
                   {t('settings.daemonOnboarding.retry', 'Retry')}
                 </Button>
@@ -364,7 +374,11 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
           className="mt-1 h-10 w-full rounded-[10px] bg-coral text-coral-foreground hover:opacity-90"
           disabled={busy}
           onClick={() =>
-            void (failedStep === 'cloud-auth' ? autoHealCloudSession() : refresh())
+            void (failedStep === 'cloud-auth'
+              ? autoHealCloudSession()
+              : failedStep === 'install-runtime'
+                ? retryRuntimeInstall()
+                : refresh())
           }
         >
           {busy ? (

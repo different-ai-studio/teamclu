@@ -288,6 +288,13 @@ type DaemonOnboardingState = {
    * but the authority behind the daemon's credentials is not. A team *change*
    * needs no flag: a mismatch always re-binds now. */
   refresh: (opts?: { forceIdentityRebind?: boolean }) => Promise<void>
+  /** Retry a failed (or slow) runtime install without leaving the wizard.
+   *
+   * Not `refresh`: with the daemon healthy, refresh marks the store 'ready'
+   * before the runtime check runs, AuthGate unmounts the wizard on 'ready', and
+   * the install then runs — and fails — behind the app with nothing on screen.
+   * This holds 'starting' through the install and refreshes only once it is in. */
+  retryRuntimeInstall: () => Promise<void>
   /** Wipe local daemon state. Settings-only (DaemonManualResetCard); the next
    * `refresh` re-binds this machine silently. */
   forceReset: () => Promise<void>
@@ -777,6 +784,14 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
       set({ busy: false })
     }
     await get().refresh()
+  },
+
+  retryRuntimeInstall: async () => {
+    if (!isTauri()) return
+    // `runStartedAt` restarts the elapsed counter for this attempt; the steps
+    // already completed keep their checks.
+    set({ status: 'starting', loaded: true, error: null, failedStep: null, runStartedAt: Date.now() })
+    if (await ensureRuntimeReady()) await get().refresh()
   },
 
   refresh: async (opts) => {
