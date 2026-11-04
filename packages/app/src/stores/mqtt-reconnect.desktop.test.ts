@@ -12,6 +12,9 @@ const daemonSnapshot = vi.hoisted(() => vi.fn())
 const desktopMqttStatus = vi.hoisted(() => vi.fn())
 const getEffectiveServerConfig = vi.hoisted(() => vi.fn())
 const fetchAndApplyBootstrap = vi.hoisted(() => vi.fn())
+const recoverDaemonMqtt = vi.hoisted(() => vi.fn())
+const refreshSession = vi.hoisted(() => vi.fn())
+const tauriListeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>())
 
 vi.mock('@/lib/utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/utils')>()
@@ -24,8 +27,10 @@ vi.mock('@/lib/mqtt/mqtt-bridge', () => ({
 
 vi.mock('@/lib/daemon/daemon-local-client', () => ({
   getDaemonMqttSnapshot: daemonSnapshot,
-  recoverDaemonMqtt: vi.fn().mockResolvedValue(undefined),
+  recoverDaemonMqtt,
 }))
+
+vi.mock('@/lib/auth/session-store', () => ({ refreshSession }))
 
 vi.mock('@/lib/config/server-config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/config/server-config')>()
@@ -37,7 +42,10 @@ vi.mock('@/lib/config/bootstrap', () => ({
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+    tauriListeners.set(name, handler)
+    return () => {}
+  }),
 }))
 
 const TEAM_ID = 'team-desktop-mqtt'
@@ -78,6 +86,28 @@ describe('desktop mqtt probe vs local agent', () => {
     fetchAndApplyBootstrap.mockReset()
     getEffectiveServerConfig.mockResolvedValue({ mqttHost: 'mqtt.example.com' })
     fetchAndApplyBootstrap.mockResolvedValue('applied')
+    recoverDaemonMqtt.mockReset()
+    recoverDaemonMqtt.mockResolvedValue(undefined)
+    refreshSession.mockReset()
+    refreshSession.mockResolvedValue(undefined)
+    tauriListeners.clear()
+  })
+
+  // #1802: the Rust client parks instead of replaying an expired token. The
+  // fresh token must reach the desktop client even when the daemon's own
+  // connection is fine, and the daemon must be left alone.
+  it('an expired desktop token refreshes the session and reconnects the desktop client only', async () => {
+    daemonSnapshot.mockResolvedValue({ connected: true, phase: 'Ready' })
+    classify('installed')
+    await wireAndSettle()
+    const nonceBefore = useMqttReconnectStore.getState().nonce
+    const onExpired = tauriListeners.get('mqtt:credentials-expired')
+    expect(onExpired).toBeDefined()
+
+    onExpired!({ payload: null })
+    await vi.waitFor(() => expect(useMqttReconnectStore.getState().nonce).toBe(nonceBefore + 1))
+    expect(refreshSession).toHaveBeenCalledTimes(1)
+    expect(recoverDaemonMqtt).not.toHaveBeenCalled()
   })
 
   it('keeps a connected daemon snapshot when a local agent is installed', async () => {

@@ -486,6 +486,22 @@ pub async fn run_event_loop(bus: Arc<super::MqttBusInner>, app: tauri::AppHandle
             Err(e) => {
                 recovery.connection_lost(&mut event_loop.pending);
                 bus.set_connected_for_generation(generation, false);
+                if mqtt_password_expired(&event_loop.mqtt_options, now_epoch_secs()) {
+                    // Polling again would reconnect with this password, which
+                    // the broker can only refuse: after a sleep that was one
+                    // rejected connect per wake, logged next to real
+                    // intrusions (#1802). Ask the app for a fresh token
+                    // instead, and wait for it to replace this generation.
+                    tracing::info!(
+                        "mqtt connection lost with an expired token; waiting for a fresh one instead of replaying it"
+                    );
+                    let _ = app.emit("mqtt:connected", false);
+                    let _ = app.emit("mqtt:credentials-expired", ());
+                    drop(event_loop);
+                    drop(event_guard);
+                    wait_for_fresh_credentials(&bus, &app, generation).await;
+                    return;
+                }
                 let mut msg = e.to_string();
                 // System DNS first; only on a TLS/cert failure try one DoH
                 // answer and pin the next reconnect to that IP (SNI unchanged).
@@ -516,6 +532,60 @@ pub async fn run_event_loop(bus: Arc<super::MqttBusInner>, app: tauri::AppHandle
 
 /// User-inbox roster hint. Logged so a membership ping is visible in
 /// `TeamClu.log`; other inbox types stay quiet.
+/// How often to repeat `mqtt:credentials-expired` while parked. The app's auto
+/// recovery has a 10 s cooldown and drops a request inside it, so one event can
+/// be lost; repeating it means a parked connection always gets another ask.
+const CREDENTIALS_EXPIRED_REMIND: Duration = Duration::from_secs(15);
+
+/// Hold this generation, without reconnecting, until the app replaces it with
+/// a connection that carries a fresh token.
+async fn wait_for_fresh_credentials(
+    bus: &super::MqttBusInner,
+    app: &tauri::AppHandle,
+    generation: u64,
+) {
+    use tauri::Emitter;
+    let mut last_ask = Instant::now();
+    while bus.current_generation() == generation {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if last_ask.elapsed() >= CREDENTIALS_EXPIRED_REMIND {
+            let _ = app.emit("mqtt:credentials-expired", ());
+            last_ask = Instant::now();
+        }
+    }
+}
+
+fn now_epoch_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Whether the password this connection would reconnect with is a JWT that has
+/// expired. A password that is not a JWT (a configured static credential) never
+/// counts as expired: only the broker can judge it.
+fn mqtt_password_expired(opts: &MqttOptions, now: i64) -> bool {
+    opts.credentials()
+        .and_then(|login| jwt_exp(&login.password))
+        .is_some_and(|exp| exp <= now)
+}
+
+/// The `exp` claim of a JWT, without verifying it. None for anything that is
+/// not a three-part token with a numeric `exp`.
+fn jwt_exp(token: &str) -> Option<i64> {
+    use base64::Engine as _;
+    let mut parts = token.split('.');
+    let (_, payload, _) = (parts.next()?, parts.next()?, parts.next()?);
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()?
+        .get("exp")?
+        .as_i64()
+}
+
 fn membership_inbox(topic: &str, payload: &[u8]) -> Option<(String, String)> {
     if !topic.starts_with("inbox/") {
         return None;
@@ -535,6 +605,57 @@ fn membership_inbox(topic: &str, payload: &[u8]) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn jwt_with_exp(exp: i64) -> String {
+        use base64::Engine as _;
+        let enc = |v: serde_json::Value| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string())
+        };
+        format!(
+            "{}.{}.sig",
+            enc(serde_json::json!({ "alg": "HS256" })),
+            enc(serde_json::json!({ "sub": "u", "exp": exp }))
+        )
+    }
+
+    fn options_with_password(password: &str) -> MqttOptions {
+        let mut opts = MqttOptions::new("c", "localhost", 1883);
+        opts.set_credentials("actor", password);
+        opts
+    }
+
+    // #1802: after a sleep the stored token has expired, and replaying it can
+    // only be refused by the broker.
+    #[test]
+    fn an_expired_jwt_password_is_not_replayed() {
+        let now = 1_800_000_000;
+        assert!(mqtt_password_expired(
+            &options_with_password(&jwt_with_exp(now - 1)),
+            now
+        ));
+        assert!(mqtt_password_expired(
+            &options_with_password(&jwt_with_exp(now)),
+            now
+        ));
+        assert!(!mqtt_password_expired(
+            &options_with_password(&jwt_with_exp(now + 600)),
+            now
+        ));
+    }
+
+    #[test]
+    fn a_password_that_is_not_a_jwt_is_left_to_the_broker() {
+        let now = 1_800_000_000;
+        assert!(!mqtt_password_expired(
+            &options_with_password("static-secret"),
+            now
+        ));
+        assert!(!mqtt_password_expired(&options_with_password("a.b.c"), now));
+        assert!(!mqtt_password_expired(
+            &MqttOptions::new("c", "localhost", 1883),
+            now
+        ));
+    }
 
     #[test]
     fn wss_bootstrap_url_uses_port_443_not_js_fallback_1883() {
