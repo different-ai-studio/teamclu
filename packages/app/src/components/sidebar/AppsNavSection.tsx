@@ -5,7 +5,6 @@ import { cn } from '@/lib/utils'
 import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 
 /**
  * One nav row, nothing more — the app list lives in column two now.
@@ -14,32 +13,26 @@ import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
  * inside a column that is otherwise fixed rows, and then made column two mean
  * two different things depending on whether a row in that list was selected.
  * Column two owns both levels now (list, then that app's sessions), so this row
- * only has to say "apps live here" and how many there are.
+ * only has to say "apps live here".
  */
 export function AppsNavSection() {
   const { t } = useTranslation()
   const filter = useUIStore((s) => s.sidebarFilter)
   const setFilter = useUIStore((s) => s.setSidebarFilter)
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? '')
-  const items = useAppsStore((s) => s.items)
   const load = useAppsStore((s) => s.load)
   const refreshLocalApps = useAppsStore((s) => s.refreshLocalApps)
   const selectApp = useAppsStore((s) => s.selectApp)
 
   const active = filter.kind === 'apps'
 
-  // Loaded from the rail, not from column two: the count on this row has to be
-  // right before anyone opens the column, and this component is always mounted.
+  // Prefetch so column two is warm when the row is clicked. AppListColumn also
+  // loads on mount; this just starts earlier from the always-mounted rail.
   React.useEffect(() => {
     if (!teamId) return
     void load(teamId)
     void refreshLocalApps(teamId)
   }, [teamId, load, refreshLocalApps])
-
-  // The same set column two lists — every app the team has, whether or not it
-  // is downloaded here. It used to count only local ones, which made the badge
-  // disagree with the list the moment that list stopped hiding the rest.
-  const count = items.length
 
   const openApps = React.useCallback(() => {
     // Always lands on the list. The row is the entrance to the section, and
@@ -65,17 +58,6 @@ export function AppsNavSection() {
         className={cn('h-[15px] w-[15px] shrink-0', active ? 'text-foreground' : 'text-muted-foreground')}
       />
       <span className="min-w-0 flex-1 truncate">{t('sidebar.apps', '应用')}</span>
-      <span
-        className={cn(
-          NAV_ROW_TRAILING_SLOT,
-          'text-[10.5px] font-semibold tabular-nums',
-          active
-            ? 'bg-coral text-coral-foreground shadow-[0_2px_6px_rgba(232,90,74,0.28)]'
-            : 'text-muted-foreground',
-        )}
-      >
-        {count}
-      </span>
     </button>
   )
 }

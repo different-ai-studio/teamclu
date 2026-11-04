@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>列表类型 · 聊天 / 通道 / 应用 / 自动化</title>
+  <style>
+    :root {
+      --background: #fbfaf7;
+      --paper: #ffffff;
+      --panel: #efece4;
+      --selected: #e7e2d6;
+      --foreground: #1a1a14;
+      --ink-2: #3d3c34;
+      --muted: #75736a;
+      --faint: #a8a6a0;
+      --border: rgba(26, 26, 20, 0.08);
+      --border-soft: rgba(26, 26, 20, 0.05);
+      --coral: #e85a4a;
+      --coral-soft: #f5d6cf;
+      --font: "PingFang SC", "Noto Sans SC", "Source Han Sans SC", -apple-system, BlinkMacSystemFont, "Microsoft YaHei", system-ui, sans-serif;
+      --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+      --shadow: 0 10px 28px -18px rgba(20, 20, 15, 0.35), 0 1px 0 rgba(26,26,20,0.04);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      color: var(--foreground);
+      background: linear-gradient(180deg, #f3efe6, #e7e2d6);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 32px;
+    }
+    .frame {
+      width: min(360px, 100%);
+      background: var(--paper);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 18px 40px -28px rgba(20,20,15,.45);
+      overflow: hidden;
+    }
+    .bar {
+      background: var(--background);
+      padding: 14px 16px 120px;
+      border-bottom: 1px solid var(--border-soft);
+      position: relative;
+    }
+    .note {
+      margin-top: 14px;
+      font-size: 12.5px;
+      color: var(--muted);
+      line-height: 1.55;
+      max-width: 360px;
+    }
+    .trigger {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      cursor: pointer;
+      font: 700 14px/1.2 var(--font);
+      color: var(--foreground);
+    }
+    .trigger .chev {
+      width: 14px; height: 14px; color: var(--muted);
+      transition: transform .18s ease;
+    }
+    .open .trigger .chev { transform: rotate(180deg); }
+    .menu {
+      position: absolute;
+      top: 42px; left: 16px;
+      width: 216px;
+      background: var(--paper);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 6px;
+      box-shadow: var(--shadow);
+      display: none;
+      z-index: 5;
+    }
+    .open .menu { display: block; animation: in .14s ease; }
+    .menu button {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 28px 1fr 14px;
+      gap: 10px;
+      align-items: center;
+      border: 0;
+      background: transparent;
+      text-align: left;
+      padding: 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--ink-2);
+    }
+    .menu button:hover { background: rgba(26,26,20,0.035); }
+    .menu button[aria-checked="true"] { background: transparent; }
+    .menu button[aria-checked="true"] .lab { font-weight: 700; color: var(--foreground); }
+    .tick { width: 14px; height: 14px; color: var(--ink-2); opacity: 0; }
+    .menu button[aria-checked="true"] .tick { opacity: 1; }
+    .ico {
+      width: 28px; height: 28px;
+      border-radius: 7px;
+      display: grid; place-items: center;
+      background: var(--panel);
+      color: var(--ink-2);
+    }
+    .menu button[aria-checked="true"] .ico {
+      background: var(--panel);
+      color: var(--ink-2);
+    }
+    .lab { font: 600 13px/1.1 var(--font); color: var(--foreground); }
+    .cap { margin-top: 2px; font: 11px/1.2 var(--mono); color: var(--faint); }
+    @keyframes in {
+      from { opacity: 0; transform: translateY(-4px) scale(.98); }
+      to { opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div>
+    <div class="frame">
+      <div class="bar open" id="stage">
+        <button class="trigger" type="button" id="trigger">聊天 <svg class="chev" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="menu" role="listbox">
+          <button type="button" role="option" aria-checked="true" data-label="聊天">
+            <span class="ico"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 4.5h10v7.5H8l-2.5 2v-2H3V4.5z" stroke="currentColor" stroke-width="1.4"/></svg></span>
+            <span class="lab">聊天</span>
+            <svg class="tick" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.2l3 3 6-6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button type="button" role="option" aria-checked="false" data-label="通道">
+            <span class="ico"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M5.5 4.5L3 8l2.5 3.5M10.5 4.5L13 8l-2.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span class="lab">通道</span>
+            <svg class="tick" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.2l3 3 6-6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button type="button" role="option" aria-checked="false" data-label="应用">
+            <span class="ico"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="3" y="3" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.4"/><rect x="9" y="3" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.4"/><rect x="3" y="9" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.4"/><rect x="9" y="9" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.4"/></svg></span>
+            <span class="lab">应用</span>
+            <svg class="tick" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.2l3 3 6-6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button type="button" role="option" aria-checked="false" data-label="自动化">
+            <span class="ico"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8.5" r="5" stroke="currentColor" stroke-width="1.4"/><path d="M8 5.8v3l2 1.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+            <span class="lab">自动化</span>
+            <svg class="tick" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.2l3 3 6-6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+    <p class="note">
+      与设置 / 主导航统一：<br/>
+      聊天 ← <code>settings.modelDefaults.chat</code><br/>
+      通道 ← <code>settings.nav.channels</code><br/>
+      应用 ← <code>sidebar.apps</code><br/>
+      自动化 ← <code>settings.nav.automation</code>
+    </p>
+  </div>
+  <script>
+    const stage = document.getElementById('stage');
+    const trigger = document.getElementById('trigger');
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      stage.classList.toggle('open');
+    });
+    document.querySelectorAll('[role="option"]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        document.querySelectorAll('[role="option"]').forEach((b) => b.setAttribute('aria-checked', 'false'));
+        btn.setAttribute('aria-checked', 'true');
+        trigger.childNodes[0].textContent = btn.getAttribute('data-label') + ' ';
+        stage.classList.remove('open');
+      });
+    });
+    document.addEventListener('click', () => stage.classList.remove('open'));
+  </script>
+</body>
+</html>

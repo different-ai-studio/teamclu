@@ -1,6 +1,6 @@
 /**
- * The right-hand slot of a first-column nav row — the session count badge, the
- * contacts "+", a team-share section count.
+ * The right-hand slot of a first-column nav row — Contacts "+" and similar
+ * trailing controls (not catalog counts; those were removed from the rail).
  *
  * They share one box on purpose: each row right-aligns its own trailing element,
  * so unless the boxes are identical the glyphs inside them land on different

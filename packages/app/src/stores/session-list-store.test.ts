@@ -3,7 +3,7 @@ import { useAuthStore } from "./auth-store";
 import { useCurrentTeamStore } from "./current-team";
 
 const mocks = vi.hoisted(() => ({
-  listCurrentActorSessions: vi.fn(),
+  listCurrentActorSessionsV2: vi.fn(),
   markCurrentActorSessionViewed: vi.fn(),
   updateSessionTitle: vi.fn(),
   archiveSession: vi.fn(),
@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/backend", () => ({
   getBackend: () => ({
     sessions: {
-      listCurrentActorSessions: mocks.listCurrentActorSessions,
+      listCurrentActorSessionsV2: mocks.listCurrentActorSessionsV2,
       markCurrentActorSessionViewed: mocks.markCurrentActorSessionViewed,
       updateSessionTitle: mocks.updateSessionTitle,
       archiveSession: mocks.archiveSession,
@@ -50,6 +50,8 @@ const sessionRow = (overrides: Partial<{
   created_at: "2026-05-17T07:59:00.000Z",
   updated_at: "2026-05-17T08:00:01.000Z",
   has_unread: false,
+  source: "user",
+  app_id: null,
   ...overrides,
 });
 
@@ -69,8 +71,14 @@ describe("session-list-store", () => {
       listKind: "regular",
       regularHasMore: false,
       regularNextCursor: null,
+      channelHasMore: false,
+      channelNextCursor: null,
+      appHasMore: false,
+      appNextCursor: null,
       cronHasMore: false,
       cronNextCursor: null,
+      kindLoadedAt: {},
+      kindStale: {},
       serverConfirmedTeams: [],
       emptyPageKeptTeams: [],
       scopeTeamId: null,
@@ -88,7 +96,7 @@ describe("session-list-store", () => {
   });
 
   it("sorts rows by last_message_at desc with nulls first after load", async () => {
-    mocks.listCurrentActorSessions.mockResolvedValueOnce({
+    mocks.listCurrentActorSessionsV2.mockResolvedValueOnce({
       rows: [
         sessionRow({
           id: "empty-old",
@@ -119,14 +127,14 @@ describe("session-list-store", () => {
   });
 
   it("loads the first page from the current actor session RPC", async () => {
-    mocks.listCurrentActorSessions.mockResolvedValueOnce({
+    mocks.listCurrentActorSessionsV2.mockResolvedValueOnce({
       rows: [sessionRow({ has_unread: true })],
     });
 
     const { useSessionListStore } = await import("./session-list-store");
     await useSessionListStore.getState().loadFirstPage();
 
-    expect(mocks.listCurrentActorSessions).toHaveBeenCalledWith({
+    expect(mocks.listCurrentActorSessionsV2).toHaveBeenCalledWith({
       limit: 50,
       cursor: null,
       teamId: "team-1",
@@ -139,7 +147,7 @@ describe("session-list-store", () => {
   });
 
   it("loads more with the last row composite cursor and dedupes rows", async () => {
-    mocks.listCurrentActorSessions
+    mocks.listCurrentActorSessionsV2
       .mockResolvedValueOnce({
         rows: [
           sessionRow({
@@ -173,7 +181,7 @@ describe("session-list-store", () => {
     await useSessionListStore.getState().loadFirstPage(2);
     await useSessionListStore.getState().loadMore(2);
 
-    expect(mocks.listCurrentActorSessions).toHaveBeenLastCalledWith({
+    expect(mocks.listCurrentActorSessionsV2).toHaveBeenLastCalledWith({
       limit: 2,
       cursor: {
         lastMessageAt: "2026-05-17T07:00:00.000Z",
@@ -193,7 +201,7 @@ describe("session-list-store", () => {
   it("keeps independent cursors for regular and cron sessions", async () => {
     const regularCursor = "regular-page-2";
     const cronCursor = "cron-page-2";
-    mocks.listCurrentActorSessions
+    mocks.listCurrentActorSessionsV2
       .mockResolvedValueOnce({
         rows: [sessionRow({ id: "regular-1" })],
         nextCursor: regularCursor,
@@ -215,19 +223,19 @@ describe("session-list-store", () => {
     ]);
 
     await useSessionListStore.getState().loadMore();
-    expect(mocks.listCurrentActorSessions).toHaveBeenLastCalledWith(
+    expect(mocks.listCurrentActorSessionsV2).toHaveBeenLastCalledWith(
       expect.objectContaining({ cursor: cronCursor, kind: "cron" }),
     );
 
     useSessionListStore.getState().setListKind("regular");
     await useSessionListStore.getState().loadMore();
-    expect(mocks.listCurrentActorSessions).toHaveBeenLastCalledWith(
+    expect(mocks.listCurrentActorSessionsV2).toHaveBeenLastCalledWith(
       expect.objectContaining({ cursor: regularCursor, kind: "regular" }),
     );
   });
 
   it("uses the backend next cursor instead of inferring hasMore from row count", async () => {
-    mocks.listCurrentActorSessions.mockResolvedValueOnce({
+    mocks.listCurrentActorSessionsV2.mockResolvedValueOnce({
       rows: [
         sessionRow({
           id: "session-1",
@@ -292,7 +300,7 @@ describe("session-list-store", () => {
       "teamclu.sessionList.archivedIds",
       JSON.stringify(["session-archived"]),
     );
-    mocks.listCurrentActorSessions.mockResolvedValueOnce({
+    mocks.listCurrentActorSessionsV2.mockResolvedValueOnce({
       rows: [
         sessionRow({ id: "session-archived" }),
         sessionRow({ id: "session-active" }),
@@ -319,7 +327,7 @@ describe("session-list-store", () => {
       "teamclu.sessionList.archivedIds",
       JSON.stringify(["session-archived"]),
     );
-    mocks.listCurrentActorSessions.mockResolvedValueOnce({
+    mocks.listCurrentActorSessionsV2.mockResolvedValueOnce({
       rows: [sessionRow({ id: "session-active" })],
     });
 
@@ -351,12 +359,46 @@ describe("session-list-store", () => {
     localStorage.removeItem("teamclu.sessionList.archivedIds");
   });
 
+  it("refills one row after archive when the kind still has more", async () => {
+    mocks.archiveSession.mockResolvedValueOnce(undefined);
+    mocks.listCurrentActorSessionsV2.mockResolvedValueOnce({
+      rows: [sessionRow({ id: "session-refill", last_message_at: "2026-05-16T08:00:00.000Z" })],
+      nextCursor: "after-refill",
+    });
+
+    const { useSessionListStore } = await import("./session-list-store");
+    useSessionListStore.setState({
+      rows: [sessionRow({ id: "session-1" })],
+      listKind: "regular",
+      scopeTeamId: "team-1",
+      hasMore: true,
+      nextCursor: "page-2",
+      regularHasMore: true,
+      regularNextCursor: "page-2",
+    });
+
+    await useSessionListStore.getState().archiveSession("session-1");
+
+    expect(mocks.listCurrentActorSessionsV2).toHaveBeenCalledWith({
+      limit: 1,
+      cursor: "page-2",
+      teamId: "team-1",
+      kind: "regular",
+    });
+    expect(useSessionListStore.getState().rows.map((row) => row.id)).toEqual([
+      "session-refill",
+    ]);
+    expect(useSessionListStore.getState().regularNextCursor).toBe("after-refill");
+    expect(useSessionListStore.getState().hasMore).toBe(true);
+    localStorage.removeItem("teamclu.sessionList.archivedIds");
+  });
+
   // Every visibility gate on GET /v1/sessions fails closed with 200 + an empty
   // list (no actor for the caller, no session_participants row, RLS), so an
   // empty page is not evidence that the user has no sessions until the server
   // has proved it can see them at least once.
   it("keeps rows already on screen when the first server page comes back empty", async () => {
-    mocks.listCurrentActorSessions.mockResolvedValueOnce({ rows: [] });
+    mocks.listCurrentActorSessionsV2.mockResolvedValueOnce({ rows: [] });
 
     const { useSessionListStore } = await import("./session-list-store");
     useSessionListStore.setState({ rows: [sessionRow({ id: "cached-1" })] });
@@ -372,13 +414,13 @@ describe("session-list-store", () => {
   });
 
   it("empties the list on an empty page once the server has returned rows", async () => {
-    mocks.listCurrentActorSessions
+    mocks.listCurrentActorSessionsV2
       .mockResolvedValueOnce({ rows: [sessionRow({ id: "session-1" })] })
       .mockResolvedValueOnce({ rows: [] });
 
     const { useSessionListStore } = await import("./session-list-store");
     await useSessionListStore.getState().loadFirstPage();
-    expect(useSessionListStore.getState().serverConfirmedTeams).toContain("team-1");
+    expect(useSessionListStore.getState().serverConfirmedTeams).toContain("team-1:regular");
 
     await useSessionListStore.getState().loadFirstPage();
 
@@ -386,7 +428,7 @@ describe("session-list-store", () => {
   });
 
   it("toasts when the list refresh fails", async () => {
-    mocks.listCurrentActorSessions.mockRejectedValueOnce(new Error("boom"));
+    mocks.listCurrentActorSessionsV2.mockRejectedValueOnce(new Error("boom"));
 
     const { useSessionListStore } = await import("./session-list-store");
     useSessionListStore.setState({ rows: [sessionRow({ id: "cached-1" })] });
@@ -412,14 +454,14 @@ describe("session-list-store", () => {
     useSessionListStore.setState({
       rows: [sessionRow({ id: "team-1-session" })],
       scopeTeamId: "team-1",
-      serverConfirmedTeams: ["team-1"],
+      serverConfirmedTeams: ["team-1:regular"],
     });
     useCurrentTeamStore.setState({
       team: { id: "team-2", name: "Other", slug: "other" },
     } as never);
 
     let rowsDuringFetch: string[] = [];
-    mocks.listCurrentActorSessions.mockImplementationOnce(async () => {
+    mocks.listCurrentActorSessionsV2.mockImplementationOnce(async () => {
       rowsDuringFetch = useSessionListStore.getState().rows.map((row) => row.id);
       return { rows: [{ ...sessionRow({ id: "team-2-session" }), team_id: "team-2" }] };
     });
@@ -443,29 +485,29 @@ describe("session-list-store", () => {
     useSessionListStore.setState({
       rows: [sessionRow({ id: "team-1-session" })],
       scopeTeamId: "team-1",
-      serverConfirmedTeams: ["team-1"],
+      serverConfirmedTeams: ["team-1:regular"],
     });
     useCurrentTeamStore.setState({
       team: { id: "team-2", name: "Other", slug: "other" },
     } as never);
-    mocks.listCurrentActorSessions.mockResolvedValueOnce({ rows: [] });
+    mocks.listCurrentActorSessionsV2.mockResolvedValueOnce({ rows: [] });
 
     await useSessionListStore.getState().loadFirstPage();
 
-    expect(useSessionListStore.getState().serverConfirmedTeams).toEqual(["team-1"]);
-    expect(useSessionListStore.getState().serverConfirmedTeams).not.toContain("team-2");
+    expect(useSessionListStore.getState().serverConfirmedTeams).toEqual(["team-1:regular"]);
+    expect(useSessionListStore.getState().serverConfirmedTeams).not.toContain("team-2:regular");
   });
 
   it("keeps the scope on loadMore so page 2 cannot widen the list", async () => {
     const { useSessionListStore } = await import("./session-list-store");
-    mocks.listCurrentActorSessions
+    mocks.listCurrentActorSessionsV2
       .mockResolvedValueOnce({ rows: [sessionRow({ id: "session-1" })] })
       .mockResolvedValueOnce({ rows: [] });
 
     await useSessionListStore.getState().loadFirstPage(1);
     await useSessionListStore.getState().loadMore(1);
 
-    expect(mocks.listCurrentActorSessions).toHaveBeenLastCalledWith(
+    expect(mocks.listCurrentActorSessionsV2).toHaveBeenLastCalledWith(
       expect.objectContaining({ teamId: "team-1" }),
     );
   });
@@ -492,7 +534,7 @@ describe("session-list-store", () => {
   it("discards a first page that resolves after a team switch", async () => {
     const { useSessionListStore } = await import("./session-list-store");
     let releaseTeam1: (v: { rows: unknown[] }) => void = () => {};
-    mocks.listCurrentActorSessions
+    mocks.listCurrentActorSessionsV2
       .mockImplementationOnce(
         () => new Promise((resolve) => {
           releaseTeam1 = resolve as typeof releaseTeam1;
@@ -525,7 +567,7 @@ describe("session-list-store", () => {
   // it. A null scope would silently disable loadMore and the cross-team filter.
   it("restores scopeTeamId when a concurrent reset nulls it mid-flight", async () => {
     const { useSessionListStore } = await import("./session-list-store");
-    mocks.listCurrentActorSessions.mockImplementationOnce(async () => {
+    mocks.listCurrentActorSessionsV2.mockImplementationOnce(async () => {
       useSessionListStore.setState({ scopeTeamId: null, loadedTeamId: null });
       return { rows: [sessionRow({ id: "session-1" })] };
     });
@@ -540,7 +582,7 @@ describe("session-list-store", () => {
   // "already scoped to this team" guard would never retry it.
   it("leaves loadedTeamId unset when the first page fails", async () => {
     const { useSessionListStore } = await import("./session-list-store");
-    mocks.listCurrentActorSessions.mockRejectedValueOnce(new Error("boom"));
+    mocks.listCurrentActorSessionsV2.mockRejectedValueOnce(new Error("boom"));
 
     await useSessionListStore.getState().loadFirstPage();
 
@@ -553,7 +595,7 @@ describe("session-list-store", () => {
   // cache rows for the rest of the session.
   it("keeps cached rows through one empty page, then believes the second", async () => {
     const { useSessionListStore } = await import("./session-list-store");
-    mocks.listCurrentActorSessions
+    mocks.listCurrentActorSessionsV2
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] });
     useSessionListStore.setState({ rows: [sessionRow({ id: "cached-1" })] });
@@ -581,7 +623,7 @@ describe("session-list-store", () => {
 
   it("shares one request between concurrent first-page loads of the same team", async () => {
     const { useSessionListStore } = await import("./session-list-store");
-    mocks.listCurrentActorSessions.mockResolvedValue({
+    mocks.listCurrentActorSessionsV2.mockResolvedValue({
       rows: [sessionRow({ id: "session-1" })],
     });
 
@@ -591,6 +633,6 @@ describe("session-list-store", () => {
       useSessionListStore.getState().load(),
     ]);
 
-    expect(mocks.listCurrentActorSessions).toHaveBeenCalledTimes(1);
+    expect(mocks.listCurrentActorSessionsV2).toHaveBeenCalledTimes(1);
   });
 });

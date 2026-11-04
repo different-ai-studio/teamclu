@@ -24,21 +24,17 @@ import {
 } from '@/components/sidebar/TeamShareNavSection'
 import { NewChatSplitButton } from '@/components/sidebar/NewChatSplitButton'
 import { AppsNavSection } from '@/components/sidebar/AppsNavSection'
-import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 import { useFeatures } from '@/lib/config/remote-features'
-import { isScheduledSession } from '@/lib/session/session-origin'
 import { cn } from '@/lib/utils'
 
 interface TopEntryProps {
   label: string
   icon: React.ComponentType<{ className?: string }>
   active?: boolean
-  badge?: number | null
   onClick: () => void
 }
 
-function TopEntry({ label, icon: Icon, active, badge, onClick }: TopEntryProps) {
-  // Soft Comfort: active = elevated paper capsule; count badge turns coral when active.
+function TopEntry({ label, icon: Icon, active, onClick }: TopEntryProps) {
   return (
     <button
       type="button"
@@ -54,20 +50,6 @@ function TopEntry({ label, icon: Icon, active, badge, onClick }: TopEntryProps) 
         className={cn('h-[15px] w-[15px] shrink-0', active ? 'text-foreground' : 'text-muted-foreground')}
       />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {badge != null && (
-        <span
-          className={cn(
-            // Same hit box for active/inactive so counts share a right edge.
-            NAV_ROW_TRAILING_SLOT,
-            'text-[10.5px] font-semibold tabular-nums',
-            active
-              ? 'bg-coral text-coral-foreground shadow-[0_2px_6px_rgba(232,90,74,0.28)]'
-              : 'text-muted-foreground',
-          )}
-        >
-          {badge}
-        </span>
-      )}
     </button>
   )
 }
@@ -81,8 +63,6 @@ export function NavRail() {
   const moreExpanded = useUIStore((s) => s.moreNavExpanded)
   const toggleMore = useUIStore((s) => s.toggleMoreNav)
   const setMoreExpanded = useUIStore((s) => s.setMoreNavExpanded)
-  const listRows = useSessionListStore((s) => s.rows)
-  const cronSessionIds = useCronStore((s) => s.cronSessionIds)
   const showCronSessions = useCronStore((s) => s.showCronSessions)
   const setShowCronSessions = useCronStore((s) => s.setShowCronSessions)
   const quickChatState = useQuickChatReadiness()
@@ -91,11 +71,6 @@ export function NavRail() {
   // Counts feed rows in both groups, so the fetch lives here rather than in
   // either TeamShareNavSection instance.
   useTeamShareCountsLoader()
-
-  const sessionsCount = React.useMemo(
-    () => listRows.filter((r) => !isScheduledSession(r, cronSessionIds)).length,
-    [listRows, cronSessionIds],
-  )
 
   // Something else can select one of the folded destinations (default-tab
   // setting, deep link, a link from the chat pane) — unfold the group so the
@@ -168,7 +143,6 @@ export function NavRail() {
           label={t('sidebar.sessions', 'Sessions')}
           icon={Inbox}
           active={filter.kind === 'all' && !showCronSessions}
-          badge={sessionsCount}
           onClick={() => {
             setShowCronSessions(false)
             setFilter({ kind: 'all' })

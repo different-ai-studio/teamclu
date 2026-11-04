@@ -8,7 +8,6 @@ import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-s
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { cn } from '@/lib/utils'
-import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 
 interface SectionDef {
   section: TeamShareSection
@@ -27,18 +26,17 @@ const SECTION_DEFS: Record<TeamShareSection, SectionDef> = {
 const ALL_SECTIONS: TeamShareSection[] = ['skills', 'mcp', 'env', 'knowledge']
 
 /**
- * Loads every section's count once. Split out of the rows because the nav now
- * renders team-share entries in two places (default group + 高级 group) and the
- * counts must still be fetched exactly once per team/workspace.
+ * Prefetches every team-share catalog once. Split out of the rows because the
+ * nav renders team-share entries in two places (default group + 高级 group) and
+ * the catalogs must still be fetched exactly once per team/workspace.
  *
  * Not gated on a workspace. Team-share content is the team's: skills and MCP
  * come from the registry (plus the selected Agent over RPC), knowledge from the
  * team's own directory under the amuxd home. The old `!workspacePath` guard
- * meant a client with no folder open showed 0 for all four, and the sections
- * behind them looked empty rather than unloaded.
+ * meant a client with no folder open showed empty sections rather than unloaded.
  *
  * `workspacePath` stays in the deps: opening a folder adds this machine's local
- * rows (personal skills / MCP), so the counts have to be read again.
+ * rows (personal skills / MCP), so the catalogs have to be read again.
  *
  * `loadCounts` uses `allSettled`, so a section that does still need a workspace
  * — Env, whose catalog read throws without one — cannot take the others down.
@@ -58,7 +56,6 @@ interface RowProps {
   label: string
   icon: React.ComponentType<{ className?: string }>
   active: boolean
-  count: number
   /** Items in this section that have stopped and need a decision. */
   needsAttention?: number
   attentionLabel?: string
@@ -69,7 +66,6 @@ function SectionRow({
   label,
   icon: Icon,
   active,
-  count,
   needsAttention = 0,
   attentionLabel,
   onClick,
@@ -90,8 +86,8 @@ function SectionRow({
       {/*
         The one thing in this panel that reaches out. Auto-follow means a member
         may never open the skills section, so a paused update has no other way
-        to be noticed — a full-ink dot against a faint count is enough contrast
-        to register without spending the brand accent on it.
+        to be noticed — a full-ink dot is enough contrast without spending the
+        brand accent on it.
       */}
       {needsAttention > 0 && (
         <span
@@ -100,8 +96,6 @@ function SectionRow({
           title={attentionLabel}
         />
       )}
-      {/* Same box as the Sessions badge / Contacts "+" — see NAV_ROW_TRAILING_SLOT. */}
-      <span className={cn(NAV_ROW_TRAILING_SLOT, 'text-[10.5px] tabular-nums text-faint')}>{count}</span>
     </button>
   )
 }
@@ -112,10 +106,6 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
   const setFilter = useUIStore((s) => s.setSidebarFilter)
 
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
-  const skillsCount = useTeamShareBrowserStore((s) => s.skills.items.length)
-  const mcpCount = useTeamShareBrowserStore((s) => s.mcp.items.length)
-  const envCount = useTeamShareBrowserStore((s) => s.envCount)
-  const knowledgeCount = useTeamShareBrowserStore((s) => s.knowledge.items.length)
   const skillLocalState = useTeamShareBrowserStore((s) => s.skillLocalState)
 
   const skillConflicts = React.useMemo(
@@ -152,13 +142,6 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
     }
   }, [conflictTeamId, loadConflicts])
 
-  const counts: Record<TeamShareSection, number> = {
-    skills: skillsCount,
-    mcp: mcpCount,
-    env: envCount,
-    knowledge: knowledgeCount,
-  }
-
   const handleSelect = React.useCallback(
     (section: TeamShareSection) => {
       setFilter({ kind: 'teamShare', section })
@@ -189,7 +172,6 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
           label={t(def.labelKey, def.fallback)}
           icon={def.icon}
           active={filter.kind === 'teamShare' && filter.section === def.section}
-          count={counts[def.section]}
           needsAttention={
             def.section === 'skills'
               ? skillConflicts

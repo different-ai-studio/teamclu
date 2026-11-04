@@ -48,6 +48,24 @@ describe("sessions module", () => {
 
   // A blank teamId used to serialize as the literal string "undefined", which
   // passes the server's truthiness guard and dies in Postgres as a bad uuid.
+  it("listCurrentActorSessionsV2 calls /v2/sessions with required kind", async () => {
+    const client = mockClient({
+      "GET /v2/sessions?limit=50&teamId=team-1&kind=channel": {
+        items: [cloudSession],
+        nextCursor: null,
+      },
+    });
+    const mod = createSessionsModule(client);
+    const out = await mod.listCurrentActorSessionsV2({
+      limit: 50,
+      cursor: null,
+      teamId: "team-1",
+      kind: "channel",
+    });
+    expect(out.rows).toHaveLength(1);
+    expect(out.nextCursor).toBeNull();
+  });
+
   it("listCurrentActorSessions refuses a blank teamId instead of sending 'undefined'", async () => {
     const client = mockClient({});
     const mod = createSessionsModule(client);

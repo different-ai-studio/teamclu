@@ -1297,7 +1297,7 @@
     "viewDetail": "View detail",
     "showAllSessions": "Show all sessions",
     "showCronSessions": "Show scheduled sessions",
-    "scheduledSessions": "Scheduled sessions",
+    "sessionKindMenu": "List kind",
     "searchWithShortcut": "Search (⌘K)",
     "pinned": "Pinned",
     "contacts": "Contacts",

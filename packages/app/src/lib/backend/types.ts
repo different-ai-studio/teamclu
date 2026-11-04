@@ -244,6 +244,16 @@ export interface SessionsBackend {
     teamId: string;
     kind?: "all" | "regular" | "cron";
   }): Promise<SessionListPage>;
+  /**
+   * Desktop session-list v2. `kind` is required and mutually exclusive
+   * (regular / channel / app / cron). Hits GET /v2/sessions.
+   */
+  listCurrentActorSessionsV2(args: {
+    limit: number;
+    cursor: SessionListCursor | null;
+    teamId: string;
+    kind: "regular" | "channel" | "app" | "cron";
+  }): Promise<SessionListPage>;
   markCurrentActorSessionViewed(sessionId: string, lastReadMessageId?: string | null): Promise<void>;
   createSessionShell(input: SessionCreateInput): Promise<{
     sessionId: string;
