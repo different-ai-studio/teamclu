@@ -374,6 +374,11 @@ esac
 [ -z "$DMG_URL" ] && { echo "No macOS build for this arch"; exit 1; }
 echo "Installing __APP__ ($(uname -m))..."
 DMG=$(mktemp /tmp/__SLUG__-install-XXXXXX.dmg)
+# `curl … | bash` hands curl the script as its stdin, so curl cannot see the
+# terminal and draws a 79-column bar. On a narrower terminal every redraw wraps,
+# and the bar piles up line by line. Read the width from the tty instead; with
+# no tty this does nothing and curl keeps its default.
+if cols=$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2) && [ -n "$cols" ]; then export COLUMNS="$cols"; fi
 curl -L --progress-bar -o "$DMG" "$DMG_URL"
 MOUNT=$(hdiutil attach "$DMG" -nobrowse 2>&1 | grep -E '/Volumes/' | tail -1 | awk -F'\\t' '{print $NF}')
 APP=$(find "$MOUNT" -maxdepth 1 -name "*.app" -type d | head -1)
@@ -428,6 +433,11 @@ echo "Downloading amuxd ($OS-$ARCH)..."
 # binary where the service expects one.
 TMP="$BIN_DIR/amuxd.download.$$"
 trap 'rm -f "$TMP"' EXIT
+# `curl … | bash` hands curl the script as its stdin, so curl cannot see the
+# terminal and draws a 79-column bar. On a narrower terminal every redraw wraps,
+# and the bar piles up line by line. Read the width from the tty instead; with
+# no tty this does nothing and curl keeps its default.
+if cols=$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2) && [ -n "$cols" ]; then export COLUMNS="$cols"; fi
 curl -fL --progress-bar -o "$TMP" "$URL"
 chmod +x "$TMP"
 [ "$OS" = "Darwin" ] && xattr -d com.apple.quarantine "$TMP" 2>/dev/null || true

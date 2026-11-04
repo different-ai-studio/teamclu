@@ -73,6 +73,11 @@ else
 
   echo "Downloading from: ${DMG_URL}"
   DMG_FILE=$(mktemp /tmp/teamclu-install-XXXXXX.dmg)
+  # `curl … | bash` hands curl the script as its stdin, so curl cannot see the
+  # terminal and draws a 79-column bar. On a narrower terminal every redraw wraps,
+  # and the bar piles up line by line. Read the width from the tty instead; with
+  # no tty this does nothing and curl keeps its default.
+  if cols=$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2) && [ -n "$cols" ]; then export COLUMNS="$cols"; fi
   curl -L --progress-bar -o "$DMG_FILE" "$DMG_URL"
 fi
 
