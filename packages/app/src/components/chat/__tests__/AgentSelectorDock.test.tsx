@@ -7,12 +7,23 @@ import { useAgentModelPickStore } from '@/stores/agent-model-pick-store'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import { RuntimeLifecycle } from '@/lib/proto/amux_pb'
 import type { EngagedAgentUiEntry } from '@/hooks/use-engaged-agent-ui-states'
+import { useClientModelMruStore } from '@/stores/client-model-mru'
+import { useActorDirectoryStore } from '@/stores/actor-directory-store'
+import { useLocalDaemonCatalogStore } from '@/stores/local-daemon-catalog-store'
+import { useWorkspaceStore } from '@/stores/workspace'
+import { resolveAgentBackendType } from '@/lib/agent/agent-backend-type'
 
 const mocks = vi.hoisted(() => ({
   runtimeStates: {} as Record<string, unknown>,
   defaultCatalogByActorId: {} as Record<string, unknown>,
   isSoloBuild: vi.fn(() => false),
+  localActorId: null as string | null,
 }))
+
+vi.mock('@/lib/daemon/daemon-agent-admin', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/daemon/daemon-agent-admin')>()
+  return { ...actual, useLocalDaemonActorId: () => mocks.localActorId }
+})
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -83,8 +94,49 @@ describe('AgentSelectorDock', () => {
     mocks.runtimeStates = {}
     mocks.defaultCatalogByActorId = {}
     mocks.isSoloBuild.mockReturnValue(false)
+    mocks.localActorId = null
+    useClientModelMruStore.setState({ byBackendTeam: {} })
+    useActorDirectoryStore.setState({ byTeam: {} })
+    useLocalDaemonCatalogStore.setState({ byWorkspacePath: {} })
     useAgentModelPickStore.setState({ bySessionAgent: {} })
     useActorPresenceStore.setState({ byActorId: {} })
+  })
+
+  // #1799: a new chat with the local agent before its runtime has reported.
+  // The send path resolved the backend through the team directory and ran on
+  // this device's last-used model; the pill knew no backend, so it had no MRU
+  // key and showed the catalog's first entry instead.
+  it('labels a new chat with the model the send will use before any runtime reports', async () => {
+    const agent = { id: 'local-1', displayName: 'My Mac' }
+    mocks.localActorId = 'local-1'
+    useWorkspaceStore.setState({ workspacePath: '/w' })
+    useLocalDaemonCatalogStore.setState({
+      byWorkspacePath: {
+        '/w': {
+          status: 'ready',
+          fetchedAt: Date.now(),
+          models: [
+            { id: 'anthropic/claude-fable-5', displayName: 'Claude Fable 5' },
+            { id: 'deepseek/deepseek-v4-pro', displayName: 'DeepSeek V4 Pro' },
+          ],
+        } as never,
+      },
+    })
+    useActorDirectoryStore.setState({
+      byTeam: { 'team-1': { actors: [{ id: 'local-1', actor_type: 'agent' }] } as never },
+    })
+    useClientModelMruStore.setState({
+      byBackendTeam: { 'pi::team-1': ['deepseek/deepseek-v4-pro'] },
+    })
+    // What the send path keys the MRU on in this state.
+    expect(
+      resolveAgentBackendType({ agentId: 'local-1', teamId: 'team-1', byRuntimeId: {} }),
+    ).toBe('pi')
+
+    render(<AgentSelectorDock {...dockProps({ engagedAgents: [agent] })} />)
+
+    expect(await screen.findByText('DeepSeek V4 Pro')).toBeInTheDocument()
+    expect(screen.queryByText('Claude Fable 5')).not.toBeInTheDocument()
   })
 
   it('renders nothing when no agents are engaged', () => {
