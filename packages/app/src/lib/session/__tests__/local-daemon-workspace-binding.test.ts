@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The window folder. Polluted on purpose: `teamclu-workspace-path` survives
 // restarts, so a path that arrived from another machine is exactly the state
@@ -45,11 +45,16 @@ vi.mock('@/lib/teamclu/resolve-runtime-start-workspace', () => ({
   runtimeStartWorkspaceArgs: h.runtimeStartWorkspaceArgs,
 }))
 
-import { resolveLocalDaemonWorkspaceBinding } from '@/lib/session/session-create'
+import {
+  prefetchLocalDaemonWorkspaceBinding,
+  resetWorkspaceBindingPrefetchForTests,
+  resolveLocalDaemonWorkspaceBinding,
+} from '@/lib/session/session-create'
 
 describe('resolveLocalDaemonWorkspaceBinding', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetWorkspaceBindingPrefetchForTests()
     listDaemonWorkspaces.mockResolvedValue([])
     loadAgentWorkspaceLookups.mockResolvedValue(new Map())
     resolveCloudWorkspaceIdForLocalPath.mockResolvedValue('')
@@ -136,5 +141,63 @@ describe('resolveLocalDaemonWorkspaceBinding', () => {
     const bound = await resolveLocalDaemonWorkspaceBinding(TEAM_ID, ['some-other-agent'])
     expect(bound).toBeNull()
     expect(loadAgentWorkspaceLookups).not.toHaveBeenCalled()
+  })
+
+  describe('prefetch', () => {
+    // Two lookups in flight at once both lazy-import the daemon module; load it
+    // first so the mocked import resolves the same way for both.
+    beforeAll(async () => {
+      await import('@/lib/daemon/daemon-agent-admin')
+    })
+
+    const seatDefault = () => {
+      loadAgentWorkspaceLookups.mockResolvedValue(
+        new Map([[AGENT_ID, { defaultWorkspaceId: 'ws-default' }]]),
+      )
+      listDaemonWorkspaces.mockResolvedValue([
+        { id: 'ws-default', agent_id: AGENT_ID, path: '/Users/me/Work', archived: false },
+      ])
+    }
+
+    // The lookup runs while the user types, so Enter does not wait ~0.4 s for
+    // a daemon call and two Cloud API reads in series.
+    it('serves the first send from the prefetch without looking up again', async () => {
+      seatDefault()
+      prefetchLocalDaemonWorkspaceBinding(TEAM_ID, [AGENT_ID])
+
+      const bound = await resolveLocalDaemonWorkspaceBinding(TEAM_ID, [AGENT_ID])
+
+      expect(bound?.workspaceId).toBe('ws-default')
+      expect(loadAgentWorkspaceLookups).toHaveBeenCalledTimes(1)
+    })
+
+    it('is used once: the next send looks up fresh', async () => {
+      seatDefault()
+      prefetchLocalDaemonWorkspaceBinding(TEAM_ID, [AGENT_ID])
+      await resolveLocalDaemonWorkspaceBinding(TEAM_ID, [AGENT_ID])
+      await resolveLocalDaemonWorkspaceBinding(TEAM_ID, [AGENT_ID])
+      expect(loadAgentWorkspaceLookups).toHaveBeenCalledTimes(2)
+    })
+
+    // A prefetch that ran before the daemon answered found nothing. Using that
+    // would create a session with no workspace seat.
+    it('looks again when the prefetch found nothing', async () => {
+      prefetchLocalDaemonWorkspaceBinding(TEAM_ID, [AGENT_ID])
+      seatDefault()
+
+      const bound = await resolveLocalDaemonWorkspaceBinding(TEAM_ID, [AGENT_ID])
+
+      expect(bound?.workspaceId).toBe('ws-default')
+    })
+
+    it('does not serve a prefetch made for other agents', async () => {
+      seatDefault()
+      prefetchLocalDaemonWorkspaceBinding(TEAM_ID, ['someone-else'])
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      const bound = await resolveLocalDaemonWorkspaceBinding(TEAM_ID, [AGENT_ID])
+
+      expect(bound?.workspaceId).toBe('ws-default')
+    })
   })
 })
