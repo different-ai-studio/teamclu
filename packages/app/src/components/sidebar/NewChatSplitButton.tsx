@@ -15,13 +15,12 @@ type NewChatSplitButtonProps = {
   onPrimaryClick: () => void
 }
 
+// `loading` stays clickable: the click resolves the agent itself. Greying the
+// button out until the background resolve settled left it dead for 1–1.5 s
+// after it first painted on a cold start, with nothing saying why.
 function isPrimaryDisabled(state: QuickChatState, creating: boolean): boolean {
   if (creating) return true
-  return (
-    state.kind === 'no_team'
-    || state.kind === 'no_agent'
-    || state.kind === 'loading'
-  )
+  return state.kind === 'no_team' || state.kind === 'no_agent'
 }
 
 export function NewChatSplitButton({

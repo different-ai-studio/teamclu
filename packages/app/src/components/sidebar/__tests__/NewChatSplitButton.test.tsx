@@ -44,7 +44,9 @@ describe('NewChatSplitButton', () => {
     expect(button).toHaveAttribute('title')
   })
 
-  it('disables primary while loading', () => {
+  // On a cold start the agent resolves for 1–1.5 s after the button paints.
+  // The click resolves it itself rather than leaving a dead button.
+  it('keeps primary clickable while the agent is still resolving', () => {
     render(
       <NewChatSplitButton
         quickChatState={{ kind: 'loading' }}
@@ -52,7 +54,10 @@ describe('NewChatSplitButton', () => {
         onPrimaryClick={onPrimaryClick}
       />,
     )
-    expect(screen.getByRole('button', { name: /新聊天/i })).toBeDisabled()
+    const button = screen.getByRole('button', { name: /新聊天/i })
+    expect(button).not.toBeDisabled()
+    fireEvent.click(button)
+    expect(onPrimaryClick).toHaveBeenCalledTimes(1)
   })
 
   it('opens the advanced dialog directly, with no intermediate menu', () => {

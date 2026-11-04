@@ -348,6 +348,72 @@ describe('useQuickChatReadiness', () => {
   })
 })
 
+describe('useQuickChatReadiness on a cold start', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.teamId = 'team-1'
+    mocks.workspacePath = null
+    mocks.defaultAgentId = null
+    mocks.effectiveDefaultAgentId = null
+    mocks.effectiveDefaultTeamId = 'team-1'
+    mocks.resolveThrows = false
+    mocks.mqttConnected = null
+    mocks.mqttReconnectNonce = 0
+  })
+
+  // Startup state (workspace, default-agent prefs, install status) lands one
+  // piece at a time, and each restarted the resolve and discarded the pass in
+  // flight, so the new-chat button stayed "loading" until the last one settled.
+  it('shows the agent from a superseded pass instead of waiting for the newest', async () => {
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
+    let settleFirst!: (value: typeof readyTarget) => void
+    const first = new Promise<typeof readyTarget>((resolve) => {
+      settleFirst = resolve
+    })
+    const never = new Promise<typeof readyTarget>(() => {})
+    vi.mocked(resolveQuickChatTarget).mockImplementation(async () =>
+      vi.mocked(resolveQuickChatTarget).mock.calls.length <= 1 ? first : never,
+    )
+
+    const { result, rerender } = renderHook(() => useQuickChatReadiness())
+    expect(result.current).toEqual({ kind: 'loading' })
+
+    // The workspace restores while the first pass is still out.
+    mocks.workspacePath = '/ws'
+    await act(async () => {
+      rerender()
+    })
+    expect(vi.mocked(resolveQuickChatTarget).mock.calls.length).toBe(2)
+
+    await act(async () => {
+      settleFirst(readyTarget)
+    })
+    expect(result.current).toEqual({ kind: 'ready', target: readyTarget })
+  })
+
+  it('does not show a superseded pass from another team', async () => {
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
+    let settleFirst!: (value: typeof readyTarget) => void
+    const first = new Promise<typeof readyTarget>((resolve) => {
+      settleFirst = resolve
+    })
+    const never = new Promise<typeof readyTarget>(() => {})
+    vi.mocked(resolveQuickChatTarget).mockImplementation(async () =>
+      vi.mocked(resolveQuickChatTarget).mock.calls.length <= 1 ? first : never,
+    )
+
+    const { result, rerender } = renderHook(() => useQuickChatReadiness())
+    mocks.teamId = 'team-2'
+    await act(async () => {
+      rerender()
+    })
+    await act(async () => {
+      settleFirst(readyTarget)
+    })
+    expect(result.current).toEqual({ kind: 'loading' })
+  })
+})
+
 describe('quickChatWelcomeAgent', () => {
   it('maps loading to spinner state', () => {
     expect(quickChatWelcomeAgent({ kind: 'loading' })).toEqual({

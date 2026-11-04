@@ -250,7 +250,63 @@ async function localDaemonOwnWorkspace(
   }
 }
 
+/** How long a prefetched binding stays usable for the next send. */
+export const WORKSPACE_BINDING_PREFETCH_TTL_MS = 60_000
+
+const workspaceBindingPrefetch = new Map<
+  string,
+  { at: number; binding: Promise<LocalDaemonWorkspaceBinding | null> }
+>()
+
+function workspaceBindingKey(teamId: string, agentActorIds: readonly string[]): string {
+  const agents = agentActorIds.map((id) => id.trim()).filter(Boolean).sort().join(',')
+  const folder = useWorkspaceStore.getState().workspacePath?.trim() || ''
+  return `${teamId.trim()}|${agents}|${folder}`
+}
+
+/**
+ * Start resolving the binding the first send of a new chat will need, as soon
+ * as the draft opens. The lookup is a daemon call plus two Cloud API reads in
+ * series (~0.4 s) that otherwise sit between Enter and the session being
+ * created.
+ */
+export function prefetchLocalDaemonWorkspaceBinding(
+  teamId: string,
+  agentActorIds: readonly string[],
+): void {
+  if (!isTauri() || !teamId.trim() || agentActorIds.length === 0) return
+  const key = workspaceBindingKey(teamId, agentActorIds)
+  const hit = workspaceBindingPrefetch.get(key)
+  if (hit && Date.now() - hit.at < WORKSPACE_BINDING_PREFETCH_TTL_MS) return
+  workspaceBindingPrefetch.set(key, {
+    at: Date.now(),
+    binding: computeLocalDaemonWorkspaceBinding(teamId, agentActorIds),
+  })
+}
+
+/** @internal Drop prefetched bindings between tests. */
+export function resetWorkspaceBindingPrefetchForTests(): void {
+  workspaceBindingPrefetch.clear()
+}
+
 export async function resolveLocalDaemonWorkspaceBinding(
+  teamId: string,
+  agentActorIds: readonly string[],
+): Promise<LocalDaemonWorkspaceBinding | null> {
+  const key = workspaceBindingKey(teamId, agentActorIds)
+  const hit = workspaceBindingPrefetch.get(key)
+  // One use per prefetch, so a later send never runs on a stale answer.
+  workspaceBindingPrefetch.delete(key)
+  if (hit && Date.now() - hit.at < WORKSPACE_BINDING_PREFETCH_TTL_MS) {
+    const binding = await hit.binding
+    // A prefetch that ran before the daemon answered found nothing; that says
+    // nothing about now, so look again rather than create an unbound session.
+    if (binding) return binding
+  }
+  return computeLocalDaemonWorkspaceBinding(teamId, agentActorIds)
+}
+
+async function computeLocalDaemonWorkspaceBinding(
   teamId: string,
   agentActorIds: readonly string[],
 ): Promise<LocalDaemonWorkspaceBinding | null> {

@@ -86,10 +86,13 @@ export function NavRail() {
   }, [moreFilterActive, setMoreExpanded])
 
   const handleQuickNewChat = React.useCallback(() => {
-    if (quickChatState.kind !== 'ready' || creating) return
+    if (creating) return
+    if (quickChatState.kind === 'no_team' || quickChatState.kind === 'no_agent') return
 
     setCreating(true)
-    void createQuickSession(quickChatState.target)
+    // Still resolving in the background: resolve here instead of making the
+    // user wait for that pass and click again.
+    void createQuickSession(quickChatState.kind === 'ready' ? quickChatState.target : null)
       .then((result) => {
         if (result.ok) return
         const { title, description } = describeQuickSessionFailure(result.reason, t)

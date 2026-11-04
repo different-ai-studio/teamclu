@@ -66,8 +66,10 @@ export function useQuickChatReadiness(): QuickChatState {
   const prevMqttNonceRef = React.useRef(mqttReconnectNonce)
   const resolveSettledRef = React.useRef(false)
 
+  const teamIdRef = React.useRef(teamId)
   targetRef.current = target
   resolvingRef.current = resolving
+  teamIdRef.current = teamId
 
   const requestRecovery = React.useCallback(() => {
     if (targetRef.current) return
@@ -157,6 +159,7 @@ export function useQuickChatReadiness(): QuickChatState {
     }
 
     let cancelled = false
+    const resolvingTeamId = teamId
     const hadTarget = Boolean(targetRef.current)
     // Keep the last ready agent visible during silent re-resolves (MQTT /
     // prefs refresh). Only show the full-page spinner when we have nothing
@@ -169,6 +172,17 @@ export function useQuickChatReadiness(): QuickChatState {
     void resolveQuickChatTarget(teamId, { workspacePath })
       .then((resolved) => {
         if (!cancelled) {
+          setTarget(resolved)
+          setResolving(false)
+          return
+        }
+        // Superseded by a dependency change. On a cold start the workspace,
+        // default-agent prefs and install status land one after another, and
+        // each restarted this pass and threw the previous answer away — the
+        // button stayed "loading" for 1–1.5 s after it painted. With nothing on
+        // screen yet, an agent found for the same team is still worth showing;
+        // the newer pass overwrites it when it settles.
+        if (resolved && !targetRef.current && teamIdRef.current === resolvingTeamId) {
           setTarget(resolved)
           setResolving(false)
         }

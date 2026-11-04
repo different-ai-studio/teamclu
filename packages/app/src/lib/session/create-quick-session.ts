@@ -49,6 +49,14 @@ export async function createQuickSession(
     kind: 'agent',
   })
   useUIStore.getState().requestComposerFocus()
+  // The first send needs this agent's workspace binding; look it up while the
+  // user is still typing instead of after they press Enter.
+  const agentId = target.agentId
+  void import('@/lib/session/session-create')
+    .then(({ prefetchLocalDaemonWorkspaceBinding }) =>
+      prefetchLocalDaemonWorkspaceBinding(teamId, [agentId]),
+    )
+    .catch(() => {})
 
   return { ok: true, agentDisplayName: target.displayName }
 }
