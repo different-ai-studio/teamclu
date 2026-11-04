@@ -501,6 +501,45 @@ where
     result.map(|()| run)
 }
 
+/// How much of stderr to keep for an install that died without reporting its
+/// own failure (an older amuxd, a panic). Enough for a Node crash trace: the
+/// error sits a few lines above the `Node.js vX` footer.
+const STDERR_TAIL_LINES: usize = 60;
+
+/// The `message` of amuxd's `{"event":"error"}` line, if `line` is one. amuxd
+/// ends a failed install on it with the whole error chain on one line.
+fn install_error_event(line: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    if value.get("event")?.as_str()? != "error" {
+        return None;
+    }
+    let message = value.get("message")?.as_str()?.trim();
+    (!message.is_empty()).then(|| message.to_string())
+}
+
+/// The error a failed `install-pi` is reported with.
+///
+/// It used to be the last stderr line alone, which for a Node crash is
+/// `Node.js v24.20.0` and nothing else (a fresh machine, 2026-11-04). amuxd's
+/// own report wins; without one, the stderr tail stands in, whole.
+fn install_failure_message(
+    reported: Option<&str>,
+    stderr_tail: &[String],
+    code: Option<i32>,
+) -> String {
+    if let Some(message) = reported {
+        return format!("amuxd install-pi failed: {message}");
+    }
+    if stderr_tail.is_empty() {
+        return format!("amuxd install-pi exited with code {code:?}");
+    }
+    let tail = stderr_tail.join("\n");
+    // `main` prints the same chain anyhow-style; drop its `Error: ` prefix so
+    // the message does not read "failed: Error: …".
+    let tail = tail.strip_prefix("Error: ").unwrap_or(&tail);
+    format!("amuxd install-pi failed: {tail}")
+}
+
 async fn spawn_amuxd_install_pi<R, F>(app: &AppHandle<R>, emit: &F) -> Result<(), String>
 where
     R: Runtime,
@@ -523,19 +562,27 @@ where
             .map_err(|e| format!("spawn amuxd: {e}"))?;
 
         let mut last_err: Option<String> = None;
-        let mut last_stderr: Option<String> = None;
+        let mut reported: Option<String> = None;
+        let mut stderr_tail: std::collections::VecDeque<String> =
+            std::collections::VecDeque::with_capacity(STDERR_TAIL_LINES);
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(bytes) => {
                     let line = String::from_utf8_lossy(&bytes).trim().to_string();
                     if !line.is_empty() {
+                        if let Some(message) = install_error_event(&line) {
+                            reported = Some(message);
+                        }
                         emit("running", Some(line), None);
                     }
                 }
                 CommandEvent::Stderr(bytes) => {
                     let line = String::from_utf8_lossy(&bytes).trim().to_string();
                     if !line.is_empty() {
-                        last_stderr = Some(line.clone());
+                        if stderr_tail.len() == STDERR_TAIL_LINES {
+                            stderr_tail.pop_front();
+                        }
+                        stderr_tail.push_back(line.clone());
                         // Forwarded, not just remembered: amuxd narrates a slow
                         // install (registry probes, mirror fallbacks) on stderr, and
                         // holding those back is most of why an install row could sit
@@ -545,10 +592,11 @@ where
                     }
                 }
                 CommandEvent::Terminated(payload) if payload.code.unwrap_or(-1) != 0 => {
-                    last_err = Some(match &last_stderr {
-                        Some(s) => format!("amuxd install-pi failed: {s}"),
-                        None => format!("amuxd install-pi exited with code {:?}", payload.code),
-                    });
+                    last_err = Some(install_failure_message(
+                        reported.as_deref(),
+                        stderr_tail.make_contiguous(),
+                        payload.code,
+                    ));
                 }
                 _ => {}
             }
@@ -685,6 +733,54 @@ mod tests {
         assert_eq!(
             gate.run(|| async { Ok(()) }).await,
             (PiInstallRun::Ran, Ok(()))
+        );
+    }
+
+    #[test]
+    fn amuxd_s_own_error_report_wins_over_the_stderr_tail() {
+        let line = r#"{"event":"error","message":"pi install failed (exit status: 1): Error: boom\n\nNode.js v24.20.0","log":"/x"}"#;
+        let reported = install_error_event(line);
+        let tail = vec!["Node.js v24.20.0".to_string()];
+        let message = install_failure_message(reported.as_deref(), &tail, Some(1));
+        assert!(message.contains("Error: boom"), "{message}");
+        assert!(message.starts_with("amuxd install-pi failed: pi install failed"));
+    }
+
+    #[test]
+    fn progress_lines_are_not_mistaken_for_the_error_report() {
+        assert_eq!(
+            install_error_event(r#"{"event":"output","message":"x"}"#),
+            None
+        );
+        assert_eq!(install_error_event("npm error code E404"), None);
+        assert_eq!(
+            install_error_event(r#"{"event":"error","message":"  "}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn without_a_report_the_whole_stderr_tail_is_kept_not_just_its_last_line() {
+        // An older amuxd: the Node crash trace arrives line by line on stderr.
+        let tail: Vec<String> = [
+            "Error: pi install failed (exit status: 1): node:internal/modules/cjs/loader:1386",
+            "Error: Cannot find module '/x/npm-cli.js'",
+            "Node.js v24.20.0",
+        ]
+        .map(String::from)
+        .to_vec();
+        let message = install_failure_message(None, &tail, Some(1));
+        assert!(
+            message.contains("Cannot find module '/x/npm-cli.js'"),
+            "{message}"
+        );
+        assert!(
+            message.starts_with("amuxd install-pi failed: pi install failed"),
+            "{message}"
+        );
+        assert_eq!(
+            install_failure_message(None, &[], Some(3)),
+            "amuxd install-pi exited with code Some(3)"
         );
     }
 

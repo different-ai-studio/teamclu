@@ -18,6 +18,7 @@ import {
   writeDaemonOnboardingIdentity,
 } from '@/lib/daemon/daemon-onboarding-identity'
 import { daemonManagedLogDisplayPath } from '@/lib/daemon/daemon-paths'
+import { reportRuntimeInstallFailure } from '@/lib/telemetry/runtime-install-report'
 import { useAuthStore } from '@/stores/auth-store'
 
 /**
@@ -147,13 +148,28 @@ async function checkAndInstallRuntime(): Promise<boolean> {
         )
       }
     })
+    useDaemonOnboardingStore.setState({ runtimeInstallFailures: 0 })
     return true
   } catch (e) {
+    const error = e instanceof Error ? e.message : String(e)
+    const { daemonOutdated, runtimeInstallFailures } = useDaemonOnboardingStore.getState()
+    // A stale daemon is a known state with its own screen, not an install
+    // that broke; counting it would offer a restart that cannot help.
+    const attempts = daemonOutdated ? runtimeInstallFailures : runtimeInstallFailures + 1
     useDaemonOnboardingStore.setState({
       status: 'error',
       loaded: true,
-      error: e instanceof Error ? e.message : String(e),
+      error,
+      runtimeInstallFailures: attempts,
     })
+    if (!daemonOutdated) {
+      const setupState = useSetupStore.getState()
+      reportRuntimeInstallFailure(error, {
+        attempts,
+        route: setupState.installRoute?.choice ?? null,
+        output: setupState.output.pi ?? [],
+      })
+    }
     return false
   } finally {
     useDaemonOnboardingStore.setState({ busy: false })
@@ -241,6 +257,10 @@ type DaemonOnboardingState = {
    * because the two want opposite advice: the step's own recovery copy sends
    * the user at their network, which here is the one thing that is fine. */
   daemonOutdated: boolean
+  /** Runtime installs that failed in a row this app session. Survives
+   * `beginRun` on purpose: it is what tells the failure screen that Retry has
+   * stopped helping and a full restart is the next thing to try. */
+  runtimeInstallFailures: number
   /** Epoch ms the current run began. The store keeps only the timestamp — a
    * ticking counter here would re-render every subscriber once a second. */
   runStartedAt: number | null
@@ -268,6 +288,13 @@ type DaemonOnboardingState = {
    * but the authority behind the daemon's credentials is not. A team *change*
    * needs no flag: a mismatch always re-binds now. */
   refresh: (opts?: { forceIdentityRebind?: boolean }) => Promise<void>
+  /** Retry a failed (or slow) runtime install without leaving the wizard.
+   *
+   * Not `refresh`: with the daemon healthy, refresh marks the store 'ready'
+   * before the runtime check runs, AuthGate unmounts the wizard on 'ready', and
+   * the install then runs — and fails — behind the app with nothing on screen.
+   * This holds 'starting' through the install and refreshes only once it is in. */
+  retryRuntimeInstall: () => Promise<void>
   /** Wipe local daemon state. Settings-only (DaemonManualResetCard); the next
    * `refresh` re-binds this machine silently. */
   forceReset: () => Promise<void>
@@ -721,6 +748,7 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
   completedSteps: [],
   failedStep: null,
   daemonOutdated: false,
+  runtimeInstallFailures: 0,
   runStartedAt: null,
   completedAgent: null,
   pendingName: null,
@@ -756,6 +784,14 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
       set({ busy: false })
     }
     await get().refresh()
+  },
+
+  retryRuntimeInstall: async () => {
+    if (!isTauri()) return
+    // `runStartedAt` restarts the elapsed counter for this attempt; the steps
+    // already completed keep their checks.
+    set({ status: 'starting', loaded: true, error: null, failedStep: null, runStartedAt: Date.now() })
+    if (await ensureRuntimeReady()) await get().refresh()
   },
 
   refresh: async (opts) => {

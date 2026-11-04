@@ -31,6 +31,7 @@
 //! searches.
 
 pub mod bundle;
+pub mod install_log;
 pub mod mcp_sdk;
 
 use std::path::PathBuf;
@@ -233,6 +234,7 @@ pub(crate) fn progress(event: &str, message: &str) {
         "{}",
         serde_json::json!({ "event": event, "message": message })
     );
+    install_log::write(event, message);
 }
 
 /// A progress line that also names the source this install settled on.
@@ -245,6 +247,28 @@ pub(crate) fn progress_route(event: &str, message: &str, route: &str) {
         "{}",
         serde_json::json!({ "event": event, "message": message, "route": route })
     );
+    install_log::write(event, &format!("{message} (route: {route})"));
+}
+
+/// The one line a failed install ends on: the whole error chain as a single
+/// JSON object, plus where the full log is.
+///
+/// Callers that read this process's pipes must take the failure from here. The
+/// same error also reaches stderr through `main`, but there it is split into
+/// lines, and a caller that kept the last stderr line showed users only
+/// `Node.js v24.20.0` — the footer of a Node crash trace, not its cause.
+fn report_failure(error: &anyhow::Error) {
+    let message = format!("{error:#}");
+    println!("{}", failure_event(&message, &install_log::path()));
+    install_log::write("error", &message);
+}
+
+fn failure_event(message: &str, log: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({
+        "event": "error",
+        "message": message,
+        "log": log.to_string_lossy(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -524,8 +548,10 @@ pub(crate) fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
 
 /// How much of a command's output to keep for its failure message. The lines
 /// themselves are streamed as they arrive; this is only what gets quoted back
-/// if the command exits non-zero.
-const OUTPUT_TAIL_LINES: usize = 20;
+/// if the command exits non-zero. Sized for a Node crash trace, whose cause
+/// line sits above a dozen stack frames and an error-properties block; the
+/// full output is in `install-pi.log` either way.
+const OUTPUT_TAIL_LINES: usize = 40;
 
 /// Read one pipe to EOF on its own thread, emitting each line as it arrives and
 /// keeping the tail for the caller's error message.
@@ -829,9 +855,22 @@ impl InstallLock {
 /// Install (or repair) the whole runtime: the managed Node, then pi and the MCP
 /// SDK on it. Idempotent; `force` reinstalls even when everything is in place.
 /// One at a time per amuxd home; see [`InstallLock`].
+///
+/// Everything it narrates is also kept in [`install_log::path`], and a failure
+/// ends on one `{"event":"error"}` line carrying the whole error (see
+/// [`report_failure`]).
 pub fn run_install(force: bool) -> anyhow::Result<()> {
-    let _lock = InstallLock::acquire()?;
-    run_install_locked(force)
+    let result = InstallLock::acquire().and_then(|_lock| {
+        // Opened under the lock: a second install waiting on it would
+        // otherwise interleave its lines with the first one's.
+        install_log::begin(force);
+        run_install_locked(force)
+    });
+    if let Err(e) = &result {
+        report_failure(e);
+    }
+    install_log::end();
+    result
 }
 
 fn run_install_locked(force: bool) -> anyhow::Result<()> {
@@ -930,6 +969,27 @@ mod tests {
         rx.recv_timeout(std::time::Duration::from_secs(5))
             .expect("second install never got the lock after the first released it");
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn a_failure_is_one_json_line_holding_the_whole_error() {
+        // The npm tail is multi-line and ends on Node's version footer; the
+        // event must carry all of it on a single stdout line.
+        let error = anyhow::anyhow!(
+            "pi install failed (exit status: 1): Error: Cannot find module 'x'\n    at foo\n\nNode.js v24.20.0"
+        );
+        let line = failure_event(
+            &format!("{error:#}"),
+            std::path::Path::new("/h/logs/install-pi.log"),
+        )
+        .to_string();
+        assert!(!line.contains('\n'), "{line}");
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["event"], "error");
+        assert_eq!(v["log"], "/h/logs/install-pi.log");
+        let message = v["message"].as_str().unwrap();
+        assert!(message.contains("Cannot find module 'x'"), "{message}");
+        assert!(message.ends_with("Node.js v24.20.0"), "{message}");
     }
 
     #[test]

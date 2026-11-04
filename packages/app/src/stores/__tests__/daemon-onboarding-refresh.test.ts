@@ -138,6 +138,7 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
   fetchDaemonDeviceId: vi.fn(async () => h.deviceId),
 }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
+vi.mock('@/lib/telemetry/runtime-install-report', () => ({ reportRuntimeInstallFailure: vi.fn() }))
 vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
   getLocalDaemonActorId: vi.fn(async () => h.localActorId),
 }))
@@ -182,6 +183,7 @@ import {
   waitForDaemonOnboardingPostReady,
 } from '../daemon-onboarding'
 import { useSetupStore } from '../setup'
+import { reportRuntimeInstallFailure } from '@/lib/telemetry/runtime-install-report'
 
 const reset = () =>
   useDaemonOnboardingStore.setState({
@@ -198,6 +200,7 @@ const reset = () =>
     completedSteps: [],
     failedStep: null,
     daemonOutdated: false,
+    runtimeInstallFailures: 0,
     runStartedAt: null,
   })
 
@@ -424,6 +427,85 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(s.status).toBe('error')
     expect(s.failedStep).toBe('install-runtime')
     expect(s.error).toContain('npm ci boom')
+  })
+
+  // The failure screen offers a restart once Retry has stopped helping, and
+  // every failure is reported — users stuck here rarely reach us themselves.
+  it('counts consecutive install failures, reports each, and clears on success', async () => {
+    h.runtimeRows = runtimeRows(false)
+    h.installShouldThrow = true
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.probeQueue = [
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+    ]
+
+    await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
+    await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
+
+    expect(useDaemonOnboardingStore.getState().runtimeInstallFailures).toBe(2)
+    expect(reportRuntimeInstallFailure).toHaveBeenCalledTimes(2)
+    expect(reportRuntimeInstallFailure).toHaveBeenLastCalledWith(
+      expect.stringContaining('npm ci boom'),
+      expect.objectContaining({ attempts: 2 }),
+    )
+
+    h.installShouldThrow = false
+    await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
+    expect(useDaemonOnboardingStore.getState().runtimeInstallFailures).toBe(0)
+  })
+
+  // Retry must hold the wizard: refresh would mark a healthy daemon 'ready'
+  // first, and AuthGate unmounts the wizard on 'ready', so the retried install
+  // would run and fail behind the app.
+  it('retrying a runtime install never passes through ready while it runs, and fails in place', async () => {
+    h.runtimeRows = runtimeRows(false)
+    h.installShouldThrow = true
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+    await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
+    expect(useDaemonOnboardingStore.getState().status).toBe('error')
+
+    const seen: string[] = []
+    const unsubscribe = useDaemonOnboardingStore.subscribe((st) => seen.push(st.status))
+    onTestFinished(unsubscribe)
+    await useDaemonOnboardingStore.getState().retryRuntimeInstall()
+
+    const s = useDaemonOnboardingStore.getState()
+    expect(seen).not.toContain('ready')
+    expect(s.status).toBe('error')
+    expect(s.failedStep).toBe('install-runtime')
+    expect(s.runtimeInstallFailures).toBe(2)
+    expect(h.installCalls).toEqual(['pi', 'pi'])
+  })
+
+  it('a retried runtime install that succeeds finishes through refresh to ready', async () => {
+    h.runtimeRows = runtimeRows(false)
+    h.installShouldThrow = true
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.probeQueue = [
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+    ]
+    await useDaemonOnboardingStore.getState().refresh()
+    await waitForDaemonOnboardingPostReady()
+
+    h.installShouldThrow = false
+    await useDaemonOnboardingStore.getState().retryRuntimeInstall()
+    await waitForDaemonOnboardingPostReady()
+
+    const s = useDaemonOnboardingStore.getState()
+    expect(s.status).toBe('ready')
+    expect(s.runtimeInstallFailures).toBe(0)
+    expect(h.installCalls).toEqual(['pi', 'pi'])
   })
 
   it('installs the runtime for a freshly named machine before it is ready', async () => {

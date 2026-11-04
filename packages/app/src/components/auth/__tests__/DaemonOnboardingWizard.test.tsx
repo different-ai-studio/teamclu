@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
+import { invoke } from '@tauri-apps/api/core'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => 'test-host') }))
 
@@ -21,6 +22,8 @@ function seed(over: Record<string, unknown> = {}) {
     step: null,
     completedSteps: [],
     failedStep: null,
+    daemonOutdated: false,
+    runtimeInstallFailures: 0,
     runStartedAt: null,
     completedAgent: null,
     refresh: noop,
@@ -30,6 +33,7 @@ function seed(over: Record<string, unknown> = {}) {
     forceReset: noop,
     checkCloudSession: noop,
     autoHealCloudSession: noop,
+    retryRuntimeInstall: noop,
     ...over,
   })
 }
@@ -81,6 +85,78 @@ describe('DaemonOnboardingWizard', () => {
     expect(screen.queryByText(/检查网络/)).not.toBeInTheDocument()
     expect(screen.getByText(/比应用旧，报不出运行时状态/)).toBeInTheDocument()
     expect(screen.getByText(/0\.4\.1-beta\.40/)).toBeInTheDocument()
+  })
+
+  // 2026-11-04: a Node crash ends on its version footer, and that footer was
+  // the only thing a stuck user could see or send us.
+  const NODE_CRASH =
+    "amuxd install-pi failed: pi install failed (exit status: 1): node:internal/modules/cjs/loader:1386\n" +
+    "Error: Cannot find module '/x/npm-cli.js'\n    at Function._resolveFilename (node:internal)\n\nNode.js v24.20.0"
+
+  it('leads a failed install with its cause and keeps the trace behind a toggle', () => {
+    seed({ status: 'error', failedStep: 'install-runtime', error: NODE_CRASH, runtimeInstallFailures: 1 })
+    render(<DaemonOnboardingWizard onDone={() => {}} />)
+    expect(screen.getByText("Error: Cannot find module '/x/npm-cli.js'")).toBeInTheDocument()
+    expect(screen.queryByText(/Node\.js v24\.20\.0/)).not.toBeInTheDocument()
+    expect(screen.getByText(/完整日志：.*logs\/install-pi\.log/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '复制详情' })).toBeInTheDocument()
+    // One failure: Retry is still the right advice.
+    expect(screen.queryByRole('button', { name: '重启应用' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '显示详情' }))
+    expect(screen.getByText(/Node\.js v24\.20\.0/)).toBeInTheDocument()
+  })
+
+  it('offers a restart once installs keep failing', () => {
+    vi.mocked(invoke).mockClear()
+    seed({ status: 'error', failedStep: 'install-runtime', error: NODE_CRASH, runtimeInstallFailures: 2 })
+    render(<DaemonOnboardingWizard onDone={() => {}} />)
+    expect(screen.getByText(/已经连续失败 2 次/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重启应用' }))
+    return vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('restart_app'))
+  })
+
+  it('does not offer a restart for a daemon too old to answer', () => {
+    seed({
+      status: 'error',
+      failedStep: 'install-runtime',
+      daemonOutdated: true,
+      error: 'stale',
+      runtimeInstallFailures: 5,
+    })
+    render(<DaemonOnboardingWizard onDone={() => {}} />)
+    expect(screen.queryByRole('button', { name: '重启应用' })).not.toBeInTheDocument()
+  })
+
+  // AuthGate mounts the wizard whenever the status turns 'starting' or 'error'.
+  // A refresh on that mount marked a healthy daemon 'ready' over the failure,
+  // AuthGate unmounted the wizard, the post-ready check reinstalled, failed,
+  // and remounted it — every few seconds, error on screen for an instant.
+  it.each(['starting', 'error'] as const)(
+    'mounting on %s reports the work in flight instead of starting a refresh',
+    (status) => {
+      const refresh = vi.fn(noop)
+      seed({ status, failedStep: status === 'error' ? 'install-runtime' : null, error: 'x', refresh })
+      render(<DaemonOnboardingWizard onDone={() => {}} />)
+      expect(refresh).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(['unknown', 'needs-onboard', 'mismatch'] as const)('mounting on %s starts the work', (status) => {
+    const refresh = vi.fn(noop)
+    seed({ status, refresh })
+    render(<DaemonOnboardingWizard onDone={() => {}} />)
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries a failed runtime install in place rather than through refresh', () => {
+    const refresh = vi.fn(noop)
+    const retryRuntimeInstall = vi.fn(noop)
+    seed({ status: 'error', failedStep: 'install-runtime', error: 'boom', refresh, retryRuntimeInstall })
+    render(<DaemonOnboardingWizard onDone={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(retryRuntimeInstall).toHaveBeenCalledTimes(1)
+    expect(refresh).not.toHaveBeenCalled()
   })
 
   it('offers reconnect rather than retry when cloud auth is what failed', () => {
