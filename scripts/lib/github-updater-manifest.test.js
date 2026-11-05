@@ -8,7 +8,7 @@ const test = require("node:test");
 
 const { buildLatestJson, missingReleaseAssets } = require("./github-updater-manifest");
 const { stageGithubReleaseAssets } = require("./stage-github-release-assets");
-const { publishGithubRelease } = require("../publish-teamclu-github-release");
+const { isNotFound, publishGithubRelease } = require("../publish-teamclu-github-release");
 
 const VERSION = "0.4.1-beta.103";
 const NAMES = [
@@ -84,6 +84,32 @@ test("stageGithubReleaseAssets copies dmg, updater, and setup exe with spaces re
     "Team_Clu.dmg",
   ]);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("macOS release staging gives each architecture a distinct versioned updater name", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gh-release-arch-"));
+  for (const arch of ["aarch64", "x86_64"]) {
+    const bundle = path.join(root, arch, "bundle");
+    fs.mkdirSync(path.join(bundle, "macos"), { recursive: true });
+    fs.writeFileSync(path.join(bundle, "macos", "TeamClu.app.tar.gz"), arch);
+    fs.writeFileSync(path.join(bundle, "macos", "TeamClu.app.tar.gz.sig"), `sig:${arch}`);
+    stageGithubReleaseAssets(bundle, path.join(root, "merged"), { version: VERSION, arch });
+  }
+  const names = fs.readdirSync(path.join(root, "merged"));
+  assert.deepEqual(missingReleaseAssets(names).filter((name) => name.includes("updater")), []);
+  assert.deepEqual(names.sort(), [
+    `TeamClu_${VERSION}_aarch64.app.tar.gz`,
+    `TeamClu_${VERSION}_aarch64.app.tar.gz.sig`,
+    `TeamClu_${VERSION}_x86_64.app.tar.gz`,
+    `TeamClu_${VERSION}_x86_64.app.tar.gz.sig`,
+  ]);
+  assert.equal(fs.readFileSync(path.join(root, "merged", names[0]), "utf8"), "aarch64");
+  assert.equal(fs.readFileSync(path.join(root, "merged", names[2]), "utf8"), "x86_64");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("an absent GitHub tag reported as 422 is treated as not found", () => {
+  assert.equal(isNotFound(new Error("gh: No commit found for SHA: v0.4.1-beta.112 (HTTP 422)")), true);
 });
 
 function writeAssets(dir) {
