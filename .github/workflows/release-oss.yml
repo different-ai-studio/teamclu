@@ -446,7 +446,9 @@ jobs:
 
       - name: Stage GitHub Release assets
         if: inputs.brand == 'teamclu'
-        run: node scripts/lib/stage-github-release-assets.js github-release "target/${{ matrix.target }}/release/bundle" "apps/desktop/target/${{ matrix.target }}/release/bundle"
+        env:
+          TAG: ${{ inputs.tag }}
+        run: node scripts/lib/stage-github-release-assets.js github-release --version "${TAG#v}" --arch "${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}" "target/${{ matrix.target }}/release/bundle" "apps/desktop/target/${{ matrix.target }}/release/bundle"
 
       - name: Upload GitHub Release assets
         if: inputs.brand == 'teamclu'

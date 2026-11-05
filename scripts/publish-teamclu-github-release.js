@@ -34,7 +34,7 @@ function defaultRun(args) {
 
 function isNotFound(err) {
   const text = `${err.stderr || ""}\n${err.message || ""}`;
-  return /not found/i.test(text) || /\b404\b/.test(text);
+  return /not found/i.test(text) || /no commit found/i.test(text) || /\b404\b/.test(text);
 }
 
 function parseArgs(argv) {

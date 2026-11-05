@@ -12,6 +12,8 @@ test("release-oss publishes a TeamClu GitHub Release from the same desktop artif
   assert.match(workflow, /publish-github-release:/);
   assert.match(workflow, /inputs\.brand == 'teamclu'/);
   assert.match(workflow, /node scripts\/lib\/stage-github-release-assets\.js/);
+  assert.match(workflow, /stage-github-release-assets\.js github-release --version/);
+  assert.match(workflow, /--arch/);
   assert.match(workflow, /node scripts\/publish-teamclu-github-release\.js/);
   assert.match(workflow, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
   assert.doesNotMatch(workflow, /publish-github-release:[\s\S]*NIGHTLY_DISPATCH_PAT/);
