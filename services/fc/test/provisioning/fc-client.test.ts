@@ -327,6 +327,88 @@ test("ensureHttpTrigger updates an existing trigger then verifies protection", a
   assert.deepEqual(url, { internetUrlDisabled: true });
 });
 
+for (const operation of ["createTrigger", "updateTrigger", "createCustomDomain", "updateCustomDomain"] as const) {
+  test(`${operation} recovers from concurrent FC updates without treating the conflict as AlreadyExists`, async () => {
+    let attempts = 0;
+    const domain = operation.includes("CustomDomain");
+    const create = domain ? "createCustomDomain" : "createTrigger";
+    const update = domain ? "updateCustomDomain" : "updateTrigger";
+    const { client } = fakeClient({
+      ...(operation === update ? { [create]: async () => { throw {
+        code: domain ? "CustomDomainAlreadyExists" : "TriggerAlreadyExists", statusCode: 409,
+      }; } } : { [update]: async () => { assert.fail("ConcurrentUpdateError is not AlreadyExists"); } }),
+      [operation]: async () => {
+        attempts++;
+        if (attempts === 1) throw { data: { Code: "ConcurrentUpdateError", StatusCode: 409 } };
+        return { body: {} };
+      },
+    });
+    const log = mock.method(console, "error", () => {});
+    try {
+      const ops = makeFcOps(client, OPS_CONFIG);
+      if (domain) assert.equal(await ops.ensureCustomDomain("tc-app-1", DOMAIN, TARGET), `http://${DOMAIN}`);
+      else assert.deepEqual(await ops.ensureHttpTrigger("tc-app-1"), { internetUrlDisabled: true });
+      assert.equal(attempts, 2);
+      assert.equal(log.mock.callCount(), 0, "recovered conflicts must not be logged as terminal failures");
+    } finally { log.mock.restore(); }
+  });
+}
+
+test("trigger update can recover after the observed three-second FC settling window", async () => {
+  const started = Date.now();
+  let attempts = 0;
+  const { client } = fakeClient({
+    createTrigger: async () => { throw { code: "TriggerAlreadyExists", statusCode: 409 }; },
+    updateTrigger: async () => {
+      attempts++;
+      if (Date.now() - started < 3000) throw { code: "ConcurrentUpdateError", statusCode: 409 };
+      return { body: {} };
+    },
+  });
+  assert.deepEqual(await makeFcOps(client, OPS_CONFIG).ensureHttpTrigger("tc-app-1"), { internetUrlDisabled: true });
+  assert.ok(attempts > 1 && attempts <= 6);
+});
+
+test("persistent concurrent updates stop after bounded retries and retain the last FC failure", async () => {
+  let attempts = 0;
+  const { client, calls } = fakeClient({
+    createTrigger: async () => { throw { code: "TriggerAlreadyExists", statusCode: 409 }; },
+    updateTrigger: async () => {
+      attempts++;
+      throw { code: "ConcurrentUpdateError", statusCode: 409,
+        data: { RequestId: "1-6aec41e2-17a43751-d25cf4c6408a" } };
+    },
+  });
+  const log = mock.method(console, "error", () => {});
+  try {
+    await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureHttpTrigger("tc-app-1"), (error: any) => {
+      assert.equal(error.code, "origin_security_unavailable");
+      assert.deepEqual(error.details, { operation: "updateTrigger", providerCode: "ConcurrentUpdateError",
+        providerStatusCode: 409, providerRequestId: "1-6aec41e2-17a43751-d25cf4c6408a" });
+      return true;
+    });
+    assert.equal(attempts, 6);
+    assert.ok(!calls.some(call => call[0] === "getTrigger"), "a failed write must not pass verification");
+    assert.equal(log.mock.callCount(), 1);
+  } finally { log.mock.restore(); }
+});
+
+for (const code of ["AccessDenied", "InvalidArgument", "UnknownConflict"]) {
+  test(`HTTP 409 ${code} is neither retried nor treated as AlreadyExists`, async () => {
+    let attempts = 0;
+    const { client, calls } = fakeClient({ createTrigger: async () => { attempts++; throw { code, statusCode: 409 }; } });
+    const log = mock.method(console, "error", () => {});
+    try {
+      await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureHttpTrigger("tc-app-1"), (error: any) => {
+        assert.equal(error.operation, "createTrigger");
+        return true;
+      });
+      assert.equal(attempts, 1);
+      assert.ok(!calls.some(call => call[0] === "updateTrigger"));
+    } finally { log.mock.restore(); }
+  });
+}
+
 test("ensureHttpTrigger recovers when FC cannot read a newly created trigger yet", async () => {
   const missing = Object.assign(new Error("trigger not found"), { statusCode: 404, code: "TriggerNotFound" });
   const exists = Object.assign(new Error("trigger exists"), { statusCode: 409, code: "TriggerAlreadyExists" });

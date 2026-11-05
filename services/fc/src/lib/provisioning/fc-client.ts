@@ -306,19 +306,21 @@ function isNotFound(e: any): boolean {
   return e?.statusCode === 404 || e?.code === "FunctionNotFound" || e?.data?.Code === "FunctionNotFound";
 }
 function isAlreadyExists(e: any): boolean {
-  return e?.statusCode === 409 || /AlreadyExists/i.test(e?.code ?? e?.data?.Code ?? "");
+  return ["AlreadyExists", "TriggerAlreadyExists", "CustomDomainAlreadyExists"].includes(e?.code ?? e?.data?.Code);
 }
 
-function isTriggerNotFound(e: any): boolean {
-  return (e?.code ?? e?.data?.Code) === "TriggerNotFound";
-}
-
-async function retryTriggerNotFound<T>(operation: () => Promise<T>): Promise<T> {
+async function retryOriginPropagation<T>(operation: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await operation();
-    } catch (e) {
-      if (!isTriggerNotFound(e) || attempt === 3) throw e;
+    } catch (e: any) {
+      const code = e?.code ?? e?.data?.Code;
+      // FC can still reject trigger writes after UpdateFunction returns 200.
+      // Allow 7.75s of backoff for this conflict, keeping the existing 1.75s
+      // missing-trigger budget. Both share an attempt counter, so mixed errors
+      // cannot restart the budget indefinitely.
+      const retries = code === "ConcurrentUpdateError" ? 5 : code === "TriggerNotFound" ? 3 : 0;
+      if (attempt >= retries) throw e;
       await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
     }
   }
@@ -331,7 +333,7 @@ const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"
 // than echoing a string merely because it has an identifier-like shape.
 const ORIGIN_PROVIDER_CODES = new Set([
   "AccessDenied", "Forbidden", "Unauthorized", "TriggerNotFound", "CustomDomainNotFound",
-  "FunctionNotFound", "TriggerAlreadyExists", "CustomDomainAlreadyExists",
+  "FunctionNotFound", "TriggerAlreadyExists", "CustomDomainAlreadyExists", "ConcurrentUpdateError",
   "InvalidArgument", "InvalidParameter", "InvalidParameterValue", "InvalidParameterType",
   "InvalidAccessKeyId.NotFound", "SignatureDoesNotMatch", "Throttling", "InternalError",
   "InternalServerError", "ServiceUnavailable", "RequestError", "SDK.TimeoutError",
@@ -507,7 +509,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       const triggerConfig = JSON.stringify({ authType: "anonymous", disableURLInternet: true, methods: HTTP_METHODS });
       // Keep the HTTP trigger for domain routing, but never publish its default URL.
       let operation = "createTrigger";
-      await originCall("ensureHttpTrigger", () => retryTriggerNotFound(async () => {
+      await originCall("ensureHttpTrigger", () => retryOriginPropagation(async () => {
         operation = "createTrigger";
         try {
           await client.createTrigger(functionName, new $fc.CreateTriggerRequest({
@@ -536,7 +538,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         authConfig: new $fc.AuthConfig({ authType: "jwt", authInfo: JSON.stringify(jwtInfo(config, target)) }),
       };
       let operation = "createCustomDomain";
-      await originCall("ensureCustomDomain", () => retryTriggerNotFound(async () => {
+      await originCall("ensureCustomDomain", () => retryOriginPropagation(async () => {
         operation = "createCustomDomain";
         try {
           await client.createCustomDomain(new $fc.CreateCustomDomainRequest({ body: new $fc.CreateCustomDomainInput({ domainName, ...body }) }));
