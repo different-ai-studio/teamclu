@@ -18,6 +18,14 @@ function protectedDomain(domainName = DOMAIN, functionName = "tc-app-1") {
     authConfig: { authType: "jwt", authInfo: JSON.stringify({ jwks: originJwks(ORIGIN, TARGET.appId), tokenLookup: "header:X-Teamclu-Origin-Authorization:Bearer ", claimPassBy: "header:version:X-Teamclu-Origin-Version" }) } };
 }
 const OPS_CONFIG = { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", originAuth: ORIGIN };
+test("existing domains use FC's observed DomainNameAlreadyExists code to update and verify protection", async () => {
+  const { client, calls } = fakeClient({ createCustomDomain: async () => {
+    throw { code: "DomainNameAlreadyExists", statusCode: 409 };
+  } });
+  assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain("tc-app-1", DOMAIN, TARGET), `http://${DOMAIN}`);
+  assert.ok(calls.some(call => call[0] === "updateCustomDomain"));
+  assert.ok(calls.some(call => call[0] === "getCustomDomain"));
+});
 test('readback rejects a Bearer prefix that would leave a space in the extracted JWT', async () => {
   const domain = protectedDomain();
   const info = JSON.parse(domain.authConfig.authInfo);

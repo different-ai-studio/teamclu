@@ -306,7 +306,7 @@ function isNotFound(e: any): boolean {
   return e?.statusCode === 404 || e?.code === "FunctionNotFound" || e?.data?.Code === "FunctionNotFound";
 }
 function isAlreadyExists(e: any): boolean {
-  return ["AlreadyExists", "TriggerAlreadyExists", "CustomDomainAlreadyExists"].includes(e?.code ?? e?.data?.Code);
+  return ["AlreadyExists", "TriggerAlreadyExists", "CustomDomainAlreadyExists", "DomainNameAlreadyExists"].includes(e?.code ?? e?.data?.Code);
 }
 
 async function retryOriginPropagation<T>(operation: () => Promise<T>): Promise<T> {
@@ -333,7 +333,7 @@ const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"
 // than echoing a string merely because it has an identifier-like shape.
 const ORIGIN_PROVIDER_CODES = new Set([
   "AccessDenied", "Forbidden", "Unauthorized", "TriggerNotFound", "CustomDomainNotFound",
-  "FunctionNotFound", "TriggerAlreadyExists", "CustomDomainAlreadyExists", "ConcurrentUpdateError",
+  "FunctionNotFound", "TriggerAlreadyExists", "CustomDomainAlreadyExists", "DomainNameAlreadyExists", "ConcurrentUpdateError",
   "InvalidArgument", "InvalidParameter", "InvalidParameterValue", "InvalidParameterType",
   "InvalidAccessKeyId.NotFound", "SignatureDoesNotMatch", "Throttling", "InternalError",
   "InternalServerError", "ServiceUnavailable", "RequestError", "SDK.TimeoutError",
