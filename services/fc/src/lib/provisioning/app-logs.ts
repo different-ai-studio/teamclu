@@ -96,6 +96,30 @@ function num(raw: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/** FC's requestURI can contain one-time credentials. Expose only the route;
+ * the query is not needed to correlate a request with its status/requestId. */
+function safeRequestPath(requestUri: string | undefined): string | undefined {
+  if (!requestUri) return undefined;
+  if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(requestUri)) {
+    try {
+      const parsed = new URL(requestUri, "https://request.invalid");
+      return parsed.search ? `${parsed.pathname}?[REDACTED]` : parsed.pathname;
+    } catch {
+      return "[REDACTED]";
+    }
+  }
+  const query = requestUri.indexOf("?");
+  const fragment = requestUri.indexOf("#");
+  const pathEnd = Math.min(
+    query < 0 ? requestUri.length : query,
+    fragment < 0 ? requestUri.length : fragment,
+  );
+  const path = requestUri.slice(0, pathEnd);
+  return query >= 0 && query < (fragment < 0 ? requestUri.length : fragment)
+    ? `${path}?[REDACTED]`
+    : path;
+}
+
 /** Level for a line the app printed. FC adds no level of its own. */
 export function inferLevel(message: string): "info" | "warn" | "error" {
   if (ERROR_WORDS.test(message) || ERROR_CLASS.test(message)) return "error";
@@ -123,7 +147,7 @@ export function normalizeSlsRow(row: SlsRow): AppLogEntry | null {
   const statusCode = num(row.statusCode);
   const durationMs = num(row.durationMs);
   const method = row.method || undefined;
-  const path = row.requestURI || undefined;
+  const path = safeRequestPath(row.requestURI);
   const failed = row.hasFunctionError === "true" || (statusCode ?? 0) >= 500;
   const parts = [method, path].filter(Boolean).join(" ");
   const tail = [

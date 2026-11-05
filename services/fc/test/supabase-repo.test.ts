@@ -2372,7 +2372,7 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   assert.deepEqual(Object.keys(items[0]).sort(), [
     "appCode", "appCodeUrl", "usesAppCodeDomain",
     "authMode", "authAudience", "authScope", "authRules", "authModePendingRedeploy",
-    "envPendingRedeploy", "typePendingRedeploy",
+    "envPendingRedeploy", "typePendingRedeploy", "artifactVerification", "deployProgress",
     "createdAt", "createdByActorId",
     "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
     "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "invitedByActorId", "name", "oauthClientId",
@@ -5525,6 +5525,61 @@ function appCodeDeployHarness(overrides: Record<string, unknown> = {}, extra: an
   };
   return { db, repo, start };
 }
+
+test("apps: successful finalize records verification for status and runtime discovery", async () => {
+  const { repo, start } = appCodeDeployHarness();
+  const started = await start();
+  const artifactVerification = {
+    status: "checked", revision: APP_REVISION, target: "Linux/x86_64",
+    hostOs: "macos", hostArch: "aarch64", unknownFiles: [],
+  };
+  const finished = await repo.finalizeDeploy("app-1", {
+    ...appFinalize(started.deployToken), artifactVerification,
+  });
+  assert.deepEqual(finished.artifactVerification, artifactVerification);
+  assert.equal(finished.deployProgress.phase, "idle");
+  assert.equal(finished.deployProgress.lastPublishedRevision, APP_REVISION);
+  assert.deepEqual((await repo.getApp("app-1")).artifactVerification, artifactVerification);
+  const runtime = await repo.getAppRuntimeInfo("app-1");
+  assert.deepEqual(runtime.currentDeployment.artifactVerification, artifactVerification);
+});
+
+test("apps: finalize rejects verification for another revision", async () => {
+  const { repo, start } = appCodeDeployHarness();
+  const started = await start();
+  await assert.rejects(() => repo.finalizeDeploy("app-1", {
+    ...appFinalize(started.deployToken),
+    artifactVerification: {
+      status: "checked", revision: "other", target: "Linux/x86_64", unknownFiles: [],
+    },
+  }), (error: any) => error.code === "artifact_verification_unknown");
+});
+
+test("apps: status exposes deploy phase without exposing the deploy bearer", async () => {
+  const { repo } = appCodeDeployHarness();
+  const preflight = await repo.preflightAppDeploy("app-1", {
+    revision: APP_REVISION, declaration: APP_DECLARATION,
+  });
+  const waiting = await repo.getApp("app-1");
+  assert.equal(waiting.deployProgress.phase, "preflight_pending");
+  assert.equal(waiting.deployProgress.approval, "unknown");
+  assert.match(preflight.attemptId, /^[0-9a-f-]{36}$/);
+  assert.equal(waiting.deployProgress.attemptId, preflight.attemptId);
+  const repeated = await repo.preflightAppDeploy("app-1", {
+    revision: APP_REVISION, declaration: APP_DECLARATION,
+  });
+  assert.equal(repeated.attemptId, preflight.attemptId);
+  assert.equal(JSON.stringify(waiting).includes(preflight.token), false);
+
+  const started = await repo.deployApp("app-1", {
+    ...APP_DEPLOY, preflightToken: preflight.token,
+  });
+  const building = await repo.getApp("app-1");
+  assert.equal(building.deployProgress.phase, "build_or_upload");
+  assert.equal(building.deployProgress.attemptId, preflight.attemptId);
+  assert.equal(building.deployProgress.startedAt, started.updatedAt);
+  assert.equal(JSON.stringify(building).includes(preflight.token), false);
+});
 
 test("apps: existing domains change only after an explicitly opted-in successful deploy", async () => {
   for (const optIn of [undefined, false, true]) {

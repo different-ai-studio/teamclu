@@ -7517,6 +7517,10 @@ paths:
                 required: [token, preview]
                 properties:
                   token: { type: string }
+                  attemptId:
+                    type: [string, "null"]
+                    format: uuid
+                    description: Safe correlation id for status after an ambiguous tool timeout; null on a reused legacy preflight.
                   preview:
                     type: object
                     required: [firstDeploy, changes, requiresMigrationApproval, originSecurity]
@@ -7691,6 +7695,8 @@ paths:
                       $ref: "#/components/schemas/AppBuildSpec"
                     start:
                       $ref: "#/components/schemas/AppStartSpec"
+                artifactVerification:
+                  $ref: "#/components/schemas/AppArtifactVerification"
       responses:
         "200":
           description: The app, now live.
@@ -8041,6 +8047,10 @@ paths:
                       runtime: { type: [string, "null"] }
                       startSpec: { type: [object, "null"], additionalProperties: true }
                       commit: { type: [string, "null"] }
+                      artifactVerification:
+                        oneOf:
+                          - $ref: "#/components/schemas/AppArtifactVerification"
+                          - type: "null"
                       deployedAt: { type: [string, "null"], format: date-time }
                       historical: { type: boolean }
                       serving: { type: boolean }
@@ -8091,6 +8101,9 @@ paths:
         a log-service query, whose tokenizer silently drops terms containing
         punctuation. A window whose scan budget was reached comes back with
         `truncated: true`.
+        Request entries omit all query values from both `path` and `message`
+        before filtering or returning rows. Application-printed lines are
+        untrusted text and may still include values the application printed.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
@@ -10198,6 +10211,17 @@ components:
       properties:
         app: { $ref: "#/components/schemas/App" }
         operation: { $ref: "#/components/schemas/AppUndeployOperation" }
+    AppArtifactVerification:
+      type: object
+      required: [status, revision, target, hostOs, hostArch, unknownFiles]
+      description: Selected daemon's check for the exact artifact revision published by a successful finalize. This is a host-side check, not a target-runtime execution test.
+      properties:
+        status: { type: string, enum: [checked] }
+        revision: { type: string }
+        target: { type: string, enum: [Linux/x86_64] }
+        hostOs: { type: string }
+        hostArch: { type: string }
+        unknownFiles: { type: array, items: { type: string }, maxItems: 0 }
     App:
       type: object
       required: [id, teamId, name, slug, appCode, usesAppCodeDomain, appCodeUrl, publicUrl, type, visibility, provisionStatus, createdAt, updatedAt]
@@ -10292,6 +10316,11 @@ components:
             - $ref: "#/components/schemas/AppStartSpec"
             - type: "null"
           description: Start configuration persisted from the last successful declaration.
+        artifactVerification:
+          oneOf:
+            - $ref: "#/components/schemas/AppArtifactVerification"
+            - type: "null"
+          description: Null when the last published artifact has no recorded daemon check.
         authMode:
           $ref: "#/components/schemas/AppAuthMode"
         authAudience:
@@ -10357,6 +10386,17 @@ components:
           oneOf:
             - $ref: "#/components/schemas/AppFcStatus"
             - type: "null"
+        deployProgress:
+          type: object
+          description: Server snapshot, not an acknowledgement that a particular MCP call completed. The deploy bearer is never returned.
+          required: [attemptId, phase, approval, startedAt, lastPublishedAt, lastPublishedRevision]
+          properties:
+            attemptId: { type: [string, "null"], format: uuid, description: Safe correlation id retained for the latest deploy attempt. }
+            phase: { type: string, enum: [preflight_pending, build_or_upload, finalizing, failed, idle] }
+            approval: { type: string, enum: [unknown], description: A preflight reservation does not prove a native approval dialog is showing. }
+            startedAt: { type: [string, "null"], format: date-time }
+            lastPublishedAt: { type: [string, "null"], format: date-time }
+            lastPublishedRevision: { type: [string, "null"] }
         fcEndpoint:
           type: [string, "null"]
           description: >-
@@ -10449,7 +10489,9 @@ components:
         statusCode: { type: [integer, "null"] }
         durationMs: { type: [number, "null"] }
         method: { type: [string, "null"] }
-        path: { type: [string, "null"] }
+        path:
+          type: [string, "null"]
+          description: Request path with query values replaced by `[REDACTED]`; omitted on app output.
         coldStart: { type: [boolean, "null"] }
     AppLogsPage:
       type: object

@@ -81,6 +81,23 @@ export function parseDeployToken(raw: unknown): string {
   return raw.trim();
 }
 
+/** The selected daemon's build check, bound to the exact artifact revision. */
+export function parseArtifactVerification(raw: unknown, revision: string) {
+  if (raw === undefined || raw === null) return null; // Older clients leave no evidence.
+  const value = raw as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.status !== "checked" || value.target !== "Linux/x86_64"
+    || value.revision !== revision || !Array.isArray(value.unknownFiles)
+    || value.unknownFiles.length !== 0
+    || typeof value.hostOs !== "string" || typeof value.hostArch !== "string") {
+    throw new ApiError(400, "artifact_verification_unknown", "artifact verification must be checked for the finalized Linux/x86_64 revision");
+  }
+  return {
+    status: "checked", revision, target: "Linux/x86_64",
+    hostOs: value.hostOs, hostArch: value.hostArch, unknownFiles: [],
+  };
+}
+
 type DeployGateRow = {
   appCode?: string | null;
   usesAppCodeDomain?: boolean;

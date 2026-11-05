@@ -2,6 +2,9 @@ export interface ArtifactVerification {
   status: string
   unknownFiles: string[]
   revision: string
+  target?: string
+  hostOs?: string
+  hostArch?: string
 }
 
 export function artifactVerificationError(verification: ArtifactVerification | null, revision: string): string | null {

@@ -243,6 +243,7 @@ impl AppOps<'_> {
         // build actually pushed, so the deploy finalizes on the app's own
         // declaration rather than the built-in contract.
         finalize_body["declaration"] = declaration.clone();
+        finalize_body["artifactVerification"] = build["artifactVerification"].clone();
         if let Some(image) = row_str(&build, "image") {
             finalize_body["image"] = json!(image);
         }
@@ -494,6 +495,10 @@ mod tests {
         assert_eq!(
             finalize[0].as_ref().unwrap()["declaration"]["build"]["kind"],
             "node"
+        );
+        assert_eq!(
+            finalize[0].as_ref().unwrap()["artifactVerification"]["revision"],
+            "sha256:d"
         );
         // Nobody asked to switch domains, so the field is not sent at all:
         // absent is what keeps the app on the domain it already has.

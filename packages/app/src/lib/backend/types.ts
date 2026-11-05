@@ -9,6 +9,7 @@ import type { MemberRoleRef, OrgRolesBackend } from "@/lib/backend/cloud-api/org
 import type { AdminBackend } from "@/lib/backend/cloud-api/admin";
 import type { OAuthProvider } from "@/lib/auth";
 import type { AppTypeId } from "@/lib/apps/app-types";
+import type { ArtifactVerification } from "@/lib/apps/artifact-verification";
 
 export type { MemberRoleRef, OrgRole, OrgRoleCreate, OrgRolePatch, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
 export type {
@@ -1325,6 +1326,8 @@ export interface AppRow {
   runtime: AppBuildKind;
   /** Start configuration persisted from the last successful deploy declaration. */
   startSpec: AppStartSpec | null;
+  /** Last successful deployment's daemon check; null for old or unchecked deployments. */
+  artifactVerification?: ArtifactVerification | null;
   authMode: AppAuthMode;
   authAudience: AppAuthAudience;
   authScope: AppAuthScope;
@@ -1353,6 +1356,15 @@ export interface AppRow {
   oauthClientId: string | null;
   provisionStatus: string;
   fcStatus: string | null;
+  /** Server snapshot for recovering an ambiguous deploy tool timeout. */
+  deployProgress?: {
+    attemptId: string | null;
+    phase: "preflight_pending" | "build_or_upload" | "finalizing" | "failed" | "idle";
+    approval: "unknown";
+    startedAt: string | null;
+    lastPublishedAt: string | null;
+    lastPublishedRevision: string | null;
+  };
   fcEndpoint: string | null;
   fcFunctionName: string | null;
   fcRegion: string | null;
@@ -1389,6 +1401,8 @@ export interface DeployAppResult extends AppRow {
 
 export interface AppDeployPreflightResult {
   token: string;
+  /** Safe correlation id; unlike token, may be shown in diagnostics. */
+  attemptId?: string | null;
   preview: { firstDeploy: boolean; requiresMigrationApproval: boolean; changes: Array<{ field: string; from: unknown; to: unknown }> };
 }
 
@@ -1637,6 +1651,7 @@ export interface AppsBackend {
       /** The image a container build pushed. Required for one, refused for
        *  anything else — see the control plane's parseDeployedImage. */
       image?: string;
+      artifactVerification?: ArtifactVerification;
     },
   ): Promise<AppRow>;
   /** The credential for the app's repo: a JIT Gitea deploy key for a

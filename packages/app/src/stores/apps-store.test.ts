@@ -132,7 +132,7 @@ const buildResult = (
 
 const withCheckedVerification = <T extends ReturnType<typeof buildResult>>(build: T) => ({
   ...build,
-  artifactVerification: { status: "checked" as const, revision: build.revision, unknownFiles: [] },
+  artifactVerification: { status: "checked" as const, revision: build.revision, target: "Linux/x86_64", hostOs: "macos", hostArch: "aarch64", unknownFiles: [] },
 });
 
 const gitCred = {
@@ -976,6 +976,7 @@ describe("apps-store deploy", () => {
     });
     expect(mocks.finalizeDeploy).toHaveBeenCalledExactlyOnceWith(appId, {
       gitCommitSha: revision, revision, declaration: defaultDeclaration, deployToken: "tok-1",
+      artifactVerification: expect.objectContaining({ status: "checked", revision }),
     });
     expect(useAppsStore.getState().items).toEqual([finalized]);
     expect(useAppsStore.getState().deployingIds).toEqual([]);
@@ -1129,6 +1130,7 @@ describe("apps-store deploy", () => {
       declaration,
       image: image.reference,
       deployToken: "tok-1",
+      artifactVerification: expect.objectContaining({ status: "checked", revision }),
     });
     expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "live" });
   });
@@ -1172,6 +1174,7 @@ describe("apps-store deploy", () => {
       revision,
       declaration: defaultDeclaration,
       deployToken: "tok-1",
+      artifactVerification: expect.objectContaining({ status: "checked", revision }),
     });
     expect(mocks.updateAppDeployStatus).not.toHaveBeenCalled();
     expect(useAppsStore.getState().items[0]).toMatchObject({
@@ -1487,6 +1490,7 @@ describe("apps-store deploy", () => {
       revision: contentDigest,
       declaration: defaultDeclaration,
       deployToken: "tok-1",
+      artifactVerification: expect.objectContaining({ status: "checked", revision: contentDigest }),
     });
     expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "live" });
   });

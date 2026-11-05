@@ -1049,6 +1049,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         // object, so finalizing without it would point the function at whatever
         // the previous deploy left in OSS.
         ...(build.image ? { image: build.image } : {}),
+        artifactVerification: build.artifactVerification!,
         deployToken: started.deployToken,
       });
       // The merged row carries `authModePendingRedeploy` straight from the
