@@ -327,21 +327,58 @@ async function retryTriggerNotFound<T>(operation: () => Promise<T>): Promise<T> 
 // FC removes the prefix verbatim; include the gateway's separating space.
 const ORIGIN_TOKEN_LOOKUP = "header:X-Teamclu-Origin-Authorization:Bearer ";
 const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"];
+// Codes are provider-defined identifiers. Keep an explicit allowlist rather
+// than echoing a string merely because it has an identifier-like shape.
+const ORIGIN_PROVIDER_CODES = new Set([
+  "AccessDenied", "Forbidden", "Unauthorized", "TriggerNotFound", "CustomDomainNotFound",
+  "FunctionNotFound", "TriggerAlreadyExists", "CustomDomainAlreadyExists",
+  "InvalidArgument", "InvalidParameter", "InvalidParameterValue", "InvalidParameterType",
+  "InvalidAccessKeyId.NotFound", "SignatureDoesNotMatch", "Throttling", "InternalError",
+  "InternalServerError", "ServiceUnavailable", "RequestError", "SDK.TimeoutError",
+  "SDK.ServerUnreachable", "ETIMEDOUT", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN",
+]);
+// FC's SDK responses use a UUID or a 1-<8 hex>-<8 hex>-<12 hex> request ID.
+// Other strings are omitted so an arbitrary token cannot become a diagnostic.
+const FC_REQUEST_ID_PATTERN = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|1-[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{12})$/i;
+type OriginProviderDetails = {
+  operation: string;
+  providerCode: string;
+  providerStatusCode: number | null;
+  providerRequestId: string | null;
+};
+
 class OriginProviderError extends ApiError {
-  constructor(readonly operation: string, error?: any) {
-    const code = error?.code ?? error?.data?.Code;
-    // An arbitrary provider error message/request can include submitted JWKS or PEM.
-    const known = ["AccessDenied", "Forbidden", "Unauthorized", "TriggerNotFound", "CustomDomainNotFound", "InvalidArgument", "Throttling", "InternalError"];
-    // Keep the safe stage/code through finalizeDeploy's ApiError boundary.
-    // Never attach the original error: it can carry credentials or JWT config.
+  constructor(readonly operation: string, error?: any, stage = operation) {
+    const rawCode = error?.code ?? error?.data?.Code;
+    const providerCode = typeof rawCode === "string" && ORIGIN_PROVIDER_CODES.has(rawCode)
+      ? rawCode : "ProviderError";
+    const rawStatus = error?.statusCode ?? error?.data?.statusCode ?? error?.data?.StatusCode;
+    const status = typeof rawStatus === "string" && rawStatus.length === 3 && /^\d{3}$/.test(rawStatus) ? Number(rawStatus) : rawStatus;
+    const rawRequestId = error?.data?.RequestId ?? error?.data?.requestId ?? error?.requestId;
+    const details: OriginProviderDetails = {
+      operation,
+      providerCode,
+      providerStatusCode: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
+      providerRequestId: typeof rawRequestId === "string"
+        && (rawRequestId.length === 32 || rawRequestId.length === 36)
+        && FC_REQUEST_ID_PATTERN.test(rawRequestId) ? rawRequestId : null,
+    };
+    const attribution = stage === operation ? operation : `${stage}/${operation}`;
+    const metadata = [providerCode,
+      ...(details.providerStatusCode === null ? [] : [`provider HTTP ${details.providerStatusCode}`]),
+      ...(details.providerRequestId === null ? [] : [`requestId ${details.providerRequestId}`])];
+    // Only this projection crosses the API/log boundary. SDK messages, request
+    // objects, headers and causes can contain submitted JWT keys or credentials.
     super(503, "origin_security_unavailable",
-      `origin security unavailable: ${operation} (${known.includes(code) ? code : "ProviderError"})`);
+      `origin security unavailable: ${attribution} (${metadata.join("; ")})`, { details });
   }
 }
-async function originCall<T>(operation: string, call: () => Promise<T>): Promise<T> {
+async function originCall<T>(operation: string, call: () => Promise<T>, currentOperation?: () => string): Promise<T> {
   try { return await call(); } catch (error) {
     if (error instanceof OriginSecurityDrift) throw error;
-    throw new OriginProviderError(operation, error);
+    const failure = new OriginProviderError(currentOperation?.() ?? operation, error, operation);
+    console.error("[apps-fc] origin operation failed", failure.details);
+    throw failure;
   }
 }
 function jsonObject(value: unknown): any {
@@ -469,18 +506,22 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       requireOriginConfig(cfg);
       const triggerConfig = JSON.stringify({ authType: "anonymous", disableURLInternet: true, methods: HTTP_METHODS });
       // Keep the HTTP trigger for domain routing, but never publish its default URL.
+      let operation = "createTrigger";
       await originCall("ensureHttpTrigger", () => retryTriggerNotFound(async () => {
+        operation = "createTrigger";
         try {
           await client.createTrigger(functionName, new $fc.CreateTriggerRequest({
             body: new $fc.CreateTriggerInput({ triggerName: "http", triggerType: "http", triggerConfig }),
           }));
         } catch (e) {
           if (!isAlreadyExists(e)) throw e;
+          operation = "updateTrigger";
           await client.updateTrigger(functionName, "http", new $fc.UpdateTriggerRequest({ body: new $fc.UpdateTriggerInput({ triggerConfig }) }));
         }
+        operation = "getTrigger";
         const trigger = await client.getTrigger(functionName, "http");
         if (jsonObject(trigger?.body?.triggerConfig)?.disableURLInternet !== true) throw driftError(["disableURLInternet"]);
-      }));
+      }), () => operation);
       return { internetUrlDisabled: true };
     },
 
@@ -494,14 +535,17 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         routeConfig: new $fc.RouteConfig({ routes: [new $fc.PathConfig({ path: "/*", functionName, qualifier: "LATEST" })] }),
         authConfig: new $fc.AuthConfig({ authType: "jwt", authInfo: JSON.stringify(jwtInfo(config, target)) }),
       };
+      let operation = "createCustomDomain";
       await originCall("ensureCustomDomain", () => retryTriggerNotFound(async () => {
+        operation = "createCustomDomain";
         try {
           await client.createCustomDomain(new $fc.CreateCustomDomainRequest({ body: new $fc.CreateCustomDomainInput({ domainName, ...body }) }));
         } catch (e) {
           if (!isAlreadyExists(e)) throw e;
+          operation = "updateCustomDomain";
           await client.updateCustomDomain(domainName, new $fc.UpdateCustomDomainRequest({ body: new $fc.UpdateCustomDomainInput(body) }));
         }
-      }));
+      }), () => operation);
       const summary = await this.readOriginSecurity(functionName, domainName, target);
       if (summary.status !== "protected") throw driftError(summary.driftFields);
       return `http://${domainName}`;

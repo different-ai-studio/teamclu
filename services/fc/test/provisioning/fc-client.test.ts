@@ -1,5 +1,5 @@
 import { originJwks, type OriginAuthConfig } from "../../src/lib/apps-origin-auth.js";
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { makeFcOps, fcEndpoint, accountIdFromRoleArn, readAppsFcVpcConfig } from "../../src/lib/provisioning/fc-client.js";
 
@@ -727,3 +727,121 @@ test("code identity verifies exact route, JWT and entrypoints before publishing 
   }
   assert.equal(calls.length, before);
 });
+
+
+for (const operation of ["createTrigger", "updateTrigger", "getTrigger"] as const) {
+  test(`terminal ${operation} failure preserves safe FC diagnostics`, async () => {
+    const requestId = "1-6aec24c8-170e05b9-be151e526d3b";
+    const providerError = Object.assign(new Error("Bearer private-token; secret JWKS body"), {
+      code: "InvalidParameterValue",
+      statusCode: 400,
+      data: { Code: "InvalidParameterValue", RequestId: requestId, Message: "private-key-material" },
+      request: { headers: { Authorization: "private-authorization" } },
+    });
+    const conflict = Object.assign(new Error("exists"), { statusCode: 409, code: "TriggerAlreadyExists" });
+    const { client } = fakeClient({
+      ...(operation === "updateTrigger" ? { createTrigger: async () => { throw conflict; } } : {}),
+      [operation]: async () => { throw providerError; },
+    });
+    const log = mock.method(console, "error", () => {});
+    try {
+      await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureHttpTrigger("tc-app-1"), (error: any) => {
+        assert.equal(error.statusCode, 503);
+        assert.equal(error.code, "origin_security_unavailable");
+        assert.equal(error.operation, operation);
+        assert.deepEqual(error.details, {
+          operation,
+          providerCode: "InvalidParameterValue",
+          providerStatusCode: 400,
+          providerRequestId: requestId,
+        });
+        assert.ok(error.message.includes(operation));
+        assert.ok(error.message.includes("InvalidParameterValue"));
+        assert.ok(error.message.includes(requestId));
+        assert.equal(error.cause, undefined);
+        assert.doesNotMatch(JSON.stringify(error), /private-|JWKS/);
+        return true;
+      });
+      assert.equal(log.mock.callCount(), 1);
+      assert.deepEqual(log.mock.calls[0].arguments, ["[apps-fc] origin operation failed", {
+        operation,
+        providerCode: "InvalidParameterValue",
+        providerStatusCode: 400,
+        providerRequestId: requestId,
+      }]);
+    } finally { log.mock.restore(); }
+  });
+}
+
+for (const operation of ["createCustomDomain", "updateCustomDomain"] as const) {
+  test(`terminal ${operation} failure identifies the individual FC call`, async () => {
+    const conflict = Object.assign(new Error("exists"), { statusCode: 409, code: "CustomDomainAlreadyExists" });
+    const { client } = fakeClient({
+      ...(operation === "updateCustomDomain" ? { createCustomDomain: async () => { throw conflict; } } : {}),
+      [operation]: async () => { throw { code: "AccessDenied", statusCode: 403 }; },
+    });
+    const log = mock.method(console, "error", () => {});
+    try {
+      await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureCustomDomain("tc-app-1", DOMAIN, TARGET),
+        (error: any) => error.operation === operation && error.details.providerStatusCode === 403);
+    } finally { log.mock.restore(); }
+  });
+}
+
+test("FC diagnostics reject malformed metadata and exclude arbitrary error payloads", async () => {
+  const { client } = fakeClient({ createTrigger: async () => { throw {
+    code: "Bearer secret-token",
+    statusCode: "500 private-token",
+    requestId: "Bearer secret-token",
+    message: "private-key-material",
+    data: { RequestId: "private\nkey", headers: { Authorization: "private-authorization" } },
+  }; } });
+  const log = mock.method(console, "error", () => {});
+  try {
+    await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureHttpTrigger("tc-app-1"), (error: any) => {
+      assert.deepEqual(error.details, {
+        operation: "createTrigger", providerCode: "ProviderError", providerStatusCode: null, providerRequestId: null,
+      });
+      assert.doesNotMatch(JSON.stringify(error), /secret-token|private|Authorization/);
+      return true;
+    });
+    assert.doesNotMatch(JSON.stringify(log.mock.calls), /secret-token|private|Authorization/);
+  } finally { log.mock.restore(); }
+});
+
+test("FC diagnostics read nested SDK status and request id without logging recovered conflicts", async () => {
+  const conflict = Object.assign(new Error("exists"), { statusCode: 409, code: "TriggerAlreadyExists" });
+  const { client } = fakeClient({
+    createTrigger: async () => { throw conflict; },
+    updateTrigger: async () => { throw { data: { Code: "AccessDenied", statusCode: 403, RequestId: "01A1AA4B-6E7C-5975-AB29-60C585C1550C" } }; },
+  });
+  const log = mock.method(console, "error", () => {});
+  try {
+    await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureHttpTrigger("tc-app-1"), (error: any) => {
+      assert.equal(error.details.providerCode, "AccessDenied");
+      assert.equal(error.details.providerStatusCode, 403);
+      assert.equal(error.details.providerRequestId, "01A1AA4B-6E7C-5975-AB29-60C585C1550C");
+      return true;
+    });
+    assert.equal(log.mock.callCount(), 1);
+  } finally { log.mock.restore(); }
+});
+
+
+for (const value of ["private_key_material", "aB3dE5gH7jK9mN2pQ4sT6vX8zC1fG3hJ5kL7nP9r"]) {
+  test("FC diagnostics reject credential-shaped metadata without known credential prefixes: " + value.length, async () => {
+    const { client } = fakeClient({ createTrigger: async () => { throw {
+      code: value, statusCode: 403, requestId: value,
+    }; } });
+    const log = mock.method(console, "error", () => {});
+    try {
+      await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureHttpTrigger("tc-app-1"), (error: any) => {
+        assert.equal(error.details.providerCode, "ProviderError");
+        assert.equal(error.details.providerRequestId, null);
+        assert.ok(!JSON.stringify(error).includes(value));
+        return true;
+      });
+      assert.ok(!JSON.stringify(log.mock.calls).includes(value));
+    } finally { log.mock.restore(); }
+  });
+}
