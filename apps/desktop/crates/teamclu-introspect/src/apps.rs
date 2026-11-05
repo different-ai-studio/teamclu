@@ -168,9 +168,10 @@ fn needs(arguments: &Value, key: &str, message: &str) -> Result<(), String> {
     }
 }
 
-const MANAGE_ACTIONS: [&str; 14] = [
+const MANAGE_ACTIONS: [&str; 15] = [
     "list",
     "status",
+    "deploy_status",
     "auth_info",
     "runtime_info",
     "sessions",
@@ -452,14 +453,14 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "manage_app",
-            "description": "Work with a TeamClu app — what its control panel does. Omit app_id and app_name to act on the app whose checkout is the workspace you are in; you do not need to ask the user which app this is, and `list` reports each app's local `workdir`. list: this team's apps. status: every setting, where the checkout is on this machine, what the checkout declares about how it is built and run, and how far its branch is ahead of what is live. auth_info: read the app's raw login rules, effective policies and actual organization role directory from the authenticated Cloud API; read-only and no approval. If organization_status is unconfigured, stop role configuration; never fall back to another organization. App-management access does not grant deployed-site role access. runtime_info: app deployment contract, recorded and provider runtime state, regional capabilities, historical observations, and this machine's build facts; language filters discovery. sessions: conversations linked to the app. create: a new app with its code on this machine — from a starter template (type), an existing repo (git_remote_url) or a folder already here (local_dir). update: change name, type, visibility and the deployed site's login wall (auth_*) — only the fields you pass change. reseed: write the code again for an app whose code was never written or failed to be. download: clone a team app onto this machine. move_workdir: move this machine's checkout elsewhere (not the one you are running in). deploy: build the checkout on this machine and PUBLISH TO THE PUBLIC INTERNET; an app whose auth_mode is \"none\" is readable by anyone with the URL. deploy, undeploy, delete, and an update that changes visibility or auth_* wait for the user to approve in the TeamClu desktop app; if they decline or nobody answers within two minutes nothing happens — tell the user, and do not retry on your own. undeploy: stop the live site and clean deployment resources while retaining the app, repository, sessions, database and files; requires an explicit app_id or app_name and desktop approval. Acceptance is not completion: read status for cleanup progress and retry failed cleanup only when requested. logs: what the deployed app printed, which is how you find out why it 500s. delete: take the app offline for good; needs an explicit app_id or app_name. Related tools: manage_app_access (who on the team may work on it), manage_app_env, manage_app_cron, manage_app_files, manage_app_data, manage_app_domain. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (most changes need admin on the app).",
+            "description": "Work with a TeamClu app — what its control panel does. Omit app_id and app_name to act on the app whose checkout is the workspace you are in; you do not need to ask the user which app this is, and `list` reports each app's local `workdir`. list: this team's apps. status: every setting, checkout facts, branch distance, and deploy_progress (server snapshot; native approval is not observable). deploy_status: fast recovery snapshot without daemon or git reads. After a transport or MCP timeout, read deploy_status and runtime_info before claiming failure or success; do not retry an ambiguous deploy on your own. auth_info: read login rules, effective policies and organization roles; read-only and no approval. If organization_status is unconfigured, stop role configuration; never fall back to another organization. App-management access does not grant deployed-site role access. runtime_info: deployment contract, recorded and provider runtime state, regional capabilities, historical observations, and this machine's build facts; language filters discovery. sessions: conversations linked to the app. create: a new app with code on this machine, from a starter template (type), repo (git_remote_url) or folder (local_dir). update: change name, type, visibility and login wall (auth_*) — only passed fields change. reseed: write code again for an app whose code was never written or failed. download: clone a team app onto this machine. move_workdir: move this machine's checkout elsewhere. deploy: build the checkout and PUBLISH TO THE PUBLIC INTERNET; auth_mode \"none\" is readable by anyone with the URL. deploy, undeploy, delete, and exposure updates wait for native approval in TeamClu; if declined or unanswered within two minutes nothing happens — tell the user, and do not retry on your own. undeploy: stop the live site while retaining app, repository, sessions, database and files; requires explicit app_id or app_name and desktop approval. Acceptance is not completion: read status for progress. logs: app output and request metrics. delete: take the app offline for good; needs explicit app_id or app_name. Related tools: manage_app_access, manage_app_env, manage_app_cron, manage_app_files, manage_app_data, manage_app_domain. Requires TeamClu desktop running and signed in; the user's own permissions apply (most changes need admin).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
                         "enum": MANAGE_ACTIONS,
-                        "description": "What to do with the app."
+                        "description": "What to do with the app. deploy_status is a fast server-only recovery read after an ambiguous deploy timeout; it reports a safe attempt id and phase without reading the daemon or remote git."
                     },
                     "app_id": { "type": "string", "description": format!("{APP_SELECTOR_ID} Not needed for list.") },
                     "app_name": { "type": "string", "description": APP_SELECTOR_NAME },
@@ -705,6 +706,8 @@ mod tests {
             let mut status = manage_body(WS, &args).unwrap();
             status["action"] = json!("auth_info");
             assert_eq!(body, status);
+            args["action"] = json!("deploy_status");
+            assert_eq!(manage_body(WS, &args).unwrap()["action"], "deploy_status");
         }
     }
 

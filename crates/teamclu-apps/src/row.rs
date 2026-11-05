@@ -69,6 +69,8 @@ pub fn app_brief(row: &Value) -> Value {
         "auth_mode": f("authMode"),
         "auth_mode_pending_redeploy": f("authModePendingRedeploy"),
         "git_commit_sha": f("gitCommitSha"),
+        "artifact_verification": f("artifactVerification"),
+        "deploy_progress": f("deployProgress"),
     })
 }
 
@@ -189,6 +191,28 @@ mod tests {
             "fcEndpoint": "https://raw-suffix.fcapp.run",
         });
         assert_eq!(no_vanity["fcEndpoint"], app_brief(&no_vanity)["url"]);
+    }
+
+    #[test]
+    fn app_brief_exposes_last_published_verification() {
+        let row = json!({"id":"app-1", "artifactVerification": {
+            "status":"checked", "revision":"sha256:abc", "target":"Linux/x86_64",
+            "unknownFiles": []
+        }});
+        assert_eq!(
+            app_brief(&row)["artifact_verification"],
+            row["artifactVerification"]
+        );
+    }
+
+    #[test]
+    fn app_brief_exposes_safe_deploy_phase() {
+        let row = json!({"id":"app-1", "deployProgress": {
+            "phase":"build_or_upload", "approval":"unknown", "startedAt":"2026-11-05T01:00:00Z"
+        }, "deployToken":"secret"});
+        let brief = app_brief(&row);
+        assert_eq!(brief["deploy_progress"]["phase"], "build_or_upload");
+        assert!(!brief.to_string().contains("secret"));
     }
 
     #[test]

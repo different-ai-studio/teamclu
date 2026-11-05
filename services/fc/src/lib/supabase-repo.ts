@@ -133,6 +133,7 @@ import {
   parseAppDeployDeclaration,
   parseDeclaredBuildKind,
   parseDeployedImage,
+  parseArtifactVerification,
   parseDeployToken,
   parseOptionalGitCommitSha,
   readAppsCloudApiUrl,
@@ -5395,7 +5396,7 @@ export function createSupabaseBusinessRepository(options) {
 
     async preflightAppDeploy(appId: string, input: { revision?: string; gitCommitSha?: string; declaration?: unknown; migrationIntent?: boolean }) {
       const { data: existing, error } = await supabase.from("apps")
-        .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, team_id, created_by_actor_id, provision_status, git_auth_kind, fc_status, deploy_started_at, deploy_token")
+        .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, team_id, created_by_actor_id, provision_status, git_auth_kind, fc_status, deploy_started_at, deploy_token, deploy_attempt_id")
         .eq("id", appId).maybeSingle();
       if (error) throw error;
       if (!existing) return null;
@@ -5434,13 +5435,14 @@ export function createSupabaseBusinessRepository(options) {
       if (existing.deploy_token && !isAppDeployPreflightExpired(existing.deploy_token)) {
         try {
           verifyAppDeployPreflight(existing.deploy_token, appId, revision, input.declaration, info.currentDeployment);
-          return { ...result, token: existing.deploy_token };
+          return { ...result, token: existing.deploy_token, attemptId: existing.deploy_attempt_id ?? null };
         } catch {
           throw new ApiError(409, "preflight_in_progress", "another approved preflight is still valid; retry after ten minutes");
         }
       }
       const writer = await this.appDeployWriter(existing);
-      let update = writer.from("apps").update({ deploy_token: result.token }).eq("id", appId);
+      const attemptId = randomUUID();
+      let update = writer.from("apps").update({ deploy_token: result.token, deploy_attempt_id: attemptId }).eq("id", appId);
       update = existing.deploy_token === null || existing.deploy_token === undefined
         ? update.is("deploy_token", null) : update.eq("deploy_token", existing.deploy_token);
       update = existing.fc_status === null || existing.fc_status === undefined
@@ -5448,7 +5450,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: updated, error: updateError } = await update.select("id").maybeSingle();
       if (updateError) throw updateError;
       if (!updated) throw new ApiError(409, "deploy_in_progress", "app deploy state changed during preflight");
-      return result;
+      return { ...result, attemptId };
     },
 
     async cancelAppDeployPreflight(appId: string, input: { deployToken?: string }) {
@@ -5588,7 +5590,7 @@ export function createSupabaseBusinessRepository(options) {
 
     async finalizeDeploy(
       appId: string,
-      input: { gitCommitSha?: string; revision?: string; deployToken: string; declaration?: unknown; image?: unknown },
+      input: { gitCommitSha?: string; revision?: string; deployToken: string; declaration?: unknown; image?: unknown; artifactVerification?: unknown },
     ) {
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
       const declaration = parseAppDeployDeclaration(input?.declaration);
@@ -5617,6 +5619,7 @@ export function createSupabaseBusinessRepository(options) {
       // may have no choice recorded; an already active app never reverts.
       const usesAppCodeDomain = existing.uses_app_code_domain === true || existing.deploy_use_app_code_domain === true;
       const revision = String(input?.revision ?? "");
+      const artifactVerification = parseArtifactVerification(input?.artifactVerification, revision);
       resolveAppFunctionName({ ...appFunctionTargetFromRow(existing), fcFunctionName: existing.fc_function_name });
       validateAppOrigin({ ...appFunctionTargetFromRow(existing), slug: existing.slug });
       const info = await this.getAppRuntimeInfo(appId);
@@ -5698,6 +5701,7 @@ export function createSupabaseBusinessRepository(options) {
             // build. They differ when an app's declaration changed mid-deploy.
             runtime: declaration.build.kind,
             start_spec: declaration.start,
+            artifact_verification: artifactVerification,
             // The function that just went live carries this auth_mode's env.
             // Recording it here is what lets `authModePendingRedeploy` clear —
             // and what makes the pending state a property of the row rather
@@ -5884,7 +5888,7 @@ export function createSupabaseBusinessRepository(options) {
     async getAppRuntimeInfo(appId: string, language?: AppLanguage) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, team_id, type, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, git_commit_sha, env_deployed_at, updated_at, undeploy_operation")
+        .select("id, slug, app_code, function_naming_mode, team_id, type, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, artifact_verification, git_commit_sha, env_deployed_at, updated_at, undeploy_operation")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -5914,6 +5918,7 @@ export function createSupabaseBusinessRepository(options) {
           runtime: app.runtime ?? null,
           startSpec: app.start_spec ?? null,
           commit: app.git_commit_sha ?? null,
+          artifactVerification: app.artifact_verification ?? null,
           deployedAt: app.env_deployed_at ?? null,
           functionName: app.fc_function_name ?? null,
           provider: null,

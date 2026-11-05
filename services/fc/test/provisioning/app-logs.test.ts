@@ -85,8 +85,36 @@ test("a request row reads as one sentence, with the numbers kept", () => {
   assert.equal(entry.kind, "request");
   assert.equal(entry.statusCode, 200);
   assert.equal(entry.durationMs, 25.69);
-  assert.match(entry.message, /GET \/\?status=active/);
+  assert.match(entry.message, /GET \/\?\[REDACTED\]/);
   assert.match(entry.message, /→ 200/);
+});
+
+test("request logs conceal sensitive query values in both path and message", () => {
+  const credential = "synthetic-entry-credential-123";
+  const entry = normalizeSlsRow(requestRow(1788854162, {
+    requestURI: `/quiz?entry_token=${credential}&page=2&API_KEY=synthetic-api-key`,
+  }))!;
+  assert.equal(entry.path, "/quiz?[REDACTED]");
+  assert.equal(entry.message, "GET /quiz?[REDACTED] → 200 in 25.69ms");
+  assert.equal(entry.requestId, "1-6a9fbf92-174ae003-aa99f23c49ae");
+  assert.equal(entry.statusCode, 200);
+  assert.equal(JSON.stringify(entry).includes(credential), false);
+});
+
+test("encoded sensitive query names are concealed before filtering", () => {
+  const entry = normalizeSlsRow(requestRow(1788854162, {
+    requestURI: "/quiz?entry%5Ftoken=synthetic-secret&view=summary",
+  }))!;
+  assert.equal(entry.path, "/quiz?[REDACTED]");
+  assert.deepEqual(filterEntries([entry], { kind: "request", contains: "synthetic-secret" }), []);
+});
+
+test("absolute request URIs cannot expose userinfo or query credentials", () => {
+  const entry = normalizeSlsRow(requestRow(1788854162, {
+    requestURI: "https://synthetic-user:synthetic-password@example.invalid/quiz?entry_token=synthetic-secret",
+  }))!;
+  assert.equal(entry.path, "/quiz?[REDACTED]");
+  assert.equal(JSON.stringify(entry).includes("synthetic-password"), false);
 });
 
 test("a 5xx request is an error even when FC reports no function error", () => {

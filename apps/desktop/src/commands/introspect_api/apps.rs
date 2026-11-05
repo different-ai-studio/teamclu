@@ -548,9 +548,10 @@ async fn daemon_selected_host_facts(row: &Value) -> Result<Value, String> {
 
 // ─── manage_app ─────────────────────────────────────────────────────────────
 
-const MANAGE_ACTIONS: [&str; 14] = [
+const MANAGE_ACTIONS: [&str; 15] = [
     "list",
     "status",
+    "deploy_status",
     "auth_info",
     "runtime_info",
     "sessions",
@@ -658,6 +659,7 @@ pub(super) async fn handle_app_manage(
     let out = match action.as_str() {
         "auth_info" => read_app_auth_info(&api, &row).await?,
         "status" => json!({ "action": "status", "app": ops.status(&row).await }),
+        "deploy_status" => deploy_status_snapshot(&row),
         "runtime_info" => json!({
             "action": "runtime_info",
             "runtime": api
@@ -687,6 +689,12 @@ pub(super) async fn handle_app_manage(
         other => return Err(format!("Unknown action: {other}")),
     };
     Ok(out.to_string())
+}
+
+/// Fast recovery read after an ambiguous MCP timeout: no daemon build or
+/// remote git lookup, and never the preflight/deploy bearer.
+fn deploy_status_snapshot(row: &Value) -> Value {
+    json!({ "action": "deploy_status", "app": app_brief(row) })
 }
 
 fn runtime_info_path(row: &Value, request: &Value) -> Result<String, String> {
@@ -894,6 +902,19 @@ mod tests {
             &super::MANAGE_ACTIONS
         )
         .is_ok());
+    }
+
+    #[test]
+    fn deploy_status_snapshot_exposes_phase_without_bearer() {
+        let row = serde_json::json!({"id":"app-1", "deployToken":"synthetic-secret", "deployProgress": {
+            "attemptId":"a1", "phase":"build_or_upload", "approval":"unknown"
+        }});
+        let snapshot = super::deploy_status_snapshot(&row);
+        assert_eq!(
+            snapshot["app"]["deploy_progress"]["phase"],
+            "build_or_upload"
+        );
+        assert!(!snapshot.to_string().contains("synthetic-secret"));
     }
 
     #[test]
