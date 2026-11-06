@@ -433,6 +433,25 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Desktop restore talks to storage directly. A missing object is a 404 from
+/// that GET; keep the sentence specific and leave the presigned URL out of it.
+fn checkpoint_http_failure(
+    action: &str,
+    status: Option<reqwest::StatusCode>,
+    detail: &str,
+) -> String {
+    if action == "download" && status == Some(reqwest::StatusCode::NOT_FOUND) {
+        return "Wiki checkpoint object is missing.".to_string();
+    }
+    format!("Cannot {action} Wiki checkpoint: {detail}")
+}
+
+fn checkpoint_transfer_error(action: &str, error: reqwest::Error) -> String {
+    let status = error.status();
+    let detail = error.without_url().to_string();
+    checkpoint_http_failure(action, status, &detail)
+}
+
 fn validate_checkpoint_bytes(
     bytes: &[u8],
     expected_size: u64,
@@ -785,7 +804,7 @@ pub async fn kb_maintainer_upload_checkpoint(
             .body(bytes)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|e| format!("Cannot upload Wiki checkpoint: {e}"))?;
+            .map_err(|e| checkpoint_transfer_error("upload", e))?;
         Ok(())
     })
     .await
@@ -889,7 +908,7 @@ pub async fn kb_maintainer_restore_checkpoint(
             .get(url)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|e| format!("Cannot download Wiki checkpoint: {e}"))?;
+            .map_err(|e| checkpoint_transfer_error("download", e))?;
         let bytes = response
             .bytes()
             .map_err(|e| format!("Cannot read Wiki checkpoint download: {e}"))?;
@@ -1428,6 +1447,26 @@ mod tests {
         fs::write(&lock, b"").unwrap();
         acquire_run_lock(&lock).unwrap();
         assert!(acquire_run_lock(&lock).is_err());
+    }
+
+    #[test]
+    fn missing_checkpoint_object_is_named_without_the_presigned_url() {
+        assert_eq!(
+            checkpoint_http_failure(
+                "download",
+                Some(reqwest::StatusCode::NOT_FOUND),
+                "secret-url"
+            ),
+            "Wiki checkpoint object is missing."
+        );
+        assert_eq!(
+            checkpoint_http_failure("download", Some(reqwest::StatusCode::FORBIDDEN), "HTTP 403"),
+            "Cannot download Wiki checkpoint: HTTP 403"
+        );
+        assert_eq!(
+            checkpoint_http_failure("upload", Some(reqwest::StatusCode::NOT_FOUND), "HTTP 404"),
+            "Cannot upload Wiki checkpoint: HTTP 404"
+        );
     }
 
     #[test]

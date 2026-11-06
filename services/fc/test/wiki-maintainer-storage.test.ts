@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import {
   assertCheckpointDescriptor,
+  checkpointDownloadUrl,
   checkpointObjectKey,
   checkpointUpload,
   retainedCheckpointGenerations,
@@ -89,6 +90,47 @@ test("checkpoint completion rejects an object key from another team", async () =
     /object key does not match/,
   );
   assert.equal(inspected, false);
+});
+
+test("checkpoint download names a missing object and does not sign a url", async () => {
+  let signed = 0;
+  const storage: any = {
+    stat: async () => null,
+    createDownloadUrl: async () => {
+      signed += 1;
+      return "https://objects.example/missing";
+    },
+  };
+  await assert.rejects(
+    () => checkpointDownloadUrl(checkpointObjectKey(TEAM, HASH), storage, 10),
+    (error: any) => error.statusCode === 404 && error.message === "Wiki checkpoint object is missing.",
+  );
+  assert.equal(signed, 0);
+});
+
+test("checkpoint download signs a url only after the object is present", async () => {
+  const key = checkpointObjectKey(TEAM, HASH);
+  let signedKey = "";
+  const storage: any = {
+    stat: async () => ({ size: 10 }),
+    createDownloadUrl: async (objectKey: string) => {
+      signedKey = objectKey;
+      return "https://objects.example/checkpoint";
+    },
+  };
+  assert.equal(await checkpointDownloadUrl(key, storage, 10), "https://objects.example/checkpoint");
+  assert.equal(signedKey, key);
+});
+
+test("checkpoint download rejects a present object whose size does not match", async () => {
+  const storage: any = {
+    stat: async () => ({ size: 9 }),
+    createDownloadUrl: async () => "https://objects.example/checkpoint",
+  };
+  await assert.rejects(
+    () => checkpointDownloadUrl(checkpointObjectKey(TEAM, HASH), storage, 10),
+    (error: any) => error.statusCode === 422 && /wrong size/.test(error.message),
+  );
 });
 
 test("checkpoint completion reads the authoritative manifest from verified bytes", async () => {
