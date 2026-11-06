@@ -812,8 +812,9 @@ async fn main() {
     );
 
     let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
+    let stdout = std::sync::Arc::new(std::sync::Mutex::new(std::io::stdout()));
     let reader = BufReader::new(stdin.lock());
+    let mut requests = tokio::task::JoinSet::new();
 
     for line in reader.lines() {
         let line = match line {
@@ -838,20 +839,41 @@ async fn main() {
                     "id": null,
                     "error": {"code": -32700, "message": format!("Parse error: {e}")}
                 });
-                let mut out = stdout.lock();
+                let mut out = stdout.lock().unwrap();
                 let _ = writeln!(out, "{}", err_resp);
                 let _ = out.flush();
                 continue;
             }
         };
 
-        if let Some(response) = handle_request(&req, &workspace, api_port, &sock).await {
-            let mut out = stdout.lock();
-            let _ = writeln!(out, "{}", response);
-            let _ = out.flush();
+        // JoinSet retains completed tasks until they are collected. This is a
+        // long-lived MCP process, so reap earlier responses on every request.
+        while let Some(result) = requests.try_join_next() {
+            if let Err(error) = result {
+                eprintln!("[introspect] request task failed: {error}");
+            }
         }
+
+        // A deploy may keep waiting for a native approval or a build after
+        // the MCP host times out. Let a following deploy_status request run
+        // immediately instead of queuing it behind that unresolved call.
+        let stdout = std::sync::Arc::clone(&stdout);
+        let workspace = workspace.clone();
+        let sock = sock.clone();
+        requests.spawn(async move {
+            if let Some(response) = handle_request(&req, &workspace, api_port, &sock).await {
+                let mut out = stdout.lock().unwrap();
+                let _ = writeln!(out, "{}", response);
+                let _ = out.flush();
+            }
+        });
     }
 
+    while let Some(result) = requests.join_next().await {
+        if let Err(error) = result {
+            eprintln!("[introspect] request task failed: {error}");
+        }
+    }
     eprintln!("[introspect] stdin closed, exiting");
 }
 
