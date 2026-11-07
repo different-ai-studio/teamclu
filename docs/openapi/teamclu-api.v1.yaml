@@ -1006,6 +1006,11 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+  # MQTT inbox/<userId> attention ping (not an HTTP route — documented here so
+  # clients share one contract with FC fan-out / mark-viewed):
+  #   message: { v:2, type:"message", team_id, session_id, message_id, kind, mentioned, ts }
+  #   read:    { v:2, type:"read",    team_id, session_id, kind, ts }
+  # kind ∈ regular|channel|app|cron; mentioned is true only for the named actor.
   /v1/sessions/{sessionId}/mark-viewed:
     post:
       operationId: markSessionViewed
@@ -11169,6 +11174,13 @@ components:
             - string
             - "null"
         hasUnread:
+          type: boolean
+        hasMention:
+          description: >-
+            True when at least one unread message names the caller's actor in
+            `metadata.mention_actor_ids`. Mentions of other people do not set
+            this. Served by `list_current_actor_sessions_v2` as of
+            20261107000000; absent/false on older list paths.
           type: boolean
         appId:
           description: >-

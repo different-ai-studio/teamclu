@@ -286,6 +286,7 @@ export function mapSessionFull(row) {
     lastMessageAt: row?.last_message_at ?? null,
     lastMessagePreview: row?.last_message_preview ?? null,
     hasUnread: false,
+    hasMention: false,
     acpSessionId: row?.acp_session_id ?? null,
     binding: row?.binding ?? null,
     // The chat a session belongs to for its whole life. `binding` is released
@@ -385,6 +386,7 @@ export function mapSession(row) {
     lastMessageAt: row?.last_message_at ?? null,
     lastMessagePreview: row?.last_message_preview ?? null,
     hasUnread: row?.has_unread === true,
+    hasMention: row?.has_mention === true,
     createdAt: row?.created_at ?? null,
     updatedAt: row?.updated_at ?? null,
     // Origin marker. List rows come from the list_current_actor_sessions RPC,

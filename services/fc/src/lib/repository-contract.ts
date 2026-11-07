@@ -28,6 +28,7 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     assert.ok(rows.length >= 2, "contract fixture must include at least two sessions");
     assert.deepEqual(Object.keys(rows[0]).sort(), [
       "createdAt",
+      "hasMention",
       "hasUnread",
       "ideaId",
       "lastMessageAt",
