@@ -51,6 +51,7 @@ function entry(overrides: Partial<SessionListEntry> = {}): SessionListEntry {
     mode: 'solo',
     idea_id: null,
     has_unread: false,
+    has_mention: false,
     created_at: '2026-07-01T00:00:00.000Z',
     updated_at: '2026-07-01T00:00:00.000Z',
     ...overrides,

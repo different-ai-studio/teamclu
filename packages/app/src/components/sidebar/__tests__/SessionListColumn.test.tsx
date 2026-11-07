@@ -95,8 +95,11 @@ const mkSessionRow = (over: Partial<{
   mode: 'collab' as const,
   idea_id: null as string | null,
   has_unread: false,
+  has_mention: false,
   source: 'user' as string | null,
   app_id: null as string | null,
+  created_at: '2026-05-16T07:59:00.000Z',
+  updated_at: '2026-05-16T08:00:00.000Z',
   ...over,
 })
 
@@ -113,6 +116,7 @@ const mkRow = (over: Partial<{ id: string; title: string; ideaId: string | null;
   last_message_at: over.lastMessageAt ?? '2026-05-17T08:00:00.000Z',
   last_message_preview: null,
   has_unread: false,
+  has_mention: false,
   created_at: '2026-05-17T07:59:00.000Z',
   updated_at: '2026-05-17T08:00:00.000Z',
 })

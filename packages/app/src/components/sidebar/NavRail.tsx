@@ -3,6 +3,10 @@ import { useTranslation } from 'react-i18next'
 import { Inbox, Lightbulb, Keyboard, ChevronDown } from 'lucide-react'
 import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
+import {
+  aggregateAttentionByKind,
+  totalAttention,
+} from '@/lib/session/session-list-attention'
 
 // Clicking 会话 doubles as a "something looks stale" fallback: refetch
 // the first page of sessions (cloud + local hydrate). Throttled so rapid
@@ -26,15 +30,19 @@ import { NewChatSplitButton } from '@/components/sidebar/NewChatSplitButton'
 import { AppsNavSection } from '@/components/sidebar/AppsNavSection'
 import { useFeatures } from '@/lib/config/remote-features'
 import { cn } from '@/lib/utils'
+import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
+import { MentionSignal, UnreadSignal } from '@/components/sidebar/session-attention-signal'
 
 interface TopEntryProps {
   label: string
   icon: React.ComponentType<{ className?: string }>
   active?: boolean
+  /** Attention signal: mention text or hollow unread ring (no counts). */
+  signal?: React.ReactNode
   onClick: () => void
 }
 
-function TopEntry({ label, icon: Icon, active, onClick }: TopEntryProps) {
+function TopEntry({ label, icon: Icon, active, signal, onClick }: TopEntryProps) {
   return (
     <button
       type="button"
@@ -50,6 +58,7 @@ function TopEntry({ label, icon: Icon, active, onClick }: TopEntryProps) {
         className={cn('h-[15px] w-[15px] shrink-0', active ? 'text-foreground' : 'text-muted-foreground')}
       />
       <span className="min-w-0 flex-1 truncate">{label}</span>
+      {signal ? <span className={NAV_ROW_TRAILING_SLOT}>{signal}</span> : null}
     </button>
   )
 }
@@ -65,8 +74,33 @@ export function NavRail() {
   const setMoreExpanded = useUIStore((s) => s.setMoreNavExpanded)
   const showCronSessions = useCronStore((s) => s.showCronSessions)
   const setShowCronSessions = useCronStore((s) => s.setShowCronSessions)
+  const attentionBySessionId = useSessionListStore((s) => s.attentionBySessionId)
+  const sessionsAttention = React.useMemo(
+    () => totalAttention(aggregateAttentionByKind(attentionBySessionId)),
+    [attentionBySessionId],
+  )
   const quickChatState = useQuickChatReadiness()
   const [creating, setCreating] = React.useState(false)
+
+  const sessionsSignal = React.useMemo(() => {
+    if (sessionsAttention.mention > 0) {
+      return (
+        <MentionSignal
+          aria-label={t('sidebar.mentioned', 'Mentioned')}
+          data-testid="nav-sessions-mention"
+        />
+      )
+    }
+    if (sessionsAttention.unread > 0) {
+      return (
+        <UnreadSignal
+          aria-label={t('sidebar.unread', 'Unread')}
+          data-testid="nav-sessions-unread"
+        />
+      )
+    }
+    return null
+  }, [sessionsAttention, t])
 
   // Counts feed rows in both groups, so the fetch lives here rather than in
   // either TeamShareNavSection instance.
@@ -146,6 +180,7 @@ export function NavRail() {
           label={t('sidebar.sessions', 'Sessions')}
           icon={Inbox}
           active={filter.kind === 'all' && !showCronSessions}
+          signal={sessionsSignal}
           onClick={() => {
             setShowCronSessions(false)
             setFilter({ kind: 'all' })

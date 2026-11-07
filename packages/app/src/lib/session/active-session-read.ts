@@ -38,7 +38,7 @@ export function scheduleMarkActiveSessionRead(
   const scheduledWhileActive = isSessionActivelyViewed(sessionId);
   if (!scheduledWhileActive) return;
 
-  useSessionListStore.getState().patchRow(sessionId, { has_unread: false });
+  useSessionListStore.getState().clearSessionAttention(sessionId);
 
   const existing = pendingBySession.get(sessionId);
   if (existing) clearTimeout(existing.timer);

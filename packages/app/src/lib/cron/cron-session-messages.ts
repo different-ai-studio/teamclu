@@ -56,6 +56,7 @@ export async function ensureCronSessionVisible(sessionId: string): Promise<void>
       mode: "collab",
       idea_id: null,
       has_unread: false,
+      has_mention: false,
       // Origin marker. Every caller of this function is a cron surface ("Run
       // Now", run history's 查看对话), and the row we synthesise here is what
       // the sidebar filters on until the next paginated reload replaces it.

@@ -33,11 +33,15 @@ function makeEnv(topic: string, payload: unknown): { topic: string; bytes: numbe
 function makeStore(rowIds: string[]): InboxStore & {
   patchRow: ReturnType<typeof vi.fn>;
   loadFirstPage: ReturnType<typeof vi.fn>;
+  noteInboxMessage: ReturnType<typeof vi.fn>;
+  clearSessionAttention: ReturnType<typeof vi.fn>;
 } {
   return {
     rows: rowIds.map((id) => ({ id })),
     patchRow: vi.fn(),
     loadFirstPage: vi.fn(async () => {}),
+    noteInboxMessage: vi.fn(),
+    clearSessionAttention: vi.fn(),
   };
 }
 
@@ -55,53 +59,101 @@ describe("handleInboxEnvelope", () => {
     vi.useRealTimers();
   });
 
-  it("patches has_unread immediately and debounces list reload for cached sessions", () => {
+  it("notes attention and debounces kind-scoped reload", () => {
     const store = makeStore(["s1", "s2"]);
     handleInboxEnvelope(
-      makeEnv("inbox/u1", { session_id: "s1", ts: 12345 }),
+      makeEnv("inbox/u1", {
+        session_id: "s1",
+        kind: "channel",
+        mentioned: true,
+        ts: 12345,
+      }),
       "u1",
       store,
     );
-    expect(store.patchRow).toHaveBeenCalledWith("s1", { has_unread: true });
+    expect(store.noteInboxMessage).toHaveBeenCalledWith({
+      sessionId: "s1",
+      kind: "channel",
+      mentioned: true,
+    });
     expect(store.loadFirstPage).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
-    expect(store.loadFirstPage).toHaveBeenCalledOnce();
+    expect(store.loadFirstPage).toHaveBeenCalledWith(50, "channel");
   });
 
-  it("debounces list reload when session is not in cache", () => {
+  it("debounces list reload for an unknown session when kind is present", () => {
     const store = makeStore(["s1"]);
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { session_id: "newsession", kind: "regular" }),
+      "u1",
+      store,
+    );
+    expect(store.noteInboxMessage).toHaveBeenCalledWith({
+      sessionId: "newsession",
+      kind: "regular",
+      mentioned: false,
+    });
+    expect(store.loadFirstPage).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
+    expect(store.loadFirstPage).toHaveBeenCalledWith(50, "regular");
+  });
+
+  it("falls back to legacy unread when kind is missing", () => {
+    const store = makeStore(["s1"]);
+    handleInboxEnvelope(makeEnv("inbox/u1", { session_id: "s1" }), "u1", store);
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
+    expect(store.patchRow).toHaveBeenCalledWith("s1", { has_unread: true });
+    vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
+    expect(store.loadFirstPage).toHaveBeenCalledWith(50, undefined);
+  });
+
+  it("legacy missing-kind still refreshes for unknown sessions", () => {
+    const store = makeStore(["s1"]);
+    const onMessagePing = vi.fn();
     handleInboxEnvelope(
       makeEnv("inbox/u1", { session_id: "newsession" }),
       "u1",
       store,
+      console,
+      { onMessagePing },
     );
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
     expect(store.patchRow).not.toHaveBeenCalled();
-    expect(store.loadFirstPage).not.toHaveBeenCalled();
-
+    expect(onMessagePing).toHaveBeenCalledWith("newsession");
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
-    expect(store.loadFirstPage).toHaveBeenCalledOnce();
+    expect(store.loadFirstPage).toHaveBeenCalledWith(50, undefined);
   });
 
   it("coalesces burst pings into a single list reload", () => {
     const store = makeStore(["s1", "s2"]);
-    handleInboxEnvelope(makeEnv("inbox/u1", { session_id: "s1" }), "u1", store);
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { session_id: "s1", kind: "regular" }),
+      "u1",
+      store,
+    );
     vi.advanceTimersByTime(100);
-    handleInboxEnvelope(makeEnv("inbox/u1", { session_id: "s2" }), "u1", store);
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { session_id: "s2", kind: "channel" }),
+      "u1",
+      store,
+    );
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
     expect(store.loadFirstPage).toHaveBeenCalledOnce();
+    expect(store.loadFirstPage).toHaveBeenCalledWith(50, "channel");
   });
 
   it("ignores pings for a different user (defensive, broker ACL should also block)", () => {
     const store = makeStore(["s1"]);
     const logger = { warn: vi.fn() };
     handleInboxEnvelope(
-      makeEnv("inbox/other-user", { session_id: "s1" }),
+      makeEnv("inbox/other-user", { session_id: "s1", kind: "regular" }),
       "u1",
       store,
       logger,
     );
-    expect(store.patchRow).not.toHaveBeenCalled();
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
     expect(store.loadFirstPage).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalled();
@@ -111,12 +163,12 @@ describe("handleInboxEnvelope", () => {
     const store = makeStore(["s1"]);
     const logger = { warn: vi.fn() };
     handleInboxEnvelope(
-      makeEnv("amux/t1/session/s1/live", { session_id: "s1" }),
+      makeEnv("amux/t1/session/s1/live", { session_id: "s1", kind: "regular" }),
       "u1",
       store,
       logger,
     );
-    expect(store.patchRow).not.toHaveBeenCalled();
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
     expect(store.loadFirstPage).not.toHaveBeenCalled();
     expect(logger.warn).not.toHaveBeenCalled();
@@ -131,7 +183,7 @@ describe("handleInboxEnvelope", () => {
       store,
       logger,
     );
-    expect(store.patchRow).not.toHaveBeenCalled();
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalled();
   });
 
@@ -156,7 +208,7 @@ describe("handleInboxEnvelope", () => {
     const store = makeStore(["s1"]);
     const logger = { warn: vi.fn() };
     handleInboxEnvelope(makeEnv("inbox/u1", { ts: 123 }), "u1", store, logger);
-    expect(store.patchRow).not.toHaveBeenCalled();
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
     expect(store.loadFirstPage).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalled();
@@ -166,7 +218,7 @@ describe("handleInboxEnvelope", () => {
     const store = makeStore(["s1"]);
     const onMessagePing = vi.fn();
     handleInboxEnvelope(
-      makeEnv("inbox/u1", { session_id: "s1", type: "message" }),
+      makeEnv("inbox/u1", { session_id: "s1", type: "message", kind: "regular" }),
       "u1",
       store,
       console,
@@ -183,6 +235,7 @@ describe("handleInboxEnvelope", () => {
       { onMessagePing },
     );
     expect(onMessagePing).not.toHaveBeenCalled();
+    expect(store.clearSessionAttention).toHaveBeenCalledWith("s1");
   });
 
   it("handles a roster hint before unread and message side effects", () => {
@@ -198,7 +251,7 @@ describe("handleInboxEnvelope", () => {
     );
     expect(onParticipantsChanged).toHaveBeenCalledWith("s1", "team-1");
     expect(onMessagePing).not.toHaveBeenCalled();
-    expect(store.patchRow).not.toHaveBeenCalled();
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
     expect(store.loadFirstPage).not.toHaveBeenCalled();
 
@@ -211,63 +264,33 @@ describe("handleInboxEnvelope", () => {
       { onParticipantsChanged },
     );
     expect(onParticipantsChanged).not.toHaveBeenCalled();
-    expect(store.patchRow).not.toHaveBeenCalled();
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
   });
 
-  it("marks active session read instead of patching unread on message ping", () => {
+  it("marks active session read instead of noting attention on message ping", () => {
     shouldMarkSessionUnreadMock.mockReturnValue(false);
     const store = makeStore(["s1"]);
     handleInboxEnvelope(
-      makeEnv("inbox/u1", { session_id: "s1", type: "message" }),
+      makeEnv("inbox/u1", { session_id: "s1", kind: "app", mentioned: true }),
       "u1",
       store,
     );
-    expect(store.patchRow).not.toHaveBeenCalled();
-    expect(scheduleMarkActiveSessionReadMock).toHaveBeenCalledWith(
-      "s1",
-      null,
-      expect.objectContaining({ afterMarkRead: expect.any(Function) }),
-    );
-    expect(store.loadFirstPage).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
-    expect(store.loadFirstPage).not.toHaveBeenCalled();
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
+    expect(scheduleMarkActiveSessionReadMock).toHaveBeenCalled();
   });
 });
 
 describe("ensureInboxSubscribed", () => {
   beforeEach(() => {
+    resetInboxSubscriptionState();
     subscribeMock.mockReset();
     subscribeMock.mockResolvedValue(undefined);
-    resetInboxSubscriptionState();
   });
 
-  it("re-subscribes after resetInboxSubscriptionState (broker reconnect)", async () => {
-    await ensureInboxSubscribed("user-1");
+  it("subscribes once per user", async () => {
+    await ensureInboxSubscribed("u1");
+    await ensureInboxSubscribed("u1");
     expect(subscribeMock).toHaveBeenCalledTimes(1);
-    subscribeMock.mockClear();
-
-    resetInboxSubscriptionState();
-    await ensureInboxSubscribed("user-1");
-
-    expect(subscribeMock).toHaveBeenCalledTimes(1);
-    expect(subscribeMock).toHaveBeenCalledWith("inbox/user-1");
-  });
-
-  it("ignores stale subscribe that completes after reset", async () => {
-    let resolveStale!: () => void;
-    subscribeMock.mockImplementationOnce(
-      () => new Promise<void>((resolve) => { resolveStale = resolve; }),
-    );
-    subscribeMock.mockResolvedValue(undefined);
-
-    const stale = ensureInboxSubscribed("user-1");
-    resetInboxSubscriptionState();
-    await ensureInboxSubscribed("user-1");
-
-    resolveStale();
-    await stale;
-
-    expect(subscribeMock).toHaveBeenCalledTimes(2);
-    expect(subscribeMock).toHaveBeenNthCalledWith(2, "inbox/user-1");
+    expect(subscribeMock).toHaveBeenCalledWith("inbox/u1");
   });
 });

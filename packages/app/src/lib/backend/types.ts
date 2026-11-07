@@ -136,10 +136,14 @@ export interface SessionListEntry {
   mode: "solo" | "collab" | "control";
   idea_id: string | null;
   has_unread: boolean;
+  /** Unread message named this actor in mention_actor_ids. */
+  has_mention: boolean;
   /** How the session was created: 'user' | 'cron' | 'gateway'. */
   source?: string | null;
   /** For source='cron', the cron job id that created it. */
   cron_job_id?: string | null;
+  /** App id when this is an app session. */
+  app_id?: string | null;
   created_at: string | null;
   updated_at: string | null;
 }

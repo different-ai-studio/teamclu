@@ -8,6 +8,7 @@ import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-s
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { cn } from '@/lib/utils'
+import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 
 interface SectionDef {
   section: TeamShareSection
@@ -89,13 +90,15 @@ function SectionRow({
         to be noticed — a full-ink dot is enough contrast without spending the
         brand accent on it.
       */}
-      {needsAttention > 0 && (
-        <span
-          className="h-1.5 w-1.5 shrink-0 rounded-full bg-foreground"
-          aria-label={attentionLabel}
-          title={attentionLabel}
-        />
-      )}
+      {needsAttention > 0 ? (
+        <span className={NAV_ROW_TRAILING_SLOT}>
+          <span
+            className="h-1.5 w-1.5 rounded-full bg-foreground"
+            aria-label={attentionLabel}
+            title={attentionLabel}
+          />
+        </span>
+      ) : null}
     </button>
   )
 }

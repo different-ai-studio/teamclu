@@ -81,6 +81,7 @@ function sessionDetailToListEntry(session: SessionDetailRow): SessionListEntry {
     mode,
     idea_id: session.idea_id,
     has_unread: false,
+    has_mention: false,
     source: session.source ?? null,
     cron_job_id: session.cron_job_id ?? null,
     created_at: session.created_at,

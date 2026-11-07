@@ -2,21 +2,25 @@
 //
 // Handles incoming MQTT pings on `inbox/<user_id>` (published by FC fan-out
 // after each message INSERT or mark-viewed). The payload shape:
-//   { type?: "message" | "read", session_id, ts }
+//   { type?: "message" | "read", session_id, kind?, mentioned?, ts }
 // `type` is optional for backward compatibility — absent means "message".
-// For message pings the client patches unread optimistically, then debounces
-// a list reload to sync preview text and sort order.
+// Attention badges need `kind`; without it (pre-attention FC) fall back to the
+// legacy unread patch + current-list refresh so a client-only ship stays silent.
 
 import {
   scheduleMarkActiveSessionRead,
   shouldMarkSessionUnread,
 } from "@/lib/session/active-session-read";
 import { mqttSubscribe } from "@/lib/mqtt/mqtt-bridge";
+import { isSessionListKindValue } from "@/lib/session/session-list-attention";
+import type { SessionListKind } from "@/lib/session/session-list-kind";
 
 interface InboxPing {
   session_id: string;
   team_id?: string;
   type?: "message" | "read" | "session.participants";
+  kind?: string;
+  mentioned?: boolean;
   ts?: number;
 }
 
@@ -36,6 +40,8 @@ let sessionListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let subscribedInboxUserId: string | null = null;
 let pendingInboxSubscribe: Promise<void> | null = null;
 let inboxSubscribeEpoch = 0;
+/** Kind to refresh when the debounced reload fires; last ping wins. */
+let pendingRefreshKind: SessionListKind | undefined;
 
 function inboxTopicForUser(userId: string): string {
   return `inbox/${userId.trim()}`;
@@ -82,6 +88,7 @@ export function resetSessionListRefreshForTests(): void {
     clearTimeout(sessionListRefreshTimer);
     sessionListRefreshTimer = null;
   }
+  pendingRefreshKind = undefined;
   resetInboxSubscriptionState();
 }
 
@@ -89,11 +96,17 @@ export function resetSessionListRefreshForTests(): void {
 export const resetInboxListRefreshForTests = resetSessionListRefreshForTests;
 
 /** Shared by inbox pings and session/live events (e.g. unknown session message.created). */
-export function scheduleSessionListRefresh(loadFirstPage: () => Promise<void>): void {
+export function scheduleSessionListRefresh(
+  loadFirstPage: (limit?: number, kind?: SessionListKind) => Promise<void>,
+  kind?: SessionListKind,
+): void {
+  if (kind) pendingRefreshKind = kind;
   if (sessionListRefreshTimer) clearTimeout(sessionListRefreshTimer);
   sessionListRefreshTimer = setTimeout(() => {
     sessionListRefreshTimer = null;
-    void loadFirstPage();
+    const refreshKind = pendingRefreshKind;
+    pendingRefreshKind = undefined;
+    void loadFirstPage(50, refreshKind);
   }, SESSION_LIST_REFRESH_MS);
 }
 
@@ -104,8 +117,17 @@ export function scheduleSessionListRefresh(loadFirstPage: () => Promise<void>): 
  */
 export interface InboxStore {
   rows: ReadonlyArray<{ id: string }>;
-  patchRow: (sessionId: string, patch: { has_unread: boolean }) => void;
-  loadFirstPage: () => Promise<void>;
+  patchRow: (
+    sessionId: string,
+    patch: { has_unread?: boolean; has_mention?: boolean },
+  ) => void;
+  loadFirstPage: (limit?: number, kind?: SessionListKind) => Promise<void>;
+  noteInboxMessage: (input: {
+    sessionId: string;
+    kind: SessionListKind;
+    mentioned: boolean;
+  }) => void;
+  clearSessionAttention: (sessionId: string) => void;
 }
 
 interface HandleInboxEnvelopeOptions {
@@ -151,29 +173,41 @@ export function handleInboxEnvelope(
   }
 
   if (payload.type === "read") {
-    // Another device marked this session read — clear the unread dot locally.
-    store.patchRow(payload.session_id, { has_unread: false });
+    store.clearSessionAttention(payload.session_id);
     return;
   }
 
   // type === "message" or absent (legacy) — mark session unread unless viewing.
+  const kind = isSessionListKindValue(payload.kind) ? payload.kind : null;
+  const mentioned = payload.mentioned === true;
   const found = store.rows.some((r) => r.id === payload.session_id);
   const isActiveView = !shouldMarkSessionUnread(payload.session_id);
-  if (found) {
-    if (isActiveView) {
-      // Persist read marker first, then reload — avoids loadFirstPage racing
-      // ahead of markSessionViewed and re-applying hasUnread from the server.
-      scheduleMarkActiveSessionRead(payload.session_id, null, {
-        afterMarkRead: () => void store.loadFirstPage(),
-      });
-    } else {
-      // Instant unread dot; preview + last_message_at come from debounced reload.
-      store.patchRow(payload.session_id, { has_unread: true });
-    }
+
+  if (isActiveView) {
+    // Persist read marker first, then reload — avoids loadFirstPage racing
+    // ahead of markSessionViewed and re-applying hasUnread from the server.
+    scheduleMarkActiveSessionRead(payload.session_id, null, {
+      afterMarkRead: () => void store.loadFirstPage(50, kind ?? undefined),
+    });
+    options?.onMessagePing?.(payload.session_id);
+    return;
   }
 
-  options?.onMessagePing?.(payload.session_id);
-  if (!found || !isActiveView) {
-    scheduleSessionListRefresh(() => store.loadFirstPage());
+  if (kind) {
+    store.noteInboxMessage({
+      sessionId: payload.session_id,
+      kind,
+      mentioned,
+    });
+    options?.onMessagePing?.(payload.session_id);
+    scheduleSessionListRefresh(store.loadFirstPage, kind);
+    return;
   }
+
+  // Pre-attention FC: no kind → same unread path as main, no cross-kind badges.
+  if (found) {
+    store.patchRow(payload.session_id, { has_unread: true });
+  }
+  options?.onMessagePing?.(payload.session_id);
+  scheduleSessionListRefresh(store.loadFirstPage);
 }
