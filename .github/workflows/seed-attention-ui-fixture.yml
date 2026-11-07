@@ -29,16 +29,12 @@ jobs:
           envs: BELAYO_TEST_RDS_PRIVATE_HOST,BELAYO_TEST_RDS_PORT,BELAYO_TEST_RDS_USER,BELAYO_TEST_RDS_PASSWORD
           script: |
             set -eu
-            docker run --rm --network host \
-              -e PGPASSWORD="$BELAYO_TEST_RDS_PASSWORD" \
-              -e PGHOST="$BELAYO_TEST_RDS_PRIVATE_HOST" \
-              -e PGPORT="${BELAYO_TEST_RDS_PORT:-5432}" \
-              -e PGUSER="$BELAYO_TEST_RDS_USER" \
-              -e PGDATABASE=supabase_db \
-              postgres:15-alpine psql -v ON_ERROR_STOP=1 <<'SQL'
+            cat > /tmp/seed-attention-ui.sql <<'SQL'
+            \set ON_ERROR_STOP on
             DO $seed$
             DECLARE
               v_email text := '1264118202@qq.com';
+              v_team_name_want text := 'bertran huang';
               v_user_id uuid;
               v_team_id uuid;
               v_team_name text;
@@ -47,7 +43,7 @@ jobs:
               v_app_id uuid;
               v_session_id uuid;
               v_msg_id uuid;
-              v_now timestamptz := now();
+              v_now timestamptz := clock_timestamp();
               v_kind text;
               v_title text;
               v_source text;
@@ -68,10 +64,11 @@ jobs:
                 JOIN amux.teams t ON t.id = a.team_id
                WHERE a.user_id = v_user_id
                  AND a.actor_type = 'member'
+                 AND lower(t.name) = lower(v_team_name_want)
                ORDER BY a.updated_at DESC NULLS LAST, a.created_at DESC
                LIMIT 1;
               IF v_me IS NULL THEN
-                RAISE EXCEPTION 'no member actor for %', v_email;
+                RAISE EXCEPTION 'no member actor for % in team %', v_email, v_team_name_want;
               END IF;
 
               SELECT a.id INTO v_sender
@@ -88,7 +85,6 @@ jobs:
                 RETURNING id INTO v_sender;
                 INSERT INTO amux.agents (id, status, owner_member_id, visibility)
                 VALUES (v_sender, 'active', v_me, 'team');
-                RAISE NOTICE 'created sender agent %', v_sender;
               END IF;
 
               SELECT id INTO v_app_id
@@ -100,8 +96,17 @@ jobs:
                 RAISE EXCEPTION 'team % (%) has no apps; cannot seed app-kind sessions', v_team_name, v_team_id;
               END IF;
 
-              RAISE NOTICE 'seeding for user=% team=% (%) me=% sender=% app=%',
+              RAISE NOTICE 'SEED_CTX user=% team=% (%) me=% sender=% app=%',
                 v_email, v_team_name, v_team_id, v_me, v_sender, v_app_id;
+
+              -- Drop previous fixture rows for this actor so reruns stay clean.
+              DELETE FROM amux.sessions s
+               WHERE s.team_id = v_team_id
+                 AND s.title LIKE '[attention-ui]%'
+                 AND EXISTS (
+                   SELECT 1 FROM amux.session_participants sp
+                    WHERE sp.session_id = s.id AND sp.actor_id = v_me
+                 );
 
               FOR i IN 1..8 LOOP
                 v_kind := (ARRAY['regular','regular','channel','channel','app','app','cron','cron'])[i];
@@ -151,8 +156,25 @@ jobs:
                  WHERE session_id = v_session_id
                    AND actor_id = v_me;
 
-                RAISE NOTICE 'seeded % session=% msg=%', v_kind, v_session_id, v_msg_id;
+                RAISE NOTICE 'SEEDED kind=% session=% msg=% title=%', v_kind, v_session_id, v_msg_id, v_title;
               END LOOP;
             END
             $seed$;
+
+            SELECT t.name AS team, s.source, (s.app_id IS NOT NULL) AS has_app, s.title, s.id::text
+              FROM amux.sessions s
+              JOIN amux.teams t ON t.id = s.team_id
+             WHERE lower(t.name) = lower('bertran huang')
+               AND s.title LIKE '[attention-ui]%'
+             ORDER BY s.title;
             SQL
+
+            echo "=== running seed SQL ==="
+            docker run --rm --network host -i \
+              -e PGPASSWORD="$BELAYO_TEST_RDS_PASSWORD" \
+              -e PGHOST="$BELAYO_TEST_RDS_PRIVATE_HOST" \
+              -e PGPORT="${BELAYO_TEST_RDS_PORT:-5432}" \
+              -e PGUSER="$BELAYO_TEST_RDS_USER" \
+              -e PGDATABASE=supabase_db \
+              postgres:15-alpine psql -v ON_ERROR_STOP=1 < /tmp/seed-attention-ui.sql
+            echo "=== seed done ==="
