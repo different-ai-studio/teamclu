@@ -1,52 +1,184 @@
-# One-shot diagnose + seed for attention UI fixtures on self-host RDS.
+# One-shot: seed unread @mention sessions on Belayo via Cloud API container env
+# (SUPABASE_URL + service role). Disposable. Does not run on push.
 name: Seed Attention UI Fixture
 
 on:
   workflow_dispatch: {}
 
 concurrency:
-  group: selfhost-ecs
+  group: belayo-attention-seed
   cancel-in-progress: false
 
 jobs:
   seed:
     runs-on: ubuntu-latest
-    environment: self-host-production
     steps:
-      - name: Diagnose then seed on self-host DB
-        uses: appleboy/ssh-action@v1.2.5
+      - name: Start ssh-agent
+        run: |
+          eval "$(ssh-agent -s)"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+          ssh-add - <<< "${{ secrets.BELAYO_DEPLOY_SSH_KEY }}"
+          mkdir -p ~/.ssh
+          printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' > ~/.ssh/config
+
+      - name: Seed on Belayo through Dokploy manager
         env:
-          BELAYO_TEST_RDS_PRIVATE_HOST: ${{ secrets.BELAYO_TEST_RDS_PRIVATE_HOST }}
-          BELAYO_TEST_RDS_PORT: ${{ secrets.BELAYO_TEST_RDS_PORT }}
-          BELAYO_TEST_RDS_USER: ${{ secrets.BELAYO_TEST_RDS_USER }}
-          BELAYO_TEST_RDS_PASSWORD: ${{ secrets.BELAYO_TEST_RDS_PASSWORD }}
-        with:
-          host: ${{ secrets.ECS_HOST }}
-          username: ${{ secrets.ECS_USER }}
-          key: ${{ secrets.ECS_SSH_PRIVATE_KEY }}
-          command_timeout: 5m
-          envs: BELAYO_TEST_RDS_PRIVATE_HOST,BELAYO_TEST_RDS_PORT,BELAYO_TEST_RDS_USER,BELAYO_TEST_RDS_PASSWORD
-          script: |
-            set -eu
-            cat > /tmp/diag-attention.sql <<'SQL'
-            \set ON_ERROR_STOP on
-            SELECT 'USER_EXACT' AS k, id::text, email FROM auth.users WHERE lower(email) = lower('1264118202@qq.com');
-            SELECT 'USER_QQ' AS k, id::text, email FROM auth.users WHERE email ILIKE '%qq.com%' ORDER BY created_at DESC LIMIT 30;
-            SELECT 'TEAM' AS k, id::text, name FROM amux.teams WHERE name ILIKE '%bertran%' OR name ILIKE '%huang%' ORDER BY created_at DESC;
-            SELECT 'MEMBER' AS k, t.name AS team, a.id::text AS actor_id, a.display_name, u.email
-              FROM amux.teams t
-              JOIN amux.actors a ON a.team_id = t.id AND a.actor_type = 'member'
-              LEFT JOIN auth.users u ON u.id = a.user_id
-             WHERE t.name ILIKE '%bertran%' OR t.name ILIKE '%huang%'
-             ORDER BY t.name, a.display_name
-             LIMIT 50;
-            SQL
-            echo "=== diagnose ==="
-            docker run --rm --network host -i \
-              -e PGPASSWORD="$BELAYO_TEST_RDS_PASSWORD" \
-              -e PGHOST="$BELAYO_TEST_RDS_PRIVATE_HOST" \
-              -e PGPORT="${BELAYO_TEST_RDS_PORT:-5432}" \
-              -e PGUSER="$BELAYO_TEST_RDS_USER" \
-              -e PGDATABASE=supabase_db \
-              postgres:15-alpine psql -v ON_ERROR_STOP=1 < /tmp/diag-attention.sql
-            echo "=== diagnose done ==="
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+          SERVICE: teamclu-cloud-api-shadow-qjau6z
+        run: |
+          set -eu
+          ssh "root@$MGR" "SERVICE='$SERVICE' bash -s" <<'REMOTE'
+          set -eu
+          SERVICE="${SERVICE:-teamclu-cloud-api-shadow-qjau6z}"
+          ENV_DUMP=$(docker service inspect "$SERVICE" --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}')
+          if [ -z "$ENV_DUMP" ]; then
+            CID=$(docker ps --filter "label=com.docker.swarm.service.name=$SERVICE" -q | head -1)
+            ENV_DUMP=$(docker inspect "$CID" --format '{{range .Config.Env}}{{println .}}{{end}}')
+          fi
+          SUPABASE_URL=$(echo "$ENV_DUMP" | sed -n 's/^SUPABASE_URL=//p' | head -1)
+          SRK=$(echo "$ENV_DUMP" | sed -n 's/^SUPABASE_SERVICE_ROLE_KEY=//p' | head -1)
+          test -n "$SUPABASE_URL"
+          test -n "$SRK"
+          echo "SUPABASE_URL=$SUPABASE_URL"
+
+          # Prefer a throwaway node container that can reach the VPC Supabase URL.
+          docker run --rm --network host \
+            -e SUPABASE_URL="$SUPABASE_URL" \
+            -e SRK="$SRK" \
+            node:20-alpine node <<'NODE'
+          const url = process.env.SUPABASE_URL.replace(/\/$/, '');
+          const key = process.env.SRK;
+          const email = '1264118202@qq.com';
+          const teamWant = 'bertran huang';
+
+          async function req(path, { method = 'GET', body, schema = 'amux', prefer } = {}) {
+            const headers = {
+              apikey: key,
+              Authorization: `Bearer ${key}`,
+              'Content-Type': 'application/json',
+            };
+            if (schema) {
+              headers['Accept-Profile'] = schema;
+              if (method !== 'GET' && method !== 'DELETE') headers['Content-Profile'] = schema;
+            }
+            const preferParts = [];
+            if (prefer) preferParts.push(prefer);
+            if (method !== 'GET' && method !== 'DELETE') preferParts.push('return=representation');
+            if (preferParts.length) headers['Prefer'] = preferParts.join(',');
+            const res = await fetch(`${url}${path}`, {
+              method,
+              headers,
+              body: body ? JSON.stringify(body) : undefined,
+            });
+            const text = await res.text();
+            let data;
+            try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+            if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}: ${text}`);
+            return data;
+          }
+
+          (async () => {
+            const dir = await req(`/rest/v1/actor_directory?select=id,team_id,user_id,user_email,display_name,actor_type&user_email=eq.${encodeURIComponent(email)}&actor_type=eq.member`);
+            console.log('DIR_HITS', JSON.stringify(dir));
+            if (!dir?.length) throw new Error('user/actor not found via actor_directory: ' + email);
+
+            const teams = await req(`/rest/v1/teams?select=id,name&or=(name.ilike.*bertran*,name.ilike.*huang*)`);
+            console.log('TEAMS', JSON.stringify(teams));
+            const team = (teams || []).find(t => (t.name || '').toLowerCase() === teamWant)
+              || (teams || []).find(t => (t.name || '').toLowerCase().includes('bertran'));
+            if (!team) throw new Error('team not found: ' + teamWant);
+
+            const meRow = dir.find(a => a.team_id === team.id) || dir[0];
+            if (!meRow || meRow.team_id !== team.id) {
+              throw new Error(`actor ${email} not on team ${team.name} (${team.id}); dir teams=${dir.map(d => d.team_id).join(',')}`);
+            }
+            const me = meRow.id;
+            const userId = meRow.user_id;
+            console.log('USER', userId, email, 'ME', me, 'TEAM', team.id, team.name);
+
+            let others = await req(`/rest/v1/actors?select=id,actor_type,display_name&team_id=eq.${team.id}&id=neq.${me}&or=(actor_type.eq.member,actor_type.eq.agent)&order=actor_type.asc&limit=1`);
+            let sender = others?.[0]?.id;
+            if (!sender) {
+              const created = await req(`/rest/v1/actors`, {
+                method: 'POST',
+                body: { team_id: team.id, actor_type: 'agent', display_name: 'Attention UI Seed Bot' },
+              });
+              sender = created[0].id;
+              await req(`/rest/v1/agents`, {
+                method: 'POST',
+                body: { id: sender, status: 'active', owner_member_id: me, visibility: 'team' },
+              });
+              console.log('CREATED_SENDER', sender);
+            }
+            console.log('SENDER', sender);
+
+            const apps = await req(`/rest/v1/apps?select=id,name&team_id=eq.${team.id}&order=updated_at.desc&limit=1`);
+            if (!apps?.length) throw new Error('no apps on team');
+            const appId = apps[0].id;
+            console.log('APP', appId, apps[0].name);
+
+            // Clear previous fixtures
+            const old = await req(`/rest/v1/sessions?select=id&team_id=eq.${team.id}&title=like.[attention-ui]*`);
+            for (const s of old || []) {
+              await req(`/rest/v1/sessions?id=eq.${s.id}`, { method: 'DELETE', prefer: 'return=minimal' });
+            }
+            console.log('CLEARED', (old || []).length);
+
+            const kinds = ['regular','regular','channel','channel','app','app','cron','cron'];
+            const now = Date.now();
+            for (let i = 0; i < kinds.length; i++) {
+              const kind = kinds[i];
+              const n = (i % 2) + 1;
+              const title = `[attention-ui] ${kind} #${n} @me unread`;
+              const source = kind === 'channel' ? 'gateway' : kind === 'cron' ? 'cron' : 'user';
+              const ts = new Date(now + (i + 1) * 1000).toISOString();
+              const sessionBody = {
+                team_id: team.id,
+                created_by_actor_id: me,
+                mode: 'collab',
+                title,
+                summary: '',
+                source,
+                cron_job_id: kind === 'cron' ? `attention-ui-seed-${i + 1}` : null,
+                app_id: kind === 'app' ? appId : null,
+                last_message_at: ts,
+                last_message_preview: `@you please check this ${kind} fixture`,
+              };
+              const sessions = await req(`/rest/v1/sessions`, { method: 'POST', body: sessionBody });
+              const sid = sessions[0].id;
+              await req(`/rest/v1/session_participants`, {
+                method: 'POST',
+                body: [
+                  { session_id: sid, actor_id: me },
+                  { session_id: sid, actor_id: sender },
+                ],
+                prefer: 'resolution=merge-duplicates,return=representation',
+              });
+              await req(`/rest/v1/messages`, {
+                method: 'POST',
+                body: {
+                  team_id: team.id,
+                  session_id: sid,
+                  sender_actor_id: sender,
+                  kind: 'text',
+                  content: `[@me] attention UI seed for ${kind}`,
+                  metadata: { mention_actor_ids: [me] },
+                  created_at: ts,
+                  updated_at: ts,
+                },
+              });
+              // ensure unread
+              await req(`/rest/v1/session_read_markers?session_id=eq.${sid}&actor_id=eq.${me}`, {
+                method: 'DELETE',
+                prefer: 'return=minimal',
+              }).catch(() => {});
+              console.log('SEEDED', kind, sid, title);
+            }
+            console.log('DONE');
+          })().catch((e) => {
+            console.error('FAIL', e.message || e);
+            process.exit(1);
+          });
+          NODE
+          REMOTE
