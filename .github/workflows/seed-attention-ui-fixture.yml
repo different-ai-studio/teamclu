@@ -1,5 +1,4 @@
-# One-shot: seed unread @mention sessions for UI verification on self-host.
-# Safe to delete after use. Does not run on push.
+# One-shot diagnose + seed for attention UI fixtures on self-host RDS.
 name: Seed Attention UI Fixture
 
 on:
@@ -14,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: self-host-production
     steps:
-      - name: Seed unread @mention sessions on self-host DB
+      - name: Diagnose then seed on self-host DB
         uses: appleboy/ssh-action@v1.2.5
         env:
           BELAYO_TEST_RDS_PRIVATE_HOST: ${{ secrets.BELAYO_TEST_RDS_PRIVATE_HOST }}
@@ -29,152 +28,25 @@ jobs:
           envs: BELAYO_TEST_RDS_PRIVATE_HOST,BELAYO_TEST_RDS_PORT,BELAYO_TEST_RDS_USER,BELAYO_TEST_RDS_PASSWORD
           script: |
             set -eu
-            cat > /tmp/seed-attention-ui.sql <<'SQL'
+            cat > /tmp/diag-attention.sql <<'SQL'
             \set ON_ERROR_STOP on
-            DO $seed$
-            DECLARE
-              v_email text := '1264118202@qq.com';
-              v_team_name_want text := 'bertran huang';
-              v_user_id uuid;
-              v_team_id uuid;
-              v_team_name text;
-              v_me uuid;
-              v_sender uuid;
-              v_app_id uuid;
-              v_session_id uuid;
-              v_msg_id uuid;
-              v_now timestamptz := clock_timestamp();
-              v_kind text;
-              v_title text;
-              v_source text;
-              v_use_app boolean;
-              i int;
-            BEGIN
-              SELECT id INTO v_user_id
-                FROM auth.users
-               WHERE lower(email) = lower(v_email)
-               LIMIT 1;
-              IF v_user_id IS NULL THEN
-                RAISE EXCEPTION 'user not found: %', v_email;
-              END IF;
-
-              SELECT a.team_id, a.id, t.name
-                INTO v_team_id, v_me, v_team_name
-                FROM amux.actors a
-                JOIN amux.teams t ON t.id = a.team_id
-               WHERE a.user_id = v_user_id
-                 AND a.actor_type = 'member'
-                 AND lower(t.name) = lower(v_team_name_want)
-               ORDER BY a.updated_at DESC NULLS LAST, a.created_at DESC
-               LIMIT 1;
-              IF v_me IS NULL THEN
-                RAISE EXCEPTION 'no member actor for % in team %', v_email, v_team_name_want;
-              END IF;
-
-              SELECT a.id INTO v_sender
-                FROM amux.actors a
-               WHERE a.team_id = v_team_id
-                 AND a.id <> v_me
-                 AND a.actor_type IN ('member', 'agent')
-               ORDER BY CASE WHEN a.actor_type = 'member' THEN 0 ELSE 1 END, a.created_at
-               LIMIT 1;
-
-              IF v_sender IS NULL THEN
-                INSERT INTO amux.actors (team_id, actor_type, display_name)
-                VALUES (v_team_id, 'agent', 'Attention UI Seed Bot')
-                RETURNING id INTO v_sender;
-                INSERT INTO amux.agents (id, status, owner_member_id, visibility)
-                VALUES (v_sender, 'active', v_me, 'team');
-              END IF;
-
-              SELECT id INTO v_app_id
-                FROM amux.apps
-               WHERE team_id = v_team_id
-               ORDER BY updated_at DESC NULLS LAST, created_at DESC
-               LIMIT 1;
-              IF v_app_id IS NULL THEN
-                RAISE EXCEPTION 'team % (%) has no apps; cannot seed app-kind sessions', v_team_name, v_team_id;
-              END IF;
-
-              RAISE NOTICE 'SEED_CTX user=% team=% (%) me=% sender=% app=%',
-                v_email, v_team_name, v_team_id, v_me, v_sender, v_app_id;
-
-              -- Drop previous fixture rows for this actor so reruns stay clean.
-              DELETE FROM amux.sessions s
-               WHERE s.team_id = v_team_id
-                 AND s.title LIKE '[attention-ui]%'
-                 AND EXISTS (
-                   SELECT 1 FROM amux.session_participants sp
-                    WHERE sp.session_id = s.id AND sp.actor_id = v_me
-                 );
-
-              FOR i IN 1..8 LOOP
-                v_kind := (ARRAY['regular','regular','channel','channel','app','app','cron','cron'])[i];
-                v_title := format('[attention-ui] %s #%s @me unread', v_kind, ((i - 1) % 2) + 1);
-                v_source := CASE v_kind
-                  WHEN 'channel' THEN 'gateway'
-                  WHEN 'cron' THEN 'cron'
-                  ELSE 'user'
-                END;
-                v_use_app := (v_kind = 'app');
-
-                INSERT INTO amux.sessions (
-                  team_id, created_by_actor_id, mode, title, summary,
-                  source, cron_job_id, app_id,
-                  last_message_at, last_message_preview, created_at, updated_at
-                ) VALUES (
-                  v_team_id, v_me, 'collab', v_title, '',
-                  v_source,
-                  CASE WHEN v_kind = 'cron' THEN format('attention-ui-seed-%s', i) ELSE NULL END,
-                  CASE WHEN v_use_app THEN v_app_id ELSE NULL END,
-                  v_now + (i || ' seconds')::interval,
-                  format('@you please check this %s fixture', v_kind),
-                  v_now, v_now
-                ) RETURNING id INTO v_session_id;
-
-                INSERT INTO amux.session_participants (session_id, actor_id)
-                VALUES (v_session_id, v_me)
-                ON CONFLICT ON CONSTRAINT session_participants_session_id_actor_id_key DO NOTHING;
-                INSERT INTO amux.session_participants (session_id, actor_id)
-                VALUES (v_session_id, v_sender)
-                ON CONFLICT ON CONSTRAINT session_participants_session_id_actor_id_key DO NOTHING;
-
-                INSERT INTO amux.messages (
-                  team_id, session_id, sender_actor_id, kind, content, metadata, created_at, updated_at
-                ) VALUES (
-                  v_team_id,
-                  v_session_id,
-                  v_sender,
-                  'text',
-                  format('[@me] attention UI seed for %s — please notice this unread mention', v_kind),
-                  jsonb_build_object('mention_actor_ids', jsonb_build_array(v_me::text)),
-                  v_now + (i || ' seconds')::interval,
-                  v_now + (i || ' seconds')::interval
-                ) RETURNING id INTO v_msg_id;
-
-                DELETE FROM amux.session_read_markers
-                 WHERE session_id = v_session_id
-                   AND actor_id = v_me;
-
-                RAISE NOTICE 'SEEDED kind=% session=% msg=% title=%', v_kind, v_session_id, v_msg_id, v_title;
-              END LOOP;
-            END
-            $seed$;
-
-            SELECT t.name AS team, s.source, (s.app_id IS NOT NULL) AS has_app, s.title, s.id::text
-              FROM amux.sessions s
-              JOIN amux.teams t ON t.id = s.team_id
-             WHERE lower(t.name) = lower('bertran huang')
-               AND s.title LIKE '[attention-ui]%'
-             ORDER BY s.title;
+            SELECT 'USER_EXACT' AS k, id::text, email FROM auth.users WHERE lower(email) = lower('1264118202@qq.com');
+            SELECT 'USER_QQ' AS k, id::text, email FROM auth.users WHERE email ILIKE '%qq.com%' ORDER BY created_at DESC LIMIT 30;
+            SELECT 'TEAM' AS k, id::text, name FROM amux.teams WHERE name ILIKE '%bertran%' OR name ILIKE '%huang%' ORDER BY created_at DESC;
+            SELECT 'MEMBER' AS k, t.name AS team, a.id::text AS actor_id, a.display_name, u.email
+              FROM amux.teams t
+              JOIN amux.actors a ON a.team_id = t.id AND a.actor_type = 'member'
+              LEFT JOIN auth.users u ON u.id = a.user_id
+             WHERE t.name ILIKE '%bertran%' OR t.name ILIKE '%huang%'
+             ORDER BY t.name, a.display_name
+             LIMIT 50;
             SQL
-
-            echo "=== running seed SQL ==="
+            echo "=== diagnose ==="
             docker run --rm --network host -i \
               -e PGPASSWORD="$BELAYO_TEST_RDS_PASSWORD" \
               -e PGHOST="$BELAYO_TEST_RDS_PRIVATE_HOST" \
               -e PGPORT="${BELAYO_TEST_RDS_PORT:-5432}" \
               -e PGUSER="$BELAYO_TEST_RDS_USER" \
               -e PGDATABASE=supabase_db \
-              postgres:15-alpine psql -v ON_ERROR_STOP=1 < /tmp/seed-attention-ui.sql
-            echo "=== seed done ==="
+              postgres:15-alpine psql -v ON_ERROR_STOP=1 < /tmp/diag-attention.sql
+            echo "=== diagnose done ==="
