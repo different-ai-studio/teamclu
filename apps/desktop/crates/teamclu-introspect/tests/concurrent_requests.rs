@@ -88,13 +88,20 @@ fn recovery_read_completes_before_a_blocked_tool_call() {
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
     server.join().unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let replies: Vec<Value> = String::from_utf8(output.stdout)
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(replies.len(), 2);
-    assert_eq!(replies[0]["id"], 2, "recovery read waited behind the slow request");
+    assert_eq!(
+        replies[0]["id"], 2,
+        "recovery read waited behind the slow request"
+    );
     assert_eq!(replies[1]["id"], 1);
 }

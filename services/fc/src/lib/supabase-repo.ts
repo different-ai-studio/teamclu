@@ -18,6 +18,7 @@ import {
   publishSessionParticipantsChanged,
   removedMemberUserId,
 } from "./session-participant-notify.js";
+import { buildSessionReadInboxPayload } from "./push-dispatch.js";
 import { ADMIN_LIST_CAP, clampPage, IN_FILTER_BATCH, isPlatformOperator, safeSearch } from "./platform-operators.js";
 import {
   DEFAULT_LIST_LIMIT,
@@ -3806,6 +3807,40 @@ export function createSupabaseBusinessRepository(options) {
         p_last_read_message_id: lastReadMessageId ?? null,
       });
       if (error) throw error;
+
+      // Fan out a read ping so the caller's other devices clear attention
+      // badges. Same inbox/<uid> topic as message pings; best-effort.
+      if (publishSessionParticipantInbox) {
+        void (async () => {
+          const { data: auth, error: authErr } = await getCurrentUser();
+          if (authErr || !auth?.user?.id) return;
+          const { data: session, error: sessionErr } = await supabase
+            .from("sessions")
+            .select("team_id, source, app_id")
+            .eq("id", sessionId)
+            .maybeSingle();
+          if (sessionErr || !session) return;
+          const source = session.source ?? "user";
+          const kind =
+            source === "cron"
+              ? "cron"
+              : source === "gateway"
+                ? "channel"
+                : session.app_id
+                  ? "app"
+                  : "regular";
+          await publishSessionParticipantInbox(
+            `inbox/${auth.user.id}`,
+            buildSessionReadInboxPayload({
+              sessionId,
+              teamId: session.team_id ?? null,
+              kind,
+            }),
+          );
+        })().catch((err: unknown) => {
+          console.error("[inbox] read ping failed (swallowed):", err);
+        });
+      }
     },
 
     async markSessionUnread(sessionId) {

@@ -145,32 +145,34 @@ export async function dispatchPush(msg, deps) {
   });
 
   // Inbox fan-out: every non-muted recipient gets a lightweight ping on their
-  // own MQTT topic so connected clients can light up an unread red dot
-  // without subscribing to per-session topics. has_unread is recomputed
-  // server-side from session_read_markers, so the payload only needs
-  // session_id — clients re-query list_current_actor_sessions on receipt.
-  const inboxUserIds = mqtt
-    ? [...new Set(ctx.recipients.filter((r) => !r.muted).map((r) => r.user_id))]
+  // own MQTT topic so connected clients can light unread / @ badges without
+  // subscribing to per-session topics. `kind` + per-user `mentioned` come from
+  // list_session_push_targets + message metadata — no second session round-trip.
+  const sessionKind = normalizeSessionKind(ctx.session_kind);
+  const mentionedActorIds = mentionActorIdSet(msg.metadata);
+  const inboxRecipients = mqtt
+    ? dedupeInboxRecipients(ctx.recipients.filter((r) => !r.muted))
     : [];
-  // `team_id` and an explicit `type` are B7: without the team a receiving
-  // client cannot build the session/live topic it may want to subscribe to,
-  // and `type` was only ever implied. Both are additive — the field readers on
-  // desktop and iOS default a missing `type` to "message".
-  const inboxPayload = mqtt
-    ? JSON.stringify({
-        v: 2,
-        type: 'message',
-        team_id: msg.team_id ?? null,
-        session_id,
-        message_id: messageId,
-        ts: now().getTime(),
-      })
-    : null;
+  const ts = now().getTime();
 
   const [apnsResults, inboxResults] = await Promise.all([
     Promise.allSettled(jobs.map((j) => apns.send(j.token.token, payload))),
     mqtt
-      ? Promise.allSettled(inboxUserIds.map((uid) => mqtt.publish(`inbox/${uid}`, inboxPayload)))
+      ? Promise.allSettled(
+          inboxRecipients.map((r) => {
+            const body = JSON.stringify({
+              v: 2,
+              type: 'message',
+              team_id: msg.team_id ?? null,
+              session_id,
+              message_id: messageId,
+              kind: sessionKind,
+              mentioned: Boolean(r.actor_id) && mentionedActorIds.has(r.actor_id),
+              ts,
+            });
+            return mqtt.publish(`inbox/${r.user_id}`, body);
+          }),
+        )
       : Promise.resolve([]),
   ]);
 
@@ -196,8 +198,52 @@ export async function dispatchPush(msg, deps) {
 
   return {
     sent, revoked, failed, recipients: ctx.recipients.length,
-    inboxSent, inboxFailed, inboxTargets: inboxUserIds.length,
+    inboxSent, inboxFailed, inboxTargets: inboxRecipients.length,
   };
+}
+
+const SESSION_KINDS = new Set(['regular', 'channel', 'app', 'cron']);
+
+/** Match desktop `classifySessionListKind` / list_session_push_targets.session_kind. */
+export function normalizeSessionKind(kind) {
+  return SESSION_KINDS.has(kind) ? kind : 'regular';
+}
+
+/** Actor ids named in message metadata.mention_actor_ids (strings only). */
+export function mentionActorIdSet(metadata) {
+  const raw = metadata && typeof metadata === 'object' ? metadata.mention_actor_ids : null;
+  const out = new Set();
+  if (!Array.isArray(raw)) return out;
+  for (const id of raw) {
+    if (typeof id === 'string' && id.length > 0) out.add(id);
+  }
+  return out;
+}
+
+/** One MQTT publish per user_id; first row wins for actor_id. */
+export function dedupeInboxRecipients(recipients) {
+  const byUser = new Map();
+  for (const r of recipients) {
+    if (!r || typeof r.user_id !== 'string' || r.user_id.length === 0) continue;
+    if (byUser.has(r.user_id)) continue;
+    byUser.set(r.user_id, {
+      user_id: r.user_id,
+      actor_id: typeof r.actor_id === 'string' ? r.actor_id : null,
+    });
+  }
+  return [...byUser.values()];
+}
+
+/** Cross-device clear after mark-viewed. Same inbox topic the desktop already handles. */
+export function buildSessionReadInboxPayload({ sessionId, teamId = null, kind = 'regular', ts = Date.now() }) {
+  return JSON.stringify({
+    v: 2,
+    type: 'read',
+    team_id: teamId,
+    session_id: sessionId,
+    kind: normalizeSessionKind(kind),
+    ts,
+  });
 }
 
 /**

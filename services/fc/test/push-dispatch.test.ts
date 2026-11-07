@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildApnsPayload, dispatchPush } from '../src/lib/push-dispatch.js';
 
-function makeDeps({ recipients, claim = true, mqtt = null }) {
+function makeDeps({ recipients, claim = true, mqtt = null, sessionKind = 'regular' }) {
   const sent = [];
   const revoked = [];
   const published = [];
@@ -16,7 +16,7 @@ function makeDeps({ recipients, claim = true, mqtt = null }) {
         }
         if (name === 'list_session_push_targets') {
           return Promise.resolve({
-            data: { sender_display_name: 'Alice', recipients },
+            data: { sender_display_name: 'Alice', session_kind: sessionKind, recipients },
           });
         }
         throw new Error(`unexpected rpc ${name}`);
@@ -94,19 +94,27 @@ test('sends to active token and revokes 410', async () => {
 
 test('inbox: publishes one MQTT ping per non-muted recipient', async () => {
   const d = makeDeps({ recipients: [
-    { user_id: 'u1', muted: false, prefs: { enabled: true },
+    { user_id: 'u1', actor_id: 'act-1', muted: false, prefs: { enabled: true },
       tokens: [{ provider: 'apns', token: 'T1', device_id: 'D1' }], presence: [] },
-    { user_id: 'u2', muted: false, prefs: { enabled: true },
+    { user_id: 'u2', actor_id: 'act-2', muted: false, prefs: { enabled: true },
       tokens: [], presence: [] },
-  ]});
-  const r = await dispatchPush({ id: 'm1', session_id: 'sess-xyz', sender_actor_id: 'a',
-                                  kind: 'text', content: 'hi' }, d);
+  ], sessionKind: 'channel' });
+  const r = await dispatchPush({
+    id: 'm1', session_id: 'sess-xyz', sender_actor_id: 'a',
+    kind: 'text', content: 'hi',
+    metadata: { mention_actor_ids: ['act-2'] },
+  }, d);
   assert.equal(d.published.length, 2);
   const topics = d.published.map((p) => p.topic).sort();
   assert.deepEqual(topics, ['inbox/u1', 'inbox/u2']);
-  const payload = JSON.parse(d.published[0].payload);
-  assert.equal(payload.session_id, 'sess-xyz');
-  assert.equal(typeof payload.ts, 'number');
+  const byUser = Object.fromEntries(
+    d.published.map((p) => [p.topic, JSON.parse(p.payload)]),
+  );
+  assert.equal(byUser['inbox/u1'].session_id, 'sess-xyz');
+  assert.equal(byUser['inbox/u1'].kind, 'channel');
+  assert.equal(byUser['inbox/u1'].mentioned, false);
+  assert.equal(byUser['inbox/u2'].mentioned, true);
+  assert.equal(typeof byUser['inbox/u1'].ts, 'number');
   assert.equal(r.inboxSent, 2);
   assert.equal(r.inboxFailed, 0);
   assert.equal(r.inboxTargets, 2);
