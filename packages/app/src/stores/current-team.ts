@@ -15,7 +15,7 @@ export async function setLocalCacheTeamGate(teamId: string | null): Promise<void
   }
 }
 
-interface CurrentTeam {
+export interface CurrentTeam {
   id: string;
   name: string;
   slug: string;
@@ -268,7 +268,11 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
    */
   enterTeam: async (teamId: string, opts) => {
     let activatedUserId: string | undefined
-    if (!opts?.assumeActive) {
+    // A support session's JWT already carries the customer org, and the server
+    // refuses to mint the support account any other session (it would escape
+    // the support grant's expiry), so activation is skipped there.
+    const { isInSupportSession } = await import("@/lib/admin/support-session")
+    if (!opts?.assumeActive && !isInSupportSession()) {
       const { refreshToken } = await getBackend().teams.activateTeam(teamId);
       // Installs the JWT carrying the new org_id (fires onAuthStateChange →
       // auth-store.session). Without this the org switch is server-only and

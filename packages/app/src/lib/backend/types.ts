@@ -23,6 +23,7 @@ export type {
   ProviderPool,
   ProviderPoolCooldown,
   ProviderPoolKey,
+  SupportSessionGrant,
 } from "@/lib/backend/cloud-api/admin";
 
 export type BackendKind = "cloud_api";

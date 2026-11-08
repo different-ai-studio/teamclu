@@ -2,19 +2,35 @@
  * Platform operator surface — Cloud API client.
  *
  * A platform operator runs the deployment this client is pointed at. It is not
- * a team or org role, and nothing in a team makes someone one: the deployment
- * lists them in `PLATFORM_OPERATOR_USER_IDS`
- * (services/fc/src/lib/platform-operators.ts).
+ * a team or org role, and nothing in a team makes someone one: they are the
+ * admin_type 4 identities of the platform org, or listed in the deployment's
+ * `PLATFORM_OPERATOR_USER_IDS` (services/fc/src/lib/platform-operators.ts).
  *
- * OpenAPI: getAdminWhoami / getProviderPools / resetProviderPool
+ * OpenAPI: getAdminWhoami / getProviderPools / resetProviderPool /
+ * startSupportSession / endCurrentSupportSession
  */
 
 import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 export interface PlatformWhoami {
-  /** The caller's own user id — what goes into PLATFORM_OPERATOR_USER_IDS. */
+  /** The caller's own user id. */
   userId: string;
+  /** admin_type 4 in the platform org, or listed in PLATFORM_OPERATOR_USER_IDS. */
   operator: boolean;
+  /** Set while the caller is using a live support session; absent on older servers. */
+  support?: { orgId: string; teamId: string | null; expiresAt: string } | null;
+}
+
+/** A support session an operator just opened (POST /v1/admin/orgs/:orgId/support-sessions). */
+export interface SupportSessionGrant {
+  grantId: string;
+  /** For the org's shared support account. Adopt it to act in the team. */
+  refreshToken: string;
+  orgId: string;
+  teamId: string;
+  actorId: string;
+  supportUserId: string;
+  expiresAt: string;
 }
 
 /**
@@ -141,6 +157,13 @@ export interface AdminBackend {
   }): Promise<{ items: AdminTeamRow[]; total: number; truncated: boolean }>;
   getTeamCredits(teamId: string): Promise<AdminTeamCredits>;
   setTeamQuotas(teamId: string, input: AdminQuotaInput): Promise<{ ok?: boolean }>;
+  /** Operator-only. Enter `teamId` of `orgId` as the org's support account. */
+  startSupportSession(
+    orgId: string,
+    input: { teamId: string; reason: string; ttlMinutes?: number },
+  ): Promise<SupportSessionGrant>;
+  /** Called with the support session itself; ends that session only. */
+  endCurrentSupportSession(): Promise<{ ended: boolean }>;
 }
 
 /** Drops empty values so `?query=` never reaches the server as a blank filter. */
@@ -192,6 +215,17 @@ export function createAdminModule(client: CloudApiClient): AdminBackend {
 
     async setTeamQuotas(teamId, input) {
       return client.put<{ ok?: boolean }>(`/v1/admin/teams/${encodeURIComponent(teamId)}/quotas`, input);
+    },
+
+    async startSupportSession(orgId, input) {
+      return client.post<SupportSessionGrant>(
+        `/v1/admin/orgs/${encodeURIComponent(orgId)}/support-sessions`,
+        input,
+      );
+    },
+
+    async endCurrentSupportSession() {
+      return client.delete<{ ended: boolean }>("/v1/admin/support-sessions/current");
     },
   };
 }

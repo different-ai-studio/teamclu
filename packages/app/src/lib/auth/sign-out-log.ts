@@ -31,6 +31,8 @@ export type SignOutReason =
   | "session_from_other_backend"
   /** The server refused the refresh token, so the local session was dropped. */
   | "refresh_rejected"
+  /** Leaving support mode, and the operator's own kept session no longer refreshes. */
+  | "support_exit_restore_failed"
   | "unspecified";
 
 /** `LogLevel.Info` in tauri-plugin-log. */

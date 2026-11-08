@@ -574,6 +574,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     return true;
   },
   signOut: async (reason = "unspecified", detail) => {
+    // Support mode: the signed-in account is a customer org's support account,
+    // shared by every operator helping that org. A GoTrue sign-out of it could
+    // end their sessions too, so "sign out" here means leaving support mode.
+    // When leaving itself fails it signs out with the reason below, and that
+    // call lands past this branch because the record is already gone.
+    const support = await import("@/lib/admin/support-session");
+    if (support.isInSupportSession(get().session?.user?.id ?? null)) {
+      await support.exitSupportSession();
+      return;
+    }
+    // An operator signing out forgets any support session kept for later.
+    support.forgetSupportSession();
     logSignOut(reason, { user: get().session?.user?.id, server: configuredServerUrl(), detail });
     await getBackend().auth.signOut();
     set({ session: null, authFlow: "idle", otpEmail: null, otpPhone: null, phoneMultiUsers: [], pendingPhoneOTPToken: "", pendingInvites: [], identityChoices: null });
