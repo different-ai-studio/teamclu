@@ -3,7 +3,7 @@
 -- through its shared support account, one auth session per entry.
 begin;
 
-select plan(33);
+select plan(36);
 
 create or replace function pg_temp.as_user(p_user uuid, p_session uuid default null)
 returns void language plpgsql as $$
@@ -105,6 +105,10 @@ select is(amux.current_team_role('56cc0000-0000-4000-8000-00000000000c'), 'owner
 select ok(amux.is_team_member('56cc0000-0000-4000-8000-00000000000c'), 'and a member of the team it entered');
 select is((select count(*)::int from amux.list_my_identities()), 1, 'its identity picker holds only itself');
 select ok(amux.support_grant_active(), 'its live grant is active');
+select throws_ok($$ select * from amux.switch_active_team('56cc0000-0000-4000-8000-00000000000c') $$,
+                 '42501', null, 'a support session cannot mint itself another session by switching team');
+select throws_ok(format('select amux.mint_identity_session(%L)', (select support_user_id from s1)),
+                 '42501', null, 'nor through the identity picker');
 select pg_temp.as_user((select support_user_id from s1), gen_random_uuid());
 select ok(not amux.support_grant_active(), 'a session with no grant is not');
 select pg_temp.as_user('56bb0000-0000-4000-8000-000000000005');
@@ -112,6 +116,9 @@ select ok(amux.support_grant_active(), 'support_grant_active never blocks ordina
 select ok(not exists (select 1 from amux.list_my_identities() i where i.user_id = (select support_user_id from s1)),
           'the support account is in no customer''s identity picker');
 select pg_temp.as_owner();
+select ok(amux.is_support_account((select support_user_id from s1))
+          and not amux.is_support_account('56bb0000-0000-4000-8000-000000000005'),
+          'is_support_account tells the support account apart');
 
 -- ── Leaving and expiry ─────────────────────────────────────────────────────
 select ok(not amux.end_support_session('56bb0000-0000-4000-8000-000000000005', (select session_id from s1)),
