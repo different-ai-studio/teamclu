@@ -15,7 +15,7 @@ TeamClu 的 RLS 认的是「当前 org 里的 actor + `roles_users`」，不是 
 
 1. **谁是平台运营：`admin_type = 4` 且身份所在 org 是平台 org。** 与合作方 saas-mono 一致
    （`packages/shared/constants/admin.ts`：4 = `SYSTEM_ADMIN`，管理所有组织；合作方的
-   api-key 逻辑同样要求 4 + 主 org）。belayo 上平台 org 是 Betly。
+   api-key 逻辑同样要求 4 + 主 org）。belayo 上平台 org 是合作方的主 org。
    平台 org 存在 `amux.deployment_settings('platform_org_id')`，不复用正在废除的
    `DEFAULT_ORG_ID`。限定 org 是为了防止别的 org 里误设的 4 直接拿到全平台权限。
 2. **每个 org 共用一个支持账号**，不按运营各建。客户看到的始终是同一个「TeamClu 支持」。
