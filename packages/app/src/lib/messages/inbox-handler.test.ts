@@ -1,9 +1,18 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 
 const subscribeMock = vi.hoisted(() => vi.fn());
+const currentTeamIdMock = vi.hoisted(() => vi.fn(() => "team-1" as string | null));
 
 vi.mock("@/lib/mqtt/mqtt-bridge", () => ({
   mqttSubscribe: subscribeMock,
+}));
+
+vi.mock("@/stores/current-team", () => ({
+  useCurrentTeamStore: {
+    getState: () => ({
+      team: currentTeamIdMock() ? { id: currentTeamIdMock() } : null,
+    }),
+  },
 }));
 
 const shouldMarkSessionUnreadMock = vi.hoisted(() => vi.fn(() => true));
@@ -52,6 +61,8 @@ describe("handleInboxEnvelope", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     resetInboxListRefreshForTests();
+    currentTeamIdMock.mockReset();
+    currentTeamIdMock.mockReturnValue("team-1");
     shouldMarkSessionUnreadMock.mockReset();
     shouldMarkSessionUnreadMock.mockReturnValue(true);
     scheduleMarkActiveSessionReadMock.mockReset();
@@ -310,6 +321,65 @@ describe("handleInboxEnvelope", () => {
     );
     expect(store.noteInboxMessage).not.toHaveBeenCalled();
     expect(scheduleMarkActiveSessionReadMock).toHaveBeenCalled();
+  });
+
+  it("ignores message and read pings for another team", () => {
+    const store = makeStore(["s1"]);
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", {
+        session_id: "s1",
+        team_id: "team-other",
+        kind: "regular",
+        mentioned: true,
+      }),
+      "u1",
+      store,
+    );
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
+    expect(store.patchRow).not.toHaveBeenCalled();
+
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", {
+        session_id: "s1",
+        team_id: "team-other",
+        type: "read",
+      }),
+      "u1",
+      store,
+    );
+    expect(store.clearSessionAttention).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
+    expect(store.refreshAfterInbox).not.toHaveBeenCalled();
+  });
+
+  it("applies same-team pings and legacy pings without team_id", () => {
+    const store = makeStore(["s1"]);
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", {
+        session_id: "s1",
+        team_id: "team-1",
+        kind: "channel",
+      }),
+      "u1",
+      store,
+    );
+    expect(store.noteInboxMessage).toHaveBeenCalledWith({
+      sessionId: "s1",
+      kind: "channel",
+      mentioned: false,
+    });
+
+    store.noteInboxMessage.mockClear();
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { session_id: "s1", kind: "regular" }),
+      "u1",
+      store,
+    );
+    expect(store.noteInboxMessage).toHaveBeenCalledWith({
+      sessionId: "s1",
+      kind: "regular",
+      mentioned: false,
+    });
   });
 });
 

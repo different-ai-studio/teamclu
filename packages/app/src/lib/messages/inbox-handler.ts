@@ -14,6 +14,7 @@ import {
 import { mqttSubscribe } from "@/lib/mqtt/mqtt-bridge";
 import { isSessionListKindValue } from "@/lib/session/session-list-attention";
 import type { SessionListKind } from "@/lib/session/session-list-kind";
+import { useCurrentTeamStore } from "@/stores/current-team";
 
 interface InboxPing {
   session_id: string;
@@ -200,6 +201,20 @@ interface HandleInboxEnvelopeOptions {
   onParticipantsChanged?: (sessionId: string, teamId: string) => void;
 }
 
+/**
+ * Inbox is per-user, not per-team. Drop message/read pings for another team so
+ * attention badges cannot stick on the active team's kind/nav map. Missing
+ * `team_id` keeps the legacy path (pre-attention FC). No current team → allow
+ * (fail open); dropping same-team pings while the store is briefly empty
+ * blanks kind badges until the user clicks into that kind.
+ */
+function isInboxPingForActiveTeam(teamId: string | undefined): boolean {
+  if (typeof teamId !== "string" || teamId.length === 0) return true;
+  const currentTeamId = useCurrentTeamStore.getState().team?.id;
+  if (!currentTeamId) return true;
+  return teamId === currentTeamId;
+}
+
 export function handleInboxEnvelope(
   env: InboxEnvelope,
   expectedUserId: string,
@@ -232,6 +247,10 @@ export function handleInboxEnvelope(
     if (typeof payload.team_id === "string" && payload.team_id.length > 0) {
       options?.onParticipantsChanged?.(payload.session_id, payload.team_id);
     }
+    return;
+  }
+
+  if (!isInboxPingForActiveTeam(payload.team_id)) {
     return;
   }
 
