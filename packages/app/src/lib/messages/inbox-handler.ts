@@ -41,12 +41,18 @@ let subscribedInboxUserId: string | null = null;
 let pendingInboxSubscribe: Promise<void> | null = null;
 let inboxSubscribeEpoch = 0;
 /**
- * Kinds accumulated during the debounce window. A burst across kinds refreshes
- * each once — not only the last ping's kind. `pendingRefreshAny` covers legacy
- * pings with no kind (reload the active list partition).
+ * Kinds accumulated during the debounce window for inbox attention refresh.
+ * `pendingRefreshAny` covers legacy pings with no kind (reload the visible
+ * list only). MQTT callers that only need a current-list reload set
+ * `pendingReloadCurrent` via `scheduleSessionListRefresh`.
  */
 let pendingRefreshKinds = new Set<SessionListKind>();
 let pendingRefreshAny = false;
+let pendingReloadCurrent = false;
+let pendingInboxRefresh:
+  | ((kinds?: SessionListKind[]) => void | Promise<void>)
+  | null = null;
+let pendingCurrentReload: (() => void | Promise<void>) | null = null;
 
 function inboxTopicForUser(userId: string): string {
   return `inbox/${userId.trim()}`;
@@ -87,6 +93,35 @@ export function resetInboxSubscriptionState(): void {
   pendingInboxSubscribe = null;
 }
 
+function flushPendingSessionListRefresh(): void {
+  sessionListRefreshTimer = null;
+  const kinds = [...pendingRefreshKinds];
+  const refreshAny = pendingRefreshAny;
+  const reloadCurrent = pendingReloadCurrent;
+  const inboxRefresh = pendingInboxRefresh;
+  const currentReload = pendingCurrentReload;
+  pendingRefreshKinds = new Set();
+  pendingRefreshAny = false;
+  pendingReloadCurrent = false;
+  pendingInboxRefresh = null;
+  pendingCurrentReload = null;
+
+  if (inboxRefresh && (kinds.length > 0 || refreshAny)) {
+    void inboxRefresh(kinds.length > 0 ? kinds : undefined);
+  }
+  if (reloadCurrent && currentReload) {
+    void currentReload();
+  }
+}
+
+function armSessionListRefreshTimer(): void {
+  if (sessionListRefreshTimer) clearTimeout(sessionListRefreshTimer);
+  sessionListRefreshTimer = setTimeout(
+    flushPendingSessionListRefresh,
+    SESSION_LIST_REFRESH_MS,
+  );
+}
+
 /** Test hook — clears pending debounced refresh. */
 export function resetSessionListRefreshForTests(): void {
   if (sessionListRefreshTimer) {
@@ -95,36 +130,40 @@ export function resetSessionListRefreshForTests(): void {
   }
   pendingRefreshKinds = new Set();
   pendingRefreshAny = false;
+  pendingReloadCurrent = false;
+  pendingInboxRefresh = null;
+  pendingCurrentReload = null;
   resetInboxSubscriptionState();
 }
 
 /** @deprecated Use resetSessionListRefreshForTests */
 export const resetInboxListRefreshForTests = resetSessionListRefreshForTests;
 
-/** Shared by inbox pings and session/live events (e.g. unknown session message.created). */
+/**
+ * Debounced reload of the *currently visible* session list.
+ * Used by MQTT live maintenance. Never switches `listKind`.
+ */
 export function scheduleSessionListRefresh(
-  loadFirstPage: (limit?: number, kind?: SessionListKind) => Promise<void>,
+  loadCurrentFirstPage: () => void | Promise<void>,
+): void {
+  pendingReloadCurrent = true;
+  pendingCurrentReload = loadCurrentFirstPage;
+  armSessionListRefreshTimer();
+}
+
+/**
+ * Debounced inbox attention refresh. Never switches `listKind` — the store's
+ * `refreshAfterInbox` reloads the visible kind only when it was touched, and
+ * soft-fetches attention for foreign kinds.
+ */
+export function scheduleInboxAttentionRefresh(
+  refreshAfterInbox: (kinds?: SessionListKind[]) => void | Promise<void>,
   kind?: SessionListKind,
 ): void {
   if (kind) pendingRefreshKinds.add(kind);
   else pendingRefreshAny = true;
-  if (sessionListRefreshTimer) clearTimeout(sessionListRefreshTimer);
-  sessionListRefreshTimer = setTimeout(() => {
-    sessionListRefreshTimer = null;
-    const kinds = [...pendingRefreshKinds];
-    const refreshAny = pendingRefreshAny;
-    pendingRefreshKinds = new Set();
-    pendingRefreshAny = false;
-    if (kinds.length > 0) {
-      for (const refreshKind of kinds) {
-        void loadFirstPage(50, refreshKind);
-      }
-      return;
-    }
-    if (refreshAny) {
-      void loadFirstPage(50, undefined);
-    }
-  }, SESSION_LIST_REFRESH_MS);
+  pendingInboxRefresh = refreshAfterInbox;
+  armSessionListRefreshTimer();
 }
 
 /**
@@ -138,7 +177,14 @@ export interface InboxStore {
     sessionId: string,
     patch: { has_unread?: boolean; has_mention?: boolean },
   ) => void;
+  /** Visible-list reload only — callers must not pass a foreign kind. */
   loadFirstPage: (limit?: number, kind?: SessionListKind) => Promise<void>;
+  /**
+   * Inbox-driven refresh that never switches `listKind`. Reloads the visible
+   * kind when touched (or when `kinds` is omitted); soft-fetches attention for
+   * every other touched kind.
+   */
+  refreshAfterInbox: (kinds?: SessionListKind[]) => void | Promise<void>;
   noteInboxMessage: (input: {
     sessionId: string;
     kind: SessionListKind;
@@ -201,10 +247,10 @@ export function handleInboxEnvelope(
   const isActiveView = !shouldMarkSessionUnread(payload.session_id);
 
   if (isActiveView) {
-    // Persist read marker first, then reload — avoids loadFirstPage racing
-    // ahead of markSessionViewed and re-applying hasUnread from the server.
+    // Persist read marker first, then reload the *visible* list — never pass a
+    // foreign kind into loadFirstPage (that switches listKind).
     scheduleMarkActiveSessionRead(payload.session_id, null, {
-      afterMarkRead: () => void store.loadFirstPage(50, kind ?? undefined),
+      afterMarkRead: () => void store.loadFirstPage(50),
     });
     options?.onMessagePing?.(payload.session_id);
     return;
@@ -217,7 +263,7 @@ export function handleInboxEnvelope(
       mentioned,
     });
     options?.onMessagePing?.(payload.session_id);
-    scheduleSessionListRefresh(store.loadFirstPage, kind);
+    scheduleInboxAttentionRefresh(store.refreshAfterInbox, kind);
     return;
   }
 
@@ -226,5 +272,5 @@ export function handleInboxEnvelope(
     store.patchRow(payload.session_id, { has_unread: true });
   }
   options?.onMessagePing?.(payload.session_id);
-  scheduleSessionListRefresh(store.loadFirstPage);
+  scheduleInboxAttentionRefresh(store.refreshAfterInbox);
 }

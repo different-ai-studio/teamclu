@@ -138,21 +138,59 @@ function mapCacheToEntry(r: SessionRow): SessionListEntry {
 }
 
 /**
- * Replace one kind's attention from a page. Drops prior entries for that kind
- * so a soft-read session that left the first page does not keep a stale badge.
+ * How long page/prefetch syncs refuse to re-add attention after a local clear
+ * (mark-viewed / read ping). Covers server lag without permanently hiding a
+ * later real unread (noteInboxMessage lifts the suppress).
+ */
+const ATTENTION_SUPPRESS_MS = 3_000;
+const attentionSuppressUntilBySessionId = new Map<string, number>();
+
+function suppressAttentionReadd(sessionId: string, now = Date.now()): void {
+  attentionSuppressUntilBySessionId.set(sessionId, now + ATTENTION_SUPPRESS_MS);
+}
+
+function liftAttentionSuppress(sessionId: string): void {
+  attentionSuppressUntilBySessionId.delete(sessionId);
+}
+
+function isAttentionSuppressed(sessionId: string, now = Date.now()): boolean {
+  const until = attentionSuppressUntilBySessionId.get(sessionId);
+  if (until == null) return false;
+  if (until <= now) {
+    attentionSuppressUntilBySessionId.delete(sessionId);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Reconcile one kind's attention from a page without wiping off-page entries.
+ *
+ * - Rows on the page with unread/mention → set (unless recently cleared).
+ * - Rows on the page without → drop that id (server says read).
+ * - Same-kind ids absent from the page → keep (page-2+ unread / inbox-only).
  */
 function syncAttentionFromRows(
   prev: Record<string, SessionAttentionEntry>,
   kind: SessionListKind,
   rows: SessionListEntry[],
 ): Record<string, SessionAttentionEntry> {
+  const pageIds = new Set(rows.map((row) => row.id));
   const next: Record<string, SessionAttentionEntry> = {};
   for (const [id, entry] of Object.entries(prev)) {
-    if (entry.kind !== kind) next[id] = entry;
+    if (entry.kind !== kind) {
+      next[id] = entry;
+      continue;
+    }
+    if (!pageIds.has(id)) next[id] = entry;
   }
+  const now = Date.now();
   for (const row of rows) {
     if (row.has_unread || row.has_mention) {
+      if (isAttentionSuppressed(row.id, now)) continue;
       next[row.id] = { kind, mention: row.has_mention };
+    } else {
+      delete next[row.id];
     }
   }
   return next;
@@ -286,6 +324,12 @@ interface State {
     mentioned: boolean;
   }) => void;
   clearSessionAttention: (sessionId: string) => void;
+  /**
+   * Inbox debounce flush. Never switches `listKind`. Reloads the visible kind
+   * when `kinds` omits a filter or includes it; soft-fetches attention for
+   * every other touched kind.
+   */
+  refreshAfterInbox: (kinds?: SessionListKind[]) => Promise<void>;
   load: () => Promise<void>;
   loadFirstPage: (limit?: number, kind?: SessionListKind) => Promise<void>;
   loadMore: (limit?: number) => Promise<void>;
@@ -713,7 +757,8 @@ async function loadFirstPageForTeam(
  *
  * Prefetch is TTL-gated per team+kind so a burst of first-page loads (inbox
  * debounce, kind switch, team reload) does not stampede the API with 3×N
- * soft fetches. MQTT kind pings still fill gaps while online.
+ * soft fetches. Inbox `refreshAfterInbox` forces a soft fetch for touched
+ * foreign kinds (still coalesced via the same TTL map after the forced run).
  */
 const attentionPrefetchAtByKey = new Map<string, number>();
 
@@ -725,11 +770,49 @@ function attentionPrefetchKey(teamId: string, kind: SessionListKind): string {
 export function clearAttentionPrefetchCache(teamId?: string): void {
   if (!teamId) {
     attentionPrefetchAtByKey.clear();
+    attentionSuppressUntilBySessionId.clear();
     return;
   }
   const prefix = `${teamId}:`;
   for (const key of attentionPrefetchAtByKey.keys()) {
     if (key.startsWith(prefix)) attentionPrefetchAtByKey.delete(key);
+  }
+}
+
+async function softFetchAttentionKind(
+  teamId: string,
+  kind: SessionListKind,
+  generation: number | null,
+  set: (partial: Partial<State>) => void,
+  get: () => State,
+  opts?: { force?: boolean },
+): Promise<void> {
+  const key = attentionPrefetchKey(teamId, kind);
+  const now = Date.now();
+  if (!opts?.force) {
+    const lastAt = attentionPrefetchAtByKey.get(key);
+    if (lastAt != null && now - lastAt < SESSION_LIST_KIND_TTL_MS) return;
+  }
+  // Reserve the slot before the fetch so concurrent callers coalesce.
+  attentionPrefetchAtByKey.set(key, now);
+  try {
+    const page = await loadPage(50, null, teamId, kind);
+    if (generation != null && generation !== firstPageGeneration) return;
+    if (useCurrentTeamStore.getState().team?.id !== teamId) return;
+    if (get().scopeTeamId !== teamId) return;
+    const rows = filterArchivedEntries(
+      sortEntries(filterToKind(filterToScope(page.rows, teamId), kind)),
+    );
+    set({
+      attentionBySessionId: syncAttentionFromRows(
+        get().attentionBySessionId,
+        kind,
+        rows,
+      ),
+    });
+  } catch {
+    // Allow a retry on the next first-page / inbox force; MQTT still fills gaps.
+    attentionPrefetchAtByKey.delete(key);
   }
 }
 
@@ -740,35 +823,9 @@ function scheduleAttentionPrefetch(
   set: (partial: Partial<State>) => void,
   get: () => State,
 ): void {
-  const now = Date.now();
   for (const kind of SESSION_LIST_KINDS) {
     if (kind === currentKind) continue;
-    const key = attentionPrefetchKey(teamId, kind);
-    const lastAt = attentionPrefetchAtByKey.get(key);
-    if (lastAt != null && now - lastAt < SESSION_LIST_KIND_TTL_MS) continue;
-    // Reserve the slot before the fetch so concurrent first-pages coalesce.
-    attentionPrefetchAtByKey.set(key, now);
-    void (async () => {
-      try {
-        const page = await loadPage(50, null, teamId, kind);
-        if (generation !== firstPageGeneration) return;
-        if (useCurrentTeamStore.getState().team?.id !== teamId) return;
-        if (get().scopeTeamId !== teamId) return;
-        const rows = filterArchivedEntries(
-          sortEntries(filterToKind(filterToScope(page.rows, teamId), kind)),
-        );
-        set({
-          attentionBySessionId: syncAttentionFromRows(
-            get().attentionBySessionId,
-            kind,
-            rows,
-          ),
-        });
-      } catch {
-        // Allow a retry on the next first-page; MQTT still fills gaps online.
-        attentionPrefetchAtByKey.delete(key);
-      }
-    })();
+    void softFetchAttentionKind(teamId, kind, generation, set, get);
   }
 }
 
@@ -797,6 +854,8 @@ export const useSessionListStore = create<State>((set, get) => ({
   loadedTeamId: null,
   attentionBySessionId: {},
   noteInboxMessage: ({ sessionId, kind, mentioned }) => {
+    // A fresh message lifts mark-viewed suppress so the badge can return.
+    liftAttentionSuppress(sessionId);
     set((state) => {
       const prev = state.attentionBySessionId[sessionId];
       const nextEntry: SessionAttentionEntry = {
@@ -820,6 +879,7 @@ export const useSessionListStore = create<State>((set, get) => ({
     });
   },
   clearSessionAttention: (sessionId) => {
+    suppressAttentionReadd(sessionId);
     set((state) => {
       if (!(sessionId in state.attentionBySessionId)) {
         return {
@@ -840,6 +900,31 @@ export const useSessionListStore = create<State>((set, get) => ({
         ),
       };
     });
+  },
+  refreshAfterInbox: async (kinds) => {
+    const teamId = resolveScopeTeamId(get().scopeTeamId);
+    if (!teamId) return;
+    const current = get().listKind;
+    const touched =
+      kinds && kinds.length > 0 ? new Set<SessionListKind>(kinds) : null;
+
+    // Visible list: reload only when this flush is unscoped (legacy) or the
+    // current kind was among the pings. Never setListKind to a foreign kind.
+    if (!touched || touched.has(current)) {
+      await get().loadFirstPage(50, current);
+    }
+
+    const generation = firstPageGeneration;
+    for (const kind of SESSION_LIST_KINDS) {
+      if (kind === current) continue;
+      if (touched && !touched.has(kind)) continue;
+      // Unscoped legacy flush only reloads the visible list — no cross-kind soft
+      // fetch (we have no signal which foreign buckets moved).
+      if (!touched) continue;
+      void softFetchAttentionKind(teamId, kind, generation, set, get, {
+        force: true,
+      });
+    }
   },
   markKindStale: (kind) => {
     if (kind) {

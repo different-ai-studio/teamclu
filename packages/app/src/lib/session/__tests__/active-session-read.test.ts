@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const markSessionViewed = vi.hoisted(() => vi.fn(async () => {}));
-const clearSessionAttention = vi.hoisted(() => vi.fn());
 
 vi.mock("@/stores/session-list-store", () => ({
   useSessionListStore: {
     getState: () => ({
       markSessionViewed,
-      clearSessionAttention,
     }),
   },
 }));
@@ -37,7 +35,6 @@ describe("active-session-read", () => {
     vi.useFakeTimers();
     resetActiveSessionReadForTests();
     markSessionViewed.mockClear();
-    clearSessionAttention.mockClear();
     selectionState.activeSessionId = null;
     selectionState.viewingArchivedSessionId = null;
   });
@@ -59,10 +56,9 @@ describe("active-session-read", () => {
     expect(isSessionActivelyViewed("s1")).toBe(false);
   });
 
-  it("scheduleMarkActiveSessionRead clears unread locally and debounces mark-viewed", () => {
+  it("scheduleMarkActiveSessionRead debounces mark-viewed without optimistic clear", () => {
     selectionState.activeSessionId = "s1";
     scheduleMarkActiveSessionRead("s1", "msg-1");
-    expect(clearSessionAttention).toHaveBeenCalledWith("s1");
     expect(markSessionViewed).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(MARK_ACTIVE_SESSION_READ_MS);
@@ -90,7 +86,6 @@ describe("active-session-read", () => {
 
   it("no-ops when session is not actively viewed", () => {
     scheduleMarkActiveSessionRead("s1", "msg-1");
-    expect(clearSessionAttention).not.toHaveBeenCalled();
     vi.advanceTimersByTime(MARK_ACTIVE_SESSION_READ_MS);
     expect(markSessionViewed).not.toHaveBeenCalled();
   });

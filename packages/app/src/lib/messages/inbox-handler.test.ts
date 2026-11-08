@@ -20,6 +20,7 @@ import {
   INBOX_LIST_REFRESH_MS,
   resetInboxListRefreshForTests,
   resetInboxSubscriptionState,
+  scheduleInboxAttentionRefresh,
   scheduleSessionListRefresh,
   SESSION_LIST_REFRESH_MS,
   type InboxStore,
@@ -33,6 +34,7 @@ function makeEnv(topic: string, payload: unknown): { topic: string; bytes: numbe
 function makeStore(rowIds: string[]): InboxStore & {
   patchRow: ReturnType<typeof vi.fn>;
   loadFirstPage: ReturnType<typeof vi.fn>;
+  refreshAfterInbox: ReturnType<typeof vi.fn>;
   noteInboxMessage: ReturnType<typeof vi.fn>;
   clearSessionAttention: ReturnType<typeof vi.fn>;
 } {
@@ -40,6 +42,7 @@ function makeStore(rowIds: string[]): InboxStore & {
     rows: rowIds.map((id) => ({ id })),
     patchRow: vi.fn(),
     loadFirstPage: vi.fn(async () => {}),
+    refreshAfterInbox: vi.fn(async () => {}),
     noteInboxMessage: vi.fn(),
     clearSessionAttention: vi.fn(),
   };
@@ -59,7 +62,7 @@ describe("handleInboxEnvelope", () => {
     vi.useRealTimers();
   });
 
-  it("notes attention and debounces kind-scoped reload", () => {
+  it("notes attention and debounces kind-scoped refreshAfterInbox", () => {
     const store = makeStore(["s1", "s2"]);
     handleInboxEnvelope(
       makeEnv("inbox/u1", {
@@ -77,12 +80,14 @@ describe("handleInboxEnvelope", () => {
       mentioned: true,
     });
     expect(store.loadFirstPage).not.toHaveBeenCalled();
+    expect(store.refreshAfterInbox).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
-    expect(store.loadFirstPage).toHaveBeenCalledWith(50, "channel");
+    expect(store.refreshAfterInbox).toHaveBeenCalledWith(["channel"]);
+    expect(store.loadFirstPage).not.toHaveBeenCalled();
   });
 
-  it("debounces list reload for an unknown session when kind is present", () => {
+  it("debounces attention refresh for an unknown session when kind is present", () => {
     const store = makeStore(["s1"]);
     handleInboxEnvelope(
       makeEnv("inbox/u1", { session_id: "newsession", kind: "regular" }),
@@ -97,7 +102,7 @@ describe("handleInboxEnvelope", () => {
     expect(store.loadFirstPage).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
-    expect(store.loadFirstPage).toHaveBeenCalledWith(50, "regular");
+    expect(store.refreshAfterInbox).toHaveBeenCalledWith(["regular"]);
   });
 
   it("falls back to legacy unread when kind is missing", () => {
@@ -106,7 +111,7 @@ describe("handleInboxEnvelope", () => {
     expect(store.noteInboxMessage).not.toHaveBeenCalled();
     expect(store.patchRow).toHaveBeenCalledWith("s1", { has_unread: true });
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
-    expect(store.loadFirstPage).toHaveBeenCalledWith(50, undefined);
+    expect(store.refreshAfterInbox).toHaveBeenCalledWith(undefined);
   });
 
   it("legacy missing-kind still refreshes for unknown sessions", () => {
@@ -123,10 +128,10 @@ describe("handleInboxEnvelope", () => {
     expect(store.patchRow).not.toHaveBeenCalled();
     expect(onMessagePing).toHaveBeenCalledWith("newsession");
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
-    expect(store.loadFirstPage).toHaveBeenCalledWith(50, undefined);
+    expect(store.refreshAfterInbox).toHaveBeenCalledWith(undefined);
   });
 
-  it("coalesces burst pings into one reload per touched kind", () => {
+  it("coalesces burst pings into one refreshAfterInbox with all touched kinds", () => {
     const store = makeStore(["s1", "s2"]);
     handleInboxEnvelope(
       makeEnv("inbox/u1", { session_id: "s1", kind: "regular" }),
@@ -140,9 +145,9 @@ describe("handleInboxEnvelope", () => {
       store,
     );
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
-    expect(store.loadFirstPage).toHaveBeenCalledTimes(2);
-    expect(store.loadFirstPage).toHaveBeenCalledWith(50, "regular");
-    expect(store.loadFirstPage).toHaveBeenCalledWith(50, "channel");
+    expect(store.refreshAfterInbox).toHaveBeenCalledTimes(1);
+    expect(store.refreshAfterInbox).toHaveBeenCalledWith(["regular", "channel"]);
+    expect(store.loadFirstPage).not.toHaveBeenCalled();
   });
 
   it("ignores pings for a different user (defensive, broker ACL should also block)", () => {
@@ -188,13 +193,12 @@ describe("handleInboxEnvelope", () => {
     expect(logger.warn).toHaveBeenCalled();
   });
 
-  it("scheduleSessionListRefresh debounces loadFirstPage", () => {
+  it("scheduleSessionListRefresh debounces current-list reload", () => {
     const loadFirstPage = vi.fn(async () => {});
     scheduleSessionListRefresh(loadFirstPage);
     expect(loadFirstPage).not.toHaveBeenCalled();
     vi.advanceTimersByTime(SESSION_LIST_REFRESH_MS);
     expect(loadFirstPage).toHaveBeenCalledOnce();
-    expect(loadFirstPage).toHaveBeenCalledWith(50, undefined);
   });
 
   it("scheduleSessionListRefresh coalesces burst calls", () => {
@@ -204,19 +208,33 @@ describe("handleInboxEnvelope", () => {
     scheduleSessionListRefresh(loadFirstPage);
     vi.advanceTimersByTime(SESSION_LIST_REFRESH_MS);
     expect(loadFirstPage).toHaveBeenCalledOnce();
-    expect(loadFirstPage).toHaveBeenCalledWith(50, undefined);
   });
 
-  it("scheduleSessionListRefresh reloads each pending kind once", () => {
-    const loadFirstPage = vi.fn(async () => {});
-    scheduleSessionListRefresh(loadFirstPage, "regular");
+  it("scheduleInboxAttentionRefresh flushes each pending kind once", () => {
+    const refreshAfterInbox = vi.fn(async () => {});
+    scheduleInboxAttentionRefresh(refreshAfterInbox, "regular");
     vi.advanceTimersByTime(100);
-    scheduleSessionListRefresh(loadFirstPage, "app");
-    scheduleSessionListRefresh(loadFirstPage, "regular");
+    scheduleInboxAttentionRefresh(refreshAfterInbox, "app");
+    scheduleInboxAttentionRefresh(refreshAfterInbox, "regular");
     vi.advanceTimersByTime(SESSION_LIST_REFRESH_MS);
-    expect(loadFirstPage).toHaveBeenCalledTimes(2);
-    expect(loadFirstPage).toHaveBeenCalledWith(50, "regular");
-    expect(loadFirstPage).toHaveBeenCalledWith(50, "app");
+    expect(refreshAfterInbox).toHaveBeenCalledTimes(1);
+    expect(refreshAfterInbox).toHaveBeenCalledWith(["regular", "app"]);
+  });
+
+  it("active-session afterMarkRead reloads visible list without a foreign kind", () => {
+    shouldMarkSessionUnreadMock.mockReturnValue(false);
+    const store = makeStore(["s1"]);
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { session_id: "s1", kind: "app", mentioned: true }),
+      "u1",
+      store,
+    );
+    const afterMarkRead = scheduleMarkActiveSessionReadMock.mock.calls[0]?.[2]
+      ?.afterMarkRead as (() => void) | undefined;
+    expect(afterMarkRead).toBeTypeOf("function");
+    afterMarkRead?.();
+    expect(store.loadFirstPage).toHaveBeenCalledWith(50);
+    expect(store.loadFirstPage).not.toHaveBeenCalledWith(50, "app");
   });
 
   it("warns on payload missing session_id", () => {

@@ -218,6 +218,135 @@ describe("session-list-store", () => {
     expect(kindCalls).toEqual(["regular"]);
   });
 
+  it("refreshAfterInbox never switches listKind for a foreign kind", async () => {
+    const kindCalls: string[] = [];
+    mocks.listCurrentActorSessionsV2.mockImplementation(async (input: { kind?: string }) => {
+      kindCalls.push(input.kind ?? "regular");
+      if (input.kind === "channel") {
+        return {
+          rows: [
+            {
+              ...sessionRow({ id: "ch-1", has_unread: true }),
+              source: "gateway",
+            },
+          ],
+        };
+      }
+      return { rows: [sessionRow({ id: "regular-1" })] };
+    });
+
+    const { useSessionListStore } = await import("./session-list-store");
+    await useSessionListStore.getState().loadFirstPage(50, "regular");
+    await vi.waitFor(() => {
+      expect(kindCalls.filter((k) => k !== "regular").length).toBe(3);
+    });
+    kindCalls.length = 0;
+
+    await useSessionListStore.getState().refreshAfterInbox(["channel"]);
+    await vi.waitFor(() => {
+      expect(
+        useSessionListStore.getState().attentionBySessionId["ch-1"],
+      ).toMatchObject({ kind: "channel", mention: false });
+    });
+
+    expect(useSessionListStore.getState().listKind).toBe("regular");
+    expect(useSessionListStore.getState().rows.map((row) => row.id)).toEqual([
+      "regular-1",
+    ]);
+    expect(kindCalls).toContain("channel");
+    expect(kindCalls).not.toContain("regular");
+  });
+
+  it("refreshAfterInbox reloads the visible kind when it was touched", async () => {
+    const kindCalls: string[] = [];
+    mocks.listCurrentActorSessionsV2.mockImplementation(async (input: { kind?: string }) => {
+      kindCalls.push(input.kind ?? "regular");
+      return { rows: [sessionRow({ id: "regular-1", has_unread: true })] };
+    });
+
+    const { useSessionListStore } = await import("./session-list-store");
+    useSessionListStore.setState({
+      listKind: "regular",
+      scopeTeamId: "team-1",
+      loadedTeamId: "team-1",
+    });
+    await useSessionListStore.getState().refreshAfterInbox(["regular", "app"]);
+
+    expect(kindCalls.filter((k) => k === "regular").length).toBeGreaterThanOrEqual(1);
+    expect(useSessionListStore.getState().listKind).toBe("regular");
+  });
+
+  it("keeps off-page attention when a first page omits that session", async () => {
+    mocks.listCurrentActorSessionsV2.mockImplementation(async (input: { kind?: string }) => {
+      if (input.kind && input.kind !== "regular") {
+        return { rows: [], nextCursor: null };
+      }
+      return {
+        rows: [sessionRow({ id: "page-1", has_unread: true })],
+        nextCursor: null,
+      };
+    });
+
+    const { useSessionListStore } = await import("./session-list-store");
+    useSessionListStore.setState({
+      attentionBySessionId: {
+        "off-page": { kind: "regular", mention: true },
+      },
+      scopeTeamId: "team-1",
+    });
+    await useSessionListStore.getState().loadFirstPage(50, "regular");
+
+    const attention = useSessionListStore.getState().attentionBySessionId;
+    expect(attention["page-1"]).toMatchObject({ kind: "regular", mention: false });
+    expect(attention["off-page"]).toMatchObject({ kind: "regular", mention: true });
+  });
+
+  it("suppresses stale page re-add after clearSessionAttention", async () => {
+    mocks.listCurrentActorSessionsV2.mockImplementation(async (input: { kind?: string }) => {
+      if (input.kind && input.kind !== "regular") {
+        return { rows: [], nextCursor: null };
+      }
+      return {
+        rows: [sessionRow({ id: "session-1", has_unread: true, has_mention: true })],
+      };
+    });
+
+    const { useSessionListStore } = await import("./session-list-store");
+    useSessionListStore.setState({
+      rows: [sessionRow({ id: "session-1", has_unread: true, has_mention: true })],
+      attentionBySessionId: {
+        "session-1": { kind: "regular", mention: true },
+      },
+      scopeTeamId: "team-1",
+      listKind: "regular",
+    });
+    useSessionListStore.getState().clearSessionAttention("session-1");
+    expect(useSessionListStore.getState().attentionBySessionId["session-1"]).toBeUndefined();
+
+    await useSessionListStore.getState().loadFirstPage(50, "regular");
+    expect(useSessionListStore.getState().attentionBySessionId["session-1"]).toBeUndefined();
+  });
+
+  it("noteInboxMessage lifts suppress so a new unread can land", async () => {
+    const { useSessionListStore } = await import("./session-list-store");
+    useSessionListStore.setState({
+      rows: [sessionRow({ id: "session-1" })],
+      attentionBySessionId: {
+        "session-1": { kind: "regular", mention: false },
+      },
+    });
+    useSessionListStore.getState().clearSessionAttention("session-1");
+    useSessionListStore.getState().noteInboxMessage({
+      sessionId: "session-1",
+      kind: "regular",
+      mentioned: true,
+    });
+    expect(useSessionListStore.getState().attentionBySessionId["session-1"]).toEqual({
+      kind: "regular",
+      mention: true,
+    });
+  });
+
   it("loads more with the last row composite cursor and dedupes rows", async () => {
     mocks.listCurrentActorSessionsV2.mockImplementation(async (input: {
       kind?: string;
