@@ -28,7 +28,9 @@ const pendingBySession = new Map<string, PendingRead>();
 
 /**
  * Debounced mark-read for messages arriving while the session is open.
- * Clears the local unread dot immediately; persists read marker after coalesce window.
+ * Attention clears only after `markSessionViewed` succeeds (same path as
+ * opening a session), so a failed write does not leave a false "read" state.
+ * The active row already hides unread/mention chips via `!isActive`.
  */
 export function scheduleMarkActiveSessionRead(
   sessionId: string,
@@ -37,8 +39,6 @@ export function scheduleMarkActiveSessionRead(
 ): void {
   const scheduledWhileActive = isSessionActivelyViewed(sessionId);
   if (!scheduledWhileActive) return;
-
-  useSessionListStore.getState().patchRow(sessionId, { has_unread: false });
 
   const existing = pendingBySession.get(sessionId);
   if (existing) clearTimeout(existing.timer);

@@ -68,6 +68,7 @@ const serverRow = {
   created_at: "2026-07-28T07:59:00.000Z",
   updated_at: "2026-07-28T08:00:01.000Z",
   has_unread: false,
+  has_mention: false,
 };
 
 const GATE_ERROR = new Error(

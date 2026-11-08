@@ -269,6 +269,7 @@ function normalizeSession(input: SeedSession, teamId: string): SessionListEntry 
     mode: normalizeMode(input.mode),
     idea_id: input.ideaId ?? input.idea_id ?? null,
     has_unread: false,
+    has_mention: false,
   };
 }
 

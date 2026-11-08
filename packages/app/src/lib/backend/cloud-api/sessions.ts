@@ -21,6 +21,7 @@ type CloudSession = {
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
   hasUnread: boolean;
+  hasMention?: boolean;
   appId?: string | null;
   source?: string | null;
   cronJobId?: string | null;
@@ -75,6 +76,7 @@ function mapSession(row: CloudSession) {
     mode: row.mode,
     idea_id: row.ideaId,
     has_unread: row.hasUnread,
+    has_mention: row.hasMention === true,
     app_id: row.appId ?? null,
     source: row.source ?? null,
     cron_job_id: row.cronJobId ?? null,

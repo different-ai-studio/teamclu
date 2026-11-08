@@ -1304,6 +1304,7 @@
     "more": "More",
     "participantCount": "{{count}} participants",
     "unread": "Unread",
+    "mentioned": "You were mentioned",
     "loadMoreSessions": "Load more",
     "appMqttDisconnected": "Cannot reach the messaging server",
     "appMqttDisconnectedHint": "Tap to retry or configure the server",

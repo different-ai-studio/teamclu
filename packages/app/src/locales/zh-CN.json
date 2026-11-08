@@ -1304,6 +1304,7 @@
     "more": "更多",
     "participantCount": "{{count}} 位",
     "unread": "未读",
+    "mentioned": "有人 @了你",
     "loadMoreSessions": "加载更多",
     "appMqttDisconnected": "连接不上通信服务器",
     "appMqttDisconnectedHint": "点击重试或配置服务器",

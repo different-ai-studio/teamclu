@@ -2,21 +2,26 @@
 //
 // Handles incoming MQTT pings on `inbox/<user_id>` (published by FC fan-out
 // after each message INSERT or mark-viewed). The payload shape:
-//   { type?: "message" | "read", session_id, ts }
+//   { type?: "message" | "read", session_id, kind?, mentioned?, ts }
 // `type` is optional for backward compatibility — absent means "message".
-// For message pings the client patches unread optimistically, then debounces
-// a list reload to sync preview text and sort order.
+// Attention badges need `kind`; without it (pre-attention FC) fall back to the
+// legacy unread patch + current-list refresh so a client-only ship stays silent.
 
 import {
   scheduleMarkActiveSessionRead,
   shouldMarkSessionUnread,
 } from "@/lib/session/active-session-read";
 import { mqttSubscribe } from "@/lib/mqtt/mqtt-bridge";
+import { isSessionListKindValue } from "@/lib/session/session-list-attention";
+import type { SessionListKind } from "@/lib/session/session-list-kind";
+import { useCurrentTeamStore } from "@/stores/current-team";
 
 interface InboxPing {
   session_id: string;
   team_id?: string;
   type?: "message" | "read" | "session.participants";
+  kind?: string;
+  mentioned?: boolean;
   ts?: number;
 }
 
@@ -36,6 +41,19 @@ let sessionListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let subscribedInboxUserId: string | null = null;
 let pendingInboxSubscribe: Promise<void> | null = null;
 let inboxSubscribeEpoch = 0;
+/**
+ * Kinds accumulated during the debounce window for inbox attention refresh.
+ * `pendingRefreshAny` covers legacy pings with no kind (reload the visible
+ * list only). MQTT callers that only need a current-list reload set
+ * `pendingReloadCurrent` via `scheduleSessionListRefresh`.
+ */
+let pendingRefreshKinds = new Set<SessionListKind>();
+let pendingRefreshAny = false;
+let pendingReloadCurrent = false;
+let pendingInboxRefresh:
+  | ((kinds?: SessionListKind[]) => void | Promise<void>)
+  | null = null;
+let pendingCurrentReload: (() => void | Promise<void>) | null = null;
 
 function inboxTopicForUser(userId: string): string {
   return `inbox/${userId.trim()}`;
@@ -76,25 +94,77 @@ export function resetInboxSubscriptionState(): void {
   pendingInboxSubscribe = null;
 }
 
+function flushPendingSessionListRefresh(): void {
+  sessionListRefreshTimer = null;
+  const kinds = [...pendingRefreshKinds];
+  const refreshAny = pendingRefreshAny;
+  const reloadCurrent = pendingReloadCurrent;
+  const inboxRefresh = pendingInboxRefresh;
+  const currentReload = pendingCurrentReload;
+  pendingRefreshKinds = new Set();
+  pendingRefreshAny = false;
+  pendingReloadCurrent = false;
+  pendingInboxRefresh = null;
+  pendingCurrentReload = null;
+
+  if (inboxRefresh && (kinds.length > 0 || refreshAny)) {
+    void inboxRefresh(kinds.length > 0 ? kinds : undefined);
+  }
+  if (reloadCurrent && currentReload) {
+    void currentReload();
+  }
+}
+
+function armSessionListRefreshTimer(): void {
+  if (sessionListRefreshTimer) clearTimeout(sessionListRefreshTimer);
+  sessionListRefreshTimer = setTimeout(
+    flushPendingSessionListRefresh,
+    SESSION_LIST_REFRESH_MS,
+  );
+}
+
 /** Test hook — clears pending debounced refresh. */
 export function resetSessionListRefreshForTests(): void {
   if (sessionListRefreshTimer) {
     clearTimeout(sessionListRefreshTimer);
     sessionListRefreshTimer = null;
   }
+  pendingRefreshKinds = new Set();
+  pendingRefreshAny = false;
+  pendingReloadCurrent = false;
+  pendingInboxRefresh = null;
+  pendingCurrentReload = null;
   resetInboxSubscriptionState();
 }
 
 /** @deprecated Use resetSessionListRefreshForTests */
 export const resetInboxListRefreshForTests = resetSessionListRefreshForTests;
 
-/** Shared by inbox pings and session/live events (e.g. unknown session message.created). */
-export function scheduleSessionListRefresh(loadFirstPage: () => Promise<void>): void {
-  if (sessionListRefreshTimer) clearTimeout(sessionListRefreshTimer);
-  sessionListRefreshTimer = setTimeout(() => {
-    sessionListRefreshTimer = null;
-    void loadFirstPage();
-  }, SESSION_LIST_REFRESH_MS);
+/**
+ * Debounced reload of the *currently visible* session list.
+ * Used by MQTT live maintenance. Never switches `listKind`.
+ */
+export function scheduleSessionListRefresh(
+  loadCurrentFirstPage: () => void | Promise<void>,
+): void {
+  pendingReloadCurrent = true;
+  pendingCurrentReload = loadCurrentFirstPage;
+  armSessionListRefreshTimer();
+}
+
+/**
+ * Debounced inbox attention refresh. Never switches `listKind` — the store's
+ * `refreshAfterInbox` reloads the visible kind only when it was touched, and
+ * soft-fetches attention for foreign kinds.
+ */
+export function scheduleInboxAttentionRefresh(
+  refreshAfterInbox: (kinds?: SessionListKind[]) => void | Promise<void>,
+  kind?: SessionListKind,
+): void {
+  if (kind) pendingRefreshKinds.add(kind);
+  else pendingRefreshAny = true;
+  pendingInboxRefresh = refreshAfterInbox;
+  armSessionListRefreshTimer();
 }
 
 /**
@@ -104,8 +174,24 @@ export function scheduleSessionListRefresh(loadFirstPage: () => Promise<void>): 
  */
 export interface InboxStore {
   rows: ReadonlyArray<{ id: string }>;
-  patchRow: (sessionId: string, patch: { has_unread: boolean }) => void;
-  loadFirstPage: () => Promise<void>;
+  patchRow: (
+    sessionId: string,
+    patch: { has_unread?: boolean; has_mention?: boolean },
+  ) => void;
+  /** Visible-list reload only — callers must not pass a foreign kind. */
+  loadFirstPage: (limit?: number, kind?: SessionListKind) => Promise<void>;
+  /**
+   * Inbox-driven refresh that never switches `listKind`. Reloads the visible
+   * kind when touched (or when `kinds` is omitted); soft-fetches attention for
+   * every other touched kind.
+   */
+  refreshAfterInbox: (kinds?: SessionListKind[]) => void | Promise<void>;
+  noteInboxMessage: (input: {
+    sessionId: string;
+    kind: SessionListKind;
+    mentioned: boolean;
+  }) => void;
+  clearSessionAttention: (sessionId: string) => void;
 }
 
 interface HandleInboxEnvelopeOptions {
@@ -113,6 +199,20 @@ interface HandleInboxEnvelopeOptions {
   onMessagePing?: (sessionId: string) => void;
   /** A roster hint. The handler returns before unread and message side effects. */
   onParticipantsChanged?: (sessionId: string, teamId: string) => void;
+}
+
+/**
+ * Inbox is per-user, not per-team. Drop message/read pings for another team so
+ * attention badges cannot stick on the active team's kind/nav map. Missing
+ * `team_id` keeps the legacy path (pre-attention FC). No current team → allow
+ * (fail open); dropping same-team pings while the store is briefly empty
+ * blanks kind badges until the user clicks into that kind.
+ */
+function isInboxPingForActiveTeam(teamId: string | undefined): boolean {
+  if (typeof teamId !== "string" || teamId.length === 0) return true;
+  const currentTeamId = useCurrentTeamStore.getState().team?.id;
+  if (!currentTeamId) return true;
+  return teamId === currentTeamId;
 }
 
 export function handleInboxEnvelope(
@@ -150,30 +250,46 @@ export function handleInboxEnvelope(
     return;
   }
 
+  if (!isInboxPingForActiveTeam(payload.team_id)) {
+    return;
+  }
+
   if (payload.type === "read") {
-    // Another device marked this session read — clear the unread dot locally.
-    store.patchRow(payload.session_id, { has_unread: false });
+    store.clearSessionAttention(payload.session_id);
     return;
   }
 
   // type === "message" or absent (legacy) — mark session unread unless viewing.
+  const kind = isSessionListKindValue(payload.kind) ? payload.kind : null;
+  const mentioned = payload.mentioned === true;
   const found = store.rows.some((r) => r.id === payload.session_id);
   const isActiveView = !shouldMarkSessionUnread(payload.session_id);
-  if (found) {
-    if (isActiveView) {
-      // Persist read marker first, then reload — avoids loadFirstPage racing
-      // ahead of markSessionViewed and re-applying hasUnread from the server.
-      scheduleMarkActiveSessionRead(payload.session_id, null, {
-        afterMarkRead: () => void store.loadFirstPage(),
-      });
-    } else {
-      // Instant unread dot; preview + last_message_at come from debounced reload.
-      store.patchRow(payload.session_id, { has_unread: true });
-    }
+
+  if (isActiveView) {
+    // Persist read marker first, then reload the *visible* list — never pass a
+    // foreign kind into loadFirstPage (that switches listKind).
+    scheduleMarkActiveSessionRead(payload.session_id, null, {
+      afterMarkRead: () => void store.loadFirstPage(50),
+    });
+    options?.onMessagePing?.(payload.session_id);
+    return;
   }
 
-  options?.onMessagePing?.(payload.session_id);
-  if (!found || !isActiveView) {
-    scheduleSessionListRefresh(() => store.loadFirstPage());
+  if (kind) {
+    store.noteInboxMessage({
+      sessionId: payload.session_id,
+      kind,
+      mentioned,
+    });
+    options?.onMessagePing?.(payload.session_id);
+    scheduleInboxAttentionRefresh(store.refreshAfterInbox, kind);
+    return;
   }
+
+  // Pre-attention FC: no kind → same unread path as main, no cross-kind badges.
+  if (found) {
+    store.patchRow(payload.session_id, { has_unread: true });
+  }
+  options?.onMessagePing?.(payload.session_id);
+  scheduleInboxAttentionRefresh(store.refreshAfterInbox);
 }

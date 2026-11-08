@@ -39,7 +39,7 @@ describe("resetClientChatState", () => {
       { id: "agent-1", displayName: "Agent" },
     ]);
     useSessionListStore.setState({
-      rows: [{ id: "session-a", title: "Old", created_at: "", last_message_at: null, last_message_preview: null, has_unread: false }],
+      rows: [{ id: "session-a", title: "Old", created_at: "", last_message_at: null, last_message_preview: null, has_unread: false, has_mention: false, mode: "collab", idea_id: null, team_id: "t1", updated_at: "" }],
       loading: false,
       highlightedSessionIds: ["session-a"],
     });

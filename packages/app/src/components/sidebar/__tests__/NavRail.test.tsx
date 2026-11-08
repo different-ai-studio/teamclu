@@ -15,6 +15,7 @@ const mkListRow = (id: string, title: string) => ({
   mode: 'collab' as const,
   idea_id: null,
   has_unread: false,
+  has_mention: false,
   created_at: '',
   updated_at: '',
 })

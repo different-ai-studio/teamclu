@@ -20,11 +20,14 @@ import { sortSessionListRows } from "@/lib/session/session-list-sort";
 import {
   classifySessionListKind,
   isSessionListKind,
+  SESSION_LIST_KINDS,
   SESSION_LIST_KIND_TTL_MS,
   type SessionListKind,
 } from "@/lib/session/session-list-kind";
+import type { SessionAttentionEntry } from "@/lib/session/session-list-attention";
 
 export type { SessionListKind } from "@/lib/session/session-list-kind";
+export type { SessionAttentionEntry } from "@/lib/session/session-list-attention";
 
 const ARCHIVED_SESSION_IDS_KEY = "teamclu.sessionList.archivedIds";
 
@@ -97,6 +100,8 @@ export interface SessionListEntry {
   mode: "solo" | "collab" | "control";
   idea_id: string | null;
   has_unread: boolean;
+  /** Unread message named this actor in mention_actor_ids. */
+  has_mention: boolean;
   /**
    * The app this session was created from, or null.
    *
@@ -123,12 +128,72 @@ function mapCacheToEntry(r: SessionRow): SessionListEntry {
     mode: (r.mode as SessionListEntry["mode"]) ?? "solo",
     idea_id: r.ideaId ?? null,
     has_unread: false,
+    has_mention: false,
     app_id: null,
     source: r.source ?? null,
     cron_job_id: r.cronJobId ?? null,
     created_at: r.createdAt ?? null,
     updated_at: r.updatedAt ?? null,
   };
+}
+
+/**
+ * How long page/prefetch syncs refuse to re-add attention after a local clear
+ * (mark-viewed / read ping). Covers server lag without permanently hiding a
+ * later real unread (noteInboxMessage lifts the suppress).
+ */
+const ATTENTION_SUPPRESS_MS = 3_000;
+const attentionSuppressUntilBySessionId = new Map<string, number>();
+
+function suppressAttentionReadd(sessionId: string, now = Date.now()): void {
+  attentionSuppressUntilBySessionId.set(sessionId, now + ATTENTION_SUPPRESS_MS);
+}
+
+function liftAttentionSuppress(sessionId: string): void {
+  attentionSuppressUntilBySessionId.delete(sessionId);
+}
+
+function isAttentionSuppressed(sessionId: string, now = Date.now()): boolean {
+  const until = attentionSuppressUntilBySessionId.get(sessionId);
+  if (until == null) return false;
+  if (until <= now) {
+    attentionSuppressUntilBySessionId.delete(sessionId);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Reconcile one kind's attention from a page without wiping off-page entries.
+ *
+ * - Rows on the page with unread/mention → set (unless recently cleared).
+ * - Rows on the page without → drop that id (server says read).
+ * - Same-kind ids absent from the page → keep (page-2+ unread / inbox-only).
+ */
+function syncAttentionFromRows(
+  prev: Record<string, SessionAttentionEntry>,
+  kind: SessionListKind,
+  rows: SessionListEntry[],
+): Record<string, SessionAttentionEntry> {
+  const pageIds = new Set(rows.map((row) => row.id));
+  const next: Record<string, SessionAttentionEntry> = {};
+  for (const [id, entry] of Object.entries(prev)) {
+    if (entry.kind !== kind) {
+      next[id] = entry;
+      continue;
+    }
+    if (!pageIds.has(id)) next[id] = entry;
+  }
+  const now = Date.now();
+  for (const row of rows) {
+    if (row.has_unread || row.has_mention) {
+      if (isAttentionSuppressed(row.id, now)) continue;
+      next[row.id] = { kind, mention: row.has_mention };
+    } else {
+      delete next[row.id];
+    }
+  }
+  return next;
 }
 
 function sortEntries(entries: SessionListEntry[]): SessionListEntry[] {
@@ -247,6 +312,24 @@ interface State {
    * fetch would otherwise look identical to a successful one and never retry.
    */
   loadedTeamId: string | null;
+  /**
+   * Sessions that need attention, keyed by id. Fed by inbox pings and
+   * reconciled from list pages (`has_unread` / `has_mention`). Cleared on
+   * mark-viewed / read ping. Menu + Nav badges aggregate this map.
+   */
+  attentionBySessionId: Record<string, SessionAttentionEntry>;
+  noteInboxMessage: (input: {
+    sessionId: string;
+    kind: SessionListKind;
+    mentioned: boolean;
+  }) => void;
+  clearSessionAttention: (sessionId: string) => void;
+  /**
+   * Inbox debounce flush. Never switches `listKind`. Reloads the visible kind
+   * when `kinds` omits a filter or includes it; soft-fetches attention for
+   * every other touched kind.
+   */
+  refreshAfterInbox: (kinds?: SessionListKind[]) => Promise<void>;
   load: () => Promise<void>;
   loadFirstPage: (limit?: number, kind?: SessionListKind) => Promise<void>;
   loadMore: (limit?: number) => Promise<void>;
@@ -257,7 +340,7 @@ interface State {
   bumpLastMessage: (
     sessionId: string,
     patch: Pick<SessionListEntry, "last_message_preview" | "last_message_at"> &
-      Partial<Pick<SessionListEntry, "has_unread">>,
+      Partial<Pick<SessionListEntry, "has_unread" | "has_mention">>,
   ) => void;
   removeRow: (sessionId: string) => void;
   markSessionViewed: (sessionId: string, lastReadMessageId?: string | null) => Promise<void>;
@@ -409,8 +492,14 @@ async function refillAfterArchive(
   }
   forgetArchivedSessionIds(rows);
   const nextCursor = resolveNextCursor(page);
+  const mergedIncoming = filterArchivedEntries(rows);
   set({
-    rows: filterArchivedEntries(mergeRows(get().rows, rows)),
+    rows: filterArchivedEntries(mergeRows(get().rows, mergedIncoming)),
+    attentionBySessionId: syncAttentionFromRows(
+      get().attentionBySessionId,
+      kind,
+      mergedIncoming,
+    ),
     ...paginationPatch(kind, nextCursor),
   });
 }
@@ -481,11 +570,15 @@ async function loadFirstPageForTeam(
   // sessions while the new page is in flight.
   const previousScope = get().scopeTeamId;
   if (previousScope !== null && previousScope !== teamId) {
+    clearAttentionPrefetchCache(previousScope);
     set({
       rows: [],
       ...emptyKindPagination(),
       kindLoadedAt: {},
       kindStale: {},
+      // Do not wait for resetClientChatState — keep off-page attention from
+      // bleeding into the team being entered.
+      attentionBySessionId: {},
     });
   }
   set({ loading: true, error: null, scopeTeamId: teamId });
@@ -633,8 +726,10 @@ async function loadFirstPageForTeam(
 
   if (superseded()) return;
   forgetArchivedSessionIds(rows);
+  const archivedRows = filterArchivedEntries(sortEntries(rows));
   set({
-    rows: replaceKindRows(get().rows, filterArchivedEntries(sortEntries(rows)), kind),
+    rows: replaceKindRows(get().rows, archivedRows, kind),
+    attentionBySessionId: syncAttentionFromRows(get().attentionBySessionId, kind, archivedRows),
     loading: false,
     ...paginationPatch(kind, nextCursor),
     // Re-asserted, not assumed: resetClientChatState nulls the scope on the
@@ -653,6 +748,90 @@ async function loadFirstPageForTeam(
     kindStale: { ...get().kindStale, [kind]: false },
   });
   markStartup("session-list:loaded");
+  // Kind menu / Nav badges need other buckets without forcing a click-through.
+  // Fire-and-forget first pages; only attention is merged (rows stay on `kind`).
+  scheduleAttentionPrefetch(teamId, kind, generation, set, get);
+}
+
+/**
+ * Soft-refresh attention for every kind except the one just loaded. Does not
+ * touch `rows` / `listKind` / pagination. Abort if a newer first-page run
+ * started or the active team changed.
+ *
+ * Prefetch is TTL-gated per team+kind so a burst of first-page loads (inbox
+ * debounce, kind switch, team reload) does not stampede the API with 3×N
+ * soft fetches. Inbox `refreshAfterInbox` forces a soft fetch for touched
+ * foreign kinds (still coalesced via the same TTL map after the forced run).
+ */
+const attentionPrefetchAtByKey = new Map<string, number>();
+
+function attentionPrefetchKey(teamId: string, kind: SessionListKind): string {
+  return `${teamId}:${kind}`;
+}
+
+/** Drop TTL slots on team switch / sign-out so the next scope can prefetch again. */
+export function clearAttentionPrefetchCache(teamId?: string): void {
+  if (!teamId) {
+    attentionPrefetchAtByKey.clear();
+    attentionSuppressUntilBySessionId.clear();
+    return;
+  }
+  const prefix = `${teamId}:`;
+  for (const key of attentionPrefetchAtByKey.keys()) {
+    if (key.startsWith(prefix)) attentionPrefetchAtByKey.delete(key);
+  }
+}
+
+async function softFetchAttentionKind(
+  teamId: string,
+  kind: SessionListKind,
+  generation: number | null,
+  set: (partial: Partial<State>) => void,
+  get: () => State,
+  opts?: { force?: boolean },
+): Promise<void> {
+  const key = attentionPrefetchKey(teamId, kind);
+  const now = Date.now();
+  if (!opts?.force) {
+    const lastAt = attentionPrefetchAtByKey.get(key);
+    if (lastAt != null && now - lastAt < SESSION_LIST_KIND_TTL_MS) return;
+  }
+  // Mark TTL only after a successful merge. Reserving before the fetch meant a
+  // superseded run (newer loadFirstPage / team switch) could abort after the
+  // request and still burn the 30s window — other-kind badges then stayed dark
+  // until the user clicked into that kind.
+  try {
+    const page = await loadPage(50, null, teamId, kind);
+    if (generation != null && generation !== firstPageGeneration) return;
+    if (useCurrentTeamStore.getState().team?.id !== teamId) return;
+    if (get().scopeTeamId !== teamId) return;
+    const rows = filterArchivedEntries(
+      sortEntries(filterToKind(filterToScope(page.rows, teamId), kind)),
+    );
+    set({
+      attentionBySessionId: syncAttentionFromRows(
+        get().attentionBySessionId,
+        kind,
+        rows,
+      ),
+    });
+    attentionPrefetchAtByKey.set(key, Date.now());
+  } catch {
+    // Leave TTL unset so the next first-page / inbox force can retry.
+  }
+}
+
+function scheduleAttentionPrefetch(
+  teamId: string,
+  currentKind: SessionListKind,
+  generation: number,
+  set: (partial: Partial<State>) => void,
+  get: () => State,
+): void {
+  for (const kind of SESSION_LIST_KINDS) {
+    if (kind === currentKind) continue;
+    void softFetchAttentionKind(teamId, kind, generation, set, get);
+  }
 }
 
 export const useSessionListStore = create<State>((set, get) => ({
@@ -678,6 +857,80 @@ export const useSessionListStore = create<State>((set, get) => ({
   emptyPageKeptTeams: [],
   scopeTeamId: null,
   loadedTeamId: null,
+  attentionBySessionId: {},
+  noteInboxMessage: ({ sessionId, kind, mentioned }) => {
+    // A fresh message lifts mark-viewed suppress so the badge can return.
+    liftAttentionSuppress(sessionId);
+    set((state) => {
+      const prev = state.attentionBySessionId[sessionId];
+      const nextEntry: SessionAttentionEntry = {
+        kind,
+        mention: mentioned || Boolean(prev?.mention),
+      };
+      const attentionBySessionId = {
+        ...state.attentionBySessionId,
+        [sessionId]: nextEntry,
+      };
+      const rows = state.rows.map((row) =>
+        row.id === sessionId
+          ? {
+              ...row,
+              has_unread: true,
+              has_mention: nextEntry.mention,
+            }
+          : row,
+      );
+      return { attentionBySessionId, rows };
+    });
+  },
+  clearSessionAttention: (sessionId) => {
+    suppressAttentionReadd(sessionId);
+    set((state) => {
+      if (!(sessionId in state.attentionBySessionId)) {
+        return {
+          rows: state.rows.map((row) =>
+            row.id === sessionId
+              ? { ...row, has_unread: false, has_mention: false }
+              : row,
+          ),
+        };
+      }
+      const { [sessionId]: _removed, ...attentionBySessionId } = state.attentionBySessionId;
+      return {
+        attentionBySessionId,
+        rows: state.rows.map((row) =>
+          row.id === sessionId
+            ? { ...row, has_unread: false, has_mention: false }
+            : row,
+        ),
+      };
+    });
+  },
+  refreshAfterInbox: async (kinds) => {
+    const teamId = resolveScopeTeamId(get().scopeTeamId);
+    if (!teamId) return;
+    const current = get().listKind;
+    const touched =
+      kinds && kinds.length > 0 ? new Set<SessionListKind>(kinds) : null;
+
+    // Visible list: reload only when this flush is unscoped (legacy) or the
+    // current kind was among the pings. Never setListKind to a foreign kind.
+    if (!touched || touched.has(current)) {
+      await get().loadFirstPage(50, current);
+    }
+
+    const generation = firstPageGeneration;
+    for (const kind of SESSION_LIST_KINDS) {
+      if (kind === current) continue;
+      if (touched && !touched.has(kind)) continue;
+      // Unscoped legacy flush only reloads the visible list — no cross-kind soft
+      // fetch (we have no signal which foreign buckets moved).
+      if (!touched) continue;
+      void softFetchAttentionKind(teamId, kind, generation, set, get, {
+        force: true,
+      });
+    }
+  },
   markKindStale: (kind) => {
     if (kind) {
       set((state) => ({ kindStale: { ...state.kindStale, [kind]: true } }));
@@ -699,6 +952,7 @@ export const useSessionListStore = create<State>((set, get) => ({
     get().setListKind(kind);
     const session = useAuthStore.getState().session;
     if (!session) {
+      clearAttentionPrefetchCache();
       set({
         rows: [],
         loading: false,
@@ -707,6 +961,7 @@ export const useSessionListStore = create<State>((set, get) => ({
         ...emptyKindPagination(),
         kindLoadedAt: {},
         kindStale: {},
+        attentionBySessionId: {},
         // Signing out re-arms the empty-response guard: the next account's
         // first page has proven nothing yet, in any team.
         serverConfirmedTeams: [],
@@ -781,9 +1036,16 @@ export const useSessionListStore = create<State>((set, get) => ({
     const rows = filterToKind(filterToScope(page.rows, teamId), kind);
     const nextCursor = resolveNextCursor(page);
     forgetArchivedSessionIds(rows);
-    const nextRows = filterArchivedEntries(mergeRows(get().rows, rows));
+    const pageRows = filterArchivedEntries(rows);
+    const nextRows = filterArchivedEntries(mergeRows(get().rows, pageRows));
     set({
       rows: nextRows,
+      // Reconcile this page only — off-page ids stay; read rows on the page drop.
+      attentionBySessionId: syncAttentionFromRows(
+        get().attentionBySessionId,
+        kind,
+        pageRows,
+      ),
       loading: false,
       ...paginationPatch(kind, nextCursor),
     });
@@ -809,16 +1071,39 @@ export const useSessionListStore = create<State>((set, get) => ({
     ),
   })),
   bumpLastMessage: (sessionId, patch) =>
-    set((state) => ({
-      rows: sortEntries(
+    set((state) => {
+      const rows = sortEntries(
         state.rows.map((row) =>
           row.id === sessionId ? { ...row, ...patch } : row,
         ),
-      ),
-    })),
-  removeRow: (sessionId) => set((state) => ({
-    rows: state.rows.filter((row) => row.id !== sessionId),
-  })),
+      );
+      // Live preview can mark unread without an inbox ping — keep kind/nav
+      // badges in sync. Clearing stays on mark-viewed / read ping.
+      if (patch.has_unread !== true && patch.has_mention !== true) {
+        return { rows };
+      }
+      const row = rows.find((entry) => entry.id === sessionId);
+      const kind = row ? classifySessionListKind(row) : null;
+      if (!kind) return { rows };
+      const prev = state.attentionBySessionId[sessionId];
+      return {
+        rows,
+        attentionBySessionId: {
+          ...state.attentionBySessionId,
+          [sessionId]: {
+            kind,
+            mention: patch.has_mention === true || Boolean(prev?.mention),
+          },
+        },
+      };
+    }),
+  removeRow: (sessionId) => set((state) => {
+    const { [sessionId]: _removed, ...attentionBySessionId } = state.attentionBySessionId;
+    return {
+      rows: state.rows.filter((row) => row.id !== sessionId),
+      attentionBySessionId,
+    };
+  }),
   markSessionViewed: async (sessionId, lastReadMessageId = null) => {
     try {
       await getBackend().sessions.markCurrentActorSessionViewed(sessionId, lastReadMessageId);
@@ -826,7 +1111,9 @@ export const useSessionListStore = create<State>((set, get) => ({
       set({ error: error instanceof Error ? error.message : String(error) });
       return;
     }
-    get().patchRow(sessionId, { has_unread: false });
+    // Clear only after the server accepts mark-viewed so a failed write does
+    // not leave a false "read" badge until the next list refresh.
+    get().clearSessionAttention(sessionId);
   },
   initPinnedSessionIds: (teamId = null) => {
     set({ pinnedSessionIds: loadPinnedSessionIds(teamId) });

@@ -53,9 +53,19 @@ import { compareSessionListByRecency } from '@/lib/session/session-list-sort'
 import { buildSessionListGlassLayoutKey } from '@/lib/ui/session-list-glass-layout-key'
 import {
   isSessionListKind,
+  SESSION_LIST_KINDS,
   type SessionListKind,
 } from '@/lib/session/session-list-kind'
 import { sessionListKindShouldReload } from '@/stores/session-list-store'
+import {
+  aggregateAttentionByKind,
+} from '@/lib/session/session-list-attention'
+import {
+  KindHotDot,
+  KindHotHost,
+  MentionSignal,
+  UnreadSignal,
+} from '@/components/sidebar/session-attention-signal'
 
 /**
  * Merged row shape consumed by the rendering pipeline. Combines list-canonical
@@ -72,6 +82,7 @@ type ListRow = {
   ideaId: string | null
   isPinned: boolean
   hasUnread: boolean
+  hasMention: boolean
   source: string | null
   appId: string | null
 }
@@ -87,6 +98,7 @@ function entryToRow(entry: SessionListEntry, isPinned: boolean): ListRow {
     ideaId: entry.idea_id,
     isPinned,
     hasUnread: entry.has_unread,
+    hasMention: entry.has_mention,
     source: entry.source ?? null,
     appId: entry.app_id ?? null,
   }
@@ -248,6 +260,15 @@ export function SessionListColumn({
   const initPinnedSessionIds = useSessionListStore((s) => s.initPinnedSessionIds)
   const listKind = useSessionListStore((s) => s.listKind)
   const listHasMore = useSessionListStore((s) => s.hasMore)
+  const attentionBySessionId = useSessionListStore((s) => s.attentionBySessionId)
+  const attentionByKind = React.useMemo(
+    () => aggregateAttentionByKind(attentionBySessionId),
+    [attentionBySessionId],
+  )
+  const otherKindsHot = React.useMemo(
+    () => SESSION_LIST_KINDS.some((k) => k !== listKind && (attentionByKind[k].unread > 0 || attentionByKind[k].mention > 0)),
+    [attentionByKind, listKind],
+  )
 
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const hasWorkspace = !!workspacePath
@@ -393,11 +414,12 @@ export function SessionListColumn({
   const listRootRef = React.useRef<HTMLDivElement>(null)
   const sessionVirtualizer = useVirtualizer({
     count: shouldVirtualize ? virtualRows.length : 0,
+    enabled: shouldVirtualize,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 56,
     overscan: 8,
     gap: 2,
-    getItemKey: (index) => virtualRows[index].key,
+    getItemKey: (index) => virtualRows[index]?.key ?? index,
   })
 
   React.useEffect(() => {
@@ -413,6 +435,22 @@ export function SessionListColumn({
       window.clearTimeout(timer)
     }
   }, [actionsOpenSessionId, shouldVirtualize, sessionVirtualizer])
+
+  // Deep scroll on a long kind (e.g. apps) then switch to a short kind left the
+  // viewport scrollTop past the new content — a long blank tail. Clamp the DOM
+  // scrollTop after layout; the virtualizer reads from that element. Kind
+  // switches also remount ScrollArea via key={listKind}.
+  React.useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight)
+    if (el.scrollTop > maxScroll) {
+      el.scrollTop = maxScroll
+    }
+    if (shouldVirtualize) {
+      sessionVirtualizer.measure()
+    }
+  }, [listKind, virtualRows.length, shouldVirtualize, sessionVirtualizer])
 
   /** Load participants for any visible row we haven't seen yet. */
   const visibleIds = filteredRows.map((r) => r.id).join('|')
@@ -486,6 +524,10 @@ export function SessionListColumn({
 
   const selectListKind = React.useCallback((kind: SessionListKind) => {
     const state = useSessionListStore.getState()
+    if (state.listKind === kind) return
+    // Drop deep-scroll offset before the short list paints (ScrollArea also
+    // remounts on listKind — this covers the same-tick paint).
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
     state.setListKind(kind)
     if (sessionListKindShouldReload(state, kind)) {
       void state.loadFirstPage(50, kind)
@@ -780,12 +822,18 @@ export function SessionListColumn({
                       {row.title || t('chat.newChat', 'New Chat')}
                     </span>
                     <div className="flex min-w-0 shrink-0 items-center">
-                      {!isActive && row.hasUnread && (
-                        <span
-                          className="mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-coral"
+                      {!isActive && row.hasMention ? (
+                        <MentionSignal
+                          className="mr-1.5"
+                          aria-label={t('sidebar.mentioned', 'Mentioned')}
+                          data-testid="v2-session-mention-badge"
+                        />
+                      ) : !isActive && row.hasUnread ? (
+                        <UnreadSignal
+                          className="mr-1.5"
                           aria-label={t('sidebar.unread', 'Unread')}
                         />
-                      )}
+                      ) : null}
                       {!isActive && isHighlighted && (
                         <span className="mr-1.5 shrink-0 rounded-full bg-coral px-1.5 py-px text-[10px] font-semibold leading-4 text-coral-foreground">
                           {t('chat.newSessionBadge', 'NEW')}
@@ -870,15 +918,7 @@ export function SessionListColumn({
                   )}
                   data-testid="v2-session-row-preview"
                 >
-                  {row.lastMessagePreview.split(/(@[\w.\-\u4e00-\u9fff]+)/g).map((part, i) =>
-                    part.startsWith('@') ? (
-                      <em key={i} className="font-medium not-italic text-coral">
-                        {part}
-                      </em>
-                    ) : (
-                      <React.Fragment key={i}>{part}</React.Fragment>
-                    ),
-                  )}
+                  {row.lastMessagePreview}
                 </span>
               )}
               {!isRenaming && parts.length > 0 && !isSoloWithLocalAgent && (
@@ -1059,24 +1099,30 @@ export function SessionListColumn({
                 <button
                   type="button"
                   className={cn(
-                    'inline-flex max-w-full items-center gap-1.5 truncate font-bold tracking-tight text-foreground outline-none',
+                    'inline-flex max-w-full items-center gap-1.5 overflow-visible font-bold tracking-tight text-foreground outline-none',
                     'text-[14px] hover:opacity-80 disabled:opacity-40',
                   )}
                   disabled={!sessionHeaderActionsEnabled}
                   data-testid="v2-session-kind-dropdown"
                   aria-label={t('sidebar.sessionKindMenu', 'Session list kind')}
                 >
-                  <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-panel text-ink-2">
-                    <TitleKindIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
-                  </span>
-                  <span className="truncate">{title}</span>
+                  <KindHotHost className="shrink-0">
+                    <span className="relative inline-flex h-6 w-6 items-center justify-center rounded-md bg-panel text-ink-2">
+                      <TitleKindIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
+                      {otherKindsHot ? (
+                        <KindHotDot data-testid="v2-session-kind-other-hot" />
+                      ) : null}
+                    </span>
+                  </KindHotHost>
+                  <span className="min-w-0 truncate">{title}</span>
                   <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-[13.5rem] p-1.5">
-                {(['regular', 'channel', 'app', 'cron'] as const).map((kind) => {
+                {SESSION_LIST_KINDS.map((kind) => {
                   const Icon = kindIcon(kind)
                   const active = listKind === kind
+                  const counts = attentionByKind[kind]
                   return (
                     <DropdownMenuItem
                       key={kind}
@@ -1089,6 +1135,19 @@ export function SessionListColumn({
                       </span>
                       <span className={cn('min-w-0 flex-1 truncate text-[13px]', active ? 'font-semibold text-foreground' : 'font-medium')}>
                         {kindLabel(kind)}
+                      </span>
+                      <span className="inline-flex shrink-0 items-center gap-1">
+                        {counts.mention > 0 ? (
+                          <MentionSignal
+                            aria-label={t('sidebar.mentioned', 'Mentioned')}
+                            data-testid={`v2-session-kind-${kind}-mention`}
+                          />
+                        ) : counts.unread > 0 ? (
+                          <UnreadSignal
+                            aria-label={t('sidebar.unread', 'Unread')}
+                            data-testid={`v2-session-kind-${kind}-unread`}
+                          />
+                        ) : null}
                       </span>
                       <Check
                         className={cn(
@@ -1228,9 +1287,10 @@ export function SessionListColumn({
       ) : null}
 
       <ScrollArea
-        className="session-list-scroll-area min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block"
+        key={listKind}
+        className="session-list-scroll-area min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block [&_[data-slot=scroll-area-viewport]>div]:min-h-0"
         viewportRef={scrollRef}
-        viewportClassName="overflow-x-hidden px-2"
+        viewportClassName="overflow-x-hidden px-2 [overflow-anchor:none]"
       >
         {filter.kind === 'actor' && actorLoading ? (
           <div className="flex items-center justify-center py-8">

@@ -31,6 +31,7 @@ export async function promoteCreatedSessionToUi(
     mode: 'collab',
     idea_id: args.ideaId ?? null,
     has_unread: false,
+    has_mention: false,
     created_at: now,
     updated_at: now,
   }
