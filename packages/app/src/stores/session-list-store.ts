@@ -526,6 +526,7 @@ async function loadFirstPageForTeam(
   // sessions while the new page is in flight.
   const previousScope = get().scopeTeamId;
   if (previousScope !== null && previousScope !== teamId) {
+    clearAttentionPrefetchCache(previousScope);
     set({
       rows: [],
       ...emptyKindPagination(),
@@ -709,7 +710,29 @@ async function loadFirstPageForTeam(
  * Soft-refresh attention for every kind except the one just loaded. Does not
  * touch `rows` / `listKind` / pagination. Abort if a newer first-page run
  * started or the active team changed.
+ *
+ * Prefetch is TTL-gated per team+kind so a burst of first-page loads (inbox
+ * debounce, kind switch, team reload) does not stampede the API with 3×N
+ * soft fetches. MQTT kind pings still fill gaps while online.
  */
+const attentionPrefetchAtByKey = new Map<string, number>();
+
+function attentionPrefetchKey(teamId: string, kind: SessionListKind): string {
+  return `${teamId}:${kind}`;
+}
+
+/** Drop TTL slots on team switch / sign-out so the next scope can prefetch again. */
+export function clearAttentionPrefetchCache(teamId?: string): void {
+  if (!teamId) {
+    attentionPrefetchAtByKey.clear();
+    return;
+  }
+  const prefix = `${teamId}:`;
+  for (const key of attentionPrefetchAtByKey.keys()) {
+    if (key.startsWith(prefix)) attentionPrefetchAtByKey.delete(key);
+  }
+}
+
 function scheduleAttentionPrefetch(
   teamId: string,
   currentKind: SessionListKind,
@@ -717,8 +740,14 @@ function scheduleAttentionPrefetch(
   set: (partial: Partial<State>) => void,
   get: () => State,
 ): void {
+  const now = Date.now();
   for (const kind of SESSION_LIST_KINDS) {
     if (kind === currentKind) continue;
+    const key = attentionPrefetchKey(teamId, kind);
+    const lastAt = attentionPrefetchAtByKey.get(key);
+    if (lastAt != null && now - lastAt < SESSION_LIST_KIND_TTL_MS) continue;
+    // Reserve the slot before the fetch so concurrent first-pages coalesce.
+    attentionPrefetchAtByKey.set(key, now);
     void (async () => {
       try {
         const page = await loadPage(50, null, teamId, kind);
@@ -736,7 +765,8 @@ function scheduleAttentionPrefetch(
           ),
         });
       } catch {
-        // Best-effort; MQTT kind pings still fill gaps while online.
+        // Allow a retry on the next first-page; MQTT still fills gaps online.
+        attentionPrefetchAtByKey.delete(key);
       }
     })();
   }
@@ -832,6 +862,7 @@ export const useSessionListStore = create<State>((set, get) => ({
     get().setListKind(kind);
     const session = useAuthStore.getState().session;
     if (!session) {
+      clearAttentionPrefetchCache();
       set({
         rows: [],
         loading: false,
@@ -958,13 +989,15 @@ export const useSessionListStore = create<State>((set, get) => ({
     };
   }),
   markSessionViewed: async (sessionId, lastReadMessageId = null) => {
-    get().clearSessionAttention(sessionId);
     try {
       await getBackend().sessions.markCurrentActorSessionViewed(sessionId, lastReadMessageId);
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error) });
       return;
     }
+    // Clear only after the server accepts mark-viewed so a failed write does
+    // not leave a false "read" badge until the next list refresh.
+    get().clearSessionAttention(sessionId);
   },
   initPinnedSessionIds: (teamId = null) => {
     set({ pinnedSessionIds: loadPinnedSessionIds(teamId) });

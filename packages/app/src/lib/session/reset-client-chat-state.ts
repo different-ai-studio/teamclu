@@ -1,6 +1,9 @@
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
-import { useSessionListStore } from "@/stores/session-list-store";
+import {
+  clearAttentionPrefetchCache,
+  useSessionListStore,
+} from "@/stores/session-list-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
@@ -15,6 +18,7 @@ export function resetClientChatState(): void {
     messageRefreshTrigger: 0,
     messageRefreshForceFull: false,
   });
+  clearAttentionPrefetchCache();
   useSessionListStore.setState({
     rows: [],
     loading: true,

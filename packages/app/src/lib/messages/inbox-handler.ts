@@ -40,8 +40,13 @@ let sessionListRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let subscribedInboxUserId: string | null = null;
 let pendingInboxSubscribe: Promise<void> | null = null;
 let inboxSubscribeEpoch = 0;
-/** Kind to refresh when the debounced reload fires; last ping wins. */
-let pendingRefreshKind: SessionListKind | undefined;
+/**
+ * Kinds accumulated during the debounce window. A burst across kinds refreshes
+ * each once — not only the last ping's kind. `pendingRefreshAny` covers legacy
+ * pings with no kind (reload the active list partition).
+ */
+let pendingRefreshKinds = new Set<SessionListKind>();
+let pendingRefreshAny = false;
 
 function inboxTopicForUser(userId: string): string {
   return `inbox/${userId.trim()}`;
@@ -88,7 +93,8 @@ export function resetSessionListRefreshForTests(): void {
     clearTimeout(sessionListRefreshTimer);
     sessionListRefreshTimer = null;
   }
-  pendingRefreshKind = undefined;
+  pendingRefreshKinds = new Set();
+  pendingRefreshAny = false;
   resetInboxSubscriptionState();
 }
 
@@ -100,13 +106,24 @@ export function scheduleSessionListRefresh(
   loadFirstPage: (limit?: number, kind?: SessionListKind) => Promise<void>,
   kind?: SessionListKind,
 ): void {
-  if (kind) pendingRefreshKind = kind;
+  if (kind) pendingRefreshKinds.add(kind);
+  else pendingRefreshAny = true;
   if (sessionListRefreshTimer) clearTimeout(sessionListRefreshTimer);
   sessionListRefreshTimer = setTimeout(() => {
     sessionListRefreshTimer = null;
-    const refreshKind = pendingRefreshKind;
-    pendingRefreshKind = undefined;
-    void loadFirstPage(50, refreshKind);
+    const kinds = [...pendingRefreshKinds];
+    const refreshAny = pendingRefreshAny;
+    pendingRefreshKinds = new Set();
+    pendingRefreshAny = false;
+    if (kinds.length > 0) {
+      for (const refreshKind of kinds) {
+        void loadFirstPage(50, refreshKind);
+      }
+      return;
+    }
+    if (refreshAny) {
+      void loadFirstPage(50, undefined);
+    }
   }, SESSION_LIST_REFRESH_MS);
 }
 

@@ -437,8 +437,9 @@ export function SessionListColumn({
   }, [actionsOpenSessionId, shouldVirtualize, sessionVirtualizer])
 
   // Deep scroll on a long kind (e.g. apps) then switch to a short kind left the
-  // viewport scrollTop past the new content — a long blank tail. Clamp after
-  // layout; kind switches also remount ScrollArea via key={listKind}.
+  // viewport scrollTop past the new content — a long blank tail. Clamp the DOM
+  // scrollTop after layout; the virtualizer reads from that element. Kind
+  // switches also remount ScrollArea via key={listKind}.
   React.useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
@@ -448,9 +449,6 @@ export function SessionListColumn({
     }
     if (shouldVirtualize) {
       sessionVirtualizer.measure()
-      if (sessionVirtualizer.getScrollOffset() > maxScroll) {
-        sessionVirtualizer.scrollToOffset(maxScroll)
-      }
     }
   }, [listKind, virtualRows.length, shouldVirtualize, sessionVirtualizer])
 

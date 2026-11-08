@@ -65,7 +65,10 @@ describe("session-list-store", () => {
     // fetches do not steal Once-queues meant for loadMore.
     mocks.listCurrentActorSessionsV2.mockReset();
     mocks.listCurrentActorSessionsV2.mockResolvedValue({ rows: [], nextCursor: null });
-    const { useSessionListStore } = await import("./session-list-store");
+    const { clearAttentionPrefetchCache, useSessionListStore } = await import(
+      "./session-list-store"
+    );
+    clearAttentionPrefetchCache();
     useSessionListStore.setState({
       rows: [],
       loading: false,
@@ -192,6 +195,27 @@ describe("session-list-store", () => {
 
     expect(useSessionListStore.getState().rows.map((row) => row.id)).toEqual(["regular-1"]);
     expect(useSessionListStore.getState().listKind).toBe("regular");
+  });
+
+  it("skips attention prefetch for kinds already fetched within TTL", async () => {
+    const kindCalls: string[] = [];
+    mocks.listCurrentActorSessionsV2.mockImplementation(async (input: { kind?: string }) => {
+      kindCalls.push(input.kind ?? "regular");
+      return { rows: [], nextCursor: null };
+    });
+
+    const { useSessionListStore } = await import("./session-list-store");
+    await useSessionListStore.getState().loadFirstPage(50, "regular");
+    await vi.waitFor(() => {
+      expect(kindCalls.filter((k) => k !== "regular").length).toBe(3);
+    });
+
+    kindCalls.length = 0;
+    await useSessionListStore.getState().loadFirstPage(50, "regular");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(kindCalls).toEqual(["regular"]);
   });
 
   it("loads more with the last row composite cursor and dedupes rows", async () => {
@@ -324,13 +348,41 @@ describe("session-list-store", () => {
 
     const { useSessionListStore } = await import("./session-list-store");
     useSessionListStore.setState({
-      rows: [sessionRow({ has_unread: true })],
+      rows: [sessionRow({ has_unread: true, has_mention: true })],
+      attentionBySessionId: {
+        "session-1": { kind: "regular", mention: true },
+      },
     });
 
     await useSessionListStore.getState().markSessionViewed("session-1");
 
     expect(mocks.markCurrentActorSessionViewed).toHaveBeenCalledWith("session-1", null);
     expect(useSessionListStore.getState().rows[0].has_unread).toBe(false);
+    expect(useSessionListStore.getState().rows[0].has_mention).toBe(false);
+    expect(useSessionListStore.getState().attentionBySessionId["session-1"]).toBeUndefined();
+  });
+
+  it("keeps local attention when mark-viewed fails", async () => {
+    mocks.markCurrentActorSessionViewed.mockRejectedValueOnce(new Error("offline"));
+
+    const { useSessionListStore } = await import("./session-list-store");
+    useSessionListStore.setState({
+      rows: [sessionRow({ has_unread: true, has_mention: true })],
+      attentionBySessionId: {
+        "session-1": { kind: "regular", mention: true },
+      },
+      error: null,
+    });
+
+    await useSessionListStore.getState().markSessionViewed("session-1");
+
+    expect(useSessionListStore.getState().rows[0].has_unread).toBe(true);
+    expect(useSessionListStore.getState().rows[0].has_mention).toBe(true);
+    expect(useSessionListStore.getState().attentionBySessionId["session-1"]).toEqual({
+      kind: "regular",
+      mention: true,
+    });
+    expect(useSessionListStore.getState().error).toBe("offline");
   });
 
   it("renames a session through the backend and patches the row", async () => {

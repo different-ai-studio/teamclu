@@ -126,7 +126,7 @@ describe("handleInboxEnvelope", () => {
     expect(store.loadFirstPage).toHaveBeenCalledWith(50, undefined);
   });
 
-  it("coalesces burst pings into a single list reload", () => {
+  it("coalesces burst pings into one reload per touched kind", () => {
     const store = makeStore(["s1", "s2"]);
     handleInboxEnvelope(
       makeEnv("inbox/u1", { session_id: "s1", kind: "regular" }),
@@ -140,7 +140,8 @@ describe("handleInboxEnvelope", () => {
       store,
     );
     vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
-    expect(store.loadFirstPage).toHaveBeenCalledOnce();
+    expect(store.loadFirstPage).toHaveBeenCalledTimes(2);
+    expect(store.loadFirstPage).toHaveBeenCalledWith(50, "regular");
     expect(store.loadFirstPage).toHaveBeenCalledWith(50, "channel");
   });
 
@@ -193,6 +194,7 @@ describe("handleInboxEnvelope", () => {
     expect(loadFirstPage).not.toHaveBeenCalled();
     vi.advanceTimersByTime(SESSION_LIST_REFRESH_MS);
     expect(loadFirstPage).toHaveBeenCalledOnce();
+    expect(loadFirstPage).toHaveBeenCalledWith(50, undefined);
   });
 
   it("scheduleSessionListRefresh coalesces burst calls", () => {
@@ -202,6 +204,19 @@ describe("handleInboxEnvelope", () => {
     scheduleSessionListRefresh(loadFirstPage);
     vi.advanceTimersByTime(SESSION_LIST_REFRESH_MS);
     expect(loadFirstPage).toHaveBeenCalledOnce();
+    expect(loadFirstPage).toHaveBeenCalledWith(50, undefined);
+  });
+
+  it("scheduleSessionListRefresh reloads each pending kind once", () => {
+    const loadFirstPage = vi.fn(async () => {});
+    scheduleSessionListRefresh(loadFirstPage, "regular");
+    vi.advanceTimersByTime(100);
+    scheduleSessionListRefresh(loadFirstPage, "app");
+    scheduleSessionListRefresh(loadFirstPage, "regular");
+    vi.advanceTimersByTime(SESSION_LIST_REFRESH_MS);
+    expect(loadFirstPage).toHaveBeenCalledTimes(2);
+    expect(loadFirstPage).toHaveBeenCalledWith(50, "regular");
+    expect(loadFirstPage).toHaveBeenCalledWith(50, "app");
   });
 
   it("warns on payload missing session_id", () => {
@@ -282,9 +297,9 @@ describe("handleInboxEnvelope", () => {
 
 describe("ensureInboxSubscribed", () => {
   beforeEach(() => {
-    resetInboxSubscriptionState();
     subscribeMock.mockReset();
     subscribeMock.mockResolvedValue(undefined);
+    resetInboxSubscriptionState();
   });
 
   it("subscribes once per user", async () => {
@@ -292,5 +307,35 @@ describe("ensureInboxSubscribed", () => {
     await ensureInboxSubscribed("u1");
     expect(subscribeMock).toHaveBeenCalledTimes(1);
     expect(subscribeMock).toHaveBeenCalledWith("inbox/u1");
+  });
+
+  it("re-subscribes after resetInboxSubscriptionState (broker reconnect)", async () => {
+    await ensureInboxSubscribed("user-1");
+    expect(subscribeMock).toHaveBeenCalledTimes(1);
+    subscribeMock.mockClear();
+
+    resetInboxSubscriptionState();
+    await ensureInboxSubscribed("user-1");
+
+    expect(subscribeMock).toHaveBeenCalledTimes(1);
+    expect(subscribeMock).toHaveBeenCalledWith("inbox/user-1");
+  });
+
+  it("ignores stale subscribe that completes after reset", async () => {
+    let resolveStale!: () => void;
+    subscribeMock.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { resolveStale = resolve; }),
+    );
+    subscribeMock.mockResolvedValue(undefined);
+
+    const stale = ensureInboxSubscribed("user-1");
+    resetInboxSubscriptionState();
+    await ensureInboxSubscribed("user-1");
+
+    resolveStale();
+    await stale;
+
+    expect(subscribeMock).toHaveBeenCalledTimes(2);
+    expect(subscribeMock).toHaveBeenNthCalledWith(2, "inbox/user-1");
   });
 });
