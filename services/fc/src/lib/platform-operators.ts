@@ -1,26 +1,29 @@
 /**
  * Platform operators: the people who run THIS deployment — not a team role,
- * not an org role. They grant credits and manage the AI gateway's provider
- * keys, which makes them the most privileged identity in the product.
+ * not an org role. They grant credits, manage the AI gateway's provider keys
+ * and enter customer orgs through support sessions, which makes them the most
+ * privileged identity in the product.
  *
- * Who they are is `PLATFORM_OPERATOR_USER_IDS`: auth.users ids, comma-separated.
+ * Two sources, either one is enough:
  *
- * An environment variable rather than a table or a JWT claim, on purpose:
- * - Granting it takes the same access as reading the provider keys and the
- *   gateway's service token. No bug inside the application — a missing authz
- *   check, an RLS hole — can make someone an operator.
- * - No schema. Belayo's migrations are applied by hand against a database
- *   shared with saas-mono; this adds nothing to that.
- * - Each deployment has its own database and so its own user ids; each lists
- *   its own operators.
- * The price is that changing the list means restarting FC, which is fine for a
- * list of two or three people that rarely changes.
+ * 1. `amux.is_platform_operator(user)` — an identity with admin_type 4 in the
+ *    deployment's platform org (`amux.deployment_settings.platform_org_id`).
+ *    This is the partner's own notion of a platform admin (saas-mono
+ *    SYSTEM_ADMIN), so on Belayo the people who already run the platform are
+ *    operators here too. docs/plans/2026-11-08-platform-operator-support-access.md.
+ *    The price: whoever can write admin_type 4 into the platform org can make
+ *    an operator. On the partner's database that is the platform admins
+ *    themselves (and service_role).
+ * 2. `PLATFORM_OPERATOR_USER_IDS` — auth.users ids, comma-separated. The
+ *    original mechanism, kept as a fallback while deployments configure
+ *    platform_org_id; to be removed.
  *
  * Ids, not emails: a phone-login account's email is synthesized
  * (PHONE_EMAIL_DOMAIN), and an id never changes. `GET /v1/admin/whoami` tells
- * anyone signed in their own id, to hand to whoever edits the deployment.
+ * anyone signed in their own id.
  *
- * Unset or blank means nobody is an operator: fail closed.
+ * Neither configured means nobody is an operator, and a failed database
+ * lookup counts as "no": fail closed.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -46,11 +49,55 @@ export function platformOperatorIds(env: NodeJS.ProcessEnv = process.env): Set<s
   return ids;
 }
 
+/** The environment-variable source only. Prefer `resolvePlatformOperator`. */
 export function isPlatformOperator(
   userId: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return !!userId && platformOperatorIds(env).has(userId.toLowerCase());
+}
+
+/**
+ * Both sources: the environment list, then `amux.is_platform_operator` through
+ * a service-role client. Any failure of the lookup (no service key, RPC
+ * missing because the migration has not run, network) is logged and answers
+ * false.
+ */
+export async function resolvePlatformOperator(
+  userId: string | null | undefined,
+  serviceRole: () => Promise<any>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  if (!userId) return false;
+  if (isPlatformOperator(userId, env)) return true;
+  try {
+    const admin = await serviceRole();
+    const { data, error } = await admin.schema("amux").rpc("is_platform_operator", { p_user_id: userId });
+    if (error) {
+      console.warn(`[operators] is_platform_operator failed: ${error.message ?? error}`);
+      return false;
+    }
+    return data === true;
+  } catch (cause) {
+    console.warn(`[operators] is_platform_operator unavailable: ${(cause as Error)?.message ?? cause}`);
+    return false;
+  }
+}
+
+/**
+ * The `session_id` claim of a bearer token, or null. Read without verifying:
+ * call it only on a token the caller has already been authenticated with.
+ */
+export function jwtSessionId(token: string | null | undefined): string | null {
+  const part = String(token ?? "").split(".")[1];
+  if (!part) return null;
+  try {
+    const json = JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+    const sid = typeof json?.session_id === "string" ? json.session_id.toLowerCase() : "";
+    return UUID.test(sid) ? sid : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

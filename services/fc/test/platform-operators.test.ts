@@ -108,8 +108,10 @@ test("an unauthenticated caller is 401, not 403", async (t) => {
 
 test("whoami answers any signed-in caller with their id and operator status", async (t) => {
   withOperators(t, OPERATOR);
-  assert.deepEqual(await repoFor(OWNER).getAdminWhoami(), { userId: OWNER, operator: false });
-  assert.deepEqual(await repoFor(OPERATOR).getAdminWhoami(), { userId: OPERATOR, operator: true });
+  // No service-role client here: the admin_type 4 lookup fails closed.
+  t.mock.method(console, "warn", () => {});
+  assert.deepEqual(await repoFor(OWNER).getAdminWhoami(), { userId: OWNER, operator: false, support: null });
+  assert.deepEqual(await repoFor(OPERATOR).getAdminWhoami(), { userId: OPERATOR, operator: true, support: null });
 });
 
 test("GET /v1/admin/whoami reaches the repository", async () => {
@@ -144,7 +146,7 @@ test("a partner-issued session is recognised as the operator it names", async (t
       rpc: () => { throw new Error("not reached"); },
     }),
   } as any) as any;
-  assert.deepEqual(await repo.getAdminWhoami(), { userId: OPERATOR, operator: true });
+  assert.deepEqual(await repo.getAdminWhoami(), { userId: OPERATOR, operator: true, support: null });
 });
 
 // ── AI gateway provider pools ───────────────────────────────────────────────

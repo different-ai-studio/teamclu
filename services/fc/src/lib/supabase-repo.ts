@@ -19,7 +19,7 @@ import {
   removedMemberUserId,
 } from "./session-participant-notify.js";
 import { buildSessionReadInboxPayload } from "./push-dispatch.js";
-import { ADMIN_LIST_CAP, clampPage, IN_FILTER_BATCH, isPlatformOperator, safeSearch } from "./platform-operators.js";
+import { ADMIN_LIST_CAP, clampPage, IN_FILTER_BATCH, jwtSessionId, resolvePlatformOperator, safeSearch } from "./platform-operators.js";
 import {
   DEFAULT_LIST_LIMIT,
   DEFAULT_MESSAGE_LIST_LIMIT,
@@ -778,10 +778,42 @@ export function createSupabaseBusinessRepository(options) {
     if (authErr || !authData?.user?.id) {
       throw new ApiError(401, "missing_auth", "authenticated user required");
     }
-    if (!isPlatformOperator(authData.user.id)) {
+    if (!(await callerIsPlatformOperator(authData.user.id))) {
       throw new ApiError(403, "not_platform_operator", "only platform operators may do this");
     }
     return authData.user.id;
+  }
+
+  function callerIsPlatformOperator(userId: string) {
+    return resolvePlatformOperator(userId, () => serviceRoleClient("check platform operator"));
+  }
+
+  /**
+   * The live support grant behind the caller's session, or null: the caller is
+   * an org's shared support account (20261108010000) and the JWT's session_id
+   * has an unrevoked, unexpired grant.
+   */
+  async function currentSupportGrant(userId: string) {
+    const sessionId = jwtSessionId(accessToken);
+    if (!sessionId) return null;
+    try {
+      const admin = await serviceRoleClient("read support session");
+      const { data, error } = await admin
+        .schema("amux")
+        .rpc("support_session_info", { p_user_id: userId, p_session_id: sessionId });
+      if (error) return null;
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row?.grant_id) return null;
+      return {
+        grantId: String(row.grant_id),
+        sessionId,
+        orgId: String(row.org_id),
+        teamId: row.team_id ? String(row.team_id) : null,
+        expiresAt: String(row.expires_at),
+      };
+    } catch {
+      return null;
+    }
   }
 
   async function requireCallerTeamOwner(targetTeamId) {
@@ -1748,7 +1780,97 @@ export function createSupabaseBusinessRepository(options) {
       if (authErr || !authData?.user?.id) {
         throw new ApiError(401, "missing_auth", "authenticated user required");
       }
-      return { userId: authData.user.id, operator: isPlatformOperator(authData.user.id) };
+      const userId = authData.user.id;
+      const [operator, grant] = await Promise.all([
+        callerIsPlatformOperator(userId),
+        currentSupportGrant(userId),
+      ]);
+      return {
+        userId,
+        operator,
+        support: grant ? { orgId: grant.orgId, teamId: grant.teamId, expiresAt: grant.expiresAt } : null,
+      };
+    },
+
+    /**
+     * A platform operator enters `teamId` of customer org `orgId` as that
+     * org's shared support account (amux.start_support_session). Returns a
+     * refresh token for a session of its own — one per entry, so operators
+     * sharing the account are told apart and revoked one by one.
+     *
+     * The client keeps the operator's own session and returns to it on exit;
+     * there is deliberately no endpoint that turns a support session back into
+     * the operator's, or holding one would be holding operator rights.
+     */
+    async startSupportSession(orgId: string, input: { teamId?: unknown; reason?: unknown; ttlMinutes?: unknown } = {}) {
+      const operatorId = await requirePlatformOperator();
+      const teamId = typeof input.teamId === "string" ? input.teamId.trim() : "";
+      const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+      if (!teamId) throw new ApiError(400, "validation_failed", "teamId is required");
+      if (!reason) throw new ApiError(400, "validation_failed", "reason is required");
+      if (reason.length > 500) throw new ApiError(400, "validation_failed", "reason is at most 500 characters");
+      let ttlMinutes = 240;
+      if (input.ttlMinutes !== undefined && input.ttlMinutes !== null) {
+        ttlMinutes = Math.trunc(Number(input.ttlMinutes));
+        if (!Number.isFinite(ttlMinutes) || ttlMinutes < 5 || ttlMinutes > 24 * 60) {
+          throw new ApiError(400, "validation_failed", "ttlMinutes must be between 5 and 1440");
+        }
+      }
+
+      const admin = await serviceRoleClient("start a support session");
+      const { data: team, error: teamErr } = await admin
+        .schema("amux").from("teams").select("id,oid").eq("id", teamId).maybeSingle();
+      if (teamErr) throw teamErr;
+      if (!team || team.oid !== orgId) throw new ApiError(404, "not_found", "team not found in this org");
+
+      const { data, error } = await admin.schema("amux").rpc("start_support_session", {
+        p_operator_user_id: operatorId,
+        p_team_id: teamId,
+        p_reason: reason,
+        p_ttl: `${ttlMinutes} minutes`,
+      });
+      if (error) {
+        const code = error.code || "";
+        if (code === "42501") throw new ApiError(403, "not_platform_operator", "only platform operators may do this");
+        if (code === "P0002") throw new ApiError(404, "not_found", error.message ?? "team not found");
+        if (code === "22023") throw new ApiError(400, "validation_failed", error.message ?? "invalid support session");
+        throw error;
+      }
+      const row = requiredRow(Array.isArray(data) ? data[0] : data, "admin.startSupportSession");
+      // Who went where and why. support_grants has it too; the log is where
+      // the other operator lines already are.
+      console.log(
+        `[admin] operator ${operatorId} entered org ${row.org_id} team ${row.team_id} ` +
+          `as support (grant ${row.grant_id}, until ${row.expires_at})`,
+      );
+      return {
+        grantId: requiredString(row.grant_id, "admin.startSupportSession", "grant_id"),
+        refreshToken: requiredString(row.refresh_token, "admin.startSupportSession", "refresh_token"),
+        orgId: requiredString(row.org_id, "admin.startSupportSession", "org_id"),
+        teamId: requiredString(row.team_id, "admin.startSupportSession", "team_id"),
+        actorId: requiredString(row.actor_id, "admin.startSupportSession", "actor_id"),
+        expiresAt: requiredString(row.expires_at, "admin.startSupportSession", "expires_at"),
+      };
+    },
+
+    /**
+     * Ends the support session the caller is using: its auth session and
+     * refresh tokens are deleted, the grant row stays as the record.
+     * `ended: false` when the caller is not in a live support session.
+     */
+    async endCurrentSupportSession() {
+      const { data: authData, error: authErr } = await getCurrentUser();
+      if (authErr || !authData?.user?.id) {
+        throw new ApiError(401, "missing_auth", "authenticated user required");
+      }
+      const sessionId = jwtSessionId(accessToken);
+      if (!sessionId) return { ended: false };
+      const admin = await serviceRoleClient("end a support session");
+      const { data, error } = await admin
+        .schema("amux")
+        .rpc("end_support_session", { p_user_id: authData.user.id, p_session_id: sessionId });
+      if (error) throw error;
+      return { ended: data === true };
     },
 
     /**

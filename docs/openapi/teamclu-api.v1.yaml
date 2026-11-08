@@ -2651,18 +2651,24 @@ paths:
       summary: Whether the caller is a platform operator of this deployment
       tags: [Admin]
       description: |
-        Answers any signed-in caller, operator or not. `userId` is what goes into
-        the deployment's `PLATFORM_OPERATOR_USER_IDS`; `operator` decides whether
+        Answers any signed-in caller, operator or not. `operator` decides whether
         a client shows the operator screens.
+
+        A platform operator is an identity with `admin_type` 4 in the
+        deployment's platform org (`platform_org_id` deployment setting), or a
+        user id listed in the deployment's `PLATFORM_OPERATOR_USER_IDS`
+        (fallback, to be removed). It is not a team or org role, and no team
+        or org role makes someone an operator.
 
         Showing a screen is all `operator` decides. Every operator endpoint
         checks the caller again on its own.
 
-        A platform operator runs the deployment itself. It is not a team or org
-        role, and no team or org role makes someone an operator.
+        `support` is set when the caller is using a live support session
+        (`POST /v1/admin/orgs/{orgId}/support-sessions`), so a client that
+        restarts mid-session can restore its support banner; null otherwise.
       responses:
         "200":
-          description: The caller's user id and operator status.
+          description: The caller's user id, operator status and support session.
           content:
             application/json:
               schema:
@@ -2671,6 +2677,13 @@ paths:
                 properties:
                   userId: { type: string, format: uuid }
                   operator: { type: boolean }
+                  support:
+                    type: [object, "null"]
+                    required: [orgId, expiresAt]
+                    properties:
+                      orgId: { type: string, format: uuid }
+                      teamId: { type: [string, "null"], format: uuid }
+                      expiresAt: { type: string, format: date-time }
         "401": { $ref: "#/components/responses/Error" }
   /v1/admin/orgs:
     get:
@@ -2698,6 +2711,76 @@ paths:
                   total: { type: integer }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/orgs/{orgId}/support-sessions:
+    post:
+      operationId: startSupportSession
+      summary: Enter a customer team as the org's support account
+      tags: [Admin]
+      description: |
+        Platform operators only. The operator acts in `teamId` of org `orgId`
+        as that org's shared support account ("TeamClu 支持", an org owner),
+        through a fresh auth session of its own: one per entry, so operators
+        sharing the account are recorded and revoked separately. The session
+        refreshes until `expiresAt` (default 4 hours) and no longer.
+
+        The client adopts `refreshToken` and enters the team. It must keep the
+        operator's own session to return to: no endpoint turns a support
+        session back into the operator's.
+
+        The platform org itself is not entered this way (400).
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [teamId, reason]
+              properties:
+                teamId: { type: string, format: uuid }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+                ttlMinutes: { type: integer, minimum: 5, maximum: 1440, default: 240 }
+      responses:
+        "201":
+          description: The support session.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [grantId, refreshToken, orgId, teamId, actorId, expiresAt]
+                properties:
+                  grantId: { type: string, format: uuid }
+                  refreshToken: { type: string }
+                  orgId: { type: string, format: uuid }
+                  teamId: { type: string, format: uuid }
+                  actorId: { type: string, format: uuid }
+                  expiresAt: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/admin/support-sessions/current:
+    delete:
+      operationId: endCurrentSupportSession
+      summary: End the support session the caller is using
+      tags: [Admin]
+      description: |
+        Called with the support session's own bearer. Deletes that auth
+        session and its refresh tokens; other operators' sessions in the same
+        org are untouched. `ended` is false when the caller is not in a live
+        support session.
+      responses:
+        "200":
+          description: Whether a support session was ended.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ended]
+                properties:
+                  ended: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
   /v1/admin/orgs/{orgId}:
     patch:
       operationId: updateAdminOrg
