@@ -1849,6 +1849,7 @@ export function createSupabaseBusinessRepository(options) {
         orgId: requiredString(row.org_id, "admin.startSupportSession", "org_id"),
         teamId: requiredString(row.team_id, "admin.startSupportSession", "team_id"),
         actorId: requiredString(row.actor_id, "admin.startSupportSession", "actor_id"),
+        supportUserId: requiredString(row.support_user_id, "admin.startSupportSession", "support_user_id"),
         expiresAt: requiredString(row.expires_at, "admin.startSupportSession", "expires_at"),
       };
     },

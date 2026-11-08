@@ -180,7 +180,7 @@ test("an operator enters a team and gets a refresh token for the support account
   const out = await repo.startSupportSession(ORG, { teamId: TEAM, reason: " ticket 42 " });
   assert.deepEqual(out, {
     grantId: GRANT, refreshToken: "rt-123", orgId: ORG, teamId: TEAM, actorId: ACTOR,
-    expiresAt: "2026-11-08T12:00:00Z",
+    supportUserId: SUPPORT, expiresAt: "2026-11-08T12:00:00Z",
   });
   const call = calls.find((c) => c.fn === "start_support_session")!;
   assert.deepEqual(call.args, {

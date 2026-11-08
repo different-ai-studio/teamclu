@@ -2748,13 +2748,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [grantId, refreshToken, orgId, teamId, actorId, expiresAt]
+                required: [grantId, refreshToken, orgId, teamId, actorId, supportUserId, expiresAt]
                 properties:
                   grantId: { type: string, format: uuid }
                   refreshToken: { type: string }
                   orgId: { type: string, format: uuid }
                   teamId: { type: string, format: uuid }
                   actorId: { type: string, format: uuid }
+                  supportUserId:
+                    type: string
+                    format: uuid
+                    description: The org's shared support account, which the adopted session signs in as.
                   expiresAt: { type: string, format: date-time }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
