@@ -133,6 +133,35 @@ create table amux.support_grants (
 过一个版本后删掉环境变量。现有控制台接口（`/v1/admin/orgs`、`/v1/admin/teams`、额度）
 一并改用新判定。self-host 上手工把自己的身份行设成 4，并配置 `platform_org_id`。
 
+## 实现记录（与上文设计的差异）
+
+- **支持账号**：邮箱是 `support-<org id>@teamclu.support`。标记它用的是新表
+  `amux.support_identities(org_id, user_id)`，不是 `public.users.metadata`：
+  我们库里的 `public.users` 没有 metadata 列，合作方库里那一列归合作方。
+  auth 账号的 `raw_app_meta_data` 里另有 `teamclu_support: true`。
+- **整个进入过程在一个 RPC 里完成**：`amux.start_support_session(operator, team, reason, ttl)`
+  负责校验运营身份、建身份和 actor、签发会话、写 grant。会话是内联签发的，为了拿到
+  session id；在 GoTrue 有 `auth.sessions.not_after` 列的库上会把它设成到期时间，
+  到期后 refresh 由 GoTrue 直接拒绝。
+- **过期清理不需要定时任务**：每次进入或退出时顺带调用 `amux.expire_support_grants()`，
+  再加上 `not_after`。
+- **堵住自我续期**：`switch_active_team` 和 `mint_identity_session` 拒绝给支持账号签发
+  会话（20261108020000）。否则支持会话可以给自己再签一个不受 grant 约束的会话。
+  拦截没有放在 `auth._mint_session` 里：线上那个函数的 owner 是 `supabase_auth_admin`，
+  而迁移以 postgres 身份运行，`create or replace` 会失败，并卡住后面所有迁移。
+- **入口**：放在运营控制台的团队详情页（设置 → 平台运营 → 额度 → 某个团队 →
+  「以支持身份进入」），没有放进团队选择器。
+- **客户端**（`packages/app/src/lib/admin/support-session.ts`）：
+  - 进入前把运营自己的 refresh token 存进 localStorage，并把「上次使用的团队」缓存
+    指向目标团队。adopt 支持会话之后，AuthGate 按正常流程自动进入该团队。
+  - 支持模式下 `enterTeam` 不调用 activate，`refreshDaemonUnlessSkipped` 不碰 daemon。
+  - 支持模式下的「退出登录」等于退出支持模式。GoTrue 登出共用账号可能会结束其他
+    运营的会话。
+  - `SupportSessionGuard` 挂在 AuthGate 外面：如果支持会话在应用关闭期间失效，
+    下次启动会自动恢复运营自己的会话；另外在到期前 1 分钟自动退出支持模式。
+  - whoami 缓存按登录用户区分，支持账号不会继承运营的控制台界面。
+- `POST .../support-sessions` 的返回值里额外带 `supportUserId`。
+
 ## 第一版不做
 
 - 禁止清单（邀请成员、建 bot、改角色、删 org、充值等）。注意：bot 会继承邀请人的全部
