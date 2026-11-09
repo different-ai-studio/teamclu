@@ -574,6 +574,15 @@ export function WeComChannel() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Bot 1 often reaches the socket before bot 2. Re-read each bot when the
+  // channel comes up, and the 5s gateway poll (refreshWecomStatus) keeps
+  // going after that.
+  React.useEffect(() => {
+    if (wecomGatewayStatus.status === 'connected' || wecomGatewayStatus.status === 'connecting') {
+      void loadWecomBotStatuses()
+    }
+  }, [wecomGatewayStatus.status, loadWecomBotStatuses])
+
   const {
     localConfig,
     updateLocalConfig,
@@ -715,7 +724,8 @@ export function WeComChannel() {
         {/* Per-bot list */}
         <div className="space-y-3">
           {bots.map((bot, i) => {
-            const status = botStatuses.find(s => s.botId === bot.botId)
+            const botId = bot.botId.trim()
+            const status = botStatuses.find((row) => row.botId.trim() === botId)
             return (
               <div
                 key={i}
