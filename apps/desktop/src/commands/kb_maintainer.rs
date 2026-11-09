@@ -491,10 +491,11 @@ fn script_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .resource_dir()
         .map_err(|e| format!("Cannot locate application resources: {e}"))?
         .join("kb-maintainer/desktop-runner.js");
-    resource
-        .is_file()
-        .then_some(resource)
-        .ok_or_else(|| missing_wiki_resources_message(&resource))
+    if resource.is_file() {
+        Ok(resource)
+    } else {
+        Err(missing_wiki_resources_message(&resource))
+    }
 }
 
 fn missing_wiki_resources_message(resource: &Path) -> String {
