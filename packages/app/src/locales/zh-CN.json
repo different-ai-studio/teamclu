@@ -2311,6 +2311,7 @@
         "init-daemon": "凭证没能写入。重置可以清掉写了一半的状态。",
         "restart-daemon": "本地服务没能重启。重置可以清掉写了一半的状态。",
         "await-daemon": "服务起来了但一直没响应，看看 {{path}}。",
+        "await-daemon-token": "本地服务在运行，但拒绝了这台机器的凭证。重试会重启它；细节在 {{path}}。",
         "cloud-auth": "这台机器没能通过服务器验证。",
         "daemon-outdated": "本机的 daemon 比应用旧，报不出运行时状态。要换一个版本匹配的 daemon 重启应用——对着同一个二进制重试不会有任何变化。"
       },
@@ -2343,6 +2344,7 @@
       "errorTitle": "无法配置本机 Agent",
       "errorSubtitle": "没有留下半配置状态，重试是安全的。",
       "startFailed": "本地 daemon 启动失败：请确认本机可运行后重试。",
+      "tokenRejected": "本地 daemon 已在运行，但没有接受这台机器的凭证。重试会重启它；若仍然失败，请重置并重新初始化。",
       "nameTitle": "给本机 Agent 取个名字",
       "nameSubtitle": "它运行在这台机器上，只有你能看到。之后可以在设置里改名。",
       "nameConfirm": "继续",

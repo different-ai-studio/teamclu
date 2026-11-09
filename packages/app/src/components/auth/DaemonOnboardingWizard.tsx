@@ -98,6 +98,24 @@ const SLOW_HINT_MS = 8_000
 /** Surface the log path and an explicit retry once it passes this. */
 const STUCK_HINT_MS = 25_000
 
+/**
+ * A step counts as done only when it finished *before* the one that failed.
+ *
+ * `completedSteps` can still contain a later step: a cloud-auth read started
+ * while the daemon looked healthy resolves after a newer run has already
+ * died in `await-daemon`. Showing that later check mark is how the failure
+ * screen claimed "检查云端连接" succeeded on a service that never answered.
+ */
+function stepIsDone(
+  step: OnboardingStep,
+  completed: readonly OnboardingStep[],
+  failed: OnboardingStep | null,
+): boolean {
+  if (!completed.includes(step)) return false
+  if (!failed) return true
+  return ONBOARDING_STEPS.indexOf(step) < ONBOARDING_STEPS.indexOf(failed)
+}
+
 function StepList({
   current,
   completed,
@@ -113,8 +131,8 @@ function StepList({
   return (
     <ul className="flex flex-col gap-1.5">
       {ONBOARDING_STEPS.map((step) => {
-        const isDone = completed.includes(step)
         const isFailed = step === failed
+        const isDone = stepIsDone(step, completed, failed)
         const isActive = step === current
         return (
           <li key={step} className="flex items-center gap-2 text-[12.5px]">
@@ -345,19 +363,33 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
           // copy is about downloads and networks — the two things that are not
           // wrong here. Retrying against the same binary cannot help either, so
           // say what does.
+          // A rejected root token also fails `await-daemon`, whose own copy
+          // says the service never answered. It did — healthz passed — so
+          // that sentence would contradict the error line under the steps.
           daemonOutdated
             ? t(
                 'settings.daemonOnboarding.recovery.daemon-outdated',
                 'The daemon on this machine is older than the app and cannot report the runtime. Restarting the app with a matching daemon is the fix — a retry against the same one will not help.',
               )
-            : failedStep
-              ? t(`settings.daemonOnboarding.recovery.${failedStep}`, {
+            : failedStep === 'await-daemon' &&
+                error ===
+                  t(
+                    'settings.daemonOnboarding.tokenRejected',
+                    'The local daemon is running, but it rejected the credential for this machine. Retry restarts it; if that keeps failing, reset and re-initialize.',
+                  )
+              ? t('settings.daemonOnboarding.recovery.await-daemon-token', {
                   path: daemonManagedLogDisplayPath,
+                  defaultValue:
+                    "The local service is running, but it rejected this machine's credential. Retry restarts it; details are in {{path}}.",
                 })
-              : t(
-                  'settings.daemonOnboarding.errorSubtitle',
-                  'Nothing was left half-configured — retrying is safe.',
-                )
+              : failedStep
+                ? t(`settings.daemonOnboarding.recovery.${failedStep}`, {
+                    path: daemonManagedLogDisplayPath,
+                  })
+                : t(
+                    'settings.daemonOnboarding.errorSubtitle',
+                    'Nothing was left half-configured — retrying is safe.',
+                  )
         }
       >
         {failedStep && (

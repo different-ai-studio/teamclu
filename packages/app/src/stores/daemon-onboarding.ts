@@ -119,11 +119,17 @@ function ensureRuntimeReady(): Promise<boolean> {
 }
 
 async function checkAndInstallRuntime(): Promise<boolean> {
+  const lease = postReadyGeneration
   const setup = useSetupStore.getState()
   await setup.listRequirements()
+  if (lease !== postReadyGeneration) return false
   if (!useSetupStore.getState().loaded || !runtimeMissing()) return true
 
-  if (useDaemonOnboardingStore.getState().runStartedAt === null) beginRun()
+  // Keep the post-ready lease. This beginRun belongs to the install that the
+  // healthy pass scheduled; an external refresh invalidates `lease` itself.
+  if (useDaemonOnboardingStore.getState().runStartedAt === null) beginRun({ keepPostReady: true })
+  if (lease !== postReadyGeneration) return false
+  const run = runGeneration
   useDaemonOnboardingStore.setState({ status: 'starting', loaded: true, busy: true, error: null })
   try {
     await runStep('install-runtime', async () => {
@@ -148,9 +154,11 @@ async function checkAndInstallRuntime(): Promise<boolean> {
         )
       }
     })
+    if (!runIsCurrent(run) || lease !== postReadyGeneration) return false
     useDaemonOnboardingStore.setState({ runtimeInstallFailures: 0 })
     return true
   } catch (e) {
+    if (!runIsCurrent(run) || lease !== postReadyGeneration) return false
     const error = e instanceof Error ? e.message : String(e)
     const { daemonOutdated, runtimeInstallFailures } = useDaemonOnboardingStore.getState()
     // A stale daemon is a known state with its own screen, not an install
@@ -172,7 +180,7 @@ async function checkAndInstallRuntime(): Promise<boolean> {
     }
     return false
   } finally {
-    useDaemonOnboardingStore.setState({ busy: false })
+    if (runIsCurrent(run)) useDaemonOnboardingStore.setState({ busy: false })
   }
 }
 
@@ -312,6 +320,17 @@ type DaemonOnboardingState = {
  */
 let postReadyTail: Promise<void> = Promise.resolve()
 let postReadyGeneration = 0
+/**
+ * Bumped by every `beginRun`. Step writes capture it and skip the store when
+ * a newer run has started, so a cloud-auth check from the pass that found the
+ * daemon healthy cannot tick "检查云端连接" on the run that then dies in
+ * "等待服务就绪".
+ */
+let runGeneration = 0
+
+function runIsCurrent(run: number): boolean {
+  return run === runGeneration
+}
 
 /** @internal Tests wait for background doctor / workspace after refresh. */
 export function waitForDaemonOnboardingPostReady(): Promise<void> {
@@ -321,6 +340,7 @@ export function waitForDaemonOnboardingPostReady(): Promise<void> {
 /** @internal Drop in-flight post-ready work between tests. */
 export function resetDaemonOnboardingPostReadyForTests(): void {
   postReadyGeneration += 1
+  runGeneration += 1
   postReadyTail = Promise.resolve()
   runtimeReadyInflight = null
 }
@@ -332,6 +352,9 @@ function schedulePostReadyWork(
   const generation = ++postReadyGeneration
   const work = (async () => {
     if (!(await ensureRuntimeReady())) return
+    // `beginRun` (a later refresh, a retry) moves `postReadyGeneration`. An
+    // install inside ensureRuntimeReady does not: that beginRun keeps this
+    // lease, otherwise a successful install would never re-affirm 'ready'.
     if (generation !== postReadyGeneration) return
     // Install path leaves status at 'starting'; re-affirm ready for AuthGate.
     useDaemonOnboardingStore.setState({ status: 'ready', loaded: true, error: null })
@@ -361,8 +384,16 @@ function rememberDaemonIdentity(teamId: string): void {
   if (userId) writeDaemonOnboardingIdentity({ teamId, userId })
 }
 
-/** Start a fresh run: clear the previous run's step trail and failure. */
-function beginRun(): void {
+/**
+ * Start a fresh run: clear the previous run's step trail and failure.
+ *
+ * Also drops the post-ready lease, unless `keepPostReady` — the runtime
+ * install scheduled by a healthy pass is part of that pass, and cancelling
+ * the lease there would leave AuthGate on 'starting' after a successful install.
+ */
+function beginRun(opts?: { keepPostReady?: boolean }): void {
+  runGeneration += 1
+  if (!opts?.keepPostReady) postReadyGeneration += 1
   useDaemonOnboardingStore.setState({
     step: null,
     completedSteps: [],
@@ -372,23 +403,33 @@ function beginRun(): void {
   })
 }
 
+function errorText(e: unknown): string {
+  if (typeof e === 'string') return e
+  if (e instanceof Error) return e.message
+  return String(e)
+}
+
 /**
  * Mark `step` active, run `fn`, record it as done.
  *
  * On failure it records `failedStep` and rethrows unchanged, so every existing
- * catch block keeps behaving exactly as it did.
+ * catch block keeps behaving exactly as it did. A newer `beginRun` makes the
+ * completion a no-op: the step belongs to the run that started it.
  */
 async function runStep<T>(step: OnboardingStep, fn: () => Promise<T>): Promise<T> {
-  useDaemonOnboardingStore.setState({ step })
+  const run = runGeneration
+  if (runIsCurrent(run)) useDaemonOnboardingStore.setState({ step })
   try {
     const result = await fn()
-    useDaemonOnboardingStore.setState((s) => ({
-      completedSteps: s.completedSteps.includes(step) ? s.completedSteps : [...s.completedSteps, step],
-      step: null,
-    }))
+    if (runIsCurrent(run)) {
+      useDaemonOnboardingStore.setState((s) => ({
+        completedSteps: s.completedSteps.includes(step) ? s.completedSteps : [...s.completedSteps, step],
+        step: s.step === step ? null : s.step,
+      }))
+    }
     return result
   } catch (e) {
-    useDaemonOnboardingStore.setState({ failedStep: step, step: null })
+    if (runIsCurrent(run)) useDaemonOnboardingStore.setState({ failedStep: step, step: null })
     throw e
   }
 }
@@ -560,32 +601,71 @@ async function waitForDaemonCloudAuthOk(timeoutMs = 30_000): Promise<boolean> {
   return (await fetchDaemonCloudAuthStatus()) === 'ok'
 }
 
+type DaemonHealth = 'ready' | 'stale' | { failed: string }
+
+/**
+ * What to show when the poll never sees a healthy daemon.
+ *
+ * A spawn error (the supervisor's own words, often the tail of
+ * `amuxd.managed.log`) beats the generic line — that generic line is what
+ * used to hide "exited before becoming ready". A daemon that answered
+ * `/v1/healthz` but rejected the root token is not "never answered" either.
+ */
+function describeHealthFailure(
+  probe: { ok: boolean; reason?: string },
+  spawnError: string | null,
+): string {
+  const spawned = spawnError?.trim()
+  if (spawned) return spawned
+  if (!probe.ok && probe.reason === 'token_invalid') {
+    return i18n.t(
+      'settings.daemonOnboarding.tokenRejected',
+      'The local daemon is running, but it rejected the credential for this machine. Retry restarts it; if that keeps failing, reset and re-initialize.',
+    )
+  }
+  return i18n.t(
+    'settings.daemonOnboarding.startFailed',
+    'Failed to start the local daemon. Make sure it can run on this machine, then retry.',
+  )
+}
+
 /** The daemon is onboarded to the current team — ensure it's actually running with a
- * valid token. Auto-recover (start/restart) and poll until healthy. Returns true if ready. */
-async function ensureHealthy(): Promise<boolean> {
+ * valid token. Auto-recover (start/restart) and poll until healthy.
+ * `'ready'` when it answers, `'stale'` when a newer run owns the store, otherwise
+ * the failure copy. */
+async function ensureHealthy(): Promise<DaemonHealth> {
+  const run = runGeneration
   let probe = await probeDaemonHttp()
-  if (probe.ok) return true
+  if (!runIsCurrent(run)) return 'stale'
+  if (probe.ok) return 'ready'
   // Desktop-managed amuxd: restart the sidecar held by the desktop process.
   const { invoke } = await import('@tauri-apps/api/core')
   // Both spawn attempts are best-effort — polling below is what decides the
-  // outcome — so this step is never the one blamed for a failure.
+  // outcome — so this step is never the one blamed for a failure. The text is
+  // kept for when the poll also fails: "restart" having a checkmark does not
+  // mean the supervisor returned Ok.
+  let spawnError: string | null = null
   await runStep('restart-daemon', async () => {
     try {
       await invoke('daemon_ensure_running')
-    } catch {
+    } catch (ensureFailure) {
       try {
         await invoke('daemon_restart_managed')
-      } catch {
-        /* fall through to polling */
+      } catch (restartFailure) {
+        const first = errorText(ensureFailure)
+        const second = errorText(restartFailure)
+        spawnError = first && second && first !== second ? `${first}\n${second}` : second || first
       }
     }
   })
+  if (!runIsCurrent(run)) return 'stale'
   // The long one: up to 6s per attempt, and `refresh` runs it twice.
   // Probe first, then sleep — the spawn often answers within the first
   // healthz; a fixed sleep(500) before every poll added ~0.5s for nothing
   // (#1798).
   useDaemonOnboardingStore.setState({ step: 'await-daemon' })
   for (let i = 0; i < 12; i++) {
+    if (!runIsCurrent(run)) return 'stale'
     invalidateDaemonConnection()
     probe = await probeDaemonHttp()
     if (probe.ok) {
@@ -593,14 +673,15 @@ async function ensureHealthy(): Promise<boolean> {
         completedSteps: s.completedSteps.includes('await-daemon')
           ? s.completedSteps
           : [...s.completedSteps, 'await-daemon'],
-        step: null,
+        step: s.step === 'await-daemon' ? null : s.step,
       }))
-      return true
+      return 'ready'
     }
     if (i < 11) await sleep(500)
   }
+  if (!runIsCurrent(run)) return 'stale'
   useDaemonOnboardingStore.setState({ failedStep: 'await-daemon', step: null })
-  return false
+  return { failed: describeHealthFailure(probe, spawnError) }
 }
 
 /**
@@ -678,17 +759,24 @@ async function ensureDefaultWorkspaceRegistered(teamId: string): Promise<void> {
 async function maybeRegisterDefaultWorkspace(teamId: string | null): Promise<void> {
   if (!isTauri() || !teamId) return
   // Best-effort: never set failedStep / flip status to error.
+  const run = runGeneration
   try {
+    if (!runIsCurrent(run)) return
     useDaemonOnboardingStore.setState({ step: 'register-workspace' })
     await ensureDefaultWorkspaceRegistered(teamId)
+    if (!runIsCurrent(run)) return
     useDaemonOnboardingStore.setState((s) => ({
       completedSteps: s.completedSteps.includes('register-workspace')
         ? s.completedSteps
         : [...s.completedSteps, 'register-workspace'],
-      step: null,
+      step: s.step === 'register-workspace' ? null : s.step,
     }))
   } catch (e) {
-    useDaemonOnboardingStore.setState({ step: null })
+    if (runIsCurrent(run)) {
+      useDaemonOnboardingStore.setState((s) => ({
+        step: s.step === 'register-workspace' ? null : s.step,
+      }))
+    }
     console.warn('[daemon-onboarding] workspace registration failed', e)
   }
 }
@@ -788,6 +876,10 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
 
   retryRuntimeInstall: async () => {
     if (!isTauri()) return
+    // Drop a cloud-auth check still in flight from the pass that looked
+    // healthy, without wiping steps this attempt already finished.
+    runGeneration += 1
+    postReadyGeneration += 1
     // `runStartedAt` restarts the elapsed counter for this attempt; the steps
     // already completed keep their checks.
     set({ status: 'starting', loaded: true, error: null, failedStep: null, runStartedAt: Date.now() })
@@ -886,20 +978,19 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
       return
     }
     beginRun()
-    set({ status: 'starting', loaded: true, error: null })
-    let ok = await ensureHealthy()
-    if (!ok) ok = await ensureHealthy()
-    if (!ok) {
-      set({
-        status: 'error',
-        loaded: true,
-        error: i18n.t(
-          'settings.daemonOnboarding.startFailed',
-          'Failed to start the local daemon. Make sure it can run on this machine, then retry.',
-        ),
-      })
+    const run = runGeneration
+    set({ status: 'starting', loaded: true, busy: false, error: null })
+    let health = await ensureHealthy()
+    if (health === 'stale' || !runIsCurrent(run)) return
+    if (health !== 'ready') {
+      health = await ensureHealthy()
+      if (health === 'stale' || !runIsCurrent(run)) return
+    }
+    if (health !== 'ready') {
+      set({ status: 'error', loaded: true, error: health.failed })
       return
     }
+    if (!runIsCurrent(run)) return
     set({ status: 'ready', loaded: true, error: null })
     schedulePostReadyWork(get, currentTeamId)
   },
