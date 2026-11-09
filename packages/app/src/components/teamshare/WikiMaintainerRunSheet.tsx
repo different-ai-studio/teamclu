@@ -4,6 +4,7 @@ import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { ModalShell } from '@/components/teamshare/skill-detail/ModalShell'
+import { groupModelsByProvider } from '@/lib/agent/selectable-models'
 
 export interface WikiSourceDirectory {
   path: string
@@ -102,23 +103,6 @@ async function defaultSubscribeProgress(
   return listen<WikiCompileProgress>('kb-maintainer:progress', (event) => {
     handler(event.payload)
   })
-}
-
-function compilerModelGroups(models: WikiCompilerModel[]): {
-  label: string
-  models: WikiCompilerModel[]
-}[] {
-  const groups = new Map<string, WikiCompilerModel[]>()
-  for (const model of models) {
-    const label = model.providerName?.trim() || ''
-    const list = groups.get(label)
-    if (list) list.push(model)
-    else groups.set(label, [model])
-  }
-  return [...groups.entries()].map(([label, groupModels]) => ({
-    label,
-    models: groupModels,
-  }))
 }
 
 function stageLabel(
@@ -415,7 +399,7 @@ export function WikiMaintainerRunSheet({
                     : t('teamShare.wikiChooseCompilerModel', 'Choose a compiler model')}
                 </option>
               )}
-              {compilerModelGroups(compilerModels).map((group) =>
+              {groupModelsByProvider(compilerModels).map((group) =>
                 group.label ? (
                   <optgroup key={group.label} label={group.label}>
                     {group.models.map((model) => (

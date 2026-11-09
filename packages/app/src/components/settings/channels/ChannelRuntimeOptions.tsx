@@ -4,7 +4,7 @@ import { ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import type { DaemonWorkspace } from '@/lib/daemon/daemon-workspaces'
-import type { DeviceModelOption } from '@/lib/agent/device-default-models'
+import { groupModelsByProvider, type SelectableModel } from '@/lib/agent/selectable-models'
 import type { ChannelRuntimeSelection } from './channel-runtime'
 
 const fieldClass =
@@ -22,7 +22,7 @@ export function ChannelRuntimeOptions({
   workspaceId?: string
   model?: string
   workspaces: DaemonWorkspace[]
-  models: DeviceModelOption[]
+  models: SelectableModel[]
   inheritedWorkspaceId: string | null
   inheritedModel: string | null
   onChange: (patch: ChannelRuntimeSelection) => void
@@ -97,11 +97,23 @@ export function ChannelRuntimeOptions({
                   {t('settings.channels.runtime.modelPiDefault', 'Pi default model')}
                 </option>
               )}
-              {modelChoices.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.displayName}
-                </option>
-              ))}
+              {groupModelsByProvider(modelChoices).map((group) =>
+                group.label ? (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.models.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.displayName}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : (
+                  group.models.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.displayName}
+                    </option>
+                  ))
+                ),
+              )}
             </select>
           ) : (
             <input
@@ -145,18 +157,24 @@ function workspaceOptions(workspaces: DaemonWorkspace[], selectedId: string): Da
 }
 
 function modelOptions(
-  models: DeviceModelOption[],
+  models: SelectableModel[],
   selectedId: string,
   inheritedModel: string | null,
-): { id: string; displayName: string }[] {
+): SelectableModel[] {
   const options = models.map((model) => ({
     id: model.id,
     displayName: model.displayName || model.id,
+    providerName: model.providerName,
   }))
   for (const id of [selectedId, inheritedModel ?? '']) {
     if (id && !options.some((option) => option.id === id)) {
-      options.unshift({ id, displayName: id })
+      options.unshift({ id, displayName: id, providerName: providerOf(id) })
     }
   }
   return options
+}
+
+function providerOf(ref: string): string | undefined {
+  const slash = ref.indexOf('/')
+  return slash > 0 ? ref.slice(0, slash) : undefined
 }

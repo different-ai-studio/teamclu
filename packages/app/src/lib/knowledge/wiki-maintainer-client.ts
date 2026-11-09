@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 
-import { loadDeviceModelOptions } from '@/lib/agent/device-default-models'
+import { loadSelectableModels, teamModelId } from '@/lib/agent/selectable-models'
 import { getBackend } from '@/lib/backend/provider'
 import {
   fetchDocuments,
@@ -274,23 +274,6 @@ export async function discoverWikiSourceDirectories(
   return response.directories
 }
 
-function teamCompilerId(id: string): string {
-  const bare = id.trim()
-  return bare.includes('/') ? bare : `team/${bare}`
-}
-
-async function loadTeamCompilerModels(teamId: string): Promise<WikiCompilerModel[]> {
-  const llm = await getBackend().teamWorkspaceConfig.loadLlmConfig(teamId)
-  if (!llm?.enabled) return []
-  return (llm.models ?? [])
-    .filter((model) => typeof model?.id === 'string' && model.id.trim() !== '')
-    .map((model) => ({
-      id: teamCompilerId(model.id),
-      name: model.name || model.id.trim(),
-      providerName: 'team',
-    }))
-}
-
 /** Keep a previously saved compiler id when it is still in the list.
  *  Older saves stored the bare team model id (`glm-4.6`); the picker now
  *  uses `provider/model`. */
@@ -300,7 +283,7 @@ export function pickSavedCompilerModel(
 ): string {
   if (saved && models.some((model) => model.id === saved)) return saved
   if (saved && !saved.includes('/')) {
-    const prefixed = teamCompilerId(saved)
+    const prefixed = teamModelId(saved)
     if (models.some((model) => model.id === prefixed)) return prefixed
   }
   return models[0]?.id ?? ''
@@ -309,38 +292,12 @@ export function pickSavedCompilerModel(
 export async function loadWikiCompilerModels(
   teamId: string,
 ): Promise<WikiCompilerModel[]> {
-  const [deviceResult, teamResult] = await Promise.allSettled([
-    loadDeviceModelOptions(teamId),
-    loadTeamCompilerModels(teamId),
-  ])
-  const models: WikiCompilerModel[] = []
-  const seen = new Set<string>()
-  if (deviceResult.status === 'fulfilled') {
-    for (const option of deviceResult.value.options) {
-      const id = option.id?.trim()
-      if (!id || seen.has(id)) continue
-      seen.add(id)
-      models.push({
-        id,
-        name: option.displayName?.trim() || id,
-        providerName: option.providerName?.trim() || undefined,
-      })
-    }
-  }
-  if (teamResult.status === 'fulfilled') {
-    for (const model of teamResult.value) {
-      if (seen.has(model.id)) continue
-      seen.add(model.id)
-      models.push(model)
-    }
-  }
-  if (models.length === 0) {
-    const failed = [deviceResult, teamResult].find((result) => result.status === 'rejected')
-    if (failed?.status === 'rejected') {
-      throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason))
-    }
-  }
-  return models
+  const models = await loadSelectableModels(teamId)
+  return models.map((model) => ({
+    id: model.id,
+    name: model.displayName,
+    providerName: model.providerName,
+  }))
 }
 
 export async function prepareWikiMaintenance(
