@@ -381,7 +381,9 @@ services/fc/src/lib/pg-repo/oss-sync.ts
 
 ## 17. 未来路线
 
-**P2 — 团队内可用**：`scaffold` 命令 + 三套模板（MOC/ADR/runbook）；聊天「存到知识库」右键；freshness 字段解析与 UI 标记。
+**P2 — 团队内可用**：聊天「存到知识库」右键；freshness 字段解析与 UI 标记。
+
+**已停用 — 标准骨架**：一键生成 `00-home` / `30-decisions` / `40-runbooks` 等目录的 scaffold（按钮、daemon `/v1/knowledge/scaffold`、`knowledge_scaffold` 动作）已移除。知识库改为以 `knowledge/wiki/` 为主体，由「维护 Wiki」从资料库编译；`wiki/` 以外仍可手写页面。已经生成过骨架的团队原样保留，不做迁移。
 
 **P3 — 跨团队发现**：`knowledge.manifest.yaml` schema + FC catalog 端点；客户端「发现」页；跨 vault 链接解析。
 
@@ -601,7 +603,9 @@ L1（个人草稿）/ L2（团队 vault）/ L3（公司发现）。关键规则�
 
 为什么需要「打捞」这个动作？因为最容易产生知识的地方是聊天，而聊天是过程。如果不主动把结论挖出来，知识库永远不会被填满。所以产品上要有「把这段对话存到知识库」的入口。
 
-### 25.2 标准目录结构
+### 25.2 标准目录结构（已停用）
+
+> 新团队不再生成这套目录，见第 17 节「已停用 — 标准骨架」。下面保留当初的取舍，老团队的目录仍然按此理解。
 
 数字前缀（`00-home.md`、`10-onboarding/`、`20-domains/`、`30-decisions/`、`40-runbooks/`、`50-glossary.md`、`90-archive/`）。为什么用数字前缀？因为 Obsidian 的文件管理器按名称排序，数字前缀让结构在**原生文件树**里也是自解释的，不依赖任何插件。
 

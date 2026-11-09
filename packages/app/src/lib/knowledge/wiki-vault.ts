@@ -17,3 +17,12 @@ export function isLlmWikiSyncKey(syncKey: string | null | undefined): boolean {
     syncKey.startsWith('wiki/')
   )
 }
+
+/**
+ * Whether the team has a published Wiki on this machine. The maintainer always
+ * publishes `wiki/index.md`, so its absence means nothing has been published.
+ */
+export async function isWikiPublished(syncRoot: string): Promise<boolean> {
+  const { exists } = await import('@tauri-apps/plugin-fs')
+  return exists(`${syncRoot}/knowledge/wiki/index.md`)
+}

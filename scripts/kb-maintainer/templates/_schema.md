@@ -1,6 +1,7 @@
 # LLM Wiki compiler rules
 
-This file is human-maintained. The kb-maintainer reads it and never writes it.
+This file is human-maintained. The kb-maintainer writes this default once when
+the team has no `_schema.md`, and only reads it after that.
 
 ## Page types
 

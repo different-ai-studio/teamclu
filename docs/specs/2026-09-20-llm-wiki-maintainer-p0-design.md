@@ -290,6 +290,8 @@ Slice 1–2 的编排测试使用不调用模型的 fake `AgentRunner`。Claude 
 
 D1 仍然成立：编排不进 daemon。Slice 3 只改会话知识提示：涉及制度 / 流程 / 术语 / 岗位 / FAQ 时先 `knowledge_read("wiki/index.md")`。UI、租约、Cloud API、数据库都不动。Wiki 与 `30-decisions/` / `40-runbooks/` 同时命中时，人审目录优先。
 
+> **2026-11 更新**：知识库改为以 Wiki 为主体，会话提示改成 Wiki 优先：先读 `wiki/index.md`，Wiki 没有答案再查手写页，两者冲突时以 Wiki 为准。标准骨架已停用，老团队的骨架目录保留。
+
 ### D22 — 相关页选择不依赖根 index 是否拆卷
 
 `context-builder` 用确定性算法挑选相关页（标题 / summary 重叠，或一份不发布的 pages manifest）。根 index 变成 `wiki/index/*.md` 分卷后，算法不变，避免 Agent 因看不到页名而重复建页。
@@ -762,7 +764,7 @@ P0 的目标 `knowledge/wiki/` 是 team-public，因此每个来源也必须是 
 2. 根据 index 直接读取候选页，或调用 `knowledge_search(..., pathPrefix: "wiki/")`。
 3. 只把 `knowledge_read` 返回的正文当作事实。
 4. 没有命中时明确说不知道，不转而读取 `documents/`。
-5. 同一问题同时命中 `wiki/` 与 `30-decisions/` / `40-runbooks/` 时，人审目录优先。
+5. 同一问题同时命中 `wiki/` 与 `30-decisions/` / `40-runbooks/` 时，人审目录优先。（2026-11 起改为 Wiki 优先，见 D21 更新。）
 
 P0 不要求查询只看 `wiki/`。人审知识仍然是同一 vault 的有效来源，Agent 可以按问题同时检索 `30-decisions/`、`40-runbooks/` 等目录。来源卡片中的 path 足以区分 AI 编译页和人审页。
 

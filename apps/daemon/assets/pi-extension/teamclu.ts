@@ -205,7 +205,7 @@ const SESSION_SCOPED_TOOLS = new Set([
 ]);
 
 const KNOWLEDGE_VAULT_PROMPT =
-  "Team knowledge is a Markdown vault. For policies, processes, terms, roles, or FAQs, knowledge_read wiki/index.md first (maxChars 12000), then knowledge_read the listed pages or knowledge_search with pathPrefix wiki/. Human-reviewed 30-decisions/ and 40-runbooks/ take precedence when both match. Only treat knowledge_read content as fact; if nothing matches, say you do not know. Do not read documents/ or browse team-knowledge/ with file tools.";
+  "Team knowledge is a Markdown vault whose main body is a Wiki compiled from the team's documents. For any question about the team's knowledge, knowledge_read wiki/index.md first (maxChars 12000), then knowledge_read the listed pages or knowledge_search with pathPrefix wiki/. Pages elsewhere in the vault are written by hand: search them when the Wiki does not answer, and when they disagree with the Wiki, the Wiki wins. Only treat knowledge_read content as fact; if nothing matches, say you do not know. Never write under wiki/ — it is rebuilt from documents. Do not read documents/ or browse team-knowledge/ with file tools.";
 
 function normalizeSessionScopedToolName(name: string): string {
   const raw = name.trim();

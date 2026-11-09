@@ -2,7 +2,7 @@ mod daemon_config;
 pub mod device_mcp;
 pub mod edit;
 pub mod global_team_store;
-pub mod knowledge_scaffold;
+pub mod knowledge_templates;
 pub mod layout;
 mod managed_skill_writer;
 mod member_store;
@@ -30,7 +30,6 @@ pub use daemon_config::{
 // Only test fixtures build a `DaemonConfig` field by field.
 #[cfg(test)]
 pub use daemon_config::{ActorConfig, AgentBackendConfig, AgentsConfig, MqttConfig};
-pub use knowledge_scaffold::{domain_index_template, scaffold_knowledge, ScaffoldReport};
 pub use managed_skill_writer::{
     create_pack, get_pack, pack_digest, update_pack, ClaimedTeamContext, CreatePackRequest,
     ManageSkillResponse, ManagedSkillError, ManagedSkillErrorCode, UpdatePackRequest,

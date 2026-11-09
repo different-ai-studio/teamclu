@@ -66,7 +66,7 @@ describe('proposeDocumentToKnowledge', () => {
         title: '对账口径',
         source: 'document',
         documentPath: 'documents/finance/对账口径.md',
-        suggestedPath: '20-domains/对账口径.md',
+        suggestedPath: '对账口径.md',
       }),
     )
     expect(openKnowledgeReview).toHaveBeenCalledWith('cand-d', '对账口径')

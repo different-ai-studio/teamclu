@@ -19,6 +19,7 @@ const { repairWiki } = require("./repair");
 const { createCheckpoint, restoreCheckpoint } = require("./checkpoint");
 const { createDaemonSession } = require("./daemon-session");
 const { createVisionExtract, findPdftoppm, transcribeWithSession } = require("./vision");
+const { seedSchema } = require("./schema-seed");
 
 function renderPdfPage(bytes, pageNumber) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-pdf-page-"));
@@ -284,6 +285,7 @@ async function prepare(input, hooks = {}) {
       ),
   };
   onProgress({ stage: "plan" });
+  seedSchema(input.knowledgeRoot);
   const dry = dryRun(common);
   const sourcePrefixes = loadConfig(input.configPath).sources.map((source) => source.prefix);
   onProgress({ stage: "estimate" });

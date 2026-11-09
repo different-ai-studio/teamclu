@@ -59,6 +59,43 @@ describe('WikiMaintainerCard', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
+  it('guides an admin to Documents when no Wiki has been published', () => {
+    canManageTeam = true
+    useCurrentTeamStore.setState({
+      team: { id: '11111111-1111-4111-8111-111111111111', name: 't', slug: 't' },
+    } as never)
+
+    render(<WikiMaintainerCard published={false} />)
+    expect(screen.getByTestId('wiki-maintainer-hint')).toHaveTextContent(
+      'No Wiki yet. Put policies, processes and FAQs into folders under Documents, then use Maintain Wiki to compile and publish.',
+    )
+    expect(screen.getByRole('button', { name: 'Maintain Wiki' })).toBeTruthy()
+  })
+
+  it('tells a member the Wiki is not published yet', () => {
+    canManageTeam = false
+    useCurrentTeamStore.setState({
+      team: { id: '11111111-1111-4111-8111-111111111111', name: 't', slug: 't' },
+    } as never)
+
+    render(<WikiMaintainerCard published={false} />)
+    expect(screen.getByTestId('wiki-maintainer-hint')).toHaveTextContent(
+      'The team has not published a Wiki yet. It appears under wiki/ once an owner or admin compiles it from Documents.',
+    )
+  })
+
+  it('keeps the usual hint once a Wiki is published', () => {
+    canManageTeam = true
+    useCurrentTeamStore.setState({
+      team: { id: '11111111-1111-4111-8111-111111111111', name: 't', slug: 't' },
+    } as never)
+
+    render(<WikiMaintainerCard published />)
+    expect(screen.getByTestId('wiki-maintainer-hint')).toHaveTextContent(
+      'Choose source folders, review the result, then publish. Wiki pages stay read-only.',
+    )
+  })
+
   it('lets an owner or admin open the single maintenance flow', async () => {
     canManageTeam = true
     useCurrentTeamStore.setState({

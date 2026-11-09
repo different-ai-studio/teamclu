@@ -20,8 +20,6 @@ import {
   Bot,
   ChevronDown,
   Trash2,
-  BookPlus,
-  MoreHorizontal,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -61,10 +59,9 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { useEnvVarsStore } from '@/stores/env-vars'
 import { FileBrowser } from '@/components/workspace/FileBrowser'
 import { TeamDirInitPanel } from '@/components/teamshare/TeamDirInitPanel'
-import { scaffoldKnowledgeVault } from '@/lib/knowledge/scaffold-client'
 import { isPathUnder, joinPathLike } from '@/lib/fs-path'
 import { fileNameError } from '@/lib/file-name'
-import { isKnowledgeVaultEmpty } from '@/lib/knowledge/is-knowledge-vault-empty'
+import { isWikiPublished } from '@/lib/knowledge/wiki-vault'
 import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
 import {
@@ -466,10 +463,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
 
   const [query, setQuery] = React.useState('')
   const [searchOpen, setSearchOpen] = React.useState(false)
-  /** True when `knowledge/` has no real files yet — show the one-click CTA. */
-  const [vaultEmpty, setVaultEmpty] = React.useState(false)
-  const [scaffolding, setScaffolding] = React.useState(false)
-  const teamName = useCurrentTeamStore((s) => s.team?.name ?? null)
+  const [wikiPublished, setWikiPublished] = React.useState<boolean | undefined>(undefined)
 
   React.useEffect(() => {
     setQuery('')
@@ -479,24 +473,25 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     void loadSection(section, { force: true, withTools: section === 'mcp' })
   }, [section, loadSection])
 
+  // `knowledge.items` is a new array after every reload, including the ones a
+  // file write or a finished sync triggers — which is when a Wiki can appear.
   React.useEffect(() => {
     if (section !== 'knowledge' || !syncRoot) {
-      setVaultEmpty(false)
+      setWikiPublished(undefined)
       return
     }
     let cancelled = false
-    void (async () => {
-      try {
-        const empty = await isKnowledgeVaultEmpty(syncRoot)
-        if (!cancelled) setVaultEmpty(empty)
-      } catch {
-        if (!cancelled) setVaultEmpty(false)
-      }
-    })()
+    isWikiPublished(syncRoot)
+      .then((published) => {
+        if (!cancelled) setWikiPublished(published)
+      })
+      .catch(() => {
+        if (!cancelled) setWikiPublished(undefined)
+      })
     return () => {
       cancelled = true
     }
-  }, [section, syncRoot, treeRefreshKey, knowledge.loaded, knowledge.items.length])
+  }, [section, syncRoot, treeRefreshKey, knowledge.items])
 
   // `subjectActorId` is read, not depended on: this effect WRITES it, so
   // listing it here made every auto-select re-run the effect and refetch
@@ -608,27 +603,6 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       )
     }
   }, [knowledgeVaultPath, t])
-
-  const handleCompleteScaffold = React.useCallback(async () => {
-    if (scaffolding) return
-    setScaffolding(true)
-    try {
-      await scaffoldKnowledgeVault({ teamName: teamName ?? undefined })
-      await loadSection('knowledge', { force: true })
-      setTreeRefreshKey((k) => k + 1)
-      toast.success(
-        t('teamShare.knowledgeScaffoldDone', '已补全标准知识库骨架（已有文件未改动）'),
-      )
-    } catch (err) {
-      toast.error(
-        t('teamShare.knowledgeScaffoldFailed', '初始化失败：{{msg}}', {
-          msg: err instanceof Error ? err.message : String(err),
-        }),
-      )
-    } finally {
-      setScaffolding(false)
-    }
-  }, [scaffolding, teamName, loadSection, t])
 
   // Opening the column is the other moment the list has to be current: a
   // conflict may have been created by the daemon's own timer while this session
@@ -1074,7 +1048,6 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             // slot opens the same directory in Obsidian instead — it IS a
             // vault, `.obsidian/` just never syncs (see
             // docs/architecture/obsidian-compatible-knowledge.md).
-            <>
             <Button
               type="button"
               variant="ghost"
@@ -1097,38 +1070,6 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                 style={obsidian.installed ? { color: '#7C3AED' } : undefined}
               />
             </Button>
-            {syncRoot && !vaultEmpty ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                    disabled={scaffolding}
-                    title={t('teamShare.knowledgeMore', '知识库操作')}
-                    data-testid="teamshare-knowledge-more"
-                  >
-                    {scaffolding ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <MoreHorizontal className="h-4 w-4" />
-                    )}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-52">
-                  <DropdownMenuItem
-                    disabled={scaffolding}
-                    onClick={() => void handleCompleteScaffold()}
-                    data-testid="teamshare-knowledge-scaffold"
-                  >
-                    <BookPlus className="mr-2 h-4 w-4" />
-                    {t('teamShare.knowledgeScaffoldTopUp', '补全标准骨架')}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
-            </>
           ) : (
             <Button
               type="button"
@@ -1411,22 +1352,9 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             // The whole shared root, not just knowledge/ — create / rename /
             // delete / move all come from FileBrowser's existing context menu,
             // and clicking a file opens it exactly as it does in the workspace.
-            // When knowledge/ has no files yet, the one-click scaffold CTA sits
-            // above the tree so documents/ remains reachable.
             <>
-            <WikiMaintainerCard />
+            <WikiMaintainerCard published={wikiPublished} />
             <KnowledgeInboxStrip />
-            {vaultEmpty ? (
-              <div className="shrink-0 border-b border-border-soft">
-                <TeamDirInitPanel
-                  mode="empty-vault"
-                  onScaffolded={() => {
-                    setVaultEmpty(false)
-                    setTreeRefreshKey((k) => k + 1)
-                  }}
-                />
-              </div>
-            ) : null}
             <FileBrowser
               variant="panel"
               rootPath={syncRoot}
@@ -1444,11 +1372,8 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             </>
           ) : (
             // The directory is missing locally. Sync is on regardless — this is
-            // a repairable local state, so offer the repair + scaffold.
-            <TeamDirInitPanel
-              mode="missing-dir"
-              onScaffolded={() => setTreeRefreshKey((k) => k + 1)}
-            />
+            // a repairable local state, so offer the repair.
+            <TeamDirInitPanel onRebuilt={() => setTreeRefreshKey((k) => k + 1)} />
           )
         ) : mcpGroups ? (
           mcpGroups.every((g) => g.rows.length === 0) ? (
