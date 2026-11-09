@@ -34,12 +34,14 @@ const stream = (
 
 const runtime = (
   status: AgentStatus,
-  lastUpdated: number,
+  statusChangedAt: number,
   sessionId = "s1",
+  lastUpdated = statusChangedAt,
 ): Record<string, RuntimeStateEntry> => ({
   [attachmentKey(AGENT, sessionId)]: {
     daemonActorId: AGENT,
     lastUpdated,
+    statusChangedAt,
     info: {
       runtimeId: sessionId,
       agentType: 0,
@@ -67,6 +69,17 @@ describe("findStaleLiveStreams — runtime retain reconciliation", () => {
     expect(find({ k: stream() }, runtime(AgentStatus.IDLE, NOW - 5_000))).toEqual(
       [],
     );
+  });
+
+  it("ignores an unchanged Idle re-delivered after the next turn opened", () => {
+    // Idle since the previous turn ended; the same snapshot arrives again
+    // just after the new turn's placeholder.
+    expect(
+      find(
+        { k: stream({ lastUpdate: NOW - 1_000 }) },
+        runtime(AgentStatus.IDLE, NOW - 30_000, "s1", NOW - 500),
+      ),
+    ).toEqual([]);
   });
 
   it("recovers even with a tool call still marked in flight", () => {

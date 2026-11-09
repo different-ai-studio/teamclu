@@ -31,6 +31,12 @@ export type RuntimeStateEntry = {
   info: RuntimeInfo
   daemonActorId: string
   lastUpdated: number // ms epoch
+  /**
+   * When `info.status` last took its current value. Unlike `lastUpdated`, a
+   * re-delivered snapshot with the same status does not move it, so it cannot
+   * make an old Idle look newer than a turn that opened after it.
+   */
+  statusChangedAt: number // ms epoch
 }
 
 export type ActorDefaultCatalogEntry = {
@@ -99,9 +105,11 @@ function applyRuntimeStateUpdates(
       Boolean(prev) &&
       prev.daemonActorId === daemonActorId &&
       runtimeInfoEqual(prev!.info, merged)
+    const statusChangedAt =
+      prev && prev.info.status === merged.status ? prev.statusChangedAt : receivedAt
     const entry: RuntimeStateEntry = prevMatches
       ? { ...prev!, lastUpdated: receivedAt }
-      : { info: merged, daemonActorId, lastUpdated: receivedAt }
+      : { info: merged, daemonActorId, lastUpdated: receivedAt, statusChangedAt }
 
     const shouldSetRuntime = !prevMatches || entry !== prev
     if (!shouldSetRuntime) continue

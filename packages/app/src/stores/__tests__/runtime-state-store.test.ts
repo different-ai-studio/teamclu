@@ -307,6 +307,33 @@ describe('runtime-state-store', () => {
     expect(map['agent-uuid']).toBeUndefined()
   })
 
+  it('moves statusChangedAt only when the status changes', async () => {
+    const { useRuntimeStateStore } = await import('../runtime-state-store')
+    const key = 'agent-uuid::session-status'
+    const info = (status: AgentStatus, currentModel = 'mimo') =>
+      create(RuntimeInfoSchema, { runtimeId: 'session-status', status, currentModel })
+    const now = vi.spyOn(Date, 'now')
+    try {
+      now.mockReturnValue(1_000)
+      useRuntimeStateStore.getState().upsert(key, 'agent-uuid', info(AgentStatus.IDLE))
+      now.mockReturnValue(2_000)
+      useRuntimeStateStore.getState().upsert(key, 'agent-uuid', info(AgentStatus.IDLE))
+      now.mockReturnValue(3_000)
+      useRuntimeStateStore.getState().upsert(key, 'agent-uuid', info(AgentStatus.IDLE, 'big-pickle'))
+
+      let entry = useRuntimeStateStore.getState().byRuntimeId[key]
+      expect(entry?.lastUpdated).toBe(3_000)
+      expect(entry?.statusChangedAt).toBe(1_000)
+
+      now.mockReturnValue(4_000)
+      useRuntimeStateStore.getState().upsert(key, 'agent-uuid', info(AgentStatus.ACTIVE, 'big-pickle'))
+      entry = useRuntimeStateStore.getState().byRuntimeId[key]
+      expect(entry?.statusChangedAt).toBe(4_000)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
   it('upsert no longer reaches into pick-store (no circular dependency)', async () => {
     const { useRuntimeStateStore } = await import('../runtime-state-store')
     const { useAgentModelPickStore } = await import('../agent-model-pick-store')

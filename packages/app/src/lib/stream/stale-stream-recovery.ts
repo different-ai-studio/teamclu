@@ -58,7 +58,7 @@ export function findStaleLiveStreams(args: {
     if (
       runtime &&
       isTerminalAgentStatus(runtime.info.status) &&
-      runtime.lastUpdated > entry.lastUpdate
+      runtime.statusChangedAt > entry.lastUpdate
     ) {
       stale.push({
         sessionId: entry.sessionId,

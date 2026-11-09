@@ -5,6 +5,11 @@ import {
   buildAgentReplyMessageRow,
   executeAgentTurnFlush,
 } from "@/lib/agent/agent-turn-flush";
+import {
+  getFlushedTurn,
+  noteTurnOpened,
+  resetFlushedTurnRegistryForTests,
+} from "@/lib/stream/flushed-turn-registry";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 
@@ -76,5 +81,59 @@ describe("agent-turn-flush", () => {
 
     const rows = useSessionMessageStore.getState().messages.s1 ?? [];
     expect(rows.find((m) => m.messageId === "interrupt-stream-1")).toBeUndefined();
+  });
+
+  it("a flush that resolves after the next turn opened does not re-register its turn", async () => {
+    resetFlushedTurnRegistryForTests();
+    const reply = createMessage(MessageSchema, {
+      messageId: "msg-turn-1",
+      sessionId: "s1",
+      senderActorId: "a1",
+      kind: MessageKind.AGENT_REPLY,
+      content: "turn 1",
+      turnId: "turn-1",
+      createdAt: BigInt(100),
+    });
+
+    const flushing = executeAgentTurnFlush({
+      sessionId: "s1",
+      actorId: "a1",
+      trigger: "mqtt.statusChange.active",
+      teamId: "team-1",
+      reply,
+      pendingReplies: [reply],
+      persistedStage: "test.persisted",
+    });
+    noteTurnOpened("s1", "a1");
+    await flushing;
+
+    expect(getFlushedTurn("s1", "a1")).toBeUndefined();
+    const rows = useSessionMessageStore.getState().messages.s1 ?? [];
+    expect(rows.find((m) => m.messageId === "msg-turn-1")).toBeDefined();
+  });
+
+  it("a flush within the same turn registers it", async () => {
+    resetFlushedTurnRegistryForTests();
+    const reply = createMessage(MessageSchema, {
+      messageId: "msg-turn-1",
+      sessionId: "s1",
+      senderActorId: "a1",
+      kind: MessageKind.AGENT_REPLY,
+      content: "turn 1",
+      turnId: "turn-1",
+      createdAt: BigInt(100),
+    });
+
+    await executeAgentTurnFlush({
+      sessionId: "s1",
+      actorId: "a1",
+      trigger: "mqtt.statusChange.terminal",
+      teamId: "team-1",
+      reply,
+      pendingReplies: [reply],
+      persistedStage: "test.persisted",
+    });
+
+    expect(getFlushedTurn("s1", "a1")?.messageId).toBe("msg-turn-1");
   });
 });
