@@ -6,12 +6,13 @@ import {
   type DaemonWorkspace,
 } from '@/lib/daemon/daemon-workspaces'
 import { loadGatewayModel } from '@/lib/daemon/amuxd-channels'
-import { loadDeviceModelOptions, type DeviceModelOption } from '@/lib/agent/device-default-models'
+import { loadDeviceModelOptions } from '@/lib/agent/device-default-models'
+import { loadSelectableModels, type SelectableModel } from '@/lib/agent/selectable-models'
 
 export interface ChannelRuntimeDefaults {
   ready: boolean
   workspaces: DaemonWorkspace[]
-  models: DeviceModelOption[]
+  models: SelectableModel[]
   /** Agent `defaultWorkspaceId` — what a channel uses when it has not chosen one. */
   inheritedWorkspaceId: string | null
   /** `channels.model` — what a channel uses when it has not chosen a model. */
@@ -57,8 +58,14 @@ export function useChannelRuntimeDefaults(): ChannelRuntimeDefaults {
         next.inheritedModel = null
       }
       try {
-        const catalog = await loadDeviceModelOptions(teamId)
-        next.models = catalog.options
+        // Same list as Maintain Wiki: device catalog, then team gateway models.
+        next.models = teamId
+          ? await loadSelectableModels(teamId)
+          : (await loadDeviceModelOptions(null)).options.map((option) => ({
+              id: option.id,
+              displayName: option.displayName,
+              providerName: option.providerName,
+            }))
       } catch {
         next.models = []
       }
