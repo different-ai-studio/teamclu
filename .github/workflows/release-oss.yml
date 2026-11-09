@@ -320,6 +320,13 @@ jobs:
           # OEM brands may provide build.macExtraArgs; TeamClu Beta deliberately
           # leaves it empty so the beta is a normal TeamClu build.
           args: "--target ${{ matrix.target }} ${{ env.BRAND_MAC_EXTRA_ARGS }}"
+          # pnpm `tauri` is this script. On macOS it checks the .app before
+          # exiting, so a bundle that dropped the Wiki maintainer scripts is
+          # never uploaded below.
+          tauriScript: node scripts/tauri-cli.js
+
+      - name: Verify Wiki maintenance resources in the macOS app
+        run: node scripts/check-wiki-maintainer-bundle.js --target ${{ matrix.target }}
 
       - name: Upload installers to OSS + emit updater fragment
         env:

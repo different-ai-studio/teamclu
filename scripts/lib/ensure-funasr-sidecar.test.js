@@ -23,10 +23,12 @@ test("Tauri bundles the architecture-matched FunASR sidecar", () => {
     "binaries/amuxd",
     "binaries/llama-funasr-sensevoice",
   ]);
-  assert.deepEqual(config.bundle.resources, [
-    "resources/licenses/funasr-llamacpp.txt",
-    "resources/licenses/sherpa-onnx-campplus.txt",
-  ]);
+  // A map merges with tauri.conf.json. An array would replace the base
+  // resources and drop scripts/kb-maintainer from every macOS release.
+  assert.deepEqual(config.bundle.resources, {
+    "resources/licenses/funasr-llamacpp.txt": "resources/licenses/funasr-llamacpp.txt",
+    "resources/licenses/sherpa-onnx-campplus.txt": "resources/licenses/sherpa-onnx-campplus.txt",
+  });
   const base = JSON.parse(
     fs.readFileSync(path.join(repoRoot, "apps/desktop/tauri.conf.json"), "utf8"),
   );
