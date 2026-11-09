@@ -22,7 +22,7 @@ describe('distillFromDocument', () => {
     expect(draft.suggestions.some((item) => item.text.includes('documents/finance/对账口径.md'))).toBe(
       true,
     )
-    expect(draft.suggestedPath).toBe('20-domains/对账口径.md')
+    expect(draft.suggestedPath).toBe('对账口径.md')
   })
 
   it('stubs a binary file as a pointer back to 资料库, without inventing body text', () => {
@@ -35,6 +35,6 @@ describe('distillFromDocument', () => {
     expect(draft.body).toContain('documents/hr/合同.pdf')
     expect(draft.body).not.toContain('%PDF')
     expect(draft.suggestions.some((item) => item.kind === 'followup')).toBe(true)
-    expect(draft.suggestedPath).toBe('20-domains/合同.md')
+    expect(draft.suggestedPath).toBe('合同.md')
   })
 })

@@ -95,7 +95,7 @@ describe('proposeSessionToKnowledge', () => {
         title: '对账口径',
         sessionId: 'sess-1',
         source: 'session-header',
-        suggestedPath: '20-domains/对账口径.md',
+        suggestedPath: '对账口径.md',
       }),
     )
     expect(openKnowledgeReview).toHaveBeenCalledWith('cand-9', '对账口径')

@@ -8,7 +8,6 @@
 //! transport-agnostic.
 //!
 //! Tool surface (docs/plans/2026-08-31-team-knowledge-base-program.md §附录 D):
-//! - `scaffold`      — generate the standard vault tree + bilingual templates
 //! - `create`        — create one page from a template (adr / runbook / domain-index / page)
 //! - `write`         — write or edit a page (overwrite, path-locked to the vault)
 //! - `salvage`       — capture a conversation conclusion into a vault page
@@ -35,7 +34,7 @@ use crate::sync::oss::state::{ForbiddenPaths, LocalSyncState};
 
 use crate::config::{
     global_team_store::sync_content_root,
-    knowledge_scaffold::{domain_index_template, scaffold_at, today_iso},
+    knowledge_templates::{domain_index_template, today_iso},
     layout,
 };
 
@@ -235,7 +234,6 @@ fn handle_knowledge_inner(payload: Value) -> String {
     };
     let inbox = inbox::inbox_dir(&team_id);
     match action {
-        "scaffold" => knowledge_scaffold(&root, &payload),
         "create" => knowledge_create(&root, &payload, &blocked),
         "write" => knowledge_write(&root, &payload, &blocked),
         "salvage" => knowledge_salvage(&root, &payload, &blocked),
@@ -253,28 +251,14 @@ fn handle_knowledge_inner(payload: Value) -> String {
             "unknown_action",
             format!(
                 "unknown knowledge action '{other}'; expected \
-                 scaffold|create|write|salvage|propose|inbox_list|inbox_get|\
+                 create|write|salvage|propose|inbox_list|inbox_get|\
                  inbox_discard|publish|search|read|manifest_get|manifest_set|health"
             ),
         ),
     }
 }
 
-// --- scaffold / create / write / salvage ---------------------------------
-
-fn knowledge_scaffold(root: &Path, payload: &Value) -> String {
-    let team_id = layout::active_team();
-    let name = str_field(payload, "team_name").unwrap_or(team_id.as_str());
-    match scaffold_at(root, &team_id, name) {
-        Ok(report) => ok(json!({
-            "knowledgeRoot": report.knowledge_root,
-            "dirsCreated": report.dirs_created,
-            "filesCreated": report.files_created,
-            "filesSkipped": report.files_skipped,
-        })),
-        Err(e) => err("scaffold_failed", format!("scaffold failed: {e}")),
-    }
-}
+// --- create / write / salvage --------------------------------------------
 
 /// Build the page body for `create` / `salvage`. `template:` is optional;
 /// `content:` overrides the template body when given.
@@ -484,10 +468,7 @@ const MANIFEST: &str = "knowledge.manifest.yaml";
 fn manifest_get(root: &Path) -> String {
     let path = root.join(MANIFEST);
     let Ok(raw) = std::fs::read_to_string(&path) else {
-        return err(
-            "no_manifest",
-            "knowledge.manifest.yaml not found; run scaffold first",
-        );
+        return err("no_manifest", "this team has no knowledge.manifest.yaml");
     };
     ok(json!({ "raw": raw }))
 }
@@ -495,10 +476,7 @@ fn manifest_get(root: &Path) -> String {
 fn manifest_set(root: &Path, payload: &Value) -> String {
     let path = root.join(MANIFEST);
     let Ok(mut raw) = std::fs::read_to_string(&path) else {
-        return err(
-            "no_manifest",
-            "knowledge.manifest.yaml not found; run scaffold first",
-        );
+        return err("no_manifest", "this team has no knowledge.manifest.yaml");
     };
     let mut updates: Vec<(&str, &str)> = Vec::new();
     // Visibility flips demand an explicit confirm flag — an agent must not
@@ -702,11 +680,18 @@ fn health(root: &Path) -> String {
             }
         }
     }
+    // Measured against the Wiki, not a directory layout: no team is expected
+    // to have any particular hand-written folder.
+    let wiki_pages_dir = Path::new(WIKI_DIR).join("pages");
+    let wiki_pages = files
+        .iter()
+        .filter(|(rel, _)| rel.starts_with(&wiki_pages_dir))
+        .count();
     let coverage = json!({
-        "hasHome": root.join("00-home.md").exists(),
-        "hasGlossary": root.join("50-glossary.md").exists(),
+        "hasWiki": root.join(WIKI_DIR).join("index.md").is_file(),
+        "wikiPages": wiki_pages,
+        "hasSchema": root.join("_schema.md").is_file(),
         "hasManifest": root.join(MANIFEST).exists(),
-        "domainsDir": root.join("20-domains").is_dir(),
     });
     ok(json!({
         "vaultExists": true,
@@ -1246,5 +1231,24 @@ mod tests {
         let v: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(v["ok"], true);
         assert!(v["result"]["staleRunbooks"].as_u64().unwrap() >= 1);
+        assert_eq!(v["result"]["coverage"]["hasWiki"], false);
+    }
+
+    #[test]
+    fn health_coverage_reads_the_wiki_not_a_folder_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("wiki/pages")).unwrap();
+        std::fs::write(root.join("wiki/index.md"), "# LLM Wiki\n").unwrap();
+        std::fs::write(root.join("wiki/pages/leave.md"), "# 请假\n").unwrap();
+        std::fs::write(root.join("wiki/pages/hours.md"), "# 工时\n").unwrap();
+        std::fs::write(root.join("_schema.md"), "# rules\n").unwrap();
+        let v: Value = serde_json::from_str(&health(root)).unwrap();
+        let coverage = &v["result"]["coverage"];
+        assert_eq!(coverage["hasWiki"], true, "{v}");
+        assert_eq!(coverage["wikiPages"], 2, "{v}");
+        assert_eq!(coverage["hasSchema"], true, "{v}");
+        assert!(coverage.get("hasHome").is_none(), "{v}");
+        assert!(coverage.get("domainsDir").is_none(), "{v}");
     }
 }

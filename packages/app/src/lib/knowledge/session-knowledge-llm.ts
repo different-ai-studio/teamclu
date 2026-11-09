@@ -8,8 +8,8 @@ import {
 import { useTeamModeStore } from '@/stores/team-mode'
 
 const JSON_SHAPE = `只返回 JSON：
-{"title":"短标题","suggestedPath":"20-domains/<slug>.md","summary":"不超过80字的一句话共识","suggestions":[{"kind":"decision|fact|followup","text":"一条可独立收入知识库的句子"}]}
-suggestions 3到8条。kind 只能是 decision、fact、followup。`
+{"title":"短标题","suggestedPath":"<slug>.md","summary":"不超过80字的一句话共识","suggestions":[{"kind":"decision|fact|followup","text":"一条可独立收入知识库的句子"}]}
+suggestions 3到8条。kind 只能是 decision、fact、followup。suggestedPath 不能放在 wiki/ 下。`
 
 const SESSION_SYSTEM_PROMPT = `你把一段团队会话提炼成知识库草稿。不要复述聊天过程，不要粘贴原文。
 只保留已经达成的共识、决策、口径、后续动作。

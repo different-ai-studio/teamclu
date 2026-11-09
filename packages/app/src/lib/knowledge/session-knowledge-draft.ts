@@ -1,5 +1,6 @@
 import type { KnowledgeSuggestion, KnowledgeSuggestionKind } from '@/lib/knowledge/inbox-types'
 import { MessageKind } from '@/lib/proto/teamclu_pb'
+import { isLlmWikiSyncKey } from '@/lib/knowledge/wiki-vault'
 
 const MAX_TITLE_CHARS = 48
 const MAX_SUGGESTIONS = 8
@@ -37,6 +38,15 @@ export function slugifyDraftTitle(title: string): string {
   }
   const trimmed = out.replace(/^-+|-+$/g, '').slice(0, MAX_TITLE_CHARS).replace(/-+$/g, '')
   return trimmed || 'note'
+}
+
+/**
+ * Where a reviewed draft lands unless the reviewer changes it: a page at the
+ * vault root. No folder is assumed — a team's hand-written folders are its own,
+ * and new teams have none.
+ */
+export function defaultDraftPath(title: string): string {
+  return `${slugifyDraftTitle(title)}.md`
 }
 
 export function composeKnowledgeDraft(input: {
@@ -188,7 +198,7 @@ export function distillFromSession(input: {
     body:
       body ||
       '（会话里没有可提炼的结论。请勾选或改写建议后再写入。）',
-    suggestedPath: `20-domains/${slugifyDraftTitle(title)}.md`,
+    suggestedPath: defaultDraftPath(title),
     summary,
     suggestions,
   }
@@ -234,10 +244,11 @@ export function parseDistillPayload(raw: string): SessionKnowledgeDraft | null {
     typeof row.summary === 'string' && row.summary.trim()
       ? clip(row.summary, MAX_SUMMARY_CHARS)
       : clip(suggestions[0].text, MAX_SUMMARY_CHARS)
+  // A path under wiki/ would be refused at publish: only the Wiki maintainer
+  // writes there.
+  const modelPath = typeof row.suggestedPath === 'string' ? row.suggestedPath.trim() : ''
   const suggestedPath =
-    typeof row.suggestedPath === 'string' && row.suggestedPath.trim()
-      ? row.suggestedPath.trim()
-      : `20-domains/${slugifyDraftTitle(title)}.md`
+    modelPath && !isLlmWikiSyncKey(modelPath.replace(/^\.\//, '')) ? modelPath : defaultDraftPath(title)
   return {
     title,
     summary,

@@ -57,7 +57,7 @@ describe('distillFromSession', () => {
     expect(draft.body.length).toBeLessThan(wall.length)
     expect(draft.suggestions.some((item) => item.text.includes('渠道单号'))).toBe(true)
     expect(draft.suggestions.some((item) => item.kind === 'followup')).toBe(true)
-    expect(draft.suggestedPath).toBe('20-domains/对账口径.md')
+    expect(draft.suggestedPath).toBe('对账口径.md')
   })
 
   it('asks the reviewer to write when the thread is empty', () => {
@@ -91,6 +91,19 @@ describe('parseDistillPayload', () => {
     expect(draft?.title).toBe('对账口径')
     expect(draft?.suggestedPath).toContain('payments')
     expect(draft?.suggestions).toHaveLength(1)
+  })
+
+  it('falls back to the default path when the model suggests one under wiki/', () => {
+    for (const suggestedPath of ['wiki/pages/对账口径.md', './wiki/x.md', 'knowledge/wiki/x.md']) {
+      const draft = parseDistillPayload(
+        JSON.stringify({
+          title: '对账口径',
+          suggestedPath,
+          suggestions: [{ kind: 'decision', text: '以渠道单号为准' }],
+        }),
+      )
+      expect(draft?.suggestedPath).toBe('对账口径.md')
+    }
   })
 
   it('rejects a payload with no suggestions', () => {

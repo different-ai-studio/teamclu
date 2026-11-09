@@ -230,7 +230,7 @@ export function KnowledgeReviewTab({ candidateId }: { candidateId: string }) {
             <Input
               value={path}
               onChange={(e) => setPath(e.target.value)}
-              placeholder="20-domains/example.md"
+              placeholder="example.md"
               className="h-9 bg-paper font-mono text-[12px]"
             />
           </label>

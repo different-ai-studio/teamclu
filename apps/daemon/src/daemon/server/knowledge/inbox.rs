@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::config::knowledge_scaffold::today_iso;
+use crate::config::knowledge_templates::today_iso;
 use crate::config::layout;
 use crate::sync::oss::state::ForbiddenPaths;
 

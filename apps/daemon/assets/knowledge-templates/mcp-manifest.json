@@ -7,17 +7,6 @@
   },
   "tools": [
     {
-      "name": "knowledge_scaffold",
-      "description": "Initialize the team knowledge vault with the standard directory tree (00-home, 10-onboarding, 20-domains, 30-decisions, 40-runbooks, 50-glossary, 90-archive, attachments) and bilingual (zh/en) templates. Idempotent — existing files are never overwritten. 初始化团队知识库的标准目录结构和双语模板；已存在的文件不会被覆盖。",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "team_name": { "type": "string", "description": "Display name stamped into 00-home.md / 写入 00-home.md 的团队显示名" }
-        }
-      },
-      "maps_to": { "action": "scaffold" }
-    },
-    {
       "name": "knowledge_create",
       "description": "Create a new vault page from a template. Refuses to overwrite an existing path — use knowledge_write to edit. 从模板新建页面；已存在则拒绝，改请用 knowledge_write。 If the reply carries teamSync:\"not-syncing\", the page was saved on this device only and is not reaching the team — say so rather than reporting it as shared. 若返回 teamSync:\"not-syncing\"，说明只存在本机、没有同步给团队，要如实告知，不要说成已共享。 A page written from `content` is stamped with `type` and `updated` so it counts toward knowledge_health; supply your own frontmatter (content starting with `---`) and the page is written verbatim, heading included. 用 content 写入的页面会自动盖上 type 和 updated，以便计入 knowledge_health；若 content 以 `---` 开头则视为你自带 frontmatter，整页原样写入（含标题）。 Paths under wiki/ are refused (errorCode wiki_read_only): the Wiki is compiled from documents. wiki/ 下的路径会被拒绝（wiki_read_only），Wiki 由资料库编译生成。",
       "inputSchema": {
@@ -110,7 +99,7 @@
     },
     {
       "name": "knowledge_manifest_set",
-      "description": "Update publish settings. Changing visibility to 'org' REQUIRES confirm=true — publishing exposes the vault org-wide and is a considered action. 修改发布设置；把 visibility 改为 org 必须带 confirm=true。 A key the manifest does not already contain is refused (errorCode unknown_key) and nothing is written — scaffold creates the full set. 清单里没有的键会被拒绝（unknown_key）且不写入任何内容；完整的键由 scaffold 生成。",
+      "description": "Update publish settings. Changing visibility to 'org' REQUIRES confirm=true — publishing exposes the vault org-wide and is a considered action. 修改发布设置；把 visibility 改为 org 必须带 confirm=true。 A key the manifest does not already contain is refused (errorCode unknown_key) and nothing is written; a team with no manifest gets no_manifest. 清单里没有的键会被拒绝（unknown_key）且不写入任何内容；团队没有清单时返回 no_manifest。",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -125,7 +114,7 @@
     },
     {
       "name": "knowledge_health",
-      "description": "Vault health stats: stale runbooks (last-verified overdue), stale pages (updated overdue), coverage checks. 知识库健康度：过期 runbook、过期页面、覆盖度检查。",
+      "description": "Vault health stats: stale runbooks (last-verified overdue), stale pages (updated overdue), and Wiki coverage (published index, page count, _schema.md). 知识库健康度：过期 runbook、过期页面，以及 Wiki 覆盖度（是否已发布、页数、_schema.md）。",
       "inputSchema": { "type": "object", "properties": {} },
       "maps_to": { "action": "health" }
     }

@@ -1,6 +1,7 @@
 import type { KnowledgeSuggestion } from '@/lib/knowledge/inbox-types'
 import {
   composeKnowledgeDraft,
+  defaultDraftPath,
   extractSuggestionsFromText,
   slugifyDraftTitle,
   type SessionKnowledgeDraft,
@@ -89,7 +90,7 @@ export function distillFromDocument(input: DocumentKnowledgeInput): SessionKnowl
   return {
     title: title.slice(0, MAX_TITLE_CHARS) || 'untitled',
     body: body || '（资料里没有可提炼的条目。请勾选或改写建议后再写入。）',
-    suggestedPath: `20-domains/${slugifyDraftTitle(title)}.md`,
+    suggestedPath: defaultDraftPath(title),
     summary,
     suggestions,
   }
