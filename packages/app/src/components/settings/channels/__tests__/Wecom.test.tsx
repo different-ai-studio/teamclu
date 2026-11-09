@@ -110,6 +110,17 @@ describe('WeComChannel', () => {
     expect(values).toContain('b2')
   })
 
+  it('shows bot 2 connected when its own status is connected', () => {
+    storeState.wecomBotStatuses = [
+      { botId: 'b1', connected: true },
+      { botId: 'b2', connected: true },
+    ]
+    render(<WeComChannel />)
+    expandCard()
+    expect(screen.getAllByText('Connected')).toHaveLength(2)
+    storeState.wecomBotStatuses = []
+  })
+
   it('exposes an add-bot control', () => {
     render(<WeComChannel />)
     expandCard()

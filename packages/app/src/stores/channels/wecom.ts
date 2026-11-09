@@ -108,11 +108,20 @@ export function createWecomActions(set: ChannelsSet) {
     },
 
     refreshWecomStatus: async () => {
+      // The channel flag is true when any bot is up. Per-bot rows used to be
+      // read once on open, so a bot that finished connecting after that read
+      // stayed on "disconnected" for as long as the page was open.
       try {
         const list = await listChannels()
         set({ wecomGatewayStatus: statusFor('wecom', list), error: null })
       } catch (e) {
         console.error('[WeCom] Failed to refresh status:', e)
+      }
+      try {
+        const statuses = await invoke<WeComBotStatus[]>('list_wecom_bots_status')
+        if (Array.isArray(statuses)) set({ wecomBotStatuses: statuses })
+      } catch (e) {
+        console.error('[WeCom] Failed to refresh per-bot statuses:', e)
       }
     },
 

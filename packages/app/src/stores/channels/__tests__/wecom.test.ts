@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }))
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke }))
+
 vi.mock('@/lib/daemon/amuxd-channels', () => {
   class AmuxdUnreachableError extends Error {
     constructor() {
@@ -109,6 +113,30 @@ describe('createWecomActions', () => {
       (c) => (c[0] as { error?: string }).error
     )?.[0] as { error?: string } | undefined
     expect(errorPayload?.error).toMatch(/amuxd not running/i)
+  })
+
+  it('refreshWecomStatus reloads every bot, not only the channel flag', async () => {
+    vi.mocked(listChannels).mockResolvedValueOnce([
+      { platform: 'wecom', enabled: true, connected: true, lastError: null },
+    ])
+    invoke.mockResolvedValueOnce([
+      { botId: 'b1', connected: true },
+      { botId: 'b2', connected: true },
+    ])
+
+    const { createWecomActions } = await import('../wecom')
+    const set = vi.fn()
+    const actions = createWecomActions(set)
+
+    await actions.refreshWecomStatus()
+
+    expect(invoke).toHaveBeenCalledWith('list_wecom_bots_status')
+    expect(set).toHaveBeenCalledWith({
+      wecomBotStatuses: [
+        { botId: 'b1', connected: true },
+        { botId: 'b2', connected: true },
+      ],
+    })
   })
 
   it('toggleWecomEnabled saves disabled config and clears status', async () => {
