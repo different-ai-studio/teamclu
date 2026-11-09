@@ -328,6 +328,13 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: "--target ${{ matrix.target }}"
+          # pnpm `tauri` is this script. On macOS it checks the .app before
+          # exiting, so tauri-action cannot upload a bundle that dropped the
+          # Wiki maintainer scripts.
+          tauriScript: node scripts/tauri-cli.js
+
+      - name: Verify Wiki maintenance resources in the macOS app
+        run: node scripts/check-wiki-maintainer-bundle.js --target ${{ matrix.target }}
 
   # Windows job uploads artifacts to the same GitHub Release created by macOS job
   release-windows:

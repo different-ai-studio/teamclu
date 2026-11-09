@@ -7,6 +7,7 @@ const { createRustBuildEnv, ensureSccacheServer } = require("./rust-build-env");
 const { ensureTeamcluIntrospectSidecar } = require("./ensure-introspect-sidecar");
 const { ensureAmuxdSidecar } = require("./ensure-amuxd-sidecar");
 const { ensureFunASRSidecar } = require("./ensure-funasr-sidecar");
+const { assertMacosReleaseBundles, repoRoot } = require("./lib/wiki-maintainer-bundle");
 const { applyDevSkipFlags } = require("./lib/dev-flags");
 const { createPhaseTimer } = require("./lib/dev-timing");
 const { platform } = process;
@@ -66,4 +67,19 @@ const child = spawn("pnpm", ["exec", "tauri", ...args], {
   cwd: desktopDir,
 });
 timing.mark(`spawn tauri ${sub ?? "?"} (vite+cargo follow)`);
-child.on("exit", (code) => process.exit(code ?? 0));
+child.on("exit", (code) => {
+  if (code === 0 && platform === "darwin" && sub === "build") {
+    try {
+      assertMacosReleaseBundles({
+        repoRoot,
+        target: targetIndex >= 0 ? args[targetIndex + 1] : undefined,
+        debug: args.includes("--debug"),
+        cargoTargetDir: env.CARGO_TARGET_DIR,
+      });
+    } catch (error) {
+      console.error(`[tauri-cli] ${error instanceof Error ? error.message : error}`);
+      process.exit(1);
+    }
+  }
+  process.exit(code ?? 0);
+});

@@ -494,7 +494,21 @@ fn script_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     resource
         .is_file()
         .then_some(resource)
-        .ok_or_else(|| "Wiki maintenance resources are missing from this build.".to_string())
+        .ok_or_else(|| missing_wiki_resources_message(&resource))
+}
+
+fn missing_wiki_resources_message(resource: &Path) -> String {
+    let packaged = resource.parent().is_some_and(|dir| dir.is_dir());
+    let detail = if packaged {
+        "the Wiki maintenance directory is present but incomplete"
+    } else {
+        "the Wiki maintenance directory was not packaged"
+    };
+    format!(
+        "Wiki maintenance resources are missing from this build ({}; expected {}).",
+        detail,
+        resource.display()
+    )
 }
 
 fn node_path() -> Result<PathBuf, String> {
@@ -1490,5 +1504,24 @@ mod tests {
 
         let outside = tempfile::NamedTempFile::new().unwrap();
         assert!(validate_checkpoint_file_path(root.path(), outside.path()).is_err());
+    }
+
+    #[test]
+    fn missing_wiki_resources_name_the_expected_file() {
+        let missing_root = tempfile::tempdir().unwrap();
+        let absent = missing_root
+            .path()
+            .join("no-such-app/kb-maintainer/desktop-runner.js");
+        let absent_message = missing_wiki_resources_message(&absent);
+        assert!(absent_message.contains("Wiki maintenance resources are missing from this build"));
+        assert!(absent_message.contains("was not packaged"));
+        assert!(absent_message.contains(absent.to_str().unwrap()));
+
+        let incomplete = tempfile::tempdir().unwrap();
+        let script = incomplete.path().join("kb-maintainer/desktop-runner.js");
+        fs::create_dir_all(script.parent().unwrap()).unwrap();
+        let incomplete_message = missing_wiki_resources_message(&script);
+        assert!(incomplete_message.contains("present but incomplete"));
+        assert!(incomplete_message.contains("desktop-runner.js"));
     }
 }
