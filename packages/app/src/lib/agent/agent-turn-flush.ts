@@ -13,6 +13,7 @@ import {
 } from "@/stores/v2-streaming-store";
 import { flushStreamDeltasFor } from "@/lib/stream/stream-delta-buffer";
 import {
+  currentTurnGeneration,
   registerFlushedTurn,
 } from "@/lib/stream/flushed-turn-registry";
 import { normalizeUnixTimestampSeconds, unixTimestampSecondsToIso } from "@/lib/messages/message-timestamp";
@@ -127,6 +128,7 @@ function commitFlushedAgentReply(
     streamEntrySnapshot?: AgentStreamEntry;
     persistedStage: string;
     persistedExtras?: Record<string, unknown>;
+    turnGeneration: number;
   },
 ): void {
   useSessionMessageStore
@@ -148,7 +150,7 @@ function commitFlushedAgentReply(
     messageId: enrichedReply.messageId,
     streamId: opts.streamEntrySnapshot?.streamId ?? "",
     turnId: enrichedReply.turnId ?? "",
-  });
+  }, opts.turnGeneration);
   logInterruptMsgDiag(opts.persistedStage, {
     sessionId,
     actorId,
@@ -181,6 +183,7 @@ export async function executeAgentTurnFlush(args: {
   shouldCommit?: () => boolean;
   persistedStage: string;
 }): Promise<void> {
+  const turnGeneration = currentTurnGeneration(args.sessionId, args.actorId);
   // Drain any buffered text deltas so persisted parts include all arrived text.
   flushStreamDeltasFor(args.sessionId, args.actorId);
   args.beforePersist?.();
@@ -225,5 +228,6 @@ export async function executeAgentTurnFlush(args: {
     teamId: args.teamId,
     streamEntrySnapshot: streamEntryForPersist,
     persistedStage: args.persistedStage,
+    turnGeneration,
   });
 }

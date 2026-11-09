@@ -4,7 +4,7 @@ import { bufferStreamDelta, flushStreamDeltasFor} from "@/lib/stream/stream-delt
 import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, isStalePiExtensionCtxError, localizeAgentTurnErrorMessage } from "@/lib/agent/agent-turn-error";
 import { patchPersistedToolResult, patchPersistedToolUse, syncStreamingToolOutputsFromLocalCache } from "@/lib/stream/streaming-persist";
 import { streamActorIdFromLiveEvent } from "@/lib/daemon/teamclu-events";
-import { getFlushedTurn } from "@/lib/stream/flushed-turn-registry";
+import { getFlushedTurn, noteTurnOpened } from "@/lib/stream/flushed-turn-registry";
 import { handleAcpPermissionRequest } from "@/lib/teamclu/handle-acp-permission-request";
 import { clearPendingPermissionsOnTurnIdle } from "@/lib/teamclu/handle-session-event-permission-resolved";
 import { isStreamInterruptible, useV2StreamingStore } from "@/stores/v2-streaming-store";
@@ -335,6 +335,7 @@ export function handleAcpEvent(
                   ),
                 });
                 clearTerminalFlushPending(agentStreamKey(sid, actorId));
+                noteTurnOpened(sid, actorId);
                 useV2StreamingStore.getState().beginPlanningPlaceholder(sid, actorId);
               } else if (isTerminalAgentStatus(sc.newStatus)) {
                 clearPendingPermissionsOnTurnIdle(sid, actorId);

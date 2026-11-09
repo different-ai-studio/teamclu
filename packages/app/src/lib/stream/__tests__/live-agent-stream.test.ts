@@ -26,6 +26,8 @@ import {
 } from "@/lib/stream/live-agent-stream";
 import type { AgentStreamEntry } from "@/stores/v2-streaming-store";
 import {
+  getFlushedTurn,
+  noteTurnOpened,
   registerFlushedTurn,
   resetFlushedTurnRegistryForTests,
 } from "@/lib/stream/flushed-turn-registry";
@@ -493,6 +495,22 @@ describe("shouldPatchFlushedToolEvent", () => {
     expect(live.streamId).not.toBe("stream-1");
     expect(live.toolCalls).toHaveLength(0);
     // Regression: brand-new tool ids must not patch the prior flushed reply.
+    expect(shouldPatchFlushedToolEvent("s1", "a1", "turn2-tool", live)).toBe(false);
+  });
+
+  it("does not route the next turn's tools to the prior reply after its dock closes", () => {
+    registerFlushedTurn("s1", "a1", {
+      messageId: "m1",
+      streamId: "stream-1",
+      turnId: "turn-1",
+    });
+    noteTurnOpened("s1", "a1");
+    useV2StreamingStore.getState().beginPlanningPlaceholder("s1", "a1");
+    // Stale-stream recovery closes the new dock before any event lands.
+    useV2StreamingStore.getState().finishSessionActor("s1", "a1");
+    const live = useV2StreamingStore.getState().byKey["s1::a1"] as AgentStreamEntry;
+    expect(live.active).toBe(false);
+    expect(getFlushedTurn("s1", "a1")).toBeUndefined();
     expect(shouldPatchFlushedToolEvent("s1", "a1", "turn2-tool", live)).toBe(false);
   });
 
