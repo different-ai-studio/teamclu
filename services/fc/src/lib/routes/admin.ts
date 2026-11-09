@@ -29,6 +29,21 @@ export function registerAdmin(router) {
     return { body: await ctx.repository.updateAdminOrg(ctx.params.orgId, ctx.json ?? {}) };
   });
 
+  // Support mode: an operator enters a customer team as the org's shared
+  // support account. docs/plans/2026-11-08-platform-operator-support-access.md.
+  router.post("/v1/admin/orgs/:orgId/support-sessions", async (ctx) => {
+    return {
+      statusCode: 201,
+      body: await ctx.repository.startSupportSession(ctx.params.orgId, ctx.json ?? {}),
+    };
+  });
+
+  // Called with the support session itself, to end it. Not operator-gated:
+  // the support account is not an operator, and it can only end its own.
+  router.delete("/v1/admin/support-sessions/current", async (ctx) => {
+    return { body: await ctx.repository.endCurrentSupportSession() };
+  });
+
   // Teams with their balance and this month's spend. `sort=balance` puts the
   // teams about to run dry first, which is the whole point of the screen.
   router.get("/v1/admin/teams", async (ctx) => {

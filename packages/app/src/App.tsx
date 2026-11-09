@@ -50,6 +50,7 @@ import { PaneLoading } from "@/components/ui/pane-loading";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { RuntimeRefreshWorkspaceBanner } from "@/components/workspace/RuntimeRefreshBanner";
 import { AgentsSkillsAccessBanner } from "@/components/skills/AgentsSkillsAccessBanner";
+import { SupportModeBanner } from "@/components/admin/SupportMode";
 import { useAgentsSkillsAccessInit } from "@/hooks/use-agents-skills-access-init";
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionListStore } from "@/stores/session-list-store";
@@ -752,6 +753,7 @@ function AppContent() {
           </header>
           ) : null}
 
+          <SupportModeBanner />
           <RuntimeRefreshWorkspaceBanner />
           <AgentsSkillsAccessBanner />
 

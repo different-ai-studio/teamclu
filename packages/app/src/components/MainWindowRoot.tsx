@@ -1,6 +1,7 @@
 import App from '@/App'
 import { AuthGate } from '@/components/auth/AuthGate'
 import { CloseToTrayHost } from '@/components/CloseToTrayDialog'
+import { SupportSessionGuard } from '@/components/admin/SupportMode'
 import { SidePanelHostGateOverlay } from '@/components/extension/SidePanelHostGateOverlay'
 import { InviteLinkConfirmDialog } from '@/components/invite/InviteLinkConfirmDialog'
 import { JoinLinkConfirmDialog } from '@/components/invite/JoinLinkConfirmDialog'
@@ -35,6 +36,12 @@ export function MainWindowRoot() {
         install could not be closed from its own title bar.
       */}
       <CloseToTrayHost />
+      {/*
+        Outside AuthGate: when a support session dies while the app is shut,
+        the next launch lands on the login screen, and this is what puts the
+        operator's own kept session back.
+      */}
+      <SupportSessionGuard />
       {/*
         An E2E build mounts App without AuthGate. The harness never signs
         in — it drives the app over the MCP socket and seeds sessions,

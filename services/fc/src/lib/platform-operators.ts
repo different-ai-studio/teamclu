@@ -1,27 +1,32 @@
 /**
  * Platform operators: the people who run THIS deployment — not a team role,
- * not an org role. They grant credits and manage the AI gateway's provider
- * keys, which makes them the most privileged identity in the product.
+ * not an org role. They grant credits, manage the AI gateway's provider keys
+ * and enter customer orgs through support sessions, which makes them the most
+ * privileged identity in the product.
  *
- * Who they are is `PLATFORM_OPERATOR_USER_IDS`: auth.users ids, comma-separated.
+ * Two sources, either one is enough:
  *
- * An environment variable rather than a table or a JWT claim, on purpose:
- * - Granting it takes the same access as reading the provider keys and the
- *   gateway's service token. No bug inside the application — a missing authz
- *   check, an RLS hole — can make someone an operator.
- * - No schema. Belayo's migrations are applied by hand against a database
- *   shared with saas-mono; this adds nothing to that.
- * - Each deployment has its own database and so its own user ids; each lists
- *   its own operators.
- * The price is that changing the list means restarting FC, which is fine for a
- * list of two or three people that rarely changes.
+ * 1. `amux.is_platform_operator(user)` — an identity with admin_type 4 in the
+ *    deployment's platform org (`amux.deployment_settings.platform_org_id`).
+ *    This is the partner's own notion of a platform admin (saas-mono
+ *    SYSTEM_ADMIN), so on Belayo the people who already run the platform are
+ *    operators here too. docs/plans/2026-11-08-platform-operator-support-access.md.
+ *    The price: whoever can write admin_type 4 into the platform org can make
+ *    an operator. On the partner's database that is the platform admins
+ *    themselves (and service_role).
+ * 2. `PLATFORM_OPERATOR_USER_IDS` — auth.users ids, comma-separated. The
+ *    original mechanism, kept as a fallback while deployments configure
+ *    platform_org_id; to be removed.
  *
  * Ids, not emails: a phone-login account's email is synthesized
  * (PHONE_EMAIL_DOMAIN), and an id never changes. `GET /v1/admin/whoami` tells
- * anyone signed in their own id, to hand to whoever edits the deployment.
+ * anyone signed in their own id.
  *
- * Unset or blank means nobody is an operator: fail closed.
+ * Neither configured means nobody is an operator, and a failed database
+ * lookup counts as "no": fail closed.
  */
+
+import { ApiError } from "./http-utils.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -46,11 +51,117 @@ export function platformOperatorIds(env: NodeJS.ProcessEnv = process.env): Set<s
   return ids;
 }
 
+/** The environment-variable source only. Prefer `resolvePlatformOperator`. */
 export function isPlatformOperator(
   userId: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return !!userId && platformOperatorIds(env).has(userId.toLowerCase());
+}
+
+/**
+ * Both sources: the environment list, then `amux.is_platform_operator` through
+ * a service-role client. Any failure of the lookup (no service key, RPC
+ * missing because the migration has not run, network) is logged and answers
+ * false.
+ */
+export async function resolvePlatformOperator(
+  userId: string | null | undefined,
+  serviceRole: () => Promise<any>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  if (!userId) return false;
+  if (isPlatformOperator(userId, env)) return true;
+  try {
+    const admin = await serviceRole();
+    const { data, error } = await admin.schema("amux").rpc("is_platform_operator", { p_user_id: userId });
+    if (error) {
+      console.warn(`[operators] is_platform_operator failed: ${error.message ?? error}`);
+      return false;
+    }
+    return data === true;
+  } catch (cause) {
+    console.warn(`[operators] is_platform_operator unavailable: ${(cause as Error)?.message ?? cause}`);
+    return false;
+  }
+}
+
+/**
+ * The `session_id` claim of a bearer token, or null. Read without verifying:
+ * call it only on a token the caller has already been authenticated with.
+ */
+export function jwtSessionId(token: string | null | undefined): string | null {
+  const part = String(token ?? "").split(".")[1];
+  if (!part) return null;
+  try {
+    const json = JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+    const sid = typeof json?.session_id === "string" ? json.session_id.toLowerCase() : "";
+    return UUID.test(sid) ? sid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The synthetic email domain of the per-org support accounts (20261108010000). */
+export const SUPPORT_EMAIL_DOMAIN = "teamclu.support";
+
+/**
+ * When `token` belongs to an org's shared support account: its user id and
+ * session id (null when the token carries none). Null for every other token.
+ *
+ * Read without verifying, and that is enough for what it decides: whether to
+ * look further. A token that merely claims to be a support account gets one
+ * extra lookup and fails it; a real one cannot shed the claims without breaking
+ * its signature, which Supabase checks on every call.
+ */
+export function supportTokenClaims(
+  token: string | null | undefined,
+): { userId: string; sessionId: string | null } | null {
+  const part = String(token ?? "").split(".")[1];
+  if (!part) return null;
+  let json: any;
+  try {
+    json = JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+  const email = typeof json?.email === "string" ? json.email.toLowerCase() : "";
+  const flagged = json?.app_metadata?.teamclu_support === true || email.endsWith(`@${SUPPORT_EMAIL_DOMAIN}`);
+  const sub = typeof json?.sub === "string" ? json.sub.toLowerCase() : "";
+  if (!flagged || !UUID.test(sub)) return null;
+  const sid = typeof json?.session_id === "string" ? json.session_id.toLowerCase() : "";
+  return { userId: sub, sessionId: UUID.test(sid) ? sid : null };
+}
+
+/**
+ * Refuses a support account's request once the grant behind its session has
+ * ended or expired. Ending a grant kills the auth session, but the access token
+ * already issued stays a valid JWT for up to an hour; FC routes that act with
+ * service_role after reading the caller would honour it. The database refuses
+ * the same requests in its PostgREST pre-request hook
+ * (amux.check_support_request); this covers the routes that never reach it
+ * with the caller's token. A no-op for every other token.
+ *
+ * `isLive` asks the database; any failure counts as "ended": fail closed.
+ */
+export async function assertSupportSessionLive(
+  token: string | null | undefined,
+  isLive: (userId: string, sessionId: string) => Promise<boolean>,
+): Promise<void> {
+  const support = supportTokenClaims(token);
+  if (!support) return;
+  let live = false;
+  if (support.sessionId) {
+    try {
+      live = await isLive(support.userId, support.sessionId);
+    } catch (err) {
+      console.warn(`[support] grant lookup failed: ${(err as Error)?.message ?? err}`);
+      live = false;
+    }
+  }
+  if (!live) {
+    throw new ApiError(401, "support_session_ended", "this support session has ended");
+  }
 }
 
 /**

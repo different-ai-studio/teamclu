@@ -1,4 +1,9 @@
 {
+  "supportMode": {
+    "banner": "支持模式 · 正以「TeamClu 支持」身份在 {{org}} / {{team}} 中操作",
+    "remaining": "剩余 {{left}}",
+    "exit": "退出支持模式"
+  },
   "teamSync": {
     "knowledgeRoot": "知识库",
     "documentsRoot": "资料库"
@@ -3546,6 +3551,15 @@
       "filtered": "已筛选",
       "prev": "上一页",
       "next": "下一页"
+    },
+    "operatorSupport": {
+      "title": "进入团队协助",
+      "description": "以「TeamClu 支持」身份（该组织的拥有者）进入这个团队，最长 4 小时。团队成员会看到这个账号；你的身份和原因会被记录。你自己的登录会话保存在本机，退出支持模式后恢复。",
+      "start": "以支持身份进入",
+      "reason": "原因（会被记录）",
+      "reasonHint": "例如工单号、客户的诉求",
+      "cancel": "取消",
+      "confirm": "进入"
     },
     "operatorCredits": {
       "title": "额度",

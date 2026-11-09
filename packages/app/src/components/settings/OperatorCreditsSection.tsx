@@ -9,6 +9,7 @@ import { CREDITS_PER_POINT, formatPoints } from '@/lib/ui/credit-points'
 import type { AdminTeamCredits, AdminTeamRow } from '@/lib/backend/types'
 import { SectionHeader, SettingCard } from './shared'
 import { OperatorOnly, fmtDate, fmtDateTime } from './operator-shared'
+import { OperatorSupportEntry } from './OperatorSupportEntry'
 
 /**
  * Credits across every team — operators only.
@@ -475,6 +476,8 @@ function TeamCreditsDetail({ teamId, onBack }: { teamId: string; onBack: () => v
               </div>
             </div>
           </SettingCard>
+
+          <OperatorSupportEntry team={data.team} />
 
           <SettingCard>
             <p className="mb-3 text-[13px] font-semibold">{t('settings.operatorCredits.grantTitle', 'Grant credits')}</p>

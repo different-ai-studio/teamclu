@@ -1,4 +1,9 @@
 {
+  "supportMode": {
+    "banner": "Support mode · acting as TeamClu Support in {{org}} / {{team}}",
+    "remaining": "{{left}} left",
+    "exit": "Leave support mode"
+  },
   "teamSync": {
     "knowledgeRoot": "Knowledge",
     "documentsRoot": "Documents"
@@ -3546,6 +3551,15 @@
       "filtered": "filtered",
       "prev": "Previous",
       "next": "Next"
+    },
+    "operatorSupport": {
+      "title": "Help inside this team",
+      "description": "Enter the team as “TeamClu Support”, an owner of its org, for up to 4 hours. The team sees that account as a member; your name and reason are recorded. Your own session is kept on this computer and comes back when you leave.",
+      "start": "Enter as support",
+      "reason": "Reason (recorded)",
+      "reasonHint": "e.g. ticket number, what the customer asked for",
+      "cancel": "Cancel",
+      "confirm": "Enter"
     },
     "operatorCredits": {
       "title": "Credits",

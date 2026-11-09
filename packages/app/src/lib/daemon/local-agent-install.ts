@@ -221,7 +221,12 @@ export async function refreshDaemonUnlessSkipped(opts?: {
 }): Promise<void> {
   const teamId = useCurrentTeamStore.getState().team?.id?.trim() || ''
   const userId = signedInUserId()
-  if (teamId && (await shouldSkipLocalAgentInstall(teamId))) {
+  // Support mode: this machine belongs to the operator, not to the customer org
+  // the operator is helping. Leave the daemon bound where it is, and open the
+  // gate the same way a skipped install does.
+  const { isInSupportSession } = await import('@/lib/admin/support-session')
+  const supportMode = isInSupportSession()
+  if (supportMode || (teamId && (await shouldSkipLocalAgentInstall(teamId)))) {
     // The account changed while this lookup was in flight. The new user's own
     // call decides the gate; this one must not skip daemon rebind for them.
     if (signedInUserId() !== userId) return
