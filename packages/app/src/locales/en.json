@@ -1106,7 +1106,10 @@
     },
     "toast": {
       "mentionRouteFailedTitle": "@Agent set but message can't be routed",
-      "mentionRouteFailedBody": "The message contains no resolvable agent @-mention, so the daemon won't reply. Make sure the agent has joined this session."
+      "mentionRouteFailedBody": "The message contains no resolvable agent @-mention, so the daemon won't reply. Make sure the agent has joined this session.",
+      "attachmentUploadFailed": "Failed to upload attachment — message not sent",
+      "attachmentUploadFailedHint": "The draft is still here. Nothing was sent.",
+      "attachmentUploadNoTeam": "No current team, so the attachment was not uploaded"
     },
     "imageViewer": {
       "saveImage": "Save image",

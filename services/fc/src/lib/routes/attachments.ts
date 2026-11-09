@@ -1,4 +1,8 @@
 import { ApiError } from "../http-utils.js";
+import {
+  safeStorageObjectPath,
+  storageContentTypeForBucket,
+} from "../storage-object-key.js";
 
 const ALLOWED_BUCKETS = new Set(["attachments", "avatars"]);
 const DEFAULT_BUCKET = "attachments";
@@ -33,10 +37,15 @@ function resolveBucket(value) {
 
 export function registerAttachments(router) {
   router.postRaw("/v1/attachments", async (ctx) => {
-    const path = ctx.query.get("path");
-    if (!path) throw new ApiError(400, "invalid_request", "path query parameter is required");
+    const rawPath = ctx.query.get("path");
+    if (!rawPath) throw new ApiError(400, "invalid_request", "path query parameter is required");
+    // Storage rejects non-ASCII keys (InvalidKey). Rewrite the key here so
+    // every client — web, desktop, iOS — can keep the original filename on
+    // the message while the object path stays in the bucket's alphabet.
+    // ASCII paths (UUIDs, `photo.png`) are unchanged.
+    const path = safeStorageObjectPath(rawPath);
     const bucket = resolveBucket(ctx.query.get("bucket"));
-    const mime = ctx.headers["content-type"] ?? "application/octet-stream";
+    const mime = storageContentTypeForBucket(ctx.headers["content-type"], bucket);
     const out = await ctx.repository.uploadAttachment({ path, mime, bytes: ctx.rawBody, bucket });
     return { statusCode: 200, body: out };
   });

@@ -1106,7 +1106,10 @@
     },
     "toast": {
       "mentionRouteFailedTitle": "已 @Agent 但无法路由消息",
-      "mentionRouteFailedBody": "消息未包含可解析的 Agent @-mention，daemon 不会回复。请确认 Agent 已加入此会话。"
+      "mentionRouteFailedBody": "消息未包含可解析的 Agent @-mention，daemon 不会回复。请确认 Agent 已加入此会话。",
+      "attachmentUploadFailed": "附件上传失败，消息未发送",
+      "attachmentUploadFailedHint": "草稿还在，消息没有发出。",
+      "attachmentUploadNoTeam": "没有当前团队，附件无法上传"
     },
     "imageViewer": {
       "saveImage": "保存图片",
