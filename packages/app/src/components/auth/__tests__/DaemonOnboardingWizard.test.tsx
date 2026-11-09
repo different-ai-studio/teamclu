@@ -63,6 +63,37 @@ describe('DaemonOnboardingWizard', () => {
     expect(screen.getByText(/仍在进行/)).toBeInTheDocument()
   })
 
+  // The screen in the report: restart is checked, await-daemon failed, and a
+  // cloud-auth read that resolved late is still sitting in `completedSteps`.
+  // That later check must not render — the service never became ready.
+  it('does not check a step that comes after the one that failed', () => {
+    seed({
+      status: 'error',
+      failedStep: 'await-daemon',
+      completedSteps: ['restart-daemon', 'cloud-auth'],
+      error: '本地 daemon 启动失败：请确认本机可运行后重试。',
+    })
+    render(<DaemonOnboardingWizard onDone={() => {}} />)
+    expect(screen.getByText(/卡在这一步：等待服务就绪/)).toBeInTheDocument()
+    expect(screen.getByText('重启本地服务').className).toContain('text-muted-foreground')
+    expect(screen.getByText('等待服务就绪').className).toContain('text-coral')
+    expect(screen.getByText('检查云端连接').className).toContain('text-faint')
+    expect(screen.getByText('检查云端连接').className).not.toContain('text-muted-foreground')
+  })
+
+  it('does not say the service never answered when it rejected the credential', () => {
+    seed({
+      status: 'error',
+      failedStep: 'await-daemon',
+      completedSteps: ['restart-daemon'],
+      error:
+        '本地 daemon 已在运行，但没有接受这台机器的凭证。重试会重启它；若仍然失败，请重置并重新初始化。',
+    })
+    render(<DaemonOnboardingWizard onDone={() => {}} />)
+    expect(screen.queryByText(/一直没响应/)).not.toBeInTheDocument()
+    expect(screen.getByText(/拒绝了这台机器的凭证/)).toBeInTheDocument()
+  })
+
   it('names the failed step and offers a reset when credentials may be half-written', () => {
     seed({ status: 'error', failedStep: 'init-daemon', completedSteps: ['mint-invite'], error: 'boom' })
     render(<DaemonOnboardingWizard onDone={() => {}} />)

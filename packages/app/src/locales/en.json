@@ -2316,6 +2316,7 @@
         "init-daemon": "Credentials could not be written. A reset clears any half-written state.",
         "restart-daemon": "The local service would not restart. A reset clears any half-written state.",
         "await-daemon": "The service started but never answered. See {{path}}.",
+        "await-daemon-token": "The local service is running, but it rejected this machine's credential. Retry restarts it; details are in {{path}}.",
         "cloud-auth": "This machine could not verify with the server.",
         "daemon-outdated": "The daemon on this machine is older than the app and cannot report the runtime. Restarting the app with a matching daemon is the fix — a retry against the same one will not help."
       },
@@ -2348,6 +2349,7 @@
       "errorTitle": "Can't set up this machine's agent",
       "errorSubtitle": "Nothing was left half-configured — retrying is safe.",
       "startFailed": "Failed to start the local daemon. Make sure it can run on this machine, then retry.",
+      "tokenRejected": "The local daemon is running, but it rejected the credential for this machine. Retry restarts it; if that keeps failing, reset and re-initialize.",
       "nameTitle": "Name this machine's agent",
       "nameSubtitle": "It runs here, on this machine, and only you can see it. You can rename it later in settings.",
       "nameConfirm": "Continue",

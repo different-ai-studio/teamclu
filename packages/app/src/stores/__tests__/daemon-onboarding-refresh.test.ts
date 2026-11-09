@@ -36,6 +36,9 @@ const h = vi.hoisted(() => ({
   // Simulate the Copilot 361 split-brain: install-pi reports success but
   // doctor still looks at the branded home and says the runtime is missing.
   installLeavesRuntimeMissing: false,
+  // Held open to keep a cloud-auth read in flight across a later refresh.
+  cloudAuthGate: null as Promise<void> | null,
+  cloudAuthStatus: 'unknown' as 'ok' | 'expired' | 'unknown',
 }))
 
 const runtimeRows = (present: boolean) => [
@@ -134,7 +137,10 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
   ),
   // Default to 'unknown' so the ready path's cloud-session probe is a no-op in
   // these orchestration tests (auto-heal is covered separately).
-  fetchDaemonCloudAuthStatus: vi.fn(async () => 'unknown'),
+  fetchDaemonCloudAuthStatus: vi.fn(async () => {
+    if (h.cloudAuthGate) await h.cloudAuthGate
+    return h.cloudAuthStatus
+  }),
   fetchDaemonDeviceId: vi.fn(async () => h.deviceId),
 }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
@@ -224,6 +230,8 @@ beforeEach(() => {
   h.installShouldThrow = false
   h.installGate = null
   h.installLeavesRuntimeMissing = false
+  h.cloudAuthGate = null
+  h.cloudAuthStatus = 'unknown'
   localStorage.clear()
   useSetupStore.setState({ requirements: [], loaded: false, installing: null, errors: {}, progress: {}, installRoute: null, probeError: null })
   resetDaemonOnboardingPostReadyForTests()
@@ -798,11 +806,73 @@ describe('daemon-onboarding refresh() orchestration', () => {
     await p
     const s = useDaemonOnboardingStore.getState()
     expect(s.status).toBe('error')
-    // De-jargoned: the user-facing error no longer leaks "amuxd"; it surfaces
-    // the i18n start-failure string with a retry hint.
-    expect(s.error).toBe(i18n.t('settings.daemonOnboarding.startFailed'))
+    // healthz answered and the root token did not. That is not "the daemon
+    // never started" — retry has to restart it, and the copy says so.
+    expect(s.error).toBe(i18n.t('settings.daemonOnboarding.tokenRejected'))
     expect(s.error).not.toMatch(/amuxd/)
+    expect(s.failedStep).toBe('await-daemon')
     expect(h.invokeCalls.filter((c) => c === 'daemon_ensure_running')).toHaveLength(2)
+  })
+
+  it('surfaces the supervisor error when the spawn fails and the poll never sees it', async () => {
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.installServiceShouldThrow = true
+    h.probeQueue = [{ ok: false, reason: 'not_running' }]
+    vi.useFakeTimers()
+    const p = useDaemonOnboardingStore.getState().refresh()
+    await vi.advanceTimersByTimeAsync(2 * 11 * 500 + 100)
+    await p
+    const s = useDaemonOnboardingStore.getState()
+    expect(s.status).toBe('error')
+    expect(s.failedStep).toBe('await-daemon')
+    // The generic "make sure it can run" line used to replace this. The
+    // supervisor already named the failure; the screen has to keep it.
+    expect(s.error).toContain('managed amuxd start boom')
+    expect(s.completedSteps).toContain('restart-daemon')
+    expect(s.completedSteps).not.toContain('cloud-auth')
+  })
+
+  it('a cloud-auth check from a healthy pass does not rewrite a later failed start', async () => {
+    let release!: () => void
+    h.cloudAuthGate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    h.cloudAuthStatus = 'ok'
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+
+    const { fetchDaemonCloudAuthStatus } = await import('@/lib/daemon/daemon-local-client')
+    try {
+      const first = useDaemonOnboardingStore.getState().refresh()
+      await first
+      expect(useDaemonOnboardingStore.getState().status).toBe('ready')
+      for (let i = 0; i < 20 && vi.mocked(fetchDaemonCloudAuthStatus).mock.calls.length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 0))
+      }
+      expect(fetchDaemonCloudAuthStatus).toHaveBeenCalled()
+
+      h.probeQueue = [{ ok: false, reason: 'not_running' }]
+      vi.useFakeTimers()
+      const second = useDaemonOnboardingStore.getState().refresh()
+      await vi.advanceTimersByTimeAsync(2 * 11 * 500 + 100)
+      await second
+      vi.useRealTimers()
+      release()
+      await waitForDaemonOnboardingPostReady()
+
+      const s = useDaemonOnboardingStore.getState()
+      expect(s.status).toBe('error')
+      expect(s.failedStep).toBe('await-daemon')
+      expect(s.error).toBe(i18n.t('settings.daemonOnboarding.startFailed'))
+      expect(s.completedSteps).toContain('restart-daemon')
+      expect(s.completedSteps).not.toContain('cloud-auth')
+    } finally {
+      release()
+      h.cloudAuthGate = null
+      vi.useRealTimers()
+    }
   })
 
   it('matched-but-down → auto-retries once before surfacing error', async () => {
