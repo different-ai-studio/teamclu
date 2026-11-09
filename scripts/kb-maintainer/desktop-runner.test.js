@@ -373,6 +373,54 @@ test("prepare asks before compiling when a PDF needs visual recognition", async 
   assert.deepEqual(events, ["plan", "estimate", "done"]);
 });
 
+test("prepare seeds the default _schema.md for a team that has none", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { prepare } = require("./desktop-runner");
+  const { TEMPLATE_PATH } = require("./schema-seed");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "kb-seed-"));
+  const documentsRoot = path.join(root, "documents");
+  const knowledgeRoot = path.join(root, "knowledge");
+  const workRoot = path.join(root, "work");
+  fs.mkdirSync(path.join(documentsRoot, "handbook"), { recursive: true });
+  fs.mkdirSync(knowledgeRoot, { recursive: true });
+  fs.mkdirSync(path.join(workRoot, "state"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "config.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      teamId: "11111111-1111-4111-8111-111111111111",
+      sources: [
+        { prefix: "documents/handbook/", class: "policy", priority: 1, allowExtensions: ["md"] },
+      ],
+      deny: { pathPatterns: [] },
+    }),
+  );
+  fs.writeFileSync(
+    path.join(workRoot, "state", "state.json"),
+    JSON.stringify({ schemaVersion: 1, sources: {} }),
+  );
+  await prepare({
+    runId: "run-seed",
+    expectedGeneration: 1,
+    configVersion: 1,
+    configPath: path.join(root, "config.json"),
+    statePath: path.join(workRoot, "state", "state.json"),
+    documentsRoot,
+    knowledgeRoot,
+    workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    runner: "fake",
+  });
+  assert.equal(
+    fs.readFileSync(path.join(knowledgeRoot, "_schema.md"), "utf8"),
+    fs.readFileSync(TEMPLATE_PATH, "utf8"),
+  );
+});
+
 test("prepare decline skips images without calling vision", async () => {
   const fs = require("node:fs");
   const os = require("node:os");

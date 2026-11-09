@@ -25,6 +25,8 @@
     "wikiCardTitle": "LLM Wiki",
     "wikiCardHintOff": "wiki/ is published by the maintainer machine. Pages are read-only. Ask about policies in a session.",
     "wikiCardAdminHint": "Choose source folders, review the result, then publish. Wiki pages stay read-only.",
+    "wikiCardEmptyAdmin": "No Wiki yet. Put policies, processes and FAQs into folders under Documents, then use Maintain Wiki to compile and publish.",
+    "wikiCardEmptyMember": "The team has not published a Wiki yet. It appears under wiki/ once an owner or admin compiles it from Documents.",
     "wikiMaintainAction": "Maintain Wiki",
     "wikiMaintainTitle": "Maintain Wiki",
     "wikiMaintainHint": "Choose source folders, then check and compile. Nothing is published until you confirm.",

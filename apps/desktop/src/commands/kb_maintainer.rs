@@ -570,10 +570,13 @@ fn humanize_compiler_error(stderr: &str) -> String {
         return "A selected source folder is restricted. Choose only folders visible to the whole team."
             .to_string();
     }
-    if stderr.contains("knowledge/_schema.md is missing")
-        || stderr.contains("knowledge/_schema.md is empty")
-    {
-        return "Set up the team knowledge base before maintaining Wiki.".to_string();
+    if stderr.contains("knowledge/_schema.md is missing") {
+        return "The team folder is not on this computer yet. Rebuild it from the Knowledge column, then maintain Wiki again."
+            .to_string();
+    }
+    if stderr.contains("knowledge/_schema.md is empty") {
+        return "The team's Wiki rules file (knowledge/_schema.md) is empty. Write the rules into it, or delete it to restore the default, then maintain Wiki again."
+            .to_string();
     }
     if stderr.contains("ACL state unknown") {
         return "Team folder permissions could not be verified. Check your connection and try again."
@@ -1377,7 +1380,11 @@ mod tests {
         );
         assert_eq!(
             humanize_compiler_error("Error: knowledge/_schema.md is missing\n at dryRun"),
-            "Set up the team knowledge base before maintaining Wiki."
+            "The team folder is not on this computer yet. Rebuild it from the Knowledge column, then maintain Wiki again."
+        );
+        assert_eq!(
+            humanize_compiler_error("Error: knowledge/_schema.md is empty\n at dryRun"),
+            "The team's Wiki rules file (knowledge/_schema.md) is empty. Write the rules into it, or delete it to restore the default, then maintain Wiki again."
         );
         assert_eq!(
             humanize_compiler_error("Error: source prefix escape is not allowed"),

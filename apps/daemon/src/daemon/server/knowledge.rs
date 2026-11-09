@@ -122,6 +122,28 @@ pub(super) fn resolve_in_vault(root: &Path, rel: &str) -> Result<PathBuf, String
     Ok(root.join(clean))
 }
 
+/// The LLM Wiki subtree. Only the kb-maintainer's publish step writes it; any
+/// other write makes the next publish refuse the vault as externally modified.
+const WIKI_DIR: &str = "wiki";
+
+/// Refuse a write whose vault-relative path falls inside [`WIKI_DIR`]. Compared
+/// case-insensitively because macOS and Windows file systems are.
+pub(super) fn refuse_wiki_write(rel: &str) -> Result<(), String> {
+    let first = Path::new(rel.trim())
+        .components()
+        .find_map(|comp| match comp {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        });
+    match first {
+        Some(part) if part.eq_ignore_ascii_case(WIKI_DIR) => Err(err(
+            "wiki_read_only",
+            "wiki/ is compiled from Documents by the Wiki maintainer and cannot be written directly. Put the content into a Documents folder that feeds the Wiki instead.",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -320,6 +342,9 @@ pub(super) fn create_or_write(
         Ok(t) => t,
         Err(e) => return e,
     };
+    if let Err(e) = refuse_wiki_write(path) {
+        return e;
+    }
     if !overwrite && target.exists() {
         return err(
             "already_exists",
@@ -1059,6 +1084,43 @@ mod tests {
         );
         let v2: Value = serde_json::from_str(&elsewhere).unwrap();
         assert!(v2["result"].get("teamSync").is_none(), "{v2}");
+    }
+
+    #[test]
+    fn writes_into_the_wiki_subtree_are_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let blocked = refused(&[]);
+        for path in [
+            "wiki/pages/leave.md",
+            "wiki/index.md",
+            "./wiki/x.md",
+            "WIKI/pages/x.md",
+        ] {
+            for overwrite in [false, true] {
+                let reply = create_or_write(
+                    root,
+                    &json!({ "path": path, "title": "X", "content": "x" }),
+                    overwrite,
+                    &blocked,
+                );
+                let v: Value = serde_json::from_str(&reply).unwrap();
+                assert_eq!(v["errorCode"], "wiki_read_only", "{path}: {v}");
+            }
+        }
+        assert!(
+            !root.join("wiki").exists(),
+            "nothing may be created under wiki/"
+        );
+
+        let reply = create_or_write(
+            root,
+            &json!({ "path": "notes/wiki-howto.md", "title": "X", "content": "x" }),
+            false,
+            &blocked,
+        );
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["ok"], true, "only the top-level wiki/ is reserved: {v}");
     }
 
     #[test]

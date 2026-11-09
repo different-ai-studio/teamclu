@@ -15,6 +15,8 @@ cp scripts/kb-maintainer/templates/_schema.md \
   ~/.amuxd/teams/<team-id>/shared/team-sync/knowledge/_schema.md
 ```
 
+   最后一条 `cp` 只有命令行运行需要；Desktop 的「维护 Wiki」在团队没有 `_schema.md` 时会自动写入这份默认模板，已有的不会覆盖。
+
 4. 编辑 `config.json`：填 `teamId`、`maintainerNodeId`、白名单 `sources[]`、`deny.pathPatterns`、`models.visionPagePrice`。
 5. 白名单只能覆盖全团队可见的 `documents/` 前缀。人事、处分、保单、薪资目录必须写进 `deny`。
 

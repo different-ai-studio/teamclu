@@ -25,6 +25,8 @@
     "wikiCardTitle": "LLM Wiki",
     "wikiCardHintOff": "wiki/ 由维护机发布，页面只读。制度类问题直接在会话里问。",
     "wikiCardAdminHint": "选择资料目录，查看处理摘要，再确认发布。Wiki 页面保持只读。",
+    "wikiCardEmptyAdmin": "还没有 Wiki。把制度、流程、FAQ 等资料按文件夹放进资料库，再点「维护 Wiki」编译发布。",
+    "wikiCardEmptyMember": "团队还没有发布 Wiki。管理员从资料库编译发布后，这里会出现 wiki/ 页面。",
     "wikiMaintainAction": "维护 Wiki",
     "wikiMaintainTitle": "维护 Wiki",
     "wikiMaintainHint": "先选资料目录，再点「检查并编译」。确认发布前不会写入知识库。",

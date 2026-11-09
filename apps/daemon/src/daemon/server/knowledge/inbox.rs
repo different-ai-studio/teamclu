@@ -16,7 +16,7 @@ use crate::config::knowledge_scaffold::today_iso;
 use crate::config::layout;
 use crate::sync::oss::state::ForbiddenPaths;
 
-use super::{create_or_write, err, ok, resolve_in_vault, str_field};
+use super::{create_or_write, err, ok, refuse_wiki_write, resolve_in_vault, str_field};
 
 const INBOX_DIR: &str = "knowledge-inbox";
 
@@ -156,6 +156,9 @@ pub(crate) fn propose(team_id: &str, inbox: &Path, payload: &Value) -> String {
         .to_string();
     if !suggested_path.is_empty() {
         if let Err(e) = resolve_in_vault(Path::new("/vault"), &suggested_path) {
+            return e;
+        }
+        if let Err(e) = refuse_wiki_write(&suggested_path) {
             return e;
         }
     }
@@ -454,6 +457,23 @@ mod tests {
         assert_eq!(v["ok"], false, "{v}");
         assert_eq!(v["errorCode"], "invalid_path");
         assert!(vault.read_dir().unwrap().next().is_none());
+        assert!(inbox.read_dir().unwrap().next().is_none());
+    }
+
+    #[test]
+    fn propose_rejects_a_suggested_path_inside_the_wiki() {
+        let (_tmp, inbox, _vault) = tmp_pair();
+        let reply = propose(
+            "team-1",
+            &inbox,
+            &json!({
+                "title": "x",
+                "content": "y",
+                "suggestedPath": "wiki/pages/x.md",
+            }),
+        );
+        let v = parse(&reply);
+        assert_eq!(v["errorCode"], "wiki_read_only", "{v}");
         assert!(inbox.read_dir().unwrap().next().is_none());
     }
 

@@ -809,11 +809,13 @@ test("before_agent_start and tool_call swallow stale extension ctx", () => {
   assert.match(src, /tool_call skipped stale ctx/);
 });
 
-test("extension tells the agent to read wiki/index.md then the vault", () => {
+test("extension tells the agent to read wiki/index.md first and lets the Wiki win", () => {
   const src = fs.readFileSync(fileURLToPath(new URL("./teamclu.ts", import.meta.url)), "utf8");
   assert.match(src, /wiki\/index\.md/);
   assert.match(src, /pathPrefix wiki\//);
-  assert.match(src, /30-decisions\//);
+  assert.match(src, /the Wiki wins/);
+  assert.match(src, /Never write under wiki\//);
+  assert.doesNotMatch(src, /take precedence/);
   assert.match(src, /KNOWLEDGE_VAULT_PROMPT/);
 });
 

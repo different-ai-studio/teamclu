@@ -25,11 +25,16 @@ import {
 
 const NO_SOURCE_DIRECTORIES: string[] = []
 
+type Props = {
+  /** `false` turns the hint into first-run guidance; `undefined` means not known yet. */
+  published?: boolean
+}
+
 /**
  * One entry point for people who maintain Wiki. Pipeline names and machine
  * setup stay behind the sheet; members only see the read-only explanation.
  */
-export function WikiMaintainerCard() {
+export function WikiMaintainerCard({ published }: Props = {}) {
   const { t } = useTranslation()
   const teamId = useCurrentTeamStore((s) => s.team?.id)
   const { canManageTeam } = useTeamPermissions()
@@ -96,16 +101,29 @@ export function WikiMaintainerCard() {
             <div className="text-[13px] font-semibold text-foreground">
               {t('teamShare.wikiCardTitle', 'LLM Wiki')}
             </div>
-            <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
-              {canManageTeam
-                ? t(
-                    'teamShare.wikiCardAdminHint',
-                    'Choose source folders, review the result, then publish. Wiki pages stay read-only.',
-                  )
-                : t(
-                    'teamShare.wikiCardHintOff',
-                    'wiki/ is published by an owner or admin. Pages are read-only. Ask about policies in a session.',
-                  )}
+            <p
+              className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground"
+              data-testid="wiki-maintainer-hint"
+            >
+              {published === false
+                ? canManageTeam
+                  ? t(
+                      'teamShare.wikiCardEmptyAdmin',
+                      'No Wiki yet. Put policies, processes and FAQs into folders under Documents, then use Maintain Wiki to compile and publish.',
+                    )
+                  : t(
+                      'teamShare.wikiCardEmptyMember',
+                      'The team has not published a Wiki yet. It appears under wiki/ once an owner or admin compiles it from Documents.',
+                    )
+                : canManageTeam
+                  ? t(
+                      'teamShare.wikiCardAdminHint',
+                      'Choose source folders, review the result, then publish. Wiki pages stay read-only.',
+                    )
+                  : t(
+                      'teamShare.wikiCardHintOff',
+                      'wiki/ is published by an owner or admin. Pages are read-only. Ask about policies in a session.',
+                    )}
             </p>
           </div>
           {canManageTeam && (

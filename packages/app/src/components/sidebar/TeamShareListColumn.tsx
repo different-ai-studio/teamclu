@@ -61,6 +61,7 @@ import { FileBrowser } from '@/components/workspace/FileBrowser'
 import { TeamDirInitPanel } from '@/components/teamshare/TeamDirInitPanel'
 import { isPathUnder, joinPathLike } from '@/lib/fs-path'
 import { fileNameError } from '@/lib/file-name'
+import { isWikiPublished } from '@/lib/knowledge/wiki-vault'
 import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
 import {
@@ -462,6 +463,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
 
   const [query, setQuery] = React.useState('')
   const [searchOpen, setSearchOpen] = React.useState(false)
+  const [wikiPublished, setWikiPublished] = React.useState<boolean | undefined>(undefined)
 
   React.useEffect(() => {
     setQuery('')
@@ -470,6 +472,26 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     setRootCreate(null)
     void loadSection(section, { force: true, withTools: section === 'mcp' })
   }, [section, loadSection])
+
+  // `knowledge.items` is a new array after every reload, including the ones a
+  // file write or a finished sync triggers — which is when a Wiki can appear.
+  React.useEffect(() => {
+    if (section !== 'knowledge' || !syncRoot) {
+      setWikiPublished(undefined)
+      return
+    }
+    let cancelled = false
+    isWikiPublished(syncRoot)
+      .then((published) => {
+        if (!cancelled) setWikiPublished(published)
+      })
+      .catch(() => {
+        if (!cancelled) setWikiPublished(undefined)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [section, syncRoot, treeRefreshKey, knowledge.items])
 
   // `subjectActorId` is read, not depended on: this effect WRITES it, so
   // listing it here made every auto-select re-run the effect and refetch
@@ -1331,7 +1353,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             // delete / move all come from FileBrowser's existing context menu,
             // and clicking a file opens it exactly as it does in the workspace.
             <>
-            <WikiMaintainerCard />
+            <WikiMaintainerCard published={wikiPublished} />
             <KnowledgeInboxStrip />
             <FileBrowser
               variant="panel"
