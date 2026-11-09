@@ -161,6 +161,22 @@ create table amux.support_grants (
     下次启动会自动恢复运营自己的会话；另外在到期前 1 分钟自动退出支持模式。
   - whoami 缓存按登录用户区分，支持账号不会继承运营的控制台界面。
 - `POST .../support-sessions` 的返回值里额外带 `supportUserId`。
+- **结束或过期的 grant 立即失效**（20261108030000，self-host E2E 发现）：
+  - 问题：结束 grant 会删掉 auth session，但已经发出去的 access token 是签名 JWT，
+    PostgREST 在它过期前（最长 1 小时）照样放行读请求。
+  - 修复：RLS helper 和大多数 RPC 各自从 auth.uid() 解析调用者，没有统一的检查点，
+    所以检查放在两个入口。
+    - **数据库**：`amux.check_support_request()` 注册为 PostgREST 的 pre-request hook，
+      写在 authenticator 角色的 `pgrst.db_pre_request` 设置里。支持账号的 JWT
+      session_id 没有有效 grant 时返回 42501（403）。其他调用者只多一次
+      support_identities 唯一索引查询。
+    - **FC**：业务 repository 工厂里有 `assertSupportSessionLive`，覆盖拿到调用者之后
+      改用 service_role 的路由，返回 401 `support_session_ended`。只有支持账号的
+      token 才会查库。
+  - 迁移的角色没有权限修改 authenticator，或者已经配置了别的 pre-request 时，迁移只
+    打 notice 跳过。**belayo 手工执行前要先查合作方的 authenticator 上有没有
+    `pgrst.db_pre_request`**，这个 hook 对合作方的 PostgREST 流量同样生效。
+  - 仍然只靠 JWT 过期兜底的入口：Storage、Realtime、EMQX 和 AI 网关。
 
 ## 第一版不做
 

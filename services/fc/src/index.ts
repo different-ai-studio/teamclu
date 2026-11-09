@@ -11,6 +11,7 @@ import { queryParams } from "./lib/routing-utils.js";
 import { fanoutMessage } from "./lib/push-dispatch.js";
 import { pushDeps } from "./lib/admin-handlers.js";
 import { ApiError } from "./lib/http-utils.js";
+import { assertSupportSessionLive } from "./lib/platform-operators.js";
 import {
   getFcClient,
   makeFcOps,
@@ -506,9 +507,36 @@ export function makeAuthRepoFactory() {
     });
 }
 
+/**
+ * Whether a support session's grant is still live, asked with service_role
+ * (support_session_info is not callable by clients). No service-role key means
+ * no support session could have been opened here: answer "not live".
+ */
+async function supportGrantIsLive(userId: string, sessionId: string): Promise<boolean> {
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+  const base = SUPABASE_URL_FN();
+  if (!serviceKey || !base) return false;
+  const res = await fetch(`${base.replace(/\/+$/, "")}/rest/v1/rpc/support_session_info`, {
+    method: "POST",
+    headers: {
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      "Content-Type": "application/json",
+      "Content-Profile": "amux",
+    },
+    body: JSON.stringify({ p_user_id: userId, p_session_id: sessionId }),
+  });
+  if (!res.ok) throw new Error(`support_session_info ${res.status}`);
+  const rows = await res.json();
+  return Array.isArray(rows) && rows.length > 0;
+}
+
 export function makeBusinessRepoFactory() {
-  return ({ accessToken }: { accessToken: string }) =>
-    createSupabaseBusinessRepository({
+  return async ({ accessToken }: { accessToken: string }) => {
+    // A support account whose grant ended is refused here, before any route
+    // runs — see assertSupportSessionLive.
+    await assertSupportSessionLive(accessToken, supportGrantIsLive);
+    return createSupabaseBusinessRepository({
       supabaseUrl: SUPABASE_URL_FN(),
       supabasePublicUrl: SUPABASE_PUBLIC_URL_FN(),
       publishableKey: SUPABASE_PUBLISHABLE_KEY(),
@@ -527,6 +555,7 @@ export function makeBusinessRepoFactory() {
       ...makeGiteaDeps(),
       ...makeGotrueOAuthDeps(),
     });
+  };
 }
 
 /** System/admin repository — no user JWT (marketplace admin shared-secret routes). */

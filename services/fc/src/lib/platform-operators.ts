@@ -26,6 +26,8 @@
  * lookup counts as "no": fail closed.
  */
 
+import { ApiError } from "./http-utils.js";
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Entries already warned about, so a bad entry is logged once, not per request. */
@@ -97,6 +99,68 @@ export function jwtSessionId(token: string | null | undefined): string | null {
     return UUID.test(sid) ? sid : null;
   } catch {
     return null;
+  }
+}
+
+/** The synthetic email domain of the per-org support accounts (20261108010000). */
+export const SUPPORT_EMAIL_DOMAIN = "teamclu.support";
+
+/**
+ * When `token` belongs to an org's shared support account: its user id and
+ * session id (null when the token carries none). Null for every other token.
+ *
+ * Read without verifying, and that is enough for what it decides: whether to
+ * look further. A token that merely claims to be a support account gets one
+ * extra lookup and fails it; a real one cannot shed the claims without breaking
+ * its signature, which Supabase checks on every call.
+ */
+export function supportTokenClaims(
+  token: string | null | undefined,
+): { userId: string; sessionId: string | null } | null {
+  const part = String(token ?? "").split(".")[1];
+  if (!part) return null;
+  let json: any;
+  try {
+    json = JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+  const email = typeof json?.email === "string" ? json.email.toLowerCase() : "";
+  const flagged = json?.app_metadata?.teamclu_support === true || email.endsWith(`@${SUPPORT_EMAIL_DOMAIN}`);
+  const sub = typeof json?.sub === "string" ? json.sub.toLowerCase() : "";
+  if (!flagged || !UUID.test(sub)) return null;
+  const sid = typeof json?.session_id === "string" ? json.session_id.toLowerCase() : "";
+  return { userId: sub, sessionId: UUID.test(sid) ? sid : null };
+}
+
+/**
+ * Refuses a support account's request once the grant behind its session has
+ * ended or expired. Ending a grant kills the auth session, but the access token
+ * already issued stays a valid JWT for up to an hour; FC routes that act with
+ * service_role after reading the caller would honour it. The database refuses
+ * the same requests in its PostgREST pre-request hook
+ * (amux.check_support_request); this covers the routes that never reach it
+ * with the caller's token. A no-op for every other token.
+ *
+ * `isLive` asks the database; any failure counts as "ended": fail closed.
+ */
+export async function assertSupportSessionLive(
+  token: string | null | undefined,
+  isLive: (userId: string, sessionId: string) => Promise<boolean>,
+): Promise<void> {
+  const support = supportTokenClaims(token);
+  if (!support) return;
+  let live = false;
+  if (support.sessionId) {
+    try {
+      live = await isLive(support.userId, support.sessionId);
+    } catch (err) {
+      console.warn(`[support] grant lookup failed: ${(err as Error)?.message ?? err}`);
+      live = false;
+    }
+  }
+  if (!live) {
+    throw new ApiError(401, "support_session_ended", "this support session has ended");
   }
 }
 

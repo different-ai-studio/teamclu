@@ -1,9 +1,10 @@
--- 20261108000000_platform_operator.sql + 20261108010000_support_identity.sql:
+-- 20261108000000_platform_operator.sql + 20261108010000_support_identity.sql
+-- + 20261108030000_support_session_request_gate.sql:
 -- platform operators (admin_type 4 in the platform org) enter a customer org
 -- through its shared support account, one auth session per entry.
 begin;
 
-select plan(36);
+select plan(46);
 
 create or replace function pg_temp.as_user(p_user uuid, p_session uuid default null)
 returns void language plpgsql as $$
@@ -105,17 +106,31 @@ select is(amux.current_team_role('56cc0000-0000-4000-8000-00000000000c'), 'owner
 select ok(amux.is_team_member('56cc0000-0000-4000-8000-00000000000c'), 'and a member of the team it entered');
 select is((select count(*)::int from amux.list_my_identities()), 1, 'its identity picker holds only itself');
 select ok(amux.support_grant_active(), 'its live grant is active');
+select lives_ok('select amux.check_support_request()', 'the request gate lets a live support session through');
 select throws_ok($$ select * from amux.switch_active_team('56cc0000-0000-4000-8000-00000000000c') $$,
                  '42501', null, 'a support session cannot mint itself another session by switching team');
 select throws_ok(format('select amux.mint_identity_session(%L)', (select support_user_id from s1)),
                  '42501', null, 'nor through the identity picker');
 select pg_temp.as_user((select support_user_id from s1), gen_random_uuid());
 select ok(not amux.support_grant_active(), 'a session with no grant is not');
+select throws_ok('select amux.check_support_request()', '42501', 'support session ended',
+                 'the request gate refuses a support session with no grant');
+select pg_temp.as_user((select support_user_id from s1));
+select throws_ok('select amux.check_support_request()', '42501', null,
+                 'and a support token without a session_id');
 select pg_temp.as_user('56bb0000-0000-4000-8000-000000000005');
 select ok(amux.support_grant_active(), 'support_grant_active never blocks ordinary callers');
+select lives_ok('select amux.check_support_request()', 'nor does the request gate');
 select ok(not exists (select 1 from amux.list_my_identities() i where i.user_id = (select support_user_id from s1)),
           'the support account is in no customer''s identity picker');
 select pg_temp.as_owner();
+select lives_ok('select amux.check_support_request()', 'the request gate ignores a request with no JWT');
+select set_config('request.jwt.claims', '{"sub":"not-a-uuid","role":"authenticated"}', true);
+select lives_ok('select amux.check_support_request()', 'and one whose sub is not a uuid');
+select pg_temp.as_owner();
+select ok(has_function_privilege('anon', 'amux.check_support_request()', 'execute')
+          and has_function_privilege('authenticated', 'amux.check_support_request()', 'execute'),
+          'every role PostgREST switches to may run the request gate');
 select ok(amux.is_support_account((select support_user_id from s1))
           and not amux.is_support_account('56bb0000-0000-4000-8000-000000000005'),
           'is_support_account tells the support account apart');
@@ -128,10 +143,20 @@ select is((select array[(select count(*)::int from auth.sessions where id = (sel
                         (select count(*)::int from auth.refresh_tokens where session_id = (select session_id from s1) and not revoked),
                         (select count(*)::int from auth.sessions where id = (select session_id from s2))]),
           array[0, 0, 1], 'removes that session and its refresh tokens, and leaves the other operator''s');
+select pg_temp.as_user((select support_user_id from s1), (select session_id from s1));
+select throws_ok('select amux.check_support_request()', '42501', null,
+                 'the ended session''s still-unexpired access token is refused at once');
+select pg_temp.as_user((select support_user_id from s2), (select session_id from s2));
+select lives_ok('select amux.check_support_request()', 'while the other operator''s session keeps working');
+select pg_temp.as_owner();
 
 update amux.support_grants
    set created_at = now() - interval '5 hours', expires_at = now() - interval '1 hour'
  where session_id = (select session_id from s2);
+select pg_temp.as_user((select support_user_id from s2), (select session_id from s2));
+select throws_ok('select amux.check_support_request()', '42501', null,
+                 'an expired grant is refused even before the sweep revokes it');
+select pg_temp.as_owner();
 select is(amux.expire_support_grants(), 1, 'an expired grant is swept');
 
 -- A role taken from the support account by hand comes back on the next entry.

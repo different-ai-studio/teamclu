@@ -2,7 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handleBusinessApiRequest } from "../src/lib/business-api.js";
 import { createSupabaseBusinessRepository } from "../src/lib/supabase-repo.js";
-import { jwtSessionId, resolvePlatformOperator } from "../src/lib/platform-operators.js";
+import {
+  assertSupportSessionLive,
+  jwtSessionId,
+  resolvePlatformOperator,
+  supportTokenClaims,
+} from "../src/lib/platform-operators.js";
 
 /**
  * Support mode (docs/plans/2026-11-08-platform-operator-support-access.md):
@@ -249,4 +254,55 @@ test("DELETE /v1/admin/support-sessions/current", async () => {
   });
   assert.equal(response.statusCode, 200);
   assert.deepEqual(JSON.parse(response.body), { ended: false });
+});
+
+// ── Ended grants stop working at once (the access token outlives the session) ──
+
+test("supportTokenClaims recognizes only the support account", () => {
+  assert.deepEqual(
+    supportTokenClaims(tokenWith({ sub: SUPPORT, session_id: SESSION, app_metadata: { teamclu_support: true } })),
+    { userId: SUPPORT, sessionId: SESSION },
+  );
+  assert.deepEqual(
+    supportTokenClaims(tokenWith({ sub: SUPPORT, session_id: SESSION, email: `support-${ORG}@teamclu.support` })),
+    { userId: SUPPORT, sessionId: SESSION },
+    "the synthetic email alone is enough, should app_metadata be rewritten",
+  );
+  assert.deepEqual(
+    supportTokenClaims(tokenWith({ sub: SUPPORT, app_metadata: { teamclu_support: true } })),
+    { userId: SUPPORT, sessionId: null },
+  );
+  assert.equal(supportTokenClaims(tokenWith({ sub: OPERATOR, session_id: SESSION, email: "a@b.test" })), null);
+  assert.equal(supportTokenClaims(tokenWith({ sub: "nope", app_metadata: { teamclu_support: true } })), null);
+  assert.equal(supportTokenClaims("not-a-jwt"), null);
+  assert.equal(supportTokenClaims(undefined), null);
+});
+
+test("assertSupportSessionLive never consults the database for ordinary tokens", async () => {
+  let asked = 0;
+  await assertSupportSessionLive(tokenWith({ sub: OPERATOR, session_id: SESSION }), async () => { asked++; return false; });
+  await assertSupportSessionLive("", async () => { asked++; return false; });
+  assert.equal(asked, 0);
+});
+
+test("assertSupportSessionLive lets a live support session through", async () => {
+  const seen: string[][] = [];
+  await assertSupportSessionLive(
+    tokenWith({ sub: SUPPORT, session_id: SESSION, app_metadata: { teamclu_support: true } }),
+    async (u, s) => { seen.push([u, s]); return true; },
+  );
+  assert.deepEqual(seen, [[SUPPORT, SESSION]]);
+});
+
+test("assertSupportSessionLive refuses an ended grant, a missing session, and a failed lookup", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const support = (claims: Record<string, unknown>) =>
+    tokenWith({ sub: SUPPORT, app_metadata: { teamclu_support: true }, ...claims });
+  const ended = (err: any) => err.statusCode === 401 && err.code === "support_session_ended";
+  await assert.rejects(assertSupportSessionLive(support({ session_id: SESSION }), async () => false), ended);
+  await assert.rejects(assertSupportSessionLive(support({}), async () => true), ended);
+  await assert.rejects(
+    assertSupportSessionLive(support({ session_id: SESSION }), async () => { throw new Error("db down"); }),
+    ended,
+  );
 });
