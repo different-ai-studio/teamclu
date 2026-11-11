@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { encodeWorkspaceId, putDaemonSkill } from '@/lib/daemon/daemon-local-client'
-import { useTeamShareBrowserStore, isSkillDirtyConflict, SkillDiscardIncompleteError, SkillSlugTakenError, SkillPublishedRefreshError, SkillMutationRefreshError, SkillRuntimeRefreshError, StaleTeamSkillPublishError, StaleDirtySkillPublishError, PreviewDigestMismatchError, type TeamSkillFileDiff, type DraftRecoveryRecord } from '@/stores/team-share-browser'
+import { useTeamShareBrowserStore, isSkillDirtyConflict, takenShareSlugs, SkillDiscardIncompleteError, SkillSlugTakenError, SkillShareIncompleteError, SkillPublishedRefreshError, SkillMutationRefreshError, SkillRuntimeRefreshError, StaleTeamSkillPublishError, StaleDirtySkillPublishError, PreviewDigestMismatchError, type TeamSkillFileDiff, type DraftRecoveryRecord } from '@/stores/team-share-browser'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend/provider'
 import { type TeamSkillCategory, type TeamSkillVersion } from '@/lib/backend/cloud-api/team-skills'
@@ -54,6 +54,8 @@ export function SkillDetail({ slug }: { slug: string }) {
   const restoreDiscardedSkill = useTeamShareBrowserStore((s) => s.restoreDiscardedSkill)
   const sharePersonalSkill = useTeamShareBrowserStore((s) => s.sharePersonalSkill)
   const allSkills = useTeamShareBrowserStore((s) => s.skills.items)
+  const skillRegistry = useTeamShareBrowserStore((s) => s.skillRegistry)
+  const myActorId = useCurrentTeamStore((s) => s.currentMember?.id ?? null)
   const forkSkill = useTeamShareBrowserStore((s) => s.forkSkill)
   const loadSkillDiff = useTeamShareBrowserStore((s) => s.loadSkillDiff)
   const loadSkillTeamUpdatesDiff = useTeamShareBrowserStore((s) => s.loadSkillTeamUpdatesDiff)
@@ -66,8 +68,8 @@ export function SkillDetail({ slug }: { slug: string }) {
   // Derived, not selected: a selector returning a fresh Set re-renders on every
   // store change, since the reference is new each time it runs.
   const registrySlugs = React.useMemo(
-    () => new Set(allSkills.filter((x) => x.origin === 'registry').map((x) => x.slug)),
-    [allSkills],
+    () => takenShareSlugs(skillRegistry ?? [], allSkills, myActorId),
+    [skillRegistry, allSkills, myActorId],
   )
   const syncError = useTeamShareBrowserStore((s) => s.skillSyncErrors[slug])
   const archivedPath = useTeamShareBrowserStore((s) => s.skillArchived[slug])
@@ -314,11 +316,29 @@ export function SkillDetail({ slug }: { slug: string }) {
             : undefined,
         )
       } catch (e) {
+        if (e instanceof SkillShareIncompleteError) {
+          setShareOpen(false)
+          toast.error(
+            t(
+              'teamShare.skillShareIncomplete',
+              '{{slug}} is published to the team, but installing it on this machine failed: {{msg}}. Retry to finish — it will not publish again.',
+              { slug: e.slug, msg: e.message },
+            ),
+            {
+              duration: 30_000,
+              action: {
+                label: t('teamShare.skillShareRetry', 'Retry'),
+                onClick: () => void runShare(input),
+              },
+            },
+          )
+          return
+        }
         toast.error(
           e instanceof SkillSlugTakenError
             ? t(
                 'teamShare.skillShareSlugTaken',
-                'The team already has a skill called {{slug}}. Pick another name, or publish a new version of the existing one.',
+                'The team already has a skill called {{slug}}. Pick another name and share again.',
                 { slug: e.slug },
               )
             : t('teamShare.skillShareFailed', 'Share failed: {{msg}}', {
