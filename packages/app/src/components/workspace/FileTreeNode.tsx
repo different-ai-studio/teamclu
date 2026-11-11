@@ -29,6 +29,8 @@ import {
 } from "lucide-react";
 
 import { cn } from '@/lib/utils';
+import { revealInFileManagerLabel } from '@/lib/platform-labels';
+import { formatShortcut } from '@/lib/platform-shortcuts';
 import { isTeamLinkDirName } from '@/lib/team/team-skill-paths';
 import { useTabsStore } from '@/stores/tabs';
 import { useCurrentTeamStore } from '@/stores/current-team';
@@ -607,7 +609,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
             <ContextMenuItem onSelect={guardedMenuAction(() => onNewFile(node.path))}>
               <FilePlus className="h-4 w-4" />
               {t("fileExplorer.newFile", "New File")}
-              <ContextMenuShortcut>⌘N</ContextMenuShortcut>
+              <ContextMenuShortcut>{formatShortcut('mod+N')}</ContextMenuShortcut>
             </ContextMenuItem>
             <ContextMenuItem onSelect={guardedMenuAction(() => onNewFolder(node.path))}>
               <FolderPlus className="h-4 w-4" />
@@ -681,12 +683,12 @@ export const FileTreeItem = React.memo(function FileTreeItem({
             <ContextMenuItem onSelect={guardedMenuAction(() => onCopy([node.path]))}>
               <Copy className="h-4 w-4" />
               {t("fileExplorer.copyFile", "Copy")}
-              <ContextMenuShortcut>⌘C</ContextMenuShortcut>
+              <ContextMenuShortcut>{formatShortcut('mod+C')}</ContextMenuShortcut>
             </ContextMenuItem>
             <ContextMenuItem onSelect={guardedMenuAction(() => onCut([node.path]))}>
               <Scissors className="h-4 w-4" />
               {t("fileExplorer.cutFile", "Cut")}
-              <ContextMenuShortcut>⌘X</ContextMenuShortcut>
+              <ContextMenuShortcut>{formatShortcut('mod+X')}</ContextMenuShortcut>
             </ContextMenuItem>
             {hasClipboard && (
               <ContextMenuItem onSelect={guardedMenuAction(() => onPaste(
@@ -694,13 +696,13 @@ export const FileTreeItem = React.memo(function FileTreeItem({
               ))}>
                 <ClipboardPaste className="h-4 w-4" />
                 {t("fileExplorer.pasteFile", "Paste")}
-                <ContextMenuShortcut>⌘V</ContextMenuShortcut>
+                <ContextMenuShortcut>{formatShortcut('mod+V')}</ContextMenuShortcut>
               </ContextMenuItem>
             )}
             <ContextMenuItem onSelect={guardedMenuAction(() => onDuplicate(node.path))}>
               <CopyPlus className="h-4 w-4" />
               {t("fileExplorer.duplicate", "Duplicate")}
-              <ContextMenuShortcut>⌘D</ContextMenuShortcut>
+              <ContextMenuShortcut>{formatShortcut('mod+D')}</ContextMenuShortcut>
             </ContextMenuItem>
           </>
         )}
@@ -755,7 +757,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
             </ContextMenuItem>
             <ContextMenuItem onSelect={guardedMenuAction(() => onReveal(node.path))}>
               <ExternalLink className="h-4 w-4" />
-              {t("fileExplorer.revealInFinder", "Reveal in Finder")}
+              {revealInFileManagerLabel(t)}
             </ContextMenuItem>
           </>
         )}

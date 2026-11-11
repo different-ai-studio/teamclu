@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { formatShortcut } from '@/lib/platform-shortcuts';
 import { render, screen, fireEvent } from '@testing-library/react';
 import React from 'react';
 
@@ -432,7 +433,7 @@ describe('FileTree interactions', () => {
       const menuItems = screen.getAllByTestId('context-menu-item');
       const copyBtn = menuItems.find(el => {
         const text = el.textContent || '';
-        return text.includes('Copy') && text.includes('⌘C');
+        return text.includes('Copy') && text.includes(formatShortcut('mod+C'));
       });
       expect(copyBtn).toBeDefined();
       fireEvent.click(copyBtn!);
@@ -446,7 +447,7 @@ describe('FileTree interactions', () => {
       // Find the "Copy" button (not "Copy Path" or "Copy Relative Path")
       const copyBtn = menuItems.find(el => {
         const text = el.textContent || '';
-        return text.includes('Copy') && text.includes('⌘C');
+        return text.includes('Copy') && text.includes(formatShortcut('mod+C'));
       });
       expect(copyBtn).toBeDefined();
       fireEvent.click(copyBtn!);

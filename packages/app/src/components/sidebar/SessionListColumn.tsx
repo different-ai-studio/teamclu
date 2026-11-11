@@ -39,6 +39,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
+import { sidebarSearchWithShortcutLabel } from '@/lib/platform-labels'
 import { formatRelativeTime } from '@/lib/ui/date-format'
 import { useTypeAhead } from '@/hooks/use-type-ahead'
 import type { SessionListActivity } from '@/lib/session/session-list-activity'
@@ -1210,7 +1211,7 @@ export function SessionListColumn({
               className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-40"
               disabled={!sessionHeaderActionsEnabled}
               onClick={() => setSearchOpen(true)}
-              title={t('sidebar.searchWithShortcut', 'Search (⌘K)')}
+              title={sidebarSearchWithShortcutLabel(t)}
             >
               <Search className="h-4 w-4" />
             </Button>

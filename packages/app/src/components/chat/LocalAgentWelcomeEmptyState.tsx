@@ -2,6 +2,7 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { formatShortcut } from '@/lib/platform-shortcuts'
 import { SessionContinueBanner } from '@/components/chat/SessionContinueBanner'
 import { useUIStore } from '@/stores/ui'
 
@@ -84,7 +85,7 @@ function StartConversationLink({
       ) : (
         <>
           {t(labelKey, labelDefault)}{' '}
-          <span className="font-mono text-[12px] font-normal">⌘N</span>
+          <span className="font-mono text-[12px] font-normal">{formatShortcut('mod+N')}</span>
         </>
       )}
     </TextLink>

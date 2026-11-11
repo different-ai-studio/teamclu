@@ -17,6 +17,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { cn } from "@/lib/utils"
+import { sidebarSearchWithShortcutLabel } from "@/lib/platform-labels"
 import { Button } from "@/components/ui/button"
 import { AnimatedClock } from "@/components/ui/animated-clock"
 import {
@@ -119,7 +120,7 @@ export function SidebarSecondarySessionActions({
         className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-40"
         disabled={!hasWorkspace}
         onClick={() => includeSearchDialog && setSearchOpen(true)}
-        title={hasWorkspace ? t('sidebar.searchWithShortcut', 'Search (⌘K)') : t('sidebar.selectWorkspaceFirst', 'Please select a workspace first')}
+        title={hasWorkspace ? sidebarSearchWithShortcutLabel(t) : t('sidebar.selectWorkspaceFirst', 'Please select a workspace first')}
       >
         <Search className="h-4 w-4" />
       </Button>
@@ -181,7 +182,7 @@ export function SidebarSecondarySessionActions({
                 )}
                 disabled={!hasWorkspace}
                 onClick={() => includeSearchDialog && setSearchOpen(true)}
-                title={hasWorkspace ? t('sidebar.searchWithShortcut', 'Search (⌘K)') : t('sidebar.selectWorkspaceFirst', 'Please select a workspace first')}
+                title={hasWorkspace ? sidebarSearchWithShortcutLabel(t) : t('sidebar.selectWorkspaceFirst', 'Please select a workspace first')}
               >
                 <Search className="h-3.5 w-3.5" />
               </Button>

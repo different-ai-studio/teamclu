@@ -28,6 +28,7 @@ import {
 } from '@/lib/session/session-detail'
 import type { SessionListActivity } from '@/lib/session/session-list-activity'
 import { cn, isTauri } from '@/lib/utils'
+import { revealAcpLogLabel } from '@/lib/platform-labels'
 import {
   isAcpDebugPanelVisible,
   useAcpDebugStore,
@@ -461,7 +462,7 @@ export function SessionDetailDialog({
                           onClick={() => void revealAcpDebugLog(displaySessionId)}
                         >
                           <FolderOpen className="mr-2 h-3.5 w-3.5" />
-                          {t('sessions.detail.revealAcpLog', 'Reveal ACP log')}
+                          {revealAcpLogLabel(t)}
                         </Button>
                       )}
                     </div>

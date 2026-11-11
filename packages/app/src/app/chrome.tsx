@@ -4,6 +4,7 @@
 import { useState, useRef, MouseEvent as ReactMouseEvent, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { terminalToggleShortcutLabel } from "@/lib/platform-shortcuts";
 import { TerminalSquare } from "lucide-react";
 import { useTerminalStore } from "@/stores/terminal-store";
 
@@ -21,7 +22,9 @@ export function TerminalToggleButton({ workspacePath }: { workspacePath: string 
         terminalOpen ? "bg-muted text-foreground" : "text-muted-foreground",
       )}
       onClick={() => togglePanel(workspacePath)}
-      title={t("terminal.toggle", "Toggle terminal (⌃`)")}
+      title={t("terminal.toggle", "Toggle terminal ({{shortcut}})", {
+        shortcut: terminalToggleShortcutLabel(),
+      })}
     >
       <TerminalSquare className="h-4 w-4" />
     </button>

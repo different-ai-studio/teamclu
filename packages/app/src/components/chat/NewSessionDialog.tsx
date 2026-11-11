@@ -25,6 +25,7 @@ import { createSessionWithFirstMessage, resolveLocalDaemonWorkspaceBinding } fro
 import { promoteCreatedSessionToUi } from '@/lib/session/promote-created-session'
 import { useEngagedAgentStore } from '@/stores/engaged-agent-store'
 import { cn, isTauri } from '@/lib/utils'
+import { formatShortcut } from '@/lib/platform-shortcuts'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { rememberDefaultWorkspaceId } from '@/stores/agent-default-workspace-store'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -712,7 +713,7 @@ export function NewSessionDialog() {
             {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {t('chat.newSessionDialog.create', '创建会话')}
             <span className="rounded-md bg-black/15 px-1.5 py-px font-mono text-[10.5px] tracking-tight text-white/90">
-              ⌘↵
+              {formatShortcut('mod+enter')}
             </span>
           </Button>
         </div>

@@ -6,7 +6,8 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { encodeWorkspaceId, notifyDaemonSkillsChanged, putDaemonSkill } from '@/lib/daemon/daemon-local-client'
-import { revealInFinder } from '@/components/workspace/file-tree-operations'
+import { revealInFileManager } from '@/components/workspace/file-tree-operations'
+import { revealInFileManagerLabel } from '@/lib/platform-labels'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 import { useEffectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
 import { useIsDark } from './use-is-dark'
@@ -191,8 +192,8 @@ export function SkillFileEditor({ slug, rel }: { slug: string; rel: string }) {
           variant="ghost"
           size="icon"
           className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
-          onClick={() => void revealInFinder(filePath)}
-          title={t('fileExplorer.revealInFinder', 'Reveal in Finder')}
+          onClick={() => void revealInFileManager(filePath)}
+          title={revealInFileManagerLabel(t)}
         >
           <FolderSearch className="h-4 w-4" />
         </Button>
@@ -243,11 +244,11 @@ export function SkillFileEditor({ slug, rel }: { slug: string; rel: string }) {
               <Button
                 type="button"
                 variant="ghost"
-                onClick={() => void revealInFinder(filePath)}
+                onClick={() => void revealInFileManager(filePath)}
                 className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
               >
                 <FolderSearch className="h-3.5 w-3.5" />
-                {t('fileExplorer.revealInFinder', 'Reveal in Finder')}
+                {revealInFileManagerLabel(t)}
               </Button>
             )}
           </div>

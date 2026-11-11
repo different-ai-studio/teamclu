@@ -3,6 +3,7 @@ import { Loader2, SlidersHorizontal } from 'lucide-react'
 import type { QuickChatState } from '@/hooks/use-quick-chat-readiness'
 import { useUIStore } from '@/stores/ui'
 import { cn } from '@/lib/utils'
+import { formatShortcut } from '@/lib/platform-shortcuts'
 import {
   Tooltip,
   TooltipContent,
@@ -59,7 +60,7 @@ export function NewChatSplitButton({
           ) : null}
           <span className="min-w-0 flex-1 truncate">{t('chat.newChat', 'New Chat')}</span>
           <span className="ml-auto shrink-0 font-mono text-[10.5px] font-medium tracking-tight text-white/70">
-            ⌘N
+            {formatShortcut('mod+N')}
           </span>
         </button>
         {/*
