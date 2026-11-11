@@ -310,6 +310,7 @@ pnpm marketplace:publish ./path/to/skill-dir --slug deploy-check --changelog "�
 |---|---|---|
 | POST | `/v1/teams/:id/skills/adopt` | `{ marketplaceSlug, slug?, version? }` → 建 `team_skills`（订阅态）+ v1 |
 | POST | `/v1/teams/:id/skills/:slug/detach` | 断开订阅，停在当前版本，团队从此拥有它 |
+| POST | `/v1/teams/:id/skills/:slug/resubscribe` | 重新跟随市场：恢复订阅并立刻对齐（§7.2） |
 
 `slug` 选填：目录 slug 和团队里已有的撞名时改个名引入，订阅仍然按 `upstream_slug` 成立
 （见 §8 撞名）。
@@ -395,6 +396,13 @@ changelog 合并三段。团队的版本号数的是**交付次数**，不是上
 「盘上的手工修改不能被无人值守地覆盖」，这里保护的是「团队发布的版本不能被上游无人值守地
 覆盖」。没有这一条，一个成员修好了目录里那一步错的流程、发成团队 v4，10 分钟后市场的 v7
 就把它抹了——而且没有任何人看着。
+
+**断开之后可以重新跟随。** 详情页「重新跟随市场」打 `resubscribe`：
+`upstream_subscribed` 改回 true，然后立刻跑一遍 §7.1 的对齐。断开期间团队发的版本不带
+`upstream_version`，所以对齐会把市场最新版作为团队的下一个版本落下；团队自己的版本留在
+版本历史里，可以 revert。断开后没改过、市场也没发新版时，什么都不发生。目录项已下架时
+返回 409。权限与发版相同：任何成员。本机有未发布改动的包照常被对账挡住，不会被覆盖。
+重新领用（adopt）走不通是因为 slug 唯一，所以这条路必须是独立的端点。
 
 **订阅期间元数据只读。** 对齐会用市场的快照覆盖 `team_skills` 的 summary / category /
 when_to_use / when_not_to_use，所以订阅期间 `PATCH` 这些字段必须**拒绝**，UI 上做成禁用 +

@@ -2596,6 +2596,32 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/TeamSkill" }
         "401": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/skills/{slug}/resubscribe:
+    post:
+      operationId: resubscribeMarketplaceSkill
+      summary: Follow marketplace updates again for a detached adopted skill
+      description: |
+        Restores the subscription and aligns immediately: when the team's latest
+        version is not the catalog's latest, the catalog's latest lands as a new
+        team version. Versions the team published while detached stay in history
+        and can be reverted to. Idempotent for a skill that is still subscribed.
+        Open to any team member, like publishing a version. 409 when the
+        catalog entry is delisted or no longer published.
+      tags: [Marketplace, TeamSkills]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/TeamSkillSlug"
+      responses:
+        "200":
+          description: Subscribed skill, aligned to the catalog's latest version.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamSkill" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /v1/admin/marketplace/skill-blobs/prepare:
     post:
       operationId: prepareMarketplaceSkillBlob

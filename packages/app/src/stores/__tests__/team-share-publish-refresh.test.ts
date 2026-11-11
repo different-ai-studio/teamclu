@@ -5,8 +5,10 @@ const {
   publishTeamSkillVersion,
   installTeamSkill,
   detachTeamSkill,
+  resubscribeTeamSkill,
   invoke,
 } = vi.hoisted(() => ({
+  resubscribeTeamSkill: vi.fn(async () => ({})),
   notifyDaemonSkillsChanged: vi.fn(async () => {}),
   publishTeamSkillVersion: vi.fn(async () => ({
     version: 4,
@@ -40,7 +42,7 @@ vi.mock('@/lib/daemon/daemon-local-client', async (importOriginal) => {
 vi.mock('@/lib/backend/provider', () => ({
   getBackend: () => ({
     teamSkills: { publishTeamSkillVersion, installTeamSkill },
-    marketplace: { detachTeamSkill },
+    marketplace: { detachTeamSkill, resubscribeTeamSkill },
   }),
 }))
 vi.mock('@/lib/auth/session-store', () => ({
@@ -129,5 +131,29 @@ describe('publishSkillVersion refresh', () => {
     ).rejects.toBeInstanceOf(SkillPublishedRefreshError)
     expect(publishTeamSkillVersion).toHaveBeenCalled()
     expect(reconciled).toBe(1)
+  })
+})
+
+describe('resubscribeMarketplaceSkill', () => {
+  test('resubscribes, then reconciles disk before reloading the list', async () => {
+    const order: string[] = []
+    resubscribeTeamSkill.mockImplementationOnce(async () => {
+      order.push('resubscribe')
+      return {}
+    })
+    useCurrentTeamStore.setState({ team: { id: 'team-1' } } as never)
+    useTeamShareBrowserStore.setState({
+      reconcileSkills: async () => {
+        order.push('reconcile')
+      },
+      loadSection: async () => {
+        order.push('load')
+      },
+    })
+
+    await store().resubscribeMarketplaceSkill('say-hello')
+
+    expect(resubscribeTeamSkill).toHaveBeenCalledWith('team-1', 'say-hello')
+    expect(order).toEqual(['resubscribe', 'reconcile', 'load'])
   })
 })

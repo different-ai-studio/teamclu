@@ -100,6 +100,29 @@ test("POST /v1/teams/:id/skills/:slug/detach stops following", async () => {
   assert.deepEqual(repo.calls[0].args, ["team-1", "deploy-check"]);
 });
 
+test("POST /v1/teams/:id/skills/:slug/resubscribe follows the marketplace again", async () => {
+  const repo = fakeRepo({
+    resubscribeMarketplaceSkill: async (...args: unknown[]) => {
+      repo.calls.push({ method: "resubscribeMarketplaceSkill", args });
+      return { slug: "deploy-check", upstreamSubscribed: true };
+    },
+  });
+  const res = await request(
+    {
+      httpMethod: "POST",
+      path: "/v1/teams/team-1/skills/deploy-check/resubscribe",
+      body: "{}",
+    },
+    repo,
+  );
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(repo.calls[0], {
+    method: "resubscribeMarketplaceSkill",
+    args: ["team-1", "deploy-check"],
+  });
+  assert.equal(JSON.parse(res.body).upstreamSubscribed, true);
+});
+
 test("admin prepare rejects when MARKETPLACE_ADMIN_SECRET is unset", async () => {
   const prev = process.env.MARKETPLACE_ADMIN_SECRET;
   delete process.env.MARKETPLACE_ADMIN_SECRET;

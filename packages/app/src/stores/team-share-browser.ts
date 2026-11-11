@@ -280,6 +280,11 @@ interface TeamShareBrowserState {
   /** Adopt a marketplace catalog entry, then install it for the caller. */
   adoptMarketplaceSkill: (marketplaceSlug: string, opts?: { slug?: string }) => Promise<void>
   detachMarketplaceSkill: (slug: string) => Promise<void>
+  /**
+   * Follow the marketplace again. The catalog's latest becomes a new team
+   * version; a local pack with unpublished edits is held back by reconcile.
+   */
+  resubscribeMarketplaceSkill: (slug: string) => Promise<void>
   setSubjectActor: (actorId: string | null) => Promise<void>
   installSkill: (slug: string) => Promise<void>
   uninstallSkill: (slug: string) => Promise<void>
@@ -1303,6 +1308,15 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     if (!teamId) throw new Error('no team')
     await getBackend().marketplace.detachTeamSkill(teamId, slug)
     await get().loadSection('skills', { force: true })
+  },
+
+  resubscribeMarketplaceSkill: async (slug) => {
+    const teamId = useCurrentTeamStore.getState().team?.id
+    if (!teamId) throw new Error('no team')
+    await getBackend().marketplace.resubscribeTeamSkill(teamId, slug)
+    await get().reconcileSkills().catch(() => {})
+    await get().loadSection('skills', { force: true })
+    window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
   },
 
   setSubjectActor: async (actorId) => {
