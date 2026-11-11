@@ -51,6 +51,14 @@ export function registerMarketplace(router) {
     return { body: skill };
   });
 
+  router.post("/v1/teams/:teamId/skills/:slug/resubscribe", async (ctx) => {
+    const skill = await ctx.repository.resubscribeMarketplaceSkill(
+      ctx.params.teamId,
+      ctx.params.slug,
+    );
+    return { body: skill };
+  });
+
   // ── Admin (shared secret) ──────────────────────────────────────────────
 
   router.post(

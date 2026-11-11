@@ -32,7 +32,14 @@ export function TeamSkillAdminActions({
   const { t } = useTranslation()
   const [deprecateOpen, setDeprecateOpen] = React.useState(false)
 
-  if (!canManageTeam || origin !== 'registry') return null
+  if (origin !== 'registry') return null
+  if (!canManageTeam) {
+    return (
+      <div className="border-b border-border px-5 py-3 text-[12px] text-muted-foreground">
+        {t('teamShare.skillAdminOnlyHint', '退役或从团队移除需要团队所有者或管理员。')}
+      </div>
+    )
+  }
 
   const handleDeprecateConfirm = (supersededBy: string | null) => {
     setDeprecateOpen(false)

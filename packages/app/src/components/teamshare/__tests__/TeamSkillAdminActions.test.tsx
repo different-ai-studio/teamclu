@@ -35,15 +35,18 @@ describe('TeamSkillAdminActions', () => {
     onDelete.mockClear()
   })
 
-  test('member sees no admin actions', () => {
+  test('member sees no admin actions, only why', () => {
     render(<TeamSkillAdminActions {...base} canManageTeam={false} />)
     expect(screen.queryByRole('button', { name: '退役' })).toBeNull()
     expect(screen.queryByRole('button', { name: '从团队移除…' })).toBeNull()
+    expect(screen.getByText('退役或从团队移除需要团队所有者或管理员。')).toBeInTheDocument()
   })
 
   test('non-registry origin renders nothing', () => {
-    render(<TeamSkillAdminActions {...base} origin="personal" />)
-    expect(screen.queryByRole('button', { name: '退役' })).toBeNull()
+    const { container } = render(
+      <TeamSkillAdminActions {...base} canManageTeam={false} origin="personal" />,
+    )
+    expect(container).toBeEmptyDOMElement()
   })
 
   test('admin + published shows deprecate and remove-from-team', () => {

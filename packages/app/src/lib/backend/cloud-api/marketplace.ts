@@ -89,6 +89,11 @@ export interface MarketplaceBackend {
   ): Promise<TeamSkill & { similarSkills: MarketplaceSimilarSkill[] }>;
   /** Stops following upstream; the team keeps the skill at its current version (§7.2). */
   detachTeamSkill(teamId: string, slug: string): Promise<TeamSkill>;
+  /**
+   * Follows upstream again after a detach. The catalog's latest lands as a new
+   * team version; versions published while detached stay revertable.
+   */
+  resubscribeTeamSkill(teamId: string, slug: string): Promise<TeamSkill>;
 }
 
 export function createMarketplaceModule(client: CloudApiClient): MarketplaceBackend {
@@ -121,6 +126,10 @@ export function createMarketplaceModule(client: CloudApiClient): MarketplaceBack
 
     async detachTeamSkill(teamId, slug) {
       return client.post(`${teamPath(teamId)}/${encodeURIComponent(slug)}/detach`, {});
+    },
+
+    async resubscribeTeamSkill(teamId, slug) {
+      return client.post(`${teamPath(teamId)}/${encodeURIComponent(slug)}/resubscribe`, {});
     },
   };
 }

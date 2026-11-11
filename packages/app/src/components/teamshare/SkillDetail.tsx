@@ -82,6 +82,7 @@ export function SkillDetail({ slug }: { slug: string }) {
   const select = useTeamShareBrowserStore((s) => s.select)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const detachMarketplaceSkill = useTeamShareBrowserStore((s) => s.detachMarketplaceSkill)
+  const resubscribeMarketplaceSkill = useTeamShareBrowserStore((s) => s.resubscribeMarketplaceSkill)
   const deprecateTeamSkill = useTeamShareBrowserStore((s) => s.deprecateTeamSkill)
   const restoreTeamSkill = useTeamShareBrowserStore((s) => s.restoreTeamSkill)
   const deleteTeamSkill = useTeamShareBrowserStore((s) => s.deleteTeamSkill)
@@ -330,6 +331,26 @@ export function SkillDetail({ slug }: { slug: string }) {
     },
     [item, busy, sharePersonalSkill, restoreDiscardedSkill, retrySkillsRuntimeRefresh, t],
   )
+
+  const runResubscribe = React.useCallback(async () => {
+    if (!item || busy) return
+    const ok = window.confirm(
+      t(
+        'teamShare.marketplaceResubscribeConfirm',
+        '用市场最新版覆盖团队当前版本，并恢复自动跟随。团队之前发布的版本保留在版本历史里，可以回滚。继续？',
+      ),
+    )
+    if (!ok) return
+    setBusy(true)
+    try {
+      await resubscribeMarketplaceSkill(item.slug)
+      toast.success(t('teamShare.marketplaceResubscribedToast', '已重新跟随市场'))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }, [item, busy, resubscribeMarketplaceSkill, t])
 
   const runPublishVersion = React.useCallback(
     async (input: {
@@ -793,7 +814,16 @@ export function SkillDetail({ slug }: { slug: string }) {
                 >
                   {t('teamShare.marketplaceDetach', '断开订阅')}
                 </button>
-              ) : null}
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="underline-offset-2 hover:underline disabled:opacity-40"
+                  onClick={() => void runResubscribe()}
+                >
+                  {t('teamShare.marketplaceResubscribe', '重新跟随市场')}
+                </button>
+              )}
             </div>
           )}
         </div>

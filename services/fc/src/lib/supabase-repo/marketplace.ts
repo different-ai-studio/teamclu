@@ -762,6 +762,68 @@ export function makeSupabaseMarketplaceMethods({
       return mapTeamSkillRow(data);
     },
 
+    /**
+     * Follow the marketplace again after a detach. Alignment then lands the
+     * catalog's latest as a new team version on top of whatever the team
+     * published meanwhile, so the team's own versions stay revertable.
+     */
+    async resubscribeMarketplaceSkill(teamId: string, slug: string) {
+      const caller = await resolveCallerActorForTeam(teamId);
+      if (!caller) throw new ApiError(403, "forbidden", "not a member of this team");
+      const { data: skill, error } = await supabase
+        .from("team_skills")
+        .select("*")
+        .eq("team_id", teamId)
+        .eq("slug", slug)
+        .maybeSingle();
+      if (error) throw error;
+      if (!skill) throw new ApiError(404, "not_found", `skill not found: ${slug}`);
+      if (skill.origin !== "marketplace" || !skill.upstream_slug) {
+        throw new ApiError(400, "validation_failed", "skill is not from the marketplace");
+      }
+
+      const { data: m, error: mErr } = await supabase
+        .from("marketplace_skills")
+        .select("slug, status, latest_version")
+        .eq("slug", skill.upstream_slug)
+        .maybeSingle();
+      if (mErr) throw mErr;
+      if (!m || m.status !== "published" || !m.latest_version) {
+        throw new ApiError(
+          409,
+          "conflict",
+          `marketplace skill ${skill.upstream_slug} is no longer listed`,
+        );
+      }
+
+      let row = skill;
+      if (!skill.upstream_subscribed) {
+        const { data, error: uErr } = await supabase
+          .from("team_skills")
+          .update({
+            upstream_subscribed: true,
+            upstream_detached_at: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", skill.id)
+          .select("*")
+          .single();
+        if (uErr) throw uErr;
+        row = data;
+      }
+
+      if (await alignOne(await admin(), row)) {
+        const { data, error: rErr } = await supabase
+          .from("team_skills")
+          .select("*")
+          .eq("id", skill.id)
+          .single();
+        if (rErr) throw rErr;
+        row = data;
+      }
+      return mapTeamSkillRow(row);
+    },
+
     /** Exported for listTeamSkills lazy align on the supabase path. */
     async _alignMarketplaceSkillRow(skill: any) {
       const a = await admin();
