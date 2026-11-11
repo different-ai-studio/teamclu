@@ -8,7 +8,7 @@ import { frontmatterString } from '@/lib/skills/frontmatter'
 import { resolveTeamSyncRoot } from '@/lib/team/team-skill-paths'
 import { invoke } from '@tauri-apps/api/core'
 import { getBackend } from '@/lib/backend/provider'
-import { isCloudAuthError } from '@/lib/backend/cloud-api/http'
+import { CloudApiError, isCloudAuthError } from '@/lib/backend/cloud-api/http'
 import { getFreshAccessToken } from '@/lib/auth/session-store'
 import { ensureAgentsSkillsPaths } from '@/lib/skills/ensure-agents-paths'
 import {
@@ -246,6 +246,39 @@ interface TeamSkillShareInput {
   requires?: string[] | null
 }
 
+type TeamSkillRegistryEntry = Pick<TeamSkill, 'slug' | 'createdBy' | 'latestVersion'>
+
+/**
+ * A registry row this member can finish sharing instead of colliding with: one
+ * they created, still at v1, and not installed on this Agent. That is what a
+ * share leaves behind when it publishes and then fails before the install —
+ * the name is taken on the server while the skill is still personal here.
+ *
+ * A row installed on this Agent is never resumable: the share would overwrite
+ * the installed team pack with whatever personal file happens to share its name.
+ */
+export function isResumableShare(
+  entry: TeamSkillRegistryEntry,
+  myActorId: string | null | undefined,
+  installedHere: boolean,
+): boolean {
+  return !!myActorId && entry.createdBy === myActorId && entry.latestVersion === 1 && !installedHere
+}
+
+/** Names a personal skill cannot be shared under. */
+export function takenShareSlugs(
+  registry: readonly TeamSkillRegistryEntry[],
+  items: readonly Pick<TeamSkillItem, 'slug' | 'origin'>[],
+  myActorId: string | null | undefined,
+): Set<string> {
+  const installed = new Set(items.filter((s) => s.origin === 'registry').map((s) => s.slug))
+  const taken = new Set(installed)
+  for (const entry of registry) {
+    if (!isResumableShare(entry, myActorId, installed.has(entry.slug))) taken.add(entry.slug)
+  }
+  return taken
+}
+
 type SectionState<T> = {
   items: T[]
   loading: boolean
@@ -257,6 +290,12 @@ const emptySection = <T>(): SectionState<T> => ({ items: [], loading: false, loa
 
 interface TeamShareBrowserState {
   skills: SectionState<TeamSkillItem>
+  /**
+   * Every skill in the team registry, installed on this Agent or not. `skills`
+   * is the Agent's inventory and leaves out a skill nobody installed here —
+   * which is exactly the name a share would collide with.
+   */
+  skillRegistry: TeamSkillRegistryEntry[]
   mcp: SectionState<TeamMcpItem>
   knowledge: SectionState<TeamKnowledgeItem>
   envCount: number
@@ -634,11 +673,15 @@ async function listTeamSkills(
   wsPath: string | null,
   teamId: string | null,
   actorId?: string,
-): Promise<{ items: TeamSkillItem[]; registryError: string | null }> {
+): Promise<{
+  items: TeamSkillItem[]
+  registry: TeamSkillRegistryEntry[]
+  registryError: string | null
+}> {
   // Agent management is intentionally all-or-nothing: without an explicit
   // target there is no "current machine" fallback, because that would make a
   // remote Agent page silently show the desktop user's filesystem.
-  if (!teamId || !actorId) return { items: [], registryError: null }
+  if (!teamId || !actorId) return { items: [], registry: [], registryError: null }
   try {
     const [registry, result, onDisk] = await Promise.all([
       getBackend().teamSkills.listTeamSkills(teamId, { actorId }),
@@ -706,9 +749,10 @@ async function listTeamSkills(
       }
     })
     items.sort((a, b) => a.name.localeCompare(b.name))
-    return { items, registryError: null }
+    const entries = registry.map(({ slug, createdBy, latestVersion }) => ({ slug, createdBy, latestVersion }))
+    return { items, registry: entries, registryError: null }
   } catch (e) {
-    return { items: [], registryError: agentManagementError(e) }
+    return { items: [], registry: [], registryError: agentManagementError(e) }
   }
 
 }
@@ -963,6 +1007,28 @@ export class SkillSlugTakenError extends Error {
 }
 
 /**
+ * The registry has the skill, but it never landed on this Agent.
+ *
+ * Nothing is rolled back: deleting a registry row takes a team admin, and most
+ * people sharing a skill are not one. The skill stays personal here, and the
+ * same share again finishes the install instead of colliding with its own name
+ * (see `isResumableShare`).
+ */
+export class SkillShareIncompleteError extends Error {
+  constructor(
+    readonly slug: string,
+    readonly cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause))
+    this.name = 'SkillShareIncompleteError'
+  }
+}
+
+function isSlugConflict(e: unknown): boolean {
+  return e instanceof CloudApiError && e.status === 409
+}
+
+/**
  * The local edits were moved aside, but the clean copy did not land.
  *
  * Carries the backup path because that is the whole difference between a
@@ -1214,6 +1280,7 @@ function daemonConfigToCatalogWrite(
 
 export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get) => ({
   skills: emptySection<TeamSkillItem>(),
+  skillRegistry: [],
   mcp: emptySection<TeamMcpItem>(),
   knowledge: emptySection<TeamKnowledgeItem>(),
   envCount: 0,
@@ -1623,80 +1690,108 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // skill-loader stores parent dir in dirPath and folder name in filename.
     const sourceDir = `${skill.dirPath}/${skill.filename}`
 
-    // Check the name before anything is uploaded. The server rejects a
-    // duplicate slug too, but only after `team_skill_pack_and_upload` has
-    // pushed the package — so the user paid for an upload, got a 409, and left
-    // an orphaned blob behind, for a condition visible from the list they were
-    // looking at. The server check stays as the backstop for a name that
-    // appeared since this list was loaded.
-    if (get().skills.items.some((s) => s.origin === 'registry' && s.slug === input.slug)) {
+    // Check the name before anything is uploaded, against the whole registry —
+    // not the list on screen, which is this Agent's inventory and leaves out a
+    // skill nobody installed here. The server rejects a duplicate slug too, but
+    // only after `team_skill_pack_and_upload` has pushed the package, so every
+    // retry cost an upload and left an orphaned blob behind. The server check
+    // stays as the backstop for a name that appeared since this fetch.
+    const backend = getBackend()
+    const myActorId = useCurrentTeamStore.getState().currentMember?.id ?? null
+    const installedHere = get().skills.items.some((s) => s.origin === 'registry' && s.slug === input.slug)
+    const registry = await backend.teamSkills.listTeamSkills(teamId).catch(() => null)
+    const existing = registry?.find((s) => s.slug === input.slug) ?? null
+    const resume = existing && isResumableShare(existing, myActorId, installedHere) ? existing : null
+    if (installedHere || (existing && !resume)) {
+      throw new SkillSlugTakenError(input.slug)
+    }
+    if (!registry && takenShareSlugs(get().skillRegistry, get().skills.items, myActorId).has(input.slug)) {
       throw new SkillSlugTakenError(input.slug)
     }
 
-    const { getEffectiveServerConfig } = await import('@/lib/config/server-config')
-    const { cloudApiUrl } = await getEffectiveServerConfig()
-    if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
-    const accessToken = await getFreshAccessToken()
-    if (!accessToken) throw new Error('Not signed in')
+    // A resumed share installs the v1 an earlier attempt published, so it
+    // skips the upload and the publish: both already happened.
+    let published: TeamSkill
+    if (resume) {
+      published = resume
+    } else {
+      const { getEffectiveServerConfig } = await import('@/lib/config/server-config')
+      const { cloudApiUrl } = await getEffectiveServerConfig()
+      if (!cloudApiUrl) throw new Error('Cloud API URL is not configured')
+      const accessToken = await getFreshAccessToken()
+      if (!accessToken) throw new Error('Not signed in')
 
-    const packed = await invoke<{ contentHash: string; size: number }>('team_skill_pack_and_upload', {
-      dirPath: sourceDir,
-      slug: input.slug,
-      teamId,
-      cloudApiUrl,
-      accessToken,
-    })
-
-    const backend = getBackend()
-    const published = await backend.teamSkills.publishTeamSkill(teamId, {
-      slug: input.slug,
-      summary: input.summary,
-      category: input.category,
-      whenToUse: input.whenToUse,
-      whenNotToUse: input.whenNotToUse,
-      changelog: input.changelog,
-      contentHash: packed.contentHash,
-      size: packed.size,
-      requires: input.requires ?? null,
-    })
-
-    // Copy-publish: keep the personal dir; materialise the team install under
-    // ~/.agents/skills so OpenCode / Claude / Pi all see the same pack.
-    //
-    // `owner` comes from the row the server just created, not from the personal
-    // item — a personal skill has no owner actor, and passing its `null` here
-    // stamps the publisher's own copy without the `owner:` field that every
-    // other member's copy gets. The pack would then differ from itself
-    // depending on who installed it, and the publisher's conflict diff would
-    // show a phantom deleted line they never touched.
-    await ensureAgentsSkillsPaths(wsPath)
-    await invoke('team_skill_install_from_dir', {
-      request: {
-        workspacePath: wsPath,
+      const packed = await invoke<{ contentHash: string; size: number }>('team_skill_pack_and_upload', {
+        dirPath: sourceDir,
         slug: input.slug,
         teamId,
-        sourceDir,
-        version: 1,
-        owner: published.ownerActorId,
-        category: input.category,
-        summary: input.summary,
-        whenToUse: input.whenToUse,
-        whenNotToUse: input.whenNotToUse,
-        requires: input.requires ?? null,
-        isGlobal: true,
-      },
-    })
+        cloudApiUrl,
+        accessToken,
+      })
 
-    // Against the Agent, not the member. `team_skill_install_from_dir` above put
-    // the pack in this machine's skills root, and the machine is an Agent — the
-    // daemon's inventory answers "what do I have installed" about its own actor,
-    // so a record on the member is one nothing that renders this list ever reads.
-    // That is how a freshly shared skill used to disappear from the column the
-    // moment it was shared.
-    await backend.teamSkills.installTeamSkill(teamId, input.slug, {
-      version: 1,
-      ...(subjectActorId ? { actorId: subjectActorId } : {}),
-    })
+      published = await backend.teamSkills
+        .publishTeamSkill(teamId, {
+          slug: input.slug,
+          summary: input.summary,
+          category: input.category,
+          whenToUse: input.whenToUse,
+          whenNotToUse: input.whenNotToUse,
+          changelog: input.changelog,
+          contentHash: packed.contentHash,
+          size: packed.size,
+          requires: input.requires ?? null,
+        })
+        .catch((e) => {
+          if (isSlugConflict(e)) throw new SkillSlugTakenError(input.slug)
+          throw e
+        })
+    }
+
+    // From here on the name is taken on the server. A failure must say so,
+    // because the list still shows the skill as personal and the next share
+    // resumes rather than publishing again.
+    try {
+      // Copy-publish: keep the personal dir; materialise the team install under
+      // ~/.agents/skills so OpenCode / Claude / Pi all see the same pack.
+      //
+      // Metadata comes from the registry row, not the personal item — a
+      // personal skill has no owner actor, and passing its `null` here stamps
+      // the publisher's own copy without the `owner:` field that every other
+      // member's copy gets. The pack would then differ from itself depending on
+      // who installed it, and the publisher's conflict diff would show a
+      // phantom deleted line they never touched.
+      await ensureAgentsSkillsPaths(wsPath)
+      await invoke('team_skill_install_from_dir', {
+        request: {
+          workspacePath: wsPath,
+          slug: input.slug,
+          teamId,
+          sourceDir,
+          version: 1,
+          owner: published.ownerActorId,
+          category: published.category,
+          summary: published.summary,
+          whenToUse: published.whenToUse,
+          whenNotToUse: published.whenNotToUse,
+          requires: published.requires ?? null,
+          isGlobal: true,
+        },
+      })
+
+      // Against the Agent, not the member. `team_skill_install_from_dir` above
+      // put the pack in this machine's skills root, and the machine is an
+      // Agent — the daemon's inventory answers "what do I have installed" about
+      // its own actor, so a record on the member is one nothing that renders
+      // this list ever reads. That is how a freshly shared skill used to
+      // disappear from the column the moment it was shared.
+      await backend.teamSkills.installTeamSkill(teamId, input.slug, {
+        version: 1,
+        ...(subjectActorId ? { actorId: subjectActorId } : {}),
+      })
+    } catch (e) {
+      await get().loadSection('skills', { force: true }).catch(() => {})
+      throw new SkillShareIncompleteError(input.slug, e)
+    }
 
     // Retire the original now that the pack exists and the server knows about
     // it. Leaving it produces two files answering to one name, and the pack
@@ -2236,12 +2331,15 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     )
     try {
       if (section === 'skills') {
-        const { items, registryError } = await listTeamSkills(
+        const { items, registry, registryError } = await listTeamSkills(
           wsPath,
           currentTeamId(),
           get().subjectActorId ?? undefined,
         )
-        set({ skills: { items, loading: false, loaded: true, error: registryError } })
+        set({
+          skills: { items, loading: false, loaded: true, error: registryError },
+          skillRegistry: registry,
+        })
         await get().refreshSkillLocalState().catch(() => {})
       } else if (section === 'knowledge') {
         // The daemon's own directory, by absolute path:
@@ -2354,7 +2452,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
 // explanation on a skill nobody deleted.
 useCurrentTeamStore.subscribe((state, prev) => {
   if (state.team?.id !== prev.team?.id) {
-    useTeamShareBrowserStore.setState({ skillRetired: {} })
+    useTeamShareBrowserStore.setState({ skillRetired: {}, skillRegistry: [] })
   }
 })
 

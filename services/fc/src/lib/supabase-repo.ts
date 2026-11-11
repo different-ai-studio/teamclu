@@ -7468,7 +7468,7 @@ export function createSupabaseBusinessRepository(options) {
           throw new ApiError(
             409,
             "conflict",
-            `a skill named ${slug} already exists — publish a new version instead`,
+            `a skill named ${slug} already exists in this team`,
           );
         }
         throw error;

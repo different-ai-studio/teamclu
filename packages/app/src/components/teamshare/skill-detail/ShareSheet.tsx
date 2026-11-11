@@ -121,7 +121,7 @@ export function ShareSheet({
               <p className="text-[12px] leading-relaxed text-foreground">
                 {t(
                   'teamShare.skillShareSlugTaken',
-                  'The team already has a skill called {{slug}}. Pick another name, or publish a new version of the existing one.',
+                  'The team already has a skill called {{slug}}. Pick another name and share again.',
                   { slug: slug.trim() },
                 )}
               </p>
