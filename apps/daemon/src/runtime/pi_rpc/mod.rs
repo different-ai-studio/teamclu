@@ -99,9 +99,9 @@ pub(crate) struct Shared {
     pub(crate) routes: parking_lot::Mutex<HashMap<String, Route>>,
     /// extension_ui_request id → pending permission bookkeeping.
     pub(crate) permissions: parking_lot::Mutex<HashMap<String, PendingPermission>>,
-/// extension_ui_request id → session, for pending `question` selects
-/// (answered via `AcpCommand::AnswerQuestion`).
-pub(crate) questions: parking_lot::Mutex<HashMap<String, PendingQuestion>>,
+    /// extension_ui_request id → session, for pending `question` selects
+    /// (answered via `AcpCommand::AnswerQuestion`).
+    pub(crate) questions: parking_lot::Mutex<HashMap<String, PendingQuestion>>,
 }
 
 impl Shared {

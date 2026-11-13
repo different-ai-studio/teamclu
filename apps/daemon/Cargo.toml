@@ -44,6 +44,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+# Daemon-owned cron (ADR-0010): expression parsing and IANA timezones.
+cron = "0.12"
+chrono-tz = "0.9"
 anyhow = "1"
 thiserror = "2"
 rand = "0.8"

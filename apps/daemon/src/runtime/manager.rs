@@ -3606,7 +3606,10 @@ mod tests {
         let evicted = mgr.evict_idle(60).await;
         assert_eq!(evicted, vec!["rt-old".to_string()]);
         assert_eq!(mgr.drain_idle_evict_pending(), vec!["rt-old".to_string()]);
-        assert!(mgr.drain_evicted().is_empty(), "stop happens after graceful detach");
+        assert!(
+            mgr.drain_evicted().is_empty(),
+            "stop happens after graceful detach"
+        );
     }
 
     #[tokio::test]

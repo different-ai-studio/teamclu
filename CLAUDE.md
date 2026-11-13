@@ -101,30 +101,35 @@ pnpm ios:test               # iOS UI tests
 - `packages/app/src/hooks/` — React hooks
 
 **Rust backend key paths:**
-- `apps/desktop/src/commands/` — Tauri IPC commands (oss_sync/, team_share/, gateway/, cron/, etc.)
+- `apps/desktop/src/commands/` — Tauri IPC commands (oss_sync/, team_share/, gateway/, cron/ proxy, etc.)
 - `apps/desktop/binaries/` — sidecar binaries (teamclu-introspect, etc.)
 
 **Desktop-owned surfaces** (they live in the Tauri process and are documented
 nowhere else; this describes what exists, it decides nothing):
-- **Cron** — `apps/desktop/src/commands/cron/`: the scheduler runs inside the
-  desktop process, one `CronInstance` per workspace. Global jobs are stored
-  under `dirs::config_dir()/<brand storage dir>/cron-global`, workspace jobs
-  are keyed by workspace path. The daemon only executes the turns a job
-  triggers, so a headless daemon has no cron.
 - **Local cache** — `apps/desktop/src/local_cache/`: a libsql (SQLite) file at
   `<brand home>/local-cache.db` mirroring Cloud API rows (actors, sessions,
   participants, messages, ideas, claims, submissions, outbox, watermarks) for
   offline reads. Commands are `local_cache_*`, all gated on the current team.
 - **Introspect API** — `commands/introspect_api.rs`: a loopback HTTP server on
   `127.0.0.1:13144` that the `teamclu-introspect` MCP sidecar calls for WeCom
-  sends, cron runs, team sync, env vars, workspace MCP config, and session
-  archive / participants / export. Requests carry a per-launch bearer token;
+  sends, cron runs (forwarded to the daemon), team sync, env vars, workspace
+  MCP config, and session archive / participants / export. Requests carry a per-launch bearer token;
   the module header documents the token file and the rejection rules. Calls
   that change state must also come from an agent host amuxd spawned (checked
   against `/internal/runtime-context/verify`; see `introspect_api/caller.rs`).
   Publishing or deleting an app, changing who can reach it, or replacing MCP
   servers waits for a native approval dialog that times out when nobody is at
   this machine (`introspect_api/confirm.rs`).
+
+**Daemon-owned cron** (ADR-0010): scheduler, storage, execution and delivery
+live in `apps/daemon/src/cron/`, served at `/v1/cron/*` (`http/cron.rs`). Jobs
+are stored team-scoped at `~/.amuxd/teams/<id>/cron/` (`jobs.json` +
+`runs/<job>.jsonl`); a workspace job carries `workspacePath`, a global job does
+not. Unattended runs default to full access in the daemon. The desktop's
+`commands/cron/` is a thin proxy for the settings page plus a one-shot import of
+the job files it used to store (renamed `*.migrated` afterwards), and its
+introspect `/cron-run` + `/cron-manage` forward to the daemon. A headless daemon
+runs its jobs; a job's model pin is checked against the workspace catalog.
 
 **Editor system:** Markdown (Tiptap) / HTML (Tiptap + sandbox preview) / Code (CodeMirror 6 + Shiki)
 

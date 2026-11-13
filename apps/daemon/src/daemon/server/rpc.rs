@@ -461,9 +461,9 @@ impl DaemonServer {
                             error: String::new(),
                             requester_client_id: String::new(),
                             requester_actor_id: String::new(),
-                            result: Some(
-                                crate::proto::teamclu::rpc_response::Result::SessionInfo(info),
-                            ),
+                            result: Some(crate::proto::teamclu::rpc_response::Result::SessionInfo(
+                                info,
+                            )),
                         };
                     }
                 }

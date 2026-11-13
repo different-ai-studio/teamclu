@@ -258,9 +258,7 @@ impl PiProcessPool {
                 .filter(|k| !keep.contains(*k))
                 .cloned()
                 .collect();
-            keys.into_iter()
-                .filter_map(|k| procs.remove(&k))
-                .collect()
+            keys.into_iter().filter_map(|k| procs.remove(&k)).collect()
         };
         let mut killed = 0;
         for p in victims {
@@ -1307,9 +1305,10 @@ mod tests {
         assert!(prewarmed.is_alive());
 
         let client = attached.client.clone();
-        let in_flight = tokio::spawn(async move {
-            client.request(serde_json::json!({"type": "prompt"})).await
-        });
+        let in_flight =
+            tokio::spawn(
+                async move { client.request(serde_json::json!({"type": "prompt"})).await },
+            );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while attached.stderr_tail().is_empty() && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;

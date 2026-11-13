@@ -243,7 +243,9 @@ fn compaction_wire_payload(event: &serde_json::Value, completed: bool) -> serde_
         .and_then(|v| v.as_str())
         .unwrap_or("threshold");
     let result = event.get("result");
-    let tokens_before = result.and_then(|r| r.get("tokensBefore")).and_then(json_u64);
+    let tokens_before = result
+        .and_then(|r| r.get("tokensBefore"))
+        .and_then(json_u64);
     let tokens_after = result
         .and_then(|r| r.get("estimatedTokensAfter"))
         .and_then(json_u64);
@@ -863,7 +865,9 @@ mod tests {
             shared.permissions.lock().contains_key("perm_ask_1"),
             "Ask mode must register a pending permission for ACP grant/deny"
         );
-        let frame = rx.try_recv().expect("Ask mode must emit AcpPermissionRequest");
+        let frame = rx
+            .try_recv()
+            .expect("Ask mode must emit AcpPermissionRequest");
         match frame.event.event.as_ref().unwrap() {
             amux::acp_event::Event::PermissionRequest(pr) => {
                 assert_eq!(pr.request_id, "perm_ask_1");

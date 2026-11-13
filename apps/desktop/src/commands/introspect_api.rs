@@ -463,12 +463,12 @@ async fn handle_send_wecom(app: &AppHandle, body: &[u8]) -> Result<String, Strin
 
     let media = media_bytes
         .as_ref()
-        .map(|bytes| super::cron::amuxd_client::ChannelSendMedia {
+        .map(|bytes| super::amuxd_channel_send::ChannelSendMedia {
             bytes,
             filename: media_filename,
         });
 
-    super::cron::amuxd_client::channel_send_media_at(
+    super::amuxd_channel_send::channel_send_media_at(
         &super::amuxd_control::endpoint(),
         "wecom",
         &dispatch_target,
@@ -502,58 +502,25 @@ async fn handle_team_sync_all(app: &AppHandle, _body: &[u8]) -> Result<String, S
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }
 
-async fn handle_cron_run(app: &AppHandle, body: &[u8]) -> Result<String, String> {
+/// Fire a job now. Forwarded to the daemon, which owns cron (ADR-0010); a
+/// job of any scope can be run, since the daemon keeps them in one store.
+async fn handle_cron_run(_app: &AppHandle, body: &[u8]) -> Result<String, String> {
     let v: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
-
     let job_id = v
         .get("job_id")
         .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
         .ok_or("Missing field: job_id")?;
-
-    // introspect_api has no calling-window context (it's an HTTP server).
-    // The request payload may carry an explicit workspace_path; otherwise we
-    // fall back to single-instance inference (which errors in multi-window).
-    let workspace_path = match v.get("workspace_path").and_then(|v| v.as_str()) {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => {
-            let registry = app.state::<super::window::WindowRegistry>();
-            registry
-                .current_workspace
-                .lock()
-                .ok()
-                .and_then(|cw| cw.clone())
-                .ok_or_else(|| {
-                    "No workspace path set. Please select a workspace first.".to_string()
-                })?
-        }
-    };
-
-    let cron_state = app.state::<super::cron::CronState>();
-    let instance = cron_state
-        .try_instance_for(&workspace_path)
-        .await
-        .ok_or_else(|| format!("Cron not initialized for workspace: {}", workspace_path))?;
-
-    let job = instance
-        .storage
-        .get_job(job_id)
-        .await
-        .ok_or_else(|| format!("Job not found: {}", job_id))?;
-
-    let scheduler = instance.scheduler.clone();
-    tokio::spawn(async move {
-        scheduler.execute_job(job).await;
-    });
-
-    Ok(format!(r#"{{"ok":true,"job_id":"{}"}}"#, job_id))
+    super::cron::run_job(job_id).await?;
+    Ok(serde_json::json!({ "ok": true, "job_id": job_id }).to_string())
 }
 
-async fn handle_cron_manage(app: &AppHandle, body: &[u8]) -> Result<String, String> {
+/// The `manage_cron` MCP tool. Forwarded to the daemon's `/v1/cron/manage`.
+async fn handle_cron_manage(_app: &AppHandle, body: &[u8]) -> Result<String, String> {
     let v: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {e}"))?;
-    let cron_state = app.state::<super::cron::CronState>();
-    let result = super::cron::mcp_manage(app, &cron_state, &v).await?;
+    let result = super::cron::mcp_manage(&v).await?;
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }
 

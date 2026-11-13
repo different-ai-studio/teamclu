@@ -9,6 +9,9 @@
 mod backend;
 #[path = "../src/config/mod.rs"]
 mod config;
+// `http::cron` serves the daemon-owned scheduler (ADR-0010).
+#[path = "../src/cron/mod.rs"]
+mod cron;
 // Same reason: `http::server` names `crate::device_id` for /v1/info.
 #[path = "../src/device_id.rs"]
 mod device_id;

@@ -11,12 +11,11 @@
 //! Discovery, the shared HTTP client and scoped-token exchange all live in
 //! [`crate::daemon_client`]; this file only knows the endpoints.
 
-use std::collections::HashSet;
 use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::daemon_client::{self as daemon, wire, DaemonError, RequestSpec, NO_BODY};
+use crate::daemon_client::{self as daemon, wire, RequestSpec, NO_BODY};
 
 pub use wire::MaterializeTeamMcpResponse;
 
@@ -167,71 +166,6 @@ pub async fn daemon_rpc(payload_b64: String) -> Result<String, String> {
     }
     let bytes = resp.bytes().await.map_err(|e| format!("rpc body: {e}"))?;
     Ok(STANDARD.encode(&bytes))
-}
-
-/// The `fetch_*` helpers below answer `None` on any failure because their
-/// callers (cron) treat "unknown" as "skip validation". The failure still gets
-/// logged, at debug level when the daemon is simply not running and as a
-/// warning for anything the daemon actually answered.
-fn log_soft_failure(what: &str, err: &DaemonError) {
-    if err.is_unavailable() {
-        tracing::debug!("[daemon-http] {what}: {err}");
-    } else {
-        tracing::warn!("[daemon-http] {what}: {err}");
-    }
-}
-
-/// `GET /v1/workspaces/:id/model-catalog` — model refs across every configured
-/// backend (OpenCode, Claude Code, Codex), lowercased for case-insensitive
-/// validation. Unlike `fetch_workspace_provider_model_keys` (OpenCode only)
-/// this is the source of truth for cron model validation, since a cron job may
-/// pin a Claude or Codex model that the OpenCode provider list never reports.
-pub async fn fetch_workspace_model_catalog_keys(workspace_path: &str) -> Option<HashSet<String>> {
-    let ws_id = encode_workspace_id(workspace_path);
-    let path = format!("/v1/workspaces/{ws_id}/model-catalog");
-    let catalog: wire::ModelCatalog =
-        match daemon::call_discovered(RequestSpec::get(&path, WORKSPACE_READ), NO_BODY).await {
-            Ok(v) => v,
-            Err(err) => {
-                log_soft_failure("workspace model catalog", &err);
-                return None;
-            }
-        };
-
-    let mut keys = HashSet::new();
-    for backend in catalog.backends {
-        for model in backend.models {
-            keys.insert(model.model_ref.to_lowercase());
-        }
-    }
-    Some(keys)
-}
-
-/// `GET /v1/agent/default-workspace` — the daemon's own agent's default
-/// working directory, resolved cloud-side from `agents.default_workspace_id`
-/// (falling back to the team's first on-disk workspace). Replaces reading
-/// `~/.amuxd/workspaces.toml`'s `default_workspace_id` directly: that local
-/// file only tracks per-device workspace registrations, not the cloud
-/// `agents` row that is now the source of truth for "which workspace does
-/// this agent's cron/global work run in".
-///
-/// Returns `None` when the daemon HTTP listener isn't up yet, the daemon
-/// isn't onboarded, or the daemon has no resolvable default (no agent
-/// default configured and no on-disk team workspace either).
-pub async fn fetch_daemon_default_workspace_path() -> Option<String> {
-    let resp: wire::DefaultWorkspaceResponse = match daemon::call_discovered(
-        RequestSpec::get("/v1/agent/default-workspace", WORKSPACE_READ),
-        NO_BODY,
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(err) => {
-            log_soft_failure("agent default workspace", &err);
-            return None;
-        }
-    };
-    resp.path.filter(|p| !p.trim().is_empty())
 }
 
 /// Workspace record returned by the daemon's `POST /v1/workspaces` endpoint.

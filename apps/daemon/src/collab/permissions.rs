@@ -178,7 +178,10 @@ mod tests {
         let drained = pm.take_pending_for_session("sess-1");
         assert_eq!(drained, vec!["req-1".to_string()]);
         assert_eq!(pm.take_pending_for_session("sess-1"), Vec::<String>::new());
-        assert_eq!(pm.take_pending_for_session("sess-2"), vec!["req-2".to_string()]);
+        assert_eq!(
+            pm.take_pending_for_session("sess-2"),
+            vec!["req-2".to_string()]
+        );
     }
 
     #[test]

@@ -416,11 +416,7 @@ impl TurnAggregator {
                         } else {
                             prose
                         };
-                        out.push(self.emit_agent_reply(
-                            content,
-                            metadata.to_string(),
-                            true,
-                        ));
+                        out.push(self.emit_agent_reply(content, metadata.to_string(), true));
                         self.turn_had_reply = true;
                     } else {
                         // Non-empty Idle prose → one cloud-final AgentReply.

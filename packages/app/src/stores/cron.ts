@@ -182,6 +182,8 @@ export interface CronJob {
   updatedAt: string
   lastRunAt?: string
   nextRunAt?: string
+  /** Workspace the job runs in; absent for a global job. Set by amuxd, which owns cron. */
+  workspacePath?: string
 }
 
 export interface CronRunRecord {

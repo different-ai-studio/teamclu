@@ -699,6 +699,11 @@ pub fn run() {
             // webview's eventId dedup.
             commands::daemon_live::spawn(app.handle().clone());
 
+            // Cron runs in the daemon (ADR-0010). This hands it any jobs the
+            // app stored itself before that, and turns the daemon's change
+            // counters into the settings page's refresh events.
+            commands::cron::spawn_background(app.handle().clone());
+
             // Desktop-managed amuxd: spawn bundled sidecar (no ~/.amuxd/bin copy,
             // no LaunchAgent). Continues while the app stays in Dock; Exit stops it.
             {

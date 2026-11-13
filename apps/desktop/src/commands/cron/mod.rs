@@ -1,819 +1,465 @@
-pub mod amuxd_client;
-pub mod delivery;
-pub mod scheduler;
-pub mod storage;
-pub mod types;
-pub mod workspace_models;
+//! Scheduled jobs — settings-page proxy to the daemon (ADR-0010).
+//!
+//! The scheduler, storage, execution and delivery live in amuxd now
+//! (`apps/daemon/src/cron/`, served at `/v1/cron/*`). What is left here:
+//!
+//! - the `cron_*` Tauri commands, kept under their old names and arguments so
+//!   the settings page did not change, each a call to the daemon;
+//! - a one-shot import of the job files this app used to keep itself
+//!   (`<config_dir>/<brand>/cron-global/<TEAMCLU_DIR>/cron-jobs.json` and
+//!   `<workspace>/<TEAMCLU_DIR>/cron-jobs.json`). Jobs only: run history stays
+//!   behind. A file is renamed `*.migrated` once the daemon has it;
+//! - a poll of `GET /v1/cron/status` that turns the daemon's change counters
+//!   into the `cron:jobs-updated` / `cron:cron-sessions-updated` events the
+//!   page listens for, whoever made the change (the page, an agent, the
+//!   scheduler itself).
 
-use delivery::DeliveryManager;
-use scheduler::CronScheduler;
-use storage::CronStorage;
-use types::*;
-
-use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
-use tauri::{AppHandle, State};
+use std::sync::Mutex;
+use std::time::Duration;
 
-/// Per-workspace cron runtime. Cheap to clone (storage and scheduler are
-/// Arc-based internally).
-#[derive(Clone)]
-pub struct CronInstance {
-    pub storage: CronStorage,
-    pub scheduler: CronScheduler,
-}
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tauri::{AppHandle, Emitter, State};
 
-impl CronInstance {
-    fn new() -> Self {
-        let storage = CronStorage::new();
-        let scheduler = CronScheduler::new(storage.clone());
-        Self { storage, scheduler }
-    }
-}
+use crate::daemon_client::{self as daemon, RequestSpec, NO_BODY};
 
-/// Cron state — one `CronInstance` per workspace, keyed by workspace_path.
-///
-/// Multi-window-safe: starting cron for workspace B no longer stops workspace
-/// A's scheduler. Each workspace keeps its own jobs, scheduler, and delivery
-/// configuration.
-pub struct CronState {
-    pub instances: tokio::sync::Mutex<HashMap<String, CronInstance>>,
-}
+const READ: &[&str] = &["workspace:read"];
+const WRITE: &[&str] = &["workspace:write"];
+const LEGACY_JOBS_FILE: &str = "cron-jobs.json";
+const STATUS_POLL_INTERVAL: Duration = Duration::from_secs(3);
 
-impl Default for CronState {
-    fn default() -> Self {
-        Self {
-            instances: tokio::sync::Mutex::new(HashMap::new()),
-        }
-    }
-}
-
-impl CronState {
-    /// Get or create the `CronInstance` for a workspace. Returns a clone — the
-    /// instance is Arc-backed so cloning is cheap and safe to drop the map lock.
-    pub async fn instance_for(&self, workspace_path: &str) -> CronInstance {
-        let mut instances = self.instances.lock().await;
-        instances
-            .entry(workspace_path.to_string())
-            .or_insert_with(CronInstance::new)
-            .clone()
-    }
-
-    /// Look up the `CronInstance` for a workspace without creating one.
-    /// Commands invoked before `cron_init` for the workspace return `None`,
-    /// which surfaces as a clear error to the caller.
-    pub async fn try_instance_for(&self, workspace_path: &str) -> Option<CronInstance> {
-        let instances = self.instances.lock().await;
-        instances.get(workspace_path).cloned()
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
-#[derive(Default)]
 pub enum CronScope {
     #[default]
     Global,
     Workspace,
 }
 
-pub(crate) fn global_cron_root() -> Result<String, String> {
-    let base = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(crate::commands::home_storage_dir_name())
-        .join("cron-global");
-    std::fs::create_dir_all(&base).map_err(|e| format!("Failed to create global cron dir: {e}"))?;
-    Ok(base.to_string_lossy().to_string())
+/// Legacy files already handed to the daemon by this process.
+#[derive(Default)]
+pub struct CronState {
+    imported: Mutex<HashSet<PathBuf>>,
 }
 
-/// Storage key + optional execution cwd for workspace-scoped runs.
-async fn resolve_cron_paths(
-    scope: CronScope,
+// ==================== daemon calls ====================
+
+async fn call<B: Serialize + ?Sized, R: serde::de::DeserializeOwned>(
+    method: reqwest::Method,
+    path: &str,
+    query: &str,
+    scopes: &[&str],
+    body: Option<&B>,
+) -> Result<R, String> {
+    let spec = RequestSpec::new(method, path, scopes).query(query);
+    Ok(daemon::call_discovered(spec, body).await?)
+}
+
+pub(crate) fn urlencode(value: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    out
+}
+
+fn job_path(job_id: &str, suffix: &str) -> String {
+    format!("/v1/cron/jobs/{}{suffix}", urlencode(job_id))
+}
+
+/// `?workspacePath=…` for a workspace scope, empty for global.
+fn scope_query(workspace: Option<&str>) -> String {
+    workspace
+        .map(|p| format!("?workspacePath={}", urlencode(p)))
+        .unwrap_or_default()
+}
+
+/// The workspace a scope names: `None` for global; for workspace scope the
+/// explicit path, else the calling window's workspace.
+fn resolve_scope(
+    scope: Option<CronScope>,
     workspace_path: Option<String>,
     window: &tauri::Window,
     registry: &State<'_, crate::commands::window::WindowRegistry>,
-) -> Result<(String, Option<String>), String> {
-    match scope {
-        CronScope::Global => Ok((global_cron_root()?, None)),
-        CronScope::Workspace => {
-            let path = match workspace_path.filter(|p| !p.is_empty()) {
-                Some(p) => p,
-                None => crate::commands::window::current_workspace_for_window(window, registry)?,
-            };
-            Ok((path.clone(), Some(path)))
-        }
+) -> Result<Option<String>, String> {
+    match scope.unwrap_or_default() {
+        CronScope::Global => Ok(None),
+        CronScope::Workspace => match workspace_path.filter(|p| !p.is_empty()) {
+            Some(p) => Ok(Some(p)),
+            None => {
+                crate::commands::window::current_workspace_for_window(window, registry).map(Some)
+            }
+        },
     }
 }
 
-/// Look up the cron instance for a scope. Errors if `cron_init` has not run yet.
-async fn require_instance(
-    scope: CronScope,
-    workspace_path: Option<String>,
-    window: &tauri::Window,
-    registry: &State<'_, crate::commands::window::WindowRegistry>,
-    cron_state: &State<'_, CronState>,
-) -> Result<CronInstance, String> {
-    let (storage_path, _) = resolve_cron_paths(scope, workspace_path, window, registry).await?;
-    cron_state
-        .try_instance_for(&storage_path)
-        .await
-        .ok_or_else(|| format!("Cron not initialized (scope={scope:?})"))
+// ==================== legacy import ====================
+
+fn legacy_global_root() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(crate::commands::home_storage_dir_name())
+        .join("cron-global")
 }
 
-// ==================== Tauri Commands ====================
+fn legacy_jobs_file(root: &std::path::Path) -> PathBuf {
+    root.join(crate::commands::TEAMCLU_DIR)
+        .join(LEGACY_JOBS_FILE)
+}
 
-/// Initialize the cron system for the calling window's workspace.
-///
-/// Re-initializing the same workspace stops only that workspace's scheduler
-/// (so its job-list and delivery config can be reloaded). Other workspaces
-/// are untouched — the previous singleton design would have killed them.
+/// Hand one legacy jobs file to the daemon, then rename it out of the way.
+/// No-op when the file is absent or this process already imported it.
+async fn import_legacy_file(
+    state: &CronState,
+    file: PathBuf,
+    workspace_path: Option<&str>,
+) -> Result<(), String> {
+    if state
+        .imported
+        .lock()
+        .map(|s| s.contains(&file))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let content = match std::fs::read_to_string(&file) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("read {}: {e}", file.display())),
+    };
+    let parsed: Value =
+        serde_json::from_str(&content).map_err(|e| format!("parse {}: {e}", file.display()))?;
+    let jobs = parsed.get("jobs").cloned().unwrap_or(Value::Array(vec![]));
+    let count = jobs.as_array().map(Vec::len).unwrap_or(0);
+    if count > 0 {
+        let body = serde_json::json!({ "jobs": jobs, "workspacePath": workspace_path });
+        let resp: Value = call(
+            reqwest::Method::POST,
+            "/v1/cron/import",
+            "",
+            WRITE,
+            Some(&body),
+        )
+        .await?;
+        log::info!(
+            "[Cron] Imported {} of {} legacy job(s) from {} into amuxd",
+            resp.get("added").and_then(Value::as_u64).unwrap_or(0),
+            count,
+            file.display()
+        );
+    }
+    // The daemon has them (import is idempotent by id). Rename rather than
+    // delete, so a bad import can still be recovered by hand.
+    let migrated = file.with_extension("json.migrated");
+    if let Err(e) = std::fs::rename(&file, &migrated) {
+        log::warn!(
+            "[Cron] Imported {} but could not rename it: {e}",
+            file.display()
+        );
+    }
+    if let Ok(mut s) = state.imported.lock() {
+        s.insert(file);
+    }
+    Ok(())
+}
+
+async fn import_legacy_for_scope(state: &CronState, workspace: Option<&str>) {
+    let file = match workspace {
+        None => legacy_jobs_file(&legacy_global_root()),
+        Some(ws) => legacy_jobs_file(std::path::Path::new(ws)),
+    };
+    if let Err(e) = import_legacy_file(state, file, workspace).await {
+        log::warn!("[Cron] Legacy job import failed (will retry): {e}");
+    }
+}
+
+/// Import every legacy file this machine has: the global one and each of the
+/// daemon's local workspaces. Retries until the daemon answers, so jobs from
+/// before the upgrade start running without anyone opening the settings page.
+async fn import_all_legacy(app: &AppHandle) {
+    use tauri::Manager;
+    for attempt in 0..60u32 {
+        if daemon::discover().is_ok() {
+            let state = app.state::<CronState>();
+            import_legacy_for_scope(&state, None).await;
+            match crate::commands::daemon_http::list_local_daemon_workspaces().await {
+                Ok(workspaces) => {
+                    for ws in workspaces {
+                        import_legacy_for_scope(&state, Some(&ws.path)).await;
+                    }
+                    return;
+                }
+                Err(e) => log::debug!("[Cron] Workspace list not ready ({e}), attempt {attempt}"),
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+}
+
+// ==================== change events ====================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Revisions {
+    jobs_revision: u64,
+    runs_revision: u64,
+}
+
+/// Background work for the life of the app: the legacy import, then the
+/// status poll that drives the settings page's refresh events.
+pub fn spawn_background(app: AppHandle) {
+    let import_app = app.clone();
+    tauri::async_runtime::spawn(async move { import_all_legacy(&import_app).await });
+    tauri::async_runtime::spawn(async move {
+        let mut last: Option<Revisions> = None;
+        loop {
+            tokio::time::sleep(STATUS_POLL_INTERVAL).await;
+            let Ok(now) =
+                call::<(), Revisions>(reqwest::Method::GET, "/v1/cron/status", "", READ, NO_BODY)
+                    .await
+            else {
+                continue;
+            };
+            if let Some(prev) = last {
+                if prev.jobs_revision != now.jobs_revision {
+                    let _ = app.emit("cron:jobs-updated", ());
+                }
+                if prev.runs_revision != now.runs_revision {
+                    let _ = app.emit("cron:cron-sessions-updated", ());
+                }
+            }
+            last = Some(now);
+        }
+    });
+}
+
+// ==================== Tauri commands ====================
+
+/// The settings page calls this before listing. Imports the scope's legacy
+/// file if it has not been yet; the daemon's scheduler is always running.
 #[tauri::command]
 pub async fn cron_init(
-    app: AppHandle,
     window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     cron_state: State<'_, CronState>,
     scope: Option<CronScope>,
     workspace_path: Option<String>,
 ) -> Result<(), String> {
-    let scope = scope.unwrap_or_default();
-    let (storage_path, execution_workspace) =
-        resolve_cron_paths(scope, workspace_path, &window, &registry).await?;
-
-    if scope == CronScope::Workspace && !std::path::Path::new(&storage_path).is_dir() {
-        return Err(format!("Workspace not found: {}", storage_path));
+    let workspace = resolve_scope(scope, workspace_path, &window, &registry)?;
+    if let Some(ws) = workspace.as_deref() {
+        if !std::path::Path::new(ws).is_dir() {
+            return Err(format!("Workspace not found: {ws}"));
+        }
     }
-
-    let instance = cron_state.instance_for(&storage_path).await;
-    instance.scheduler.stop().await;
-
-    instance.storage.init(&storage_path).await;
-    instance
-        .scheduler
-        .set_execution_workspace(execution_workspace)
-        .await;
-    instance.scheduler.set_app_handle(app);
-
-    let delivery_mgr = DeliveryManager::new(storage_path.clone());
-    instance.scheduler.set_delivery(delivery_mgr).await;
-
-    instance.scheduler.reconcile_interrupted_runs().await;
-
-    instance.scheduler.start().await;
-
-    log::info!("[Cron] System initialized (scope={scope:?}, storage={storage_path})");
+    import_legacy_for_scope(&cron_state, workspace.as_deref()).await;
     Ok(())
 }
 
-/// List all cron jobs for the calling window's workspace.
 #[tauri::command]
 pub async fn cron_list_jobs(
     window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
-    cron_state: State<'_, CronState>,
     scope: Option<CronScope>,
     workspace_path: Option<String>,
-) -> Result<Vec<CronJob>, String> {
-    let instance = require_instance(
-        scope.unwrap_or_default(),
-        workspace_path,
-        &window,
-        &registry,
-        &cron_state,
+) -> Result<Value, String> {
+    let workspace = resolve_scope(scope, workspace_path, &window, &registry)?;
+    call(
+        reqwest::Method::GET,
+        "/v1/cron/jobs",
+        &scope_query(workspace.as_deref()),
+        READ,
+        NO_BODY,
     )
-    .await?;
-    Ok(instance.storage.list_jobs().await)
+    .await
 }
 
-/// Add a new cron job to the calling window's workspace.
 #[tauri::command]
 pub async fn cron_add_job(
-    request: CreateCronJobRequest,
+    request: Value,
     window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
-    cron_state: State<'_, CronState>,
     scope: Option<CronScope>,
     workspace_path: Option<String>,
-) -> Result<CronJob, String> {
-    let instance = require_instance(
-        scope.unwrap_or_default(),
-        workspace_path,
-        &window,
-        &registry,
-        &cron_state,
+) -> Result<Value, String> {
+    let workspace = resolve_scope(scope, workspace_path, &window, &registry)?;
+    let body = serde_json::json!({ "request": request, "workspacePath": workspace });
+    call(
+        reqwest::Method::POST,
+        "/v1/cron/jobs",
+        "",
+        WRITE,
+        Some(&body),
     )
-    .await?;
-
-    let job = create_job_on_instance(&instance, request).await;
-    log::info!("[Cron] Job created: {} ({})", job.name, job.id);
-    Ok(job)
+    .await
 }
 
-pub(crate) async fn create_job_on_instance(
-    instance: &CronInstance,
-    request: CreateCronJobRequest,
-) -> CronJob {
-    let now = chrono::Utc::now();
-    let mut job = CronJob {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: request.name,
-        description: request.description,
-        enabled: request.enabled,
-        schedule: request.schedule,
-        payload: request.payload,
-        delivery: request.delivery,
-        delete_after_run: request.delete_after_run,
-        created_at: now,
-        updated_at: now,
-        last_run_at: None,
-        next_run_at: None,
-    };
-
-    job.next_run_at = instance.scheduler.compute_next_run(&job, None);
-    instance.storage.add_job(job.clone()).await;
-    instance.scheduler.emit_jobs_updated();
-    job
-}
-
-/// MCP / HTTP entry: mutate the same CronState the settings UI lists.
-/// Defaults to global scope so created jobs show up in "Global tasks".
-pub(crate) async fn mcp_manage(
-    app: &AppHandle,
-    cron_state: &CronState,
-    body: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let action = body
-        .get("action")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing field: action")?;
-    let scope = match body.get("scope").and_then(|v| v.as_str()) {
-        Some("workspace") => CronScope::Workspace,
-        _ => CronScope::Global,
-    };
-    let workspace_path = body
-        .get("workspace_path")
-        .and_then(|v| v.as_str())
+#[tauri::command]
+pub async fn cron_update_job(request: Value) -> Result<Value, String> {
+    let job_id = request
+        .get("id")
+        .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .map(str::to_string);
-
-    let instance = ensure_instance(app, cron_state, scope, workspace_path).await?;
-
-    match action {
-        "create" => {
-            let mut request = parse_create_request(body)?;
-            if let Some(delivery) = request.delivery.as_mut() {
-                pin_announce_delivery_target(delivery).await?;
-            }
-            let job = create_job_on_instance(&instance, request).await;
-            log::info!("[Cron] MCP job created: {} ({})", job.name, job.id);
-            let job = serde_json::to_value(job).map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({
-                "action": "created",
-                "job": job,
-            }))
-        }
-        "list" => {
-            let jobs = instance.storage.list_jobs().await;
-            let jobs = serde_json::to_value(jobs).map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({ "action": "listed", "jobs": jobs }))
-        }
-        "pause" | "resume" => {
-            let job_id = require_mcp_job_id(body)?;
-            let enabled = action == "resume";
-            instance.storage.toggle_enabled(job_id, enabled).await?;
-            if enabled {
-                if let Some(job) = instance.storage.get_job(job_id).await {
-                    let next = instance.scheduler.compute_next_run(&job, None);
-                    instance.storage.update_next_run_at(job_id, next).await;
-                }
-            }
-            instance.scheduler.emit_jobs_updated();
-            let action_name = if enabled { "resumed" } else { "paused" };
-            Ok(serde_json::json!({
-                "action": action_name,
-                "job_id": job_id,
-            }))
-        }
-        "delete" => {
-            let job_id = require_mcp_job_id(body)?;
-            instance.storage.remove_job(job_id).await?;
-            instance.scheduler.emit_jobs_updated();
-            Ok(serde_json::json!({ "action": "deleted", "job_id": job_id }))
-        }
-        "run" => {
-            let job_id = require_mcp_job_id(body)?;
-            let job = instance
-                .storage
-                .get_job(job_id)
-                .await
-                .ok_or_else(|| format!("Job not found: {job_id}"))?;
-            let scheduler = instance.scheduler.clone();
-            tokio::spawn(async move {
-                scheduler.execute_job(job).await;
-            });
-            Ok(serde_json::json!({ "action": "triggered", "job_id": job_id }))
-        }
-        "get_runs" => {
-            let job_id = require_mcp_job_id(body)?;
-            let runs = instance.storage.get_runs(job_id, Some(10)).await;
-            let runs = serde_json::to_value(runs).map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({ "job_id": job_id, "runs": runs }))
-        }
-        other => Err(format!("Unknown action: {other}")),
-    }
+        .ok_or("Missing field: id")?
+        .to_string();
+    call(
+        reqwest::Method::PATCH,
+        &job_path(&job_id, ""),
+        "",
+        WRITE,
+        Some(&request),
+    )
+    .await
 }
 
-fn require_mcp_job_id(body: &serde_json::Value) -> Result<&str, String> {
-    body.get("job_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "Missing field: job_id".to_string())
-}
-
-fn parse_create_request(body: &serde_json::Value) -> Result<CreateCronJobRequest, String> {
-    let mut obj = body
-        .as_object()
-        .cloned()
-        .ok_or_else(|| "create body must be an object".to_string())?;
-    obj.remove("action");
-    obj.remove("scope");
-    obj.remove("workspace_path");
-    obj.remove("job_id");
-    let reply_token = obj
-        .remove("reply_token")
-        .and_then(|v| match v {
-            serde_json::Value::String(s) => Some(s),
-            _ => None,
-        })
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    if let Some(schedule) = obj.get("schedule").cloned() {
-        obj.insert("schedule".into(), unwrap_stringified_schedule(schedule));
-    }
-    let mut request: CreateCronJobRequest = serde_json::from_value(serde_json::Value::Object(obj))
-        .map_err(|e| format!("invalid create request: {e}"))?;
-    fill_announce_delivery_to(&mut request, reply_token.as_deref())?;
-    Ok(request)
-}
-
-fn fill_announce_delivery_to(
-    request: &mut CreateCronJobRequest,
-    reply_token: Option<&str>,
-) -> Result<(), String> {
-    let Some(delivery) = request.delivery.as_mut() else {
-        return Ok(());
-    };
-    if delivery.mode != DeliveryMode::Announce {
-        return Ok(());
-    }
-    delivery.to = delivery.to.trim().to_string();
-    if delivery.to.is_empty() {
-        if let Some(token) = reply_token {
-            delivery.to = token.to_string();
-        }
-    }
-    if delivery.to.is_empty() {
-        return Err(ANNOUNCE_DELIVERY_TO_REQUIRED.to_string());
-    }
+#[tauri::command]
+pub async fn cron_remove_job(job_id: String) -> Result<(), String> {
+    let _: Value = call(
+        reqwest::Method::DELETE,
+        &job_path(&job_id, ""),
+        "",
+        WRITE,
+        NO_BODY,
+    )
+    .await?;
     Ok(())
 }
 
-/// 32-char hex — the shape `reply_token::token_for_binding` mints.
-pub(crate) fn looks_like_reply_token(s: &str) -> bool {
-    let s = s.trim();
-    s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-async fn pin_announce_delivery_target(delivery: &mut CronDelivery) -> Result<(), String> {
-    if delivery.mode != DeliveryMode::Announce {
-        return Ok(());
-    }
-    let to = delivery.to.trim();
-    if to.is_empty() {
-        return Err(ANNOUNCE_DELIVERY_TO_REQUIRED.to_string());
-    }
-    if !looks_like_reply_token(to) {
-        return Ok(());
-    }
-    let resolved = amuxd_client::resolve_reply_token(to).await.map_err(|e| {
-        format!(
-            "could not pin delivery.to from reply_token: {e}. \
-             Pass wecom single:<userid> or group:<chatid> instead."
-        )
-    })?;
-    if delivery.channel.as_str() != resolved.channel {
-        return Err(format!(
-            "reply_token is a {} chat (`{}`), but delivery.channel is {}",
-            resolved.channel,
-            resolved.to,
-            delivery.channel.as_str()
-        ));
-    }
-    delivery.to = resolved.to;
+#[tauri::command]
+pub async fn cron_toggle_enabled(job_id: String, enabled: bool) -> Result<(), String> {
+    let body = serde_json::json!({ "enabled": enabled });
+    let _: Value = call(
+        reqwest::Method::POST,
+        &job_path(&job_id, "/enabled"),
+        "",
+        WRITE,
+        Some(&body),
+    )
+    .await?;
     Ok(())
 }
 
-/// Recover when a sidecar stuffed a one-time/interval object into `expr`
-/// because the model stringified `{kind:"at",...}` as a cron expression.
-fn unwrap_stringified_schedule(schedule: serde_json::Value) -> serde_json::Value {
-    let Some(obj) = schedule.as_object() else {
-        return schedule;
-    };
-    if obj.get("kind").and_then(|v| v.as_str()) != Some("cron") {
-        return schedule;
-    }
-    let Some(expr) = obj.get("expr").and_then(|v| v.as_str()) else {
-        return schedule;
-    };
-    let expr = expr.trim();
-    if !expr.starts_with('{') {
-        return schedule;
-    }
-    let Ok(inner) = serde_json::from_str::<serde_json::Value>(expr) else {
-        return schedule;
-    };
-    match inner.get("kind").and_then(|v| v.as_str()) {
-        Some("at" | "every" | "cron") => inner,
-        _ => schedule,
-    }
-}
-
-pub(crate) async fn ensure_instance(
-    app: &AppHandle,
-    cron_state: &CronState,
-    scope: CronScope,
-    workspace_path: Option<String>,
-) -> Result<CronInstance, String> {
-    let (storage_path, execution_workspace) = match scope {
-        CronScope::Global => (global_cron_root()?, None),
-        CronScope::Workspace => {
-            let path = workspace_path
-                .filter(|p| !p.is_empty())
-                .ok_or_else(|| "workspace scope requires workspace_path".to_string())?;
-            if !std::path::Path::new(&path).is_dir() {
-                return Err(format!("Workspace not found: {path}"));
-            }
-            (path.clone(), Some(path))
-        }
-    };
-
-    let instance = cron_state.instance_for(&storage_path).await;
-    if instance.storage.is_initialized().await {
-        return Ok(instance);
-    }
-
-    instance.storage.init(&storage_path).await;
-    instance
-        .scheduler
-        .set_execution_workspace(execution_workspace)
-        .await;
-    instance.scheduler.set_app_handle(app.clone());
-
-    let delivery_mgr = DeliveryManager::new(storage_path.clone());
-    instance.scheduler.set_delivery(delivery_mgr).await;
-    instance.scheduler.reconcile_interrupted_runs().await;
-    instance.scheduler.start().await;
-    Ok(instance)
-}
-
-/// Update an existing cron job in the calling window's workspace.
 #[tauri::command]
-pub async fn cron_update_job(
-    request: UpdateCronJobRequest,
-    window: tauri::Window,
-    registry: State<'_, crate::commands::window::WindowRegistry>,
-    cron_state: State<'_, CronState>,
-    scope: Option<CronScope>,
-    workspace_path: Option<String>,
-) -> Result<CronJob, String> {
-    let instance = require_instance(
-        scope.unwrap_or_default(),
-        workspace_path,
-        &window,
-        &registry,
-        &cron_state,
+pub async fn cron_run_job(job_id: String) -> Result<(), String> {
+    let _: Value = call(
+        reqwest::Method::POST,
+        &job_path(&job_id, "/run"),
+        "",
+        WRITE,
+        NO_BODY,
     )
     .await?;
-
-    let mut job = instance
-        .storage
-        .get_job(&request.id)
-        .await
-        .ok_or_else(|| format!("Job not found: {}", request.id))?;
-
-    if let Some(name) = request.name {
-        job.name = name;
-    }
-    if let Some(desc) = request.description {
-        job.description = Some(desc);
-    }
-    if let Some(enabled) = request.enabled {
-        job.enabled = enabled;
-    }
-    if let Some(schedule) = request.schedule {
-        job.schedule = schedule;
-        job.next_run_at = instance.scheduler.compute_next_run(&job, None);
-    }
-    if let Some(payload) = request.payload {
-        job.payload = payload;
-    }
-    if let Some(delivery) = request.delivery {
-        job.delivery = delivery;
-    }
-    if let Some(delete_after_run) = request.delete_after_run {
-        job.delete_after_run = delete_after_run;
-    }
-
-    job.updated_at = chrono::Utc::now();
-
-    instance.storage.update_job(job.clone()).await?;
-    log::info!("[Cron] Job updated: {} ({})", job.name, job.id);
-
-    Ok(job)
-}
-
-/// Remove a cron job from the calling window's workspace.
-#[tauri::command]
-pub async fn cron_remove_job(
-    job_id: String,
-    window: tauri::Window,
-    registry: State<'_, crate::commands::window::WindowRegistry>,
-    cron_state: State<'_, CronState>,
-    scope: Option<CronScope>,
-    workspace_path: Option<String>,
-) -> Result<(), String> {
-    let instance = require_instance(
-        scope.unwrap_or_default(),
-        workspace_path,
-        &window,
-        &registry,
-        &cron_state,
-    )
-    .await?;
-    instance.storage.remove_job(&job_id).await?;
-    log::info!("[Cron] Job removed: {}", job_id);
     Ok(())
 }
 
-/// Toggle a cron job's enabled state.
 #[tauri::command]
-pub async fn cron_toggle_enabled(
-    job_id: String,
-    enabled: bool,
-    window: tauri::Window,
-    registry: State<'_, crate::commands::window::WindowRegistry>,
-    cron_state: State<'_, CronState>,
-    scope: Option<CronScope>,
-    workspace_path: Option<String>,
-) -> Result<(), String> {
-    let instance = require_instance(
-        scope.unwrap_or_default(),
-        workspace_path,
-        &window,
-        &registry,
-        &cron_state,
+pub async fn cron_get_runs(job_id: String, limit: Option<usize>) -> Result<Value, String> {
+    let query = format!("?limit={}", limit.unwrap_or(50));
+    call(
+        reqwest::Method::GET,
+        &job_path(&job_id, "/runs"),
+        &query,
+        READ,
+        NO_BODY,
     )
-    .await?;
-    instance.storage.toggle_enabled(&job_id, enabled).await?;
-
-    if enabled {
-        if let Some(job) = instance.storage.get_job(&job_id).await {
-            let next = instance.scheduler.compute_next_run(&job, None);
-            instance.storage.update_next_run_at(&job_id, next).await;
-        }
-    }
-
-    log::info!(
-        "[Cron] Job {} {}",
-        job_id,
-        if enabled { "enabled" } else { "disabled" }
-    );
-    Ok(())
+    .await
 }
 
-/// Run a cron job immediately (manual trigger).
-#[tauri::command]
-pub async fn cron_run_job(
-    job_id: String,
-    window: tauri::Window,
-    registry: State<'_, crate::commands::window::WindowRegistry>,
-    cron_state: State<'_, CronState>,
-    scope: Option<CronScope>,
-    workspace_path: Option<String>,
-) -> Result<(), String> {
-    let instance = require_instance(
-        scope.unwrap_or_default(),
-        workspace_path,
-        &window,
-        &registry,
-        &cron_state,
-    )
-    .await?;
-
-    let job = instance
-        .storage
-        .get_job(&job_id)
-        .await
-        .ok_or_else(|| format!("Job not found: {}", job_id))?;
-
-    log::info!("[Cron] Manual run triggered for: {} ({})", job.name, job.id);
-
-    let scheduler = instance.scheduler.clone();
-    tokio::spawn(async move {
-        scheduler.execute_job(job).await;
-    });
-
-    Ok(())
-}
-
-/// Get run history for a cron job.
-#[tauri::command]
-pub async fn cron_get_runs(
-    job_id: String,
-    limit: Option<usize>,
-    window: tauri::Window,
-    registry: State<'_, crate::commands::window::WindowRegistry>,
-    cron_state: State<'_, CronState>,
-    scope: Option<CronScope>,
-    workspace_path: Option<String>,
-) -> Result<Vec<CronRunRecord>, String> {
-    let instance = require_instance(
-        scope.unwrap_or_default(),
-        workspace_path,
-        &window,
-        &registry,
-        &cron_state,
-    )
-    .await?;
-    let limit = limit.unwrap_or(50);
-    Ok(instance.storage.get_runs(&job_id, Some(limit)).await)
-}
-
-/// Refresh delivery configs (no-op now — `DeliveryManager` reads config on demand).
+/// Kept for the settings page; delivery reads its config on demand.
 #[tauri::command]
 pub async fn cron_refresh_delivery() -> Result<(), String> {
-    log::info!("[Cron] Delivery config refresh requested (no-op, config is read on demand)");
     Ok(())
 }
 
-/// True if any cron job, in any workspace (global included), is currently
-/// mid-execution on this process. Used by the desktop auto-restart update
-/// mode as one of its "safe to restart" signals.
+/// True when the daemon is mid-run. The desktop's auto-restart waits on it:
+/// restarting the app restarts its bundled daemon too.
 #[tauri::command]
-pub async fn cron_any_job_running(cron_state: State<'_, CronState>) -> Result<bool, String> {
-    let instances = cron_state.instances.lock().await;
-    Ok(instances.values().any(|i| i.scheduler.is_running()))
-}
-
-/// Arm/disarm the cooperative "refuse new cron work" flag ahead of an
-/// auto-restart. Applies to every live instance (global + all workspaces) —
-/// a restart tears down the whole process regardless of which workspace's
-/// cron would have fired.
-#[tauri::command]
-pub async fn cron_set_restart_imminent(
-    imminent: bool,
-    cron_state: State<'_, CronState>,
-) -> Result<(), String> {
-    let instances = cron_state.instances.lock().await;
-    for instance in instances.values() {
-        instance.scheduler.set_restart_imminent(imminent);
+pub async fn cron_any_job_running() -> Result<bool, String> {
+    #[derive(Deserialize)]
+    struct Status {
+        running: bool,
     }
+    // An unreachable daemon is running nothing this restart could interrupt.
+    match call::<(), Status>(reqwest::Method::GET, "/v1/cron/status", "", READ, NO_BODY).await {
+        Ok(s) => Ok(s.running),
+        Err(_) => Ok(false),
+    }
+}
+
+/// Arm/disarm the daemon's "start no new run" flag ahead of an auto-restart.
+#[tauri::command]
+pub async fn cron_set_restart_imminent(imminent: bool) -> Result<(), String> {
+    let body = serde_json::json!({ "imminent": imminent });
+    let _: Value = call(
+        reqwest::Method::POST,
+        "/v1/cron/restart-imminent",
+        "",
+        WRITE,
+        Some(&body),
+    )
+    .await?;
     Ok(())
+}
+
+// ==================== introspect ====================
+
+/// `/cron-manage` body, forwarded as-is (`action`, `scope`, …).
+pub(crate) async fn mcp_manage(body: &Value) -> Result<Value, String> {
+    call(
+        reqwest::Method::POST,
+        "/v1/cron/manage",
+        "",
+        WRITE,
+        Some(body),
+    )
+    .await
+}
+
+/// `/cron-run`: fire a job now, whatever scope it belongs to.
+pub(crate) async fn run_job(job_id: &str) -> Result<(), String> {
+    cron_run_job(job_id.to_string()).await
 }
 
 #[cfg(test)]
-mod mcp_create_tests {
+mod tests {
     use super::*;
 
-    fn sample_request() -> CreateCronJobRequest {
-        CreateCronJobRequest {
-            name: "Morning summary".into(),
-            description: None,
-            enabled: true,
-            schedule: CronSchedule {
-                kind: ScheduleKind::Cron,
-                at: None,
-                every_ms: None,
-                expr: Some("0 9 * * *".into()),
-                tz: None,
-            },
-            payload: CronPayload {
-                message: "hello".into(),
-                model: None,
-                backend: None,
-                timeout_seconds: None,
-                permission_mode: None,
-            },
-            delivery: None,
-            delete_after_run: false,
-        }
+    #[test]
+    fn scope_query_encodes_the_workspace_path() {
+        assert_eq!(scope_query(None), "");
+        assert_eq!(
+            scope_query(Some("/Users/a b/ws")),
+            "?workspacePath=%2FUsers%2Fa%20b%2Fws"
+        );
+    }
+
+    #[test]
+    fn job_path_encodes_the_id() {
+        assert_eq!(job_path("abc", "/run"), "/v1/cron/jobs/abc/run");
+        assert_eq!(job_path("a/b", ""), "/v1/cron/jobs/a%2Fb");
+    }
+
+    #[test]
+    fn legacy_file_sits_under_the_brand_dir() {
+        let f = legacy_jobs_file(std::path::Path::new("/ws"));
+        assert!(f.ends_with(format!("{}/cron-jobs.json", crate::commands::TEAMCLU_DIR)));
     }
 
     #[tokio::test]
-    async fn mcp_style_create_is_visible_to_list_jobs_on_the_same_instance() {
+    async fn a_missing_legacy_file_is_a_quiet_no_op() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().to_str().unwrap();
         let state = CronState::default();
-        let instance = state.instance_for(path).await;
-        instance.storage.init(path).await;
-
-        let created = create_job_on_instance(&instance, sample_request()).await;
-        let listed = state
-            .try_instance_for(path)
+        import_legacy_file(&state, dir.path().join("nope.json"), None)
             .await
-            .unwrap()
-            .storage
-            .list_jobs()
-            .await;
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, created.id);
-        assert_eq!(listed[0].name, "Morning summary");
-    }
-
-    #[test]
-    fn parse_create_request_accepts_mcp_global_body() {
-        let body = serde_json::json!({
-            "action": "create",
-            "scope": "global",
-            "name": "Morning summary",
-            "enabled": true,
-            "schedule": { "kind": "cron", "expr": "0 9 * * *" },
-            "payload": { "message": "hello" }
-        });
-        let request = parse_create_request(&body).unwrap();
-        assert_eq!(request.name, "Morning summary");
-        assert_eq!(request.payload.message, "hello");
-        assert_eq!(request.schedule.expr.as_deref(), Some("0 9 * * *"));
-    }
-
-    #[test]
-    fn parse_create_request_unwraps_stringified_at_schedule_stuffed_in_cron_expr() {
-        let body = serde_json::json!({
-            "action": "create",
-            "scope": "global",
-            "name": "One-shot ping",
-            "enabled": true,
-            "schedule": {
-                "kind": "cron",
-                "expr": "{\"kind\": \"at\", \"at\": \"2026-09-09T20:10:30+08:00\"}"
-            },
-            "payload": { "message": "ping" }
-        });
-        let request = parse_create_request(&body).unwrap();
-        assert_eq!(request.schedule.kind, ScheduleKind::At);
-        assert_eq!(
-            request.schedule.at.as_deref(),
-            Some("2026-09-09T20:10:30+08:00")
-        );
-        assert!(request.schedule.expr.is_none());
-    }
-
-    #[test]
-    fn parse_create_request_rejects_announce_with_empty_to() {
-        let body = serde_json::json!({
-            "action": "create",
-            "name": "日报",
-            "enabled": true,
-            "schedule": { "kind": "cron", "expr": "0 10 * * *" },
-            "payload": { "message": "hello" },
-            "delivery": {
-                "mode": "announce",
-                "channel": "wecom",
-                "to": ""
-            }
-        });
-        let err = parse_create_request(&body).unwrap_err();
-        assert!(err.contains("delivery.to is required"), "got: {err}");
-        assert!(err.contains("reply_token"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_create_request_fills_empty_to_from_reply_token() {
-        let token = "0".repeat(32);
-        let body = serde_json::json!({
-            "action": "create",
-            "name": "日报",
-            "enabled": true,
-            "schedule": { "kind": "cron", "expr": "0 10 * * *" },
-            "payload": { "message": "hello" },
-            "reply_token": token,
-            "delivery": {
-                "mode": "announce",
-                "channel": "wecom",
-                "to": "  "
-            }
-        });
-        let request = parse_create_request(&body).unwrap();
-        let delivery = request.delivery.expect("delivery");
-        assert_eq!(delivery.to, token);
-        assert_eq!(delivery.channel, DeliveryChannel::Wecom);
-    }
-
-    #[test]
-    fn looks_like_reply_token_is_32_hex() {
-        assert!(looks_like_reply_token(&"ab".repeat(16)));
-        assert!(!looks_like_reply_token("single:HuangWeiGan"));
-        assert!(!looks_like_reply_token(""));
-        assert!(!looks_like_reply_token("abcd"));
+            .unwrap();
     }
 }

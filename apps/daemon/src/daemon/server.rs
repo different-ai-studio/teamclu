@@ -195,6 +195,9 @@ pub struct DaemonServer {
     /// hits the "absent → create" branch, but the lookup-first shape stays
     /// so future code can adopt session reuse without changing the handler.
     cron_sessions: cron::CronSessionCache,
+    /// Daemon-owned scheduled jobs (ADR-0010). Served over `/v1/cron/*`;
+    /// started once the command channel exists (see `run`).
+    cron_service: crate::cron::CronService,
     refresh_watch_registry:
         Option<std::sync::Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
     refresh_coordinator: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
@@ -737,6 +740,7 @@ impl DaemonServer {
             actor_id,
             channel_mgr: None,
             cron_sessions: cron::CronSessionCache::new(),
+            cron_service: crate::cron::CronService::for_active_team(),
             refresh_watch_registry: None,
             refresh_coordinator: None,
             runtime_supervisor: None,
@@ -1164,6 +1168,7 @@ impl DaemonServer {
                 session_prompt,
                 session_attach,
                 Some(self.managed_llm.clone()),
+                Some(self.cron_service.clone()),
             )
             .await
             {
@@ -1283,18 +1288,31 @@ impl DaemonServer {
         let sock_path = DaemonConfig::sock_path();
         spawn_sock_listener(sock_path.clone(), sock_tx.clone());
 
+        // The scheduler lives here now, not in the desktop (ADR-0010): it
+        // needs the command channel to run a turn, so it starts once that
+        // exists. Jobs fire whether or not a desktop is attached.
+        self.cron_service
+            .start(Arc::new(cron::SockCronExecutor {
+                tx: sock_tx.clone(),
+            }))
+            .await;
+
         // A standalone install keeps itself current: check the release channel,
         // swap the binary, and exit through the service manager once no turn is
         // running. `self_update` decides whether this daemon is one — the
         // desktop sidecar and containers are not.
         {
             let agents = self.agents.clone();
+            let cron_service = self.cron_service.clone();
             let shutdown_tx = sock_tx.clone();
             crate::self_update::spawn_background(
                 update_plan,
                 move || {
                     let agents = agents.clone();
-                    async move { agents.lock().await.has_any_active_turn() }
+                    // A cron run is busy between turns too (session setup,
+                    // delivery), where no agent turn is active.
+                    let cron_busy = cron_service.is_running();
+                    async move { cron_busy || agents.lock().await.has_any_active_turn() }
                 },
                 move || async move {
                     let _ = shutdown_tx.send(SockCommand::Shutdown).await;
@@ -3870,6 +3888,9 @@ pub(crate) mod tests {
                 actor_id: "agent-actor".to_string(),
                 channel_mgr: None,
                 cron_sessions: cron::CronSessionCache::new(),
+                cron_service: crate::cron::CronService::new(crate::cron::storage::CronStorage::at(
+                    tmp.path().join("cron"),
+                )),
                 refresh_watch_registry: None,
                 refresh_coordinator: None,
                 runtime_supervisor: None,
