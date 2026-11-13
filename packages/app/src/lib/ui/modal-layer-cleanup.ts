@@ -65,7 +65,10 @@ function removeInteractivityLockClasses() {
 function hasRunningAnimation(node: HTMLElement): boolean {
   if (typeof node.getAnimations !== 'function') return false
   return node.getAnimations().some((animation) => {
-    return animation.playState === 'running' || animation.playState === 'pending'
+    // `pending` is in the CSS Animations spec but not in this DOM lib's
+    // AnimationPlayState, so compare it as a string.
+    const state = animation.playState as string
+    return state === 'running' || state === 'pending'
   })
 }
 
