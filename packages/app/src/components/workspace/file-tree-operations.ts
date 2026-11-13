@@ -62,7 +62,7 @@ export async function deleteItem(
   }
 }
 
-export async function revealInFinder(path: string): Promise<void> {
+export async function revealInFileManager(path: string): Promise<void> {
   if (!isTauri()) return;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -73,10 +73,13 @@ export async function revealInFinder(path: string): Promise<void> {
       const { open } = await import("@tauri-apps/plugin-shell");
       await open(dirnameOf(path));
     } catch (error) {
-      console.error("[FileTree] Failed to reveal in finder:", error);
+      console.error("[FileTree] Failed to reveal in file manager:", error);
     }
   }
 }
+
+/** @deprecated Use {@link revealInFileManager}. */
+export const revealInFinder = revealInFileManager;
 
 export async function openWithDefaultApp(path: string): Promise<void> {
   if (!isTauri()) return;

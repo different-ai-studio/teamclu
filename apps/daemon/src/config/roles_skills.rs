@@ -77,13 +77,8 @@ pub struct RolesSkillsStateDto {
 // ── Scanner ──────────────────────────────────────────────────────────────────
 
 const ROLE_SKILL_DIR: &str = "skills";
-const INHERENT_SKILL_NAMES: &[&str] = &[
-    "create-role",
-    "deploy-app",
-    "app-auth",
-    "macos-control",
-    "windows-control",
-];
+const INHERENT_SKILL_NAMES: &[&str] =
+    &["create-role", "deploy-app", "app-auth", "open-computer-use"];
 
 /// Skills that ship with the binary. They are read-only everywhere — the
 /// scanner classifies them as `builtin`, and the agent-management RPC refuses

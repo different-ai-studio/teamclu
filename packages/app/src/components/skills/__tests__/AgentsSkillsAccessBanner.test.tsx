@@ -2,9 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const revealInFinder = vi.fn()
+const revealInFileManager = vi.fn()
 vi.mock('@/components/workspace/file-tree-operations', () => ({
-  revealInFinder: (...args: unknown[]) => revealInFinder(...args),
+  revealInFileManager: (...args: unknown[]) => revealInFileManager(...args),
+  revealInFinder: (...args: unknown[]) => revealInFileManager(...args),
 }))
 
 vi.mock('react-i18next', () => ({
@@ -18,7 +19,7 @@ import { useAgentsSkillsAccessStore } from '@/stores/agents-skills-access-store'
 
 describe('AgentsSkillsAccessBanner', () => {
   beforeEach(() => {
-    revealInFinder.mockReset()
+    revealInFileManager.mockReset()
     useAgentsSkillsAccessStore.setState({
       access: null,
       checking: false,
@@ -59,6 +60,6 @@ describe('AgentsSkillsAccessBanner', () => {
     render(<AgentsSkillsAccessBanner />)
     expect(screen.getByTestId('agents-skills-access-banner')).toBeTruthy()
     await user.click(screen.getByTestId('agents-skills-access-reveal'))
-    expect(revealInFinder).toHaveBeenCalledWith('/Users/me/.agents/skills')
+    expect(revealInFileManager).toHaveBeenCalledWith('/Users/me/.agents/skills')
   })
 })

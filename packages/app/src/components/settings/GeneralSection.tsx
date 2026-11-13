@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn, isTauri } from '@/lib/utils'
+import { closeWindowQuitHint } from '@/lib/platform-labels'
 import {
   Select,
   SelectContent,
@@ -428,12 +429,7 @@ export const GeneralSection = React.memo(function GeneralSection() {
               <PanelBottom className="h-4 w-4 text-muted-foreground" />
               {t('settings.general.closeWindow', 'When closing the window')}
             </label>
-            <p className="text-xs text-muted-foreground">
-              {t(
-                'settings.general.closeWindowDesc',
-                'Choose what happens when you click the window close button. Cmd+Q always quits.',
-              )}
-            </p>
+            <p className="text-xs text-muted-foreground">{closeWindowQuitHint(t)}</p>
             <Select value={closePref} onValueChange={(v) => void handleClosePrefChange(v)}>
               <SelectTrigger className="h-11" data-testid="close-window-pref-select">
                 <SelectValue />

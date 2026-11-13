@@ -2,7 +2,7 @@
 //!
 //! These four servers are identical for every workspace on the machine:
 //! `teamclu-introspect` (the bundled sidecar), `playwright`, `chrome-control`
-//! and `autoui` (all `npx` tools). They used to be materialized into every
+//! and `open-computer-use` (the `npx` tools). They used to be materialized into every
 //! `<workspace>/opencode.json`, which meant N copies of the same thing, each
 //! carrying **this** machine's absolute binary paths — so opening the same repo
 //! on another machine rewrote the file, and a committed copy churned forever.
@@ -34,17 +34,34 @@ pub const DEVICE_MCP_NAMES: &[&str] = &[
     "teamclu-introspect",
     "playwright",
     "chrome-control",
-    "autoui",
+    "open-computer-use",
 ];
 
 /// `amuxd-send` was a second daemon MCP server whose only tool, `send`, is now
 /// `send_channel_message`'s `reply_token` branch inside `teamclu-introspect`.
 /// Two servers and two send tools in front of the model did one job.
 ///
-/// Kept as a name so existing device files lose the entry instead of keeping a
+/// `autoui` was the vision-and-mouse fallback for desktop control. Computer Use
+/// covers that job, so the entry is dropped instead of leaving a server the
+/// skills no longer call.
+///
+/// Kept as names so existing device files lose the entry instead of keeping a
 /// server nothing spawns any more. Workspace copies are cleaned by
 /// `LEGACY_MCP_NAMES` in `runtime::supervisor`.
-pub const RETIRED_DEVICE_MCP_NAMES: &[&str] = &["amuxd-send"];
+pub const RETIRED_DEVICE_MCP_NAMES: &[&str] = &["amuxd-send", "autoui"];
+
+/// Pinned on purpose: this process can click the user's whole desktop.
+const OPEN_COMPUTER_USE_PACKAGE: &str = "open-computer-use@1.1.4";
+
+/// Seconds for the settings-page tool probe. The default probe waits 10s, and
+/// a cold `npx -y open-computer-use mcp` handshake takes about 17s, so the
+/// page otherwise reports `timeout after 10s` and zero tools.
+const OPEN_COMPUTER_USE_PROBE_TIMEOUT_SECS: u64 = 45;
+
+/// Unset, the macOS `mcp` command runs inside an AppKit process so it can draw
+/// a software cursor. That window stays ordered in front. `0` keeps the same
+/// tools and runs the server without that UI.
+const VISUAL_CURSOR_ENV: &str = "OPEN_COMPUTER_USE_VISUAL_CURSOR";
 
 pub fn is_device_scoped(name: &str) -> bool {
     DEVICE_MCP_NAMES.contains(&name)
@@ -200,19 +217,26 @@ fn introspect_scheme_stale(existing: &serde_json::Value, scheme: Option<&str>) -
     current != s
 }
 
-fn autoui_environment() -> serde_json::Value {
-    serde_json::json!({
-        "QWEN_API_KEY": "${QWEN_API_KEY}",
-        "QWEN_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "QWEN_MODEL": "qwen3-vl-flash"
-    })
+/// Leave a cursor setting the user already wrote. Otherwise turn the overlay off.
+fn ensure_visual_cursor_disabled(entry: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    let env = entry
+        .entry("environment".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(env_obj) = env.as_object_mut() else {
+        return false;
+    };
+    if env_obj.contains_key(VISUAL_CURSOR_ENV) {
+        return false;
+    }
+    env_obj.insert(VISUAL_CURSOR_ENV.to_string(), serde_json::json!("0"));
+    true
 }
 
 /// Seed the device servers, non-destructively.
 ///
 /// `teamclu-introspect` is refreshed when its binary path has gone stale — a
-/// reinstall moves the sidecar. The three `npx` bridges are only created when
-/// absent so a user's `enabled` toggle survives. Retired servers are removed.
+/// reinstall moves the sidecar. The `npx` bridges are only created when absent
+/// so a user's `enabled` toggle survives. Retired servers are removed.
 /// Returns whether the file changed.
 pub fn ensure_device_mcp() -> Result<bool, WorkspaceControlError> {
     let mut root = read_raw();
@@ -300,32 +324,31 @@ pub fn ensure_device_mcp() -> Result<bool, WorkspaceControlError> {
         changed = true;
     }
 
-    match mcp_obj.get_mut("autoui") {
-        None => {
-            mcp_obj.insert(
-                "autoui".to_string(),
-                serde_json::json!({
-                    "type": "local",
-                    "enabled": true,
-                    "command": ["npx", "-y", "autoui-mcp@latest"],
-                    "environment": autoui_environment()
-                }),
-            );
-            changed = true;
-        }
-        Some(existing) => {
-            // An empty `environment` means an older build (or a hand edit) lost
-            // the QWEN placeholders, which leaves autoui unable to authenticate.
-            if let Some(obj) = existing.as_object_mut() {
-                let needs_restore = obj
-                    .get("environment")
-                    .and_then(|v| v.as_object())
-                    .map(|env| env.is_empty())
-                    .unwrap_or(true);
-                if needs_restore {
-                    obj.insert("environment".to_string(), autoui_environment());
-                    changed = true;
-                }
+    if !mcp_obj.contains_key("open-computer-use") {
+        mcp_obj.insert(
+            "open-computer-use".to_string(),
+            serde_json::json!({
+                "type": "local",
+                "enabled": true,
+                "command": ["npx", "-y", OPEN_COMPUTER_USE_PACKAGE, "mcp"],
+                "timeout": OPEN_COMPUTER_USE_PROBE_TIMEOUT_SECS,
+                "environment": { "OPEN_COMPUTER_USE_VISUAL_CURSOR": "0" }
+            }),
+        );
+        changed = true;
+    } else if let Some(entry) = mcp_obj.get_mut("open-computer-use") {
+        // Entries seeded before the probe timeout existed still fail the 10s
+        // probe. Fill only a missing timeout; a value the user set stays.
+        if let Some(obj) = entry.as_object_mut() {
+            if !obj.contains_key("timeout") {
+                obj.insert(
+                    "timeout".to_string(),
+                    serde_json::json!(OPEN_COMPUTER_USE_PROBE_TIMEOUT_SECS),
+                );
+                changed = true;
+            }
+            if ensure_visual_cursor_disabled(obj) {
+                changed = true;
             }
         }
     }
@@ -407,6 +430,108 @@ mod tests {
                 "the retired entry is a change"
             );
             assert!(!load_device_mcp().contains_key("amuxd-send"));
+        })
+    }
+
+    #[test]
+    fn open_computer_use_replaces_autoui_and_keeps_a_user_toggle() {
+        with_temp_home(|| {
+            let path = device_mcp_file();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"mcp":{"autoui":{"type":"local","enabled":true,
+                    "command":["npx","-y","autoui-mcp@latest"]}}}"#,
+            )
+            .unwrap();
+
+            assert!(ensure_device_mcp().unwrap());
+            let servers = load_device_mcp();
+            assert!(!servers.contains_key("autoui"));
+            let ocu = servers.get("open-computer-use").expect("seeded");
+            assert_eq!(ocu.enabled, Some(true));
+            assert_eq!(
+                ocu.command,
+                vec!["npx", "-y", "open-computer-use@1.1.4", "mcp"]
+            );
+            assert_eq!(ocu.timeout, Some(45));
+            assert_eq!(
+                ocu.environment.get(VISUAL_CURSOR_ENV).map(String::as_str),
+                Some("0")
+            );
+
+            let mut disabled = ocu.clone();
+            disabled.enabled = Some(false);
+            assert!(put_device_entries(HashMap::from([(
+                "open-computer-use".to_string(),
+                disabled
+            )]))
+            .unwrap());
+            assert!(
+                !ensure_device_mcp().unwrap(),
+                "a disabled Computer Use entry is left alone"
+            );
+            assert_eq!(load_device_mcp()["open-computer-use"].enabled, Some(false));
+        })
+    }
+
+    #[test]
+    fn an_existing_open_computer_use_entry_gains_a_probe_timeout() {
+        with_temp_home(|| {
+            let path = device_mcp_file();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"$schema":"https://opencode.ai/config.json","mcp":{
+                    "playwright":{"type":"local","enabled":false,"command":["npx","-y","@playwright/mcp@latest"]},
+                    "chrome-control":{"type":"local","enabled":true,"command":["npx","-y","chrome-devtools-mcp@latest","--autoConnect"]},
+                    "open-computer-use":{"type":"local","enabled":false,
+                        "command":["npx","-y","open-computer-use@1.1.4","mcp"]}
+                }}"#,
+            )
+            .unwrap();
+
+            assert!(ensure_device_mcp().unwrap());
+            let ocu = load_device_mcp().remove("open-computer-use").expect("kept");
+            assert_eq!(ocu.enabled, Some(false), "the user's toggle survives");
+            assert_eq!(
+                ocu.command,
+                vec!["npx", "-y", "open-computer-use@1.1.4", "mcp"]
+            );
+            assert_eq!(ocu.timeout, Some(45));
+            assert_eq!(
+                ocu.environment
+                    .get("OPEN_COMPUTER_USE_VISUAL_CURSOR")
+                    .map(String::as_str),
+                Some("0")
+            );
+            assert!(!ensure_device_mcp().unwrap(), "timeout is filled only once");
+        })
+    }
+
+    #[test]
+    fn a_user_who_wants_the_visual_cursor_keeps_it() {
+        with_temp_home(|| {
+            let path = device_mcp_file();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"$schema":"https://opencode.ai/config.json","mcp":{
+                    "open-computer-use":{"type":"local","enabled":true,"timeout":45,
+                        "command":["npx","-y","open-computer-use@1.1.4","mcp"],
+                        "environment":{"OPEN_COMPUTER_USE_VISUAL_CURSOR":"1"}}
+                }}"#,
+            )
+            .unwrap();
+
+            let _ = ensure_device_mcp().unwrap();
+            let ocu = &load_device_mcp()["open-computer-use"];
+            assert_eq!(
+                ocu.environment
+                    .get("OPEN_COMPUTER_USE_VISUAL_CURSOR")
+                    .map(String::as_str),
+                Some("1")
+            );
         })
     }
 

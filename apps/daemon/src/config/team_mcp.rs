@@ -21,7 +21,7 @@ use super::workspace_control::{McpServerConfig, WorkspaceControlError};
 pub const INHERENT_MCP_NAMES: &[&str] = &[
     "playwright",
     "chrome-control",
-    "autoui",
+    "open-computer-use",
     "teamclu-introspect",
 ];
 

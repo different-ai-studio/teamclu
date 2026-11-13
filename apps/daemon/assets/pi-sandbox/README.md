@@ -36,7 +36,7 @@ grep "pi host sandbox enabled" ~/.amuxd/logs/amuxd.log
 |---|---|
 | 工作区读写 | ✅ |
 | TeamClu 自己的 MCP 工具（`teamclu-introspect`） | ✅ |
-| `npx` 类 MCP（chrome-control / autoui / playwright） | ❌ `spawn EPERM` |
+| `npx` 类 MCP（chrome-control / open-computer-use / playwright） | ❌ `spawn EPERM` |
 | `git push` / 部署 | ❌ `~/.ssh` 被拒 |
 | cargo / pnpm 构建 | ❌ 缓存目录在工作区之外 |
 

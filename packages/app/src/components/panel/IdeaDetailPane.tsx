@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { formatRelativeTime } from '@/lib/ui/date-format'
+import { formatShortcut } from '@/lib/platform-shortcuts'
 import {
   createIdeaActivity,
   recordIdeaStatusChange,
@@ -169,7 +170,9 @@ function IdeaCreatePane({ teamId }: { teamId: string }) {
         eyebrow={t('ideas.detail.eyebrow', 'Idea')}
         actions={
           <>
-            <span className="mr-1 hidden font-mono text-[11px] text-faint sm:inline">⌘↵</span>
+            <span className="mr-1 hidden font-mono text-[11px] text-faint sm:inline">
+              {formatShortcut('mod+enter')}
+            </span>
             <Button
               type="button"
               variant="outline"

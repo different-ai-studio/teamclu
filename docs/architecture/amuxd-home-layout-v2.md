@@ -208,7 +208,7 @@ panic、init 前的 print、子进程输出。managed.log 由桌面端在每次 
 ### 3.4 `mcp.json`
 
 设备级 MCP server：`teamclu-introspect`（随 app 分发的 sidecar）、`playwright`、
-`chrome-control`、`autoui`。形状是 opencode 自己的
+`chrome-control`、`open-computer-use`。形状是 opencode 自己的
 `{ "mcp": { name: { type, enabled, command: [...] } } }`，**不是**团队那份用的
 Cursor `mcpServers` 形状——Cursor 形状没地方放 `enabled`（playwright 默认关），
 而这个形状每个消费者本来就已经在为工作区配置解析了。
