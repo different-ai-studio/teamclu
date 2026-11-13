@@ -80,9 +80,11 @@ function exitAnimationNames(node: HTMLElement): string[] {
 }
 
 /**
- * Ask Radix Presence to leave `unmountSuspended`. A synthetic animationend is
- * ignored while the exit animation is still running, so a normal close can
- * finish on its own.
+ * Ask Radix Presence to leave `unmountSuspended`. Skip this while an exit
+ * animation is still running so a normal close can finish on its own.
+ * Presence matches `animationName.includes(CSS.escape(event.animationName))`,
+ * so a closed overlay whose computed name has fallen back to `none` still
+ * needs an event named `none`.
  */
 function createAnimationEndEvent(animationName: string): Event {
   if (typeof AnimationEvent === 'function') {
@@ -100,7 +102,11 @@ function finishClosedOverlays() {
     const node = el as HTMLElement
     if (node.dataset.state === 'open') continue
     if (hasRunningAnimation(node)) continue
-    for (const animationName of exitAnimationNames(node)) {
+    const animationNames = exitAnimationNames(node)
+    // `none` is the computed value after an exit animation is gone. Presence
+    // treats that name as a match and unmounts; clearing body styles does not.
+    const names = animationNames.length > 0 ? animationNames : ['none']
+    for (const animationName of names) {
       node.dispatchEvent(createAnimationEndEvent(animationName))
     }
   }

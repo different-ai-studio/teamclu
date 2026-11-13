@@ -40,6 +40,22 @@ describe('releaseStuckModalLayers', () => {
     expect(ended).toEqual(['exit'])
   })
 
+  it('finishes a closed overlay whose animation name has fallen back to none', () => {
+    const overlay = document.createElement('div')
+    overlay.dataset.slot = 'dialog-overlay'
+    overlay.dataset.state = 'closed'
+    const ended: string[] = []
+    overlay.addEventListener('animationend', (event) => {
+      ended.push((event as AnimationEvent).animationName)
+    })
+    document.body.appendChild(overlay)
+
+    releaseStuckModalLayers()
+
+    expect(overlay.style.display).toBe('')
+    expect(ended).toEqual(['none'])
+  })
+
   it('leaves a closed overlay alone while its exit animation is running', () => {
     const overlay = document.createElement('div')
     overlay.dataset.slot = 'dialog-overlay'
