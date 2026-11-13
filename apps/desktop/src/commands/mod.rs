@@ -34,7 +34,6 @@ pub mod team_secret_store;
 pub mod team_share;
 pub mod team_skills;
 pub mod team_sync_proxy;
-pub mod terminal;
 pub mod tray_menu;
 pub mod updater;
 pub mod voice_input;

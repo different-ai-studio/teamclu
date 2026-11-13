@@ -13,7 +13,6 @@ import {
   User,
   Bug,
   PanelBottom,
-  TerminalSquare,
   FolderGit,
   RefreshCw,
   Shield,
@@ -167,8 +166,6 @@ export const GeneralSection = React.memo(function GeneralSection() {
   }, [])
   const acpStreamDebugEnabled = useAcpDebugStore((s) => s.enabled)
   const setAcpStreamDebugEnabled = useAcpDebugStore((s) => s.setEnabled)
-  const showTerminalToggle = useHeaderPreferencesStore((s) => s.showTerminalToggle)
-  const setShowTerminalToggle = useHeaderPreferencesStore((s) => s.setShowTerminalToggle)
   const showChangesTab = useHeaderPreferencesStore((s) => s.showChangesTab)
   const setShowChangesTab = useHeaderPreferencesStore((s) => s.setShowChangesTab)
   const showSkillsRefresh = useHeaderPreferencesStore((s) => s.showSkillsRefresh)
@@ -539,35 +536,17 @@ export const GeneralSection = React.memo(function GeneralSection() {
           <div className="flex items-center justify-between gap-4">
             <div className="space-y-1">
               <label className="text-[13px] font-medium flex items-center gap-2">
-                <TerminalSquare className="h-4 w-4 text-muted-foreground" />
-                {t('settings.general.showTerminalToggle', '终端开关')}
+                <FolderGit className="h-4 w-4 text-muted-foreground" />
+                {t('settings.general.showChangesTab', '文件更改')}
               </label>
               <p className="text-xs text-muted-foreground">
-                {t('settings.general.showTerminalToggleDesc', '在会话右上角显示终端面板开关。快捷键 Ctrl+` 始终可用，不受此设置影响。')}
+                {t('settings.general.showChangesTabDesc', '在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。')}
               </p>
             </div>
             <ToggleSwitch
-              enabled={showTerminalToggle}
-              onChange={setShowTerminalToggle}
+              enabled={showChangesTab}
+              onChange={setShowChangesTab}
             />
-          </div>
-
-          <div className="border-t pt-4">
-            <div className="flex items-center justify-between gap-4">
-              <div className="space-y-1">
-                <label className="text-[13px] font-medium flex items-center gap-2">
-                  <FolderGit className="h-4 w-4 text-muted-foreground" />
-                  {t('settings.general.showChangesTab', '文件更改')}
-                </label>
-                <p className="text-xs text-muted-foreground">
-                  {t('settings.general.showChangesTabDesc', '在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。')}
-                </p>
-              </div>
-              <ToggleSwitch
-                enabled={showChangesTab}
-                onChange={setShowChangesTab}
-              />
-            </div>
           </div>
 
           <div className="border-t pt-4">

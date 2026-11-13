@@ -84,12 +84,11 @@ import { useAppsStore } from "@/stores/apps-store";
 import { E2E_BUILD, isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
 import { TrafficLights } from "@/components/ui/traffic-lights";
 import { SidebarInset, SidebarProvider, useSidebar } from "@/components/ui/sidebar";
-import { HeaderPanelTab, TerminalToggleButton } from "@/app/chrome";
+import { HeaderPanelTab } from "@/app/chrome";
 import { MainContent } from "@/app/MainContent";
 import {
   useAppMenuOpenSettings,
   useDaemonLiveStatus,
-  useTerminalShortcuts,
   useTrayMenuLocaleSync,
   useWebviewShortcuts,
 } from "@/app/shell-hooks";
@@ -201,7 +200,6 @@ function AppContent() {
   // Header icon visibility — additive gates on top of the capability/session
   // conditions below. Defaults hidden; users enable per-icon in Settings →
   // General → "会话头部图标". See stores/header-preferences-store.ts.
-  const showTerminalToggle = useHeaderPreferencesStore((s) => s.showTerminalToggle);
   const showSkillsRefresh = useHeaderPreferencesStore((s) => s.showSkillsRefresh);
   const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
   const hasActiveFileTab = !!useTabsStore(selectActiveTab);
@@ -213,11 +211,10 @@ function AppContent() {
     isPanelOpen &&
     activeTab === "shortcuts";
   const showAppControlPanel = appControlPanelOpen && !!controlPanelApp;
-  // The file tree and the terminal both reach this machine's filesystem, so
-  // they only mean something for a session the local agent is in. Without this
-  // gate they kept showing the previous session's directory: the workspace
-  // store is ambient and only moves when a session resolving to a local path
-  // is opened.
+  // The file tree reaches this machine's filesystem, so it only means
+  // something for a session the local agent is in. Without this gate it kept
+  // showing the previous session's directory: the workspace store is ambient
+  // and only moves when a session resolving to a local path is opened.
   const {
     hasLocalAgent: sessionHasLocalAgent,
     path: sessionWorkspacePath,
@@ -692,13 +689,6 @@ function AppContent() {
                   <AppWindow className="h-4 w-4" />
                 </button>
               )}
-              {/* `sessionWorkspacePath`, not the ambient `workspacePath`: the
-                  store lags a session switch by a background round trip, and a
-                  PTY opened in that window lands in the previous session's
-                  folder — which a terminal, unlike a tree, then keeps. */}
-              {capabilities.workspace && sessionWorkspacePath && showTerminalToggle && (
-                <TerminalToggleButton workspacePath={sessionWorkspacePath} />
-              )}
               {capabilities.workspace && sessionWorkspacePath && showSkillsRefresh && (
                 <RefreshSkillsHeaderButton workspacePath={sessionWorkspacePath} />
               )}
@@ -809,7 +799,6 @@ function App() {
 
   // ── Global webview shortcuts (find, zoom, context menu) ──
   useWebviewShortcuts()
-  useTerminalShortcuts()
   useDaemonLiveStatus()
   useTrayMenuLocaleSync()
   useAppMenuOpenSettings()

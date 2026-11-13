@@ -2163,8 +2163,6 @@
       "acpStreamDebugDesc": "Show live ACP event stream above the chat thread",
       "headerIcons": "Conversation header icons",
       "headerIconsDesc": "Control which action icons appear in the conversation's top-right. Hidden by default; enable here as needed.",
-      "showTerminalToggle": "Terminal toggle",
-      "showTerminalToggleDesc": "Show the terminal panel toggle in the conversation's top-right. The Ctrl+` shortcut always works regardless of this setting.",
       "showChangesTab": "File changes",
       "showChangesTabDesc": "Show this session's file-changes entry in the conversation's top-right. Only appears when there is an active session.",
       "showSkillsRefresh": "Force refresh skills",
@@ -3608,7 +3606,7 @@
       "agent": "agent",
       "saveLimits": "Save limits",
       "quotasSaved": "Limits saved.",
-      "limitsHint": "Blank means no limit. The period is team-wide: per-member periods would make \u201cused this period\u201d incomparable between people.",
+      "limitsHint": "Blank means no limit. The period is team-wide: per-member periods would make “used this period” incomparable between people.",
       "ledgerTitle": "Top-ups and grants",
       "ledgerEmpty": "Nothing yet."
     },
@@ -3691,16 +3689,13 @@
     "publish": "Write to knowledge",
     "published": "Written to knowledge",
     "savedLocalOnly": "Saved on this machine; not synced to the team yet",
-    "distillHint": "These are distilled suggestions from the session, not the full transcript. Check what to keep, then write.",
+    "distillHint": "Suggestions distilled from the session — not the full chat. Select what to keep, then write.",
     "distillHintDocument": "These are distilled suggestions from the document, not the original file. Check what to keep, then write.",
-    "suggestions": "Suggestions",
-    "rewriteBody": "Rewrite the body from the selected suggestions",
+    "suggestions": "Distilled suggestions",
+    "rewriteBody": "Rewrite body from selected suggestions",
     "tabLabel": "Review",
     "title": "Review before writing to knowledge",
-    "untitled": "Untitled",
-    "distillHint": "Suggestions distilled from the session — not the full chat. Select what to keep, then write.",
-    "suggestions": "Distilled suggestions",
-    "rewriteBody": "Rewrite body from selected suggestions"
+    "untitled": "Untitled"
   },
   "knowledgeSync": {
     "groupConflict": "Needs a decision",
@@ -4100,15 +4095,6 @@
     "signInFirst": "You'll sign in first; the team is joined right after.",
     "cancel": "Not now",
     "accept": "Join team"
-  },
-  "terminal": {
-    "label": "Terminal",
-    "toggle": "Toggle terminal (⌃`)",
-    "newTab": "New terminal",
-    "closeTab": "Close terminal",
-    "search": {
-      "caseSensitive": "Case sensitive"
-    }
   },
   "skills": {
     "access": {

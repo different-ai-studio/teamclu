@@ -1,10 +1,10 @@
 // Suppress cfg warnings from the legacy `objc` crate's `msg_send!` / `sel_impl!` macros.
 #![allow(unexpected_cfgs)]
-// Eight Tauri command signatures take 8-14 flat arguments (env_catalog_set /
+// Several Tauri command signatures take 8-14 flat arguments (env_catalog_set /
 // env_catalog_delete and their _for_workspace twins, mqtt_connect, mqtt_probe,
-// terminal_open, webview_create). Commands receive their arguments as flat JS
-// invoke() fields, so folding them into a struct changes the IPC shape; left as
-// a crate-level allow with that count until those commands are redesigned.
+// webview_create). Commands receive their arguments as flat JS invoke() fields,
+// so folding them into a struct changes the IPC shape; left as a crate-level
+// allow with that count until those commands are redesigned.
 // Every other lint that used to be allowed here hid zero warnings or was fixed.
 #![allow(clippy::too_many_arguments)]
 
@@ -23,7 +23,6 @@ pub mod proto;
 #[cfg(target_os = "macos")]
 mod screenshot_drop;
 pub mod sentry_utils;
-mod terminal;
 #[cfg(test)]
 pub mod test_home;
 mod webview_recovery;
@@ -417,7 +416,6 @@ pub fn run() {
         .manage(commands::oauth_loopback::OAuthLoopbackState::default())
         .manage(commands::kb_maintainer::KbMaintainerState::default())
         .manage::<crate::mqtt::MqttBus>(std::sync::Arc::new(crate::mqtt::MqttBusInner::new()))
-        .manage(std::sync::Arc::new(crate::terminal::Registry::new()))
         .invoke_handler(tauri::generate_handler![
             commands::os_full_name,
             commands::get_device_hostname,
@@ -541,13 +539,6 @@ pub fn run() {
             commands::updater::check_update,
             commands::updater::download_and_install_update,
             commands::updater::restart_app,
-            commands::terminal::terminal_close,
-            commands::terminal::terminal_list,
-            commands::terminal::terminal_open,
-            commands::terminal::terminal_resize,
-            commands::terminal::terminal_subscribe,
-            commands::terminal::terminal_detach,
-            commands::terminal::terminal_write,
             commands::team_sync_proxy::team_file_versions,
             commands::team_sync_proxy::team_file_content,
             commands::team_sync_proxy::team_changed_files,
@@ -996,9 +987,6 @@ pub fn run() {
                     }
                 }
                 tauri::RunEvent::ExitRequested { .. } => {
-                    if let Some(registry) = app.try_state::<std::sync::Arc<crate::terminal::Registry>>() {
-                        registry.kill_all();
-                    }
                     // Same once-flag as Exit — second call is a no-op.
                     if let Some(sup) =
                         app.try_state::<commands::amuxd_supervisor::AmuxdSupervisor>()

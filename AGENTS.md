@@ -372,7 +372,6 @@ domain, that is usually a sign it is doing two things.
     team/         teams, invites, permissions, skill paths
     teamclu/      agent runtime protocol (ACP permissions, runtime commands)
     telemetry/    Sentry, scoring, usage, startup timing
-    terminal/     PTY client
     ui/           presentation helpers with no domain of their own
     workspace/    workspace paths, gitignore, desktop file reads
     workspace-seed/  first-run workspace instructions

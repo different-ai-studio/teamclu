@@ -2,7 +2,7 @@
  * Cross-window "is this window busy" mirror for the auto-restart update mode.
  *
  * `UpdateDialogContainer` mounts at the app root, so it runs once per open
- * window — but streaming/terminal state lives in per-renderer Zustand stores
+ * window — but streaming state lives in per-renderer Zustand stores
  * (each Tauri window is its own webview), invisible across windows. Only the
  * `"main"` window ever decides to restart (see `use-auto-restart.ts`), so
  * every other window broadcasts its own local busy signal here for `main` to

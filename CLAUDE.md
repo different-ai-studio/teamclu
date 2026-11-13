@@ -111,10 +111,6 @@ nowhere else; this describes what exists, it decides nothing):
   under `dirs::config_dir()/<brand storage dir>/cron-global`, workspace jobs
   are keyed by workspace path. The daemon only executes the turns a job
   triggers, so a headless daemon has no cron.
-- **Terminal** — `apps/desktop/src/terminal/` + `commands/terminal.rs`:
-  `portable-pty` PTYs with an 8 MiB per-terminal ring buffer replayed on
-  re-attach. The cwd must fall under one of the allowed roots the frontend
-  passes with the call; no roots, no terminal.
 - **Local cache** — `apps/desktop/src/local_cache/`: a libsql (SQLite) file at
   `<brand home>/local-cache.db` mirroring Cloud API rows (actors, sessions,
   participants, messages, ideas, claims, submissions, outbox, watermarks) for

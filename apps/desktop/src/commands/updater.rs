@@ -960,7 +960,7 @@ pub async fn download_and_install_update<R: Runtime>(
 /// — the window disappears (or never goes away) and nothing comes back.
 /// Instead we hand the relaunch to `open(1)` in a detached shell that outlives
 /// this process, then exit through the normal Tauri path so `RunEvent::Exit`
-/// still stops amuxd and the terminal registry.
+/// still stops amuxd.
 #[tauri::command]
 pub async fn restart_app<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     relaunch_and_exit(app)
@@ -1082,7 +1082,7 @@ fn relaunch_and_exit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 
     // `/R` brings the app back once the install finishes, so this exit is the
     // end of our part. Exit through Tauri rather than `process::exit` so the
-    // terminal registry and the rest of `RunEvent::Exit` still run;
+    // rest of `RunEvent::Exit` still run;
     // `shutdown_fast_no_wait` has already flipped the supervisor's once-only
     // flag, so the handler there will not re-enter the blocking stop.
     app.exit(0);

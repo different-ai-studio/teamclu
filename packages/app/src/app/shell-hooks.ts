@@ -8,9 +8,7 @@ import { isTauri } from "@/lib/utils";
 import { listenForDaemonLiveStatus } from "@/lib/mqtt/mqtt-bridge";
 import { setDaemonLiveConnected } from "@/lib/diagnostics/live-dedup-stats";
 import { useUIStore } from "@/stores/ui";
-import { useWorkspaceStore } from "@/stores/workspace";
 import { useTabsStore } from "@/stores/tabs";
-import { useTerminalStore } from "@/stores/terminal-store";
 import { urlToLabel } from "@/lib/ui/webview-utils";
 import { useWebviewUIStore } from "@/app/webview-ui-store";
 
@@ -132,50 +130,4 @@ export function useWebviewShortcuts() {
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
   }, [])
-}
-
-export function useTerminalShortcuts() {
-  const togglePanel = useTerminalStore(s => s.togglePanel);
-  const openTerminal = useTerminalStore(s => s.openTerminal);
-  const closeTerminal = useTerminalStore(s => s.closeTerminal);
-  const workspacePath = useWorkspaceStore(s => s.workspacePath);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!workspacePath) return;
-      const mod = e.metaKey || e.ctrlKey;
-
-      // Ctrl + ` (backtick) — toggle terminal panel
-      if (e.ctrlKey && e.key === "`") {
-        e.preventDefault();
-        togglePanel(workspacePath);
-        return;
-      }
-
-      // Only act on Cmd+T / Cmd+W when focus is inside a terminal viewport.
-      const focused = document.activeElement;
-      const inTerminal = focused?.closest?.(".xterm") != null;
-      if (!inTerminal) return;
-
-      if (mod && e.key.toLowerCase() === "t") {
-        e.preventDefault();
-        void openTerminal(workspacePath, {
-          cwd: workspacePath,
-          allowedRoots: [workspacePath],
-        });
-        return;
-      }
-
-      if (mod && e.key.toLowerCase() === "w") {
-        e.preventDefault();
-        const state = useTerminalStore.getState();
-        const activeId = state.activeTabByWorkspace[workspacePath];
-        if (activeId) void closeTerminal(activeId);
-        return;
-      }
-    };
-
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [workspacePath, togglePanel, openTerminal, closeTerminal]);
 }
