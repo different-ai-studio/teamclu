@@ -1108,7 +1108,9 @@
       "clear": "Clear",
       "waiting": "Waiting for {{token}} …",
       "logFileSession": "{{dir}}/{{sessionId}}.log + _all.log",
-      "openLog": "Open log in Finder"
+      "openLogInExplorer": "Open log in Explorer",
+      "openLogInFileManager": "Open log in file manager",
+      "openLogInFinder": "Open log in Finder"
     },
     "toast": {
       "mentionRouteFailedTitle": "@Agent set but message can't be routed",
@@ -1231,7 +1233,9 @@
     "invalidFileNameChars": "A name can't contain {{chars}}",
     "invalidFileNameReserved": "\"{{name}}\" is a reserved name on Windows",
     "invalidFileNameTrailing": "A name can't end with a space or a period",
-    "undo": "Undo: {{desc}}"
+    "undo": "Undo: {{desc}}",
+    "revealInExplorer": "Show in Explorer",
+    "revealInFileManager": "Show in file manager"
   },
   "sessions": {
     "list": {
@@ -1269,9 +1273,11 @@
       "waiting": "Waiting",
       "acpLines": "{{count}} ACP debug lines",
       "acpLogHint": "{{dir}}/{{sessionId}}.log",
-      "revealAcpLog": "Reveal ACP log",
       "openSession": "Open session",
-      "copySessionId": "Copy session ID"
+      "copySessionId": "Copy session ID",
+      "revealAcpLogExplorer": "Reveal ACP log in Explorer",
+      "revealAcpLogFileManager": "Reveal ACP log in file manager",
+      "revealAcpLogMac": "Reveal ACP log in Finder"
     }
   },
   "sidebar": {
@@ -1307,7 +1313,6 @@
     "showAllSessions": "Show all sessions",
     "showCronSessions": "Show scheduled sessions",
     "sessionKindMenu": "List kind",
-    "searchWithShortcut": "Search (⌘K)",
     "pinned": "Pinned",
     "contacts": "Contacts",
     "more": "More",
@@ -1334,7 +1339,8 @@
     "localDaemonAutomationAria": "Open automation tasks",
     "localDaemonRetrying": "Retrying…",
     "localDaemonTokensThisMonth": "{{tokens}} tokens this month",
-    "ideas": "Ideas"
+    "ideas": "Ideas",
+    "searchWithShortcutDynamic": "Search ({{shortcut}})"
   },
   "errors": {
     "somethingWentWrong": "Something went wrong",
@@ -2123,7 +2129,6 @@
       "defaultPermissionAsk": "Ask",
       "defaultPermissionFullAccess": "Full access",
       "closeWindow": "When closing the window",
-      "closeWindowDesc": "Choose what happens when you click the window close button. Cmd+Q always quits.",
       "closeWindowAsk": "Ask every time",
       "closeWindowTray": "Minimize to tray (keep agent)",
       "closeWindowQuit": "Quit and stop agent",
@@ -2166,7 +2171,9 @@
       "showChangesTab": "File changes",
       "showChangesTabDesc": "Show this session's file-changes entry in the conversation's top-right. Only appears when there is an active session.",
       "showSkillsRefresh": "Force refresh skills",
-      "showSkillsRefreshDesc": "Show a button in the conversation's top-right that reloads this workspace's skill directories. Use it when hot-reload misses a change."
+      "showSkillsRefreshDesc": "Show a button in the conversation's top-right that reloads this workspace's skill directories. Use it when hot-reload misses a change.",
+      "closeWindowDescMac": "Choose what happens when you click the window close button. {{quitKeys}} always quits and stops the agent.",
+      "closeWindowDescOther": "Choose what happens when you click the window close button. {{quitKeys}} always quits and stops the agent."
     },
     "llm": {
       "refresh": "Refresh",
@@ -4099,14 +4106,17 @@
   "skills": {
     "access": {
       "title": "Cannot access skills folder",
-      "osPermissionBody": "Your user account cannot read or write {{path}}. Fix ownership in Finder (Get Info → Sharing & Permissions), then retry.",
-      "tauriScopeBody": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in Finder.",
       "homeMissingBody": "Could not resolve your home directory, so ~/.agents/skills is unavailable.",
       "createFailedBody": "Could not create {{path}}: {{detail}}",
       "genericBody": "Skills cannot be installed until ~/.agents/skills is accessible.",
-      "reveal": "Reveal in Finder",
       "retry": "Retry",
-      "dismiss": "Dismiss"
+      "dismiss": "Dismiss",
+      "osPermissionBodyLinux": "Your user account cannot read or write {{path}}. Fix folder permissions in your file manager, then retry.",
+      "osPermissionBodyMac": "Your user account cannot read or write {{path}}. In Finder, select the folder → Get Info → Sharing & Permissions, fix ownership, then retry.",
+      "osPermissionBodyWindows": "Your user account cannot read or write {{path}}. In File Explorer, right-click the folder → Properties → Security, fix permissions, then retry.",
+      "tauriScopeBodyLinux": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in your file manager.",
+      "tauriScopeBodyMac": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in Finder.",
+      "tauriScopeBodyWindows": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in File Explorer."
     },
     "builtinLabel": "Built-in",
     "builtinPath": "~/.agents/skills/ ({{app}} built-in)",
