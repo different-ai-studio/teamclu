@@ -105,8 +105,7 @@ pub fn safe_save_dialog<R: Runtime>(
     match outcome {
         Some(Ok(path)) => Ok(path.map(|p| p.to_string_lossy().into_owned())),
         Some(Err(())) => Err(
-            "Save dialog failed (native panel unavailable). Try again with the app focused."
-                .into(),
+            "Save dialog failed (native panel unavailable). Try again with the app focused.".into(),
         ),
         None => Err("Save dialog did not run on the main thread".into()),
     }
