@@ -40,9 +40,11 @@ tauri = { version = "2", features = ["macos-private-api", "unstable", "tray-icon
 tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
-# Direct rfd for safe_save_dialog (catch_unwind around NSSavePanel); keep in
-# lockstep with the version pulled by tauri-plugin-dialog.
-rfd = "0.16"
+# Direct rfd for safe_save_dialog (catch_unwind around NSSavePanel).
+# default-features = false: rfd 0.16 defaults to xdg-portal, while
+# tauri-plugin-dialog defaults to gtk3 — enabling both panics the build script
+# on Linux CI. Stay featureless here so dialog's gtk3 wins via unification.
+rfd = { version = "0.16", default-features = false }
 tauri-plugin-notification = "2"
 tauri-plugin-process = "2"
 tauri-plugin-deep-link = "2"
