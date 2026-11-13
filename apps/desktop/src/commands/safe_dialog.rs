@@ -68,6 +68,8 @@ fn run_save_dialog(args: &SafeSaveArgs) -> Option<PathBuf> {
     dialog.save_file()
 }
 
+type DialogOutcome = Result<Option<PathBuf>, ()>;
+
 /// Native save dialog. Returns `Ok(None)` on cancel, `Err` if AppKit/rfd panics.
 #[tauri::command]
 pub fn safe_save_dialog<R: Runtime>(
@@ -76,7 +78,7 @@ pub fn safe_save_dialog<R: Runtime>(
 ) -> Result<Option<String>, String> {
     activate_app();
 
-    let slot: Arc<Mutex<Option<Result<Option<PathBuf>, ()>>>> = Arc::new(Mutex::new(None));
+    let slot: Arc<Mutex<Option<DialogOutcome>>> = Arc::new(Mutex::new(None));
     let slot_for_main = Arc::clone(&slot);
     app.run_on_main_thread(move || {
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| run_save_dialog(&args)));
