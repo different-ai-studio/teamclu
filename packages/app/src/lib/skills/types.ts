@@ -54,31 +54,14 @@ export const INHERENT_SKILL_NAMES = new Set([
   'create-role',
   'deploy-app',
   'app-auth',
-  'macos-control',
-  'windows-control',
+  'open-computer-use',
 ])
 
-const DESKTOP_CONTROL_INHERENT_SLUGS = new Set(['macos-control', 'windows-control'])
+const RETIRED_DESKTOP_CONTROL_SLUGS = new Set(['macos-control', 'windows-control'])
 
-/** Host OS–matched built-in desktop automation skill, or null on Linux / unknown. */
-function getActiveDesktopControlSkillSlug(): 'macos-control' | 'windows-control' | null {
-  if (typeof navigator === 'undefined') return null
-  const platform = (navigator.platform ?? '').toLowerCase()
-  const ua = (navigator.userAgent ?? '').toLowerCase()
-  if (platform.includes('mac') || platform.includes('darwin') || ua.includes('mac os')) {
-    return 'macos-control'
-  }
-  if (platform.includes('win') || ua.includes('windows')) {
-    return 'windows-control'
-  }
-  return null
-}
-
-/** Hide the non-native desktop control inherent skill in UI / merged lists (legacy skill dir is cleaned in Rust). */
+/** Hide leftover macos-control / windows-control dirs until the daemon deletes them. */
 export function shouldIncludeDesktopControlSkill(filename: string): boolean {
-  if (!DESKTOP_CONTROL_INHERENT_SLUGS.has(filename)) return true
-  const active = getActiveDesktopControlSkillSlug()
-  return active !== null && filename === active
+  return !RETIRED_DESKTOP_CONTROL_SLUGS.has(filename)
 }
 
 /** Extended skill info with source tracking */

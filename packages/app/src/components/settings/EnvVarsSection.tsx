@@ -123,8 +123,8 @@ function EnvVarDialog({ open, onOpenChange, editingEntry, teamSecretMissing, onS
       return
     }
     // shared team keys must be lowercase server-side. For system-shared
-    // placeholder rows the displayed key is uppercase (matches the env-var name
-    // autoui-mcp reads), but the dialog stores the lowercase form transparently
+    // placeholder rows the displayed key is uppercase (env-var convention),
+    // but the dialog stores the lowercase form transparently
     // — so we accept either case here and let `onSave` normalize.
     if (shared) {
       const probe = isPlaceholder ? trimmedKey.toLowerCase() : trimmedKey

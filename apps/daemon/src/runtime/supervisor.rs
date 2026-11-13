@@ -28,11 +28,11 @@ const MAX_AUTO_SKILL_REFRESHES_PER_TICK: usize = 1;
 /// name this build no longer maintains. Removed on sight — see the call site.
 /// Names no runtime should load any more. `teamclaw-introspect` is the
 /// pre-rename sidecar; `amuxd-send` is the retired second daemon MCP server
-/// whose `send` tool now lives in `teamclu-introspect`. Both are removed from
-/// any workspace config that still carries a copy — leaving one means spawning
-/// a server that no longer exists, and under pi a failed bridge spawn used to
-/// take the whole runtime down.
-const LEGACY_MCP_NAMES: &[&str] = &["teamclaw-introspect", "amuxd-send"];
+/// whose `send` tool now lives in `teamclu-introspect`; `autoui` is the retired
+/// vision-and-mouse desktop fallback. Removed from any workspace config that
+/// still carries a copy — leaving one means spawning a server that no longer
+/// exists, and under pi a failed bridge spawn used to take the whole runtime down.
+const LEGACY_MCP_NAMES: &[&str] = &["teamclaw-introspect", "amuxd-send", "autoui"];
 
 use crate::config::workspace_control::{
     ApplyOutcome, EnvActivationBlocker, EnvActivationDiagnostics, RuntimeStatus,
@@ -52,25 +52,8 @@ struct InherentSkill {
     content: &'static str,
 }
 
-fn inherent_desktop_control_skill() -> Option<InherentSkill> {
-    #[cfg(target_os = "macos")]
-    return Some(InherentSkill {
-        dirname: "macos-control",
-        content: include_str!("../../../../packages/app/src/lib/skills/macos-control/SKILL.md"),
-    });
-
-    #[cfg(target_os = "windows")]
-    return Some(InherentSkill {
-        dirname: "windows-control",
-        content: include_str!("../../../../packages/app/src/lib/skills/windows-control/SKILL.md"),
-    });
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    None
-}
-
 fn inherent_skills() -> Vec<InherentSkill> {
-    let mut out = vec![
+    vec![
         InherentSkill {
             dirname: "create-role",
             content: include_str!("../../../../packages/app/src/lib/skills/create-role/SKILL.md"),
@@ -83,11 +66,13 @@ fn inherent_skills() -> Vec<InherentSkill> {
             dirname: "deploy-app",
             content: include_str!("../../../../packages/app/src/lib/skills/deploy-app/SKILL.md"),
         },
-    ];
-    if let Some(skill) = inherent_desktop_control_skill() {
-        out.push(skill);
-    }
-    out
+        InherentSkill {
+            dirname: "open-computer-use",
+            content: include_str!(
+                "../../../../packages/app/src/lib/skills/open-computer-use/SKILL.md"
+            ),
+        },
+    ]
 }
 
 fn opencode_json_path(workspace_path: &Path) -> PathBuf {
@@ -169,7 +154,7 @@ fn mutate_inherent_mcp(
         changed = true;
     }
 
-    // `amuxd-send`, `playwright`, `chrome-control` and `autoui` are device-level
+    // `amuxd-send`, `playwright`, `chrome-control` and `open-computer-use` are device-level
     // and live in `~/.amuxd/mcp.json` (see `config::device_mcp`). They used to be
     // written here, once per workspace, each copy carrying this machine's
     // absolute binary paths. Drop any such copy: it outranks the device file, so
@@ -526,12 +511,12 @@ fn ensure_extended_inherent_config(
         WorkspaceControlError::Parse("opencode.json root is not an object".into())
     })?;
 
-    // No MCP server is seeded here any more. teamclu-introspect / autoui /
-    // playwright / chrome-control / amuxd-send are all written once per machine
-    // by `config::device_mcp::ensure_device_mcp`. Introspect was the last one
-    // written per workspace, for the sake of a `--workspace` argument it does
-    // not need: the flag defaults to `.` and MCP children are spawned with the
-    // worktree as cwd.
+    // No MCP server is seeded here any more. teamclu-introspect,
+    // open-computer-use, playwright and chrome-control are written once per
+    // machine by `config::device_mcp::ensure_device_mcp`. Introspect was the
+    // last one written per workspace, for the sake of a `--workspace` argument
+    // it does not need: the flag defaults to `.` and MCP children are spawned
+    // with the worktree as cwd.
 
     // `skills.paths` is not workspace state either. It used to be seeded here as
     // `["teamclu-team/skills", "<home>/.agents/skills"]`:
@@ -740,22 +725,12 @@ pub fn ensure_global_skill_paths() -> Result<bool, WorkspaceControlError> {
     .map_err(map_store_err)
 }
 
-fn remove_non_native_desktop_control_skills(skills_dir: &Path) {
-    let remove_if_dir = |name: &str| {
+fn remove_retired_desktop_control_skills(skills_dir: &Path) {
+    for name in ["macos-control", "windows-control"] {
         let path = skills_dir.join(name);
         if path.is_dir() {
             let _ = std::fs::remove_dir_all(&path);
         }
-    };
-
-    #[cfg(target_os = "macos")]
-    remove_if_dir("windows-control");
-    #[cfg(target_os = "windows")]
-    remove_if_dir("macos-control");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        remove_if_dir("macos-control");
-        remove_if_dir("windows-control");
     }
 }
 
@@ -853,7 +828,7 @@ fn ensure_managed_deploy_app_skill(
 
 fn ensure_inherent_skills_in_dir(skills_dir: &Path) -> Result<(), WorkspaceControlError> {
     std::fs::create_dir_all(skills_dir).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-    remove_non_native_desktop_control_skills(skills_dir);
+    remove_retired_desktop_control_skills(skills_dir);
 
     for skill in inherent_skills() {
         if skill.dirname == "deploy-app" {
@@ -2158,6 +2133,7 @@ mod inherent_mcp_tests {
         let mut config = serde_json::json!({
             "mcp": {
                 "amuxd-send": { "type": "local", "enabled": true, "command": ["/old/amuxd", "mcp-server"] },
+                "autoui": { "type": "local", "enabled": true, "command": ["npx", "autoui-mcp"] },
                 "chrome-control": { "type": "local", "enabled": true, "command": ["npx", "chrome"] },
                 // Introspect copies additionally pin `--workspace` to whichever
                 // workspace happened to write them.
@@ -2168,6 +2144,7 @@ mod inherent_mcp_tests {
         });
         let mcp = inherent_mcp_map(&mut config);
         assert!(!mcp.contains_key("amuxd-send"));
+        assert!(!mcp.contains_key("autoui"));
         assert!(!mcp.contains_key("chrome-control"));
         assert!(!mcp.contains_key("teamclu-introspect"));
     }
@@ -2359,6 +2336,22 @@ mod tests {
             assert!(body.contains(&format!("name: {name}")));
             assert!(inherent_skills().iter().any(|skill| skill.dirname == name));
         }
+    }
+
+    #[test]
+    fn retired_desktop_control_skills_are_replaced_by_open_computer_use() {
+        let root = tempfile::tempdir().unwrap();
+        let skills = root.path().join("skills");
+        for name in ["macos-control", "windows-control"] {
+            let dir = skills.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), "old desktop skill").unwrap();
+        }
+        ensure_inherent_skills_in_dir(&skills).unwrap();
+        assert!(!skills.join("macos-control").exists());
+        assert!(!skills.join("windows-control").exists());
+        let body = std::fs::read_to_string(skills.join("open-computer-use/SKILL.md")).unwrap();
+        assert!(body.contains("name: open-computer-use"));
     }
 
     fn isolated_home() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {

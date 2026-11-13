@@ -14,6 +14,15 @@ use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::time::timeout;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// A configured `timeout` cannot stall the settings page indefinitely.
+const PROBE_TIMEOUT_MAX: Duration = Duration::from_secs(120);
+
+/// Per-server `timeout` (seconds) when set, otherwise [`PROBE_TIMEOUT`].
+/// Clamped so a typo cannot hang tool discovery.
+fn probe_timeout(config: &McpServerConfig) -> Duration {
+    let secs = config.timeout.unwrap_or(PROBE_TIMEOUT.as_secs());
+    Duration::from_secs(secs.clamp(1, PROBE_TIMEOUT_MAX.as_secs()))
+}
 
 /// MCP configs commonly say "npx"/"npm"; those are .cmd shims on Windows.
 /// One rule for the whole daemon lives in `well_known_bin::spawn_name`.
@@ -174,13 +183,14 @@ pub async fn probe_local_stdio(
         .take()
         .ok_or_else(|| "stdout unavailable".to_string())?;
 
-    let result = timeout(PROBE_TIMEOUT, mcp_stdio_tools_exchange(stdin, stdout)).await;
+    let probe_timeout = probe_timeout(config);
+    let result = timeout(probe_timeout, mcp_stdio_tools_exchange(stdin, stdout)).await;
     let _ = child.kill().await;
 
     match result {
         Ok(Ok(tools)) => Ok(tools),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(format!("timeout after {}s", PROBE_TIMEOUT.as_secs())),
+        Err(_) => Err(format!("timeout after {}s", probe_timeout.as_secs())),
     }
 }
 
@@ -281,7 +291,7 @@ pub async fn probe_remote_http(config: &McpServerConfig) -> Result<Vec<String>, 
         .ok_or_else(|| "no url configured".to_string())?;
 
     let client = reqwest::Client::builder()
-        .timeout(PROBE_TIMEOUT)
+        .timeout(probe_timeout(config))
         .build()
         .map_err(|e| format!("build client failed: {e}"))?;
 
@@ -444,6 +454,29 @@ async fn probe_one_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_timeout_defaults_to_ten_seconds_and_clamps() {
+        assert_eq!(probe_timeout_secs(None), 10);
+        assert_eq!(probe_timeout_secs(Some(45)), 45);
+        assert_eq!(probe_timeout_secs(Some(0)), 1);
+        assert_eq!(probe_timeout_secs(Some(10_000)), 120);
+    }
+
+    fn probe_timeout_secs(configured: Option<u64>) -> u64 {
+        let config = McpServerConfig {
+            server_type: String::new(),
+            enabled: None,
+            command: Vec::new(),
+            environment: HashMap::new(),
+            url: None,
+            headers: HashMap::new(),
+            timeout: configured,
+            source: None,
+            extra: HashMap::new(),
+        };
+        probe_timeout(&config).as_secs()
+    }
 
     #[test]
     fn extract_tool_names_from_tools_list_response() {

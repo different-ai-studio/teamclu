@@ -4,7 +4,7 @@ use serde_json::{json, Map, Value};
 const INHERENT_MCP_NAMES: &[&str] = &[
     "playwright",
     "chrome-control",
-    "autoui",
+    "open-computer-use",
     "teamclu-introspect",
 ];
 
