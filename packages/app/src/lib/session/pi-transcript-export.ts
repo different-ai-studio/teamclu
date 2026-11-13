@@ -80,11 +80,11 @@ export async function savePiTranscript(sessionId: string): Promise<string | null
     return filename
   }
 
-  const { save } = await import('@tauri-apps/plugin-dialog')
+  const { safeSaveDialog } = await import('@/lib/workspace/safe-save-dialog')
   const { writeFile } = await import('@tauri-apps/plugin-fs')
   const { downloadDir } = await import('@tauri-apps/api/path')
   const downloads = await downloadDir()
-  const dest = await save({
+  const dest = await safeSaveDialog({
     title: i18n.t('chat.exportTranscript', 'Export session transcript'),
     defaultPath: `${downloads}/${filename}`,
     filters: [{ name: 'JSON', extensions: ['json'] }],

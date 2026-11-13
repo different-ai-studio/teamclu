@@ -824,10 +824,24 @@ impl AmuxdSupervisor {
         if let Some(introspect) = bundled_introspect_path() {
             cmd.env(INTROSPECT_ENV, introspect);
         }
-        log::info!(
-            "[amuxd-supervisor] spawning managed amuxd: {}",
-            bin.display()
-        );
+        // Avoid bare `log::info!` here: if the logger's stdout/webview target
+        // is already broken, fern's stderr fallback panics the process (RUST-3)
+        // before we ever spawn. Write the breadcrumb into the managed log and
+        // soft-log the same line.
+        {
+            let line = format!(
+                "[amuxd-supervisor] spawning managed amuxd: {}",
+                bin.display()
+            );
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .and_then(|mut f| {
+                    std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes())
+                });
+            crate::soft_log::info(&line);
+        }
         let child = cmd
             .spawn()
             .map_err(|e| format!("spawn bundled amuxd start: {e}"))?;
@@ -849,6 +863,14 @@ impl AmuxdSupervisor {
         Ok(())
     }
 
+    /// True after Exit / ExitRequested / signal handlers started teardown.
+    /// Callers that schedule work after wake/resume must check this before
+    /// touching the event loop again — otherwise tao can panic with
+    /// `cannot move state from Destroyed` (TEAMCLU-RUST-V).
+    pub fn is_exiting(&self) -> bool {
+        self.app_exiting.load(Ordering::SeqCst)
+    }
+
     /// Mark app exiting and stop amuxd. Safe to call from Exit + ExitRequested.
     /// Must stay fast: once-only, wait on Child (not kill(0) polling).
     pub fn shutdown_blocking(&self) {
@@ -865,7 +887,9 @@ impl AmuxdSupervisor {
                 return;
             }
             if std::time::Instant::now() >= deadline {
-                log::warn!("[amuxd-supervisor] lifecycle lock busy on exit; stopping without lock");
+                crate::soft_log::warn(
+                    "[amuxd-supervisor] lifecycle lock busy on exit; stopping without lock",
+                );
                 stop_without_lock();
                 return;
             }

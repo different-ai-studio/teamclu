@@ -40,6 +40,9 @@ tauri = { version = "2", features = ["macos-private-api", "unstable", "tray-icon
 tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
+# Direct rfd for safe_save_dialog (catch_unwind around NSSavePanel); keep in
+# lockstep with the version pulled by tauri-plugin-dialog.
+rfd = "0.16"
 tauri-plugin-notification = "2"
 tauri-plugin-process = "2"
 tauri-plugin-deep-link = "2"

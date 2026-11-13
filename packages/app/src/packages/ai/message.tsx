@@ -27,14 +27,14 @@ function dataUrlToUint8Array(dataUrl: string): Uint8Array {
 async function downloadImage(dataUrl: string, filename: string) {
   if (isTauri()) {
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog")
+      const { safeSaveDialog } = await import("@/lib/workspace/safe-save-dialog")
       const { writeFile } = await import("@tauri-apps/plugin-fs")
       const { downloadDir } = await import("@tauri-apps/api/path")
 
       const ext = filename.split(".").pop()?.toLowerCase() || "png"
       const filterName = ext.toUpperCase() + " Image"
       const downloads = await downloadDir()
-      const dest = await save({
+      const dest = await safeSaveDialog({
         title: i18n.t("chat.imageViewer.saveImage", "保存图片"),
         defaultPath: `${downloads}/${filename}`,
         filters: [{ name: filterName, extensions: [ext] }],

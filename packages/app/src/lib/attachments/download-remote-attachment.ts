@@ -93,8 +93,8 @@ async function downloadViaBrowser(url: string, filename: string): Promise<void> 
 }
 
 async function downloadViaTauri(url: string, filename: string): Promise<string | null> {
-  const [{ save }, { writeFile }, { downloadDir }] = await Promise.all([
-    import("@tauri-apps/plugin-dialog"),
+  const [{ safeSaveDialog }, { writeFile }, { downloadDir }] = await Promise.all([
+    import("@/lib/workspace/safe-save-dialog"),
     import("@tauri-apps/plugin-fs"),
     import("@tauri-apps/api/path"),
   ]);
@@ -102,7 +102,7 @@ async function downloadViaTauri(url: string, filename: string): Promise<string |
   const safeName = sanitizeFilename(filename);
   const ext = extensionFromFilename(safeName);
   const downloads = await downloadDir();
-  const dest = await save({
+  const dest = await safeSaveDialog({
     title: i18n.t("chat.attachment.saveAttachment", "Save attachment"),
     defaultPath: `${downloads}/${safeName}`,
     filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
@@ -168,15 +168,15 @@ async function downloadBytesViaTauri(
   bytes: Uint8Array,
   filename: string,
 ): Promise<string | null> {
-  const [{ save }, { writeFile }, { downloadDir }] = await Promise.all([
-    import("@tauri-apps/plugin-dialog"),
+  const [{ safeSaveDialog }, { writeFile }, { downloadDir }] = await Promise.all([
+    import("@/lib/workspace/safe-save-dialog"),
     import("@tauri-apps/plugin-fs"),
     import("@tauri-apps/api/path"),
   ]);
   const safeName = sanitizeFilename(filename);
   const ext = extensionFromFilename(safeName);
   const downloads = await downloadDir();
-  const dest = await save({
+  const dest = await safeSaveDialog({
     title: i18n.t("chat.attachment.saveAttachment", "Save attachment"),
     defaultPath: `${downloads}/${safeName}`,
     filters: [{ name: ext.toUpperCase(), extensions: [ext] }],

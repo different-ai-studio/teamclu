@@ -23,6 +23,7 @@ pub mod proto;
 #[cfg(target_os = "macos")]
 mod screenshot_drop;
 pub mod sentry_utils;
+pub mod soft_log;
 #[cfg(test)]
 pub mod test_home;
 mod webview_recovery;
@@ -353,25 +354,40 @@ pub fn run() {
     // never shadow it. Best-effort, non-fatal.
     commands::server_config::cleanup_deprecated_server_config();
 
+    // Packaged GUI apps often have a closed stdout/stderr. fern then fails the
+    // Stdout target, falls back to stderr logging, fails again, and panics
+    // ("Error performing stderr logging after error occurred during regular
+    // logging") — Sentry TEAMCLU-RUST-3, seen while spawning amuxd. Keep LogDir
+    // as the only release target; Stdout/Webview stay for debug builds.
+    let mut log_builder = tauri_plugin_log::Builder::new()
+        .level(log::LevelFilter::Info)
+        .filter(|metadata| {
+            // Suppress noisy third-party crate logs
+            let target = metadata.target();
+            !(target.starts_with("tracing::span")
+                || target.starts_with("hyper_util")
+                || target.starts_with("hyper::")
+                || target.starts_with("reqwest")
+                || target.starts_with("hickory_")
+                || target.starts_with("netwatch")
+                || target.starts_with("portmapper"))
+        })
+        .target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::LogDir { file_name: None },
+        ));
+    #[cfg(debug_assertions)]
+    {
+        log_builder = log_builder
+            .target(tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::Stdout,
+            ))
+            .target(tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::Webview,
+            ));
+    }
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::new()
-            .level(log::LevelFilter::Info)
-            .filter(|metadata| {
-                // Suppress noisy third-party crate logs
-                let target = metadata.target();
-                !(target.starts_with("tracing::span")
-                    || target.starts_with("hyper_util")
-                    || target.starts_with("hyper::")
-                    || target.starts_with("reqwest")
-                    || target.starts_with("hickory_")
-                    || target.starts_with("netwatch")
-                    || target.starts_with("portmapper"))
-            })
-            .targets([
-                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
-                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
-                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
-            ]).build())
+        .plugin(log_builder.build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
@@ -431,6 +447,7 @@ pub fn run() {
             commands::introspect_auth::set_introspect_auth,
             commands::introspect_auth::clear_introspect_auth,
             commands::show_in_folder,
+            commands::safe_dialog::safe_save_dialog,
             commands::acp_debug_log::acp_debug_append_log,
             commands::acp_debug_log::acp_debug_log_directory,
             commands::acp_debug_log::acp_debug_reveal_log,
@@ -969,8 +986,22 @@ pub fn run() {
                     let app_handle = app.clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(750));
+                        // Quit can race this delayed probe; touching the event
+                        // loop after Destroyed panics on Windows (TEAMCLU-RUST-V).
+                        if app_handle
+                            .try_state::<commands::amuxd_supervisor::AmuxdSupervisor>()
+                            .is_some_and(|s| s.is_exiting())
+                        {
+                            return;
+                        }
                         let app_for_probe = app_handle.clone();
                         let _ = app_handle.run_on_main_thread(move || {
+                            if app_for_probe
+                                .try_state::<commands::amuxd_supervisor::AmuxdSupervisor>()
+                                .is_some_and(|s| s.is_exiting())
+                            {
+                                return;
+                            }
                             webview_recovery::request_restart_if_main_webview_unhealthy(
                                 &app_for_probe,
                                 "event loop resume",

@@ -6,6 +6,7 @@ pub mod app_menu;
 pub mod clawhub;
 pub mod cron;
 pub mod daemon_http;
+pub mod safe_dialog;
 pub mod daemon_live;
 pub mod daemon_onboarding;
 pub mod deps;
