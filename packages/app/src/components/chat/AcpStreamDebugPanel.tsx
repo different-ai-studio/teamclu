@@ -9,6 +9,7 @@ import {
   revealAcpDebugLog,
 } from "@/lib/diagnostics/acp-debug-file-log";
 import { isTauri } from "@/lib/utils";
+import { openLogInFileManagerLabel } from "@/lib/platform-labels";
 import {
   ACP_DEBUG_PANEL_LINES,
   isAcpDebugPanelVisible,
@@ -82,7 +83,7 @@ export function AcpStreamDebugPanel({ sessionId }: { sessionId: string | null })
               type="button"
               onClick={() => void revealAcpDebugLog(sessionId)}
               className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-selected hover:text-foreground"
-              title={t("chat.acpDebug.openLog", "在 Finder 中打开日志")}
+              title={openLogInFileManagerLabel(t)}
             >
               <FolderOpen className="h-3.5 w-3.5" />
             </button>

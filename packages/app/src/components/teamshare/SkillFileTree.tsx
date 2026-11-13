@@ -35,8 +35,9 @@ import {
   createNewFile,
   createNewFolder,
   deleteItem,
-  revealInFinder,
+  revealInFileManager,
 } from '@/components/workspace/file-tree-operations'
+import { revealInFileManagerLabel } from '@/lib/platform-labels'
 import { cn } from '@/lib/utils'
 
 /**
@@ -327,9 +328,9 @@ export function SkillFileTree({
                       <ContextMenuSeparator />
                     </>
                   )}
-                  <ContextMenuItem onSelect={() => void revealInFinder(abs(entry.rel))}>
+                  <ContextMenuItem onSelect={() => void revealInFileManager(abs(entry.rel))}>
                     <FolderSearch className="mr-2 h-3.5 w-3.5" />
-                    {t('fileExplorer.revealInFinder', 'Reveal in Finder')}
+                    {revealInFileManagerLabel(t)}
                   </ContextMenuItem>
                   <ContextMenuSeparator />
                   <ContextMenuItem
@@ -415,7 +416,7 @@ export function SkillRootMenuItems({
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={onReveal}>
         <FolderSearch className="mr-2 h-3.5 w-3.5" />
-        {t('fileExplorer.revealInFinder', 'Reveal in Finder')}
+        {revealInFileManagerLabel(t)}
       </ContextMenuItem>
     </>
   )

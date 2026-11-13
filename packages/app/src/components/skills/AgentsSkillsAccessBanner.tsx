@@ -2,7 +2,12 @@ import { useTranslation } from 'react-i18next'
 import { AlertCircle, FolderOpen, RefreshCw, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { revealInFinder } from '@/components/workspace/file-tree-operations'
+import { revealInFileManager } from '@/components/workspace/file-tree-operations'
+import {
+  skillsAccessOsPermissionBody,
+  skillsAccessRevealLabel,
+  skillsAccessTauriScopeBody,
+} from '@/lib/platform-labels'
 import { cn } from '@/lib/utils'
 import { useAgentsSkillsAccessStore } from '@/stores/agents-skills-access-store'
 
@@ -14,17 +19,9 @@ function kindMessage(
 ): string {
   switch (kind) {
     case 'os_permission':
-      return t(
-        'skills.access.osPermissionBody',
-        'Your user account cannot read or write {{path}}. Fix ownership in Finder (Get Info → Sharing & Permissions), then retry.',
-        { path },
-      )
+      return skillsAccessOsPermissionBody(t, path)
     case 'tauri_scope':
-      return t(
-        'skills.access.tauriScopeBody',
-        'The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in Finder.',
-        { path },
-      )
+      return skillsAccessTauriScopeBody(t, path)
     case 'home_missing':
       return t(
         'skills.access.homeMissingBody',
@@ -74,11 +71,11 @@ export function AgentsSkillsAccessBanner() {
         size="sm"
         variant="outline"
         className="h-7 shrink-0 gap-1 px-2 text-[12px]"
-        onClick={() => void revealInFinder(path)}
+        onClick={() => void revealInFileManager(path)}
         data-testid="agents-skills-access-reveal"
       >
         <FolderOpen className="h-3.5 w-3.5" />
-        {t('skills.access.reveal', 'Reveal in Finder')}
+        {skillsAccessRevealLabel(t)}
       </Button>
       <Button
         size="sm"

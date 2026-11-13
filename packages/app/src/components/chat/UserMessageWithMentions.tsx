@@ -12,6 +12,7 @@ import type { PageContext } from "@/lib/embed/embed-page-context";
 import { openOrDownloadRemoteAttachment } from "@/lib/attachments/download-remote-attachment";
 import { getCachedAttachmentPath, normalizeAttachmentUrlKey } from "@/lib/attachments/attachment-download-index";
 import { isTauri } from "@/lib/utils";
+import { revealInFileManagerLabel } from "@/lib/platform-labels";
 import { linkifyHttpUrls } from "@/lib/messages/linkify-http";
 
 /** Max pixel height before the message is collapsed */
@@ -340,7 +341,7 @@ function RemoteAttachmentChip({
   const urlKey = React.useMemo(() => normalizeAttachmentUrlKey(remoteUrl), [remoteUrl]);
   const hasSavedCopy = isTauri() && Boolean(getCachedAttachmentPath(urlKey));
   const actionTitle = hasSavedCopy
-    ? t("fileExplorer.revealInFinder", "Reveal in Finder")
+    ? revealInFileManagerLabel(t)
     : t("chat.attachment.download", "Download attachment");
 
   const handleClick = React.useCallback(async () => {

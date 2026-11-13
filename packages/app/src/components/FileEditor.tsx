@@ -23,6 +23,7 @@ import {
   History,
 } from "lucide-react";
 import { cn, isTauri } from "@/lib/utils";
+import { formatShortcut } from "@/lib/platform-shortcuts";
 import { withHtmlPreviewCsp } from "@/lib/ui/html-preview-csp";
 import {
   globalTeamKnowledgeShareDir,
@@ -751,7 +752,11 @@ export function FileEditor({
                   ? "text-blue-600 hover:bg-blue-100 dark:hover:bg-blue-900/30"
                   : "text-muted-foreground/50"
               }`}
-              title={isModified ? `${t("common.save", "Save")} (⌘S)` : t("app.noChanges", "No changes")}
+              title={
+                isModified
+                  ? `${t("common.save", "Save")} (${formatShortcut("mod+S")})`
+                  : t("app.noChanges", "No changes")
+              }
             >
               {isSaving ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

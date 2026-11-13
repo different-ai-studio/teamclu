@@ -252,9 +252,21 @@ pub async fn show_in_folder(path: String) -> Result<(), String> {
         .map_err(|e| format!("show_in_folder task failed: {e}"))?
 }
 
+/// Explorer `/select,` needs backslashes; the webview may send `/` separators.
+pub(crate) fn normalize_show_in_folder_path(path: String) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        if path.contains('/') {
+            return path.replace('/', "\\");
+        }
+    }
+    path
+}
+
 /// Blocking body of [`show_in_folder`], shared with the Rust callers that are
 /// already off the main thread (diagnostics, acp debug log).
 pub(crate) fn show_in_folder_blocking(path: String) -> Result<(), String> {
+    let path = normalize_show_in_folder_path(path);
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
@@ -591,5 +603,25 @@ mod branded_amuxd_sidecar_tests {
                 "{needle} must spawn via branded_amuxd_sidecar so install-pi inherits AMUXD_HOME"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod show_in_folder_path_tests {
+    use super::normalize_show_in_folder_path;
+
+    #[test]
+    fn windows_style_paths_keep_backslashes() {
+        let path = r"C:\Users\me\doc.txt".to_string();
+        assert_eq!(normalize_show_in_folder_path(path), r"C:\Users\me\doc.txt");
+    }
+
+    #[test]
+    fn forward_slashes_become_backslashes_on_windows() {
+        let normalized = normalize_show_in_folder_path(r"C:/Users/me/文档/spaced file.txt".into());
+        #[cfg(target_os = "windows")]
+        assert_eq!(normalized, r"C:\Users\me\文档\spaced file.txt");
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(normalized, r"C:/Users/me/文档/spaced file.txt");
     }
 }
