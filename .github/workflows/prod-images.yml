@@ -64,3 +64,4 @@ jobs:
         run: |
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           printf '%s@%s\n' "$IMAGE" "$DIGEST" | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '\nFor a new package, set visibility to Public in GHCR package settings before the anonymous ACK pull test.\n' >> "$GITHUB_STEP_SUMMARY"
