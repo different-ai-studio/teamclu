@@ -41,6 +41,13 @@ fn classify_main_webview_url(url: Option<Result<(), String>>) -> MainWebviewProb
 }
 
 pub fn request_restart_if_main_webview_unhealthy(app: &tauri::AppHandle, reason: &str) -> bool {
+    if app
+        .try_state::<crate::commands::amuxd_supervisor::AmuxdSupervisor>()
+        .is_some_and(|s| s.is_exiting())
+    {
+        return false;
+    }
+
     let probe = probe_main_webview(app);
     if !should_restart_for_probe(probe) {
         return false;
@@ -49,7 +56,7 @@ pub fn request_restart_if_main_webview_unhealthy(app: &tauri::AppHandle, reason:
     let message = format!(
         "[WebViewRecovery] Requesting app restart after {reason}; main webview probe: {probe:?}"
     );
-    log::warn!("{message}");
+    crate::soft_log::warn(&message);
     crate::sentry_utils::capture_warning(&message);
     app.request_restart();
     true

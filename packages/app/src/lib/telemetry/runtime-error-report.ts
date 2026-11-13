@@ -46,6 +46,8 @@ type RuntimeFailureReasonKind =
   | 'device_offline'
   | 'cloud_network_error'
   | 'daemon_rejected'
+  /** Agent host / opencode HTTP 500 noise that is not a desktop crash. */
+  | 'agent_http_error'
   | 'unknown'
 
 export type RuntimeErrorContext = {
@@ -80,6 +82,19 @@ export function classifyRuntimeFailureReason(reason: string | undefined): Runtim
   }
   if (lower.includes('publish')) return 'mqtt_publish_failed'
   if (lower.includes('rejected')) return 'daemon_rejected'
+  // pi/opencode HTTP 500 / create-session failures are daemon-side noise that
+  // previously landed as unknown error-level Sentry events and crowded out
+  // real desktop crashes (see soft_log / NSSavePanel fixes in the same PR).
+  if (
+    lower.includes('http 500') ||
+    lower.includes('status code 500') ||
+    lower.includes('status: 500') ||
+    lower.includes('internal server error') ||
+    lower.includes('create session failed') ||
+    lower.includes('opencode serve')
+  ) {
+    return 'agent_http_error'
+  }
   return 'unknown'
 }
 
@@ -170,6 +185,7 @@ function levelFor(
   // shared with the ensure-crash path — a batch that fails this way must not
   // come back as an error either.
   if (reasonKind === 'active_turn') return 'warning'
+  if (reasonKind === 'agent_http_error') return 'warning'
   return 'error'
 }
 

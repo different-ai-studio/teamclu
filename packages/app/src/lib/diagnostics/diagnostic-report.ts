@@ -1188,13 +1188,13 @@ async function buildDiagnosticZipBytes(report: DiagnosticReport): Promise<Uint8A
 
 export async function saveDiagnosticZip(report: DiagnosticReport): Promise<string | null> {
   if (!isTauri()) return null
-  const { save } = await import('@tauri-apps/plugin-dialog')
+  const { safeSaveDialog } = await import('@/lib/workspace/safe-save-dialog')
   const { writeFile } = await import('@tauri-apps/plugin-fs')
   const { downloadDir } = await import('@tauri-apps/api/path')
 
   const filename = diagnosticZipFilename(report)
   const downloads = await downloadDir()
-  const dest = await save({
+  const dest = await safeSaveDialog({
     title: '导出诊断包',
     defaultPath: `${downloads}/${filename}`,
     filters: [{ name: 'ZIP Archive', extensions: ['zip'] }],

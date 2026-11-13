@@ -63,6 +63,10 @@ describe('classifyRuntimeFailureReason', () => {
         'workspace has active turn: e3b1cae9-7db8-4c20-a8d6-0c806a531bde',
       ),
     ).toBe('active_turn')
+    expect(classifyRuntimeFailureReason('HTTP 500 from opencode serve')).toBe('agent_http_error')
+    expect(classifyRuntimeFailureReason('create session failed: Internal Server Error')).toBe(
+      'agent_http_error',
+    )
     expect(classifyRuntimeFailureReason('')).toBe('unknown')
     expect(classifyRuntimeFailureReason(undefined)).toBe('unknown')
   })

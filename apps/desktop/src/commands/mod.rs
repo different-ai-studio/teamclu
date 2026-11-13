@@ -21,6 +21,7 @@ pub mod mqtt_bus;
 pub mod oauth_loopback;
 pub mod obsidian;
 pub mod oss_sync;
+pub mod safe_dialog;
 pub mod server_config;
 pub mod setup;
 pub mod shared_secrets;
