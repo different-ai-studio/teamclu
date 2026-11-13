@@ -270,7 +270,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_mcp",
-            "description": "Manage MCP servers for this workspace: list configured servers, get one by name, add/update a local (stdio) or remote (HTTP) server, enable/disable, or remove a custom server. Built-in servers (teamclu-introspect, playwright, chrome-control, autoui) cannot be deleted; servers installed from the team MCP catalog cannot be edited or deleted here. Env/header secret values are redacted on list/get. Changes require an agent runtime restart to take effect.",
+            "description": "Manage MCP servers for this workspace: list configured servers, get one by name, add/update a local (stdio) or remote (HTTP) server, enable/disable, or remove a custom server. Built-in servers (teamclu-introspect, playwright, chrome-control, open-computer-use) cannot be deleted; servers installed from the team MCP catalog cannot be edited or deleted here. Env/header secret values are redacted on list/get. Changes require an agent runtime restart to take effect.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
