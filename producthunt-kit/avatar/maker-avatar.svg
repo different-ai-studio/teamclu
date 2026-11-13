@@ -1,0 +1,54 @@
+<!--
+  Product Hunt maker avatar — the "aperture" mark, re-seated.
+
+  Constraints this design is solving, in order of how badly they bite:
+
+  1. PH shows a maker avatar at 32–40px in comment threads and next to the
+     post title. The app icon's ring (12/120 stroke) greys out to mush at that
+     size, so the stroke here is proportionally much heavier.
+
+  2. PH masks every avatar to a circle. So the mark is optically centred at
+     (512,512) and nothing important sits outside r≈330 — there is deliberate
+     empty margin so the circle crop never clips an edge.
+
+  3. An abstract mark beats a cartoon face here. This belongs to someone who
+     does not want their identity on a public launch; a generic cartoon face
+     also reads as stock art and draws "is that a stock avatar?" replies. An
+     abstract mark reads as a deliberate handle and survives a rebrand.
+
+  4. It has to be recognisably the same family as the product icon without
+     being a copy of it. Same ring geometry, same gap arc, same coral dot in
+     the gap — so the two read as one system at a glance.
+
+  Regenerate raster uploads with:
+    magick -background none producthunt-kit/avatar/maker-avatar.svg \
+      -resize 1024x1024 /tmp/maker-avatar.png
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="TeamClu maker avatar">
+  <defs>
+    <clipPath id="disc">
+      <circle cx="512" cy="512" r="512"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#disc)">
+    <!-- Warm white field, matching the app icon body (#faf7f0). -->
+    <rect width="1024" height="1024" fill="#faf7f0"/>
+
+    <!--
+      The mark, drawn in the app icon's own coordinate system and scaled up.
+      Icon: 120-unit space, ring r=38, stroke 12, gap centred on -45°, coral
+      dot r=9 at (86.87, 33.13). Scaled 5.6x and centred on the canvas, with
+      the stroke bumped 12 -> 20 so it holds at 32px.
+
+      A small positive y-shift corrects for optical centring: a ring with a gap
+      at the top-right carries more visual weight up there, so geometrically
+      centred artwork reads as sitting low.
+    -->
+    <g transform="translate(176, 188) scale(5.6)">
+      <path d="M 96.705 50.165 A 38 38 0 1 1 69.835 23.295"
+            fill="none" stroke="#1a1a14" stroke-width="24" stroke-linecap="round"/>
+      <circle cx="86.870" cy="33.130" r="13.5" fill="#e85a4a"/>
+    </g>
+  </g>
+</svg>

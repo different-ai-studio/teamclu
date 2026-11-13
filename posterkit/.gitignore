@@ -1,0 +1,3 @@
+# Intermediates only. The rendered PNG under out/ is a launch asset and IS
+# committed, so the poster ships without needing ImageMagick.
+.tmp/
