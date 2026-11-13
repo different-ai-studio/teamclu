@@ -4149,8 +4149,7 @@
     "findInPage": "Find in page...",
     "noMatches": "No matches",
     "previousShiftEnter": "Previous (Shift+Enter)",
-    "nextEnter": "Next (Enter)",
-    "find": "Find"
+    "nextEnter": "Next (Enter)"
   },
   "webview": {
     "back": "Back",
