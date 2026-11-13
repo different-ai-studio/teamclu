@@ -1,6 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { releaseStuckModalLayers } from '@/lib/ui/modal-layer-cleanup'
+import {
+  releaseStuckModalLayers,
+  scheduleReleaseStuckModalLayers,
+} from '@/lib/ui/modal-layer-cleanup'
 
 describe('releaseStuckModalLayers', () => {
   afterEach(() => {
@@ -12,7 +15,7 @@ describe('releaseStuckModalLayers', () => {
     document.documentElement.style.cssText = ''
   })
 
-  it('clears body scroll-lock and hides closed overlays', () => {
+  it('clears body scroll-lock and finishes a closed overlay without hiding it', () => {
     document.body.setAttribute('data-scroll-locked', '1')
     document.body.style.pointerEvents = 'none'
     document.body.style.overflow = 'hidden'
@@ -20,6 +23,11 @@ describe('releaseStuckModalLayers', () => {
     const overlay = document.createElement('div')
     overlay.dataset.slot = 'dialog-overlay'
     overlay.dataset.state = 'closed'
+    overlay.style.animationName = 'exit'
+    const ended: string[] = []
+    overlay.addEventListener('animationend', (event) => {
+      ended.push((event as AnimationEvent).animationName)
+    })
     document.body.appendChild(overlay)
 
     releaseStuckModalLayers()
@@ -27,8 +35,27 @@ describe('releaseStuckModalLayers', () => {
     expect(document.body.hasAttribute('data-scroll-locked')).toBe(false)
     expect(document.body.style.pointerEvents).toBe('')
     expect(document.body.style.overflow).toBe('')
-    expect(overlay.style.pointerEvents).toBe('none')
-    expect(overlay.style.display).toBe('none')
+    expect(overlay.style.display).toBe('')
+    expect(overlay.style.pointerEvents).toBe('')
+    expect(ended).toEqual(['exit'])
+  })
+
+  it('leaves a closed overlay alone while its exit animation is running', () => {
+    const overlay = document.createElement('div')
+    overlay.dataset.slot = 'dialog-overlay'
+    overlay.dataset.state = 'closed'
+    overlay.style.animationName = 'exit'
+    overlay.getAnimations = () => [{ playState: 'running' } as Animation]
+    let ended = 0
+    overlay.addEventListener('animationend', () => {
+      ended += 1
+    })
+    document.body.appendChild(overlay)
+
+    releaseStuckModalLayers()
+
+    expect(ended).toBe(0)
+    expect(overlay.style.display).toBe('')
   })
 
   it('clears react-remove-scroll fixed body lock and block-interactivity classes', () => {
@@ -65,9 +92,40 @@ describe('releaseStuckModalLayers', () => {
 
     document.body.append(openContent, overlay)
 
+    let ended = 0
+    overlay.addEventListener('animationend', () => {
+      ended += 1
+    })
+
     releaseStuckModalLayers()
 
     expect(overlay.style.display).toBe('block')
+    expect(ended).toBe(0)
+  })
+
+  it('drops a stale cleanup so it cannot race the next close', () => {
+    vi.useFakeTimers()
+    try {
+      const overlay = document.createElement('div')
+      overlay.dataset.slot = 'dialog-overlay'
+      overlay.dataset.state = 'closed'
+      overlay.style.animationName = 'exit'
+      let ended = 0
+      overlay.addEventListener('animationend', () => {
+        ended += 1
+      })
+      document.body.appendChild(overlay)
+
+      scheduleReleaseStuckModalLayers()
+      scheduleReleaseStuckModalLayers()
+      vi.runAllTimers()
+
+      // The surviving schedule runs twice: the double rAF and the 280ms timeout.
+      expect(ended).toBe(2)
+      expect(overlay.style.display).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps body scroll-lock while a nested modal is still open', () => {

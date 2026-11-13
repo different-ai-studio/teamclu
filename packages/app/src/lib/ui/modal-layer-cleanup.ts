@@ -1,8 +1,14 @@
 /**
- * Radix Dialog / Sheet (via react-remove-scroll) can leave scroll-lock residue
- * after close — especially in the Chrome extension side panel. Symptoms: chat
- * message list no longer scrolls, clicks feel dead. Idempotent; safe to call
- * after any modal closes.
+ * Radix Dialog / Sheet (via react-remove-scroll) can leave a document-level
+ * wheel listener after close. The listener is owned by the overlay's Presence
+ * node and drops only when that node unmounts.
+ *
+ * Never set `display: none` on a closing overlay. Presence is already waiting
+ * for animationend / animationcancel; hiding the node before the exit
+ * animation starts swallows that event and the wheel listener stays forever.
+ * A closed overlay with no running animation gets a matching animationend so
+ * Presence can finish. A newer schedule cancels the previous one, so a stale
+ * cleanup cannot land in the same frame as the next close.
  */
 
 const BODY_LOCK_PROPS = [
@@ -56,12 +62,47 @@ function removeInteractivityLockClasses() {
   }
 }
 
-function hideOrphanedOverlays() {
+function hasRunningAnimation(node: HTMLElement): boolean {
+  if (typeof node.getAnimations !== 'function') return false
+  return node.getAnimations().some((animation) => {
+    return animation.playState === 'running' || animation.playState === 'pending'
+  })
+}
+
+/** Names Presence matches with `animationName.includes(CSS.escape(event.animationName))`. */
+function exitAnimationNames(node: HTMLElement): string[] {
+  const raw = getComputedStyle(node).animationName
+  if (!raw || raw === 'none') return []
+  return raw
+    .split(',')
+    .map((name) => name.trim().replace(/^["']|["']$/g, ''))
+    .filter((name) => name && name !== 'none')
+}
+
+/**
+ * Ask Radix Presence to leave `unmountSuspended`. A synthetic animationend is
+ * ignored while the exit animation is still running, so a normal close can
+ * finish on its own.
+ */
+function createAnimationEndEvent(animationName: string): Event {
+  if (typeof AnimationEvent === 'function') {
+    return new AnimationEvent('animationend', { animationName })
+  }
+  // jsdom has no AnimationEvent. Presence only reads `event.animationName`.
+  const event = new Event('animationend')
+  Object.defineProperty(event, 'animationName', { value: animationName })
+  return event
+}
+
+function finishClosedOverlays() {
   if (document.querySelector(OPEN_MODAL_SELECTOR)) return
   for (const el of document.querySelectorAll(OVERLAY_SELECTOR)) {
     const node = el as HTMLElement
-    node.style.pointerEvents = 'none'
-    node.style.display = 'none'
+    if (node.dataset.state === 'open') continue
+    if (hasRunningAnimation(node)) continue
+    for (const animationName of exitAnimationNames(node)) {
+      node.dispatchEvent(createAnimationEndEvent(animationName))
+    }
   }
 }
 
@@ -84,13 +125,38 @@ export function releaseStuckModalLayers(): void {
     root?.removeAttribute('aria-hidden')
   }
 
-  hideOrphanedOverlays()
+  finishClosedOverlays()
+}
+
+let outerFrame = 0
+let innerFrame = 0
+let releaseTimer = 0
+
+function cancelScheduledRelease(): void {
+  if (outerFrame) cancelAnimationFrame(outerFrame)
+  if (innerFrame) cancelAnimationFrame(innerFrame)
+  if (releaseTimer) clearTimeout(releaseTimer)
+  outerFrame = 0
+  innerFrame = 0
+  releaseTimer = 0
 }
 
 /** Run cleanup after Radix close animation + internal teardown (dialog duration-200). */
 export function scheduleReleaseStuckModalLayers(): void {
   if (typeof window === 'undefined') return
-  const run = () => releaseStuckModalLayers()
-  requestAnimationFrame(() => requestAnimationFrame(run))
-  window.setTimeout(run, 280)
+  // Drop the previous double-rAF and timeout. Otherwise a cleanup queued by
+  // the last close runs in the same frame as the next close, before its exit
+  // animation has started.
+  cancelScheduledRelease()
+  outerFrame = requestAnimationFrame(() => {
+    outerFrame = 0
+    innerFrame = requestAnimationFrame(() => {
+      innerFrame = 0
+      releaseStuckModalLayers()
+    })
+  })
+  releaseTimer = window.setTimeout(() => {
+    releaseTimer = 0
+    releaseStuckModalLayers()
+  }, 280)
 }
