@@ -159,8 +159,13 @@ function collectRenderedTextLiterals(): string[] {
         return
       }
 
-      if (ts.isCallExpression(node) && isTranslationCall(node, sourceFile)) {
-        return
+      if (ts.isCallExpression(node)) {
+        // t() copy and formatShortcut('mod+K') specs are not hardcoded UI prose.
+        if (isTranslationCall(node, sourceFile)) return
+        const expression = node.expression.getText(sourceFile)
+        if (expression === 'formatShortcut' || expression.endsWith('.formatShortcut')) {
+          return
+        }
       }
 
       if (ts.isStringLiteralLike(node)) {

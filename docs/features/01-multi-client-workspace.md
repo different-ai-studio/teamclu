@@ -203,7 +203,6 @@ const SETTINGS_SECTION_COMPONENTS: Record<SettingsSection, React.ComponentType> 
 
 - `⌘N`：快速新会话（`NavRail` 里监听，走 `createQuickSession`，目标由 `resolve-quick-chat-target` 解析为「本地 agent，否则有效默认 agent」）。失败时会弹 toast 并给出 `no_agent` 情况下的「设置默认 agent」动作，直接打开 `daemonGeneral` 设置页。
 - `⌘↵`：发送。
-- `⌃`` `：切换终端（`chrome.tsx` 的 `TerminalToggleButton`）。
 
 键盘提示 pill 用 mono 字体、`text-[11px]`、faint 色——见 `AGENTS.md` 的类型刻度。
 

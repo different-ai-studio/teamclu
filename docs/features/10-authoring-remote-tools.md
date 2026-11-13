@@ -1,23 +1,22 @@
-# TeamClu 功能详解 · 第 10 篇：创作与本地操作能力（编辑器 / 终端 / 远程工具）
+# TeamClu 功能详解 · 第 10 篇：创作与本地操作能力（编辑器 / 远程工具）
 
 > 版本基线：当前 `main`（`package.json` v0.4.1-beta.51）。
 > 读者：要接手编辑器、终端、远程工具、扩展这块的工程师。
 > 关联：`docs/remote-tools.md`、`docs/chrome-extension-design.md`、
 > `packages/app/src/components/editors/`、`packages/app/src/components/diff/`、
-> `apps/desktop/src/terminal/`、`packages/app/src/lib/remote-tools/`、
+> `packages/app/src/lib/remote-tools/`、
 > `packages/app/src/lib/dynamic-ui/`、`packages/app/src/lib/history/`。
 
 ---
 
 ## 0. 一句话定位
 
-这一篇讲的是「人和 agent 一起改东西」的能力。TeamClu 不是 IDE，但它有编辑器、有终端、有 diff、有版本历史——这四件东西的存在不是为了让用户从零写代码，而是为了让 **agent 改完的东西可被人审查、可被人接手、可被人修正**。
+这一篇讲的是「人和 agent 一起改东西」的能力。TeamClu 不是 IDE，但它有编辑器、有 diff、有版本历史——这些东西的存在不是为了让用户从零写代码，而是为了让 **agent 改完的东西可被人审查、可被人接手、可被人修正**。内嵌终端（PTY / xterm）已下线；文件树仍可通过 `open_in_terminal` 打开系统终端。
 
 所以这一篇的视角与「一个编辑器功能」不同。每个能力都要回答同一个问题：**它是为「人写」设计的，还是为「人看 agent 写的」设计的？** 答案是后者，这解释了很多看起来奇怪的选择：
 
 - diff 是「agent-first」的，专门渲染 agent 的修改；
 - 编辑器支持「agent 改了这里」的高亮，而不是全量重渲染；
-- 终端有 8 MiB 回放缓冲，因为 agent 跑的命令你看的时候它可能已经跑完了；
 - 远程工具让 agent 能读用户浏览器里的页面，而不是让用户复制粘贴。
 
 ---
@@ -117,42 +116,12 @@ Provider 是 `lib/history/oss-provider.ts`（`OssHistoryProvider`）——版本
 
 ---
 
-## 4. 终端
+## 4. 终端（已下线）
 
-`apps/desktop/src/terminal/` 是一个完整的 PTY 实现：
+内嵌终端（`apps/desktop/src/terminal/` + xterm.js 面板）已从产品中移除。桌面端仍保留 `open_in_terminal`：文件树右键「在终端中打开」会拉起系统终端（macOS Terminal.app / Windows cmd / Linux 常见 emulator），不再在 app 内嵌 PTY。
 
-| 文件 | 作用 |
-|---|---|
-| `pty.rs` | `portable-pty` 封装 |
-| `registry.rs` | 终端注册表、状态、错误 |
-| `ring.rs` | 8 MiB 固定容量环形缓冲 |
-| `shell_integration.rs` | shell 集成脚本 |
+Agent 跑命令继续走工具（bash 等），与内嵌终端无关。
 
-### 4.1 8 MiB 环形缓冲
-
-`RING_CAPACITY: usize = 8 * 1024 * 1024`。终端输出进环形缓冲，重新附着（re-attach）时回放。
-
-为什么需要回放？因为终端是**异步**的：agent 或用户跑了命令，然后切走，过一会切回来。没有回放，你会看到一个空白终端，不知道刚才输出了什么。
-
-为什么是 8 MiB？它是一个折中：足够回放大量输出，又不至于为每个终端吃掉不可接受的内存。`ring.rs` 的实现处理了「一个 chunk 大于整个容量」的情况（只保留尾部）、以及未填满与已环绕两种快照。
-
-一个实现细节：`snapshot()` 在未环绕时返回 `buf[..head]`，已环绕时返回从 head 到末尾再接开头的两段。这是环形缓冲的标准做法，但很容易写错——`filled` 标志的处理是关键。
-
-### 4.2 cwd 白名单
-
-`TerminalError::CwdNotAllowed` / `CwdNotFound` 是两条错误。终端 cwd 必须落在前端传进来的 allowed roots 之下；**没有根就没有终端。**
-
-这与第 2 篇的「PTY 的 allowed roots」是同一条：终端是一个可以在用户机器上跑任意命令的能力，所以它的工作目录必须受限。
-
-### 4.3 状态与错误
-
-`TerminalStatus`（running / exited）、`TerminalSummary`（id、shell、pid、status、exit code）、`TerminalError` 是一个判别枚举（shell not found / cwd not allowed / cwd not found / pty closed / not found / spawn failed / bad request）。
-
-**错误是带 kind 的判别枚举**，不是字符串。这与 ADR-0013（IPC 错误带 code）一致：前端能按 kind 分支，而不是正则匹配文案。
-
-### 4.4 UI
-
-`TerminalToggleButton`（`app/chrome.tsx`）在 header 上切换终端面板，快捷键 `⌃`` `。`useTerminalStore` 按 workspace 记录面板开关状态（`panelOpenByWorkspace`）。
 
 ---
 
@@ -268,7 +237,6 @@ Agent → amuxd remote-tools-mcp (stdio) → daemon.sock → remote_context_id l
 | 能力 | 谁在执行 | 权限门 |
 |---|---|---|
 | 编辑器写文件 | 前端 + Tauri | 文件操作权限 |
-| 终端 | 桌面进程 PTY | cwd allowed roots |
 | 远程工具 | 客户端扩展 | requester 必须是 session agent + participants 已加载 |
 | 动态 UI | 前端渲染 | catalog 白名单（不是权限，是能力边界） |
 
@@ -280,7 +248,6 @@ Agent → amuxd remote-tools-mcp (stdio) → daemon.sock → remote_context_id l
 
 - 编辑器：`editors/__tests__/`（含 agent-edit-diff 的 surrogate 测试）；
 - diff：`diff/__tests__/`；
-- 终端：Rust 侧单元测试（ring buffer 的环绕、cwd 校验）；
 - remote-tools：`rpc-server.test.ts`、`validate-request.test.ts`、`link-utils.test.ts`；
 - dynamic-ui：`__tests__/`；
 - 扩展：`pnpm test:extension`。
@@ -312,8 +279,6 @@ packages/app/src/
     catalog.ts / prompt.ts / registry.tsx / generator.ts / streaming.ts
   lib/fs-scope.ts
   lib/extension/                         与 apps/extension 共享
-apps/desktop/src/terminal/
-  mod.rs / pty.rs / registry.rs / ring.rs / shell_integration.rs
 apps/extension/                          MV3 扩展
 ```
 
@@ -323,10 +288,8 @@ apps/extension/                          MV3 扩展
 
 1. **agent 编辑不要全量替换文档。** 会丢光标、重建所有行。
 2. **surrogate pair 不能切开。** diffAgentEdit 里有专门检查。
-3. **终端回放缓冲不能删。** 否则切回来是空白。
-4. **终端 cwd 必须有白名单。** 没有根就没有终端。
-5. **remote-tools 校验必须 fail-closed。** 且 participants 未加载时拒绝。
-6. **MQTT ACL 迁移要先于客户端部署。**
+3. **remote-tools 校验必须 fail-closed。** 且 participants 未加载时拒绝。
+4. **MQTT ACL 迁移要先于客户端部署。**
 7. **动态 UI 不能执行任意代码。** 只用 catalog 里的组件。
 8. **前端校验不是安全边界。** 强制在 daemon/Rust 侧。
 9. **`lib/extension/` 两边编译要保持一致。** 有守卫测试。
@@ -396,31 +359,10 @@ DiffRenderer 可以嵌在 tab 里，也可以用 `SimpleDiff`（版本预览用�
 
 ---
 
-## 15. 附录 C：终端的细节
+## 15. 附录 C：终端的细节（历史）
 
-### 15.1 portable-pty 与 shell 集成
+内嵌 PTY / ring buffer / shell 集成已随下线删除。需要系统终端时走 `open_in_terminal`。
 
-`portable-pty` 提供跨平台 PTY。`shell_integration.rs` 是 shell 集成脚本，用于让 shell 报告 cwd、命令开始/结束等事件。
-
-为什么需要 shell 集成？因为一个「原始的 PTY」只能看到字节流，它不知道「用户现在在哪个目录」或「一条命令什么时候结束」。shell 集成把这些语义补上，这也是很多终端功能的基础。
-
-### 15.2 终端注册表
-
-`Registry` 是 `RwLock<HashMap<TerminalId, Arc<PtyHandle>>>`。每个终端有 id、shell、pid、status、exit code。
-
-一个细节：`TerminalError::ShellNotFound` 被标记 `#[allow(dead_code)]`——说明这条错误在当前平台上不可达（或者暂时没有调用方）。这类标记在文档里要诚实：“代码在，但现在是死的”。
-
-### 15.3 与 agent 的关系
-
-终端与 agent 是两个独立的东西：agent 跑命令是通过工具（bash），而不是通过终端。终端是给人看的，agent 不一定使用它。
-
-但是它们共享同一个 workspace 的目录。所以一个常见的场景是：agent 改完代码，人在终端里跑测试。这也是为什么终端要有回放：agent 可能刚在终端里跑了什么（如果它用了终端），或者用户自己跑了然后切走。
-
-### 15.4 多终端与持久化
-
-`registry.rs` 支持多个终端（`HashMap`）。每个终端有独立的 ring buffer。
-
-它们不跨应用重启保留——终止 app 后终端都没了。这是符合直觉的（终端是进程，进程随父进程结束），但值得知道：如果你想让它保留，那是一个独立的设计问题（比如 tmux 式的外部分离）。
 
 ---
 
@@ -612,7 +554,7 @@ A：在 sandbox 里，CSP 显式设置。
 A：因为版本来自同步引擎的历史记录。它的价值是回到之前的状态，不是记录每一次敲击。
 
 **Q：能不能在扩展里用完整桌面功能？**
-A：不能。扩展只嵌入聊天子集；workspace / terminal / git / MCP / 文件编辑都明确排除。
+A：不能。扩展只嵌入聊天子集；workspace / git / MCP / 文件编辑都明确排除。
 
 **Q：前端校验能当安全边界吗？**
 A：不能。真正的强制在 daemon/Rust 侧。前端的校验只是体验。
@@ -629,7 +571,6 @@ A：不能。真正的强制在 daemon/Rust 侧。前端的校验只是体验。
 | CSP sandbox | HTML 预览的隔离 |
 | hunk | diff 里的一个连续改动块 |
 | AST diff | 语法树级差异 |
-| PTY | 伪终端 |
 | ring buffer | 终端回放缓冲 |
 | allowed roots | 终端 cwd 的白名单 |
 | remote-tools | agent 侧、客户端执行的 MCP 工具 |
@@ -728,7 +669,7 @@ A：不能。真正的强制在 daemon/Rust 侧。前端的校验只是体验。
 - 人到 agent：内容是你自己选的，风险在于你可能无意中把敏感内容发给了一个错误的会话；
 - agent 到人：内容不是你选的，风险在于 agent 可能不是你以为的那个。
 
-本文的四个能力里，只有终端与远程工具需要真正的强制；编辑器与动态 UI 的危险性来自「内容来源」而不是「执行」。分清这一点，就不会在不需要的地方加校验（体验变差），也不会在需要的地方漏掉（安全面）。
+本文能力里，远程工具需要真正的强制；编辑器与动态 UI 的危险性来自「内容来源」而不是「执行」。分清这一点，就不会在不需要的地方加校验（体验变差），也不会在需要的地方漏掉（安全面）。
 
 ---
 
@@ -740,7 +681,6 @@ A：不能。真正的强制在 daemon/Rust 侧。前端的校验只是体验。
 |---|---|---|
 | 编辑器 | Markdown / Code 两种 | agent 编辑的局部 diff（PERF-17） |
 | diff | 通用差异 | agent 工具补丁语义 |
-| 终端 | PTY + 基本交互 | 8 MiB 回放 + cwd 白名单 |
 | 远程工具 | `get_page_dom` | `show_page_nav_links`（daemon-local） |
 | 动态 UI | 组件目录 | 流式 + 数据绑定 |
 

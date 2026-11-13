@@ -1,35 +1,7 @@
-//! Small pieces of the window chrome: the terminal toggle button, one
-//! header tab, and the drag handle between panes.
+//! Small pieces of the window chrome: one header tab, and the drag handle
+//! between panes.
 
 import { useState, useRef, MouseEvent as ReactMouseEvent, type ComponentType } from "react";
-import { useTranslation } from "react-i18next";
-import { cn } from "@/lib/utils";
-import { terminalToggleShortcutLabel } from "@/lib/platform-shortcuts";
-import { TerminalSquare } from "lucide-react";
-import { useTerminalStore } from "@/stores/terminal-store";
-
-/** Terminal toggle button in the header. */
-export function TerminalToggleButton({ workspacePath }: { workspacePath: string }) {
-  const { t } = useTranslation();
-  const terminalOpen = useTerminalStore(
-    s => Boolean(s.panelOpenByWorkspace[workspacePath]),
-  );
-  const togglePanel = useTerminalStore(s => s.togglePanel);
-  return (
-    <button
-      className={cn(
-        "ml-1 rounded p-1 transition-colors hover:bg-muted hover:text-foreground",
-        terminalOpen ? "bg-muted text-foreground" : "text-muted-foreground",
-      )}
-      onClick={() => togglePanel(workspacePath)}
-      title={t("terminal.toggle", "Toggle terminal ({{shortcut}})", {
-        shortcut: terminalToggleShortcutLabel(),
-      })}
-    >
-      <TerminalSquare className="h-4 w-4" />
-    </button>
-  );
-}
 
 // Header panel tab button component
 export function HeaderPanelTab({

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { formatShortcut, terminalToggleShortcutLabel } from '@/lib/platform-shortcuts'
+import { formatShortcut } from '@/lib/platform-shortcuts'
 
 describe('formatShortcut', () => {
   afterEach(() => {
@@ -27,11 +27,4 @@ describe('formatShortcut', () => {
     expect(formatShortcut('mod+enter')).toBe('Ctrl+↵')
   })
 
-  it('terminal toggle label differs by platform', () => {
-    vi.stubGlobal('navigator', { platform: 'MacIntel', userAgent: 'Macintosh' })
-    expect(terminalToggleShortcutLabel()).toBe('⌃`')
-
-    vi.stubGlobal('navigator', { platform: 'Win32', userAgent: 'Windows NT 10.0' })
-    expect(terminalToggleShortcutLabel()).toBe('Ctrl+`')
-  })
 })

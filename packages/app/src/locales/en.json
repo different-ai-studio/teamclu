@@ -1108,10 +1108,9 @@
       "clear": "Clear",
       "waiting": "Waiting for {{token}} …",
       "logFileSession": "{{dir}}/{{sessionId}}.log + _all.log",
-      "openLog": "Open log in Finder",
-      "openLogInFinder": "Open log in Finder",
       "openLogInExplorer": "Open log in Explorer",
-      "openLogInFileManager": "Open log in file manager"
+      "openLogInFileManager": "Open log in file manager",
+      "openLogInFinder": "Open log in Finder"
     },
     "toast": {
       "mentionRouteFailedTitle": "@Agent set but message can't be routed",
@@ -1193,8 +1192,6 @@
     "rename": "Rename",
     "delete": "Delete",
     "revealInFinder": "Reveal in Finder",
-    "revealInExplorer": "Show in Explorer",
-    "revealInFileManager": "Show in file manager",
     "noFilesFound": "No files found",
     "noFilesMatchFilter": "No files match filter",
     "filterPlaceholder": "Filter files...",
@@ -1236,7 +1233,9 @@
     "invalidFileNameChars": "A name can't contain {{chars}}",
     "invalidFileNameReserved": "\"{{name}}\" is a reserved name on Windows",
     "invalidFileNameTrailing": "A name can't end with a space or a period",
-    "undo": "Undo: {{desc}}"
+    "undo": "Undo: {{desc}}",
+    "revealInExplorer": "Show in Explorer",
+    "revealInFileManager": "Show in file manager"
   },
   "sessions": {
     "list": {
@@ -1274,12 +1273,11 @@
       "waiting": "Waiting",
       "acpLines": "{{count}} ACP debug lines",
       "acpLogHint": "{{dir}}/{{sessionId}}.log",
-      "revealAcpLog": "Reveal ACP log",
-      "revealAcpLogMac": "Reveal ACP log in Finder",
+      "openSession": "Open session",
+      "copySessionId": "Copy session ID",
       "revealAcpLogExplorer": "Reveal ACP log in Explorer",
       "revealAcpLogFileManager": "Reveal ACP log in file manager",
-      "openSession": "Open session",
-      "copySessionId": "Copy session ID"
+      "revealAcpLogMac": "Reveal ACP log in Finder"
     }
   },
   "sidebar": {
@@ -1315,8 +1313,6 @@
     "showAllSessions": "Show all sessions",
     "showCronSessions": "Show scheduled sessions",
     "sessionKindMenu": "List kind",
-    "searchWithShortcut": "Search (⌘K)",
-    "searchWithShortcutDynamic": "Search ({{shortcut}})",
     "pinned": "Pinned",
     "contacts": "Contacts",
     "more": "More",
@@ -1343,7 +1339,8 @@
     "localDaemonAutomationAria": "Open automation tasks",
     "localDaemonRetrying": "Retrying…",
     "localDaemonTokensThisMonth": "{{tokens}} tokens this month",
-    "ideas": "Ideas"
+    "ideas": "Ideas",
+    "searchWithShortcutDynamic": "Search ({{shortcut}})"
   },
   "errors": {
     "somethingWentWrong": "Something went wrong",
@@ -2132,9 +2129,6 @@
       "defaultPermissionAsk": "Ask",
       "defaultPermissionFullAccess": "Full access",
       "closeWindow": "When closing the window",
-      "closeWindowDesc": "Choose what happens when you click the window close button. Cmd+Q always quits.",
-      "closeWindowDescMac": "Choose what happens when you click the window close button. {{quitKeys}} always quits and stops the agent.",
-      "closeWindowDescOther": "Choose what happens when you click the window close button. {{quitKeys}} always quits and stops the agent.",
       "closeWindowAsk": "Ask every time",
       "closeWindowTray": "Minimize to tray (keep agent)",
       "closeWindowQuit": "Quit and stop agent",
@@ -2174,12 +2168,12 @@
       "acpStreamDebugDesc": "Show live ACP event stream above the chat thread",
       "headerIcons": "Conversation header icons",
       "headerIconsDesc": "Control which action icons appear in the conversation's top-right. Hidden by default; enable here as needed.",
-      "showTerminalToggle": "Terminal toggle",
-      "showTerminalToggleDesc": "Show the terminal panel toggle in the conversation's top-right. The Ctrl+` shortcut always works regardless of this setting.",
       "showChangesTab": "File changes",
       "showChangesTabDesc": "Show this session's file-changes entry in the conversation's top-right. Only appears when there is an active session.",
       "showSkillsRefresh": "Force refresh skills",
-      "showSkillsRefreshDesc": "Show a button in the conversation's top-right that reloads this workspace's skill directories. Use it when hot-reload misses a change."
+      "showSkillsRefreshDesc": "Show a button in the conversation's top-right that reloads this workspace's skill directories. Use it when hot-reload misses a change.",
+      "closeWindowDescMac": "Choose what happens when you click the window close button. {{quitKeys}} always quits and stops the agent.",
+      "closeWindowDescOther": "Choose what happens when you click the window close button. {{quitKeys}} always quits and stops the agent."
     },
     "llm": {
       "refresh": "Refresh",
@@ -3024,16 +3018,16 @@
       "notifyDaemonUnavailable": "The local amuxd daemon is unavailable. The change will be recovered when the runtime next detects the environment drift, or you can force a reload from Settings → Daemon → General.",
       "savedQueued": "Environment variable saved",
       "savedQueuedHint": "It will apply automatically when idle. To apply it immediately, force a reload from Settings → Daemon → General.",
-      "sectionDescription": "Securely store API keys, passwords, and other secrets in your system credential store",
+      "sectionDescription": "Securely store API keys, passwords, and other secrets in your system keychain",
       "count": "{{count}} variable(s) stored",
       "add": "Add Variable",
       "addFirst": "Add Your First Variable",
       "addTitle": "Add Environment Variable",
-      "addDescription": "Add a new secret that will be stored securely in your system credential store.",
+      "addDescription": "Add a new secret that will be stored securely in your system keychain.",
       "editTitle": "Edit Environment Variable",
-      "editDescription": "Update the value for this environment variable. Values are stored securely in your system credential store.",
+      "editDescription": "Update the value for this environment variable. Values are stored securely in your system keychain.",
       "deleteTitle": "Delete Environment Variable",
-      "deleteDescription": "Are you sure you want to delete \"{{key}}\"? This will remove the secret from your system credential store and cannot be undone.",
+      "deleteDescription": "Are you sure you want to delete \"{{key}}\"? This will remove the secret from your system keychain and cannot be undone.",
       "deleteSuccess": "Environment variable deleted",
       "deleteFailed": "Failed to delete environment variable",
       "key": "Key",
@@ -3619,7 +3613,7 @@
       "agent": "agent",
       "saveLimits": "Save limits",
       "quotasSaved": "Limits saved.",
-      "limitsHint": "Blank means no limit. The period is team-wide: per-member periods would make \u201cused this period\u201d incomparable between people.",
+      "limitsHint": "Blank means no limit. The period is team-wide: per-member periods would make “used this period” incomparable between people.",
       "ledgerTitle": "Top-ups and grants",
       "ledgerEmpty": "Nothing yet."
     },
@@ -3702,16 +3696,13 @@
     "publish": "Write to knowledge",
     "published": "Written to knowledge",
     "savedLocalOnly": "Saved on this machine; not synced to the team yet",
-    "distillHint": "These are distilled suggestions from the session, not the full transcript. Check what to keep, then write.",
+    "distillHint": "Suggestions distilled from the session — not the full chat. Select what to keep, then write.",
     "distillHintDocument": "These are distilled suggestions from the document, not the original file. Check what to keep, then write.",
-    "suggestions": "Suggestions",
-    "rewriteBody": "Rewrite the body from the selected suggestions",
+    "suggestions": "Distilled suggestions",
+    "rewriteBody": "Rewrite body from selected suggestions",
     "tabLabel": "Review",
     "title": "Review before writing to knowledge",
-    "untitled": "Untitled",
-    "distillHint": "Suggestions distilled from the session — not the full chat. Select what to keep, then write.",
-    "suggestions": "Distilled suggestions",
-    "rewriteBody": "Rewrite body from selected suggestions"
+    "untitled": "Untitled"
   },
   "knowledgeSync": {
     "groupConflict": "Needs a decision",
@@ -4112,32 +4103,20 @@
     "cancel": "Not now",
     "accept": "Join team"
   },
-  "terminal": {
-    "label": "Terminal",
-    "toggle": "Toggle terminal ({{shortcut}})",
-    "newTab": "New terminal",
-    "closeTab": "Close terminal",
-    "search": {
-      "caseSensitive": "Case sensitive"
-    }
-  },
   "skills": {
     "access": {
       "title": "Cannot access skills folder",
-      "osPermissionBody": "Your user account cannot read or write {{path}}. Fix ownership in Finder (Get Info → Sharing & Permissions), then retry.",
-      "osPermissionBodyMac": "Your user account cannot read or write {{path}}. In Finder, select the folder → Get Info → Sharing & Permissions, fix ownership, then retry.",
-      "osPermissionBodyWindows": "Your user account cannot read or write {{path}}. In File Explorer, right-click the folder → Properties → Security, fix permissions, then retry.",
-      "osPermissionBodyLinux": "Your user account cannot read or write {{path}}. Fix folder permissions in your file manager, then retry.",
-      "tauriScopeBody": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in Finder.",
-      "tauriScopeBodyMac": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in Finder.",
-      "tauriScopeBodyWindows": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in File Explorer.",
-      "tauriScopeBodyLinux": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in your file manager.",
       "homeMissingBody": "Could not resolve your home directory, so ~/.agents/skills is unavailable.",
       "createFailedBody": "Could not create {{path}}: {{detail}}",
       "genericBody": "Skills cannot be installed until ~/.agents/skills is accessible.",
-      "reveal": "Reveal in Finder",
       "retry": "Retry",
-      "dismiss": "Dismiss"
+      "dismiss": "Dismiss",
+      "osPermissionBodyLinux": "Your user account cannot read or write {{path}}. Fix folder permissions in your file manager, then retry.",
+      "osPermissionBodyMac": "Your user account cannot read or write {{path}}. In Finder, select the folder → Get Info → Sharing & Permissions, fix ownership, then retry.",
+      "osPermissionBodyWindows": "Your user account cannot read or write {{path}}. In File Explorer, right-click the folder → Properties → Security, fix permissions, then retry.",
+      "tauriScopeBodyLinux": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in your file manager.",
+      "tauriScopeBodyMac": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in Finder.",
+      "tauriScopeBodyWindows": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in File Explorer."
     },
     "builtinLabel": "Built-in",
     "builtinPath": "~/.agents/skills/ ({{app}} built-in)",
@@ -4180,8 +4159,7 @@
     "findInPage": "Find in page...",
     "noMatches": "No matches",
     "previousShiftEnter": "Previous (Shift+Enter)",
-    "nextEnter": "Next (Enter)",
-    "find": "Find"
+    "nextEnter": "Next (Enter)"
   },
   "webview": {
     "back": "Back",

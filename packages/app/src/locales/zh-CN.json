@@ -1108,10 +1108,9 @@
       "clear": "清空",
       "waiting": "等待 {{token}} …",
       "logFileSession": "{{dir}}/{{sessionId}}.log + _all.log",
-      "openLog": "在 Finder 中打开日志",
-      "openLogInFinder": "在 Finder 中打开日志",
       "openLogInExplorer": "在资源管理器中打开日志",
-      "openLogInFileManager": "在文件管理器中打开日志"
+      "openLogInFileManager": "在文件管理器中打开日志",
+      "openLogInFinder": "在 Finder 中打开日志"
     },
     "toast": {
       "mentionRouteFailedTitle": "已 @Agent 但无法路由消息",
@@ -1193,8 +1192,6 @@
     "rename": "重命名",
     "delete": "删除",
     "revealInFinder": "在 Finder 中显示",
-    "revealInExplorer": "在资源管理器中显示",
-    "revealInFileManager": "在文件管理器中显示",
     "noFilesFound": "未找到文件",
     "noFilesMatchFilter": "没有匹配的文件",
     "filterPlaceholder": "过滤文件...",
@@ -1236,7 +1233,9 @@
     "invalidFileNameChars": "名称不能包含 {{chars}}",
     "invalidFileNameReserved": "「{{name}}」是 Windows 的保留名称",
     "invalidFileNameTrailing": "名称不能以空格或句点结尾",
-    "undo": "撤销：{{desc}}"
+    "undo": "撤销：{{desc}}",
+    "revealInExplorer": "在资源管理器中显示",
+    "revealInFileManager": "在文件管理器中显示"
   },
   "sessions": {
     "list": {
@@ -1274,12 +1273,11 @@
       "waiting": "等待中",
       "acpLines": "{{count}} 条 ACP 调试日志",
       "acpLogHint": "{{dir}}/{{sessionId}}.log",
-      "revealAcpLog": "在 Finder 中显示 ACP 日志",
-      "revealAcpLogMac": "在 Finder 中显示 ACP 日志",
+      "openSession": "打开会话",
+      "copySessionId": "复制会话 ID",
       "revealAcpLogExplorer": "在资源管理器中显示 ACP 日志",
       "revealAcpLogFileManager": "在文件管理器中显示 ACP 日志",
-      "openSession": "打开会话",
-      "copySessionId": "复制会话 ID"
+      "revealAcpLogMac": "在 Finder 中显示 ACP 日志"
     }
   },
   "sidebar": {
@@ -1315,8 +1313,6 @@
     "showAllSessions": "显示全部会话",
     "showCronSessions": "显示定时会话",
     "sessionKindMenu": "列表类型",
-    "searchWithShortcut": "搜索 (⌘K)",
-    "searchWithShortcutDynamic": "搜索 ({{shortcut}})",
     "pinned": "已置顶",
     "contacts": "联系人",
     "more": "更多",
@@ -1343,7 +1339,8 @@
     "localDaemonAutomationAria": "打开自动化任务",
     "localDaemonRetrying": "正在重试…",
     "localDaemonTokensThisMonth": "本月消耗 {{tokens}} tokens",
-    "ideas": "想法"
+    "ideas": "想法",
+    "searchWithShortcutDynamic": "搜索 ({{shortcut}})"
   },
   "errors": {
     "somethingWentWrong": "出了点问题",
@@ -2132,9 +2129,6 @@
       "defaultPermissionAsk": "询问",
       "defaultPermissionFullAccess": "完全访问",
       "closeWindow": "关闭窗口时",
-      "closeWindowDesc": "点击窗口关闭按钮时的行为。Cmd+Q 始终退出并停止 Agent。",
-      "closeWindowDescMac": "点击窗口关闭按钮时的行为。{{quitKeys}} 始终退出并停止 Agent。",
-      "closeWindowDescOther": "点击窗口关闭按钮时的行为。{{quitKeys}} 始终退出并停止 Agent。",
       "closeWindowAsk": "每次询问",
       "closeWindowTray": "最小化到托盘（保持 Agent）",
       "closeWindowQuit": "退出并停止 Agent",
@@ -2174,12 +2168,12 @@
       "acpStreamDebugDesc": "在聊天区域上方显示实时 ACP 事件流",
       "headerIcons": "会话头部图标",
       "headerIconsDesc": "控制会话右上角操作图标的显示。默认隐藏，需要时在此开启。",
-      "showTerminalToggle": "终端开关",
-      "showTerminalToggleDesc": "在会话右上角显示终端面板开关。快捷键 Ctrl+` 始终可用，不受此设置影响。",
       "showChangesTab": "文件更改",
       "showChangesTabDesc": "在会话右上角显示本会话的文件更改入口。仅在有活跃会话时显示。",
       "showSkillsRefresh": "强制刷新 Skills",
-      "showSkillsRefreshDesc": "在会话右上角显示强制刷新 Skills 的按钮。热更新异常时用来立刻重载当前工作区的 skill 目录。"
+      "showSkillsRefreshDesc": "在会话右上角显示强制刷新 Skills 的按钮。热更新异常时用来立刻重载当前工作区的 skill 目录。",
+      "closeWindowDescMac": "点击窗口关闭按钮时的行为。{{quitKeys}} 始终退出并停止 Agent。",
+      "closeWindowDescOther": "点击窗口关闭按钮时的行为。{{quitKeys}} 始终退出并停止 Agent。"
     },
     "llm": {
       "refresh": "刷新",
@@ -3024,16 +3018,16 @@
       "notifyDaemonUnavailable": "本地 amuxd 不可用。运行时下次检测到环境漂移时会补录该变更，或可在设置 → Daemon → 通用中强制重载。",
       "savedQueued": "环境变量已保存",
       "savedQueuedHint": "空闲后将自动生效；急需时可在设置 → Daemon → 通用中强制重载。",
-      "sectionDescription": "在系统凭据存储中安全存储 API 密钥、密码和其他敏感信息",
+      "sectionDescription": "在系统钥匙串中安全存储 API 密钥、密码和其他敏感信息",
       "count": "已存储 {{count}} 个变量",
       "add": "添加变量",
       "addFirst": "添加第一个变量",
       "addTitle": "添加环境变量",
-      "addDescription": "添加一个新的密钥，将安全存储在系统凭据存储中。",
+      "addDescription": "添加一个新的密钥，将安全存储在系统钥匙串中。",
       "editTitle": "编辑环境变量",
-      "editDescription": "更新环境变量的值。值将安全存储在系统凭据存储中。",
+      "editDescription": "更新环境变量的值。值将安全存储在系统钥匙串中。",
       "deleteTitle": "删除环境变量",
-      "deleteDescription": "确定要删除 \"{{key}}\" 吗？这将从系统凭据存储中移除该密钥，且无法撤销。",
+      "deleteDescription": "确定要删除 \"{{key}}\" 吗？这将从系统钥匙串中移除该密钥，且无法撤销。",
       "deleteSuccess": "环境变量已删除",
       "deleteFailed": "删除环境变量失败",
       "key": "键名",
@@ -3046,7 +3040,7 @@
       "reveal": "显示值",
       "hide": "隐藏值",
       "emptyTitle": "暂无环境变量",
-      "emptyDescription": "安全存储你的 API 密钥和密码。值通过系统凭据存储加密保存（macOS 钥匙串 / Windows 凭据管理器）。",
+      "emptyDescription": "安全存储你的 API 密钥和密码。值通过系统钥匙串加密存储（macOS Keychain / Windows 凭据管理器）。",
       "error": {
         "keyRequired": "键名不能为空",
         "valueRequired": "值不能为空",
@@ -3708,10 +3702,7 @@
     "rewriteBody": "按所选建议重写正文",
     "tabLabel": "审稿",
     "title": "写入知识库前先看一遍",
-    "untitled": "未命名",
-    "distillHint": "这是从会话里提炼的建议，不是聊天全文。勾选要留下的条目，再写入。",
-    "suggestions": "提炼建议",
-    "rewriteBody": "按所选建议重写正文"
+    "untitled": "未命名"
   },
   "knowledgeSync": {
     "groupConflict": "待决策",
@@ -4112,32 +4103,20 @@
     "cancel": "暂不",
     "accept": "加入团队"
   },
-  "terminal": {
-    "label": "终端",
-    "toggle": "切换终端 ({{shortcut}})",
-    "newTab": "新建终端",
-    "closeTab": "关闭终端",
-    "search": {
-      "caseSensitive": "区分大小写"
-    }
-  },
   "skills": {
     "access": {
       "title": "无法访问技能目录",
-      "osPermissionBody": "当前用户无法读写 {{path}}。请在访达中选中该文件夹 →「显示简介」→「共享与权限」修正所有者后重试。",
-      "osPermissionBodyMac": "当前用户无法读写 {{path}}。请在 Finder 中选中该文件夹 →「显示简介」→「共享与权限」修正所有者后重试。",
-      "osPermissionBodyWindows": "当前用户无法读写 {{path}}。请在资源管理器中右键该文件夹 →「属性」→「安全」，修正权限后重试。",
-      "osPermissionBodyLinux": "当前用户无法读写 {{path}}。请在文件管理器中修正该文件夹权限后重试。",
-      "tauriScopeBody": "应用尚未获得对 {{path}} 的文件系统访问。请点击「重试」重新授权，或在访达中打开该目录。",
-      "tauriScopeBodyMac": "应用尚未获得对 {{path}} 的文件系统访问。请点击「重试」重新授权，或在 Finder 中打开该目录。",
-      "tauriScopeBodyWindows": "应用尚未获得对 {{path}} 的文件系统访问。请点击「重试」重新授权，或在资源管理器中打开该目录。",
-      "tauriScopeBodyLinux": "应用尚未获得对 {{path}} 的文件系统访问。请点击「重试」重新授权，或在文件管理器中打开该目录。",
       "homeMissingBody": "无法解析用户主目录，因此无法使用 ~/.agents/skills。",
       "createFailedBody": "无法创建 {{path}}：{{detail}}",
       "genericBody": "在可以访问 ~/.agents/skills 之前，无法安装技能。",
-      "reveal": "在访达中显示",
       "retry": "重试",
-      "dismiss": "关闭"
+      "dismiss": "关闭",
+      "osPermissionBodyLinux": "当前用户无法读写 {{path}}。请在文件管理器中修正该文件夹权限后重试。",
+      "osPermissionBodyMac": "当前用户无法读写 {{path}}。请在 Finder 中选中该文件夹 →「显示简介」→「共享与权限」修正所有者后重试。",
+      "osPermissionBodyWindows": "当前用户无法读写 {{path}}。请在资源管理器中右键该文件夹 →「属性」→「安全」，修正权限后重试。",
+      "tauriScopeBodyLinux": "应用尚未获得对 {{path}} 的文件系统访问。请点击「重试」重新授权，或在文件管理器中打开该目录。",
+      "tauriScopeBodyMac": "应用尚未获得对 {{path}} 的文件系统访问。请点击「重试」重新授权，或在 Finder 中打开该目录。",
+      "tauriScopeBodyWindows": "应用尚未获得对 {{path}} 的文件系统访问。请点击「重试」重新授权，或在资源管理器中打开该目录。"
     },
     "builtinLabel": "内置",
     "builtinPath": "~/.agents/skills/（{{app}} 内置）",
@@ -4180,8 +4159,7 @@
     "findInPage": "在页面中查找…",
     "noMatches": "无匹配项",
     "previousShiftEnter": "上一个 (Shift+Enter)",
-    "nextEnter": "下一个 (Enter)",
-    "find": "查找"
+    "nextEnter": "下一个 (Enter)"
   },
   "webview": {
     "back": "后退",

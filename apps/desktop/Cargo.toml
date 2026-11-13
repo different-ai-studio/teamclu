@@ -134,7 +134,6 @@ log = "0.4"
 rand = "0.8"
 
 sentry = { version = "0.47.0", features = ["backtrace", "debug-images"] }
-portable-pty = "0.8"
 
 # macOS native APIs for traffic light control
 [target.'cfg(unix)'.dependencies]

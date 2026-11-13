@@ -6,7 +6,6 @@ import { useUpdaterStore } from "@/stores/updater";
 import { useAutoUpdatePreferenceStore } from "@/stores/auto-update-preference-store";
 import { getFeatures, subscribeFeatures } from "@/lib/config/remote-features";
 import { useAnyStreamActive } from "@/lib/stream/any-stream-active";
-import { useAnyTerminalBusy } from "@/stores/terminal-store";
 import { publishWindowActivity, isAnyOtherWindowBusy } from "@/lib/updater/window-activity-broadcast";
 import { isWindowsPlatform } from "@/lib/platform";
 import { appStoragePrefix } from "@/lib/config/build-config";
@@ -75,7 +74,7 @@ async function sendWindowsRestartNotice(): Promise<void> {
 
 /**
  * Drives the `auto-restart` update mode: polls for a safe window (no active
- * stream/cron/terminal, anywhere — including other windows), then counts down
+ * stream/cron, anywhere — including other windows), then counts down
  * before actually restarting. Only the `"main"` window runs this; every window
  * still publishes its own local activity so `main` can see it.
  *
@@ -90,7 +89,6 @@ export function useAutoRestartOrchestration(): {
   const update = useUpdaterStore((s) => s.update);
   const restart = useUpdaterStore((s) => s.restart);
   const isStreamActive = useAnyStreamActive();
-  const isTerminalBusy = useAnyTerminalBusy();
 
   const [restartCountdown, setRestartCountdown] = React.useState<number | null>(null);
   const countdownTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
@@ -168,11 +166,11 @@ export function useAutoRestartOrchestration(): {
   React.useEffect(() => {
     if (!isTauri()) return;
     const label = getWindowLabelSafe();
-    const publish = () => publishWindowActivity(label, isStreamActive || isTerminalBusy);
+    const publish = () => publishWindowActivity(label, isStreamActive);
     publish();
     const heartbeat = setInterval(publish, ACTIVITY_HEARTBEAT_MS);
     return () => clearInterval(heartbeat);
-  }, [isStreamActive, isTerminalBusy]);
+  }, [isStreamActive]);
 
   // The poll loop: only the `main` window drives the actual restart decision.
   React.useEffect(() => {
@@ -196,7 +194,7 @@ export function useAutoRestartOrchestration(): {
       const ceilingReached = Date.now() - readySince >= CEILING_MS;
 
       if (!ceilingReached) {
-        if (isStreamActive || isTerminalBusy) return;
+        if (isStreamActive) return;
         if (isAnyOtherWindowBusy("main")) return;
         try {
           const cronBusy = await invoke<boolean>("cron_any_job_running");
@@ -218,7 +216,7 @@ export function useAutoRestartOrchestration(): {
         pollTimerRef.current = null;
       }
     };
-  }, [mode, update.state, update.readySince, isStreamActive, isTerminalBusy, startCountdown, clearCountdown]);
+  }, [mode, update.state, update.readySince, isStreamActive, startCountdown, clearCountdown]);
 
   // Bounded retry after a detected restart failure (see `restart()` in
   // `stores/updater.ts`: it flips to "error" if the process is still alive 5s

@@ -85,12 +85,6 @@ import {
   resolveRuntimeStateEntryForAgent,
   backendTypeFromRuntimeEntry,
 } from "@/lib/agent/runtime-state-resolve";
-// xterm + its webgl/search addons are ~560KB of the startup chunk and are only
-// needed once the terminal drawer is actually opened, so pay for them then.
-const TerminalPanel = React.lazy(async () => ({
-  default: (await import("@/components/terminal/TerminalPanel")).TerminalPanel,
-}));
-import { useTerminalStore } from "@/stores/terminal-store";
 import { useSessionApp } from "@/lib/apps/app-locality";
 import { AppNotDownloadedComposer } from "@/components/apps/AppNotDownloadedComposer";
 const EMPTY_AGENTS: AttachedAgent[] = [];
@@ -280,15 +274,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   // separate bootstrapped vs ready flags collapsed into one signal.
   const workspaceBootstrapped = !!workspacePath;
   const workspaceReady = !!workspacePath;
-  const currentWorkspaceId = workspacePath ?? "";
-  const terminalOpen = useTerminalStore(
-    s => Boolean(currentWorkspaceId && s.panelOpenByWorkspace[currentWorkspaceId]),
-  );
-  const terminalPanelHeight = useTerminalStore(
-    s => currentWorkspaceId ? s.panelHeightByWorkspace[currentWorkspaceId] ?? 240 : 240,
-  );
-  const terminalBottomOffset = terminalOpen && workspacePath ? terminalPanelHeight : 0;
-
   // ── Local state ───────────────────────────────────────────────────────
   // draftInput lives in ChatInputArea (store subscription) so typing does not
   // re-render this panel / MessageList.
@@ -1238,23 +1223,12 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
             onRemoveFromQueue={removeFromQueue}
             onHeightChange={handleInputHeightChange}
             onComposerFocus={handleComposerFocus}
-            bottomOffsetPx={terminalBottomOffset}
             stackTodos={hasComposerPlanData ? (combinedTodos as Todo[]) : []}
             stackQueue={hasComposerPlanData ? messageQueue : []}
             planSlotHidden={hasComposerPlanData && !showInlineTodo}
             pendingQuestion={activeInputQuestion}
           />
       ) : null}
-
-      {terminalOpen && workspacePath && (
-        <React.Suspense fallback={null}>
-          <TerminalPanel
-            workspaceId={workspacePath}
-            workspacePath={workspacePath}
-            allowedRoots={[workspacePath]}
-          />
-        </React.Suspense>
-      )}
     </div>
     {displaySessionId && isAgentReplyForkEnabled() && threadListParentSessionId === displaySessionId ? (
       <ThreadListPanel parentSessionId={displaySessionId} />

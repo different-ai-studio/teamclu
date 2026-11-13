@@ -44,7 +44,3 @@ export function formatShortcut(spec: string): string {
 
   return out
 }
-
-export function terminalToggleShortcutLabel(): string {
-  return isMacPlatform() ? '⌃`' : 'Ctrl+`'
-}

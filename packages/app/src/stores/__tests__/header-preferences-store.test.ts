@@ -23,7 +23,6 @@ describe("header-preferences-store", () => {
     localStorage.clear();
     // Reset the live store instance to defaults for state assertions.
     useHeaderPreferencesStore.setState({
-      showTerminalToggle: false,
       showChangesTab: false,
       showSkillsRefresh: false,
     });
@@ -31,20 +30,8 @@ describe("header-preferences-store", () => {
 
   test("defaults are hidden (false)", () => {
     const s = useHeaderPreferencesStore.getState();
-    expect(s.showTerminalToggle).toBe(false);
     expect(s.showChangesTab).toBe(false);
     expect(s.showSkillsRefresh).toBe(false);
-  });
-
-  test("setShowTerminalToggle flips state and persists to localStorage", () => {
-    useHeaderPreferencesStore.getState().setShowTerminalToggle(true);
-    expect(useHeaderPreferencesStore.getState().showTerminalToggle).toBe(true);
-    const loaded = loadFromStorage(STORAGE_KEY, null);
-    expect(loaded).toEqual({
-      showTerminalToggle: true,
-      showChangesTab: false,
-      showSkillsRefresh: false,
-    });
   });
 
   test("setShowChangesTab flips state and persists to localStorage", () => {
@@ -52,20 +39,9 @@ describe("header-preferences-store", () => {
     expect(useHeaderPreferencesStore.getState().showChangesTab).toBe(true);
     const loaded = loadFromStorage(STORAGE_KEY, null);
     expect(loaded).toEqual({
-      showTerminalToggle: false,
       showChangesTab: true,
       showSkillsRefresh: false,
     });
-  });
-
-  test("the two toggles are independent", () => {
-    useHeaderPreferencesStore.getState().setShowTerminalToggle(true);
-    useHeaderPreferencesStore.getState().setShowTerminalToggle(false);
-    useHeaderPreferencesStore.getState().setShowChangesTab(true);
-    const s = useHeaderPreferencesStore.getState();
-    expect(s.showTerminalToggle).toBe(false);
-    expect(s.showChangesTab).toBe(true);
-    expect(s.showSkillsRefresh).toBe(false);
   });
 
   test("setShowSkillsRefresh flips state and persists to localStorage", () => {
@@ -73,36 +49,40 @@ describe("header-preferences-store", () => {
     expect(useHeaderPreferencesStore.getState().showSkillsRefresh).toBe(true);
     const loaded = loadFromStorage(STORAGE_KEY, null);
     expect(loaded).toEqual({
-      showTerminalToggle: false,
       showChangesTab: false,
       showSkillsRefresh: true,
     });
   });
 
+  test("the toggles are independent", () => {
+    useHeaderPreferencesStore.getState().setShowChangesTab(true);
+    useHeaderPreferencesStore.getState().setShowSkillsRefresh(true);
+    useHeaderPreferencesStore.getState().setShowChangesTab(false);
+    const s = useHeaderPreferencesStore.getState();
+    expect(s.showChangesTab).toBe(false);
+    expect(s.showSkillsRefresh).toBe(true);
+  });
+
   test("storage helpers round-trip the persisted shape the store writes", () => {
     saveToStorage(STORAGE_KEY, {
-      showTerminalToggle: true,
       showChangesTab: true,
       showSkillsRefresh: true,
     });
     expect(loadFromStorage(STORAGE_KEY, null)).toEqual({
-      showTerminalToggle: true,
       showChangesTab: true,
       showSkillsRefresh: true,
     });
   });
 
   test("missing persisted keys fall back to the false defaults (loadFromStorage semantics)", () => {
-    // Only one key seeded — the store reads `persisted.showChangesTab` as
+    // Only one key seeded — the store reads `persisted.showSkillsRefresh` as
     // undefined and applies `?? false`.
-    saveToStorage(STORAGE_KEY, { showTerminalToggle: true });
+    saveToStorage(STORAGE_KEY, { showChangesTab: true });
     const loaded = loadFromStorage<Partial<{
-      showTerminalToggle: boolean;
       showChangesTab: boolean;
       showSkillsRefresh: boolean;
     }>>(STORAGE_KEY, {});
-    expect(loaded.showTerminalToggle ?? false).toBe(true);
-    expect(loaded.showChangesTab ?? false).toBe(false);
+    expect(loaded.showChangesTab ?? false).toBe(true);
     expect(loaded.showSkillsRefresh ?? false).toBe(false);
   });
 });
