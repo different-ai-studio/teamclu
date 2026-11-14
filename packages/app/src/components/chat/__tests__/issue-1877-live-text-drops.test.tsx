@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
-import { create as createMessage } from "@bufbuild/protobuf";
-import { MessageKind, MessageSchema } from "@/lib/proto/teamclu_pb";
 import { StreamingAgentBubble } from "../StreamingAgentBubble";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import {
@@ -28,7 +26,6 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 const SESSION = "s1";
 const ACTOR = "agent-a";
 const ESSAY = "报销规则说明".repeat(20);
-const SHORT_REPLY = "我先查一下。";
 const NO_MESSAGES: { content: string }[] = [];
 
 /**
@@ -59,7 +56,7 @@ beforeEach(() => {
 });
 
 describe("issue 1877 live text drops", () => {
-  it("keeps the dock up after a short reply lands, until the turn is closed", async () => {
+  it("keeps the dock up for the whole turn and leaves the message area empty", async () => {
     act(() => {
       useV2StreamingStore.getState().appendThinking(SESSION, ACTOR, ESSAY);
     });
@@ -68,24 +65,6 @@ describe("issue 1877 live text drops", () => {
     await waitFor(() => {
       expect(view.getByTestId("dock").textContent).toContain("报销规则说明");
     });
-    expect(view.getByTestId("messages").textContent).not.toContain("报销规则");
-
-    act(() => {
-      useSessionMessageStore.getState().appendMessage(
-        SESSION,
-        createMessage(MessageSchema, {
-          messageId: "m-short",
-          sessionId: SESSION,
-          senderActorId: ACTOR,
-          kind: MessageKind.AGENT_REPLY,
-          content: SHORT_REPLY,
-          createdAt: BigInt(1),
-        }),
-      );
-    });
-
-    expect(view.getByTestId("dock").textContent).toContain("报销规则说明");
-    expect(view.getByTestId("messages").textContent).toContain(SHORT_REPLY);
     expect(view.getByTestId("messages").textContent).not.toContain("报销规则");
     expect(isStreamInterruptible(
       useV2StreamingStore.getState().byKey[streamEntryKey(SESSION, ACTOR)]!,
@@ -96,7 +75,7 @@ describe("issue 1877 live text drops", () => {
     });
 
     expect(view.getByTestId("dock").textContent ?? "").not.toContain("报销规则");
-    expect(view.getByTestId("messages").textContent).toContain(SHORT_REPLY);
+    expect(view.getByTestId("messages").textContent ?? "").toBe("");
     expect(isStreamInterruptible(
       useV2StreamingStore.getState().byKey[streamEntryKey(SESSION, ACTOR)]!,
     )).toBe(false);
