@@ -147,7 +147,7 @@ describe("interruptAgentActor", () => {
     ).toBe(true);
   });
 
-  it("cleans up locally when the daemon reports no attachment", async () => {
+  it("keeps the live dock when the daemon reports no attachment", async () => {
     runtimeCommand.mockResolvedValue(false);
 
     await expect(
@@ -157,9 +157,11 @@ describe("interruptAgentActor", () => {
       }),
     ).rejects.toThrow(/no live attachment/);
 
+    // A failed cancel is not a settled turn. Dropping the dock here made the
+    // reply vanish while the agent was still running.
     expect(mqttPublish).not.toHaveBeenCalled();
-    expect(discardPendingStreamReply).toHaveBeenCalledWith("session-1", "agent-a");
-    expect(useV2StreamingStore.getState().byKey["session-1::agent-a"]?.active).toBe(false);
+    expect(discardPendingStreamReply).not.toHaveBeenCalled();
+    expect(useV2StreamingStore.getState().byKey["session-1::agent-a"]?.active).toBe(true);
     expect(
       useV2StreamingStore.getState().isInterruptedFlushPending("session-1", "agent-a"),
     ).toBe(false);
