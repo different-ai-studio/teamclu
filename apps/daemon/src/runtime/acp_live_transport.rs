@@ -405,4 +405,117 @@ mod tests {
         let before = env.encode_to_vec();
         assert_eq!(prepare_acp_event_body_for_live(&env), before);
     }
+
+    /// #1877. The daemon log records only `body_bytes`, not the acp case.
+    /// Parent Output and Thinking of the same text differ by the oneof tag.
+    /// A child event carries the pi session path and cannot land in the
+    /// 141–185 byte band of the 2956 live deltas captured before 10:47:26Z.
+    fn live_delta(thinking: bool, text: &str, acp_session_id: &str) -> usize {
+        let event = if thinking {
+            amux::acp_event::Event::Thinking(amux::AcpThinking {
+                text: text.to_string(),
+            })
+        } else {
+            amux::acp_event::Event::Output(amux::AcpOutput {
+                text: text.to_string(),
+                is_complete: false,
+            })
+        };
+        let envelope = AmuxEnvelope {
+            runtime_id: "d43bb384-2384-4282-8141-323fd77ba184".into(),
+            actor_id: "d43bb384-2384-4282-8141-323fd77ba184".into(),
+            timestamp: 1_763_024_450,
+            sequence: 4_000,
+            turn_id: "6f3c1a20-7b14-4e0a-9c55-2a1d8e0b7c31".into(),
+            acp_session_id: acp_session_id.to_string(),
+            payload: Some(amux::envelope::Payload::AcpEvent(amux::AcpEvent {
+                event: Some(event),
+                model: "team/max".into(),
+            })),
+            ..Default::default()
+        };
+        prepare_acp_event_body_for_live(&envelope).len()
+    }
+
+    fn message_created_body(content: &str, reply_to: &str) -> usize {
+        use crate::proto::teamclu::{Message, MessageKind, SessionMessageEnvelope};
+        SessionMessageEnvelope {
+            message: Some(Message {
+                message_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890".into(),
+                session_id: "8da7cfaf-5144-4af1-8cc1-0881ca860d90".into(),
+                sender_actor_id: "d43bb384-2384-4282-8141-323fd77ba184".into(),
+                kind: MessageKind::AgentReply as i32,
+                content: content.to_string(),
+                created_at: 1_794_564_523,
+                reply_to_message_id: reply_to.to_string(),
+                model: "team/max".into(),
+                turn_id: "6f3c1a20-7b14-4e0a-9c55-2a1d8e0b7c31".into(),
+                ..Default::default()
+            }),
+            mention_actor_ids: vec![],
+        }
+        .encode_to_vec()
+        .len()
+    }
+
+    #[test]
+    fn issue_1877_logged_deltas_are_parent_events() {
+        let text = "报销";
+        let thinking = live_delta(true, text, "");
+        let output = live_delta(false, text, "");
+        assert!(
+            (thinking as i64 - output as i64).abs() <= 2,
+            "thinking {thinking} vs output {output}: size cannot tell them apart"
+        );
+        let child_path = "pi:/Users/xiaoli/.amuxd/teams/4b8e9df9-c8c5-4d6b-b074-986eef7d02d1/state/pi-sessions/b18ccca6a07c1a25/2026-11-02T09-51-28-687Z_01a19bab-c7af-7752-8385-3b527c0be4e8.jsonl";
+        let child = live_delta(true, text, child_path);
+        assert!(
+            child > 185 + 100,
+            "child body {child} would sit above the captured 141–185 band"
+        );
+
+        // Captured live deltas before 10:47:26Z are 141–185 bytes (2956 events).
+        let short = live_delta(true, "我", "");
+        let longer = live_delta(true, "报销规则说明", "");
+        assert!(
+            short <= 185 && longer >= 141,
+            "parent delta sizes short={short} longer={longer} must overlap 141–185; child={child}"
+        );
+        assert!(
+            (141..=185).contains(&thinking) || (141..=185).contains(&short),
+            "expected a parent token to land in 141–185, got short={short} 报销={thinking} longer={longer} child={child}"
+        );
+
+        // message.created bodies in the same log are 263–306. That envelope is a
+        // short AgentReply. The long stream, if it were that reply, would be
+        // far larger — and it would have been flushed at each tool boundary.
+        let reply_to = "df6b44e0-5114-4628-83de-359ae9a9bef7";
+        let empty = message_created_body("", "");
+        let empty_reply = message_created_body("", reply_to);
+        let chars_for = |target: usize, with_reply: bool| -> usize {
+            let mut n = 0;
+            while message_created_body(&"字".repeat(n), if with_reply { reply_to } else { "" })
+                < target
+            {
+                n += 1;
+                assert!(n < 200, "logged {target} is not a short reply");
+            }
+            n
+        };
+        let essay = message_created_body(&"报销规则说明".repeat(80), "");
+        let n_263 = chars_for(263, true).min(chars_for(263, false));
+        let n_306 = chars_for(306, true).max(chars_for(306, false));
+        // Measured: parent 1 CJK = 143, 2 CJK thinking=output=146, 6 CJK = 158,
+        // child with the pi session path = 318. Logged message.created 263–306
+        // is 17–44 CJK chars. The same essay as an AgentReply is 1616.
+        assert_eq!(thinking, output, "same text, thinking and output encode to the same size");
+        assert!(
+            (141..=185).contains(&short) && (141..=185).contains(&longer),
+            "parent tokens must sit in the captured band, got {short} and {longer}, child {child}"
+        );
+        assert!(
+            n_306 < 50 && essay > 1500,
+            "logged 263–306 is {n_263}–{n_306} CJK chars (empty {empty}/{empty_reply}); essay is {essay}"
+        );
+    }
 }

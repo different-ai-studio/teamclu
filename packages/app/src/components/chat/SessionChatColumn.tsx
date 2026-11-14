@@ -478,12 +478,7 @@ export function SessionChatColumn({
     return agents;
   }, [v2Streams, engagedAgents]);
 
-  const v2HasActiveStream = useV2StreamingStore((s) =>
-    sessionId
-      ? Object.values(s.byKey).some((e) => e.sessionId === sessionId && e.active)
-      : false,
-  );
-  const isStreaming = activeStreamingAgents.length > 0 || v2HasActiveStream;
+  const isStreaming = activeStreamingAgents.length > 0;
 
   const handleInterruptAgent = React.useCallback(
     (agentActorId: string) => {

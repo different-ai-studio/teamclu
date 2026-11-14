@@ -1,7 +1,5 @@
-import { create as createMessage } from "@bufbuild/protobuf";
 import { AgentStatus } from "@/lib/proto/amux_pb";
 import type { Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
-import { MessageKind, MessageSchema } from "@/lib/proto/teamclu_pb";
 import type { AgentStreamEntry } from "@/stores/v2-streaming-store";
 import type { ToolCallContentBlock } from "@/components/chat/tool-calls/tool-call-content";
 import { parseToolContentBlocks } from "@/components/chat/tool-calls/tool-call-content";
@@ -132,27 +130,6 @@ export function mergePendingAgentReplies(
   return { ...last, content };
 }
 
-/** Client-side anchor when daemon terminal arrives before agent_reply (interrupt + tool). */
-export function buildInterruptedStreamAnchor(
-  sessionId: string,
-  actorId: string,
-  snapshot: AgentStreamEntry,
-): TeamcluMessage {
-  const createdAtMs =
-    snapshot.toolCalls[0]?.startTime?.getTime?.() ??
-    snapshot.lastUpdate ??
-    Date.now();
-  return createMessage(MessageSchema, {
-    messageId: `interrupt-${snapshot.streamId}`,
-    sessionId,
-    senderActorId: actorId,
-    kind: MessageKind.AGENT_REPLY,
-    content: "",
-    turnId: `interrupt-${snapshot.streamId}`,
-    createdAt: BigInt(Math.max(1, Math.floor(createdAtMs / 1000))),
-  });
-}
-
 /** Daemon emits an empty AGENT_REPLY anchor when a tool-only turn ends (e.g. cancel). */
 export function isToolOnlyTurnAnchor(
   pending: TeamcluMessage[],
@@ -164,19 +141,26 @@ export function isToolOnlyTurnAnchor(
 }
 
 /**
- * Mid-turn AgentReply slices stay parked until the turn ends.
+ * Mid-turn AgentReply slices stay parked for the end-of-turn merge.
+ * The message list also appends them immediately so the thread is not blank
+ * while the dock is still up.
  *
- * Gateway checkout forwards ACP Idle *during* `run_turn`, then `write_reply`
- * only after the channel finish frame (WeCom ack can take 15s). Desktop Idle
- * starts an 8s wait and may `finishSessionActor` before that row arrives —
- * an inactive live stream is already past terminal, so flush the parked reply.
+ * Gateway checkout forwards ACP Idle during `run_turn`, then `write_reply`
+ * only after the channel finish frame (WeCom ack can take 15s). After Idle
+ * the desktop waits 20s for that row before closing the dock.
  */
 export function shouldFlushParkedAgentReply(args: {
   terminalPending: boolean;
   toolOnlyAnchor: boolean;
   streamActive: boolean;
+  turnPhase?: "streaming" | "awaiting_reply" | "closed";
 }): boolean {
-  return args.terminalPending || args.toolOnlyAnchor || !args.streamActive;
+  if (args.terminalPending || args.toolOnlyAnchor) return true;
+  if (args.turnPhase === "streaming" || args.turnPhase === "awaiting_reply") {
+    return false;
+  }
+  if (args.turnPhase === "closed") return true;
+  return !args.streamActive;
 }
 
 type StreamVisibilityEntry = {

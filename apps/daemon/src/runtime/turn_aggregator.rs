@@ -903,6 +903,77 @@ mod tests {
         assert!(emitted[2].metadata_json.contains("\"tool_id\":\"t1\""));
     }
 
+    fn push_deltas(agg: &mut TurnAggregator, text: &str, thinking: bool) {
+        for chunk in text.chars().collect::<Vec<_>>().chunks(4) {
+            let piece: String = chunk.iter().collect();
+            let event = if thinking {
+                thinking_chunk(&piece)
+            } else {
+                output_chunk(&piece)
+            };
+            assert!(
+                agg.ingest(&event).is_empty(),
+                "deltas stay in memory until a tool or turn end"
+            );
+        }
+    }
+
+    /// #1877. The live dock paints every acp delta. A thread message is only
+    /// the AgentReply flushed when a tool starts. Thinking is flushed next to
+    /// it, but it is not an AgentReply, so the publish path never turns it
+    /// into `message.created` and it never reaches the cloud.
+    ///
+    /// The captured log flushed a 263-byte `message.created` at the tool
+    /// boundary after ~90s of small acp deltas. A thinking stream plus a short
+    /// reply produces that shape. The same bytes as Output would be inside
+    /// the AgentReply.
+    #[test]
+    fn long_thinking_before_tool_is_not_the_agent_reply() {
+        let mut agg = TurnAggregator::new();
+        let long = "报销规则说明".repeat(80);
+        assert!(long.len() > 263);
+        push_deltas(&mut agg, &long, true);
+        let short = "我先查一下。";
+        assert!(agg.ingest(&output_chunk(short)).is_empty());
+
+        let emitted = agg.ingest(&tool_use("t1", "Read", "rules"));
+        let replies: Vec<_> = emitted
+            .iter()
+            .filter(|m| m.kind == MessageKind::AgentReply)
+            .collect();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].content, short);
+        assert!(!replies[0].content.contains("报销规则"));
+        assert!(!replies[0].cloud_persist);
+        assert!(!TurnAggregator::cloud_persistent(replies[0]));
+
+        let thinking: Vec<_> = emitted
+            .iter()
+            .filter(|m| m.kind == MessageKind::AgentThinking)
+            .collect();
+        assert_eq!(thinking.len(), 1);
+        assert_eq!(thinking[0].content, long);
+        assert_ne!(thinking[0].kind, MessageKind::AgentReply);
+        assert!(!TurnAggregator::cloud_persistent(thinking[0]));
+    }
+
+    #[test]
+    fn long_output_before_tool_is_handed_off_whole() {
+        let mut agg = TurnAggregator::new();
+        let long = "报销规则说明".repeat(80);
+        push_deltas(&mut agg, &long, false);
+
+        let emitted = agg.ingest(&tool_use("t1", "Read", "rules"));
+        let replies: Vec<_> = emitted
+            .iter()
+            .filter(|m| m.kind == MessageKind::AgentReply)
+            .collect();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].content, long);
+        assert!(!replies[0].cloud_persist);
+        assert!(!TurnAggregator::cloud_persistent(replies[0]));
+    }
+
     #[test]
     fn tool_call_metadata_preserves_params() {
         let mut agg = TurnAggregator::new();

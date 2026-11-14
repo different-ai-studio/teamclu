@@ -1,25 +1,15 @@
-import { discardPendingStreamReply } from "@/lib/stream/live-agent-stream";
 import { mqttPublish } from "@/lib/mqtt/mqtt-bridge";
 import {
   resolvePermissionCommandTarget,
   runtimeTargetsForSession,
 } from "@/lib/agent/runtime-state-resolve";
 import { sessionFlowError, sessionFlowLog } from "@/lib/session/session-flow-log";
-import { logStreamToolDiag } from "@/lib/diagnostics/stream-tool-diag";
 import { createRuntimeCommandSender } from "@/lib/teamclu/runtime-command";
 import { runtimeCommand } from "@/lib/daemon/teamclu-rpc";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 
-
-function cleanupLocalAgentStream(sessionId: string, agentActorId: string): void {
-  discardPendingStreamReply(sessionId, agentActorId);
-  logStreamToolDiag("interrupt.cleanup", { sessionId, agentActorId });
-  useV2StreamingStore.getState().finishSessionActor(sessionId, agentActorId, {
-    reason: "interrupt",
-  });
-}
 
 export async function interruptAgentActor(args: {
   sessionId: string;
@@ -99,7 +89,6 @@ export async function interruptAgentActor(args: {
     });
   } catch (error) {
     useV2StreamingStore.getState().clearInterruptedFlushPending(sessionId, agentActorId);
-    cleanupLocalAgentStream(sessionId, agentActorId);
     sessionFlowError("interrupt.failed", error, {
       sessionId,
       agentActorId,

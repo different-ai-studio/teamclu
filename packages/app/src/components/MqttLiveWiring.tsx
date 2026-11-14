@@ -189,9 +189,11 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
         clearTerminalFlushPending(streamKey);
         return;
       }
+      const phase = useV2StreamingStore.getState().byKey[streamKey]?.turnPhase;
+      if (phase !== "awaiting_reply") return;
       // Keep terminalFlushPending: a late write_reply must still flush. Closing
       // the dock here used to drop that flag and the ChatMessage never landed.
-      useV2StreamingStore.getState().finishSessionActor(sessionId, actorId, {
+      useV2StreamingStore.getState().closeLiveDock(sessionId, actorId, {
         reason: "statusChange.terminal.timeout",
       });
       useV2StreamingStore
@@ -201,18 +203,9 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
   }
 
   const flushTurnAgentReplyInFlightRef = useRef<Record<string, boolean>>({});
-  /** Eager client flush when terminal arrives before daemon agent_reply (interrupt + tool). */
-  const interruptedStreamFlushRef = useRef<
-    Record<string, { streamId: string; messageId: string }>
-  >({});
-  /** Real AGENT_REPLY won the race — in-flight eager flush must not commit. */
-  const interruptedFlushSupersededRef = useRef<Record<string, boolean>>({});
-  /** streamId that was superseded; blocks re-flush of the same interrupted turn. */
-  const interruptedFlushSupersededStreamIdRef = useRef<Record<string, string>>({});
 
-  // Drop the synthetic interrupt-<streamId> anchor from BOTH the in-memory
-  // message store AND the libsql cache, so it never survives a reload as a
-  // duplicate bubble alongside the real reply.
+  // Drop a leftover interrupt-* row from BOTH the in-memory message store AND
+  // the libsql cache, so it never survives a reload as a duplicate bubble.
   function dropInterruptedPlaceholderRow(sessionId: string, messageId: string) {
     logExtMsgDiag("interrupt.drop", {
       sessionId,
@@ -233,72 +226,19 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
     });
   }
 
-  function removeInterruptedStreamPlaceholder(
-    sessionId: string,
-    actorId: string,
-    streamId: string | undefined,
-  ) {
-    const streamKey = agentStreamKey(sessionId, actorId);
-    const placeholder = interruptedStreamFlushRef.current[streamKey];
-    if (!placeholder || !streamId || placeholder.streamId !== streamId) {
-      logExtMsgDiag("interrupt.removeByStream.miss", {
-        sessionId,
-        actorId,
-        streamId: streamId ?? null,
-        hasPlaceholder: Boolean(placeholder),
-        placeholderStreamId: placeholder?.streamId ?? null,
-        placeholderMessageId: placeholder?.messageId ?? null,
-      });
-      return;
-    }
-    dropInterruptedPlaceholderRow(sessionId, placeholder.messageId);
-    delete interruptedStreamFlushRef.current[streamKey];
-  }
-
-  // When the daemon's REAL agent_reply for a turn arrives after the live stream
-  // was already detached (mid-stream interrupt eager-flush), the parking branch
-  // no longer finds a live streamEntry and falls through to plain appendMessage.
-  // Drop every synthetic interrupt-* for this actor (tracked ref + store rows)
-  // and mark the in-flight eager flush superseded so it cannot re-insert.
   function removeInterruptedStreamPlaceholderForRealReply(
     sessionId: string,
     actorId: string,
   ) {
-    const streamKey = agentStreamKey(sessionId, actorId);
-    interruptedFlushSupersededRef.current[streamKey] = true;
-    const tracked = interruptedStreamFlushRef.current[streamKey];
-    const liveStreamId =
-      useV2StreamingStore.getState().byKey[streamKey]?.streamId?.trim() || "";
-    const supersededStreamId = (tracked?.streamId || liveStreamId).trim();
-    if (supersededStreamId) {
-      interruptedFlushSupersededStreamIdRef.current[streamKey] = supersededStreamId;
-    }
     const { messageIds } = resolveInterruptedPlaceholdersToDrop({
-      tracked,
+      tracked: undefined,
       messages: useSessionMessageStore.getState().messages[sessionId] ?? [],
       actorId,
     });
-    if (messageIds.length === 0 && !tracked) {
-      logExtMsgDiag("interrupt.removeForRealReply.miss", {
-        sessionId,
-        actorId,
-        note: "no tracked placeholder and no interrupt-* rows — ok if eager flush never ran",
-      });
-      return;
-    }
-    logExtMsgDiag("interrupt.removeForRealReply.hit", {
-      sessionId,
-      actorId,
-      placeholderMessageId: tracked?.messageId ?? null,
-      placeholderStreamId: tracked?.streamId ?? null,
-      droppedIds: messageIds,
-      superseded: true,
-      supersededStreamId: supersededStreamId || null,
-    });
+    if (messageIds.length === 0) return;
     for (const messageId of messageIds) {
       dropInterruptedPlaceholderRow(sessionId, messageId);
     }
-    delete interruptedStreamFlushRef.current[streamKey];
   }
 
   function teamIdForSession(sessionId: string): string {
@@ -418,13 +358,6 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
       beforePersist: () => {
         useV2StreamingStore.getState().finalize(sessionId, actorId);
       },
-      afterEnriched: () => {
-        removeInterruptedStreamPlaceholder(
-          sessionId,
-          actorId,
-          streamEntrySnapshot?.streamId,
-        );
-      },
       persistedStage: "flush.persisted",
     }).finally(() => {
       delete flushTurnAgentReplyInFlightRef.current[streamKey];
@@ -452,7 +385,7 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
     return true;
   }
 
-  /** Close live docks whose terminal statusChange never arrived. */
+  /** Log quiet docks. Only an already-Idle turn may flush here. */
   function recoverStaleLiveStreams(trigger: string) {
     const stale = findStaleLiveStreams({
       byKey: useV2StreamingStore.getState().byKey,
@@ -465,6 +398,16 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
         // ACP Idle already armed the daemon write_reply wait. Gateway turns
         // persist that row after the channel finish-ack; stealing the dock
         // here dropped the ChatMessage.
+        continue;
+      }
+      const phase = useV2StreamingStore.getState().byKey[streamKey]?.turnPhase;
+      if (phase !== "awaiting_reply") {
+        logInterruptMsgDiag(`${trigger}.keepDock`, {
+          sessionId,
+          actorId,
+          reason,
+          phase: phase ?? "streaming",
+        });
         continue;
       }
       const flushed = flushTurnAgentReply(sessionId, actorId, trigger);
@@ -481,12 +424,12 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
       });
       clearTerminalFlushPending(streamKey);
       if (flushed) continue;
-      useV2StreamingStore.getState().finishSessionActor(sessionId, actorId, {
-        reason: trigger,
+      // 没收到 ACP Idle 就不撤直播条。静音或 runtime 状态对不上 pi 时只记日志。
+      logInterruptMsgDiag(`${trigger}.keepDock`, {
+        sessionId,
+        actorId,
+        reason,
       });
-      useV2StreamingStore
-        .getState()
-        .clearInterruptedFlushPending(sessionId, actorId);
     }
   }
 
@@ -999,9 +942,6 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
       }
       terminalFlushPendingRef.current = {};
       followUpActiveRef.current = {};
-      interruptedStreamFlushRef.current = {};
-      interruptedFlushSupersededRef.current = {};
-      interruptedFlushSupersededStreamIdRef.current = {};
       moduleLeaseGroup?.release();
       identityLease?.release();
     };

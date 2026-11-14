@@ -7,7 +7,6 @@ import {
   type Message as TeamcluMessage,
 } from "@/lib/proto/teamclu_pb";
 import {
-  buildInterruptedStreamAnchor,
   isAgentActiveStatus,
   isTurnOpeningStatusChange,
   isTerminalAgentStatus,
@@ -304,6 +303,30 @@ describe("live agent stream event helpers", () => {
         streamActive: false,
       }),
     ).toBe(true);
+    expect(
+      shouldFlushParkedAgentReply({
+        terminalPending: false,
+        toolOnlyAnchor: false,
+        streamActive: false,
+        turnPhase: "streaming",
+      }),
+    ).toBe(false);
+    expect(
+      shouldFlushParkedAgentReply({
+        terminalPending: false,
+        toolOnlyAnchor: false,
+        streamActive: false,
+        turnPhase: "awaiting_reply",
+      }),
+    ).toBe(false);
+    expect(
+      shouldFlushParkedAgentReply({
+        terminalPending: false,
+        toolOnlyAnchor: false,
+        streamActive: false,
+        turnPhase: "closed",
+      }),
+    ).toBe(true);
   });
 
   it("detects when a stream ended without any visible content", () => {
@@ -382,37 +405,6 @@ describe("live agent stream event helpers", () => {
       parts: [{ type: "text", text: "Hello world" }],
     });
     expect(before).not.toBe(after);
-  });
-
-  it("buildInterruptedStreamAnchor uses streamId for stable client ids", () => {
-    const snapshot: AgentStreamEntry = {
-      sessionId: "s1",
-      actorId: "a1",
-      outputText: "",
-      thinkingText: "",
-      parts: [{ type: "tool-call", toolCall: { id: "tool-1" } }],
-      toolCalls: [
-        {
-          id: "tool-1",
-          name: "bash",
-          status: "completed",
-          startTime: new Date("2026-06-08T07:38:00.000Z"),
-        },
-      ],
-      planEntries: [],
-      pendingPermissionsByRequestId: {},
-      errorMessage: null,
-      errorDetails: null,
-      lastUpdate: 1_748_868_000_000,
-      active: false,
-      streamId: "s1::a1::stream-9",
-    };
-    const anchor = buildInterruptedStreamAnchor("s1", "a1", snapshot);
-    expect(anchor.messageId).toBe("interrupt-s1::a1::stream-9");
-    expect(anchor.turnId).toBe("interrupt-s1::a1::stream-9");
-    expect(Number(anchor.createdAt)).toBe(
-      Math.floor(new Date("2026-06-08T07:38:00.000Z").getTime() / 1000),
-    );
   });
 });
 
