@@ -1,0 +1,6 @@
+# Spike-only: gpui-kit 0.9 / gpui-pre-macos needs Option::map_or_default
+# (not in TeamClu's 1.97.1 pin). Do not copy this into the monorepo root.
+[toolchain]
+channel = "stable"
+components = ["rustfmt"]
+profile = "minimal"

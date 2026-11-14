@@ -1,0 +1,20 @@
+# Throwaway — not a workspace member. Answers the GPUI Kit spike questions in
+# docs/specs/2026-11-13-gpui-migration-feasibility.md §6 path 3.
+[package]
+name = "gpui-kit-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Keep this crate out of the TeamClu workspace (own lockfile + target).
+[workspace]
+
+[dependencies]
+gpui-kit = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+
+[profile.dev]
+# Spike-only profile; do not share the monorepo target dir (SDLC).
+debug = "line-tables-only"
