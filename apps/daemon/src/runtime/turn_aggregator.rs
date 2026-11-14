@@ -424,12 +424,16 @@ impl TurnAggregator {
                         self.turn_had_reply = true;
                     } else {
                         // Non-empty Idle prose → one cloud-final AgentReply.
-                        // Empty Idle (tool-only, or mid-turn flushes already
-                        // drained the buffer) → durable no_final_reply notice
-                        // so catchup sees an agent row and UI can localize.
+                        // Empty Idle after a turn was opened (tool-only, a
+                        // model stop that streamed nothing, or mid-turn
+                        // flushes already drained the buffer) → durable
+                        // no_final_reply notice so catchup sees an agent row
+                        // and UI can localize. A status change that never
+                        // opened a turn still emits nothing.
                         let had_final_prose = !self.reply_buf.trim().is_empty();
+                        let turn_was_open = self.current_turn_id.is_some();
                         self.flush_reply_into(&mut out, true);
-                        if !had_final_prose && self.turn_had_activity {
+                        if !had_final_prose && turn_was_open {
                             out.push(self.emit_agent_reply(
                                 NO_FINAL_REPLY_AGENT_CONTENT.to_string(),
                                 NO_FINAL_REPLY_METADATA_JSON.to_string(),
@@ -480,23 +484,29 @@ impl TurnAggregator {
     }
 
     fn flush_reply_into(&mut self, out: &mut Vec<EmittedMessage>, cloud_persist: bool) {
-        if !self.reply_buf.is_empty() {
-            let content = std::mem::take(&mut self.reply_buf);
-            if cloud_persist {
-                out.push(self.emit_agent_reply(content, String::new(), true));
-            } else {
-                out.push(EmittedMessage {
-                    kind: MessageKind::AgentReply,
-                    content,
-                    metadata_json: String::new(),
-                    turn_id: self.current_turn_id.clone().unwrap_or_default(),
-                    cloud_persist: false,
-                    attachments: Vec::new(),
-                    attachment_urls: Vec::new(),
-                });
-            }
-            self.turn_had_reply = true;
+        if self.reply_buf.is_empty() {
+            return;
         }
+        let content = std::mem::take(&mut self.reply_buf);
+        // Spaces and newlines are not a reply. Drop them so a tool call does
+        // not publish a blank AgentReply the client can mistake for turn end.
+        if content.trim().is_empty() {
+            return;
+        }
+        if cloud_persist {
+            out.push(self.emit_agent_reply(content, String::new(), true));
+        } else {
+            out.push(EmittedMessage {
+                kind: MessageKind::AgentReply,
+                content,
+                metadata_json: String::new(),
+                turn_id: self.current_turn_id.clone().unwrap_or_default(),
+                cloud_persist: false,
+                attachments: Vec::new(),
+                attachment_urls: Vec::new(),
+            });
+        }
+        self.turn_had_reply = true;
     }
 
     fn emit_agent_reply(
@@ -1000,6 +1010,28 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_before_tool_is_dropped_and_idle_still_notices() {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&output_chunk(" \n\t "));
+        let mid = agg.ingest(&tool_use("t1", "bash", "pwd"));
+        assert!(
+            mid.iter().all(|m| m.kind != MessageKind::AgentReply),
+            "whitespace is not a mid-turn reply: {mid:?}"
+        );
+        assert_eq!(mid.len(), 1);
+        assert_eq!(mid[0].kind, MessageKind::AgentToolCall);
+
+        agg.ingest(&tool_result("t1", true, "/tmp"));
+        let idle = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(idle.len(), 1);
+        assert_eq!(idle[0].content, NO_FINAL_REPLY_AGENT_CONTENT);
+        assert!(idle[0].cloud_persist);
+    }
+
+    #[test]
     fn tool_only_turn_emits_no_final_reply_notice_at_idle() {
         let mut agg = TurnAggregator::new();
         agg.ingest(&status_change(
@@ -1123,6 +1155,27 @@ mod tests {
             amux::AgentStatus::Idle,
         ));
         assert!(emitted.is_empty());
+    }
+
+    #[test]
+    fn opened_turn_that_streams_nothing_emits_no_final_reply_notice() {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].kind, MessageKind::AgentReply);
+        assert_eq!(emitted[0].content, NO_FINAL_REPLY_AGENT_CONTENT);
+        assert!(emitted[0]
+            .metadata_json
+            .contains("\"turn_status\":\"no_final_reply\""));
+        assert!(emitted[0].cloud_persist);
+        assert!(TurnAggregator::cloud_persistent(&emitted[0]));
     }
 
     #[test]

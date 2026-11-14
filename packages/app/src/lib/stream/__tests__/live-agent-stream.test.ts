@@ -254,11 +254,10 @@ describe("live agent stream event helpers", () => {
     expect(mergePendingAgentReplies(pending)).toBeNull();
   });
 
-  it("keeps tool-only turn anchors even when agent_reply content is empty", () => {
-    const pending = [{ messageId: "m1", content: "" }] as TeamcluMessage[];
+  it("closes from an end notice, not from a blank or whitespace reply", () => {
     const streamEntry = {
       outputText: "",
-      thinkingText: "",
+      thinkingText: "想一下",
       toolCalls: [{ id: "sleep-tool" }],
       parts: [
         {
@@ -267,11 +266,53 @@ describe("live agent stream event helpers", () => {
         },
       ],
     };
-    expect(mergePendingAgentReplies(pending, streamEntry)).toMatchObject({
-      messageId: "m1",
-      content: "",
-    });
-    expect(isToolOnlyTurnAnchor(pending, streamEntry)).toBe(true);
+    expect(
+      isToolOnlyTurnAnchor(
+        [{ messageId: "m1", content: "" }] as TeamcluMessage[],
+        streamEntry,
+      ),
+    ).toBe(false);
+    expect(
+      isToolOnlyTurnAnchor(
+        [{ messageId: "m1", content: " \n\t " }] as TeamcluMessage[],
+        streamEntry,
+      ),
+    ).toBe(false);
+    expect(
+      isToolOnlyTurnAnchor(
+        [
+          {
+            messageId: "m1",
+            content:
+              "[Turn completed with no final reply] The agent finished this turn without producing a final written answer.",
+          },
+        ] as TeamcluMessage[],
+        streamEntry,
+      ),
+    ).toBe(true);
+    expect(
+      isToolOnlyTurnAnchor(
+        [
+          {
+            messageId: "m1",
+            content: "[Turn interrupted by user] The user stopped this turn.",
+          },
+        ] as TeamcluMessage[],
+        streamEntry,
+      ),
+    ).toBe(true);
+    expect(
+      isToolOnlyTurnAnchor(
+        [
+          {
+            messageId: "m1",
+            content:
+              "[Turn completed with no final reply] The agent finished this turn.",
+          },
+        ] as TeamcluMessage[],
+        { outputText: "", thinkingText: "", toolCalls: [], parts: [] },
+      ),
+    ).toBe(false);
   });
 
   it("keeps mid-turn slices parked, and flushes once Idle or the live stream ends", () => {

@@ -130,14 +130,28 @@ export function mergePendingAgentReplies(
   return { ...last, content };
 }
 
-/** Daemon emits an empty AGENT_REPLY anchor when a tool-only turn ends (e.g. cancel). */
+const TURN_END_NOTICE_PREFIXES = [
+  "[Turn completed with no final reply]",
+  "[Turn interrupted by user]",
+];
+
+/** End-of-turn notice, not a blank or whitespace slice. */
+function isTurnEndNotice(content: string | undefined): boolean {
+  const trimmed = content?.trimStart() ?? "";
+  return TURN_END_NOTICE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
+/**
+ * Close the dock from the reply itself only when the daemon already ended the
+ * turn and sent the no-final-reply or interrupt notice. Whitespace and other
+ * blank slices stay parked until Idle.
+ */
 export function isToolOnlyTurnAnchor(
   pending: TeamcluMessage[],
   streamEntry?: StreamVisibilityEntry,
 ): boolean {
-  const merged = mergePendingAgentReplies(pending, streamEntry);
-  if (!merged) return false;
-  return !merged.content.trim() && streamEntryHasVisibleContent(streamEntry);
+  if (!streamEntryHasVisibleContent(streamEntry)) return false;
+  return pending.some((message) => isTurnEndNotice(message.content));
 }
 
 /**

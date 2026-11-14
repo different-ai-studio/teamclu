@@ -4144,7 +4144,6 @@
       "sessionWorkspaceUnboundDesc": "This session has no workspace binding, so Agent {{shortId}} cannot start.",
       "sessionParticipantFailedDesc": "Could not add agent {{shortId}} to this session, so its runtime was not started. The agent must be a session participant before it can read the session. ({{reason}})",
       "startFailedTitle": "Failed to start Agent runtime",
-      "emptyReply": "Agent returned no output. The selected model may be unavailable or misconfigured.",
       "providerStalled": "The model provider stopped responding. It may be unavailable or rate-limited — please retry or switch models.",
       "providerError": "The model provider reported an error. Please retry or switch models."
     },

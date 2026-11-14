@@ -382,15 +382,10 @@ export function handleAcpEvent(
                     );
                     scheduleTerminalDaemonReplyTimeout(sid, actorId);
                   } else {
-                    useV2StreamingStore.getState().setError(
-                      sid,
-                      actorId,
-                      t(
-                        "daemon.agentRuntime.emptyReply",
-                        "Agent returned no output. The selected model may be unavailable or misconfigured.",
-                      ),
-                      "",
-                    );
+                    // Idle with nothing visible. The turn is over; the thread
+                    // already has the no-final-reply row. Do not paint the
+                    // "model unavailable" banner — that used to keep the dock
+                    // up because an error no longer hides it.
                     useV2StreamingStore.getState().closeLiveDock(sid, actorId, {
                       reason: "empty-reply",
                     });

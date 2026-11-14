@@ -1470,24 +1470,39 @@ export const useV2StreamingStore = create<State>((set, get) => ({
 
   closeLiveDock: (sessionId, actorId, opts) => {
     const key = k(sessionId, actorId);
-    const existing = get().byKey[key];
-    if (!existing || existing.turnPhase === "closed") return;
-    const toolCalls = finishUnresolvedTools(existing.toolCalls, {
-      interrupted: opts?.reason === "interrupt",
+    const state = get();
+    const existing = state.byKey[key];
+    const now = Date.now();
+    // Archived copies keep the phase they had when parked. The dock treats
+    // any streaming / awaiting_reply row as still replying, so a close that
+    // only updates byKey leaves that copy holding the bar.
+    let archivedChanged = false;
+    const archived = state.archived.map((entry) => {
+      if (entry.sessionId !== sessionId || entry.actorId !== actorId) return entry;
+      if (!isStreamInterruptible(entry)) return entry;
+      archivedChanged = true;
+      return { ...entry, active: false, turnPhase: "closed" as const, lastUpdate: now };
     });
+    const liveOpen = Boolean(existing && isStreamInterruptible(existing));
+    if (!liveOpen && !archivedChanged) return;
+    const byKey = { ...state.byKey };
+    if (liveOpen && existing) {
+      const toolCalls = finishUnresolvedTools(existing.toolCalls, {
+        interrupted: opts?.reason === "interrupt",
+      });
+      byKey[key] = {
+        ...existing,
+        toolCalls,
+        parts: syncToolParts(entryParts(existing), toolCalls),
+        active: false,
+        turnPhase: "closed",
+        lastUpdate: now,
+      };
+    }
     set({
-      byKey: {
-        ...get().byKey,
-        [key]: {
-          ...existing,
-          toolCalls,
-          parts: syncToolParts(entryParts(existing), toolCalls),
-          active: false,
-          turnPhase: "closed",
-          lastUpdate: Date.now(),
-        },
-      },
-      revisionBySession: bumpRevision(get().revisionBySession, sessionId),
+      byKey,
+      archived,
+      revisionBySession: bumpRevision(state.revisionBySession, sessionId),
     });
   },
 

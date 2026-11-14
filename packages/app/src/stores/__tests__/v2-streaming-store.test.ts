@@ -573,6 +573,40 @@ describe("v2-streaming-store", () => {
     expect(stream.parts[0].toolCall?.status).toBe("failed");
   });
 
+  it("closeLiveDock drops archived copies that would keep the dock up", () => {
+    const store = useV2StreamingStore.getState();
+    store.appendThinking("s1", "a1", "思考");
+    store.finalize("s1", "a1");
+    store.appendOutput("s1", "a1", " ");
+
+    const before = selectStreamsForSession(useV2StreamingStore.getState(), "s1");
+    expect(useV2StreamingStore.getState().archived).toHaveLength(1);
+    expect(before.some((entry) => isStreamInterruptible(entry))).toBe(true);
+
+    store.closeLiveDock("s1", "a1", { reason: "empty-reply" });
+
+    const after = selectStreamsForSession(useV2StreamingStore.getState(), "s1");
+    expect(after.every((entry) => entry.turnPhase === "closed")).toBe(true);
+    expect(after.every((entry) => isStreamInterruptible(entry))).toBe(false);
+    expect(after.every((entry) => entry.errorMessage == null)).toBe(true);
+  });
+
+  it("closeLiveDock still closes an archived copy after the live slot is gone", () => {
+    const store = useV2StreamingStore.getState();
+    store.appendThinking("s1", "a1", "思考");
+    store.finalize("s1", "a1");
+    store.appendOutput("s1", "a1", " ");
+    const { "s1::a1": _live, ...rest } = useV2StreamingStore.getState().byKey;
+    useV2StreamingStore.setState({ byKey: rest });
+
+    store.closeLiveDock("s1", "a1", { reason: "empty-reply" });
+
+    const archived = useV2StreamingStore.getState().archived;
+    expect(archived).toHaveLength(1);
+    expect(archived[0]?.turnPhase).toBe("closed");
+    expect(isStreamInterruptible(archived[0]!)).toBe(false);
+  });
+
   it("keeps an errored stream on the dock until the turn is closed", () => {
     const store = useV2StreamingStore.getState();
     store.appendOutput("s1", "a1", "Partial output");
