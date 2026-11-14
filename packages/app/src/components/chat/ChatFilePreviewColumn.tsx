@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { useChatFilePreviewStore } from "@/stores/chat-file-preview-store";
 
 const MIN_WIDTH = 280;
-const MAX_WIDTH = 640;
+const MAX_WIDTH_RATIO = 0.5;
 
 export function ChatFilePreviewToggle() {
   const { t } = useTranslation();
@@ -48,6 +48,17 @@ export function ChatFilePreviewColumn() {
   const [body, setBody] = React.useState("");
   const [failed, setFailed] = React.useState(false);
   const dragging = React.useRef(false);
+  const [windowWidth, setWindowWidth] = React.useState(() =>
+    typeof window === "undefined" ? 0 : window.innerWidth,
+  );
+
+  React.useEffect(() => {
+    const onResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const maxWidth = Math.max(MIN_WIDTH, Math.round(windowWidth * MAX_WIDTH_RATIO));
 
   React.useEffect(() => {
     if (!active || collapsed) return;
@@ -85,7 +96,7 @@ export function ChatFilePreviewColumn() {
     const startW = width;
     const move = (e: PointerEvent) => {
       const parent = grip.parentElement?.parentElement?.clientWidth ?? window.innerWidth;
-      const max = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, parent - 360));
+      const max = Math.min(Math.round(window.innerWidth * MAX_WIDTH_RATIO), parent);
       const next = Math.round(Math.max(MIN_WIDTH, Math.min(max, startW + (startX - e.clientX))));
       setWidth(next);
     };
@@ -107,7 +118,7 @@ export function ChatFilePreviewColumn() {
         "relative flex h-full min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-border bg-background",
         shown ? "border-l" : "border-l-0",
       )}
-      style={{ width: shown ? width : 0 }}
+      style={{ width: shown ? Math.min(width, maxWidth) : 0 }}
       data-chat-preview
       aria-label={t("chat.fileOpen.panel", "阅读面板")}
     >

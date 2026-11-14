@@ -12,7 +12,7 @@ import { appDisplayName } from "@/lib/config/build-config";
 import { daemonHomeDisplayPath } from "@/lib/daemon/daemon-paths";
 import { parseSessionDeeplink } from "@/lib/session/session-deeplink";
 import { markStartup } from "@/lib/telemetry/startup-perf";
-import { BookOpen, ChevronLeft, X, PanelRightClose, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
+import { BookOpen, ChevronLeft, X, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
 import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
 import { SessionShareButton } from "@/components/chat/SessionShareButton";
 import { ExportPiTranscriptButton } from "@/components/chat/ExportPiTranscriptButton";
@@ -728,18 +728,6 @@ function AppContent() {
                   isActive={showAppControlPanel}
                   onClick={() => toggleAppControlPanel()}
                 />
-              )}
-              {showRightSidePanel && (
-                <button
-                  className="ml-1 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  onClick={() => {
-                    if (showAppControlPanel) closeAppControlPanel();
-                    else closePanel();
-                  }}
-                  title={t("navigation.collapsePanel", "Collapse panel")}
-                >
-                  <PanelRightClose className="h-4 w-4" />
-                </button>
               )}
               <ChatFilePreviewToggle />
             </div>
