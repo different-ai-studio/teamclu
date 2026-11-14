@@ -4144,7 +4144,6 @@
       "sessionWorkspaceUnboundDesc": "该会话没有绑定工作目录，无法启动 Agent {{shortId}}。",
       "sessionParticipantFailedDesc": "无法把 Agent {{shortId}} 加入本会话，因此没有启动它的 runtime。Agent 必须先成为会话参与者才能读取该会话。({{reason}})",
       "startFailedTitle": "启动 Agent runtime 失败",
-      "emptyReply": "Agent 没有返回任何内容，所选模型可能不可用或配置异常。",
       "providerStalled": "模型服务长时间无响应，可能不可用或被限流，请重试或切换模型。",
       "providerError": "模型服务返回错误，请重试或切换模型。"
     },

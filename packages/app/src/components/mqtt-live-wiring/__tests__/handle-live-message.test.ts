@@ -83,7 +83,9 @@ describe("handleLiveMessage parked AGENT_REPLY", () => {
 
     expect(ctx.flushTurnAgentReply).not.toHaveBeenCalled();
     expect(ctx.pendingStreamRepliesRef.current[STREAM_KEY]).toHaveLength(1);
-    expect(useSessionMessageStore.getState().messages[SESSION_ID]).toBeUndefined();
+    expect(useSessionMessageStore.getState().messages[SESSION_ID]?.map((m) => m.content)).toEqual([
+      "还没说完",
+    ]);
   });
 
   it("flushes write_reply after Idle timeout closed the dock (stream inactive, terminalPending cleared)", () => {

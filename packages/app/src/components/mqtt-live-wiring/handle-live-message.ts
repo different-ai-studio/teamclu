@@ -87,6 +87,7 @@ export function handleLiveMessage(
                 terminalPending,
                 toolOnlyAnchor,
                 streamActive: streamEntry.active,
+                turnPhase: streamEntry.turnPhase,
               });
               logInterruptMsgDiag("mqtt.agentReply.parked", {
                 sessionId: sid,
@@ -104,6 +105,10 @@ export function handleLiveMessage(
                   resolvedStream: resolvedStreamEntry,
                 }),
               });
+              if (!shouldFlush) {
+                // 回合还没结束：短 AgentReply 先出现在消息区，直播条继续挂着。不上云仍由 daemon 决定。
+                useSessionMessageStore.getState().appendMessage(sid, msg);
+              }
               if (shouldFlush) {
                 const flushed = flushTurnAgentReply(
                   sid,

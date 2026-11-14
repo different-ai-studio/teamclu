@@ -1,5 +1,6 @@
+import { AgentStatus } from "@/lib/proto/amux_pb";
 import type { Question, QuestionOption } from "@/stores/session-types";
-import { agentStreamKey, isTerminalAgentStatus, isTurnOpeningStatusChange, normalizeToolResultEvent, normalizeToolUseEvent, shouldPatchFlushedToolEvent, streamEntryHasVisibleContent } from "@/lib/stream/live-agent-stream";
+import { agentStreamKey, isTurnOpeningStatusChange, normalizeToolResultEvent, normalizeToolUseEvent, shouldPatchFlushedToolEvent, streamEntryHasVisibleContent } from "@/lib/stream/live-agent-stream";
 import { bufferStreamDelta, flushStreamDeltasFor} from "@/lib/stream/stream-delta-buffer";
 import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, isStalePiExtensionCtxError, localizeAgentTurnErrorMessage } from "@/lib/agent/agent-turn-error";
 import { patchPersistedToolResult, patchPersistedToolUse, syncStreamingToolOutputsFromLocalCache } from "@/lib/stream/streaming-persist";
@@ -337,7 +338,8 @@ export function handleAcpEvent(
                 clearTerminalFlushPending(agentStreamKey(sid, actorId));
                 noteTurnOpened(sid, actorId);
                 useV2StreamingStore.getState().beginPlanningPlaceholder(sid, actorId);
-              } else if (isTerminalAgentStatus(sc.newStatus)) {
+              } else if (sc.newStatus === AgentStatus.IDLE) {
+                useV2StreamingStore.getState().noteTurnSettled(sid, actorId);
                 clearPendingPermissionsOnTurnIdle(sid, actorId);
                 const streamKey = agentStreamKey(sid, actorId);
                 clearFollowUpActive(streamKey);
@@ -380,17 +382,25 @@ export function handleAcpEvent(
                     );
                     scheduleTerminalDaemonReplyTimeout(sid, actorId);
                   } else {
-                    useV2StreamingStore.getState().setError(
-                      sid,
-                      actorId,
-                      t(
-                        "daemon.agentRuntime.emptyReply",
-                        "Agent returned no output. The selected model may be unavailable or misconfigured.",
-                      ),
-                      "",
-                    );
+                    // Idle with nothing visible. The turn is over; the thread
+                    // already has the no-final-reply row. Do not paint the
+                    // "model unavailable" banner — that used to keep the dock
+                    // up because an error no longer hides it.
+                    useV2StreamingStore.getState().closeLiveDock(sid, actorId, {
+                      reason: "empty-reply",
+                    });
                   }
                 }
+              } else if (
+                sc.newStatus === AgentStatus.ERROR ||
+                sc.newStatus === AgentStatus.STOPPED
+              ) {
+                logInterruptMsgDiag("mqtt.statusChange.notSettled", {
+                  sessionId: sid,
+                  actorId,
+                  oldStatus: sc.oldStatus,
+                  newStatus: sc.newStatus,
+                });
               }
             } else if (event?.case === "error") {
               const er = event.value as { message?: string; details?: string };
@@ -418,11 +428,8 @@ export function handleAcpEvent(
                     ),
                   });
                 } else {
-                  terminalFlushPendingRef.current[agentStreamKey(sid, actorId)] = true;
-                  flushTurnAgentReply(sid, actorId, "mqtt.error");
-                  // Localize known daemon-emitted errors (the daemon is
-                  // locale-agnostic and emits English for iOS/logs). Keep the raw
-                  // message for anything we don't recognize.
+                  // ACP error is not agent_settled. Leave the dock up; the
+                  // session error alert carries the message.
                   const localizedMessage = localizeAgentTurnErrorMessage(er.message, t);
                   useV2StreamingStore.getState().setError(
                     sid,
@@ -430,10 +437,6 @@ export function handleAcpEvent(
                     localizedMessage,
                     er.details ?? "",
                   );
-                  // The live dock unmounts as soon as a turn errors
-                  // (isStreamInterruptible excludes errored entries), so the dock's
-                  // ErrorCard is never seen. Surface every turn error as a durable
-                  // SessionErrorAlert bubble in the thread instead.
                   {
                     const detail = (er.details ?? "").trim();
                     const errorName = classifyAgentTurnErrorName(er.message, er.details);

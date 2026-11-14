@@ -7,7 +7,6 @@ import {
   type Message as TeamcluMessage,
 } from "@/lib/proto/teamclu_pb";
 import {
-  buildInterruptedStreamAnchor,
   isAgentActiveStatus,
   isTurnOpeningStatusChange,
   isTerminalAgentStatus,
@@ -255,11 +254,10 @@ describe("live agent stream event helpers", () => {
     expect(mergePendingAgentReplies(pending)).toBeNull();
   });
 
-  it("keeps tool-only turn anchors even when agent_reply content is empty", () => {
-    const pending = [{ messageId: "m1", content: "" }] as TeamcluMessage[];
+  it("closes from an end notice, not from a blank or whitespace reply", () => {
     const streamEntry = {
       outputText: "",
-      thinkingText: "",
+      thinkingText: "想一下",
       toolCalls: [{ id: "sleep-tool" }],
       parts: [
         {
@@ -268,11 +266,53 @@ describe("live agent stream event helpers", () => {
         },
       ],
     };
-    expect(mergePendingAgentReplies(pending, streamEntry)).toMatchObject({
-      messageId: "m1",
-      content: "",
-    });
-    expect(isToolOnlyTurnAnchor(pending, streamEntry)).toBe(true);
+    expect(
+      isToolOnlyTurnAnchor(
+        [{ messageId: "m1", content: "" }] as TeamcluMessage[],
+        streamEntry,
+      ),
+    ).toBe(false);
+    expect(
+      isToolOnlyTurnAnchor(
+        [{ messageId: "m1", content: " \n\t " }] as TeamcluMessage[],
+        streamEntry,
+      ),
+    ).toBe(false);
+    expect(
+      isToolOnlyTurnAnchor(
+        [
+          {
+            messageId: "m1",
+            content:
+              "[Turn completed with no final reply] The agent finished this turn without producing a final written answer.",
+          },
+        ] as TeamcluMessage[],
+        streamEntry,
+      ),
+    ).toBe(true);
+    expect(
+      isToolOnlyTurnAnchor(
+        [
+          {
+            messageId: "m1",
+            content: "[Turn interrupted by user] The user stopped this turn.",
+          },
+        ] as TeamcluMessage[],
+        streamEntry,
+      ),
+    ).toBe(true);
+    expect(
+      isToolOnlyTurnAnchor(
+        [
+          {
+            messageId: "m1",
+            content:
+              "[Turn completed with no final reply] The agent finished this turn.",
+          },
+        ] as TeamcluMessage[],
+        { outputText: "", thinkingText: "", toolCalls: [], parts: [] },
+      ),
+    ).toBe(false);
   });
 
   it("keeps mid-turn slices parked, and flushes once Idle or the live stream ends", () => {
@@ -302,6 +342,30 @@ describe("live agent stream event helpers", () => {
         terminalPending: false,
         toolOnlyAnchor: false,
         streamActive: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldFlushParkedAgentReply({
+        terminalPending: false,
+        toolOnlyAnchor: false,
+        streamActive: false,
+        turnPhase: "streaming",
+      }),
+    ).toBe(false);
+    expect(
+      shouldFlushParkedAgentReply({
+        terminalPending: false,
+        toolOnlyAnchor: false,
+        streamActive: false,
+        turnPhase: "awaiting_reply",
+      }),
+    ).toBe(false);
+    expect(
+      shouldFlushParkedAgentReply({
+        terminalPending: false,
+        toolOnlyAnchor: false,
+        streamActive: false,
+        turnPhase: "closed",
       }),
     ).toBe(true);
   });
@@ -382,37 +446,6 @@ describe("live agent stream event helpers", () => {
       parts: [{ type: "text", text: "Hello world" }],
     });
     expect(before).not.toBe(after);
-  });
-
-  it("buildInterruptedStreamAnchor uses streamId for stable client ids", () => {
-    const snapshot: AgentStreamEntry = {
-      sessionId: "s1",
-      actorId: "a1",
-      outputText: "",
-      thinkingText: "",
-      parts: [{ type: "tool-call", toolCall: { id: "tool-1" } }],
-      toolCalls: [
-        {
-          id: "tool-1",
-          name: "bash",
-          status: "completed",
-          startTime: new Date("2026-06-08T07:38:00.000Z"),
-        },
-      ],
-      planEntries: [],
-      pendingPermissionsByRequestId: {},
-      errorMessage: null,
-      errorDetails: null,
-      lastUpdate: 1_748_868_000_000,
-      active: false,
-      streamId: "s1::a1::stream-9",
-    };
-    const anchor = buildInterruptedStreamAnchor("s1", "a1", snapshot);
-    expect(anchor.messageId).toBe("interrupt-s1::a1::stream-9");
-    expect(anchor.turnId).toBe("interrupt-s1::a1::stream-9");
-    expect(Number(anchor.createdAt)).toBe(
-      Math.floor(new Date("2026-06-08T07:38:00.000Z").getTime() / 1000),
-    );
   });
 });
 

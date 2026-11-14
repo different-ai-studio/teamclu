@@ -424,12 +424,16 @@ impl TurnAggregator {
                         self.turn_had_reply = true;
                     } else {
                         // Non-empty Idle prose → one cloud-final AgentReply.
-                        // Empty Idle (tool-only, or mid-turn flushes already
-                        // drained the buffer) → durable no_final_reply notice
-                        // so catchup sees an agent row and UI can localize.
+                        // Empty Idle after a turn was opened (tool-only, a
+                        // model stop that streamed nothing, or mid-turn
+                        // flushes already drained the buffer) → durable
+                        // no_final_reply notice so catchup sees an agent row
+                        // and UI can localize. A status change that never
+                        // opened a turn still emits nothing.
                         let had_final_prose = !self.reply_buf.trim().is_empty();
+                        let turn_was_open = self.current_turn_id.is_some();
                         self.flush_reply_into(&mut out, true);
-                        if !had_final_prose && self.turn_had_activity {
+                        if !had_final_prose && turn_was_open {
                             out.push(self.emit_agent_reply(
                                 NO_FINAL_REPLY_AGENT_CONTENT.to_string(),
                                 NO_FINAL_REPLY_METADATA_JSON.to_string(),
@@ -480,23 +484,29 @@ impl TurnAggregator {
     }
 
     fn flush_reply_into(&mut self, out: &mut Vec<EmittedMessage>, cloud_persist: bool) {
-        if !self.reply_buf.is_empty() {
-            let content = std::mem::take(&mut self.reply_buf);
-            if cloud_persist {
-                out.push(self.emit_agent_reply(content, String::new(), true));
-            } else {
-                out.push(EmittedMessage {
-                    kind: MessageKind::AgentReply,
-                    content,
-                    metadata_json: String::new(),
-                    turn_id: self.current_turn_id.clone().unwrap_or_default(),
-                    cloud_persist: false,
-                    attachments: Vec::new(),
-                    attachment_urls: Vec::new(),
-                });
-            }
-            self.turn_had_reply = true;
+        if self.reply_buf.is_empty() {
+            return;
         }
+        let content = std::mem::take(&mut self.reply_buf);
+        // Spaces and newlines are not a reply. Drop them so a tool call does
+        // not publish a blank AgentReply the client can mistake for turn end.
+        if content.trim().is_empty() {
+            return;
+        }
+        if cloud_persist {
+            out.push(self.emit_agent_reply(content, String::new(), true));
+        } else {
+            out.push(EmittedMessage {
+                kind: MessageKind::AgentReply,
+                content,
+                metadata_json: String::new(),
+                turn_id: self.current_turn_id.clone().unwrap_or_default(),
+                cloud_persist: false,
+                attachments: Vec::new(),
+                attachment_urls: Vec::new(),
+            });
+        }
+        self.turn_had_reply = true;
     }
 
     fn emit_agent_reply(
@@ -903,6 +913,77 @@ mod tests {
         assert!(emitted[2].metadata_json.contains("\"tool_id\":\"t1\""));
     }
 
+    fn push_deltas(agg: &mut TurnAggregator, text: &str, thinking: bool) {
+        for chunk in text.chars().collect::<Vec<_>>().chunks(4) {
+            let piece: String = chunk.iter().collect();
+            let event = if thinking {
+                thinking_chunk(&piece)
+            } else {
+                output_chunk(&piece)
+            };
+            assert!(
+                agg.ingest(&event).is_empty(),
+                "deltas stay in memory until a tool or turn end"
+            );
+        }
+    }
+
+    /// #1877. The live dock paints every acp delta. A thread message is only
+    /// the AgentReply flushed when a tool starts. Thinking is flushed next to
+    /// it, but it is not an AgentReply, so the publish path never turns it
+    /// into `message.created` and it never reaches the cloud.
+    ///
+    /// The captured log flushed a 263-byte `message.created` at the tool
+    /// boundary after ~90s of small acp deltas. A thinking stream plus a short
+    /// reply produces that shape. The same bytes as Output would be inside
+    /// the AgentReply.
+    #[test]
+    fn long_thinking_before_tool_is_not_the_agent_reply() {
+        let mut agg = TurnAggregator::new();
+        let long = "报销规则说明".repeat(80);
+        assert!(long.len() > 263);
+        push_deltas(&mut agg, &long, true);
+        let short = "我先查一下。";
+        assert!(agg.ingest(&output_chunk(short)).is_empty());
+
+        let emitted = agg.ingest(&tool_use("t1", "Read", "rules"));
+        let replies: Vec<_> = emitted
+            .iter()
+            .filter(|m| m.kind == MessageKind::AgentReply)
+            .collect();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].content, short);
+        assert!(!replies[0].content.contains("报销规则"));
+        assert!(!replies[0].cloud_persist);
+        assert!(!TurnAggregator::cloud_persistent(replies[0]));
+
+        let thinking: Vec<_> = emitted
+            .iter()
+            .filter(|m| m.kind == MessageKind::AgentThinking)
+            .collect();
+        assert_eq!(thinking.len(), 1);
+        assert_eq!(thinking[0].content, long);
+        assert_ne!(thinking[0].kind, MessageKind::AgentReply);
+        assert!(!TurnAggregator::cloud_persistent(thinking[0]));
+    }
+
+    #[test]
+    fn long_output_before_tool_is_handed_off_whole() {
+        let mut agg = TurnAggregator::new();
+        let long = "报销规则说明".repeat(80);
+        push_deltas(&mut agg, &long, false);
+
+        let emitted = agg.ingest(&tool_use("t1", "Read", "rules"));
+        let replies: Vec<_> = emitted
+            .iter()
+            .filter(|m| m.kind == MessageKind::AgentReply)
+            .collect();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].content, long);
+        assert!(!replies[0].cloud_persist);
+        assert!(!TurnAggregator::cloud_persistent(replies[0]));
+    }
+
     #[test]
     fn tool_call_metadata_preserves_params() {
         let mut agg = TurnAggregator::new();
@@ -926,6 +1007,28 @@ mod tests {
         assert_eq!(emitted[0].kind, MessageKind::AgentToolResult);
         assert_eq!(emitted[0].content, "file content here");
         assert!(emitted[0].metadata_json.contains("\"success\":true"));
+    }
+
+    #[test]
+    fn whitespace_before_tool_is_dropped_and_idle_still_notices() {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&output_chunk(" \n\t "));
+        let mid = agg.ingest(&tool_use("t1", "bash", "pwd"));
+        assert!(
+            mid.iter().all(|m| m.kind != MessageKind::AgentReply),
+            "whitespace is not a mid-turn reply: {mid:?}"
+        );
+        assert_eq!(mid.len(), 1);
+        assert_eq!(mid[0].kind, MessageKind::AgentToolCall);
+
+        agg.ingest(&tool_result("t1", true, "/tmp"));
+        let idle = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(idle.len(), 1);
+        assert_eq!(idle[0].content, NO_FINAL_REPLY_AGENT_CONTENT);
+        assert!(idle[0].cloud_persist);
     }
 
     #[test]
@@ -1052,6 +1155,27 @@ mod tests {
             amux::AgentStatus::Idle,
         ));
         assert!(emitted.is_empty());
+    }
+
+    #[test]
+    fn opened_turn_that_streams_nothing_emits_no_final_reply_notice() {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].kind, MessageKind::AgentReply);
+        assert_eq!(emitted[0].content, NO_FINAL_REPLY_AGENT_CONTENT);
+        assert!(emitted[0]
+            .metadata_json
+            .contains("\"turn_status\":\"no_final_reply\""));
+        assert!(emitted[0].cloud_persist);
+        assert!(TurnAggregator::cloud_persistent(&emitted[0]));
     }
 
     #[test]
