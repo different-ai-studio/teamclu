@@ -5,11 +5,11 @@
  */
 import { useEffect } from "react";
 import { isTauri, openExternalUrl } from "@/lib/utils";
+import { parseChatTarget } from "@/lib/messages/chat-open-target";
+import { openChatHref } from "@/lib/messages/open-chat-file";
 
 export function useExternalLinkHandler() {
   useEffect(() => {
-    if (!isTauri()) return;
-
     const handler = (e: MouseEvent) => {
       const anchor = (e.target as HTMLElement).closest?.("a");
       if (!anchor) return;
@@ -27,12 +27,26 @@ export function useExternalLinkHandler() {
         return;
       }
       const href = anchor.getAttribute("href");
-      // In-document http(s) links open in the system browser. The chat stays
-      // put; openExternalUrl refuses anything that is not http(s) or mailto.
-      if (href && /^https?:\/\//.test(href)) {
+      if (!href) return;
+      const parsed = parseChatTarget(href);
+      // Web links leave the chat and open in the system browser. Local paths
+      // open in the side column (markdown / html) or the default app.
+      if (parsed.kind === "web") {
+        // The browser build follows http(s) and mailto itself. The desktop
+        // webview would navigate away, so those leave through the shell.
+        if (!isTauri()) return;
         e.preventDefault();
         e.stopPropagation();
-        void openExternalUrl(href);
+        void openExternalUrl(parsed.url);
+        return;
+      }
+      if (parsed.kind === "path") {
+        // Only chat and the reading column. A path-shaped href elsewhere
+        // (for example an in-app route) stays a normal link.
+        if (!anchor.closest("[data-chat-messages], [data-chat-preview]")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        void openChatHref(href);
       }
     };
 

@@ -9,11 +9,8 @@ import { hasStructuredMentionLines } from "@/lib/actor/outgoing-mention-content"
 import { parseSentPageChip } from "@/lib/embed/expand-page-link-tokens";
 import { pageLinkChipLabel, parsePageLinkBody } from "@/lib/embed/page-link-token";
 import type { PageContext } from "@/lib/embed/embed-page-context";
-import { openOrDownloadRemoteAttachment } from "@/lib/attachments/download-remote-attachment";
-import { getCachedAttachmentPath, normalizeAttachmentUrlKey } from "@/lib/attachments/attachment-download-index";
-import { isTauri } from "@/lib/utils";
-import { revealInFileManagerLabel } from "@/lib/platform-labels";
-import { linkifyHttpUrls } from "@/lib/messages/linkify-http";
+import { linkifyChatTargets } from "@/lib/messages/linkify-http";
+import { openChatAttachment } from "@/lib/messages/open-chat-file";
 
 /** Max pixel height before the message is collapsed */
 const COLLAPSED_HEIGHT = 200;
@@ -26,7 +23,7 @@ const CHAT_LINK_CLASS =
   "rounded-[2px] text-foreground underline decoration-foreground/30 underline-offset-2 hover:bg-foreground/[0.06] dark:decoration-white/30 dark:hover:bg-white/[0.08]";
 
 function LinkifiedText({ text }: { text: string }) {
-  const segments = linkifyHttpUrls(text);
+  const segments = linkifyChatTargets(text);
   return (
     <>
       {segments.map((segment, index) =>
@@ -338,17 +335,13 @@ function RemoteAttachmentChip({
 }) {
   const { t } = useTranslation();
   const [busy, setBusy] = React.useState(false);
-  const urlKey = React.useMemo(() => normalizeAttachmentUrlKey(remoteUrl), [remoteUrl]);
-  const hasSavedCopy = isTauri() && Boolean(getCachedAttachmentPath(urlKey));
-  const actionTitle = hasSavedCopy
-    ? revealInFileManagerLabel(t)
-    : t("chat.attachment.download", "Download attachment");
+  const actionTitle = t("chat.fileOpen.open", "打开");
 
   const handleClick = React.useCallback(async () => {
     if (busy) return;
     setBusy(true);
     try {
-      await openOrDownloadRemoteAttachment(remoteUrl, filename);
+      await openChatAttachment({ filename, url: remoteUrl });
     } catch (error) {
       console.error("[UserMessage] attachment open/download failed:", error);
       const { toast } = await import("sonner");
@@ -361,6 +354,9 @@ function RemoteAttachmentChip({
   return (
     <button
       type="button"
+      data-chat-attachment=""
+      data-chat-filename={filename}
+      data-chat-url={remoteUrl}
       onClick={() => void handleClick()}
       disabled={busy}
       title={actionTitle}

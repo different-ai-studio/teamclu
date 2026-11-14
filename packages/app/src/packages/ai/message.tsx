@@ -7,6 +7,7 @@ import { Download, X, Copy, Check, Maximize2 } from "lucide-react"
 
 import i18n from "@/lib/i18n"
 import { cn, isTauri } from "@/lib/utils"
+import { looksLikeLocalChatPath } from "@/lib/messages/chat-open-target"
 import { bytesToDataUrl } from "@/lib/base64"
 import {
   Dialog,
@@ -913,11 +914,17 @@ const markdownComponentsBase = {
     const codeText = String(children)
     const isInline = !className && !codeText.includes('\n')
     if (isInline) {
+      const className =
+        "chat-md-inline-code rounded-[3px] px-[0.3em] py-[0.08em] font-mono text-[0.86em] leading-normal break-words [overflow-wrap:anywhere]"
+      if (looksLikeLocalChatPath(codeText.trim())) {
+        return (
+          <a href={codeText.trim()} className={`${className} underline decoration-foreground/30 underline-offset-2`}>
+            {children}
+          </a>
+        )
+      }
       return (
-        <code
-          className="chat-md-inline-code rounded-[3px] px-[0.3em] py-[0.08em] font-mono text-[0.86em] leading-normal break-words [overflow-wrap:anywhere]"
-          {...codeProps}
-        >
+        <code className={className} {...codeProps}>
           {children}
         </code>
       )
