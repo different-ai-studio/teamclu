@@ -26,6 +26,8 @@ import { useAgentAppChanges } from "@/hooks/use-agent-app-changes";
 import { useWorkspaceRuntimeRefreshPoll } from "@/hooks/use-workspace-runtime-refresh-poll";
 import { useOpenCodePreload } from "@/hooks/use-opencode-preload";
 import { useExternalLinkHandler } from "@/hooks/use-external-link-handler";
+import { ChatFileMenuHost } from "@/components/chat/ChatFileMenuHost";
+import { ChatFilePreviewColumn, ChatFilePreviewToggle } from "@/components/chat/ChatFilePreviewColumn";
 import { useTauriBodyClass } from "@/hooks/use-tauri-body-class";
 import { useMemberPresenceHeartbeat } from "@/hooks/use-member-presence-heartbeat";
 import { useExtensionSessionCleanup } from "@/hooks/use-extension-session-cleanup";
@@ -739,6 +741,7 @@ function AppContent() {
                   <PanelRightClose className="h-4 w-4" />
                 </button>
               )}
+              <ChatFilePreviewToggle />
             </div>
           </header>
           ) : null}
@@ -748,8 +751,11 @@ function AppContent() {
           <AgentsSkillsAccessBanner />
 
           {/* Main content - Chat or file preview */}
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-            <MainContent />
+          <div className="relative flex min-h-0 flex-1 overflow-hidden">
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <MainContent />
+            </div>
+            <ChatFilePreviewColumn />
           </div>
           </>
         </div>
@@ -930,6 +936,7 @@ function App() {
       >
         <AppContent />
       </SidebarProvider>
+      <ChatFileMenuHost />
       <Toaster
         position="top-center"
         offset={40}

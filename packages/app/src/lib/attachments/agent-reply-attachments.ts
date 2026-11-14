@@ -8,6 +8,7 @@ export interface AgentReplyAttachment {
   size: number;
   url: string;
   bucketPath?: string;
+  localPath?: string;
   isImage: boolean;
 }
 
@@ -16,6 +17,7 @@ type GatewayAttachmentRow = {
   mime?: unknown;
   size?: unknown;
   bucket_path?: unknown;
+  local_path?: unknown;
 };
 
 function parseMetadataJson(metadataJson: string): Record<string, unknown> {
@@ -80,6 +82,10 @@ export function agentReplyAttachmentsFromMessageFields(
         typeof row.bucket_path === "string" && row.bucket_path.trim()
           ? row.bucket_path.trim()
           : undefined;
+      const localPath =
+        typeof row.local_path === "string" && row.local_path.trim()
+          ? row.local_path.trim()
+          : undefined;
       let url = urls[index] ?? "";
       if (!url && bucketPath) {
         const match = urls.find((u) => u.includes(encodeURIComponent(bucketPath)) || u.includes(bucketPath));
@@ -91,6 +97,7 @@ export function agentReplyAttachmentsFromMessageFields(
         size,
         url,
         bucketPath,
+        localPath,
         isImage: isImageAttachment(mime, filename),
       };
     });

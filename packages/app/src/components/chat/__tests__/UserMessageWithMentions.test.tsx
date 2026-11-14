@@ -8,8 +8,9 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
-vi.mock('@/lib/attachments/download-remote-attachment', () => ({
-  openOrDownloadRemoteAttachment: vi.fn(async () => 'downloaded' as const),
+vi.mock('@/lib/messages/open-chat-file', () => ({
+  openChatAttachment: vi.fn(async () => undefined),
+  openChatHref: vi.fn(async () => undefined),
 }))
 
 vi.mock('@/lib/attachments/attachment-download-index', () => ({
@@ -112,7 +113,7 @@ describe('UserMessageWithMentions', () => {
     )
 
     const button = screen.getByRole('button')
-    expect(button).toHaveAttribute('title', 'Download attachment')
+    expect(button).toHaveAttribute('title', '打开')
     expect(screen.getByText('report.pdf')).toBeTruthy()
     expect(screen.queryByRole('link')).toBeNull()
   })
@@ -164,11 +165,11 @@ describe('UserMessageWithMentions', () => {
     expect(screen.queryByRole('link', { name: /docs\./ })).toBeNull()
   })
 
-  it('does not turn javascript or file urls into links', () => {
+  it('does not turn javascript into a link, and does link file paths', () => {
     render(<UserMessageWithMentions content="javascript:alert(1) file:///tmp/x" />)
 
-    expect(screen.queryByRole('link')).toBeNull()
-    expect(screen.getByText('javascript:alert(1) file:///tmp/x')).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /javascript/ })).toBeNull()
+    expect(screen.getByRole('link', { name: 'file:///tmp/x' })).toHaveAttribute('href', 'file:///tmp/x')
   })
 
   it('linkifies only the text around a role chip', () => {
