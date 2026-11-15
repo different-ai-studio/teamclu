@@ -619,7 +619,6 @@
     "files": "Files",
     "hideTabs": "Hide files",
     "restoreTabs": "Show files",
-    "collapsePanel": "Collapse panel",
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
     "settings": "Settings"
@@ -1131,7 +1130,6 @@
       "imagePreviewLoading": "Loading preview…"
     },
     "attachment": {
-      "download": "Download attachment",
       "saveAttachment": "Save attachment",
       "downloadFailed": "Download failed"
     },
