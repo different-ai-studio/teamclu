@@ -319,14 +319,36 @@ fn open_with_default_app_blocking(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         // Not `cmd /C start "" <path>`: cmd re-parses its command line, so a
-        // path containing `&`, `|` or `^` — a directory named `x & calc` —
-        // ran as a command (SEC-6). `explorer.exe <path>` resolves the file
-        // association itself and takes the path as one argv element, the
-        // same launcher `show_in_folder` already trusts.
-        std::process::Command::new("explorer")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("Failed to open file: {}", e))?;
+        // path containing `&`, `|` or `^` ran as a command (SEC-6).
+        // Not `explorer.exe <path>` either: Explorer only navigates folders.
+        // A file path is not a folder, so it falls back to Documents.
+        // ShellExecuteW "open" is the association itself, and the path is a
+        // wide string, not a command line.
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        fn wide(value: &OsStr) -> Vec<u16> {
+            value.encode_wide().chain(std::iter::once(0)).collect()
+        }
+
+        let path = normalize_show_in_folder_path(path);
+        let verb = wide(OsStr::new("open"));
+        let file = wide(OsStr::new(&path));
+        let code = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                verb.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        if code <= 32 {
+            return Err(format!("Failed to open file (ShellExecute {code}): {path}"));
+        }
     }
 
     #[cfg(target_os = "linux")]
