@@ -1180,7 +1180,7 @@ export async function copyDiagnosticReport(report: DiagnosticReport): Promise<vo
   await navigator.clipboard.writeText(text)
 }
 
-async function buildDiagnosticZipBytes(report: DiagnosticReport): Promise<Uint8Array> {
+export async function buildDiagnosticZipBytes(report: DiagnosticReport): Promise<Uint8Array> {
   const json = formatDiagnosticReportJson(report)
   const bytes = await invoke<number[]>('build_diagnostic_zip', { reportJson: json })
   return new Uint8Array(bytes)

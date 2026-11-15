@@ -18,6 +18,9 @@ type Deps = {
 type RouteOptions = {
   auth?: "bearer" | "none" | "marketplace-admin" | "app-token" | "cron-tick";
   rawBody?: boolean;
+  /** Bound raw uploads even when Content-Length is absent or dishonest. */
+  maxBodyBytes?: number;
+  noStore?: boolean;
 };
 type LegacyCtx = Record<string, unknown>;
 type LegacyHandler = (ctx: LegacyCtx) => Promise<any> | any;
@@ -59,7 +62,35 @@ function rawParams(routePath: string | undefined, parts: string[]): Record<strin
 
 async function buildCtxFromHono(c: Context, repository: unknown, opts: RouteOptions): Promise<LegacyCtx> {
   const isRaw = opts.rawBody === true;
-  const rawBuf = isRaw ? Buffer.from(await c.req.arrayBuffer()) : undefined;
+  let rawBuf: Buffer | undefined;
+  if (isRaw && opts.maxBodyBytes !== undefined) {
+    const limit = opts.maxBodyBytes;
+    if (Number(c.req.header("content-length")) > limit) {
+      throw new ApiError(413, "payload_too_large", `Request body exceeds ${limit} bytes`);
+    }
+    const reader = c.req.raw.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    if (reader) {
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          length += value.length;
+          if (length > limit) {
+            await reader.cancel().catch(() => {});
+            throw new ApiError(413, "payload_too_large", `Request body exceeds ${limit} bytes`);
+          }
+          chunks.push(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+    rawBuf = Buffer.concat(chunks, length);
+  } else if (isRaw) {
+    rawBuf = Buffer.from(await c.req.arrayBuffer());
+  }
   const bodyText = isRaw ? "" : await c.req.text();
   const event = synthEvent(c, bodyText);
   const headers = normalizeHeaders(event.headers);
@@ -128,6 +159,10 @@ export function createHonoRouterAdapter(app: Hono, deps: Deps) {
     const [options, handler]: [RouteOptions, LegacyHandler] =
       typeof optionsOrHandler === "function" ? [{}, optionsOrHandler] : [optionsOrHandler, handlerMaybe as LegacyHandler];
     const auth = options.auth ?? "bearer";
+    const respond = (response: Response) => {
+      if (options.noStore) response.headers.set("Cache-Control", "no-store");
+      return response;
+    };
     const fn = async (c: Context) => {
       const requestId = resolveRequestId(Object.fromEntries(c.req.raw.headers));
       try {
@@ -209,9 +244,9 @@ export function createHonoRouterAdapter(app: Hono, deps: Deps) {
         }
         const ctx = await buildCtxFromHono(c, repository, options);
         const result = await handler(ctx);
-        return toResponse(c, result, requestId);
+        return respond(toResponse(c, result, requestId));
       } catch (err) {
-        return errorToResponse(err, requestId);
+        return respond(errorToResponse(err, requestId));
       }
     };
     const verb = method.toLowerCase() as "get" | "post" | "put" | "patch" | "delete";

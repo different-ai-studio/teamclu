@@ -278,3 +278,33 @@ describe('collectDiagnosticReport', () => {
     expect(diagnosticZipFilename({ causeCodes: [] }, stamp)).toBe('teamclu-diag-20260903-1414.zip')
   })
 })
+
+
+vi.mock('@/lib/workspace/safe-save-dialog', () => ({ safeSaveDialog: vi.fn(async () => '/tmp/diagnostic.zip') }))
+vi.mock('@tauri-apps/plugin-fs', () => ({ writeFile: vi.fn(async () => {}) }))
+vi.mock('@tauri-apps/api/path', () => ({ downloadDir: vi.fn(async () => '/tmp') }))
+
+describe('diagnostic ZIP builder parity and local export regression', () => {
+  it('uses the same native command and unmodified report for uploaded/exported bytes', async () => {
+    const { buildDiagnosticZipBytes, saveDiagnosticZip } = await import('@/lib/diagnostics/diagnostic-report')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
+    const report = { causeCodes: [], details: { logTails: { amuxd: 'Bearer [redacted]' } } } as unknown as import('@/lib/diagnostics/diagnostic-report').DiagnosticReport
+    const nativeBytes = [80, 75, 3, 4, 23, 45]
+    invokeMock.mockReset().mockResolvedValue(nativeBytes)
+    const uploadBytes = await buildDiagnosticZipBytes(report)
+    expect(await saveDiagnosticZip(report)).toBe('/tmp/diagnostic.zip')
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'build_diagnostic_zip', { reportJson: JSON.stringify(report, null, 2) })
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'build_diagnostic_zip', { reportJson: JSON.stringify(report, null, 2) })
+    expect(writeFile).toHaveBeenCalledWith('/tmp/diagnostic.zip', uploadBytes)
+    expect(Array.from(uploadBytes)).toEqual(nativeBytes)
+  })
+
+  it('cancelling local export does not build or upload anything', async () => {
+    const { saveDiagnosticZip } = await import('@/lib/diagnostics/diagnostic-report')
+    const { safeSaveDialog } = await import('@/lib/workspace/safe-save-dialog')
+    vi.mocked(safeSaveDialog).mockResolvedValueOnce(null)
+    invokeMock.mockClear()
+    expect(await saveDiagnosticZip({ causeCodes: [] } as unknown as import('@/lib/diagnostics/diagnostic-report').DiagnosticReport)).toBeNull()
+    expect(invokeMock).not.toHaveBeenCalled()
+  })
+})

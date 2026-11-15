@@ -1,3 +1,4 @@
+import { registerDiagnostics } from "./diagnostics.js";
 import { registerAuth } from "./auth.js";
 import { registerTeams } from "./teams.js";
 import { registerSessions } from "./sessions.js";
@@ -33,6 +34,7 @@ import { registerWikiMaintainer } from "./wiki-maintainer.js";
 
 export function registerAllRoutes(router) {
   registerAuth(router);
+  registerDiagnostics(router);
   registerAccount(router);
   registerTeams(router);
   registerSessions(router);
