@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "default_locale": "zh_CN",
   "name": "__MSG_appName__",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "description": "__MSG_extensionDescription__",
   "homepage_url": "https://www.teamclu.ai",
   "minimum_chrome_version": "116",

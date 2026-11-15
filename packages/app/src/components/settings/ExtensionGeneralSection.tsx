@@ -37,6 +37,7 @@ import { ExtensionServerSwitch } from '@/components/extension/ExtensionServerSwi
 import { clearLinkSessionMapForTeam } from '@/lib/extension/link-session'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { SettingCard, SectionHeader } from './shared'
+import { LanguageSettingCard } from './LanguageSettingCard'
 
 export const ExtensionGeneralSection = React.memo(function ExtensionGeneralSection() {
   const { t } = useTranslation()
@@ -182,6 +183,8 @@ export const ExtensionGeneralSection = React.memo(function ExtensionGeneralSecti
           'Extension settings for the browser side panel.',
         )}
       />
+
+      <LanguageSettingCard />
 
       <SettingCard>
         <div className="mb-4 flex items-start gap-3">

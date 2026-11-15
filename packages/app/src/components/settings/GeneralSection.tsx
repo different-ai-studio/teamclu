@@ -1,13 +1,11 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import i18next from 'i18next'
 import { invoke } from '@tauri-apps/api/core'
 import {
   Settings2,
   Moon,
   Sun,
   Monitor,
-  Languages,
   Bell,
   Server,
   User,
@@ -49,8 +47,7 @@ import {
 } from '@/lib/session/session-permission-mode'
 import { syncDefaultPermissionModeToLiveSessions } from '@/lib/teamclu/sync-session-permission-mode'
 import { NOTIFICATION_LEVEL_KEY } from '@/lib/ui/notification-service'
-import { LANGUAGE_OPTIONS, getPreferredLanguage, normalizeSupportedLanguage, persistLanguage } from '@/lib/locale'
-import { changeLanguage } from '@/lib/i18n'
+import { LanguageSettingCard } from './LanguageSettingCard'
 import { getEffectiveServerConfig, type ServerConfig } from '@/lib/config/server-config'
 import { fetchAndApplyBootstrap } from '@/lib/config/bootstrap'
 import { useAuthStore } from '@/stores/auth-store'
@@ -90,21 +87,6 @@ applyTheme(getStoredTheme())
 export const GeneralSection = React.memo(function GeneralSection() {
   const { t } = useTranslation()
   const [theme, setThemeState] = React.useState(getStoredTheme)
-  const [language, setLanguage] = React.useState(() => {
-    return getPreferredLanguage()
-  })
-
-  // Sync language state with i18n instance
-  React.useEffect(() => {
-    const handleLanguageChange = () => {
-      setLanguage(i18next.language);
-    };
-
-    i18next.on('languageChanged', handleLanguageChange);
-    return () => {
-      i18next.off('languageChanged', handleLanguageChange);
-    };
-  }, []);
   // Account: the current user's own display name (editable).
   const currentMemberName = useCurrentTeamStore((s) => s.currentMember?.displayName ?? '')
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? '')
@@ -213,20 +195,6 @@ export const GeneralSection = React.memo(function GeneralSection() {
     setThemeState(t)
     try { localStorage.setItem(THEME_STORAGE_KEY, t) } catch { /* ignore */ }
     applyTheme(t)
-  }, [])
-
-  const handleLanguageChange = React.useCallback((value: string) => {
-    const normalizedValue = normalizeSupportedLanguage(value)
-    setLanguage(normalizedValue)
-    // Through `@/lib/i18n`, not `i18next` directly: catalogues are fetched on
-    // demand (PERF-15), and only this wrapper loads the target one before
-    // switching. Calling i18next straight through swaps to a locale with no
-    // strings and paints raw keys.
-    void changeLanguage(normalizedValue)
-    persistLanguage(normalizedValue)
-    void invoke('set_config_locale', { locale: normalizedValue }).catch(() => {
-      // Settings should still update locally if the native config is unavailable.
-    })
   }, [])
 
   const themeIcons: Record<string, React.ElementType> = {
@@ -362,32 +330,7 @@ export const GeneralSection = React.memo(function GeneralSection() {
         </div>
       </SettingCard>
 
-      {!import.meta.env.VITE_LOCALE || import.meta.env.VITE_LOCALE === 'all' ? (
-        <SettingCard>
-          <div className="space-y-2">
-            <label className="text-[13px] font-medium flex items-center gap-2">
-              <Languages className="h-4 w-4 text-muted-foreground" />
-              {t('settings.general.language', 'Language')}
-            </label>
-            <p className="text-xs text-muted-foreground">
-              {t('settings.general.languageDesc', 'Choose the app display language')}
-            </p>
-            <Select value={language} onValueChange={handleLanguageChange}>
-              <SelectTrigger className="h-11" data-testid="language-select">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {LANGUAGE_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.value === 'en' ? '🇺🇸 ' : '🇨🇳 '}
-                    {t(option.labelKey, option.fallback)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </SettingCard>
-      ) : null}
+      <LanguageSettingCard />
 
       {!isSoloBuild() ? (
         <SettingCard>
