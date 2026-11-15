@@ -619,7 +619,6 @@
     "files": "文件",
     "hideTabs": "隐藏文件",
     "restoreTabs": "显示文件",
-    "collapsePanel": "收起面板",
     "collapseSidebar": "收起侧边栏",
     "expandSidebar": "展开侧边栏",
     "settings": "设置"
@@ -1131,9 +1130,27 @@
       "imagePreviewLoading": "加载预览…"
     },
     "attachment": {
-      "download": "下载附件",
       "saveAttachment": "保存附件",
       "downloadFailed": "下载失败"
+    },
+    "fileOpen": {
+      "open": "打开",
+      "openInSidebar": "在侧边栏打开",
+      "openWithDefaultApp": "用默认程序打开",
+      "download": "下载",
+      "reveal": "打开文件所在位置",
+      "panel": "阅读面板",
+      "collapse": "收起阅读面板",
+      "expand": "展开阅读面板",
+      "resize": "拖动改变宽度",
+      "closeTab": "关闭 {{name}}",
+      "notFound": "找不到这个文件",
+      "readFailed": "读不到这个文件",
+      "outsideWorkspace": "这个路径不在当前会话的目录里",
+      "sidebarUnsupported": "这个文件不能在侧边栏里打开",
+      "executableBlocked": "程序文件不会直接运行，已在文件夹中显示",
+      "desktopOnly": "在桌面端才能用系统程序打开",
+      "noWorkspace": "没有当前工作目录，无法保存文件"
     },
     "fileMention": {
       "title": "引用文件",

@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>聊天里打开 Markdown / HTML — 侧边阅读面板</title>
+  <style>
+    :root {
+      --background: #fbfaf7;
+      --paper: #ffffff;
+      --panel: #efece4;
+      --selected: #e7e2d6;
+      --foreground: #1a1a14;
+      --ink-2: #3d3c34;
+      --muted-foreground: #75736a;
+      --faint: #a8a6a0;
+      --border: rgba(26, 26, 20, 0.08);
+      --border-soft: rgba(26, 26, 20, 0.05);
+      --coral: #e85a4a;
+      --font-sans: "PingFang SC", "Noto Sans SC", "Source Han Sans SC", -apple-system, BlinkMacSystemFont, "Microsoft YaHei", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: var(--font-sans);
+      background: #e7e4dc;
+      color: var(--foreground);
+      min-height: 100vh;
+    }
+
+    .spec {
+      background: var(--paper);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 22px 14px;
+    }
+    .spec h1 { font-size: 15px; font-weight: 700; }
+    .spec .lead {
+      margin-top: 6px;
+      max-width: 62rem;
+      font-size: 13px;
+      line-height: 1.65;
+      color: var(--muted-foreground);
+    }
+    .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+    .controls span {
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+    .controls button {
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--ink-2);
+      cursor: pointer;
+    }
+    .controls button:hover { background: var(--selected); }
+
+    .stage {
+      padding: 14px 16px 18px;
+      height: calc(100vh - 112px);
+      min-height: 520px;
+    }
+
+    .shell {
+      position: relative;
+      height: 100%;
+      display: flex;
+      background: var(--background);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 18px 50px -28px rgba(20, 20, 15, 0.45);
+    }
+
+    .sidebar {
+      width: 148px;
+      flex: none;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+    .chrome { height: 38px; display: flex; align-items: center; gap: 6px; padding: 0 12px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #d5d0c6; }
+    .brand { margin-left: auto; font-size: 11px; color: var(--muted-foreground); }
+    .brand b { font-weight: 600; color: var(--ink-2); }
+    .nav { padding: 4px 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 9px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--ink-2);
+    }
+    .nav-item.is-on { background: var(--selected); font-weight: 600; }
+    .count { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
+    .group-label {
+      margin: 12px 12px 6px;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+
+    .sessions {
+      width: 176px;
+      flex: none;
+      background: var(--background);
+      border-right: 1px solid var(--border-soft);
+      display: flex;
+      flex-direction: column;
+    }
+    .sessions-head { padding: 14px 14px 8px; display: flex; align-items: baseline; gap: 8px; }
+    .sessions-head h2 { font-size: 15px; font-weight: 700; }
+    .day {
+      padding: 8px 14px 4px;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+    .card { margin: 2px 8px; padding: 10px 10px 10px 12px; border-radius: 10px; position: relative; }
+    .card.is-active { background: var(--paper); }
+    .card.is-active::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 8px; bottom: 8px;
+      width: 2px;
+      background: var(--coral);
+      border-radius: 2px;
+    }
+    .card-title { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 600; }
+    .card-title time { font-family: var(--font-mono); font-size: 11px; font-weight: 400; color: var(--faint); }
+    .card p {
+      margin-top: 4px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--muted-foreground);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .chat {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--background);
+    }
+    .chat-head {
+      height: 58px;
+      flex: none;
+      padding: 10px 48px 8px 18px;
+      border-bottom: 1px solid var(--border-soft);
+      background: var(--paper);
+    }
+    .chat-head h2 { font-size: 15px; font-weight: 700; }
+    .chat-head .meta { margin-top: 2px; font-size: 12px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thread {
+      flex: 1;
+      overflow: auto;
+      padding: 16px 18px 12px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      gap: 16px;
+    }
+
+    .user { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+    .who { font-size: 12px; color: var(--muted-foreground); }
+    .bubble {
+      max-width: 78%;
+      padding: 10px 14px;
+      border-radius: 16px 16px 6px 16px;
+      background: var(--foreground);
+      color: #fefdfa;
+      font-size: 13.5px;
+      line-height: 1.6;
+    }
+
+    .agent { padding-left: 33px; }
+    .agent-head { display: flex; align-items: center; gap: 8px; margin-left: -33px; margin-bottom: 8px; flex-wrap: wrap; }
+    .avatar {
+      width: 24px; height: 24px;
+      border-radius: 5px;
+      display: grid; place-items: center;
+      background: #f3e4df;
+      color: var(--coral);
+      font-size: 11px;
+      font-weight: 700;
+      box-shadow: 0 0 0 1.5px var(--coral);
+    }
+    .agent-name { font-size: 13px; font-weight: 600; }
+    .ai-pill {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 3px;
+      border: 1px solid var(--coral);
+      color: var(--coral);
+    }
+    .model { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
+    .note { font-size: 13.5px; line-height: 1.7; color: var(--ink-2); }
+    .note button.link {
+      font: inherit;
+      color: var(--foreground);
+      background: none;
+      border: none;
+      padding: 0;
+      text-decoration: underline;
+      text-decoration-color: rgba(26, 26, 20, 0.3);
+      text-underline-offset: 2px;
+      cursor: pointer;
+      border-radius: 2px;
+    }
+    .note button.link:hover, .note button.link.is-on { background: var(--selected); }
+
+    .files {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px dashed var(--border-soft);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .tile {
+      width: 88px; height: 88px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--paper);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 8px 6px 6px;
+      font-family: inherit;
+      color: inherit;
+    }
+    .tile:hover { background: rgba(231, 226, 214, 0.45); }
+    .tile.is-on { background: var(--selected); border-color: transparent; }
+    .ext {
+      height: 22px;
+      padding: 0 6px;
+      border-radius: 4px;
+      background: var(--panel);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 700;
+      color: var(--muted-foreground);
+      display: grid;
+      place-items: center;
+    }
+    .tile .fn { margin-top: 8px; font-size: 11px; font-weight: 600; line-height: 1.25; text-align: center; }
+    .tile .sub { margin-top: auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--faint); }
+
+    .preview {
+      flex: none;
+      width: 0;
+      min-width: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      background: var(--paper);
+      border-left: 0 solid var(--border);
+      position: relative;
+      transition: width 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .shell.is-dragging .preview { transition: none; }
+    .preview.is-open { border-left-width: 1px; }
+
+    .grip {
+      position: absolute;
+      top: 0; bottom: 0; left: 0;
+      width: 8px;
+      cursor: col-resize;
+      z-index: 2;
+    }
+    .grip::after {
+      content: "";
+      position: absolute;
+      top: 0; bottom: 0; left: 0;
+      width: 2px;
+      background: transparent;
+    }
+    .preview.is-open .grip:hover::after,
+    .shell.is-dragging .grip::after { background: rgba(26, 26, 20, 0.28); }
+
+    .tabbar {
+      height: 38px;
+      flex: none;
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      padding: 6px 44px 0 10px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border-soft);
+      overflow: hidden;
+    }
+    .tab {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      max-width: 168px;
+      min-width: 0;
+      height: 28px;
+      padding: 0 4px 0 10px;
+      border-radius: 7px 7px 0 0;
+      color: var(--muted-foreground);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .tab:hover { background: rgba(255, 255, 255, 0.45); }
+    .tab.is-on { background: var(--paper); color: var(--foreground); font-weight: 600; }
+    .tab-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tab .x {
+      width: 16px; height: 16px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--faint);
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      flex: none;
+    }
+    .tab .x:hover { background: rgba(26, 26, 20, 0.08); color: var(--foreground); }
+
+    .preview-body { flex: 1; min-height: 0; min-width: 220px; overflow: auto; position: relative; }
+    .doc[hidden] { display: none !important; }
+    .md { padding: 20px 22px 28px; }
+    .md h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 8px; }
+    .md .by { font-family: var(--font-mono); font-size: 11px; color: var(--faint); margin-bottom: 14px; }
+    .md p { font-size: 13.5px; line-height: 1.7; color: var(--ink-2); margin: 0 0 12px; }
+    .md h2 { font-size: 15px; font-weight: 650; margin: 16px 0 8px; }
+    .md ul { margin: 0 0 12px 1.1em; }
+    .md li { font-size: 13.5px; line-height: 1.65; color: var(--ink-2); margin: 4px 0; }
+    .md blockquote {
+      margin: 0 0 12px;
+      padding: 2px 0 2px 12px;
+      border-left: 3px solid rgba(26, 26, 20, 0.16);
+      color: var(--muted-foreground);
+      font-size: 13.5px;
+      line-height: 1.65;
+    }
+    .html-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+
+    .pane-toggle {
+      position: absolute;
+      top: 7px;
+      right: 8px;
+      z-index: 6;
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--ink-2);
+      cursor: pointer;
+      display: none;
+      place-items: center;
+    }
+    .pane-toggle.is-shown { display: grid; }
+    .pane-toggle:hover, .pane-toggle.is-open { background: var(--selected); }
+    .pane-toggle svg { width: 16px; height: 16px; }
+
+    .menu {
+      position: fixed;
+      z-index: 20;
+      min-width: 168px;
+      padding: 4px;
+      background: var(--paper);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 10px 28px -16px rgba(20, 20, 15, 0.45);
+    }
+    .menu[hidden] { display: none; }
+    .menu button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      border: none;
+      background: transparent;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-family: inherit;
+      font-size: 12.5px;
+      color: var(--ink-2);
+      cursor: pointer;
+    }
+    .menu button:hover { background: var(--selected); }
+    .menu button[hidden] { display: none; }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 28px;
+      transform: translateX(-50%) translateY(8px);
+      background: var(--foreground);
+      color: #fefdfa;
+      font-size: 12.5px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s, transform 0.2s;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+  <header class="spec">
+    <h1>右侧单独一列，把聊天挤窄</h1>
+    <p class="lead">面板不盖在会话上面。打开文件后，右边多出一列，聊天被挤窄。每个文件一个标签，可以同时开着好几份。只要还有文件开着，窗口右上角就出现收起 / 展开按钮。任何一个能点开的文件都可以右键：Markdown 和 HTML 可以选择在侧边栏打开，或用默认程序打开；侧边栏打不开的，菜单里只剩默认程序。</p>
+    <div class="controls">
+      <span>试一下</span>
+      <button type="button" id="open-md" data-open="md">打开周报.md</button>
+      <button type="button" id="open-html" data-open="html">打开落地页.html</button>
+      <button type="button" id="open-notes" data-open="notes">打开发布说明.md</button>
+      <button type="button" id="open-pdf" data-open="pdf">点 PDF</button>
+    </div>
+  </header>
+
+  <div class="stage">
+    <div class="shell" id="shell">
+      <aside class="sidebar">
+        <div class="chrome">
+          <i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <div class="brand"><b>TeamClu</b> · 产品</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-item is-on">会话 <span class="count">12</span></div>
+          <div class="nav-item">@提及 <span class="count">1</span></div>
+          <div class="nav-item">等待我 <span class="count">0</span></div>
+        </nav>
+        <div class="group-label">团队 · 2</div>
+        <nav class="nav">
+          <div class="nav-item">产品</div>
+          <div class="nav-item">设计</div>
+        </nav>
+      </aside>
+
+      <aside class="sessions">
+        <div class="sessions-head">
+          <h2>会话</h2>
+          <span class="count">12</span>
+        </div>
+        <div class="day">今天 · 2</div>
+        <div class="card is-active">
+          <div class="card-title">周报整理 <time>22:41</time></div>
+          <p>周报和落地页都放在会话里了，点开就能看。</p>
+        </div>
+        <div class="card">
+          <div class="card-title">昨日同步 <time>18:06</time></div>
+          <p>模型列表已经对齐，明天再看发布说明。</p>
+        </div>
+      </aside>
+
+      <main class="chat">
+        <header class="chat-head">
+          <h2>周报整理</h2>
+          <div class="meta">2 位参与者 · 4 条消息 · 22:41 更新</div>
+        </header>
+        <div class="thread">
+          <div class="user">
+            <div class="who">你</div>
+            <div class="bubble">把这周的周报和落地页预览发我，我直接在这里看。</div>
+          </div>
+          <div class="agent">
+            <div class="agent-head">
+              <div class="avatar">周</div>
+              <span class="agent-name">周报</span>
+              <span class="ai-pill">AI</span>
+              <span class="model">pi · 22:41</span>
+            </div>
+            <div class="note">
+              三份都在会话目录里。<button type="button" class="link" data-open="md">周报.md</button>、<button type="button" class="link" data-open="html">落地页.html</button>、<button type="button" class="link" data-open="notes">发布说明.md</button>。点开会在右边多一个标签，PDF 仍交给系统。
+            </div>
+            <div class="files">
+              <button type="button" class="tile" data-open="md">
+                <span class="ext">MD</span>
+                <span class="fn">周报.md</span>
+                <span class="sub">4 KB</span>
+              </button>
+              <button type="button" class="tile" data-open="html">
+                <span class="ext">HTML</span>
+                <span class="fn">落地页.html</span>
+                <span class="sub">12 KB</span>
+              </button>
+              <button type="button" class="tile" data-open="notes">
+                <span class="ext">MD</span>
+                <span class="fn">发布说明.md</span>
+                <span class="sub">2 KB</span>
+              </button>
+              <button type="button" class="tile" data-open="pdf">
+                <span class="ext">PDF</span>
+                <span class="fn">规格.pdf</span>
+                <span class="sub">系统打开</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <section class="preview" id="preview" aria-label="阅读面板">
+        <div class="grip" id="grip" title="拖动改变宽度"></div>
+        <div class="tabbar" id="tabbar" role="tablist"></div>
+        <div class="preview-body">
+          <article class="md doc" data-doc="md">
+            <h1>本周进展</h1>
+            <div class="by">docs/周报.md</div>
+            <p>这一列和聊天并排，把聊天挤窄，不盖在消息上面。</p>
+            <h2>做好了</h2>
+            <ul>
+              <li>每个文件一个标签。</li>
+              <li>右上角可以收起，文件还留着。</li>
+              <li>再点一次展开。</li>
+            </ul>
+          </article>
+          <article class="md doc" data-doc="notes" hidden>
+            <h1>发布说明</h1>
+            <div class="by">docs/发布说明.md</div>
+            <p>这是第二份笔记，和周报各占一个标签，来回点不会把前一份关掉。</p>
+            <h2>这次</h2>
+            <ul>
+              <li>Markdown 和 HTML 在客户端里看。</li>
+              <li>其他文件仍用系统应用打开。</li>
+            </ul>
+          </article>
+          <iframe class="html-frame doc" data-doc="html" title="落地页.html" hidden></iframe>
+        </div>
+      </section>
+
+      <button type="button" class="pane-toggle" id="pane-toggle" aria-label="收起阅读面板">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+          <rect x="1.6" y="2.4" width="12.8" height="11.2" rx="1.6"></rect>
+          <path d="M10.2 2.4v11.2"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+  <div class="menu" id="menu" hidden>
+    <button type="button" data-act="side">在侧边栏打开</button>
+    <button type="button" data-act="system">用默认程序打开</button>
+  </div>
+  <div class="toast" id="toast">PDF 仍用系统应用打开</div>
+
+  <script>
+    const HTML_PAGE = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><style>
+      body { margin:0; font-family:"PingFang SC","Microsoft YaHei",sans-serif; background:#fbfaf7; color:#1a1a14; }
+      .hero { padding:28px 22px 12px; }
+      .kicker { font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:#a8a6a0; }
+      h1 { margin:8px 0 0; font-size:24px; letter-spacing:-.03em; }
+      p { color:#3d3c34; font-size:14px; line-height:1.7; }
+      .go { display:inline-block; margin-top:12px; background:#1a1a14; color:#fefdfa; border-radius:8px; padding:7px 14px; font-size:13px; font-weight:600; }
+    </style></head><body>
+      <div class="hero">
+        <div class="kicker">preview / 落地页.html</div>
+        <h1>在这一列里看页面</h1>
+        <p>这是页面本身，不是源码。它和笔记各是一个标签。</p>
+        <span class="go">开始使用</span>
+      </div>
+    </body></html>`;
+
+    const DOCS = {
+      md: { name: '周报.md', path: 'docs/周报.md', sidebar: true },
+      html: { name: '落地页.html', path: 'preview/落地页.html', sidebar: true },
+      notes: { name: '发布说明.md', path: 'docs/发布说明.md', sidebar: true },
+      pdf: { name: '规格.pdf', path: 'docs/规格.pdf', sidebar: false },
+    };
+
+    const shell = document.getElementById('shell');
+    const preview = document.getElementById('preview');
+    const tabbar = document.getElementById('tabbar');
+    const toggle = document.getElementById('pane-toggle');
+    const grip = document.getElementById('grip');
+    const toast = document.getElementById('toast');
+    const menu = document.getElementById('menu');
+    let menuId = null;
+    const htmlFrame = document.querySelector('[data-doc="html"]');
+    htmlFrame.srcdoc = HTML_PAGE;
+
+    let tabs = [];
+    let active = null;
+    let collapsed = false;
+    let width = 320;
+    let sizedByUser = false;
+    let toastTimer = 0;
+
+    function fitWidth() {
+      const room = shell.clientWidth - 148 - 176 - 168;
+      return Math.round(Math.max(200, Math.min(420, room)));
+    }
+
+    function render() {
+      const hasTabs = tabs.length > 0;
+      const shown = hasTabs && !collapsed;
+      preview.classList.toggle('is-open', shown);
+      preview.style.width = shown ? width + 'px' : '0px';
+      toggle.classList.toggle('is-shown', hasTabs);
+      toggle.classList.toggle('is-open', shown);
+      toggle.title = shown ? '收起阅读面板' : '展开阅读面板';
+      toggle.setAttribute('aria-label', toggle.title);
+
+      tabbar.innerHTML = tabs.map((id) => `
+        <div class="tab${id === active ? ' is-on' : ''}" data-tab="${id}" role="tab">
+          <span class="tab-name">${DOCS[id].name}</span>
+          <button type="button" class="x" data-close="${id}" aria-label="关闭 ${DOCS[id].name}">×</button>
+        </div>
+      `).join('');
+
+      document.querySelectorAll('.doc').forEach((node) => {
+        node.hidden = !shown || node.dataset.doc !== active;
+      });
+      document.querySelectorAll('[data-open]').forEach((el) => {
+        el.classList.toggle('is-on', shown && el.dataset.open === active);
+      });
+    }
+
+    function openDoc(id) {
+      if (id === 'pdf') {
+        showToast('PDF 仍用系统应用打开');
+        return;
+      }
+      if (!tabs.includes(id)) tabs.push(id);
+      active = id;
+      collapsed = false;
+      if (!sizedByUser) width = fitWidth();
+      render();
+    }
+
+    function closeTab(id) {
+      const index = tabs.indexOf(id);
+      if (index === -1) return;
+      tabs.splice(index, 1);
+      if (active === id) active = tabs[Math.max(0, index - 1)] || tabs[0] || null;
+      if (!tabs.length) collapsed = false;
+      render();
+    }
+
+    function showToast(text) {
+      toast.textContent = text;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 1600);
+    }
+
+    function hideMenu() {
+      menu.hidden = true;
+      menuId = null;
+    }
+
+    function showMenu(x, y, id) {
+      menuId = id;
+      menu.querySelector('[data-act="side"]').hidden = !DOCS[id].sidebar;
+      menu.hidden = false;
+      const pad = 8;
+      const rect = menu.getBoundingClientRect();
+      menu.style.left = Math.min(x, window.innerWidth - rect.width - pad) + 'px';
+      menu.style.top = Math.min(y, window.innerHeight - rect.height - pad) + 'px';
+    }
+
+    function openWithDefaultApp(id) {
+      const doc = DOCS[id];
+      showToast('用默认程序打开 ' + doc.name);
+    }
+
+    document.querySelectorAll('[data-open]').forEach((el) => {
+      el.addEventListener('click', () => openDoc(el.dataset.open));
+    });
+
+    document.addEventListener('contextmenu', (event) => {
+      if (menu.contains(event.target)) return;
+      const opener = event.target.closest('[data-open], [data-tab]');
+      if (!opener) return;
+      event.preventDefault();
+      showMenu(event.clientX, event.clientY, opener.dataset.open || opener.dataset.tab);
+    });
+
+    menu.addEventListener('click', (event) => {
+      const act = event.target.closest('[data-act]');
+      if (!act || !menuId) return;
+      const id = menuId;
+      hideMenu();
+      if (act.dataset.act === 'system') openWithDefaultApp(id);
+      else openDoc(id);
+    });
+
+    document.addEventListener('pointerdown', (event) => {
+      if (!menu.hidden && !menu.contains(event.target)) hideMenu();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') hideMenu();
+    });
+    window.addEventListener('scroll', hideMenu, true);
+
+    tabbar.addEventListener('click', (event) => {
+      const close = event.target.closest('[data-close]');
+      if (close) {
+        closeTab(close.dataset.close);
+        return;
+      }
+      const tab = event.target.closest('[data-tab]');
+      if (!tab) return;
+      active = tab.dataset.tab;
+      collapsed = false;
+      render();
+    });
+
+    toggle.addEventListener('click', () => {
+      if (!tabs.length) return;
+      collapsed = !collapsed;
+      if (!collapsed && !sizedByUser) width = fitWidth();
+      render();
+    });
+
+    grip.addEventListener('pointerdown', (event) => {
+      if (!tabs.length || collapsed) return;
+      grip.setPointerCapture(event.pointerId);
+      shell.classList.add('is-dragging');
+      const startX = event.clientX;
+      const startW = width;
+      function move(e) {
+        const max = Math.min(560, shell.clientWidth - 148 - 176 - 140);
+        width = Math.round(Math.max(200, Math.min(max, startW + (startX - e.clientX))));
+        preview.style.width = width + 'px';
+      }
+      function up() {
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', up);
+        shell.classList.remove('is-dragging');
+        sizedByUser = true;
+      }
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', up);
+    });
+
+    openDoc('md');
+    openDoc('html');
+  </script>
+</body>
+</html>

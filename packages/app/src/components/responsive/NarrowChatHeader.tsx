@@ -27,6 +27,7 @@ import {
   savePiTranscript,
 } from '@/lib/session/pi-transcript-export'
 import { proposeSessionToKnowledge } from '@/lib/knowledge/propose-from-session'
+import { ChatFilePreviewToggle } from '@/components/chat/ChatFilePreviewColumn'
 
 export function NarrowChatHeader() {
   const { t } = useTranslation()
@@ -202,6 +203,7 @@ export function NarrowChatHeader() {
             </DropdownMenu>
           )
         ) : null}
+        <ChatFilePreviewToggle />
       </div>
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>

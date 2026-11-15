@@ -1,3 +1,5 @@
+import { looksLikeLocalChatPath } from "@/lib/messages/chat-open-target";
+
 export type HttpTextSegment =
   | { type: "text"; text: string }
   | { type: "link"; text: string; href: string };
@@ -76,4 +78,55 @@ export function linkifyHttpUrls(input: string): HttpTextSegment[] {
     return [{ type: "text", text: input }];
   }
   return segments;
+}
+
+const CHAT_PATH_PATTERN =
+  /(?:file:\/\/\/[^\s<>"']+|\\\\[^\s<>"']+|(?:\.\.?[/\\]|[A-Za-z]:[/\\]|\/(?!\/))[^\s<>"']+)/gi;
+
+/**
+ * `/settings` is how routes are written. A Unix path we turn into a link names
+ * a file, so the last segment has a dot (`/Users/a/note.md`). `./` and `C:\`
+ * stay as they are.
+ */
+function shouldLinkChatPath(href: string): boolean {
+  if (!looksLikeLocalChatPath(href)) return false;
+  if (href.startsWith("/") && !href.startsWith("//")) {
+    const last = href.slice(href.lastIndexOf("/") + 1);
+    if (!last.includes(".")) return false;
+  }
+  return true;
+}
+
+function linkifyPathText(input: string): HttpTextSegment[] {
+  if (!input) return [{ type: "text", text: input }];
+  const segments: HttpTextSegment[] = [];
+  let cursor = 0;
+  for (const match of input.matchAll(CHAT_PATH_PATTERN)) {
+    const raw = match[0];
+    const index = match.index ?? 0;
+    if (raw.startsWith("//")) continue;
+    const { href, trailing } = splitTrailingPunctuation(raw);
+    if (!href || href.startsWith("//") || !shouldLinkChatPath(href)) continue;
+
+    if (index > cursor) {
+      segments.push({ type: "text", text: input.slice(cursor, index) });
+    }
+    segments.push({ type: "link", text: href, href });
+    if (trailing) segments.push({ type: "text", text: trailing });
+    cursor = index + raw.length;
+  }
+  if (cursor < input.length) segments.push({ type: "text", text: input.slice(cursor) });
+  if (segments.length === 0) return [{ type: "text", text: input }];
+  return segments;
+}
+
+/** http(s) links plus local file paths (`file://`, absolute, `./`). */
+export function linkifyChatTargets(input: string): HttpTextSegment[] {
+  const parts = linkifyHttpUrls(input);
+  const out: HttpTextSegment[] = [];
+  for (const part of parts) {
+    if (part.type === "link") out.push(part);
+    else out.push(...linkifyPathText(part.text));
+  }
+  return out.length > 0 ? out : [{ type: "text", text: input }];
 }

@@ -619,7 +619,6 @@
     "files": "Files",
     "hideTabs": "Hide files",
     "restoreTabs": "Show files",
-    "collapsePanel": "Collapse panel",
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
     "settings": "Settings"
@@ -1131,9 +1130,27 @@
       "imagePreviewLoading": "Loading preview…"
     },
     "attachment": {
-      "download": "Download attachment",
       "saveAttachment": "Save attachment",
       "downloadFailed": "Download failed"
+    },
+    "fileOpen": {
+      "open": "Open",
+      "openInSidebar": "Open in side panel",
+      "openWithDefaultApp": "Open with default app",
+      "download": "Download",
+      "reveal": "Show in folder",
+      "panel": "Reading panel",
+      "collapse": "Collapse reading panel",
+      "expand": "Expand reading panel",
+      "resize": "Drag to resize",
+      "closeTab": "Close {{name}}",
+      "notFound": "File not found",
+      "readFailed": "Could not read this file",
+      "outsideWorkspace": "This path is outside the current session",
+      "sidebarUnsupported": "This file cannot open in the side panel",
+      "executableBlocked": "Programs are not run directly. Showing the file instead",
+      "desktopOnly": "Opening with the system app needs the desktop app",
+      "noWorkspace": "No workspace is open, so the file cannot be saved"
     },
     "fileMention": {
       "title": "Reference a file",

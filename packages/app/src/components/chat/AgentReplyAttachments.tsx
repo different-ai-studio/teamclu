@@ -2,10 +2,8 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { AgentReplyAttachment } from "@/lib/attachments/agent-reply-attachments";
-import {
-  fetchAgentReplyAttachmentBytes,
-  openOrDownloadAgentReplyAttachment,
-} from "@/lib/attachments/download-remote-attachment";
+import { fetchAgentReplyAttachmentBytes } from "@/lib/attachments/download-remote-attachment";
+import { openChatAttachment } from "@/lib/messages/open-chat-file";
 
 /** Fixed square tile — images and files share the same footprint. */
 const TILE_SIZE_CLASS = "h-[88px] w-[88px]";
@@ -39,7 +37,7 @@ function FileAttachmentTile({
 }) {
   const ext = item.filename.split(".").pop()?.toUpperCase() ?? "FILE";
   const sizeLabel = formatAttachmentSize(item.size);
-  const canOpen = Boolean(item.url || item.bucketPath);
+  const canOpen = Boolean(item.url || item.bucketPath || item.localPath);
 
   return (
     <button
@@ -48,6 +46,11 @@ function FileAttachmentTile({
       onClick={() => onOpen(item)}
       className={attachmentTileButtonClass(canOpen, busy)}
       title={item.filename}
+      data-chat-attachment=""
+      data-chat-filename={item.filename}
+      data-chat-url={item.url}
+      data-chat-bucket={item.bucketPath ?? ""}
+      data-chat-local={item.localPath ?? ""}
     >
       <div className="flex h-full flex-col items-center px-1 py-1.5">
         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-panel font-mono text-[8px] font-bold text-muted-foreground">
@@ -78,7 +81,7 @@ function ImageAttachmentTile({
   busy: boolean;
 }) {
   const { t } = useTranslation();
-  const canOpen = Boolean(item.url || item.bucketPath);
+  const canOpen = Boolean(item.url || item.bucketPath || item.localPath);
   const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
   const [previewFailed, setPreviewFailed] = React.useState(false);
   const previewObjectUrlRef = React.useRef<string | null>(null);
@@ -137,6 +140,11 @@ function ImageAttachmentTile({
       onClick={() => onOpen(item)}
       className={attachmentTileButtonClass(canOpen, busy)}
       title={item.filename}
+      data-chat-attachment=""
+      data-chat-filename={item.filename}
+      data-chat-url={item.url}
+      data-chat-bucket={item.bucketPath ?? ""}
+      data-chat-local={item.localPath ?? ""}
     >
       {previewUrl ? (
         <img
@@ -172,11 +180,16 @@ export function AgentReplyAttachments({
 
   const handleOpen = React.useCallback(
     async (item: AgentReplyAttachment) => {
-      if (busyUrl || (!item.url && !item.bucketPath)) return;
+      if (busyUrl || (!item.url && !item.bucketPath && !item.localPath)) return;
       const busyKey = item.url || item.bucketPath || item.filename;
       setBusyUrl(busyKey);
       try {
-        await openOrDownloadAgentReplyAttachment(item);
+        await openChatAttachment({
+          filename: item.filename,
+          url: item.url,
+          bucketPath: item.bucketPath,
+          localPath: item.localPath,
+        });
       } catch (error) {
         console.error("[AgentReplyAttachments] open failed:", error);
         const { toast } = await import("sonner");
