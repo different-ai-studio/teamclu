@@ -4,6 +4,7 @@ import { useAuthStore, type AuthClaimResult } from "@/stores/auth-store";
 import { useCurrentTeamStore, readCachedCurrentTeam } from "@/stores/current-team";
 import { getBackend } from "@/lib/backend";
 import { isTauri, removeStartupSkeleton } from "@/lib/utils";
+import { isChromeExtension } from "@/lib/config/platform";
 import { devSkipDaemonOnboarding } from "@/lib/config/dev-onboarding-flags";
 import { resolveDefaultDisplayName } from "@/lib/actor/default-display-name";
 import { DesktopOnboarding } from "./DesktopOnboarding";
@@ -43,6 +44,14 @@ import { useShallow } from "zustand/react/shallow";
 /** A one-option "choice" is noise: single-locale builds skip the language step
  *  entirely rather than showing a screen with nothing to decide. */
 const canChooseLanguage = !isLocaleLocked && availableLanguages.length > 1;
+
+/** Desktop already asks before sign-in. The extension shares that first-run
+ *  question so a side-panel user can confirm or override the system locale
+ *  before the login screen. Plain web is left alone: it is not this change's
+ *  surface and still follows the persisted or system language. */
+function shouldAskLanguageOnThisSurface(): boolean {
+  return isTauri() || isChromeExtension();
+}
 
 interface AuthGateProps {
   children: React.ReactNode;
@@ -629,7 +638,7 @@ export function AuthGate({ children }: AuthGateProps) {
   // Language first, alone, ahead of auth: everything after it is written in
   // whichever language this answers. Skipped outright on single-locale builds,
   // where there is nothing to ask.
-  if (isTauri() && !onboardingLanguageAck && canChooseLanguage) {
+  if (shouldAskLanguageOnThisSurface() && !onboardingLanguageAck && canChooseLanguage) {
     removeStartupSkeleton();
     return <LanguageStep onDone={markOnboardingLanguageAck} />;
   }

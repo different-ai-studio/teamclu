@@ -8,6 +8,12 @@ const storage = vi.hoisted(() => ({
 
 const clearLinkSessionMapForTeam = vi.hoisted(() => vi.fn(async () => {}))
 
+const { mockChangeLanguage, mockPersistLanguage, mockNormalizeSupportedLanguage } = vi.hoisted(() => ({
+  mockChangeLanguage: vi.fn(),
+  mockPersistLanguage: vi.fn(),
+  mockNormalizeSupportedLanguage: vi.fn((language: string) => language),
+}))
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: string) => fallback ?? _key,
@@ -20,6 +26,61 @@ vi.mock('sonner', () => ({
 
 vi.mock('@/lib/extension/link-session', () => ({
   clearLinkSessionMapForTeam,
+}))
+
+vi.mock('@/lib/i18n', () => ({
+  changeLanguage: mockChangeLanguage,
+  isLocaleLocked: false,
+}))
+
+vi.mock('i18next', () => ({
+  default: {
+    language: 'en',
+    on: vi.fn(),
+    off: vi.fn(),
+    changeLanguage: vi.fn(),
+  },
+}))
+
+vi.mock('@/lib/locale', () => ({
+  LANGUAGE_OPTIONS: [
+    { value: 'en', labelKey: 'common.english', fallback: 'English' },
+    { value: 'zh-CN', labelKey: 'common.chinese', fallback: '中文' },
+  ],
+  getPreferredLanguage: () => 'en',
+  normalizeSupportedLanguage: mockNormalizeSupportedLanguage,
+  persistLanguage: mockPersistLanguage,
+}))
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue(null),
+}))
+
+vi.mock('@/components/ui/select', () => ({
+  Select: ({
+    value,
+    onValueChange,
+    children,
+  }: {
+    value: string
+    onValueChange: (value: string) => void
+    children: React.ReactNode
+  }) => (
+    <select
+      aria-label="Language"
+      data-testid="language-select"
+      value={value}
+      onChange={(event) => onValueChange(event.target.value)}
+    >
+      {children}
+    </select>
+  ),
+  SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SelectItem: ({ value, children }: { value: string; children: React.ReactNode }) => (
+    <option value={value}>{children}</option>
+  ),
+  SelectTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SelectValue: () => null,
 }))
 
 vi.mock('@/stores/current-team', () => ({
@@ -75,6 +136,9 @@ describe('ExtensionGeneralSection', () => {
   beforeEach(() => {
     storage.value = { domains: [], urlPatterns: [] }
     clearLinkSessionMapForTeam.mockClear()
+    mockChangeLanguage.mockReset()
+    mockPersistLanguage.mockReset()
+    mockNormalizeSupportedLanguage.mockClear()
   })
 
   it('shows empty state and adds a domain to storage', async () => {
@@ -127,5 +191,20 @@ describe('ExtensionGeneralSection', () => {
       expect(clearLinkSessionMapForTeam).toHaveBeenCalledWith('team-1')
     })
     expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it('lets the user switch the display language from extension settings', async () => {
+    const { ExtensionGeneralSection } = await import('../ExtensionGeneralSection')
+
+    render(<ExtensionGeneralSection />)
+
+    expect(await screen.findByText('Language')).toBeInTheDocument()
+    expect(screen.getByText('Choose the app display language')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByTestId('language-select'), { target: { value: 'zh-CN' } })
+
+    expect(mockNormalizeSupportedLanguage).toHaveBeenCalledWith('zh-CN')
+    expect(mockChangeLanguage).toHaveBeenCalledWith('zh-CN')
+    expect(mockPersistLanguage).toHaveBeenCalledWith('zh-CN')
   })
 })

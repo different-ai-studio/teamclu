@@ -1,10 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 
+const { isTauriMock, isChromeExtensionMock } = vi.hoisted(() => ({
+  isTauriMock: vi.fn(() => true),
+  isChromeExtensionMock: vi.fn(() => false),
+}))
+
 vi.mock('@/lib/utils', async () => {
   const actual = await vi.importActual<typeof import('@/lib/utils')>('@/lib/utils')
-  return { ...actual, isTauri: () => true, removeStartupSkeleton: () => {} }
+  return { ...actual, isTauri: () => isTauriMock(), removeStartupSkeleton: () => {} }
 })
+
+vi.mock('@/lib/config/platform', () => ({
+  isChromeExtension: () => isChromeExtensionMock(),
+}))
 
 // Two locales, unlocked: the language step has something to ask.
 vi.mock('@/lib/i18n', () => ({
@@ -38,6 +47,7 @@ vi.mock('@/components/onboarding/LanguageStep', () => ({
   ),
 }))
 vi.mock('../DesktopOnboarding', () => ({ DesktopOnboarding: () => <div>sign in</div> }))
+vi.mock('../LoginScreen', () => ({ LoginScreen: () => <div>login screen</div> }))
 vi.mock('@/components/auth/DaemonOnboardingWizard', () => ({ DaemonOnboardingWizard: () => null }))
 vi.mock('@/components/auth/PendingInvitesDialog', () => ({ PendingInvitesDialog: () => null }))
 
@@ -49,10 +59,15 @@ import { useOnboardingStore } from '@/stores/onboarding'
  * (#1250). Picking a runtime and installing it moved into the post-login
  * daemon wizard, where the daemon's own doctor decides — so there is no
  * "setup done" record here for an upgrade to trip over.
+ *
+ * The extension now shares this gate so a side-panel user can pick a language
+ * before the email-code login screen. Plain web still skips it.
  */
 describe('AuthGate first-run onboarding gate', () => {
   beforeEach(() => {
     useOnboardingStore.getState().reset()
+    isTauriMock.mockReturnValue(true)
+    isChromeExtensionMock.mockReturnValue(false)
   })
 
   it('asks for the language first', () => {
@@ -74,5 +89,35 @@ describe('AuthGate first-run onboarding gate', () => {
     render(<AuthGate>app</AuthGate>)
     expect(screen.queryByText('language step')).not.toBeInTheDocument()
     expect(await screen.findByText('sign in')).toBeInTheDocument()
+  })
+
+  it('asks for the language first in the Chrome extension', async () => {
+    isTauriMock.mockReturnValue(false)
+    isChromeExtensionMock.mockReturnValue(true)
+    render(<AuthGate>app</AuthGate>)
+    expect(screen.getByText('language step')).toBeInTheDocument()
+    expect(screen.queryByText('login screen')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('language step'))
+    expect(useOnboardingStore.getState().languageAck).toBe(true)
+    expect(await screen.findByText('login screen')).toBeInTheDocument()
+    expect(screen.queryByText('language step')).not.toBeInTheDocument()
+  })
+
+  it('does not ask again in the Chrome extension once the language is answered', async () => {
+    isTauriMock.mockReturnValue(false)
+    isChromeExtensionMock.mockReturnValue(true)
+    useOnboardingStore.getState().markLanguageAck()
+    render(<AuthGate>app</AuthGate>)
+    expect(screen.queryByText('language step')).not.toBeInTheDocument()
+    expect(await screen.findByText('login screen')).toBeInTheDocument()
+  })
+
+  it('skips the language step on plain web, which is not this surface', async () => {
+    isTauriMock.mockReturnValue(false)
+    isChromeExtensionMock.mockReturnValue(false)
+    render(<AuthGate>app</AuthGate>)
+    expect(screen.queryByText('language step')).not.toBeInTheDocument()
+    expect(await screen.findByText('login screen')).toBeInTheDocument()
   })
 })
