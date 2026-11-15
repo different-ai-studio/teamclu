@@ -1,7 +1,8 @@
 import i18n from "@/lib/i18n";
 import { isTauri, openExternalUrl } from "@/lib/utils";
 import { toast } from "sonner";
-import { basenameOf, isPathAtOrUnder, joinPathLike } from "@/lib/fs-path";
+import { allowFsScopeDirs } from "@/lib/fs-scope";
+import { basenameOf, dirnameOf, joinPathLike } from "@/lib/fs-path";
 import {
   isExecutableChatFile,
   parseChatTarget,
@@ -190,53 +191,141 @@ export async function openChatHref(href: string, intent: ChatOpenIntent = "prima
   await openLocalPath(parsed.input, intent);
 }
 
+function hasRemoteAttachment(target: ChatAttachmentTarget): boolean {
+  return Boolean(target.url?.trim() || target.bucketPath?.trim());
+}
+
+async function loadOrNotify(target: ChatAttachmentTarget): Promise<Uint8Array | null> {
+  try {
+    return await loadAttachmentBytes(target);
+  } catch (error) {
+    console.error("[openChatFile] download failed", error);
+    notify("chat.attachment.downloadFailed", "下载失败");
+    return null;
+  }
+}
+
+function saveBrowserDownload(bytes: Uint8Array, filename: string) {
+  const blob = new Blob([Uint8Array.from(bytes)]);
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+/** A copy we already saved, including one the user picked in the save dialog. */
+export async function downloadedChatAttachmentPath(
+  target: ChatAttachmentTarget,
+): Promise<string | null> {
+  if (!hasRemoteAttachment(target)) return null;
+  const cached = getCachedAttachmentPath(cacheKeyFor(target));
+  if (!cached) return null;
+  const parent = dirnameOf(cached);
+  if (parent) await allowFsScopeDirs([parent]);
+  return (await pathExists(cached)) ? cached : null;
+}
+
+async function promptDownloadPath(filename: string): Promise<string | null> {
+  const safe = filename.trim().replace(/[/\\?%*:|"<>]/g, "_") || "attachment";
+  const dot = safe.lastIndexOf(".");
+  const ext = dot > 0 ? safe.slice(dot + 1).toLowerCase() : "";
+  const [{ safeSaveDialog }, { downloadDir }] = await Promise.all([
+    import("@/lib/workspace/safe-save-dialog"),
+    import("@tauri-apps/api/path"),
+  ]);
+  const downloads = await downloadDir();
+  return safeSaveDialog({
+    title: i18n.t("chat.attachment.saveAttachment", "保存附件"),
+    defaultPath: joinPathLike(downloads, safe),
+    filters: ext ? [{ name: ext.toUpperCase(), extensions: [ext] }] : undefined,
+  });
+}
+
+/** Ask where to save, defaulting to the user's Downloads folder. Remembers the path. */
+export async function downloadChatAttachment(target: ChatAttachmentTarget): Promise<void> {
+  const filename = target.filename.trim() || "attachment";
+  if (!hasRemoteAttachment(target)) {
+    notify("chat.attachment.downloadFailed", "下载失败");
+    return;
+  }
+  if (await downloadedChatAttachmentPath(target)) return;
+  if (!isTauri()) {
+    const bytes = await loadOrNotify(target);
+    if (bytes) saveBrowserDownload(bytes, filename);
+    return;
+  }
+  let dest: string | null;
+  try {
+    dest = await promptDownloadPath(filename);
+  } catch (error) {
+    console.error("[openChatFile] save dialog failed", error);
+    notify("chat.attachment.downloadFailed", "下载失败");
+    return;
+  }
+  if (!dest) return;
+  const bytes = await loadOrNotify(target);
+  if (!bytes) return;
+  try {
+    const parent = dirnameOf(dest);
+    if (parent) await allowFsScopeDirs([parent]);
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    await writeFile(dest, bytes);
+    setCachedAttachmentPath(cacheKeyFor(target), dest, filename);
+  } catch (error) {
+    console.error("[openChatFile] save failed", error);
+    notify("chat.attachment.downloadFailed", "下载失败");
+  }
+}
+
+/** Show the already downloaded copy in the file manager. */
+export async function revealDownloadedChatAttachment(target: ChatAttachmentTarget): Promise<void> {
+  const path = await downloadedChatAttachmentPath(target);
+  if (!path) {
+    notify("chat.fileOpen.notFound", "找不到这个文件");
+    return;
+  }
+  if (!isTauri()) {
+    notify("chat.fileOpen.desktopOnly", "在桌面端才能用系统程序打开");
+    return;
+  }
+  await revealInFileManager(path);
+}
+
 /** Left click, or a menu choice, for a chat attachment chip. */
 export async function openChatAttachment(
   target: ChatAttachmentTarget,
   intent: ChatOpenIntent = "primary",
 ): Promise<void> {
   const filename = target.filename.trim() || "attachment";
-  if (!target.url?.trim() && !target.bucketPath?.trim()) {
+  if (!hasRemoteAttachment(target)) {
     notify("chat.attachment.downloadFailed", "下载失败");
     return;
   }
 
   const key = cacheKeyFor(target);
-  const outputDir = workspaceOutputDir();
-  const cached = getCachedAttachmentPath(key);
-  if (outputDir && cached && isPathAtOrUnder(cached, outputDir) && (await pathExists(cached))) {
+  const cached = await downloadedChatAttachmentPath(target);
+  if (cached) {
     await openTrustedFile(cached, filename, intent);
     return;
   }
 
-  let bytes: Uint8Array;
-  try {
-    bytes = await loadAttachmentBytes(target);
-  } catch (error) {
-    console.error("[openChatFile] download failed", error);
-    notify("chat.attachment.downloadFailed", "下载失败");
-    return;
-  }
+  const bytes = await loadOrNotify(target);
+  if (!bytes) return;
 
   const sidebar = supportsSidebarPreview(filename);
   if (!isTauri()) {
     if (intent === "sidebar" || (intent === "primary" && sidebar)) {
-      const text = new TextDecoder().decode(bytes);
-      rememberPreview(key, filename, undefined, text);
+      rememberPreview(key, filename, undefined, new TextDecoder().decode(bytes));
       return;
     }
-    const blob = new Blob([Uint8Array.from(bytes)]);
-    const objectUrl = URL.createObjectURL(blob);
-    try {
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-    } finally {
-      URL.revokeObjectURL(objectUrl);
-    }
+    saveBrowserDownload(bytes, filename);
     return;
   }
 

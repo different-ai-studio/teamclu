@@ -1139,6 +1139,8 @@
       "open": "打开",
       "openInSidebar": "在侧边栏打开",
       "openWithDefaultApp": "用默认程序打开",
+      "download": "下载",
+      "reveal": "打开文件所在位置",
       "panel": "阅读面板",
       "collapse": "收起阅读面板",
       "expand": "展开阅读面板",

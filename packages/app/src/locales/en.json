@@ -1139,6 +1139,8 @@
       "open": "Open",
       "openInSidebar": "Open in side panel",
       "openWithDefaultApp": "Open with default app",
+      "download": "Download",
+      "reveal": "Show in folder",
       "panel": "Reading panel",
       "collapse": "Collapse reading panel",
       "expand": "Expand reading panel",

@@ -5,9 +5,12 @@ import {
   supportsSidebarPreview,
 } from "@/lib/messages/chat-open-target";
 import {
+  downloadChatAttachment,
+  downloadedChatAttachmentPath,
   openChatAttachment,
   openChatHref,
   openPreviewTabFile,
+  revealDownloadedChatAttachment,
   type ChatAttachmentTarget,
   type ChatOpenIntent,
 } from "@/lib/messages/open-chat-file";
@@ -17,6 +20,9 @@ type MenuState = {
   y: number;
   sidebar: boolean;
   run: (intent: ChatOpenIntent) => void;
+  attachment: ChatAttachmentTarget | null;
+  /** Set when `attachment` is already saved under the workspace output folder. */
+  downloadedPath: string | null;
 };
 
 function attachmentFrom(element: HTMLElement): ChatAttachmentTarget | null {
@@ -35,6 +41,7 @@ export function ChatFileMenuHost() {
   const { t } = useTranslation();
   const [menu, setMenu] = React.useState<MenuState | null>(null);
   const menuRef = React.useRef<HTMLDivElement>(null);
+  const requestRef = React.useRef(0);
 
   React.useEffect(() => {
     const onContextMenu = (event: MouseEvent) => {
@@ -73,7 +80,18 @@ export function ChatFileMenuHost() {
 
       if (!run) return;
       event.preventDefault();
-      setMenu({ x: event.clientX, y: event.clientY, sidebar, run });
+      const request = ++requestRef.current;
+      const point = { x: event.clientX, y: event.clientY, sidebar, run };
+      if (!(attachmentEl instanceof HTMLElement)) {
+        setMenu({ ...point, attachment: null, downloadedPath: null });
+        return;
+      }
+      const attachment = attachmentFrom(attachmentEl);
+      if (!attachment) return;
+      void downloadedChatAttachmentPath(attachment).then((downloadedPath) => {
+        if (requestRef.current !== request) return;
+        setMenu({ ...point, attachment, downloadedPath });
+      });
     };
 
     const onPointerDown = (event: PointerEvent) => {
@@ -99,16 +117,30 @@ export function ChatFileMenuHost() {
 
   if (!menu) return null;
 
-  const left = Math.min(menu.x, window.innerWidth - 180);
-  const top = Math.min(menu.y, window.innerHeight - (menu.sidebar ? 84 : 48));
+  const rows = (menu.sidebar ? 1 : 0) + 1 + (menu.attachment ? 1 : 0);
+  const left = Math.min(menu.x, window.innerWidth - 196);
+  const top = Math.min(menu.y, window.innerHeight - (rows * 32 + 12));
 
   return (
     <div
       ref={menuRef}
       data-chat-file-menu
-      className="fixed z-50 min-w-[168px] rounded-lg border border-border bg-paper p-1 shadow-[0_10px_28px_-16px_rgba(20,20,15,0.45)]"
+      className="fixed z-50 min-w-[188px] rounded-lg border border-border bg-paper p-1 shadow-[0_10px_28px_-16px_rgba(20,20,15,0.45)]"
       style={{ left, top }}
     >
+      {menu.attachment && !menu.downloadedPath ? (
+        <button
+          type="button"
+          className="block w-full rounded-md px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 hover:bg-selected"
+          onClick={() => {
+            const attachment = menu.attachment;
+            setMenu(null);
+            if (attachment) void downloadChatAttachment(attachment);
+          }}
+        >
+          {t("chat.fileOpen.download", "下载")}
+        </button>
+      ) : null}
       {menu.sidebar ? (
         <button
           type="button"
@@ -131,6 +163,19 @@ export function ChatFileMenuHost() {
       >
         {t("chat.fileOpen.openWithDefaultApp", "用默认程序打开")}
       </button>
+      {menu.attachment && menu.downloadedPath ? (
+        <button
+          type="button"
+          className="block w-full rounded-md px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 hover:bg-selected"
+          onClick={() => {
+            const attachment = menu.attachment;
+            setMenu(null);
+            if (attachment) void revealDownloadedChatAttachment(attachment);
+          }}
+        >
+          {t("chat.fileOpen.reveal", "打开文件所在位置")}
+        </button>
+      ) : null}
     </div>
   );
 }

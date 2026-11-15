@@ -4,15 +4,21 @@ import { ChatFileMenuHost } from "@/components/chat/ChatFileMenuHost";
 import { ChatFilePreviewColumn, ChatFilePreviewToggle } from "@/components/chat/ChatFilePreviewColumn";
 import { useChatFilePreviewStore } from "@/stores/chat-file-preview-store";
 
-const { openChatHref, openPreviewTabFile } = vi.hoisted(() => ({
+const { openChatHref, openPreviewTabFile, downloadedChatAttachmentPath, downloadChatAttachment, revealDownloadedChatAttachment } = vi.hoisted(() => ({
   openChatHref: vi.fn(),
   openPreviewTabFile: vi.fn(),
+  downloadedChatAttachmentPath: vi.fn(async () => null as string | null),
+  downloadChatAttachment: vi.fn(async () => undefined),
+  revealDownloadedChatAttachment: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/messages/open-chat-file", () => ({
   openChatHref: (...args: unknown[]) => openChatHref(...args),
   openChatAttachment: vi.fn(),
   openPreviewTabFile: (...args: unknown[]) => openPreviewTabFile(...args),
+  downloadedChatAttachmentPath: (...args: unknown[]) => downloadedChatAttachmentPath(...args),
+  downloadChatAttachment: (...args: unknown[]) => downloadChatAttachment(...args),
+  revealDownloadedChatAttachment: (...args: unknown[]) => revealDownloadedChatAttachment(...args),
 }));
 
 function resetPreview() {
@@ -74,6 +80,10 @@ describe("ChatFileMenuHost", () => {
   beforeEach(() => {
     openChatHref.mockClear();
     openPreviewTabFile.mockClear();
+    downloadChatAttachment.mockClear();
+    revealDownloadedChatAttachment.mockClear();
+    downloadedChatAttachmentPath.mockReset();
+    downloadedChatAttachmentPath.mockResolvedValue(null);
   });
 
   function renderLink(href: string) {
@@ -102,6 +112,45 @@ describe("ChatFileMenuHost", () => {
     fireEvent.contextMenu(screen.getByRole("link"));
     expect(screen.queryByRole("button", { name: "在侧边栏打开" })).toBeNull();
     expect(screen.getByRole("button", { name: "用默认程序打开" })).toBeTruthy();
+  });
+
+  it("offers download until the attachment is saved, then reveal", async () => {
+    const { rerender } = render(
+      <>
+        <button type="button" data-chat-attachment="" data-chat-filename="说明.pdf" data-chat-url="https://cdn.example/a.pdf">
+          说明.pdf
+        </button>
+        <ChatFileMenuHost />
+      </>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "说明.pdf" }));
+    const downloadItem = await screen.findByRole("button", { name: "下载" });
+    const menuButtons = downloadItem.parentElement?.querySelectorAll("button");
+    expect(menuButtons?.[0]).toBe(downloadItem);
+    expect(screen.queryByRole("button", { name: "打开文件所在位置" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "下载" }));
+    expect(downloadChatAttachment).toHaveBeenCalledWith({
+      filename: "说明.pdf",
+      url: "https://cdn.example/a.pdf",
+      bucketPath: undefined,
+      localPath: undefined,
+    });
+
+    downloadedChatAttachmentPath.mockResolvedValue("C:/repo/output/说明.pdf");
+    rerender(
+      <>
+        <button type="button" data-chat-attachment="" data-chat-filename="说明.pdf" data-chat-url="https://cdn.example/a.pdf">
+          说明.pdf
+        </button>
+        <ChatFileMenuHost />
+      </>,
+    );
+    fireEvent.contextMenu(screen.getByRole("button", { name: "说明.pdf" }));
+    expect(await screen.findByRole("button", { name: "打开文件所在位置" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "下载" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "打开文件所在位置" }));
+    expect(revealDownloadedChatAttachment).toHaveBeenCalled();
   });
 
   it("ignores links outside the chat", () => {
