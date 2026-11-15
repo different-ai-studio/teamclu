@@ -1,3 +1,5 @@
+import { looksLikeLocalChatPath } from "@/lib/messages/chat-open-target";
+
 export type HttpTextSegment =
   | { type: "text"; text: string }
   | { type: "link"; text: string; href: string };
@@ -81,6 +83,20 @@ export function linkifyHttpUrls(input: string): HttpTextSegment[] {
 const CHAT_PATH_PATTERN =
   /(?:file:\/\/\/[^\s<>"']+|\\\\[^\s<>"']+|(?:\.\.?[/\\]|[A-Za-z]:[/\\]|\/(?!\/))[^\s<>"']+)/gi;
 
+/**
+ * `/settings` is how routes are written. A Unix path we turn into a link names
+ * a file, so the last segment has a dot (`/Users/a/note.md`). `./` and `C:\`
+ * stay as they are.
+ */
+function shouldLinkChatPath(href: string): boolean {
+  if (!looksLikeLocalChatPath(href)) return false;
+  if (href.startsWith("/") && !href.startsWith("//")) {
+    const last = href.slice(href.lastIndexOf("/") + 1);
+    if (!last.includes(".")) return false;
+  }
+  return true;
+}
+
 function linkifyPathText(input: string): HttpTextSegment[] {
   if (!input) return [{ type: "text", text: input }];
   const segments: HttpTextSegment[] = [];
@@ -90,7 +106,7 @@ function linkifyPathText(input: string): HttpTextSegment[] {
     const index = match.index ?? 0;
     if (raw.startsWith("//")) continue;
     const { href, trailing } = splitTrailingPunctuation(raw);
-    if (!href || href.startsWith("//")) continue;
+    if (!href || href.startsWith("//") || !shouldLinkChatPath(href)) continue;
 
     if (index > cursor) {
       segments.push({ type: "text", text: input.slice(cursor, index) });

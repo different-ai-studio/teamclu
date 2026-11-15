@@ -117,7 +117,13 @@ export function ChatFileMenuHost() {
 
   if (!menu) return null;
 
-  const rows = (menu.sidebar ? 1 : 0) + 1 + (menu.attachment ? 1 : 0);
+  const canDownload = Boolean(
+    menu.attachment &&
+      (menu.attachment.url?.trim() || menu.attachment.bucketPath?.trim()) &&
+      !menu.downloadedPath,
+  );
+  const canReveal = Boolean(menu.attachment && menu.downloadedPath);
+  const rows = (menu.sidebar ? 1 : 0) + 1 + (canDownload || canReveal ? 1 : 0);
   const left = Math.min(menu.x, window.innerWidth - 196);
   const top = Math.min(menu.y, window.innerHeight - (rows * 32 + 12));
 
@@ -128,7 +134,7 @@ export function ChatFileMenuHost() {
       className="fixed z-50 min-w-[188px] rounded-lg border border-border bg-paper p-1 shadow-[0_10px_28px_-16px_rgba(20,20,15,0.45)]"
       style={{ left, top }}
     >
-      {menu.attachment && !menu.downloadedPath ? (
+      {canDownload ? (
         <button
           type="button"
           className="block w-full rounded-md px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 hover:bg-selected"
@@ -163,7 +169,7 @@ export function ChatFileMenuHost() {
       >
         {t("chat.fileOpen.openWithDefaultApp", "用默认程序打开")}
       </button>
-      {menu.attachment && menu.downloadedPath ? (
+      {canReveal ? (
         <button
           type="button"
           className="block w-full rounded-md px-2.5 py-1.5 text-left text-[12.5px] text-ink-2 hover:bg-selected"

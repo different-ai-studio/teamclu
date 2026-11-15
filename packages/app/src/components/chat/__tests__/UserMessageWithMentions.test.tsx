@@ -169,7 +169,15 @@ describe('UserMessageWithMentions', () => {
     render(<UserMessageWithMentions content="javascript:alert(1) file:///tmp/x" />)
 
     expect(screen.queryByRole('link', { name: /javascript/ })).toBeNull()
-    expect(screen.getByRole('link', { name: 'file:///tmp/x' })).toHaveAttribute('href', 'file:///tmp/x')
+    const fileLink = screen.getByRole('link', { name: 'file:///tmp/x' })
+    expect(fileLink).toHaveAttribute('href', 'file:///tmp/x')
+    expect(fileLink).not.toHaveAttribute('target', '_blank')
+  })
+
+  it('does not link an in-app route written in the message', () => {
+    render(<UserMessageWithMentions content="打开 /settings 看设置" />)
+
+    expect(screen.queryByRole('link')).toBeNull()
   })
 
   it('linkifies only the text around a role chip', () => {

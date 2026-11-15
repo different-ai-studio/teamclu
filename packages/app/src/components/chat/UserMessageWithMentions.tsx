@@ -9,6 +9,7 @@ import { hasStructuredMentionLines } from "@/lib/actor/outgoing-mention-content"
 import { parseSentPageChip } from "@/lib/embed/expand-page-link-tokens";
 import { pageLinkChipLabel, parsePageLinkBody } from "@/lib/embed/page-link-token";
 import type { PageContext } from "@/lib/embed/embed-page-context";
+import { parseChatTarget } from "@/lib/messages/chat-open-target";
 import { linkifyChatTargets } from "@/lib/messages/linkify-http";
 import { openChatAttachment } from "@/lib/messages/open-chat-file";
 
@@ -31,8 +32,9 @@ function LinkifiedText({ text }: { text: string }) {
           <a
             key={index}
             href={segment.href}
-            target="_blank"
-            rel="noopener noreferrer"
+            {...(parseChatTarget(segment.href).kind === "web"
+              ? { target: "_blank", rel: "noopener noreferrer" }
+              : {})}
             className={CHAT_LINK_CLASS}
           >
             {segment.text}

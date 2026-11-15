@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { linkifyHttpUrls } from "@/lib/messages/linkify-http";
+import { linkifyChatTargets, linkifyHttpUrls } from "@/lib/messages/linkify-http";
 
 describe("linkifyHttpUrls", () => {
   it("returns plain text when there is no http(s) url", () => {
@@ -44,6 +44,22 @@ describe("linkifyHttpUrls", () => {
   it("keeps balanced parentheses that belong to the url", () => {
     const url = "https://en.wikipedia.org/wiki/Rust_(programming_language)";
     expect(linkifyHttpUrls(url)).toEqual([{ type: "link", text: url, href: url }]);
+  });
+
+  it("linkifies file paths and leaves route-shaped text alone", () => {
+    expect(linkifyChatTargets("打开 ./docs/周报.md 和 C:/repo/note.md")).toEqual([
+      { type: "text", text: "打开 " },
+      { type: "link", text: "./docs/周报.md", href: "./docs/周报.md" },
+      { type: "text", text: " 和 " },
+      { type: "link", text: "C:/repo/note.md", href: "C:/repo/note.md" },
+    ]);
+    expect(linkifyChatTargets("去 /settings 看看 /Users/a/note.md")).toEqual([
+      { type: "text", text: "去 /settings 看看 " },
+      { type: "link", text: "/Users/a/note.md", href: "/Users/a/note.md" },
+    ]);
+    expect(linkifyChatTargets("file:///tmp/x")).toEqual([
+      { type: "link", text: "file:///tmp/x", href: "file:///tmp/x" },
+    ]);
   });
 
   it("linkifies every bare url in the string", () => {

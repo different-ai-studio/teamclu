@@ -305,6 +305,11 @@ export async function openChatAttachment(
 ): Promise<void> {
   const filename = target.filename.trim() || "attachment";
   if (!hasRemoteAttachment(target)) {
+    const local = target.localPath?.trim();
+    if (local) {
+      await openLocalPath(local, intent);
+      return;
+    }
     notify("chat.attachment.downloadFailed", "下载失败");
     return;
   }

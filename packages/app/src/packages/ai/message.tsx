@@ -7,7 +7,7 @@ import { Download, X, Copy, Check, Maximize2 } from "lucide-react"
 
 import i18n from "@/lib/i18n"
 import { cn, isTauri } from "@/lib/utils"
-import { looksLikeLocalChatPath } from "@/lib/messages/chat-open-target"
+import { looksLikeLocalChatPath, parseChatTarget } from "@/lib/messages/chat-open-target"
 import { bytesToDataUrl } from "@/lib/base64"
 import {
   Dialog,
@@ -935,16 +935,18 @@ const markdownComponentsBase = {
     }
     return <CodeBlock language={language}>{codeText}</CodeBlock>
   },
-  a: ({ children, href }: { children?: React.ReactNode; href?: string }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="rounded-[2px] text-foreground underline decoration-foreground/30 underline-offset-2 hover:bg-foreground/[0.06] dark:decoration-white/30 dark:hover:bg-white/[0.08]"
-    >
-      {children}
-    </a>
-  ),
+  a: ({ children, href }: { children?: React.ReactNode; href?: string }) => {
+    const openOutside = Boolean(href && parseChatTarget(href).kind === "web")
+    return (
+      <a
+        href={href}
+        {...(openOutside ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+        className="rounded-[2px] text-foreground underline decoration-foreground/30 underline-offset-2 hover:bg-foreground/[0.06] dark:decoration-white/30 dark:hover:bg-white/[0.08]"
+      >
+        {children}
+      </a>
+    )
+  },
   ul: ({ children, className }: { children?: React.ReactNode; className?: string }) => (
     <ul className={cn('my-2 space-y-0.5 pl-6', className?.includes('contains-task-list') ? 'list-none pl-0' : 'list-disc', className)}>
       {children}

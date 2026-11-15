@@ -51,6 +51,10 @@ export function useExternalLinkHandler() {
     };
 
     document.addEventListener("click", handler, true);
-    return () => document.removeEventListener("click", handler, true);
+    document.addEventListener("auxclick", handler, true);
+    return () => {
+      document.removeEventListener("click", handler, true);
+      document.removeEventListener("auxclick", handler, true);
+    };
   }, []);
 }

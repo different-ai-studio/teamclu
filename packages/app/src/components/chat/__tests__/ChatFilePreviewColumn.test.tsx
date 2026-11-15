@@ -153,6 +153,22 @@ describe("ChatFileMenuHost", () => {
     expect(revealDownloadedChatAttachment).toHaveBeenCalled();
   });
 
+  it("does not offer download for an attachment that only has a local path", async () => {
+    render(
+      <>
+        <button type="button" data-chat-attachment="" data-chat-filename="说明.pdf" data-chat-local="C:/repo/说明.pdf">
+          说明.pdf
+        </button>
+        <ChatFileMenuHost />
+      </>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "说明.pdf" }));
+    expect(await screen.findByRole("button", { name: "用默认程序打开" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "下载" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "打开文件所在位置" })).toBeNull();
+  });
+
   it("ignores links outside the chat", () => {
     render(
       <>

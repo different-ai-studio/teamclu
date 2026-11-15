@@ -69,6 +69,15 @@ describe("useExternalLinkHandler", () => {
     expect(openExternalUrl).not.toHaveBeenCalled();
   });
 
+  it("keeps a middle click on a chat path inside the app", () => {
+    openChatHref.mockClear();
+    render(<Probe href="./docs/周报.md" chat />);
+
+    fireEvent(screen.getByRole("link"), new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 }));
+
+    expect(openChatHref).toHaveBeenCalledWith("./docs/周报.md");
+  });
+
   it("leaves path-shaped links outside chat alone", () => {
     openChatHref.mockClear();
     render(<Probe href="/settings" />);
