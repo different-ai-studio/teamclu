@@ -23,6 +23,8 @@ import {
 } from '@/lib/tabs/app-tabs'
 import { isGiteaManaged, useAppsStore } from '@/stores/apps-store'
 import { AppStatusDot } from './AppStatusDot'
+import { AppDeployActions } from './AppDeployActions'
+import { AppLocalPathRow } from './AppLocalPathRow'
 import type { AppGitHead, AppRow } from '@/lib/backend/types'
 
 /**
@@ -530,6 +532,12 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto px-3.5 py-3.5">
+        <Group title={t('apps.controlPanel.deployGroup', '部署')}>
+          <AppDeployActions app={app} />
+        </Group>
+        <Group title={t('apps.localPath.title', '本地路径')}>
+          <AppLocalPathRow app={app} />
+        </Group>
         <Group title={t('apps.controlPanel.runtimeGroup', '运行与数据')}>
           <SummaryRow
             label={t('apps.data.section', '线上数据')}

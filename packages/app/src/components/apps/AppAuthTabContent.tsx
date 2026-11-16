@@ -26,6 +26,7 @@ import {
   sameAuthRow,
 } from '@/lib/apps/app-auth-access'
 import { useAppsStore } from '@/stores/apps-store'
+import { requestAgentDeploy } from '@/lib/apps/app-deploy-prompt'
 import { AppTabShell } from './AppTabShell'
 import type { AppAuthMode, AppRow } from '@/lib/backend/types'
 
@@ -162,7 +163,6 @@ export function AppAuthTabContent({ appId }: { appId: string }) {
 function AuthBody({ app }: { app: AppRow }) {
   const { t } = useTranslation()
   const updateAuthPolicy = useAppsStore((s) => s.updateAuthPolicy)
-  const deploy = useAppsStore((s) => s.deploy)
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
 
   const [mode, setMode] = React.useState<AppAuthMode>(app.authMode)
@@ -479,7 +479,7 @@ function AuthBody({ app }: { app: AppRow }) {
             size="sm"
             className="h-9 gap-1.5 rounded-[7px] text-[13px]"
             disabled={deploying || app.provisionStatus !== 'ready'}
-            onClick={() => void deploy(app.id)}
+            onClick={() => void requestAgentDeploy(app)}
             data-testid="app-auth-redeploy-now"
           >
             {deploying ? (

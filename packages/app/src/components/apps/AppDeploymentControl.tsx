@@ -5,13 +5,13 @@ import { Button } from '@/components/ui/button'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { getBackend } from '@/lib/backend/provider'
 import { useAppsStore } from '@/stores/apps-store'
+import { requestAgentDeploy } from '@/lib/apps/app-deploy-prompt'
 import type { AppRow } from '@/lib/backend/types'
 
 /** Only server-resolved management permission exposes the destructive action. */
 export function AppDeploymentControl({ app, compact = false, disabled = false }: { app: AppRow; compact?: boolean; disabled?: boolean }) {
   const { t } = useTranslation()
   const undeploy = useAppsStore(s => s.undeployApp)
-  const deploy = useAppsStore(s => s.deploy)
   const deploying = useAppsStore(s => s.deployingIds?.includes(app.id) ?? false)
   const syncApp = useAppsStore(s => s.syncApp)
   const refresh = useAppsStore(s => s.refreshApp)
@@ -43,8 +43,7 @@ export function AppDeploymentControl({ app, compact = false, disabled = false }:
     finally { setBusy(false) }
   }
   if (compact && current.canManageDeployment !== true) return null
-  return <div className={compact ? "inline-flex min-w-0 max-w-full flex-wrap items-center gap-1 text-[11.5px] text-muted-foreground" : "space-y-3 text-[12.5px] text-muted-foreground"} data-testid="app-undeploy-control">
-    {compact && <span className="mr-2 text-faint" aria-hidden>·</span>}
+  return <div className={compact ? "inline-flex min-w-0 max-w-full flex-wrap items-center gap-1.5 text-[12px] text-muted-foreground" : "space-y-3 text-[12.5px] text-muted-foreground"} data-testid="app-undeploy-control">
     {!compact && <p className="leading-relaxed">{t('apps.undeploy.hint', '线上应用将停止服务。代码、会话、数据库和上传文件会保留，之后可重新部署。')}</p>}
     {['uninstalling', 'uninstalled', 'uninstall_failed'].includes(current.fcStatus ?? '') && <p role="status" className="flex min-w-0 items-center gap-1.5 break-words font-medium text-foreground">
       {current.fcStatus === 'uninstalling' ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : current.fcStatus === 'uninstalled' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <CircleAlert className="h-3.5 w-3.5 text-destructive" />}
@@ -64,8 +63,8 @@ export function AppDeploymentControl({ app, compact = false, disabled = false }:
     </details>}
     {current.undeployOperation?.error && <p role="alert">{current.undeployOperation.error}</p>}
     {readError && <p role="alert">{t('apps.undeploy.checkFailed', '无法读取卸载状态，请刷新重试。')}</p>}
-    {current.canManageDeployment === true && current.fcStatus === 'uninstalled' && !compact && <Button variant="outline" size="sm" className="h-8 rounded-[7px] text-[12px]" disabled={pending || readError} onClick={() => void deploy(app.id)}>{t('apps.undeploy.redeploy', '重新部署')}</Button>}
-    {current.canManageDeployment === true && current.fcStatus !== 'uninstalled' && !(compact && current.fcStatus === 'uninstalling') && <Button variant={compact ? "ghost" : "outline"} size="sm" className={compact ? "h-auto p-0 text-[11.5px] font-normal hover:bg-transparent hover:underline underline-offset-2" : "mt-1 h-8 rounded-[7px] text-[12px]"} disabled={pending || conflict || !deployed || readError} onClick={() => setOpen(true)}>
+    {current.canManageDeployment === true && current.fcStatus === 'uninstalled' && !compact && <Button variant="outline" size="sm" className="h-8 rounded-[7px] text-[12px]" disabled={pending || readError} onClick={() => void requestAgentDeploy(current)}>{t('apps.undeploy.redeploy', '重新部署')}</Button>}
+    {current.canManageDeployment === true && current.fcStatus !== 'uninstalled' && !(compact && current.fcStatus === 'uninstalling') && <Button variant={compact ? "ghost" : "outline"} size="sm" className={compact ? "h-auto p-0 text-[12px] font-normal text-muted-foreground hover:bg-transparent hover:text-destructive" : "mt-1 h-8 rounded-[7px] text-[12px]"} disabled={pending || conflict || !deployed || readError} onClick={() => setOpen(true)}>
       {current.fcStatus === 'uninstall_failed' ? t('apps.undeploy.retry', '重试清理') : t('apps.undeploy.title', '卸载部署')}
     </Button>}
     <AlertDialog open={open} onOpenChange={value => { if (!busy) setOpen(value) }}>

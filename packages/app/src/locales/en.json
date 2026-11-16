@@ -1473,6 +1473,17 @@
     "deployConfirmTitle": "Confirm deploy",
     "deployConfirmContinue": "Deploy anyway",
     "deployFailed": "Deploy failed",
+    "deployPrompt": "Please deploy the app \"{{name}}\".\n\nFollow the deploy-app skill: check the current state with manage_app status, commit and push any uncommitted or unpushed changes, then publish with manage_app deploy. When it is done, tell me the live URL, the deployed revision, and what you verified.",
+    "deployPromptFailed": "Could not send the deploy request to the AI. Open the app session and try again.",
+    "deployViaAgentHint": "Send a message asking the AI to check, commit and deploy",
+    "localPath": {
+      "title": "Local path",
+      "none": "This app's code is not on this computer yet",
+      "copy": "Copy path",
+      "copyFailed": "Copy failed",
+      "openWith": "Open with…",
+      "openFailed": "Could not open with {{app}}"
+    },
     "live": "Live",
     "rename": "Rename",
     "delete": "Delete",
@@ -1819,6 +1830,7 @@
       "truncated": "Truncated — only the most recent entries are shown. A shorter window shows more of them."
     },
     "controlPanel": {
+      "deployGroup": "Deploy",
       "settings": "App settings",
       "runtimeGroup": "Runtime & data",
       "configGroup": "Access & configuration",
