@@ -64,9 +64,14 @@ fi
 # warm-up). Probe /auth/v1/health so token refresh in the first e2e suite does
 # not fail spuriously.
 echo "=== wait for gotrue via kong ==="
+# Kong's key-auth answers 401 to anything without an apikey, health included,
+# so without one this loop could only ever time out. Read it from .env by key:
+# the file is compose syntax, not shell.
+ANON_KEY="${ANON_KEY:-$(sed -n 's/^ANON_KEY=//p' "$REPO_ROOT/deploy/self-host/.env" 2>/dev/null | tail -n 1)}"
 i=0
 until [ "$i" -ge 30 ]; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+    -H "apikey: ${ANON_KEY}" \
     "http://$KONG_IP:8000/auth/v1/health" 2>/dev/null || echo "000")
   if [ "$code" = "200" ]; then
     echo "  gotrue ready via kong after ${i}s"
