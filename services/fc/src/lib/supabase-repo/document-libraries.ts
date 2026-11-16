@@ -3,7 +3,7 @@
  *
  * Owner/admin is checked here, then every ACL read and write uses the service
  * role: `amuxc_path_acl*` has RLS with no policy. The service-role client
- * defaults to schema `amux`. `public.roles` and `public.roles_users` go through
+ * defaults to schema `amux`. `public.roles` goes through
  * `publicFrom` (../public-schema.ts).
  */
 
@@ -159,7 +159,7 @@ async function loadMemberAccess(admin: any, teamId: string, orgId: string): Prom
   if (withUser.length === 0) return [];
 
   const userIds = [...new Set(withUser.map((member: any) => member.user_id))];
-  const { data: bindings, error: bindErr } = await publicFrom(admin, "roles_users")
+  const { data: bindings, error: bindErr } = await admin.from("org_roles_users")
     .select("user_id, role_id")
     .eq("org_id", orgId)
     .in("user_id", userIds)

@@ -1,6 +1,6 @@
 -- 040_org_roles.sql
 --
--- Org-scoped public.roles / public.roles_users: schema, system seed, backfill
+-- Org-scoped public.roles / amux.org_roles_users: schema, system seed, backfill
 -- from team_members.role, and current_team_role from roles_users only
 -- (no team_members.role fallback).
 --
@@ -9,7 +9,7 @@
 
 begin;
 
-select plan(11);
+select plan(12);
 
 create or replace function pg_temp.as_user(p_user uuid)
 returns void language plpgsql as $$
@@ -30,7 +30,7 @@ $$;
 
 -- ── Schema ──────────────────────────────────────────────────────────────────
 select has_table('public', 'roles', 'roles exists');
-select has_table('public', 'roles_users', 'roles_users exists');
+select has_table('amux', 'org_roles_users', 'collaboration bindings exist');
 
 select has_function('amux', 'has_org_role_code', array['uuid', 'text'],
   'has_org_role_code(team, code) exists');
@@ -134,7 +134,7 @@ select ok(
 select ok(
   exists (
     select 1
-    from public.roles_users ru
+    from amux.org_roles_users ru
     join public.roles r on r.id = ru.role_id
     where ru.user_id = (select owner_user from fx)
       and ru.org_id = (select org_id from fx)
@@ -148,13 +148,19 @@ select ok(
 
 -- ── Backfill union: admin + member → both rows ──────────────────────────────
 select is(
-  (select count(*)::int from public.roles_users ru
+  (select count(*)::int from amux.org_roles_users ru
     join public.roles r on r.id = ru.role_id
    where ru.user_id = (select multi_user from fx)
      and ru.org_id = (select org_id from fx)
      and r.code in ('admin', 'member')),
   2,
   'same user across teams unions admin + member roles_users'
+);
+
+select is(
+  (select count(*)::int from public.roles_users where org_id=(select org_id from fx)),
+  0,
+  'collaboration role backfill never creates a Betly employee grant'
 );
 
 -- ── current_team_role: owner ────────────────────────────────────────────────
@@ -190,7 +196,7 @@ select throws_ok(
     where id = (
       select r.id
       from public.roles r
-      join public.roles_users ru on ru.role_id = r.id
+      join amux.org_roles_users ru on ru.role_id = r.id
       where r.org_id = (select org_id from fx)
         and r.code = 'owner'
       limit 1

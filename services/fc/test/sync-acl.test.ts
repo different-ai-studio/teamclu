@@ -338,6 +338,7 @@ describe("sync-acl view", () => {
   test("loadCallerRoles returns active role ids and fails closed on a role error", async () => {
     const supabase = {
       from(table: string) {
+        if (table === "org_roles_users") return this.schema().from(table);
         return {
           select() {
             return {
@@ -375,7 +376,7 @@ describe("sync-acl view", () => {
                           eq() {
                             return {
                               is: async () => {
-                                if (table === "roles_users")
+                                if (table === "org_roles_users")
                                   return { data: [{ role_id: "role-finance" }], error: null };
                                 throw new Error(table);
                               },

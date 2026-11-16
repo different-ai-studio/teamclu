@@ -152,7 +152,7 @@ async function activeOrgRolesForUser(
   orgId: string,
   userId: string,
 ): Promise<MemberRoleRef[]> {
-  const { data: bindings, error } = await publicFrom(client, "roles_users")
+  const { data: bindings, error } = await client.from("org_roles_users")
     .select("role_id")
     .eq("org_id", orgId)
     .eq("user_id", userId)
@@ -224,7 +224,7 @@ export async function assignSystemOrgRole(
   // `status` matters: an inactive binding satisfied the old existence probe, so
   // the grant no-op'd while current_team_role (which filters status='active')
   // still saw nothing — a member with no effective role and no error raised.
-  const { data: existing, error: existErr } = await publicFrom(admin, "roles_users")
+  const { data: existing, error: existErr } = await admin.from("org_roles_users")
     .select("id, status")
     .eq("user_id", userId)
     .eq("role_id", role.id)
@@ -233,13 +233,13 @@ export async function assignSystemOrgRole(
   if (existErr) throw existErr;
   if (existing?.id) {
     if (existing.status !== "active") {
-      const { error: reviveErr } = await publicFrom(admin, "roles_users")
+      const { error: reviveErr } = await admin.from("org_roles_users")
         .update({ status: "active" })
         .eq("id", existing.id);
       if (reviveErr) throw reviveErr;
     }
   } else {
-    const { error: insertErr } = await publicFrom(admin, "roles_users").insert({
+    const { error: insertErr } = await admin.from("org_roles_users").insert({
       user_id: userId,
       role_id: role.id,
       org_id: orgId,
@@ -313,7 +313,7 @@ export async function enrichActorsWithOrgRoles<
   ];
   const byUser = new Map<string, MemberRoleRef[]>();
   if (userIds.length > 0) {
-    const { data: bindings, error: bindErr } = await publicFrom(supabase, "roles_users")
+    const { data: bindings, error: bindErr } = await supabase.from("org_roles_users")
       .select("user_id, role_id")
       .eq("org_id", orgId)
       .eq("status", "active")
@@ -505,7 +505,7 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
   }
 
   async function listActiveMemberRoles(orgId: string, userId: string): Promise<MemberRoleRef[]> {
-    const { data: bindings, error } = await publicFrom(host.supabase, "roles_users")
+    const { data: bindings, error } = await host.supabase.from("org_roles_users")
       .select("role_id")
       .eq("org_id", orgId)
       .eq("user_id", userId)
@@ -531,7 +531,7 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
     if (roleErr) throw roleErr;
     if (!ownerRole?.id) return 0;
 
-    let q = publicFrom(host.supabase, "roles_users")
+    let q = host.supabase.from("org_roles_users")
       .select("id", { count: "exact", head: true })
       .eq("org_id", orgId)
       .eq("role_id", ownerRole.id)
@@ -664,11 +664,18 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
         throw new ApiError(403, "forbidden", "系统角色不可修改");
       }
 
-      const { count, error: cErr } = await publicFrom(host.supabase, "roles_users")
-        .select("id", { count: "exact", head: true })
-        .eq("role_id", roleId);
-      if (cErr) throw cErr;
-      const bindingCount = typeof count === "number" ? count : 0;
+      // The role catalog is shared: deleting a role must also preserve staff
+      // grants, including staff who have never joined a collaboration team.
+      const bindingCounts = await Promise.all([
+        host.supabase.from("org_roles_users")
+          .select("id", { count: "exact", head: true }).eq("role_id", roleId),
+        publicFrom(host.supabase, "roles_users")
+          .select("id", { count: "exact", head: true }).eq("role_id", roleId),
+      ]);
+      for (const result of bindingCounts) {
+        if (result.error) throw result.error;
+      }
+      const bindingCount = bindingCounts.reduce((sum, result) => sum + (result.count ?? 0), 0);
       if (bindingCount > 0) {
         throw new ApiError(409, "conflict", "role still has member bindings", {
           details: { bindingCount },
@@ -759,7 +766,7 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
       const toAdd = [...nextIds].filter((id) => !currentIds.has(id));
 
       for (const roleId of toRemove) {
-        const { error } = await publicFrom(host.supabase, "roles_users")
+        const { error } = await host.supabase.from("org_roles_users")
           .delete()
           .eq("org_id", orgId)
           .eq("user_id", userId)
@@ -769,7 +776,7 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
       }
 
       for (const roleId of toAdd) {
-        const { error } = await publicFrom(host.supabase, "roles_users").insert({
+        const { error } = await host.supabase.from("org_roles_users").insert({
           user_id: userId,
           role_id: roleId,
           org_id: orgId,

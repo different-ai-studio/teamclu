@@ -4,6 +4,8 @@
  * with auth_user_id null. The role's org_id, not the row's default tenant,
  * determines whether a grant applies here.
  */
+import { appRoleBindings } from "./app-role-bindings.js";
+
 export async function findAppOrgRoleIdentities(
   admin: any,
   authUserId: string,
@@ -22,14 +24,7 @@ export async function findAppOrgRoleIdentities(
     typeof user.id === "string" && user.id ? [user.id] : []))];
   if (ids.length === 0) return [];
 
-  const { data: bindings, error: bindingsError } = await admin
-    .schema("public")
-    .from("roles_users")
-    .select("user_id")
-    .eq("org_id", orgId)
-    .eq("status", "active")
-    .in("user_id", ids);
-  if (bindingsError) throw new Error(`app org role lookup failed: ${bindingsError.message}`);
+  const bindings = await appRoleBindings(admin, orgId, ids);
   return [...new Set<string>((bindings ?? []).flatMap((binding: any): string[] =>
     typeof binding.user_id === "string" && binding.user_id ? [binding.user_id] : []))];
 }

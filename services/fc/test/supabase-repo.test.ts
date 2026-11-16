@@ -367,7 +367,7 @@ test("auth repo claimInvite forwards the caller bearer for member claims", async
     tableData: {
       teams: [{ id: "team-9", oid: "org-9" }],
       roles: [{ id: "role-member", org_id: "org-9", code: "member", is_system: true }],
-      roles_users: [],
+      org_roles_users: [],
     },
   });
   const repo = createSupabaseAuthRepository({
@@ -406,7 +406,7 @@ test("auth repo claimInvite forwards the caller bearer for member claims", async
   // authed client carrying the caller bearer.
   assert.equal(createCalls.length, 2);
   assert.equal(createCalls[1].options.global.headers.Authorization, "Bearer member-jwt");
-  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  const insert = adminCalls.find((c) => c.table === "org_roles_users" && c.op === "insert");
   assert.ok(insert, "member roles_users must be inserted via service-role");
   assert.equal(insert.row.user_id, "joiner-user-1");
   assert.equal(insert.row.role_id, "role-member");
@@ -423,7 +423,7 @@ test("auth repo claimInvite grants the org role to the identity the actor joined
       actors: [{ id: "actor-9", user_id: "identity-in-org-9" }],
       teams: [{ id: "team-9", oid: "org-9" }],
       roles: [{ id: "role-member", org_id: "org-9", code: "member", is_system: true }],
-      roles_users: [],
+      org_roles_users: [],
     },
   });
   const repo = createSupabaseAuthRepository({
@@ -452,7 +452,7 @@ test("auth repo claimInvite grants the org role to the identity the actor joined
 
   const result = await repo.claimInvite("invite-token", { accessToken: "member-jwt" });
   assert.equal(result.refreshToken, "rt-for-identity");
-  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  const insert = adminCalls.find((c) => c.table === "org_roles_users" && c.op === "insert");
   assert.ok(insert, "member roles_users must be inserted via service-role");
   assert.equal(insert.row.user_id, "identity-in-org-9");
 });
@@ -808,7 +808,7 @@ test("createTeam routes to create_team with the caller's JWT org as fallback", a
       tableData: {
         teams: [{ id: "team-9", oid: "org-real" }],
         roles: [{ id: ownerRoleId, org_id: "org-real", code: "owner", is_system: true }],
-        roles_users: [],
+        org_roles_users: [],
       },
     });
     const repo = createRepo(caller, { createServiceRoleClient: () => admin });
@@ -832,7 +832,7 @@ test("createTeam routes to create_team with the caller's JWT org as fallback", a
     assert.equal(team.name, "香蕉攀岩");
     assert.equal(team.slug, "banana");
     // Owner binding must go through service-role (not caller JWT / RLS).
-    const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+    const insert = adminCalls.find((c) => c.table === "org_roles_users" && c.op === "insert");
     assert.ok(insert, "roles_users owner insert must use service-role client");
     assert.equal(insert.row.user_id, "u1");
     assert.equal(insert.row.role_id, ownerRoleId);
@@ -872,7 +872,7 @@ test("createTeam mints a personal org when the caller carries none — never DEF
       tableData: {
         teams: [{ id: "team-solo", oid: "org-mine" }],
         roles: [{ id: "role-owner", org_id: "org-mine", code: "owner", is_system: true }],
-        roles_users: [],
+        org_roles_users: [],
       },
     });
     const repo = createRepo(caller, { createServiceRoleClient: () => admin });
@@ -919,7 +919,7 @@ test("joinPublicTeam assigns member roles_users via service-role", async () => {
       tableData: {
         teams: [{ id: "team-public", oid: "org-real" }],
         roles: [{ id: memberRoleId, org_id: "org-real", code: "member", is_system: true }],
-        roles_users: [],
+        org_roles_users: [],
       },
     });
     const repo = createRepo(caller, { createServiceRoleClient: () => admin });
@@ -928,7 +928,7 @@ test("joinPublicTeam assigns member roles_users via service-role", async () => {
 
     assert.equal(rpcCalls[0]?.name, "join_public_team");
     assert.equal(team.id, "team-public");
-    const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+    const insert = adminCalls.find((c) => c.table === "org_roles_users" && c.op === "insert");
     assert.ok(insert, "roles_users member insert must use service-role client");
     assert.equal(insert.row.user_id, "u-join");
     assert.equal(insert.row.role_id, memberRoleId);
@@ -976,7 +976,7 @@ test("bootstrapTeam verifies a trusted external JWT without a local GoTrue looku
     tableData: {
       teams: [{ id: "team-bootstrap", oid: "betly-org-1" }],
       roles: [{ id: "role-owner", org_id: "betly-org-1", code: "owner", is_system: true }],
-      roles_users: [],
+      org_roles_users: [],
     },
   });
   const repo = createRepo(caller, {
@@ -998,7 +998,7 @@ test("bootstrapTeam verifies a trusted external JWT without a local GoTrue looku
     },
   }]);
   assert.equal(team.id, "team-bootstrap");
-  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  const insert = adminCalls.find((c) => c.table === "org_roles_users" && c.op === "insert");
   assert.ok(insert, "bootstrap must assign owner via service-role");
   assert.equal(insert.row.user_id, "betly-user-1");
 });
@@ -1018,7 +1018,7 @@ test("bootstrapTeam passes the shared tenant so the partner org stays on the old
       tableData: {
         teams: [{ id: "t", oid: "betly-org-1" }],
         roles: [{ id: "role-owner", org_id: "betly-org-1", code: "owner", is_system: true }],
-        roles_users: [],
+        org_roles_users: [],
       },
     });
     const repo = createRepo(caller, {
@@ -1545,7 +1545,7 @@ const ORG_ADMIN_DIRECTORY_ROW = {
 };
 const ORG_ROLE_TABLES = {
   teams: [{ oid: "org-1" }],
-  roles_users: [{ user_id: "user-admin", role_id: "role-admin" }],
+  org_roles_users: [{ user_id: "user-admin", role_id: "role-admin" }],
   roles: [{ id: "role-admin", code: "admin", name: "管理员", status: "active" }],
 };
 
@@ -6183,7 +6183,7 @@ test("auth info aggregates only the active application organization catalog",asy
  assert.deepEqual(info.organization,{id:"org-1",name:"Organization"});
  assert.deepEqual(info.roles,[{id:"review",code:"reviewer",name:"Reviewer",status:"active"}]);
  assert.deepEqual(info.authRules,[{path:"/staff",auth:"required",audience:"org"}]);
- assert.equal(calls.some(c=>c.table==="roles_users"),false);
+ assert.equal(calls.some(c=>c.table==="org_roles_users"),false);
  assert.ok(calls.some(c=>c.table==="roles" && c.op==="eq" && c.column==="org_id" && c.value==="org-1"));
 });
 test("auth info rejects organization mismatch and propagates directory failures",async()=>{
