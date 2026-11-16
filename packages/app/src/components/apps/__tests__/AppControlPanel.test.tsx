@@ -105,13 +105,13 @@ describe('AppControlPanel', () => {
     backendMocks.listAppAccess.mockResolvedValue([
       {
         memberId: 'member-1',
-        permissionLevel: 'prompt',
+        permissionLevel: 'write',
         grantedByMemberId: 'o',
         createdAt: 'x',
       },
       {
         memberId: 'member-2',
-        permissionLevel: 'view',
+        permissionLevel: 'read',
         grantedByMemberId: 'o',
         createdAt: 'x',
       },

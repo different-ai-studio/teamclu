@@ -422,7 +422,7 @@ test("PUT /v1/apps/:id/access/:memberId 404s when repo returns null (non-admin)"
   await assert.rejects(
     () => handler({
       params: { appId: "app-1", memberId: "member-2" },
-      json: { permissionLevel: "prompt" },
+      json: { permissionLevel: "write" },
       repository: { setAppAccess: async () => null },
     }),
     (e) => (e as { statusCode?: number }).statusCode === 404,
@@ -435,7 +435,7 @@ test("GET /v1/apps/:id/access returns access rows", async () => {
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/access")[2];
   const items = [{
     memberId: "member-2",
-    permissionLevel: "prompt",
+    permissionLevel: "write",
     grantedByMemberId: "actor-app-1",
     createdAt: "2026-08-27T00:00:00.000Z",
   }];

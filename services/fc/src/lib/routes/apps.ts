@@ -108,6 +108,10 @@ export function registerApps(router, tickDeps = { createServiceRoleClient, makeA
     requireString(body.teamId, "teamId");
     requireString(body.name, "name");
     requireString(body.type, "type");
+    if (body.grantActorIds !== undefined
+        && (!Array.isArray(body.grantActorIds) || body.grantActorIds.some((id) => typeof id !== "string"))) {
+      throw new ApiError(400, "validation_failed", "grantActorIds must be an array of actor ids");
+    }
     const out = await ctx.repository.createApp({
       ...body,
       gitRemoteUrl: normalizeGitRemoteUrl(body.gitRemoteUrl),
@@ -412,7 +416,7 @@ export function registerApps(router, tickDeps = { createServiceRoleClient, makeA
     return { body: out };
   });
 
-  // Deleting a folder is deleting every key under a prefix. `prompt`, like a
+  // Deleting a folder is deleting every key under a prefix. `write`, like a
   // single file — a folder is not a different kind of object, and emptying the
   // WHOLE app is the separate admin-only purge below.
   router.delete("/v1/apps/:appId/storage/folder", async (ctx) => {

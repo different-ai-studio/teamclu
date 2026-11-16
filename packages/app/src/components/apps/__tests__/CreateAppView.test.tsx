@@ -19,6 +19,11 @@ const inspectDirMock = vi.fn()
 const bindWorkdirMock = vi.fn()
 const pickDirMock = vi.fn()
 const closeCreateAppMock = vi.fn()
+const listActorsMock = vi.fn()
+
+vi.mock('@/lib/backend', () => ({
+  getBackend: () => ({ actors: { listTeamActorsForAppAccess: (...args: unknown[]) => listActorsMock(...args) } }),
+}))
 
 vi.mock('@/stores/apps-store', () => ({
   useAppsStore: {
@@ -55,6 +60,8 @@ beforeEach(() => {
   bindWorkdirMock.mockResolvedValue({ workdir: '/repo', gitRemoteUrl: null })
   pickDirMock.mockReset()
   closeCreateAppMock.mockReset()
+  listActorsMock.mockReset()
+  listActorsMock.mockResolvedValue([])
   useCurrentTeamStore.setState({ team: { id: 'team-1' } as never })
 })
 
@@ -97,6 +104,39 @@ describe('CreateAppView', () => {
       adoptLocalDir: null,
     })
     await waitFor(() => expect(closeCreateAppMock).toHaveBeenCalledTimes(1))
+  })
+
+  it('offers connected agents unchecked, and grants the ones the user checks', async () => {
+    listActorsMock.mockResolvedValue([
+      { id: 'agent-1', displayName: '小助手', actorType: 'agent', connected: true },
+      { id: 'agent-2', displayName: '离线助手', actorType: 'agent', connected: false },
+      { id: 'member-1', displayName: '同事', actorType: 'member', connected: true },
+    ])
+    render(<CreateAppView />)
+
+    const box = await screen.findByTestId('create-app-grant-agent-agent-1')
+    expect(box).not.toBeChecked()
+    // Only connected agents: no offline agent, no people.
+    expect(screen.queryByTestId('create-app-grant-agent-agent-2')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('create-app-grant-agent-member-1')).not.toBeInTheDocument()
+
+    fireEvent.change(nameField(), { target: { value: 'Granted app' } })
+    fireEvent.click(box)
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1))
+    expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ grantActorIds: ['agent-1'] }))
+  })
+
+  it('sends no grants when no agent is checked', async () => {
+    listActorsMock.mockResolvedValue([
+      { id: 'agent-1', displayName: '小助手', actorType: 'agent', connected: true },
+    ])
+    render(<CreateAppView />)
+    await screen.findByTestId('create-app-grant-agents')
+    fireEvent.change(nameField(), { target: { value: 'Plain app' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1))
+    expect(createMock.mock.calls[0][0]).not.toHaveProperty('grantActorIds')
   })
 
   it('submit is disabled with an empty name', () => {

@@ -905,6 +905,8 @@ export interface ActorsBackend {
   }): Promise<void>;
   listAgentAccess(agentId: string): Promise<AgentAccessBackendRow[]>;
   listTeamMembersForAccess(teamId: string): Promise<TeamMemberOptionBackendRow[]>;
+  /** Members and agents of the team, for the app access picker. */
+  listTeamActorsForAppAccess(teamId: string): Promise<AppAccessCandidate[]>;
   upsertAgentAccess(input: {
     agentId: string;
     memberId: string;
@@ -1443,15 +1445,33 @@ export interface AppMembership {
   member: boolean;
 }
 
-/** Per-member app permission (`view` | `prompt` | `admin`). */
-export type AppPermissionLevel = "view" | "prompt" | "admin";
+/**
+ * Per-actor app permission. Named after Gitea's collaborator levels so the
+ * grant maps onto the app's Git repository one to one (`read` | `write` |
+ * `admin`). They were `view` | `prompt` | `admin` before 2026-11-17.
+ */
+export type AppPermissionLevel = "read" | "write" | "admin";
 
 /** Row from `GET /v1/apps/:id/access` or `PUT …/access/:memberId`. */
 export interface AppMemberAccessRow {
+  /** The grantee's actor id — a member or an agent. */
   memberId: string;
   permissionLevel: AppPermissionLevel;
   grantedByMemberId: string | null;
   createdAt: string;
+  /** Present on the list: what the grantee is. */
+  actorType?: "member" | "agent" | null;
+  /** Present on the list: false for an agent whose daemon has not claimed an account. */
+  connected?: boolean | null;
+}
+
+/** Someone in the team an app can be granted to — a member or an agent. */
+export interface AppAccessCandidate {
+  id: string;
+  displayName: string;
+  actorType: "member" | "agent";
+  /** False for an agent with no account yet: it cannot be granted. */
+  connected: boolean;
 }
 
 export interface AppSessionRow {
@@ -1586,6 +1606,8 @@ export interface AppsBackend {
     /** Optional repo to import. The app is cloned from it instead of being
      *  seeded with a starter template. */
     gitRemoteUrl?: string | null;
+    /** Agents to grant `write` on the new app (they get nothing by default). */
+    grantActorIds?: string[];
   }): Promise<AppRow>;
   getApp(appId: string): Promise<AppRow | null>;
   listAppSessions(appId: string): Promise<AppSessionRow[]>;
@@ -1687,7 +1709,7 @@ export interface AppsBackend {
   deleteAppDataRow(appId: string, table: string, rowKey: string): Promise<void>;
 
   // --- File storage (design 2026-09-09-app-storage-design) ---
-  // `view` may browse and download, `prompt` may also upload and delete,
+  // `read` may browse and download, `write` may also upload and delete,
   // `admin` may set the quota and purge. Every app's files live under one
   // prefix of a shared bucket; there is no bucket per app.
 

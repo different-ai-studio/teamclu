@@ -83,6 +83,8 @@ interface AppsState {
      * resolves the app's workdir from that binding.
      */
     adoptLocalDir?: string | null;
+    /** Agents to grant `write` on the new app (they get nothing by default). */
+    grantActorIds?: string[];
   }) => Promise<AppRow>;
   /** Re-ask the daemon which apps are on this machine. */
   refreshLocalApps: (teamId?: string | null) => Promise<void>;

@@ -2674,24 +2674,47 @@ test("apps: getAppMembership returns null when app is missing", async () => {
   assert.equal(await repo.getAppMembership("missing"), null);
 });
 
+const MEMBER_2_ACTOR = { id: "member-2", team_id: "team-1", actor_type: "member", user_id: "user-2" };
+
 test("apps: listAppAccess returns rows for creator", async () => {
-  const accessRows = [{
+  const accessRows: any[] = [{
     app_id: "app-1",
     member_id: "member-2",
     permission_level: "prompt",
     granted_by_member_id: "actor-app-1",
     created_at: "2026-08-27T00:00:00.000Z",
   }];
-  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows } });
+  const unclaimedAgent = { id: "agent-3", team_id: "team-1", actor_type: "agent", user_id: null };
+  accessRows.push({
+    app_id: "app-1",
+    member_id: "agent-3",
+    permission_level: "read",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-28T00:00:00.000Z",
+  });
+  const admin = appsSupabase({
+    seed: { apps: [APP_ROW], app_member_access: accessRows, actors: [MEMBER_2_ACTOR, unclaimedAgent] },
+  });
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), {
     createServiceRoleClient: () => admin,
   });
   const items = await repo.listAppAccess("app-1");
+  // A row written before the rename still reads back under the new name; an
+  // agent with no account yet is marked not connected.
   assert.deepEqual(items, [{
     memberId: "member-2",
-    permissionLevel: "prompt",
+    permissionLevel: "write",
     grantedByMemberId: "actor-app-1",
     createdAt: "2026-08-27T00:00:00.000Z",
+    actorType: "member",
+    connected: true,
+  }, {
+    memberId: "agent-3",
+    permissionLevel: "read",
+    grantedByMemberId: "actor-app-1",
+    createdAt: "2026-08-28T00:00:00.000Z",
+    actorType: "agent",
+    connected: false,
   }]);
 });
 
@@ -2715,7 +2738,7 @@ test("apps: listAppAccess returns null when app is not visible", async () => {
 
 test("apps: setAppAccess upserts for creator", async () => {
   const calls: any[] = [];
-  const admin = appsSupabase({ seed: { apps: [APP_ROW] }, calls });
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], actors: [MEMBER_2_ACTOR] }, calls });
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] }, calls }), {
     createServiceRoleClient: () => admin,
   });
@@ -2736,7 +2759,7 @@ test("apps: setAppAccess returns null for non-creator without admin", async () =
     appsSupabase({ seed: { apps: [APP_ROW] }, actorRow: { id: "actor-other" } }),
     { createServiceRoleClient: () => admin },
   );
-  assert.equal(await repo.setAppAccess("app-1", "member-2", "prompt"), null);
+  assert.equal(await repo.setAppAccess("app-1", "member-2", "write"), null);
 });
 
 test("apps: setAppAccess allows admin member who is not creator", async () => {
@@ -2748,14 +2771,57 @@ test("apps: setAppAccess allows admin member who is not creator", async () => {
     granted_by_member_id: "actor-app-1",
     created_at: "2026-08-27T00:00:00.000Z",
   }];
-  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows } });
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows, actors: [MEMBER_2_ACTOR] } });
   const repo = appsRepo(
     appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows }, actorRow: adminMember }),
     { createServiceRoleClient: () => admin },
   );
+  // An old client still sends "view"; it is stored and returned as "read".
   const row = await repo.setAppAccess("app-1", "member-2", "view");
-  assert.equal(row?.permissionLevel, "view");
+  assert.equal(row?.permissionLevel, "read");
   assert.equal(row?.grantedByMemberId, "admin-member");
+});
+
+test("apps: setAppAccess grants an agent in the app's team", async () => {
+  const agentActor = { id: "agent-2", team_id: "team-1", actor_type: "agent", user_id: "daemon-user-2" };
+  const calls: any[] = [];
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], actors: [agentActor] }, calls });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), { createServiceRoleClient: () => admin });
+  const row = await repo.setAppAccess("app-1", "agent-2", "write");
+  assert.equal(row?.memberId, "agent-2");
+  assert.equal(row?.permissionLevel, "write");
+});
+
+test("apps: setAppAccess refuses an agent with no account yet", async () => {
+  const unclaimed = { id: "agent-3", team_id: "team-1", actor_type: "agent", user_id: null };
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], actors: [unclaimed] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), { createServiceRoleClient: () => admin });
+  await assert.rejects(
+    () => repo.setAppAccess("app-1", "agent-3", "write"),
+    (e: any) => e?.statusCode === 422 && e?.code === "agent_not_connected",
+  );
+});
+
+test("apps: setAppAccess refuses an actor from another team", async () => {
+  const outsider = { id: "member-x", team_id: "team-2", actor_type: "member", user_id: "user-x" };
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], actors: [outsider] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), { createServiceRoleClient: () => admin });
+  await assert.rejects(
+    () => repo.setAppAccess("app-1", "member-x", "read"),
+    (e: any) => e?.statusCode === 422 && e?.code === "grantee_not_in_team",
+  );
+});
+
+test("apps: an agent that administers an app is recorded as the grantor", async () => {
+  const agentCreated = { ...APP_ROW, created_by_actor_id: "agent-actor-9" };
+  const calls: any[] = [];
+  const admin = appsSupabase({ seed: { apps: [agentCreated], actors: [MEMBER_2_ACTOR] }, calls });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [agentCreated] }, actorRow: { id: "agent-actor-9", actor_type: "agent" } }),
+    { createServiceRoleClient: () => admin },
+  );
+  const row = await repo.setAppAccess("app-1", "member-2", "write");
+  assert.equal(row?.grantedByMemberId, "agent-actor-9");
 });
 
 test("apps: setAppAccess rejects invalid permissionLevel", async () => {
@@ -2825,7 +2891,7 @@ test("apps: removeAppAccess revokes Gitea deploy keys for the member", async () 
   assert.deepEqual(deleted, [10]);
 });
 
-test("apps: setAppAccess downgrade to view revokes Gitea deploy keys", async () => {
+test("apps: setAppAccess downgrade to read revokes Gitea deploy keys", async () => {
   const now = 1_700_000_000_000;
   const memberId = "member-2";
   const accessRows = [{
@@ -2843,17 +2909,17 @@ test("apps: setAppAccess downgrade to view revokes Gitea deploy keys", async () 
     ],
     deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
   });
-  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows } });
+  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows, actors: [MEMBER_2_ACTOR] } });
   const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), {
     createServiceRoleClient: () => admin,
     gitea,
   });
-  const row = await repo.setAppAccess("app-1", memberId, "view");
-  assert.equal(row?.permissionLevel, "view");
+  const row = await repo.setAppAccess("app-1", memberId, "read");
+  assert.equal(row?.permissionLevel, "read");
   assert.deepEqual(deleted.sort(), [20, 21]);
 });
 
-test("apps: setAppAccess prompt to admin does not revoke deploy keys", async () => {
+test("apps: setAppAccess write to admin does not revoke deploy keys", async () => {
   const memberId = "member-2";
   const accessRows = [{
     app_id: "app-1",
@@ -2866,7 +2932,7 @@ test("apps: setAppAccess prompt to admin does not revoke deploy keys", async () 
   const gitea = fakeGitea({
     listDeployKeys: async () => { listCalled = true; return []; },
   });
-  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows } });
+  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows, actors: [MEMBER_2_ACTOR] } });
   const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), {
     createServiceRoleClient: () => admin,
     gitea,
@@ -2950,19 +3016,26 @@ test("apps: an agent administers the apps it created, and no others", async () =
   });
   assert.equal(await repo.isAppCreator("team-1", "agent-actor-1"), true);
 
-  // A grant row naming the agent cannot exist for real (`member_id` is a
-  // member); even seeded, it confers nothing on an app the agent did not make.
-  const members = appsRepo(
+  // On an app it did not make, an agent has exactly what it was granted
+  // (grants are keyed on actors since 20261117000000) ...
+  const granted = appsRepo(
     appsSupabase({
       seed: {
         apps: [GITEA_MANAGED_APP],
-        app_member_access: [{ app_id: "app-1", member_id: "agent-actor-1", permission_level: "admin" }],
+        app_member_access: [{ app_id: "app-1", member_id: "agent-actor-1", permission_level: "write" }],
       },
       actorRow: agent,
     }),
   );
-  assert.equal(await members.resolveAppCallerPermissionForApp(GITEA_MANAGED_APP), null);
-  assert.equal(await members.cancelAppDeployPreflight("app-1", { deployToken: "t" }), null);
+  assert.deepEqual(await granted.resolveAppCallerPermissionForApp(GITEA_MANAGED_APP), {
+    level: "write",
+    callerActorId: "agent-actor-1",
+    callerMemberId: null,
+  });
+  // ... and with no grant, nothing.
+  const ungranted = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] }, actorRow: agent }));
+  assert.equal(await ungranted.resolveAppCallerPermissionForApp(GITEA_MANAGED_APP), null);
+  assert.equal(await ungranted.cancelAppDeployPreflight("app-1", { deployToken: "t" }), null);
 });
 
 test("apps: an agent's own app is minted a key in the agent's name", async () => {
@@ -3501,6 +3574,27 @@ test("apps: createApp inserts a pending app when importing an external repo", as
     gitRemoteUrl: "https://github.com/owner/repo.git",
   });
   assert.equal(app.provisionStatus, "pending");
+});
+
+test("apps: createApp grants write to the agents the caller picked", async () => {
+  const calls: any[] = [];
+  const agentActor = { id: "agent-7", team_id: "team-1", actor_type: "agent", user_id: "daemon-7" };
+  const unclaimed = { id: "agent-8", team_id: "team-1", actor_type: "agent", user_id: null };
+  const supabase = appsSupabase({ calls, seed: { actors: [agentActor, unclaimed] } });
+  const repo = appsRepo(supabase, { createServiceRoleClient: () => supabase.serviceRole() });
+  const app = await repo.createApp({
+    teamId: "team-1",
+    name: "Granted App",
+    type: "slides",
+    visibility: "personal",
+    gitRemoteUrl: "https://github.com/owner/repo.git",
+    grantActorIds: ["agent-7", "agent-8"],
+  });
+  assert.equal(app.provisionStatus, "pending");
+  const upserts = calls.filter((c) => c.table === "app_member_access" && c.op === "upsert");
+  // The connected agent is granted; the one with no account is skipped, and
+  // its refusal does not undo the app.
+  assert.deepEqual(upserts.map((c) => [c.row.member_id, c.row.permission_level]), [["agent-7", "write"]]);
 });
 
 test("apps: updateApp returns null when no row updated (RLS non-creator)", async () => {
