@@ -1194,6 +1194,8 @@
     "agentNotStarted": "Agent has not started yet",
     "noWorkspaceBound": "This session has no workspace",
     "workspaceUnavailable": "Couldn't read this session's workspace",
+    "workspaceNotSwitched": "Not on this session's workspace yet",
+    "switchToWorkspace": "Switch to it",
     "pickWorkspaceHint": "Pick a folder for {{agent}} to work in",
     "pickWorkspaceHintNoName": "Pick a folder for this machine's agent to work in",
     "workspacesLoading": "Loading…",

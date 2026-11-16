@@ -1,3 +1,4 @@
+import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { SessionActorPanel } from '@/components/chat/SessionActorSheet'
 import { ShortcutsPanel } from './ShortcutsPanel'
@@ -27,15 +28,61 @@ interface RightPanelProps {
  *   the local agent's workspaces (or a folder to browse to) to bind
  * - binding resolved with no folder, seat not confirmed empty → say the folder
  *   could not be read; a picker there could overwrite a bound seat
- * - otherwise no settled path → waiting on runtime / workspace switch
+ * - binding resolved to a folder the window has not moved to → name that
+ *   folder and offer the (guarded) switch. Mid-switch this is a beat; when the
+ *   switch was skipped it is where the pane stays, and "Agent 尚未启动" there
+ *   blamed an agent that was fine
+ * - otherwise binding still resolving → waiting on runtime
  * Rendering the previous session's tree in that gap is the bug this replaces.
  */
 function WorkspaceFilesPane() {
   const { t } = useTranslation()
   const { agentId, agentName, path, bindingResolved, boundPath, needsWorkspace } =
     useSessionLocalWorkspace()
+  const sessionId = useSessionSelectionStore(s => s.currentSessionId)
+  const teamId = useCurrentTeamStore(s => s.team?.id ?? null)
+  const [switching, setSwitching] = React.useState(false)
+
+  // The same guarded switch a session click runs: it only adopts a folder that
+  // exists on this machine, so the button cannot persist another machine's path.
+  const switchToBound = React.useCallback(async () => {
+    if (!teamId || !sessionId) return
+    setSwitching(true)
+    try {
+      const { switchToSessionWorkspaceIfNeeded } = await import('@/lib/session/session-by-workspace')
+      await switchToSessionWorkspaceIfNeeded(teamId, sessionId)
+    } catch (e) {
+      console.warn('[RightPanel] could not switch to the session workspace', e)
+    } finally {
+      setSwitching(false)
+    }
+  }, [teamId, sessionId])
 
   if (!path) {
+    if (bindingResolved && boundPath) {
+      return (
+        <div
+          data-testid="files-workspace-not-switched"
+          className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center"
+        >
+          <div className="text-[12.5px] text-muted-foreground">
+            {t('fileExplorer.workspaceNotSwitched', '还没切换到该会话的工作目录')}
+          </div>
+          <div className="max-w-full truncate text-[12px] text-faint" title={boundPath}>
+            {shortenWorkspacePath(boundPath)}
+          </div>
+          <button
+            type="button"
+            data-testid="files-workspace-switch"
+            disabled={switching || !teamId || !sessionId}
+            onClick={() => { void switchToBound() }}
+            className="mt-1 rounded-md px-2.5 py-1 text-[12px] text-ink-2 ring-1 ring-border hover:bg-black/[0.04] disabled:opacity-50"
+          >
+            {t('fileExplorer.switchToWorkspace', '切换过去')}
+          </button>
+        </div>
+      )
+    }
     if (bindingResolved && !boundPath && !needsWorkspace) {
       return (
         <div

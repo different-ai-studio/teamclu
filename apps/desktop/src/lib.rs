@@ -463,6 +463,7 @@ pub fn run() {
             commands::window::open_local_agent_panel_window,
             commands::window::register_window_workspace,
             fs_scope::allow_fs_scope_dirs,
+            fs_scope::path_is_directory,
             commands::window::set_window_title,
             commands::mqtt_bus::mqtt_connect,
             commands::mqtt_bus::mqtt_subscribe,
