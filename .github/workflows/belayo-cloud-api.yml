@@ -64,11 +64,15 @@ jobs:
       # reaches the manager on its private address, the way saas-mono's
       # deploy workflows do. BELAYO_DOKPLOY_HOST must hold that private
       # address; the public one times out on port 22.
+      #
+      # No --accept-routes in `args`: v4 always passes it itself
+      # (src/main.ts), and a second copy makes `tailscale up` exit with
+      # "flag provided multiple times".
       - name: Join company VPN
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.BELAYO_CI_TS_AUTHKEY }}
-          args: --login-server=https://hs.mx5.cn --accept-routes
+          args: --login-server=https://hs.mx5.cn
           hostname: gha-teamclu-cloud-api-${{ github.run_id }}
 
       - name: Start ssh-agent
