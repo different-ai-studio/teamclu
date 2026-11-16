@@ -290,6 +290,37 @@ pub struct SeedAppBody {
     /// over it is the one thing that must not happen.
     #[serde(default)]
     pub adopt_existing: Option<bool>,
+    /// The repo's HTTPS address when the app uses per-account Gitea auth (the
+    /// cloud's `gitHttpUrl`). The seed/clone still runs over SSH with the deploy
+    /// key; afterwards the checkout is pointed at this for people and agents.
+    #[serde(default)]
+    pub git_http_url: Option<String>,
+}
+
+/// Point a freshly seeded/cloned/built checkout at per-account HTTPS, and
+/// remember the host so `amuxd git-credential` answers for it. Best-effort: the
+/// operation that called this already succeeded, and a checkout left on SSH
+/// still works through the git-ssh shim.
+fn apply_account_git(
+    dir: &std::path::Path,
+    app_id: &str,
+    ssh_remote: &str,
+    http_url: Option<&str>,
+    api_base: Option<&str>,
+) {
+    let Some(http_url) = http_url.map(str::trim).filter(|u| !u.is_empty()) else {
+        return;
+    };
+    match crate::sync::app_git::set_repo_account_git(dir, ssh_remote, http_url) {
+        Ok(()) => {
+            if let Some((_, host)) = crate::sync::app_git::http_remote_authority(http_url) {
+                if let Err(e) = crate::sync::git_account_cache::remember_git_host(&host, api_base) {
+                    tracing::debug!(app_id, error = %e, "apps: could not remember the git host");
+                }
+            }
+        }
+        Err(e) => tracing::warn!(app_id, error = %e, "apps: could not point the checkout at per-account git"),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -430,9 +461,10 @@ pub async fn app_manifest(
 /// `app_clone` skips the clone and leaves the directory untouched.
 pub async fn seed_app(
     principal: Principal,
-    State(_state): State<HttpState>,
+    State(state): State<HttpState>,
     Json(body): Json<SeedAppBody>,
 ) -> Result<Json<SeedAppResponse>, HttpError> {
+    let api_base = state.backend.as_ref().and_then(|b| b.cloud_base_url());
     require_scope(&principal, "workspace:write")?;
 
     let workdir_path = resolve_workdir(
@@ -491,7 +523,16 @@ pub async fn seed_app(
         None => None,
     };
 
+    let git_http_url = body
+        .git_http_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .map(str::to_string);
     let seed_result = tokio::task::spawn_blocking(move || {
+        let account = |url: &str| {
+            apply_account_git(&workdir_path, &app_id, url, git_http_url.as_deref(), api_base.as_deref())
+        };
         let vars = crate::sync::app_templates::TemplateVars {
             app_id: &app_id,
             app_name: &app_name,
@@ -509,6 +550,7 @@ pub async fn seed_app(
                     git_user_email: git_user_email.as_deref(),
                 };
                 let out = crate::sync::app_seed::adopt_app_repo(&workdir_path, &push)?;
+                account(url);
                 Ok(("seeded", out.git_commit_sha))
             }
             (Some(url), Some(key)) if clone_only => {
@@ -520,6 +562,7 @@ pub async fn seed_app(
                     git_user_name.as_deref(),
                     git_user_email.as_deref(),
                 )?;
+                account(url);
                 Ok(("ready", None))
             }
             (Some(url), Some(key)) => {
@@ -531,6 +574,7 @@ pub async fn seed_app(
                     git_user_email: git_user_email.as_deref(),
                 };
                 let out = crate::sync::app_seed::seed_app_repo(&workdir_path, &vars, Some(&push))?;
+                account(url);
                 Ok(("seeded", out.git_commit_sha))
             }
             (Some(url), None) => {
@@ -621,6 +665,10 @@ pub struct BuildAppBody {
     /// "container"`. Carries a registry password — never logged.
     #[serde(default)]
     pub image: Option<ImagePushBody>,
+    /// See [`SeedAppBody::git_http_url`]. Re-applied on every deploy, which is
+    /// what moves an existing checkout to per-account git once its app has it.
+    #[serde(default)]
+    pub git_http_url: Option<String>,
 }
 
 /// The registry handle the control plane mints for one container deploy.
@@ -714,9 +762,11 @@ fn build_destination(
 /// this deployment holds no credential for that remote.
 pub async fn build_app(
     principal: Principal,
-    State(_state): State<HttpState>,
+    State(state): State<HttpState>,
     Json(body): Json<BuildAppBody>,
 ) -> Result<Json<BuildAppResponse>, HttpError> {
+    let api_base = state.backend.as_ref().and_then(|b| b.cloud_base_url());
+    let build_git_http_url = body.git_http_url.clone();
     require_scope(&principal, "workspace:write")?;
 
     // Split now rather than inside the build closure: the upload URL is needed
@@ -793,6 +843,13 @@ pub async fn build_app(
         )?;
         if let Some(git) = git_ctx.as_ref() {
             crate::sync::app_build::verify_git_build_revision(&workdir_path, git)?;
+            apply_account_git(
+                &workdir_path,
+                git.app_id,
+                git.remote_url,
+                build_git_http_url.as_deref(),
+                api_base.as_deref(),
+            );
         }
         if !use_git
             && crate::sync::app_git::checkout_content_digest(&workdir_path)? != expected_revision

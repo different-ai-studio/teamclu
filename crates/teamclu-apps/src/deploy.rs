@@ -25,6 +25,10 @@ pub struct GitCredential {
     pub remote_url: String,
     pub private_key_pem: String,
     pub deploy_key_id: Option<i64>,
+    /// The repo's HTTPS address under per-account Gitea auth. Forwarded to the
+    /// daemon, which points the checkout's people and agents at it while the
+    /// deploy key keeps serving the daemon's own SSH fetch and push.
+    pub git_http_url: Option<String>,
 }
 
 /// Mint a deploy key for the app's Gitea repo — for a deploy's fetch, a seed's
@@ -49,6 +53,7 @@ pub async fn mint_git_credential(ops: &AppOps<'_>, app_id: &str) -> Result<GitCr
         remote_url,
         private_key_pem,
         deploy_key_id: cred.get("deployKeyId").and_then(Value::as_i64),
+        git_http_url: row_str(&cred, "gitHttpUrl").map(str::to_string),
     })
 }
 
@@ -186,6 +191,9 @@ impl AppOps<'_> {
         if let Some(cred) = &credential {
             build_body["gitRemoteUrl"] = json!(cred.remote_url);
             build_body["deployKeyPem"] = json!(cred.private_key_pem);
+            if let Some(url) = &cred.git_http_url {
+                build_body["gitHttpUrl"] = json!(url);
+            }
             if let Some(sha) = &git_commit_sha {
                 build_body["gitCommitSha"] = json!(sha);
             }

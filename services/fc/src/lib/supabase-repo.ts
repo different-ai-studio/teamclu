@@ -250,6 +250,7 @@ import {
   mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
   mapActor, mapTeamMember, mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
   mapFeedbackRow, mapLeaderboardRow, chunkedIn,
+  appGitAccountFields,
 } from "./supabase-repo/shared.js";
 export { publishableKeyFromEnv } from "./supabase-repo/shared.js";
 export { createSupabaseAuthRepository } from "./supabase-repo/auth.js";
@@ -1142,6 +1143,10 @@ export function createSupabaseBusinessRepository(options) {
       remoteUrl: app.git_remote_url,
       authKind: "deploy_key" as const,
       ...jit,
+      // Per-account auth: the daemon keeps using this deploy key over SSH for
+      // its own seed/fetch, and points the checkout's people and agents at
+      // gitHttpUrl (spec §6). Absent → the checkout stays on SSH as before.
+      ...appGitAccountFields(app),
     };
   }
 

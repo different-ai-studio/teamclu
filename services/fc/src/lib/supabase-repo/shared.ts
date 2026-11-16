@@ -168,7 +168,7 @@ export function appRelationshipFor(
   return { relationship: "invited", invitedByActorId: null };
 }
 
-function appGitAccountFields(r: any): { gitAccountAuth: boolean; gitHttpUrl: string | null } {
+export function appGitAccountFields(r: any): { gitAccountAuth: boolean; gitHttpUrl: string | null } {
   const accountAuth =
     r.git_auth_kind === GITEA_AUTH_KIND &&
     giteaAccountAuthEnabled() &&

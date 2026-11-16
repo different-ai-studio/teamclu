@@ -468,6 +468,8 @@ async function runSeed(
           cloneFrom,
           deployKeyPem,
           adoptExisting,
+          // Per-account git only: older call shapes stay exactly as they were.
+          ...(accountGitUrl(app) ? [null, accountGitUrl(app)] as const : []),
         );
   } catch (e) {
     console.warn("app seed kick failed (non-fatal)", e);
@@ -490,6 +492,11 @@ async function runSeed(
 }
 
 /** The deploy-key half of a credential reply, or null for any other kind. */
+/** The HTTPS address a per-account app's checkout should use, or null to stay on SSH. */
+function accountGitUrl(app: AppRow): string | null {
+  return app.gitAccountAuth && app.gitHttpUrl?.trim() ? app.gitHttpUrl.trim() : null;
+}
+
 function deployKeyOf(cred: AppGitCredential | null): AppGitDeployKeyCredential | null {
   return cred?.authKind === "deploy_key" ? cred : null;
 }
@@ -620,7 +627,9 @@ export async function ensureAppCheckout(
   try {
     result = httpsCredential
       ? await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem, httpsCredential)
-      : await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem);
+      : accountGitUrl(app)
+        ? await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem, null, accountGitUrl(app))
+        : await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem);
   } catch (e) {
     console.warn("app clone kick failed (non-fatal)", e);
   } finally {

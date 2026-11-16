@@ -1336,6 +1336,13 @@ export interface AppRow {
    *  holds a deploy key for it; null when the app was imported from a remote we
    *  have no credential for — those deploy the local workdir as it sits. */
   gitAuthKind: string | null;
+  /**
+   * Per-account Gitea auth: the repo's HTTPS address, and true when the
+   * checkout should use it with the person's or agent's own account. The
+   * stored `gitRemoteUrl` stays the SSH one the daemon uses with deploy keys.
+   */
+  gitAccountAuth?: boolean;
+  gitHttpUrl?: string | null;
   /** HEAD SHA at last successful deploy; null before first deploy completes. */
   gitCommitSha: string | null;
   /** Build kind persisted from the last successful deploy declaration. */
@@ -1463,6 +1470,18 @@ export interface AppMemberAccessRow {
   actorType?: "member" | "agent" | null;
   /** Present on the list: false for an agent whose daemon has not claimed an account. */
   connected?: boolean | null;
+}
+
+/** `POST /v1/git/token`. */
+export interface GitTokenGrant {
+  token: string;
+  expiresAt: string;
+  ttlSeconds: number;
+  userId: string;
+  /** This account's Gitea user name. */
+  userName: string;
+  /** Host of the TeamClu git server, for the credential helper. */
+  gitHost: string | null;
 }
 
 /** Someone in the team an app can be granted to — a member or an agent. */
@@ -1658,6 +1677,13 @@ export interface AppsBackend {
   getAppMembership(appId: string): Promise<AppMembership | null>;
   /** List per-member grants (creator or app admin only). Null on 404. */
   listAppAccess(appId: string): Promise<AppMemberAccessRow[] | null>;
+  /**
+   * Mint this person's git-only token (`POST /v1/git/token`). The desktop
+   * stores it for `amuxd git-credential`; it opens git and nothing else.
+   */
+  mintGitToken(): Promise<GitTokenGrant>;
+  /** Revoke every git token of this account (`POST /v1/git/token/revoke`), on sign-out. */
+  revokeGitTokens(): Promise<void>;
   /** Upsert a member grant (creator or app admin only). Null on 404. */
   setAppAccess(
     appId: string,

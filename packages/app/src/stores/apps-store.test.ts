@@ -471,6 +471,35 @@ describe("apps-store", () => {
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
 
+  it("create: a per-account app tells the daemon its HTTPS address", async () => {
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({
+        provisionStatus: "repo_created",
+        gitRemoteUrl: "ssh://git@gitea:2222/o1/tc-app-app-1.git",
+        gitAuthKind: "gitea_deploy_key",
+        gitAccountAuth: true,
+        gitHttpUrl: "https://gitea/o1/tc-app-app-1.git",
+      }),
+    );
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.seedDaemonApp.mockResolvedValueOnce(seedResult("seeded"));
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().create({ teamId: "team-1", name: "N", type: "static_web", visibility: "team" });
+    // The seed push still goes over SSH with the deploy key; the HTTPS address
+    // is for whoever uses the checkout afterwards.
+    expect(mocks.seedDaemonApp).toHaveBeenCalledWith(
+      "app-1",
+      "team-1",
+      "App",
+      "fullstack_tanstack_postgres",
+      "ssh://git@gitea:2222/o1/tc-app-app-1.git",
+      gitCred.privateKeyPem,
+      false,
+      null,
+      "https://gitea/o1/tc-app-app-1.git",
+    );
+  });
+
   it("create: the directory the daemon wrote to is recorded on the app's workspace", async () => {
     mocks.createApp.mockResolvedValueOnce(appRow({ provisionStatus: "pending" }));
     mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));

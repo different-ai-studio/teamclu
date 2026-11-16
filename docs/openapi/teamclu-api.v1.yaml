@@ -10771,6 +10771,18 @@ components:
           type: string
           format: date-time
           description: Informational TTL (~15m); the key remains until deleted on Gitea.
+        gitAccountAuth:
+          type: boolean
+          description: >-
+            Same meaning as on `App`: the deployment runs per-account Gitea
+            auth and this repo is under its TeamClu org. The key above still
+            serves the daemon's own seed push and deploy fetch over SSH.
+        gitHttpUrl:
+          type: [string, "null"]
+          description: >-
+            HTTPS address the daemon points the checkout at for people and
+            agents (`url.<https>.insteadOf` in the checkout). Set only when
+            `gitAccountAuth` is true.
     AppLogEntry:
       type: object
       required: [ts, kind, level, message]
