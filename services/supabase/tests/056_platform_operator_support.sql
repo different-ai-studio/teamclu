@@ -160,11 +160,11 @@ select pg_temp.as_owner();
 select is(amux.expire_support_grants(), 1, 'an expired grant is swept');
 
 -- A role taken from the support account by hand comes back on the next entry.
-delete from public.roles_users where user_id = (select support_user_id from s1);
+delete from amux.org_roles_users where user_id = (select support_user_id from s1);
 update amux.members set status = 'disabled' where id = (select actor_id from s1);
 create temp table s3 as
   select * from amux.start_support_session('56bb0000-0000-4000-8000-000000000001', '56cc0000-0000-4000-8000-00000000000c', 'ticket 3');
-select is((select array[(select count(*)::int from public.roles_users ru join public.roles r on r.id = ru.role_id
+select is((select array[(select count(*)::int from amux.org_roles_users ru join public.roles r on r.id = ru.role_id
                           where ru.user_id = (select support_user_id from s3) and r.code = 'owner' and ru.status = 'active'),
                         (select count(*)::int from amux.members where id = (select actor_id from s3) and status = 'active')]),
           array[1, 1], 're-entering restores the owner role and reactivates the actor');

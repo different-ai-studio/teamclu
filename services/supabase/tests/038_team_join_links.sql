@@ -27,7 +27,7 @@ begin
   if v_role is null then
     raise exception 'fixture: no system role % for org %', p_code, v_org;
   end if;
-  insert into public.roles_users (user_id, role_id, org_id, status, store_id, is_primary)
+  insert into amux.org_roles_users (user_id, role_id, org_id, status, store_id, is_primary)
   values (p_user, v_role, v_org, 'active', null, false)
   on conflict do nothing;
 end;

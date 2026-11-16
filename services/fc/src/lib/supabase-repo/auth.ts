@@ -231,8 +231,8 @@ export function createSupabaseAuthRepository(options) {
         displayName: requiredString(row.display_name, "auth.claimInvite", "display_name"),
         refreshToken: row.refresh_token ?? null,
       };
-      // Member invites: write roles_users (authz SoT) via service-role.
-      // Agents have no public.users row and skip assignment.
+      // Member invites write collaboration bindings via service-role.
+      // Agent inheritance is handled atomically inside the claim RPC.
       await assignMemberRoleOnClaim(client, result, ctx.accessToken);
       // A new member reads the team's team-visible apps through its Gitea team;
       // a newly connected agent can finally use the grants it was given.

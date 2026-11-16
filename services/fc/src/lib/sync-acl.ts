@@ -224,7 +224,7 @@ export async function loadCallerRoles(
   const orgId = typeof team?.oid === 'string' ? team.oid.trim() : '';
   if (!orgId) throw new Error(`team ${teamId} has no org_id`);
 
-  const { data: bindings, error: bindErr } = await publicFrom(supabase, 'roles_users')
+  const { data: bindings, error: bindErr } = await supabase.from("org_roles_users")
     .select('role_id')
     .eq('org_id', orgId)
     .eq('user_id', userId)

@@ -291,6 +291,7 @@ function makeStubHost(opts: {
   bindings?: BindingRow[];
   /** When set, deleteOrgRole binding count uses this instead of bindings.length. */
   bindingCount?: number;
+  staffBindingCount?: number;
   member?: boolean;
   actorUserId?: string | null;
 }) {
@@ -586,6 +587,13 @@ function makeStubHost(opts: {
       }
       if (table === "roles_users") {
         return {
+          select() {
+            return { eq: async () => ({count: opts.staffBindingCount ?? 0, error: null}) };
+          },
+        };
+      }
+      if (table === "org_roles_users") {
+        return {
           select(cols?: string, selOpts?: { count?: string; head?: boolean }) {
             const q = rolesUsersQuery("select");
             return q.select(cols, selOpts);
@@ -783,6 +791,13 @@ describe("makeOrgRolesRepo", () => {
       },
     );
     assert.equal(host._roles.length, 1, "role row kept when bindings present");
+  });
+
+  test("deleteOrgRole preserves roles assigned only to Betly staff", async () => {
+    const host = makeStubHost({teamRole:"owner", roles:[seededCustom], staffBindingCount:1});
+    await assert.rejects(() => makeOrgRolesRepo(host).deleteOrgRole(TEAM,CUSTOM_ROLE),
+      (err:unknown) => err instanceof ApiError && err.statusCode===409);
+    assert.equal(host._roles.length,1);
   });
 
   test("deleteOrgRole without bindings removes role", async () => {
@@ -1055,6 +1070,7 @@ describe("makeOrgRolesRepo", () => {
     };
     const callerJwtClient = {
       from(table: string) {
+        if (table === "org_roles_users") return this.schema().from(table);
         if (table === "teams") {
           return {
             select() {
@@ -1089,7 +1105,7 @@ describe("makeOrgRolesRepo", () => {
                 },
               };
             }
-            if (table === "roles_users") {
+            if (table === "org_roles_users") {
               return {
                 select() {
                   const api: any = {

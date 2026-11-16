@@ -49,6 +49,7 @@ import { makeSupabaseLoginAppLookup } from "./lib/apps-login-service.js";
 import { findTenantIdentity } from "./lib/apps-tenant-identity.js";
 import { makeSupabaseTraefikDomainLookup } from "./lib/apps-traefik-provider.js";
 import { createServiceRoleClient } from "./lib/supabase.js";
+import { appRoleBindings } from "./lib/app-role-bindings.js";
 import { findAppOrgRoleIdentities } from "./lib/apps-org-role-identity.js";
 
 // ---------------------------------------------------------------------------
@@ -450,14 +451,7 @@ export function visitorRolesLookup() {
     if (hit && hit.expiresAt > now) return hit.value;
 
     const admin = createServiceRoleClient();
-    const { data: bindings, error: bindErr } = await admin
-      .schema("public")
-      .from("roles_users")
-      .select("role_id")
-      .eq("org_id", orgId)
-      .in("user_id", identityIds)
-      .eq("status", "active");
-    if (bindErr) throw new Error(`visitor roles lookup failed: ${bindErr.message}`);
+    const bindings = await appRoleBindings(admin, orgId, identityIds);
 
     const roleIds = [...new Set((bindings ?? []).map((b: any) => b.role_id).filter(Boolean))];
     let codes: string[] = [];
