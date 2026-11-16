@@ -174,6 +174,10 @@ export function giteaNoreplyHost(apiUrl: string, env: NodeJS.ProcessEnv = proces
   return "gitea.local";
 }
 
+/** Gitea's own page cap; asking for more is silently clamped to it. */
+const LIST_PAGE_SIZE = 50;
+const LIST_MAX_PAGES = 200;
+
 export function makeGiteaClient(opts: GiteaClientOptions) {
   const base = opts.url.replace(/\/+$/, "");
   const fetchFn = opts.fetch ?? fetch;
@@ -210,6 +214,30 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
       );
     }
     return res;
+  }
+
+  /**
+   * Every item of a paged Gitea list, or null when the first page is a 404.
+   *
+   * The callers treat the answer as the complete current state and remove what
+   * is missing from it, so one page is not enough: Gitea caps a page at 50
+   * (`MAX_RESPONSE_ITEMS`), and a 51st team member read as "not a member" would
+   * never be removed again. Bounded so a server that ignores `page` cannot loop.
+   */
+  async function giteaListAll<T>(path: string): Promise<T[] | null> {
+    const out: T[] = [];
+    for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
+      const res = await giteaGetOrNull(`${path}${path.includes("?") ? "&" : "?"}limit=${LIST_PAGE_SIZE}&page=${page}`);
+      if (!res) {
+        if (page === 1) return null;
+        break;
+      }
+      const items = (await res.json()) as T[];
+      if (!Array.isArray(items) || items.length === 0) break;
+      out.push(...items);
+      if (items.length < LIST_PAGE_SIZE) break;
+    }
+    return out;
   }
 
   return {
@@ -309,17 +337,15 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
 
     /** The id of the org's team `name`, or null when the org or the team does not exist. */
     async findTeamId(org: string, name: string): Promise<number | null> {
-      const listRes = await giteaGetOrNull(`/api/v1/orgs/${enc(org)}/teams?limit=50`);
-      if (!listRes) return null;
-      const teams = (await listRes.json()) as { id: number; name: string }[];
-      const found = Array.isArray(teams) ? teams.find((t) => t.name === name) : undefined;
+      const teams = await giteaListAll<{ id: number; name: string }>(`/api/v1/orgs/${enc(org)}/teams`);
+      const found = teams?.find((t) => t.name === name);
       return found ? found.id : null;
     },
 
     async listTeamMembers(teamId: number): Promise<string[]> {
-      const res = await giteaFetch(`/api/v1/teams/${teamId}/members?limit=50`);
-      const users = (await res.json()) as { login?: string }[];
-      return Array.isArray(users) ? users.map((u) => String(u.login ?? "")).filter(Boolean) : [];
+      const users = await giteaListAll<{ login?: string }>(`/api/v1/teams/${teamId}/members`);
+      if (!users) throw new ApiError(404, "gitea_error", "team not found");
+      return users.map((u) => String(u.login ?? "")).filter(Boolean);
     },
 
     async addTeamMember(teamId: number, username: string): Promise<void> {
@@ -358,9 +384,8 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
      */
     async listCollaborators(appId: string): Promise<{ username: string; permission: GiteaCollaboratorPermission }[]> {
       const repoPath = `/api/v1/repos/${enc(opts.owner)}/${enc(appRepoName(appId))}`;
-      const res = await giteaFetch(`${repoPath}/collaborators?limit=50`);
-      const users = (await res.json()) as { login?: string }[];
-      if (!Array.isArray(users)) return [];
+      const users = await giteaListAll<{ login?: string }>(`${repoPath}/collaborators`);
+      if (!users) throw new ApiError(404, "gitea_error", "repository not found");
       const out: { username: string; permission: GiteaCollaboratorPermission }[] = [];
       for (const u of users) {
         const username = String(u.login ?? "");
@@ -388,6 +413,46 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
         const detail = await res.text().catch(() => "");
         throw new ApiError(res.status >= 500 ? 502 : res.status, "gitea_error", detail || "remove collaborator failed");
       }
+    },
+
+    /**
+     * Take every account's access off the app's repo: direct collaborators and
+     * every team but the org's own `Owners`.
+     *
+     * For delete. Archiving only stops pushes, and the reconcile never visits a
+     * repo whose app row is gone, so whoever could clone the app would otherwise
+     * keep cloning `deleted-…` with their git token for good.
+     */
+    async removeAllAppAccess(appId: string): Promise<{ collaborators: number; teams: number }> {
+      const repoPath = `/api/v1/repos/${enc(opts.owner)}/${enc(appRepoName(appId))}`;
+      const drop = async (path: string, what: string) => {
+        const res = await fetchFn(`${base}${path}`, {
+          method: "DELETE",
+          headers: { Authorization: `token ${opts.token}` },
+        });
+        if (!res.ok && res.status !== 404) {
+          const detail = await res.text().catch(() => "");
+          throw new ApiError(res.status >= 500 ? 502 : res.status, "gitea_error", detail || `remove ${what} failed`);
+        }
+      };
+      const users = (await giteaListAll<{ login?: string }>(`${repoPath}/collaborators`)) ?? [];
+      let collaborators = 0;
+      for (const u of users) {
+        const username = String(u.login ?? "");
+        if (!username) continue;
+        await drop(`${repoPath}/collaborators/${enc(username)}`, "collaborator");
+        collaborators += 1;
+      }
+      const repoTeams = (await giteaListAll<{ name?: string }>(`${repoPath}/teams`)) ?? [];
+      let teams = 0;
+      for (const t of repoTeams) {
+        const name = String(t.name ?? "");
+        // `Owners` holds the service account alone and cannot be detached.
+        if (!name || name === "Owners") continue;
+        await drop(`${repoPath}/teams/${enc(name)}`, "team");
+        teams += 1;
+      }
+      return { collaborators, teams };
     },
 
     /**

@@ -8012,6 +8012,33 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+  /v1/git/host:
+    get:
+      operationId: getGitHost
+      summary: The deployment's public git host
+      description: |
+        Unauthenticated. Names the host (and scheme) apps are cloned from, the
+        same one every clone address shows. The daemon asks before it accepts
+        the `gitHttpUrl` a local caller passed to seed or build. Its credential
+        helper sends a login to the host it trusts, so that host has to come
+        from the cloud and not from the caller. 503 when per-account git is off.
+      tags: [Apps]
+      security: []
+      responses:
+        "200":
+          description: The git host.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [gitHost, gitScheme]
+                properties:
+                  gitHost:
+                    type: string
+                    description: Host of `GITEA_PUBLIC_URL`, with its port when not the default.
+                  gitScheme: { type: string, enum: [https, http] }
+        "503":
+          $ref: "#/components/responses/Error"
   /v1/apps/{appId}/git-credential:
     get:
       operationId: getAppGitCredential

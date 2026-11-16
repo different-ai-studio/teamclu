@@ -15,9 +15,21 @@ export function giteaAccountAuthEnabled(env: Env = process.env): boolean {
 export interface GiteaSyncRunner {
   /** Re-sync one app. Never throws: the business change already happened. */
   app(appId: string): Promise<void>;
-  /** Re-sync every managed app of a team (someone joined or left it). */
+  /**
+   * Re-sync every managed app of a team (someone joined or left it). Resolves
+   * when the sync is done or after `teamWaitMs`, whichever is first; the sync
+   * itself keeps going either way.
+   */
   team(teamId: string): Promise<void>;
 }
+
+/**
+ * How long a join/leave request waits for its team sync. Long enough that a
+ * small team is in step by the time the response lands, short enough that a
+ * slow or hung Gitea cannot time the request out — the caller would retry a
+ * join that already succeeded.
+ */
+export const GITEA_TEAM_SYNC_WAIT_MS = 3_000;
 
 const NOOP: GiteaSyncRunner = { app: async () => {}, team: async () => {} };
 
@@ -31,6 +43,7 @@ export function makeGiteaSyncRunner(opts: {
   enabled: boolean;
   serviceRoleClient: (why: string) => Promise<any>;
   log?: (message: string) => void;
+  teamWaitMs?: number;
 }): GiteaSyncRunner {
   const { gitea, enabled, serviceRoleClient } = opts;
   if (!gitea || !enabled) return NOOP;
@@ -45,12 +58,20 @@ export function makeGiteaSyncRunner(opts: {
       }
     },
     async team(teamId) {
-      try {
-        const admin = await serviceRoleClient("mirror team membership to gitea");
-        await syncTeamAppsToGitea({ gitea, admin, log }, teamId);
-      } catch (e) {
-        log(`[gitea-sync] team ${teamId} not synced (reconcile will retry): ${String((e as Error)?.message ?? e)}`);
-      }
+      const sync = (async () => {
+        try {
+          const admin = await serviceRoleClient("mirror team membership to gitea");
+          await syncTeamAppsToGitea({ gitea, admin, log }, teamId);
+        } catch (e) {
+          log(`[gitea-sync] team ${teamId} not synced (reconcile will retry): ${String((e as Error)?.message ?? e)}`);
+        }
+      })();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const waited = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, opts.teamWaitMs ?? GITEA_TEAM_SYNC_WAIT_MS);
+      });
+      await Promise.race([sync, waited]);
+      clearTimeout(timer);
     },
   };
 }

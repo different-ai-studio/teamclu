@@ -33,6 +33,26 @@ export interface GiteaSyncDeps {
   gitea: GiteaClient;
   admin: AdminClient;
   log?: (message: string) => void;
+  /** Set by the passes that sync many apps in a row; see `GiteaSyncPass`. */
+  pass?: GiteaSyncPass;
+}
+
+/**
+ * What one pass over many apps has already made true in Gitea.
+ *
+ * A team's apps share their org, their people and their Gitea team, so without
+ * this a team of 40 with 30 apps asks Gitea about the same 40 accounts 30
+ * times — sequentially, on the request that added one teammate.
+ */
+export interface GiteaSyncPass {
+  orgs: Set<string>;
+  users: Set<string>;
+  /** Gitea team id → member count, once its membership has been synced. */
+  teams: Map<number, number>;
+}
+
+export function newGiteaSyncPass(): GiteaSyncPass {
+  return { orgs: new Set(), users: new Set(), teams: new Map() };
 }
 
 export type GiteaSyncResult =
@@ -96,7 +116,16 @@ export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promis
   if (!owner || !isTeamCluOrgOwner(owner)) return { status: "skipped", reason: "legacy_owner" };
 
   const gitea = deps.gitea.withOwner(owner);
-  await gitea.ensureOrg(owner);
+  const pass = deps.pass;
+  if (!pass?.orgs.has(owner)) {
+    await gitea.ensureOrg(owner);
+    pass?.orgs.add(owner);
+  }
+  const ensureUser = async (username: string, actor: ActorRow) => {
+    if (pass?.users.has(username)) return;
+    await gitea.ensureUser(username, giteaFullName(actor));
+    pass?.users.add(username);
+  };
 
   // ── Collaborators: the creator (admin) and every grant ─────────────────
   const { data: grants, error: grantErr } = await admin
@@ -124,7 +153,7 @@ export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promis
     if (level) want(g.member_id, level);
   }
 
-  for (const [username, { actor }] of desired) await gitea.ensureUser(username, giteaFullName(actor));
+  for (const [username, { actor }] of desired) await ensureUser(username, actor);
   const current = new Map<string, GiteaCollaboratorPermission>(
     (await gitea.listCollaborators(appId)).map((c) => [c.username, c.permission] as const),
   );
@@ -140,7 +169,9 @@ export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promis
   let teamMembers: number | null = null;
   if (app.visibility === "team") {
     const teamId = await gitea.ensureReadTeam(owner, teamName);
-    teamMembers = await syncGiteaTeamMembers(deps, gitea, teamId, app.team_id);
+    const done = pass?.teams.get(teamId);
+    teamMembers = done ?? (await syncGiteaTeamMembers(deps, gitea, teamId, app.team_id, ensureUser));
+    pass?.teams.set(teamId, teamMembers);
     await gitea.setTeamRepo(teamId, appId, true);
   } else {
     const teamId = await gitea.findTeamId(owner, teamName);
@@ -156,10 +187,11 @@ async function syncGiteaTeamMembers(
   gitea: GiteaClient,
   giteaTeamId: number,
   teamId: string,
+  ensureUser: (username: string, actor: ActorRow) => Promise<void>,
 ): Promise<number> {
   const members = await readTeamActors(deps.admin, teamId);
   const desired = new Map(members.map((a) => [giteaUserName(a.user_id!), a]));
-  for (const [username, actor] of desired) await gitea.ensureUser(username, giteaFullName(actor));
+  for (const [username, actor] of desired) await ensureUser(username, actor);
   const current = new Set(await gitea.listTeamMembers(giteaTeamId));
   for (const username of desired.keys()) if (!current.has(username)) await gitea.addTeamMember(giteaTeamId, username);
   for (const username of current) if (!desired.has(username)) await gitea.removeTeamMember(giteaTeamId, username);
@@ -177,9 +209,10 @@ export async function syncTeamAppsToGitea(deps: GiteaSyncDeps, teamId: string): 
     .eq("team_id", teamId)
     .eq("git_auth_kind", GITEA_AUTH_KIND);
   if (error) throw error;
+  const pass = { ...deps, pass: deps.pass ?? newGiteaSyncPass() };
   for (const row of (data ?? []) as { id: string }[]) {
     try {
-      await syncAppToGitea(deps, row.id);
+      await syncAppToGitea(pass, row.id);
     } catch (e) {
       deps.log?.(`[gitea-sync] team ${teamId} app ${row.id} failed: ${String((e as Error)?.message ?? e)}`);
     }
@@ -206,6 +239,7 @@ export async function reconcileGiteaApps(
   // last synced; a deadline that cuts the pass short just resumes next time
   // from a shuffled order, so no app is starved for long.
   const rows = [...((data ?? []) as { id: string; git_remote_url: string | null }[])].sort(() => Math.random() - 0.5);
+  const pass = { ...deps, pass: deps.pass ?? newGiteaSyncPass() };
   for (const row of rows) {
     if (opts.deadline !== undefined && Date.now() >= opts.deadline) {
       return { synced, failed, skipped, truncated: true };
@@ -215,7 +249,7 @@ export async function reconcileGiteaApps(
       continue;
     }
     try {
-      const result = await syncAppToGitea(deps, row.id);
+      const result = await syncAppToGitea(pass, row.id);
       if (result.status === "synced") synced += 1;
       else skipped += 1;
     } catch (e) {

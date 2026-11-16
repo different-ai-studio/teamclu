@@ -291,6 +291,14 @@ export function fakeGitea(over: Record<string, unknown> = {}, owner = "teamclaw-
       if (!state.collaborators.has(repoKey(appId))) state.collaborators.set(repoKey(appId), new Map());
       state.collaborators.get(repoKey(appId))!.set(username, permission);
     },
+    removeAllAppAccess: async (appId: string) => {
+      state.ops.push(["removeAllAppAccess", repoKey(appId)]);
+      const collaborators = state.collaborators.get(repoKey(appId))?.size ?? 0;
+      state.collaborators.delete(repoKey(appId));
+      let teams = 0;
+      for (const team of state.teams.values()) if (team.repos.delete(repoKey(appId))) teams += 1;
+      return { collaborators, teams };
+    },
     removeCollaborator: async (appId: string, username: string) => {
       state.ops.push(["removeCollaborator", repoKey(appId), username]);
       state.collaborators.get(repoKey(appId))?.delete(username);

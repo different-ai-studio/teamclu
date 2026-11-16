@@ -44,6 +44,9 @@ pub const TOKEN_FILE_NAME: &str = "git-credential.json";
 #[serde(rename_all = "camelCase")]
 pub struct TokenFile {
     pub git_host: Option<String>,
+    /// `https` when absent; `http` only when the cloud said so at sign-in.
+    #[serde(default)]
+    pub git_scheme: Option<String>,
     pub api_base: Option<String>,
     pub user_id: Option<String>,
     pub user_name: Option<String>,
@@ -326,22 +329,33 @@ fn read_token_file(path: &Path) -> Option<TokenFile> {
 }
 
 fn read_cache() -> AccountCache {
-    std::fs::read_to_string(account_cache_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    crate::sync::git_account_cache::read_account_cache()
 }
 
-/// Hosts this helper answers for: the person's token file and the daemon's cache.
-pub fn known_hosts(file: Option<&TokenFile>, cache: &AccountCache) -> Vec<String> {
-    let mut hosts: Vec<String> = cache.hosts.iter().map(|h| h.to_ascii_lowercase()).collect();
-    if let Some(h) = file.and_then(|f| f.git_host.as_deref()) {
-        let h = h.trim().to_ascii_lowercase();
-        if !h.is_empty() && !hosts.contains(&h) {
-            hosts.push(h);
-        }
+/// Whether a login may be answered for this request: a known host, over the
+/// scheme the cloud serves it on. `https` always; `http` only where the cloud
+/// said its git host is plain http — otherwise a remote rewritten to
+/// `http://<the real host>` would have git send the login in cleartext.
+pub fn answers_for(file: Option<&TokenFile>, cache: &AccountCache, request: &Request) -> bool {
+    if cache.answers(&request.protocol, &request.host) {
+        return true;
     }
-    hosts
+    let Some(file) = file else { return false };
+    let host_matches = file
+        .git_host
+        .as_deref()
+        .is_some_and(|h| h.trim().eq_ignore_ascii_case(&request.host));
+    if !host_matches {
+        return false;
+    }
+    match request.protocol.as_str() {
+        "https" => true,
+        "http" => file
+            .git_scheme
+            .as_deref()
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case("http")),
+        _ => false,
+    }
 }
 
 pub fn answer(login: &Login) -> Option<String> {
@@ -357,7 +371,7 @@ pub fn run(brand: Option<&str>, operation: &str) -> i32 {
     }
     let file = read_token_file(&token_file_path(brand));
     let cache = read_cache();
-    if !known_hosts(file.as_ref(), &cache).contains(&request.host) {
+    if !answers_for(file.as_ref(), &cache, &request) {
         return 0;
     }
     let login = match caller_from_env(|k| std::env::var(k).ok()) {
@@ -382,7 +396,7 @@ pub fn run(brand: Option<&str>, operation: &str) -> i32 {
         .and_then(|f| f.api_base.clone())
         .or(cache.api_base.clone());
     if let (Some(base), Some(path)) = (api_base, request.path.as_deref()) {
-        if let Some(hint) = access_hint(&base, path, &login.password) {
+        if let Some(hint) = access_hint_once(&base, path, &login) {
             eprintln!("{TAG} {hint}");
         }
     }
@@ -404,9 +418,75 @@ struct Access {
     actor_type: Option<String>,
 }
 
-/// One sentence when the caller holds nothing on the app, else None. Best-effort
-/// with a short timeout: the git operation must never wait on the hint.
-fn access_hint(api_base: &str, repo_path: &str, token: &str) -> Option<String> {
+/// `<amuxd home>/cache/git-access.json` — which (account, repo) pairs the cloud
+/// recently said do have access, so the next git operation skips the question.
+const ACCESS_CACHE_FILE: &str = "git-access.json";
+/// How long a "yes" is reused. A grant taken away inside this window costs one
+/// hint (Gitea still refuses; git just says "not found" without our sentence).
+const ACCESS_CONFIRMED_TTL_SECS: i64 = 600;
+const ACCESS_CACHE_MAX: usize = 200;
+
+type AccessCache = std::collections::BTreeMap<String, i64>;
+
+fn access_cache_key(username: &str, repo_path: &str) -> String {
+    let repo = repo_path.trim().trim_matches('/').trim_end_matches(".git");
+    format!("{username} {}", repo.to_ascii_lowercase())
+}
+
+fn access_confirmed(cache: &AccessCache, key: &str, now: i64) -> bool {
+    cache
+        .get(key)
+        .is_some_and(|at| (0..ACCESS_CONFIRMED_TTL_SECS).contains(&(now - at)))
+}
+
+fn note_access_confirmed(cache: &mut AccessCache, key: String, now: i64) {
+    cache.retain(|_, at| (0..ACCESS_CONFIRMED_TTL_SECS).contains(&(now - *at)));
+    while cache.len() >= ACCESS_CACHE_MAX {
+        let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, at)| **at)
+            .map(|(k, _)| k.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest);
+    }
+    cache.insert(key, now);
+}
+
+/// The hint, asked at most once per ten minutes for an (account, repo) that has
+/// access. Git waits for this process to exit before it does anything, so the
+/// question is on the path of every clone, fetch and push; the answer only
+/// matters when it is "no", which is the one case that is never cached.
+fn access_hint_once(api_base: &str, repo_path: &str, login: &Login) -> Option<String> {
+    let path = account_cache_path().with_file_name(ACCESS_CACHE_FILE);
+    let mut cache: AccessCache = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let key = access_cache_key(&login.username, repo_path);
+    let now = chrono::Utc::now().timestamp();
+    if access_confirmed(&cache, &key, now) {
+        return None;
+    }
+    let access = fetch_access(api_base, repo_path, &login.password)?;
+    let hint = hint_for(&access);
+    if hint.is_none() {
+        note_access_confirmed(&mut cache, key, now);
+        // Best effort: a sandboxed agent may not be able to write here, and
+        // then it simply asks again next time.
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, serde_json::to_vec(&cache).unwrap_or_default());
+    }
+    hint
+}
+
+/// What the cloud says the caller holds on the repo. None when it cannot be
+/// asked quickly: git is waiting on this process, so an unreachable API costs
+/// well under a second to give up on, not the length of a normal timeout.
+fn fetch_access(api_base: &str, repo_path: &str, token: &str) -> Option<Access> {
     let url = format!(
         "{}/v1/git/access?repo={}",
         api_base.trim_end_matches('/'),
@@ -416,9 +496,10 @@ fn access_hint(api_base: &str, repo_path: &str, token: &str) -> Option<String> {
         .enable_all()
         .build()
         .ok()?;
-    let access: Access = rt.block_on(async {
+    rt.block_on(async {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
+            .connect_timeout(Duration::from_millis(700))
+            .timeout(Duration::from_millis(1500))
             .build()
             .ok()?;
         let res = client.get(&url).bearer_auth(token).send().await.ok()?;
@@ -426,8 +507,7 @@ fn access_hint(api_base: &str, repo_path: &str, token: &str) -> Option<String> {
             return None;
         }
         res.json::<Access>().await.ok()
-    })?;
-    hint_for(&access)
+    })
 }
 
 fn hint_for(access: &Access) -> Option<String> {
@@ -631,8 +711,15 @@ mod tests {
         // What the desktop leaves on sign-out (git_credential_clear): host, no token.
         let raw = r#"{"gitHost":"gitea.example.com","gitScheme":"https","apiBase":null,"userId":null,"userName":null,"token":"","expiresAt":null}"#;
         let file: TokenFile = serde_json::from_str(raw).unwrap();
-        assert!(known_hosts(Some(&file), &AccountCache::default())
-            .contains(&"gitea.example.com".to_string()));
+        assert!(answers_for(
+            Some(&file),
+            &AccountCache::default(),
+            &Request {
+                protocol: "https".into(),
+                host: "gitea.example.com".into(),
+                path: None
+            }
+        ));
         let err = person_login(Some(&file), now()).unwrap_err();
         assert!(err.contains("not signed in"), "{err}");
     }
@@ -674,7 +761,52 @@ mod tests {
     }
 
     #[test]
-    fn only_known_hosts_are_answered() {
+    fn a_confirmed_access_is_not_asked_about_again_for_ten_minutes() {
+        let mut cache = AccessCache::new();
+        let key = access_cache_key("u1", "/o1/tc-app-1.git");
+        assert_eq!(key, access_cache_key("u1", "O1/tc-app-1"));
+        assert_ne!(key, access_cache_key("u2", "o1/tc-app-1"));
+        assert!(!access_confirmed(&cache, &key, 1_000));
+        note_access_confirmed(&mut cache, key.clone(), 1_000);
+        assert!(access_confirmed(
+            &cache,
+            &key,
+            1_000 + ACCESS_CONFIRMED_TTL_SECS - 1
+        ));
+        assert!(!access_confirmed(
+            &cache,
+            &key,
+            1_000 + ACCESS_CONFIRMED_TTL_SECS
+        ));
+        // A clock set back must not make an entry immortal.
+        assert!(!access_confirmed(&cache, &key, 900));
+    }
+
+    #[test]
+    fn the_access_cache_stays_small() {
+        let mut cache = AccessCache::new();
+        for i in 0..(ACCESS_CACHE_MAX as i64 + 50) {
+            note_access_confirmed(&mut cache, format!("u r{i}"), 1_000 + i % 5);
+        }
+        assert!(cache.len() <= ACCESS_CACHE_MAX);
+        note_access_confirmed(
+            &mut cache,
+            "u fresh".into(),
+            1_000 + ACCESS_CONFIRMED_TTL_SECS + 10,
+        );
+        assert_eq!(cache.len(), 1, "expired entries are dropped on write");
+    }
+
+    fn request(protocol: &str, host: &str) -> Request {
+        Request {
+            protocol: protocol.into(),
+            host: host.into(),
+            path: None,
+        }
+    }
+
+    #[test]
+    fn a_login_is_never_sent_in_cleartext_to_an_https_host() {
         let file = TokenFile {
             git_host: Some("Gitea.Example.com".into()),
             token: "t".into(),
@@ -682,13 +814,49 @@ mod tests {
         };
         let cache = AccountCache {
             hosts: vec!["git.headless.box".into()],
-            api_base: None,
+            ..Default::default()
         };
-        let hosts = known_hosts(Some(&file), &cache);
-        assert!(hosts.contains(&"gitea.example.com".to_string()));
-        assert!(hosts.contains(&"git.headless.box".to_string()));
-        assert!(!hosts.contains(&"github.com".to_string()));
-        assert!(known_hosts(None, &AccountCache::default()).is_empty());
+        assert!(answers_for(
+            Some(&file),
+            &cache,
+            &request("https", "gitea.example.com")
+        ));
+        assert!(answers_for(
+            None,
+            &cache,
+            &request("https", "git.headless.box")
+        ));
+        // The same hosts over http: a rewritten remote must not get the login.
+        assert!(!answers_for(
+            Some(&file),
+            &cache,
+            &request("http", "gitea.example.com")
+        ));
+        assert!(!answers_for(
+            None,
+            &cache,
+            &request("http", "git.headless.box")
+        ));
+        assert!(!answers_for(
+            Some(&file),
+            &cache,
+            &request("https", "github.com")
+        ));
+    }
+
+    #[test]
+    fn an_http_deployment_is_answered_over_http() {
+        let file = TokenFile {
+            git_host: Some("gitea.localhost:8080".into()),
+            git_scheme: Some("http".into()),
+            token: "t".into(),
+            ..Default::default()
+        };
+        assert!(answers_for(
+            Some(&file),
+            &AccountCache::default(),
+            &request("http", "gitea.localhost:8080")
+        ));
     }
 
     #[test]

@@ -572,3 +572,20 @@ GITEA_GATEWAY_URL=https://git.service.ucar.cc GITEA_TOKEN=<bot token> SKIP_CONTA
 | 9 | 只在移除成员时同步 | 新成员要等对账才能 clone 团队可见的 app | 加入 team 也触发同步，PR2.2 |
 | 10 | 从 `teams.oid` 查 app 的组织 | `amux.apps.org_id` 早就有，是 app 的租户指针 | 直接用 `apps.org_id`，PR2.1 |
 | 11 | Caddy 配置留给冒烟测试验证 | 这是安全核心 | 已在本机端到端实测通过，spec §9.8 |
+
+## 代码评审修订（2026-11-16，PR #1888）
+
+| # | 问题 | 改成 |
+|---|---|---|
+| 1 | agent 被授予 `read` 后拿只读 deploy key，没授权的 agent 反而走团队级路径拿可写 key | `read` 授权不再收窄 agent 的 deploy key；团队级路径本身仍按已定事项 2 保留到 deploy key 下线 |
+| 2 | 在另一台机器退出登录后，本机 token 已被吊销但本地看不出来，git 一直 401 | 桌面端定期用 `/v1/git/authz` 核验，被拒就重新签（`git_credential_verify`） |
+| 3 | Gitea 的成员、协作者、team 列表只读第一页（50 条） | 翻页读全（`giteaListAll`） |
+| 4 | 删除 app 只撤 deploy key、归档改名，原协作者仍能 clone 归档仓库 | 归档前移除全部协作者和 team 关联（`removeAllAppAccess`） |
+| 5 | `/v1/git/authz` 的缓存没有上限；GoTrue 临时故障被缓存成「拒绝」60 秒 | 缓存上限 5000 条、先清过期项；临时故障不缓存 |
+| 6 | daemon 把调用方传来的 `gitHttpUrl` 的主机直接记成可信主机 | 只认云端 `GET /v1/git/host` 返回的主机；helper 不对 `http` 降级应答 |
+| 7 | 加入 / 移出 team 的请求同步等待整个团队的 Gitea 同步，且每个 app 重复同步一遍团队成员 | 一轮同步里组织、账号、team 各只处理一次；请求最多等 3 秒，同步在后台做完 |
+| 8 | helper 每次 `get` 都先问一次 Cloud API | 「有权限」的结果缓存 10 分钟；连接超时 0.7 秒、总超时 1.5 秒 |
+| 9 | 退出登录时，正在进行的 token 同步可能在清空之后又写回一个有效 token | 退出先等同步结束再吊销，同步发现已退出就不写 |
+| 10 | `/v1/git/access` 在路由里直接查表 | 挪到 `supabase-repo/app-git-access.ts` |
+
+已经删除的 app 不会被追溯处理：这次修改之前删除的归档仓库上，协作者关系还在，上线时要手工清一次。

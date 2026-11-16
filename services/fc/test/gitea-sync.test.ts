@@ -9,8 +9,8 @@ import {
   isTeamCluOrgOwner,
   repoOwnerFromRemote,
 } from "../src/lib/provisioning/gitea.js";
-import { reconcileGiteaApps, syncAppToGitea } from "../src/lib/provisioning/gitea-sync.js";
-import { giteaAccountAuthEnabled } from "../src/lib/provisioning/gitea-sync-runner.js";
+import { reconcileGiteaApps, syncAppToGitea, syncTeamAppsToGitea } from "../src/lib/provisioning/gitea-sync.js";
+import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "../src/lib/provisioning/gitea-sync-runner.js";
 import { isGiteaReconcileMinute } from "../src/lib/routes/apps.js";
 import { mapApp } from "../src/lib/supabase-repo/shared.js";
 
@@ -272,4 +272,47 @@ test("app responses tell new clients to use HTTPS only for per-org repos with th
     if (prev === undefined) delete process.env.GITEA_ACCOUNT_AUTH;
     else process.env.GITEA_ACCOUNT_AUTH = prev;
   }
+});
+
+// ── a team's apps in one pass ─────────────────────────────────────────────
+
+test("a team sync asks Gitea about each org, account and team once, however many apps", async () => {
+  const apps = ["app-1", "app-2", "app-3"].map((id) =>
+    orgApp({ id, visibility: "team", git_remote_url: `git@gitea.example:${OWNER}/tc-app-${id}.git` }),
+  );
+  const admin = appsSupabase({ seed: { apps, actors, app_member_access: [] } });
+  const gitea = fakeGitea();
+  await syncTeamAppsToGitea({ gitea, admin }, TEAM);
+
+  const count = (name: string) => gitea.ops.filter((op: any[]) => op[0] === name).length;
+  assert.equal(count("ensureOrg"), 1);
+  // owner, agent, mate: three accounts, not three per app.
+  assert.equal(count("ensureUser"), 3);
+  assert.equal(count("addTeamMember"), 3);
+  // Every app is still attached to the team and gets its own collaborators.
+  assert.equal(gitea.ops.filter((op: any[]) => op[0] === "setTeamRepo" && op[3] === true).length, 3);
+  assert.equal(count("setCollaborator"), 3);
+});
+
+test("a join waits for its team sync only so long, and the sync still finishes", async () => {
+  const admin = appsSupabase({ seed: { apps: [orgApp({ visibility: "team" })], actors, app_member_access: [] } });
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const gitea = fakeGitea();
+  const slow = { ...gitea, withOwner: () => ({ ...gitea.withOwner(OWNER), ensureOrg: async () => { await held; } }) };
+  const runner = makeGiteaSyncRunner({
+    gitea: slow as any,
+    enabled: true,
+    serviceRoleClient: async () => admin,
+    teamWaitMs: 20,
+    log: () => {},
+  });
+  const started = Date.now();
+  await runner.team(TEAM);
+  assert.ok(Date.now() - started < 1_000, "the request must not wait on a hung Gitea");
+  assert.equal(gitea.ops.some((op: any[]) => op[0] === "addTeamMember"), false);
+
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(gitea.ops.filter((op: any[]) => op[0] === "addTeamMember").length, 3);
 });

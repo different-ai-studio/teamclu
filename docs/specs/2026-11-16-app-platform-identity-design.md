@@ -127,7 +127,11 @@ FC 新增的端点：
   通过就返回 `200 + X-WEBAUTH-USER: u<sub 的 uuid>`，否则 `401 + WWW-Authenticate: Basic`。账号状态和 epoch 缓存 60 秒。
 - `POST /v1/git/token`（桌面端调用，带当前 TeamClu 会话）：签发 git token，返回 `{ token, expiresAt, gitHost, userName }`。
 - `POST /v1/git/token/revoke`（桌面端退出登录时调用）：把账号的 `git_token_epoch` 加一，这个账号所有机器上的 git token 立刻失效；
-  其他机器上的桌面端下次启动时自动重新签。
+  其他机器上的桌面端每 30 分钟（以及每次启动）用 `/v1/git/authz` 核验一次本机的 token，被拒就重新签——
+  本机文件里看不出 token 已被吊销，只看过期时间的话要等到续期（最长约 23 天）才会恢复。
+- `GET /v1/git/host`（daemon 调用，不需要登录）：返回 `{ gitHost, gitScheme }`。daemon 只把云端确认的这个主机记成
+  helper 可以应答的主机；seed / build 请求里带来的 `gitHttpUrl` 不在这个主机上就不采用。helper 只在云端声明
+  git 主机是 `http` 时才对 `http` 应答，避免 remote 被改写后明文送出凭证。
 - `GET /v1/git/access?repo=<owner>/<repo>`（helper 调用，用同一个 token）：返回调用者对这个仓库对应 app 的权限和 app 名称，
   只用来打印清楚的错误提示（§5）。
 

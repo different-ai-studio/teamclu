@@ -178,3 +178,58 @@ test("users FC creates get a noreply address under the public git host, not FC's
   await client.ensureUser("uabc", "Alice");
   assert.equal(bodies[0].email, "uabc@users.noreply.git.example.com");
 });
+
+/** A Gitea that pages: `limit` is clamped to 50, as the real one does. */
+function pagedGitea(lists: Record<string, unknown[]>, calls: string[] = []) {
+  return makeGiteaClient({
+    url: "https://gitea.example",
+    token: "tok",
+    owner: "o1",
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${url.pathname}${url.search}`);
+      if (method !== "GET") return new Response(null, { status: 204 });
+      if (url.pathname.endsWith("/permission")) return json(200, { permission: "write" });
+      const list = lists[url.pathname];
+      if (!list) return json(404, { message: "not found" });
+      const limit = Math.min(Number(url.searchParams.get("limit") ?? 30), 50);
+      const page = Number(url.searchParams.get("page") ?? 1);
+      return json(200, list.slice((page - 1) * limit, page * limit));
+    },
+  });
+}
+
+test("lists the sync treats as complete are read past Gitea's 50-item page", async () => {
+  const members = Array.from({ length: 120 }, (_, i) => ({ login: `u${i}` }));
+  const teams = Array.from({ length: 51 }, (_, i) => ({ id: i + 1, name: `t${i}` }));
+  const collaborators = Array.from({ length: 53 }, (_, i) => ({ login: `c${i}` }));
+  const client = pagedGitea({
+    "/api/v1/teams/7/members": members,
+    "/api/v1/orgs/o1/teams": teams,
+    "/api/v1/repos/o1/tc-app-a1/collaborators": collaborators,
+  });
+  // The 51st member is exactly who a one-page read would never remove again.
+  assert.equal((await client.listTeamMembers(7)).length, 120);
+  assert.equal(await client.findTeamId("o1", "t50"), 51);
+  assert.equal(await client.findTeamId("o1", "nope"), null);
+  assert.equal(await client.findTeamId("missing-org", "t1"), null);
+  assert.equal((await client.listCollaborators("a1")).length, 53);
+});
+
+test("removeAllAppAccess takes every collaborator and team off the repo, but not Owners", async () => {
+  const calls: string[] = [];
+  const client = pagedGitea(
+    {
+      "/api/v1/repos/o1/tc-app-a1/collaborators": Array.from({ length: 51 }, (_, i) => ({ login: `c${i}` })),
+      "/api/v1/repos/o1/tc-app-a1/teams": [{ name: "Owners" }, { name: "t1" }],
+    },
+    calls,
+  );
+  assert.deepEqual(await client.removeAllAppAccess("a1"), { collaborators: 51, teams: 1 });
+  const deletes = calls.filter((c) => c.startsWith("DELETE "));
+  assert.equal(deletes.length, 52);
+  assert.ok(deletes.includes("DELETE /api/v1/repos/o1/tc-app-a1/collaborators/c50"));
+  assert.ok(deletes.includes("DELETE /api/v1/repos/o1/tc-app-a1/teams/t1"));
+  assert.ok(!deletes.some((c) => c.endsWith("/teams/Owners")));
+});

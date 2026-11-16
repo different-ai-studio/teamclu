@@ -13,6 +13,7 @@ vi.mock('@/lib/utils', () => ({ isTauri: () => true }))
 import {
   GIT_TOKEN_RENEW_BEFORE_MS,
   gitTokenIsFresh,
+  resetGitCredentialState,
   revokeGitCredential,
   syncGitCredential,
 } from '../git-credential'
@@ -45,6 +46,7 @@ describe('gitTokenIsFresh', () => {
 describe('syncGitCredential', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetGitCredentialState()
     apps.mintGitToken.mockResolvedValue(grant)
   })
 
@@ -88,6 +90,63 @@ describe('syncGitCredential', () => {
     expect(apps.mintGitToken).not.toHaveBeenCalled()
   })
 
+  const freshStatus = { present: true, userId: 'user-1', gitHost: 'g', expiresAt: '2099-01-01T00:00:00Z' }
+
+  it('replaces a fresh-looking token the server rejects (signed out on another machine)', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'git_credential_status') return freshStatus
+      if (cmd === 'git_credential_verify') return 'rejected'
+      return undefined
+    })
+    await syncGitCredential(session)
+    expect(apps.mintGitToken).toHaveBeenCalledTimes(1)
+    expect(invoke).toHaveBeenCalledWith('git_credential_write', expect.anything())
+  })
+
+  it('keeps the token when the server cannot be asked, and asks again next time', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'git_credential_status') return freshStatus
+      if (cmd === 'git_credential_verify') return 'unknown'
+      return undefined
+    })
+    await syncGitCredential(session)
+    await syncGitCredential(session)
+    expect(apps.mintGitToken).not.toHaveBeenCalled()
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === 'git_credential_verify')).toHaveLength(2)
+  })
+
+  it('does not ask the server again right after it confirmed the token', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'git_credential_status') return freshStatus
+      if (cmd === 'git_credential_verify') return 'valid'
+      return undefined
+    })
+    await syncGitCredential(session)
+    await syncGitCredential(session)
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === 'git_credential_verify')).toHaveLength(1)
+    expect(apps.mintGitToken).not.toHaveBeenCalled()
+  })
+
+  it('a sync caught mid-mint by sign-out writes nothing, and the revoke runs after its mint', async () => {
+    const order: string[] = []
+    let releaseMint: (v: typeof grant) => void = () => {}
+    apps.mintGitToken.mockImplementation(
+      () => new Promise((resolve) => { releaseMint = (v) => { order.push('minted'); resolve(v) } }),
+    )
+    apps.revokeGitTokens.mockImplementation(async () => { order.push('revoke') })
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'git_credential_status') return { present: false, userId: null, expiresAt: null, gitHost: null }
+      order.push(cmd)
+      return undefined
+    })
+    const syncing = syncGitCredential(session)
+    await vi.waitFor(() => expect(apps.mintGitToken).toHaveBeenCalled())
+    const signingOut = revokeGitCredential()
+    releaseMint(grant)
+    await Promise.all([syncing, signingOut])
+    expect(order).toEqual(['minted', 'revoke', 'git_credential_clear'])
+  })
+
   it('shares one round trip between concurrent calls', async () => {
     invoke.mockImplementation(async (cmd: string) =>
       cmd === 'git_credential_status' ? { present: false, userId: null, expiresAt: null, gitHost: null } : undefined,
@@ -114,7 +173,10 @@ describe('syncGitCredential', () => {
 })
 
 describe('revokeGitCredential', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetGitCredentialState()
+  })
 
   it('revokes server-side, then removes the file', async () => {
     const order: string[] = []

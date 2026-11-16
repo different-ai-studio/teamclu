@@ -95,6 +95,13 @@ export async function teardownAppResources(
   }
 
   let archivedRepoUrl: string | null = input.gitRemoteUrl ?? null;
+  // Before the rename: the calls below address the repo by its app name.
+  // Own try — a failure here must not leave the repo unarchived as well.
+  try {
+    await deps.gitea.removeAllAppAccess?.(input.appId);
+  } catch {
+    // Best effort, like the keys.
+  }
   try {
     await revokeAllDeployKeys(deps.gitea, input.appId);
     const patched = await deps.gitea.archiveAndRenameAppRepo(input.appId);

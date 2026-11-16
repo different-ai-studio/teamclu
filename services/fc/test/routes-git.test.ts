@@ -7,6 +7,8 @@ import {
   registerGit,
   resetGitCallerCache,
   resetGitMintLimiter,
+  gitCallerCacheSize,
+  GIT_CALLER_CACHE_MAX,
   type GitRouteDeps,
 } from "../src/lib/routes/git.js";
 import { signGitToken, verifyGitToken, GIT_TOKEN_TTL_SECONDS } from "../src/lib/git-token.js";
@@ -232,4 +234,63 @@ test("access reveals nothing to someone outside the team", async () => {
     (e: any) => e.statusCode === 404,
   );
   await assert.rejects(() => call("GET /v1/git/access", {}, `repo=o1/tc-app-${APP_ID}`), (e: any) => e.statusCode === 401);
+});
+
+// ── caller cache ──────────────────────────────────────────────────────────
+
+test("junk credentials cannot grow the caller cache without bound", async () => {
+  const { call } = setup();
+  for (let i = 0; i < GIT_CALLER_CACHE_MAX + 200; i += 1) {
+    const res = await call("GET /v1/git/authz", { authorization: basic(`junk-${i}`) });
+    assert.equal(res.statusCode, 401);
+  }
+  assert.ok(gitCallerCacheSize() <= GIT_CALLER_CACHE_MAX, `cache holds ${gitCallerCacheSize()}`);
+});
+
+test("expired entries are dropped before live ones when the cache is full", async () => {
+  const { call, advance } = setup();
+  for (let i = 0; i < GIT_CALLER_CACHE_MAX; i += 1) {
+    await call("GET /v1/git/authz", { authorization: basic(`old-${i}`) });
+  }
+  advance(61_000);
+  await call("GET /v1/git/authz", { authorization: basic("agent-session") });
+  assert.equal(gitCallerCacheSize(), 1);
+});
+
+test("an auth service that cannot answer is not remembered as a refusal", async () => {
+  const { admin, call } = setup();
+  const realGetUser = admin.auth.getUser;
+  let down = true;
+  admin.auth.getUser = async (jwt: string) =>
+    down
+      ? { data: { user: null }, error: Object.assign(new Error("bad gateway"), { status: 502 }) }
+      : realGetUser(jwt);
+  assert.equal((await call("GET /v1/git/authz", { authorization: basic("agent-session") })).statusCode, 401);
+  // GoTrue is back: the very next request works, not one a minute later.
+  down = false;
+  assert.equal((await call("GET /v1/git/authz", { authorization: basic("agent-session") })).statusCode, 200);
+});
+
+test("a real refusal is still cached", async () => {
+  const { admin, call } = setup();
+  let asked = 0;
+  admin.auth.getUser = async () => {
+    asked += 1;
+    return { data: { user: null }, error: Object.assign(new Error("invalid jwt"), { status: 401 }) };
+  };
+  await call("GET /v1/git/authz", { authorization: basic("nobody") });
+  await call("GET /v1/git/authz", { authorization: basic("nobody") });
+  assert.equal(asked, 1);
+});
+
+// ── /v1/git/host ──────────────────────────────────────────────────────────
+
+test("the git host is public, and absent when per-account git is off", async () => {
+  const on = setup({}, { gitScheme: () => "http", accountAuth: () => true });
+  assert.deepEqual((await on.call("GET /v1/git/host")).body, { gitHost: "gitea.example.com", gitScheme: "http" });
+  assert.deepEqual((await setup().call("GET /v1/git/host")).body, { gitHost: "gitea.example.com", gitScheme: "https" });
+  const off = setup({}, { accountAuth: () => false });
+  await assert.rejects(() => off.call("GET /v1/git/host"), (e: any) => e.statusCode === 503);
+  const unset = setup({}, { gitHost: () => null });
+  await assert.rejects(() => unset.call("GET /v1/git/host"), (e: any) => e.statusCode === 503);
 });

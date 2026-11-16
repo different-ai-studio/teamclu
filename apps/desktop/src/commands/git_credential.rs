@@ -189,6 +189,56 @@ pub fn git_credential_status() -> GitCredentialStatus {
     }
 }
 
+/// How the server answered the stored token on `GET /v1/git/authz`, the same
+/// question Caddy asks for every git request. Only a 401 means the token is
+/// dead; anything else (offline, a proxy page, a 5xx) says nothing about it.
+fn verdict_for_status(status: u16) -> &'static str {
+    match status {
+        200..=299 => "valid",
+        401 => "rejected",
+        _ => "unknown",
+    }
+}
+
+/// Ask the server whether the stored token still works.
+///
+/// Sign-out on another machine revokes this account's git tokens everywhere,
+/// and the file here cannot show that: its expiry is weeks away. The frontend
+/// calls this now and then and mints a new token on `rejected`. The token
+/// never leaves this process for the webview — only the verdict does.
+#[tauri::command]
+pub async fn git_credential_verify() -> &'static str {
+    let file: Option<GitCredentialFile> = std::fs::read_to_string(token_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let Some(file) = file else {
+        return "unknown";
+    };
+    let token = file.token.trim();
+    let Some(base) = file
+        .api_base
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+    else {
+        return "unknown";
+    };
+    if token.is_empty() {
+        return "unknown";
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    else {
+        return "unknown";
+    };
+    let url = format!("{}/v1/git/authz", base.trim_end_matches('/'));
+    match client.get(url).bearer_auth(token).send().await {
+        Ok(res) => verdict_for_status(res.status().as_u16()),
+        Err(_) => "unknown",
+    }
+}
+
 /// Store the minted token and point git at the helper for its host. The git
 /// config step is best-effort: without git on PATH the file is still useful to
 /// TeamClu's own checkouts, which carry their own repo-local helper config.
@@ -334,5 +384,15 @@ mod tests {
         let f: GitCredentialFile =
             serde_json::from_str(r#"{"gitHost":"g.example","token":"t"}"#).unwrap();
         assert_eq!(f.git_scheme, None);
+    }
+
+    #[test]
+    fn only_a_401_condemns_the_stored_token() {
+        assert_eq!(verdict_for_status(200), "valid");
+        assert_eq!(verdict_for_status(401), "rejected");
+        // A captive portal, a proxy error or a restarting API says nothing.
+        for status in [302, 403, 404, 500, 502, 503] {
+            assert_eq!(verdict_for_status(status), "unknown");
+        }
     }
 }

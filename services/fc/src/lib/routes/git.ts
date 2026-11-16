@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { ApiError } from "../http-utils.js";
 import { createServiceRoleClient } from "../supabase.js";
 import { verifyTrustedExternalJwt } from "../trusted-external-jwt.js";
-import { appLevelAtLeast, storedAppPermissionLevel, type AppPermissionLevel } from "../app-permission.js";
 import {
   gitTokenEpochOf,
   readGitTokenSecret,
@@ -12,6 +11,7 @@ import {
 } from "../git-token.js";
 import { giteaUserName } from "../provisioning/gitea.js";
 import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
+import { readAppGitAccess } from "../supabase-repo/app-git-access.js";
 
 /**
  * Per-account git over HTTPS (docs/specs/2026-11-16-app-platform-identity-design.md §4, §6).
@@ -20,8 +20,9 @@ import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
  *   POST /v1/git/token/revoke   sign-out: every git token of the account dies
  *   GET  /v1/git/authz          Caddy forward_auth: who is this git request?
  *   GET  /v1/git/access         the credential helper: why was I refused?
+ *   GET  /v1/git/host           a daemon: which host is this cloud's git host?
  *
- * All four authenticate themselves (route `auth: "none"`): the credential is
+ * The first four authenticate themselves (route `auth: "none"`): the credential is
  * either a git token (`aud=teamclu-git`, see git-token.ts) or a TeamClu login
  * token — an agent's, handed to it by its daemon — and the generic bearer
  * middleware only knows the latter.
@@ -107,12 +108,43 @@ type Caller = { userId: string; via: "git_token" | "login_token" };
  * costs one verification. Keyed by a hash so no token sits in memory as-is.
  * 60 seconds bounds how long a revoked token or a disabled account outlives
  * its revocation.
+ *
+ * Bounded, because these routes take any password from anyone: every distinct
+ * junk credential is a new key, and an entry nobody asks for again is never
+ * read, so expiry-on-read alone never frees it.
  */
 const CACHE_TTL_MS = 60_000;
+export const GIT_CALLER_CACHE_MAX = 5_000;
 const callerCache = new Map<string, { caller: Caller | null; until: number }>();
 
 export function resetGitCallerCache() {
   callerCache.clear();
+}
+
+export function gitCallerCacheSize(): number {
+  return callerCache.size;
+}
+
+function rememberCaller(key: string, caller: Caller | null, now: number) {
+  if (callerCache.size >= GIT_CALLER_CACHE_MAX && !callerCache.has(key)) {
+    for (const [k, entry] of callerCache) if (entry.until <= now) callerCache.delete(k);
+    // Still full of live entries: drop the oldest (a Map iterates in insertion order).
+    for (const k of callerCache.keys()) {
+      if (callerCache.size < GIT_CALLER_CACHE_MAX) break;
+      callerCache.delete(k);
+    }
+  }
+  callerCache.set(key, { caller, until: now + CACHE_TTL_MS });
+}
+
+/**
+ * GoTrue could not answer, as opposed to answering "no". Not worth remembering:
+ * cached, one restart of GoTrue would refuse a valid token for a full minute.
+ */
+function isTransientAuthError(error: any): boolean {
+  if (!error) return false;
+  const status = Number(error.status);
+  return error.name === "AuthRetryableFetchError" || status === 0 || status >= 500;
 }
 
 function isBanned(user: any, now: number): boolean {
@@ -128,6 +160,7 @@ export async function resolveGitCaller(token: string, deps: GitRouteDeps): Promi
   if (cached && cached.until > now) return cached.caller;
 
   let caller: Caller | null = null;
+  let transient = false;
   const admin = deps.admin();
   const secret = deps.secret();
   const claims = secret ? await verifyGitToken(token, secret, now) : null;
@@ -136,6 +169,7 @@ export async function resolveGitCaller(token: string, deps: GitRouteDeps): Promi
     // banned, or signed out since (epoch moved on) all mean no.
     const { data, error } = await admin.auth.admin.getUserById(claims.userId);
     const user = data?.user;
+    transient = isTransientAuthError(error);
     if (!error && user && !isBanned(user, now) && gitTokenEpochOf(user) === claims.epoch) {
       caller = { userId: user.id, via: "git_token" };
     }
@@ -145,6 +179,7 @@ export async function resolveGitCaller(token: string, deps: GitRouteDeps): Promi
     if (!error && data?.user?.id && !isBanned(data.user, now)) {
       caller = { userId: data.user.id, via: "login_token" };
     } else {
+      transient = isTransientAuthError(error);
       const trusted = deps.trustedExternalJwtSecret();
       if (trusted) {
         try {
@@ -156,7 +191,7 @@ export async function resolveGitCaller(token: string, deps: GitRouteDeps): Promi
       }
     }
   }
-  callerCache.set(cacheKey, { caller, until: now + CACHE_TTL_MS });
+  if (caller || !transient) rememberCaller(cacheKey, caller, now);
   return caller;
 }
 
@@ -227,6 +262,15 @@ export function registerGit(router, deps: GitRouteDeps = defaultDeps()) {
     return { body: { revoked: true, epoch: next } };
   });
 
+  // Public on purpose: it is the host anyone sees in a clone address. A daemon
+  // asks before it trusts the `gitHttpUrl` a local caller handed it, because
+  // its credential helper sends a login to whatever host it trusts.
+  router.get("/v1/git/host", { auth: "none" }, async () => {
+    const gitHost = deps.accountAuth && !deps.accountAuth() ? null : deps.gitHost();
+    if (!gitHost) throw new ApiError(503, "git_host_unavailable", "per-account git is not enabled on this deployment");
+    return { body: { gitHost, gitScheme: deps.gitScheme?.() ?? "https" } };
+  });
+
   router.get("/v1/git/authz", { auth: "none" }, async (ctx) => {
     const token = credentialFromHeader(ctx.getHeader("authorization"));
     const caller = token ? await resolveGitCaller(token, deps) : null;
@@ -255,42 +299,9 @@ export function registerGit(router, deps: GitRouteDeps = defaultDeps()) {
     const appId = APP_REPO.exec(repoName)?.[1];
     if (!appId) throw new ApiError(404, "not_found", "not an app repository");
 
-    const admin = deps.admin();
-    const { data: app } = await admin
-      .from("apps")
-      .select("id, name, team_id, visibility, created_by_actor_id")
-      .eq("id", appId)
-      .maybeSingle();
-    if (!app) throw new ApiError(404, "not_found", "app not found");
-    const { data: actor } = await admin
-      .from("actors")
-      .select("id, actor_type, display_name")
-      .eq("team_id", app.team_id)
-      .eq("user_id", caller.userId)
-      .maybeSingle();
     // Outside the app's team: say nothing about the app, not even that it exists.
-    if (!actor) throw new ApiError(404, "not_found", "app not found");
-
-    let permission: AppPermissionLevel | null = null;
-    if (app.created_by_actor_id === actor.id) permission = "admin";
-    else {
-      const { data: grant } = await admin
-        .from("app_member_access")
-        .select("permission_level")
-        .eq("app_id", app.id)
-        .eq("member_id", actor.id)
-        .maybeSingle();
-      permission = storedAppPermissionLevel(grant?.permission_level);
-      if (app.visibility === "team" && (!permission || !appLevelAtLeast(permission, "read"))) permission = "read";
-    }
-    return {
-      body: {
-        appId: app.id,
-        appName: app.name,
-        permission,
-        actorName: actor.display_name ?? null,
-        actorType: actor.actor_type,
-      },
-    };
+    const access = await readAppGitAccess(deps.admin(), appId, caller.userId);
+    if (!access) throw new ApiError(404, "not_found", "app not found");
+    return { body: access };
   });
 }

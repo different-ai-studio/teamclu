@@ -3130,6 +3130,7 @@ test("apps: deleteApp requires completed uninstall, archives workspace, and remo
   const ossDeleted: string[] = [];
   const oauthDisabled: string[] = [];
   let archivedRepo = false;
+  const giteaOrder: string[] = [];
   const calls: any[] = [];
   const admin = appsSupabase({
     calls,
@@ -3151,8 +3152,13 @@ test("apps: deleteApp requires completed uninstall, archives workspace, and remo
     gitea: fakeGitea({
       listDeployKeys: async () => [{ id: 9, title: "jit-x" }],
       deleteDeployKey: async (_appId: string, id: number) => { deletedKeys.push(id); },
+      removeAllAppAccess: async () => {
+        giteaOrder.push("removeAllAppAccess");
+        return { collaborators: 2, teams: 1 };
+      },
       archiveAndRenameAppRepo: async () => {
         archivedRepo = true;
+        giteaOrder.push("archive");
         return { sshUrl: "git@gitea.example:teamclaw-apps/deleted-tc-app-app-1.git" };
       },
     }),
@@ -3170,6 +3176,9 @@ test("apps: deleteApp requires completed uninstall, archives workspace, and remo
   assert.equal(await repo.deleteApp("app-1"), true);
   assert.deepEqual(deletedKeys, [9]);
   assert.ok(archivedRepo);
+  // Archiving only stops pushes: whoever could clone the app must lose that
+  // too, and before the rename, while the repo still answers to its app name.
+  assert.deepEqual(giteaOrder, ["removeAllAppAccess", "archive"]);
   assert.deepEqual(oauthDisabled, []);
   assert.deepEqual(fcDeleted, []);
   assert.deepEqual(ossDeleted, []);
@@ -3448,6 +3457,38 @@ test("apps: a view-only member is answered read-only, not handed the agent path"
   assert.equal(issued.length, 1);
   assert.deepEqual(issued[0].opts, { readOnly: true });
   assert.ok(issued[0].title.startsWith("jit-member-other-"), `titled for the member, got ${issued[0].title}`);
+});
+
+test("apps: a read grant does not leave an agent with less than an ungranted agent", async () => {
+  // The team-scoped agent path below still issues write keys (phase 1 leaves it
+  // alone). Narrowing a granted agent to read-only would invert the two.
+  const issued: unknown[] = [];
+  const gitea = fakeGitea({
+    createDeployKey: async (_appId: string, _title: string, _key: string, opts: unknown) => {
+      issued.push(opts);
+      return { id: 9 };
+    },
+  });
+  const repo = appsRepo(
+    appsSupabase({
+      seed: {
+        apps: [GITEA_MANAGED_APP],
+        app_member_access: [{
+          app_id: "app-1",
+          member_id: "agent-actor-1",
+          permission_level: "read",
+          granted_by_member_id: "actor-app-1",
+          created_at: "2026-11-16T00:00:00.000Z",
+        }],
+      },
+      actorRow: { id: "agent-actor-1", actor_type: "agent" },
+    }),
+    { gitea },
+  );
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.equal(cred?.readOnly, false);
+  assert.equal(issued.length, 1);
+  assert.notDeepEqual(issued[0], { readOnly: true });
 });
 
 test("apps: an agent actor from another team gets nothing", async () => {

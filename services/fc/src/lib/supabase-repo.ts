@@ -6383,11 +6383,16 @@ export function createSupabaseBusinessRepository(options) {
         // A member the app knows about is answered on the member rules alone,
         // never by falling through to the agent path below. `read` may download
         // the code but not push to it, so its key cannot push.
+        //
+        // An agent's `read` grant does not narrow its key. The agent path below
+        // still gives every agent of the team a writable one (phase 1 leaves it
+        // alone — the daemon's own seed/clone/deploy run on it), so narrowing
+        // here would hand a granted agent less than an ungranted one.
         if (permission) {
           return {
             actorId: permission.callerActorId,
             app: visible,
-            readOnly: permission.level === "read",
+            readOnly: permission.level === "read" && permission.callerMemberId !== null,
           };
         }
         // A teammate with no grant on a team-visible app. The app list shows it
@@ -6413,10 +6418,12 @@ export function createSupabaseBusinessRepository(options) {
       // team-scoped: any agent actor in the app's team may mint a key for a
       // Gitea-managed app in that team.
       //
-      // Coarser than the per-app member rules on purpose — `app_member_access`
-      // is keyed on `amux.members`, so an agent actor cannot hold a per-app
-      // grant at all — and accepted when this path was chosen. The blast radius
-      // is one repo per key, and the key's title names the agent actor.
+      // Coarser than the per-app member rules on purpose, and accepted when
+      // this path was chosen. An agent can hold a per-app grant now, and that
+      // grant is what Gitea enforces on its own HTTPS pushes; this deploy-key
+      // path keeps the team-wide rule until the daemon's git moves to HTTPS and
+      // the keys are retired (phase-1 plan, "旧 deploy key 路径"). The blast
+      // radius is one repo per key, and the key's title names the agent actor.
       //
       // The row is re-read with the service role because `apps.visibility`
       // defaults to `personal`, which `apps_select_if_visible` hides from every

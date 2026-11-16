@@ -37,7 +37,38 @@ export function gitTokenIsFresh(status: GitCredentialStatus | null, userId: stri
   return Number.isFinite(expires) && expires - now > GIT_TOKEN_RENEW_BEFORE_MS;
 }
 
+/**
+ * How often a token that looks fine locally is checked against the server.
+ *
+ * Sign-out on any machine revokes the account's git tokens everywhere, and
+ * nothing in the local file shows it: without this check the other machines
+ * would keep presenting a dead token until it came up for renewal, weeks
+ * later. The auth listener calls in on every session refresh (about hourly),
+ * so a revoked token is replaced within the hour without a restart.
+ */
+export const GIT_TOKEN_VERIFY_EVERY_MS = 30 * 60 * 1000;
+
+/** `rejected`: the server refused the stored token. `unknown`: it could not be asked. */
+type GitCredentialVerdict = "valid" | "rejected" | "unknown";
+
 let inflight: Promise<void> | null = null;
+let verified: { userId: string; at: number } | null = null;
+/** Bumped by sign-out, so a sync that was already running cannot write after it. */
+let generation = 0;
+
+/** Test seam: forget what this process has verified. */
+export function resetGitCredentialState() {
+  inflight = null;
+  verified = null;
+}
+
+async function storedTokenRejected(userId: string, now: number): Promise<boolean> {
+  if (verified?.userId === userId && now - verified.at < GIT_TOKEN_VERIFY_EVERY_MS) return false;
+  const verdict = await invoke<GitCredentialVerdict>("git_credential_verify").catch(() => "unknown" as const);
+  // Offline or an older shell without the command: keep the token, ask again next time.
+  if (verdict === "valid") verified = { userId, at: now };
+  return verdict === "rejected";
+}
 
 /**
  * Make sure the token file is current for this session. Concurrent calls (the
@@ -51,11 +82,16 @@ export function syncGitCredential(
     return Promise.resolve();
   }
   const userId = session.user.id;
+  const startedIn = generation;
   inflight ??= (async () => {
     try {
       const status = await invoke<GitCredentialStatus>("git_credential_status").catch(() => null);
-      if (gitTokenIsFresh(status, userId, Date.now())) return;
+      const now = Date.now();
+      if (gitTokenIsFresh(status, userId, now) && !(await storedTokenRejected(userId, now))) return;
       const grant = await getBackend().apps.mintGitToken();
+      // Signed out while the mint was in flight: the token must not land in a
+      // file sign-out has just emptied. Sign-out's revoke kills it server-side.
+      if (generation !== startedIn) return;
       await invoke("git_credential_write", {
         credential: {
           gitHost: grant.gitHost,
@@ -67,6 +103,7 @@ export function syncGitCredential(
           expiresAt: grant.expiresAt,
         },
       });
+      verified = { userId, at: Date.now() };
     } catch (error) {
       // 503 on a deployment without per-account git is the common case here.
       console.debug("[git-credential] not refreshed:", error);
@@ -83,6 +120,11 @@ export function syncGitCredential(
  */
 export async function revokeGitCredential(): Promise<void> {
   if (!isTauri()) return;
+  generation += 1;
+  verified = null;
+  // Let a sync that is mid-mint finish first, so the revoke below covers the
+  // token it was minting; it sees the new generation and writes nothing.
+  await inflight?.catch(() => {});
   try {
     await getBackend().apps.revokeGitTokens();
   } catch (error) {

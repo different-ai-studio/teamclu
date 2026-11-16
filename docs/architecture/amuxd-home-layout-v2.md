@@ -96,7 +96,8 @@ daemon.toml  device-id  mcp.json  teams/  run/  logs/  cache/  bin/
 │   └── amuxd.log                      # 轮换：单文件上限 + 保留份数（§3.3）
 │
 ├── cache/                             # 机器级缓存，删了只影响性能
-│   ├── git-account.json               # 见过的 TeamClu git 主机 + 云端 API 地址（`amuxd git-credential` 全局模式用）
+│   ├── git-account.json               # 云端确认的 TeamClu git 主机 + 云端 API 地址（`amuxd git-credential` 全局模式用）
+│   ├── git-access.json                # 最近确认有权限的（账号, 仓库），10 分钟内不再问云端
 │   ├── model-catalog.toml             # 键控：backend → worktree
 │   ├── model-mru.toml                 # 键控：backend
 │   ├── node/<version>/                # amuxd 托管的 Node.js（ADR-0015）

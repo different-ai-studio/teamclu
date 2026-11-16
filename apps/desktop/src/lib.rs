@@ -445,6 +445,7 @@ pub fn run() {
             commands::daemon_http::list_local_daemon_workspaces,
             commands::daemon_http::register_daemon_workspace,
             commands::git_credential::git_credential_status,
+            commands::git_credential::git_credential_verify,
             commands::git_credential::git_credential_write,
             commands::git_credential::git_credential_clear,
             commands::introspect_auth::set_introspect_auth,
