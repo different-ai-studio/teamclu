@@ -797,6 +797,11 @@ function MermaidBlock({ children }: { children: string }) {
           startOnLoad: false,
           securityLevel: 'strict',
           theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
+          // Mermaid 12 switched the default flowchart/state/class layout and
+          // look, which re-lays out and recolours every existing diagram.
+          // Pin the v11 rendering so chat history keeps looking the same.
+          layout: 'dagre',
+          look: 'classic',
         })
 
         const rendered = await mermaid.render(`mermaid-${diagramId}`, source)
