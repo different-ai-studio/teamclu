@@ -22,7 +22,10 @@
 //! Hosts it does not know (any other forge) get no answer, so git moves on to
 //! its next helper. Always exits 0, for the same reason the per-app helper does.
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
+// Only the unix socket path reads a raw stream; Windows goes through reqwest.
+#[cfg(unix)]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -85,19 +88,121 @@ pub fn read_request(input: impl BufRead) -> Request {
 /// Who is asking, as far as the helper can tell from its environment.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Caller {
-    Agent { socket: PathBuf },
+    /// Unix: the runtime-context socket, which checks the caller's process
+    /// ancestry against the agent hosts amuxd spawned.
+    AgentSocket {
+        socket: PathBuf,
+    },
+    /// Windows (no peer-pid socket): the host's runtime-context bearer over
+    /// loopback TCP — the same route Windows skills already use for the cloud
+    /// token. The daemon checks the bearer against the live host generation.
+    AgentBearer {
+        url: String,
+        token: String,
+        host_generation_id: String,
+        backend_kind: String,
+    },
     Person,
 }
 
+/// amuxd puts the socket (unix only) and the URL / token / generation /
+/// backend (every platform) into each agent host's environment; any of them
+/// marks the caller as an agent. The socket wins when both are present: on
+/// unix the TCP route refuses to issue the token at all.
 pub fn caller_from_env(var: impl Fn(&str) -> Option<String>) -> Caller {
-    match var(teamclu_runtime_env::TEAMCLU_RUNTIME_CONTEXT_SOCK_ENV)
-        .filter(|v| !v.trim().is_empty())
-    {
-        Some(socket) => Caller::Agent {
+    let get = |key: &str| {
+        var(key)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(socket) = get(teamclu_runtime_env::TEAMCLU_RUNTIME_CONTEXT_SOCK_ENV) {
+        return Caller::AgentSocket {
             socket: PathBuf::from(socket),
-        },
-        None => Caller::Person,
+        };
     }
+    let url = get(teamclu_runtime_env::TEAMCLU_RUNTIME_CONTEXT_URL_ENV);
+    let token = get(teamclu_runtime_env::TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV);
+    match (url, token) {
+        (Some(url), Some(token)) => Caller::AgentBearer {
+            url,
+            token,
+            host_generation_id: get(teamclu_runtime_env::TEAMCLU_HOST_GENERATION_ID_ENV)
+                .unwrap_or_default(),
+            backend_kind: get(teamclu_runtime_env::TEAMCLU_AGENT_BACKEND_ENV).unwrap_or_default(),
+        },
+        // Half of the pair is still an agent environment — refused below rather
+        // than mistaken for a person.
+        (Some(url), None) | (None, Some(url)) => Caller::AgentBearer {
+            url,
+            token: String::new(),
+            host_generation_id: String::new(),
+            backend_kind: String::new(),
+        },
+        (None, None) => Caller::Person,
+    }
+}
+
+const UNCONFIRMED_AGENT: &str = "could not confirm this agent's identity (a background process \
+     outlives the agent that started it) — run git in the foreground";
+
+/// The login an agent gets from the daemon's token, named after its account.
+fn agent_login_from_token(token: String) -> Login {
+    let username = jwt_subject(&token)
+        .map(|sub| gitea_user_name(&sub))
+        .unwrap_or_else(|| "git".to_string());
+    Login {
+        username,
+        password: token,
+    }
+}
+
+/// The agent's login over loopback TCP with the host's bearer (Windows).
+pub fn agent_login_bearer(
+    url: &str,
+    bearer: &str,
+    host_generation_id: &str,
+    backend_kind: &str,
+) -> Result<Login, String> {
+    if bearer.is_empty() || host_generation_id.is_empty() {
+        return Err(UNCONFIRMED_AGENT.into());
+    }
+    let endpoint = format!(
+        "{}/internal/runtime-context/cloud-token",
+        url.trim_end_matches('/')
+    );
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("cannot ask amuxd for this agent's identity ({e})"))?;
+    let token = rt.block_on(async {
+        // Loopback: never through a proxy, whatever the environment says.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let res = client
+            .post(&endpoint)
+            .bearer_auth(bearer)
+            .header("Accept", "text/plain")
+            .json(&serde_json::json!({
+                "hostGenerationId": host_generation_id,
+                "backendKind": backend_kind,
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("cannot reach amuxd for this agent's identity ({e})"))?;
+        if !res.status().is_success() {
+            return Err(UNCONFIRMED_AGENT.to_string());
+        }
+        let body = res.text().await.map_err(|e| e.to_string())?;
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            return Err(UNCONFIRMED_AGENT.to_string());
+        }
+        Ok(body)
+    })?;
+    Ok(agent_login_from_token(token))
 }
 
 /// A login to hand git.
@@ -177,25 +282,17 @@ pub fn agent_login(socket: &Path) -> Result<Login, String> {
         .map(|(_, b)| b.trim())
         .unwrap_or("");
     if status != 200 || body.is_empty() {
-        return Err(
-            "could not confirm this agent's identity (a background process outlives the agent \
-             that started it) — run git in the foreground"
-                .into(),
-        );
+        return Err(UNCONFIRMED_AGENT.into());
     }
-    let token = body.to_string();
-    let username = jwt_subject(&token)
-        .map(|sub| gitea_user_name(&sub))
-        .unwrap_or_else(|| "git".to_string());
-    Ok(Login {
-        username,
-        password: token,
-    })
+    Ok(agent_login_from_token(body.to_string()))
 }
 
+/// Never reached on Windows: amuxd sets no socket variable there, so an agent
+/// arrives as [`Caller::AgentBearer`]. Kept so a stray variable still refuses
+/// instead of falling back to the person's token.
 #[cfg(not(unix))]
 pub fn agent_login(_socket: &Path) -> Result<Login, String> {
-    Err("agent git identity is not available on this platform yet".into())
+    Err(UNCONFIRMED_AGENT.into())
 }
 
 fn read_token_file(path: &Path) -> Option<TokenFile> {
@@ -238,7 +335,13 @@ pub fn run(brand: Option<&str>, operation: &str) -> i32 {
         return 0;
     }
     let login = match caller_from_env(|k| std::env::var(k).ok()) {
-        Caller::Agent { socket } => agent_login(&socket),
+        Caller::AgentSocket { socket } => agent_login(&socket),
+        Caller::AgentBearer {
+            url,
+            token,
+            host_generation_id,
+            backend_kind,
+        } => agent_login_bearer(&url, &token, &host_generation_id, &backend_kind),
         Caller::Person => person_login(file.as_ref(), chrono::Utc::now()),
     };
     let login = match login {
@@ -332,6 +435,8 @@ fn urlencoding_component(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(unix))]
+    use std::io::Read;
 
     fn now() -> chrono::DateTime<chrono::Utc> {
         chrono::DateTime::parse_from_rfc3339("2026-11-17T08:00:00Z")
@@ -354,19 +459,134 @@ mod tests {
         );
     }
 
+    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |k: &str| map.get(k).cloned()
+    }
+
     #[test]
-    fn the_socket_variable_marks_an_agent() {
-        let agent = caller_from_env(|k| {
-            (k == "TEAMCLU_RUNTIME_CONTEXT_SOCK").then(|| "/run/x.sock".to_string())
-        });
+    fn the_socket_variable_marks_a_unix_agent_and_wins_over_the_bearer() {
+        let caller = caller_from_env(env(&[
+            ("TEAMCLU_RUNTIME_CONTEXT_SOCK", "/run/x.sock"),
+            ("TEAMCLU_RUNTIME_CONTEXT_URL", "http://127.0.0.1:1"),
+            ("TEAMCLU_RUNTIME_CONTEXT_TOKEN", "t"),
+        ]));
         assert_eq!(
-            agent,
-            Caller::Agent {
+            caller,
+            Caller::AgentSocket {
                 socket: PathBuf::from("/run/x.sock")
             }
         );
         assert_eq!(caller_from_env(|_| None), Caller::Person);
         assert_eq!(caller_from_env(|_| Some("  ".into())), Caller::Person);
+    }
+
+    #[test]
+    fn the_runtime_context_url_and_token_mark_a_windows_agent() {
+        let caller = caller_from_env(env(&[
+            ("TEAMCLU_RUNTIME_CONTEXT_URL", "http://127.0.0.1:41000/"),
+            ("TEAMCLU_RUNTIME_CONTEXT_TOKEN", "rtctx"),
+            ("TEAMCLU_HOST_GENERATION_ID", "gen-1"),
+            ("TEAMCLU_AGENT_BACKEND", "pi"),
+        ]));
+        assert_eq!(
+            caller,
+            Caller::AgentBearer {
+                url: "http://127.0.0.1:41000/".into(),
+                token: "rtctx".into(),
+                host_generation_id: "gen-1".into(),
+                backend_kind: "pi".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn half_an_agent_environment_is_still_an_agent_and_is_refused() {
+        let caller = caller_from_env(env(&[("TEAMCLU_RUNTIME_CONTEXT_TOKEN", "rtctx")]));
+        let Caller::AgentBearer {
+            url,
+            token,
+            host_generation_id,
+            backend_kind,
+        } = caller
+        else {
+            panic!("must not be treated as a person: {caller:?}");
+        };
+        assert!(
+            agent_login_bearer(&url, &token, &host_generation_id, &backend_kind)
+                .unwrap_err()
+                .contains("foreground")
+        );
+    }
+
+    /// One-shot loopback HTTP server; returns (base url, captured request).
+    fn serve_once(status: &'static str, body: String) -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut buf = vec![0u8; 8192];
+            let mut req = String::new();
+            loop {
+                let n = s.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                req.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if let Some((head, rest)) = req.split_once("\r\n\r\n") {
+                    let len = head
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if rest.len() >= len {
+                        break;
+                    }
+                }
+            }
+            let resp = format!("HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let _ = s.write_all(resp.as_bytes());
+            req
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn a_windows_agent_gets_the_daemon_token_with_its_host_bearer() {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"sub":"cccccccc-0000-4000-8000-00000000000c"}"#);
+        let daemon_token = format!("h.{payload}.s");
+        let (url, server) = serve_once("200 OK", daemon_token.clone());
+        let login = agent_login_bearer(&url, "rtctx-secret", "gen-7", "pi").unwrap();
+        assert_eq!(login.username, "ucccccccc00004000800000000000000c");
+        assert_eq!(login.password, daemon_token);
+        let req = server.join().unwrap();
+        assert!(
+            req.starts_with("POST /internal/runtime-context/cloud-token "),
+            "{req}"
+        );
+        assert!(req
+            .to_ascii_lowercase()
+            .contains("authorization: bearer rtctx-secret"));
+        assert!(
+            req.contains(r#""hostGenerationId":"gen-7""#) && req.contains(r#""backendKind":"pi""#)
+        );
+    }
+
+    #[test]
+    fn a_windows_agent_the_daemon_refuses_gets_no_login() {
+        let (url, server) = serve_once("401 Unauthorized", String::new());
+        assert!(agent_login_bearer(&url, "stale", "gen-old", "pi")
+            .unwrap_err()
+            .contains("foreground"));
+        server.join().unwrap();
     }
 
     #[test]
