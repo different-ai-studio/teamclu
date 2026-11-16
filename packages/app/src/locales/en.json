@@ -857,6 +857,7 @@
         "skippedBy": "{{name}} skipped",
         "processingAnswer": "Processing answer...",
         "waitingForResponse": "Waiting for response...",
+        "selectMultiple": "Select all that apply",
         "customAnswerPlaceholder": "Or type a custom answer...",
         "answerPlaceholder": "Type your answer...",
         "answerLabel": "Answer: ",
