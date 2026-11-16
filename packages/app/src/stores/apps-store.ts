@@ -449,6 +449,7 @@ async function runSeed(
   let result: SeedAppResult = { outcome: "unreachable", workdir: null, error: null };
   try {
     const cloneFrom = cloneUrl?.trim() || app.gitRemoteUrl;
+    const httpUrl = accountGitUrl(app);
     result = cloneCredential
       ? await seedDaemonApp(
           app.id,
@@ -460,17 +461,29 @@ async function runSeed(
           adoptExisting,
           cloneCredential,
         )
-      : await seedDaemonApp(
-          app.id,
-          app.teamId,
-          app.name,
-          app.type,
-          cloneFrom,
-          deployKeyPem,
-          adoptExisting,
-          // Per-account git only: older call shapes stay exactly as they were.
-          ...(accountGitUrl(app) ? [null, accountGitUrl(app)] as const : []),
-        );
+      : httpUrl
+        ? // Per-account git: no http(s) import credential, then the HTTPS
+          // address the checkout's people and agents should push to.
+          await seedDaemonApp(
+            app.id,
+            app.teamId,
+            app.name,
+            app.type,
+            cloneFrom,
+            deployKeyPem,
+            adoptExisting,
+            null,
+            httpUrl,
+          )
+        : await seedDaemonApp(
+            app.id,
+            app.teamId,
+            app.name,
+            app.type,
+            cloneFrom,
+            deployKeyPem,
+            adoptExisting,
+          );
   } catch (e) {
     console.warn("app seed kick failed (non-fatal)", e);
   } finally {
