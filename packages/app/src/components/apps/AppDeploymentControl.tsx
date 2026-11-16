@@ -12,7 +12,6 @@ import type { AppRow } from '@/lib/backend/types'
 export function AppDeploymentControl({ app, compact = false, disabled = false }: { app: AppRow; compact?: boolean; disabled?: boolean }) {
   const { t } = useTranslation()
   const undeploy = useAppsStore(s => s.undeployApp)
-  const deploying = useAppsStore(s => s.deployingIds?.includes(app.id) ?? false)
   const syncApp = useAppsStore(s => s.syncApp)
   const refresh = useAppsStore(s => s.refreshApp)
   const [current, setCurrent] = React.useState(app)
@@ -34,7 +33,7 @@ export function AppDeploymentControl({ app, compact = false, disabled = false }:
     void read()
     return () => { stopped = true; clearTimeout(timer) }
   }, [app.id, app.fcStatus, busy, syncApp])
-  const pending = disabled || deploying || busy || current.fcStatus === 'uninstalling'
+  const pending = disabled || busy || current.fcStatus === 'uninstalling'
   const conflict = ['awaiting_build', 'building', 'deploying'].includes(current.fcStatus ?? '')
   const deployed = !!current.fcStatus && !['not_deployed', 'uninstalled'].includes(current.fcStatus)
   const approve = async () => {

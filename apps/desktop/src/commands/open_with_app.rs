@@ -77,6 +77,11 @@ pub async fn open_path_with_app(path: String, target: String) -> Result<(), Stri
 }
 
 fn validate_dir(path: &str) -> Result<&Path, String> {
+    // A verbatim `\\?\C:\...` path (what canonicalize returns on Windows)
+    // cannot be a cmd.exe working directory — cmd silently falls back to the
+    // Windows folder — and some editors mangle it. The plain form is the same
+    // folder.
+    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
     let p = Path::new(path);
     if !p.is_absolute() {
         return Err(format!("Not an absolute path: {path}"));
@@ -142,32 +147,7 @@ fn open_blocking(path: &str, target: OpenWithTarget) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt as _;
-        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        if target == OpenWithTarget::Claude {
-            // A visible console that stays open (`/K`) with claude running in
-            // the folder; the folder is the working directory, not an argument.
-            std::process::Command::new("cmd")
-                .args(["/K", "claude"])
-                .current_dir(dir)
-                .creation_flags(CREATE_NEW_CONSOLE)
-                .spawn()
-                .map_err(|e| format!("Failed to open {}: {e}", target.display_name()))?;
-            return Ok(());
-        }
-        // The editors install `.cmd` shims, which only cmd can resolve. `.`
-        // is a fixed argument; the folder is the working directory.
-        let status = std::process::Command::new("cmd")
-            .args(["/C", target.cli_name(), "."])
-            .current_dir(dir)
-            .creation_flags(CREATE_NO_WINDOW)
-            .status()
-            .map_err(|e| format!("Failed to open {}: {e}", target.display_name()))?;
-        if !status.success() {
-            return Err(not_installed(target));
-        }
-        Ok(())
+        windows::open(dir, target)
     }
 
     #[cfg(target_os = "linux")]
@@ -195,6 +175,131 @@ fn open_blocking(path: &str, target: OpenWithTarget) -> Result<(), String> {
     }
 }
 
+/// Windows: editors are found by where their installers put them, and only
+/// then by PATH, because a GUI process often starts with a PATH that predates
+/// the install (and the `.cmd` shims need cmd.exe to run at all).
+#[cfg(target_os = "windows")]
+mod windows {
+    use super::{not_installed, OpenWithTarget};
+    use std::ffi::OsString;
+    use std::os::windows::process::CommandExt as _;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    /// `<install dir>\<exe>` candidates, relative to LOCALAPPDATA\Programs
+    /// (per-user installs, the default) and the Program Files folders.
+    fn install_candidates(target: OpenWithTarget) -> &'static [(&'static str, &'static str)] {
+        match target {
+            OpenWithTarget::VsCode => &[("Microsoft VS Code", "Code.exe")],
+            OpenWithTarget::Cursor => &[("cursor", "Cursor.exe"), ("Cursor", "Cursor.exe")],
+            OpenWithTarget::Qoder => &[("Qoder", "Qoder.exe")],
+            OpenWithTarget::WorkBuddy => &[("WorkBuddy", "WorkBuddy.exe")],
+            OpenWithTarget::Claude => &[],
+        }
+    }
+
+    fn env_dir(key: &str) -> Option<PathBuf> {
+        std::env::var_os(key)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    }
+
+    fn installed_exe(target: OpenWithTarget) -> Option<PathBuf> {
+        let roots: Vec<PathBuf> = [
+            env_dir("LOCALAPPDATA").map(|d| d.join("Programs")),
+            env_dir("ProgramFiles"),
+            env_dir("ProgramFiles(x86)"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        install_candidates(target).iter().find_map(|(dir, exe)| {
+            roots
+                .iter()
+                .map(|root| root.join(dir).join(exe))
+                .find(|p| p.is_file())
+        })
+    }
+
+    /// First `name` + PATHEXT extension found on `path`.
+    fn find_on_path(name: &str, path: &OsString) -> Option<PathBuf> {
+        let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        std::env::split_paths(path).find_map(|dir| {
+            exts.split(';')
+                .filter(|e| !e.is_empty())
+                .map(|ext| dir.join(format!("{name}{ext}")))
+                .find(|p| p.is_file())
+        })
+    }
+
+    /// PATH for the child, with the places the Claude Code installers use
+    /// appended in case this process started before they were added.
+    fn path_with_claude_dirs() -> OsString {
+        let mut dirs: Vec<PathBuf> =
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+        if let Some(home) = env_dir("USERPROFILE") {
+            dirs.push(home.join(".local").join("bin"));
+        }
+        if let Some(appdata) = env_dir("APPDATA") {
+            dirs.push(appdata.join("npm"));
+        }
+        std::env::join_paths(dirs).unwrap_or_default()
+    }
+
+    pub(super) fn open(dir: &Path, target: OpenWithTarget) -> Result<(), String> {
+        let fail = |e: std::io::Error| format!("Failed to open {}: {e}", target.display_name());
+
+        if target == OpenWithTarget::Claude {
+            let path = path_with_claude_dirs();
+            if find_on_path(target.cli_name(), &path).is_none() {
+                return Err(not_installed(target));
+            }
+            // A visible console that stays open (`/K`) with claude running in
+            // the folder. The folder is the working directory, never part of
+            // the command line cmd parses.
+            Command::new("cmd")
+                .args(["/K", target.cli_name()])
+                .env("PATH", path)
+                .current_dir(dir)
+                .creation_flags(CREATE_NEW_CONSOLE)
+                .spawn()
+                .map_err(fail)?;
+            return Ok(());
+        }
+
+        // The editor binary itself, with the folder as a plain argv entry —
+        // no shell between us and it.
+        if let Some(exe) = installed_exe(target) {
+            Command::new(exe).arg(dir).spawn().map_err(fail)?;
+            return Ok(());
+        }
+
+        // Fallback: the PATH launcher (`code.cmd` and friends). Only cmd can
+        // run a `.cmd`; `.` is a fixed argument and the folder is the working
+        // directory.
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        if find_on_path(target.cli_name(), &path).is_none() {
+            return Err(not_installed(target));
+        }
+        let status = Command::new("cmd")
+            .args(["/C", target.cli_name(), "."])
+            .current_dir(dir)
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(fail)?;
+        if !status.success() {
+            return Err(format!(
+                "Failed to open {}: launcher exited with {status}",
+                target.display_name()
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +320,13 @@ mod tests {
         assert!(validate_dir("/definitely/not/a/real/dir/teamclu").is_err());
         let tmp = std::env::temp_dir();
         assert!(validate_dir(tmp.to_str().unwrap()).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn strips_the_verbatim_prefix() {
+        let tmp = std::env::temp_dir();
+        let verbatim = format!(r"\\?\{}", tmp.display());
+        assert_eq!(validate_dir(&verbatim).unwrap(), tmp.as_path());
     }
 }

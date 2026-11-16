@@ -12,7 +12,7 @@ import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCa
 import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 import { resolveAppType } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
-import { appStatusMeta, showsPublicBadge } from '@/lib/apps/app-list-helpers'
+import { appStatusMeta, showsPublicBadge, isDeployInFlight } from '@/lib/apps/app-list-helpers'
 import { resolveAppLocality } from '@/lib/apps/app-locality'
 import {
   countAppsByRelationship,
@@ -53,8 +53,8 @@ function AppRowButton({
   onDownload: () => void
 }) {
   const { t } = useTranslation()
-  const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
-  const meta = appStatusMeta(app, deploying)
+  const deploying = isDeployInFlight(app)
+  const meta = appStatusMeta(app)
   const typeMeta = resolveAppType(app.type)
   const TypeIcon = appTypeIcon(app.type)
   const publicLive = showsPublicBadge(app)

@@ -9,7 +9,6 @@ import type { MemberRoleRef, OrgRolesBackend } from "@/lib/backend/cloud-api/org
 import type { AdminBackend } from "@/lib/backend/cloud-api/admin";
 import type { OAuthProvider } from "@/lib/auth";
 import type { AppTypeId } from "@/lib/apps/app-types";
-import type { ArtifactVerification } from "@/lib/apps/artifact-verification";
 
 export type { MemberRoleRef, OrgRole, OrgRoleCreate, OrgRolePatch, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
 export type {
@@ -1123,6 +1122,16 @@ export interface AppStartSpec {
   healthCheckPath?: string;
 }
 
+/** The daemon's check of a build artifact, as the last successful deploy left it. */
+export interface ArtifactVerification {
+  status: string;
+  unknownFiles: string[];
+  revision: string;
+  target?: string;
+  hostOs?: string;
+  hostArch?: string;
+}
+
 export interface AppDeployDeclaration {
   build: AppBuildSpec;
   start: AppStartSpec;
@@ -1380,37 +1389,6 @@ export interface AppRow {
   updatedAt: string;
 }
 
-/** `POST /v1/apps/:id/deploy` response — app row plus the OSS upload handle the
- *  local daemon needs to upload the build artifact. */
-export interface DeployAppResult extends AppRow {
-  /**
-   * Archive deploys. Absent for a container app, which pushes an image instead
-   * — exactly one of these and `image` is ever set.
-   */
-  ossObjectName?: string;
-  presignedPut?: string;
-  /** Container deploys: where to push the image, and short-lived credentials. */
-  image?: {
-    reference: string;
-    registry: string;
-    username: string;
-    password: string;
-    expiresAt?: string;
-  };
-  /** Short-lived bearer for finalize; not stored on the app row in mapApp. */
-  deployToken: string;
-  /** Null for an imported app: there is no forge commit to pin the deploy to. */
-  gitCommitSha: string | null;
-  revision: string;
-}
-
-export interface AppDeployPreflightResult {
-  token: string;
-  /** Safe correlation id; unlike token, may be shown in diagnostics. */
-  attemptId?: string | null;
-  preview: { firstDeploy: boolean; requiresMigrationApproval: boolean; changes: Array<{ field: string; from: unknown; to: unknown }> };
-}
-
 /** A JIT deploy key for a Gitea-managed app's repo. */
 export interface AppGitDeployKeyCredential {
   remoteUrl: string;
@@ -1612,9 +1590,6 @@ export interface AppsBackend {
   getApp(appId: string): Promise<AppRow | null>;
   listAppSessions(appId: string): Promise<AppSessionRow[]>;
   updateAppProvisionStatus(appId: string, provisionStatus: string): Promise<AppRow | null>;
-  /** Report a deploy-lifecycle status the client owns (today: `deploy_error`
-   *  when the local daemon build never finished). Returns null on 404. */
-  updateAppDeployStatus(appId: string, fcStatus: string, deployError?: string, deployToken?: string): Promise<AppRow | null>;
   /** Rename an app (PATCH name). Returns null on 404. */
   renameApp(appId: string, name: string): Promise<AppRow | null>;
   /**
@@ -1635,30 +1610,6 @@ export interface AppsBackend {
    * next deploy (see `typePendingRedeploy`). Leaving `data_app` keeps the data.
    */
   setAppType(appId: string, type: AppTypeId): Promise<AppRow | null>;
-  /** Start FC deploy: provisions the function + returns the OSS upload handle.
-   *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
-  deployApp(
-    appId: string,
-    input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; preflightToken: string; useAppCodeDomain?: boolean },
-  ): Promise<DeployAppResult>;
-  preflightAppDeploy(appId: string, input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; migrationIntent?: boolean }): Promise<AppDeployPreflightResult>;
-  cancelAppDeployPreflight(appId: string, deployToken: string): Promise<{ cancelled: boolean }>;
-  /** Finalize FC deploy after the artifact is uploaded: points the function at
-   *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
-  finalizeDeploy(
-    appId: string,
-    input: {
-      gitCommitSha?: string;
-      revision: string;
-      deployToken: string;
-      /** The daemon-validated build and start contract from `teamclu.app.json`. */
-      declaration: AppDeployDeclaration;
-      /** The image a container build pushed. Required for one, refused for
-       *  anything else — see the control plane's parseDeployedImage. */
-      image?: string;
-      artifactVerification?: ArtifactVerification;
-    },
-  ): Promise<AppRow>;
   /** The credential for the app's repo: a JIT Gitea deploy key for a
    *  Gitea-managed app, or the stored token for an imported http(s) repo
    *  (`authKind` says which). Returns null on 404, and for an app that has

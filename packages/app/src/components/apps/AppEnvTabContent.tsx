@@ -19,6 +19,7 @@ import { useAppsStore } from '@/stores/apps-store'
 import { requestAgentDeploy } from '@/lib/apps/app-deploy-prompt'
 import { AppTabShell } from './AppTabShell'
 import type { AppEnvVar, AppRow } from '@/lib/backend/types'
+import { isDeployInFlight } from '@/lib/apps/app-list-helpers'
 
 /**
  * The variables and secrets the deployed app runs with.
@@ -81,7 +82,7 @@ export function AppEnvTabContent({ appId }: { appId: string }) {
 
 function EnvBody({ app }: { app: AppRow }) {
   const { t } = useTranslation()
-  const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
+  const deploying = isDeployInFlight(app)
   const invalidateAppSummary = useAppsStore((s) => s.invalidateAppSummary)
   const refreshApp = useAppsStore((s) => s.refreshApp)
 

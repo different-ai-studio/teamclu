@@ -16,7 +16,6 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 
 import {
-  buildDaemonApp,
   cloneDaemonApp,
   invalidateDaemonConnection,
   moveDaemonAppWorkdir,
@@ -28,7 +27,6 @@ const DETAIL = 'git clone failed: git@git.example.com: Permission denied (public
 const failures: [string, () => Promise<{ outcome: string; error: string | null }>][] = [
   ['cloneDaemonApp', () => cloneDaemonApp('app-1', 'team-1', 'ssh://git@git.example.com:2222/o/r.git', 'pem')],
   ['seedDaemonApp', () => seedDaemonApp('app-1', 'team-1', 'App', 'web')],
-  ['buildDaemonApp', () => buildDaemonApp('app-1', 'team-1', { presignedPut: 'https://oss.example.com/put' })],
   ['moveDaemonAppWorkdir', () => moveDaemonAppWorkdir('app-1', 'team-1', '/elsewhere')],
 ]
 

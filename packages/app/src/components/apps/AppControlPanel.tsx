@@ -312,7 +312,6 @@ interface AppControlPanelProps {
  */
 export function AppControlPanel({ app }: AppControlPanelProps) {
   const { t } = useTranslation()
-  const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
   const rename = useAppsStore((s) => s.rename)
 
   const [editingName, setEditingName] = React.useState(false)
@@ -325,7 +324,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
     setNameDraft(app.name)
   }, [app.id, app.name])
 
-  const status = appStatusMeta(app, deploying)
+  const status = appStatusMeta(app)
 
   const handleRename = async () => {
     const trimmed = nameDraft.trim()

@@ -29,6 +29,7 @@ import { useAppsStore } from '@/stores/apps-store'
 import { requestAgentDeploy } from '@/lib/apps/app-deploy-prompt'
 import { AppTabShell } from './AppTabShell'
 import type { AppAuthMode, AppRow } from '@/lib/backend/types'
+import { isDeployInFlight } from '@/lib/apps/app-list-helpers'
 
 /**
  * Who on the internet may open the deployed site, page by page.
@@ -163,7 +164,7 @@ export function AppAuthTabContent({ appId }: { appId: string }) {
 function AuthBody({ app }: { app: AppRow }) {
   const { t } = useTranslation()
   const updateAuthPolicy = useAppsStore((s) => s.updateAuthPolicy)
-  const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
+  const deploying = isDeployInFlight(app)
 
   const [mode, setMode] = React.useState<AppAuthMode>(app.authMode)
   const [orgRoles, setOrgRoles] = React.useState<AppAuthInfo['roles']>([])

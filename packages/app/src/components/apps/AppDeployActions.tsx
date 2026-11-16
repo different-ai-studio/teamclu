@@ -3,14 +3,11 @@ import { useTranslation } from 'react-i18next'
 import { Eye, Globe, Loader2, Rocket, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { deployDisabledReason } from '@/lib/apps/app-list-helpers'
+import { deployDisabledReason, isDeployInFlight } from '@/lib/apps/app-list-helpers'
 import { requestAgentDeploy } from '@/lib/apps/app-deploy-prompt'
 import { openAppPreview } from '@/lib/tabs/app-tabs'
 import { AppDeploymentControl } from './AppDeploymentControl'
 import type { AppRow } from '@/lib/backend/types'
-
-/** States in which a deploy is already under way on the server. */
-const IN_FLIGHT = ['awaiting_build', 'building', 'deploying']
 
 /**
  * Deploy, preview and uninstall, in the app's control panel.
@@ -25,7 +22,7 @@ export function AppDeployActions({ app }: { app: AppRow }) {
   const [requesting, setRequesting] = React.useState(false)
 
   const blocked = deployDisabledReason(app)
-  const inFlight = IN_FLIGHT.includes(app.fcStatus ?? '')
+  const inFlight = isDeployInFlight(app)
   const deployDisabled = requesting || inFlight || app.provisionStatus !== 'ready' || !!blocked
   const previewUrl = app.publicUrl ?? app.fcEndpoint
   const previewDisabled = !previewUrl || app.fcStatus !== 'live'

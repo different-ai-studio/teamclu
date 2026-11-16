@@ -307,7 +307,6 @@ function KeyValues({ items, testId }: { items: KeyValueItem[]; testId?: string }
  */
 export function AppSettingsPanel({ app }: { app: AppRow }) {
   const { t } = useTranslation()
-  const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
   const reseed = useAppsStore((s) => s.reseed)
   const setVisibility = useAppsStore((s) => s.setVisibility)
   const setType = useAppsStore((s) => s.setType)
@@ -344,7 +343,7 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
     setNameDraft(app.name)
   }, [app.id, app.name])
 
-  const status = appStatusMeta(app, deploying)
+  const status = appStatusMeta(app)
   const showReseed = canReseed(app.provisionStatus)
   const gitKind = appGitKind(app)
   const repoHint = REPO_HINTS[gitKind.kind]
