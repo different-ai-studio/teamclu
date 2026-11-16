@@ -153,19 +153,21 @@ function AppContent() {
       <AutomationPanelDialog />
     </React.Suspense>
   ) : null;
-  const selectedAppId = useAppsStore((s) => s.selectedAppId);
   const appIdBySessionId = useAppsStore((s) => s.appIdBySessionId);
   const appItems = useAppsStore((s) => s.items);
   const activeSessionId = useSessionSelectionStore((s) => s.currentSessionId);
+  const activeSessionAppId = useSessionListStore((s) =>
+    activeSessionId ? s.rows.find((r) => r.id === activeSessionId)?.app_id ?? null : null,
+  );
 
   const controlPanelAppId = React.useMemo(
     () =>
       resolveControlPanelAppId({
-        selectedAppId,
         activeSessionId,
+        sessionAppId: activeSessionAppId,
         appIdBySessionId,
       }),
-    [selectedAppId, activeSessionId, appIdBySessionId],
+    [activeSessionId, activeSessionAppId, appIdBySessionId],
   );
   const controlPanelApp = React.useMemo(
     () => (controlPanelAppId ? appItems.find((a) => a.id === controlPanelAppId) ?? null : null),
