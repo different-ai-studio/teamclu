@@ -26,12 +26,29 @@ updates:
     ignore:
       - dependency-name: "expo*"
         update-types: ["version-update:semver-major"]
+      # The matrix pins react-native and its third-party native modules to a
+      # minor (react-native 0.86.x, gesture-handler ~2.32, screens ~4.26, ...),
+      # so a minor bump already leaves it: #1874 tried react-native 0.86 → 0.88.
+      # Earlier, react-native-webview 13.17.0 broke the Expo typecheck (every
+      # <WebView> prop typed `never`, #1757). These move with the SDK.
       - dependency-name: "react-native*"
-        update-types: ["version-update:semver-major"]
-      # 13.17.0 broke the Expo typecheck (every <WebView> prop typed `never`,
-      # #1757); it moves with the SDK, not on its own.
-      - dependency-name: "react-native-webview"
-        update-types: ["version-update:semver-minor"]
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # react-native ships its renderer for one exact react version, so react
+      # and react-dom move with react-native. The ignore is repo-wide (one
+      # pnpm workspace), which holds the desktop app on the same react minor.
+      - dependency-name: "react"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # shiki 4.6 loads its inlined oniguruma wasm with Blob.stream(),
+      # DecompressionStream and Response.bytes() at module load. bytes() needs
+      # Safari 18 and the macOS build targets safari13, so syntax highlighting
+      # breaks on older WebKit (jsdom lacks Blob.stream too, so the
+      # shiki-renderer tests fail, #1874). Lift this once the WebKit floor moves.
+      - dependency-name: "shiki"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "@shikijs/*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
       # The Tauri CLI refuses to build when an npm package and its Rust crate
       # differ in major.minor, and the crate side drags a Tauri core upgrade
       # (#1759). These move together, in a Tauri upgrade.
