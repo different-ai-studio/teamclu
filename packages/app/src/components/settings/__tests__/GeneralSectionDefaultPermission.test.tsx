@@ -26,6 +26,7 @@ vi.mock('i18next', () => ({
 
 vi.mock('@/lib/i18n', () => ({
   changeLanguage: vi.fn(),
+  isLocaleLocked: false,
 }))
 
 vi.mock('@/lib/config/build-config', () => ({
