@@ -59,6 +59,18 @@ jobs:
           node --import tsx --test test/deploy-env-parity.test.ts
           npm run build
 
+      # Since 2026-11-11 the Dokploy manager takes SSH only from the company
+      # VPN (headscale), so a runner joins it as an ephemeral tag:ci node and
+      # reaches the manager on its private address, the way saas-mono's
+      # deploy workflows do. BELAYO_DOKPLOY_HOST must hold that private
+      # address; the public one times out on port 22.
+      - name: Join company VPN
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.BELAYO_CI_TS_AUTHKEY }}
+          args: --login-server=https://hs.mx5.cn --accept-routes
+          hostname: gha-teamclu-cloud-api-${{ github.run_id }}
+
       - name: Start ssh-agent
         run: |
           eval "$(ssh-agent -s)"
