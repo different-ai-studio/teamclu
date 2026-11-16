@@ -14,6 +14,7 @@ CREATE TABLE amux.org_roles_users (
   created_by uuid DEFAULT auth.uid(),
   updated_by uuid DEFAULT auth.uid(),
   updated_note text,
+  deleted_at timestamptz,
   UNIQUE NULLS NOT DISTINCT (user_id,role_id,store_id)
 );
 COMMENT ON TABLE amux.org_roles_users IS
@@ -32,6 +33,7 @@ COMMENT ON COLUMN amux.org_roles_users.updated_at IS 'Last grant update timestam
 COMMENT ON COLUMN amux.org_roles_users.created_by IS 'Identity that created the grant';
 COMMENT ON COLUMN amux.org_roles_users.updated_by IS 'Identity that last updated the grant';
 COMMENT ON COLUMN amux.org_roles_users.updated_note IS 'Audit note for the grant update';
+COMMENT ON COLUMN amux.org_roles_users.deleted_at IS 'Nullable deletion timestamp required by the common audit schema';
 
 
 ALTER TABLE amux.org_roles_users ENABLE ROW LEVEL SECURITY;
