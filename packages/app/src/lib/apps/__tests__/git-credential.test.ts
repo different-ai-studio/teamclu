@@ -57,12 +57,24 @@ describe('syncGitCredential', () => {
     expect(invoke).toHaveBeenCalledWith('git_credential_write', {
       credential: {
         gitHost: 'gitea.example.com',
+        gitScheme: 'https',
         apiBase: 'https://api.example.com',
         userId: 'user-1',
         userName: 'uuser1',
         token: 'git-token',
         expiresAt: '2026-12-17T08:00:00Z',
       },
+    })
+  })
+
+  it('passes an http deployment\'s scheme on, so the helper matches http URLs', async () => {
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === 'git_credential_status' ? { present: false, userId: null, expiresAt: null, gitHost: null } : undefined,
+    )
+    apps.mintGitToken.mockResolvedValue({ ...grant, gitScheme: 'http' })
+    await syncGitCredential(session)
+    expect(invoke).toHaveBeenCalledWith('git_credential_write', {
+      credential: expect.objectContaining({ gitHost: 'gitea.example.com', gitScheme: 'http' }),
     })
   })
 

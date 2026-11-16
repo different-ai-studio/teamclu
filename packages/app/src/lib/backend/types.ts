@@ -1482,6 +1482,8 @@ export interface GitTokenGrant {
   userName: string;
   /** Host of the TeamClu git server, for the credential helper. */
   gitHost: string | null;
+  /** Scheme git reaches that host with; the helper is keyed on `<scheme>://<host>`. Older servers omit it (https). */
+  gitScheme?: 'https' | 'http';
 }
 
 /** Someone in the team an app can be granted to — a member or an agent. */

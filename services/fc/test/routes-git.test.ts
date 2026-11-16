@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   credentialFromHeader,
   readGitPublicHost,
+  readGitPublicScheme,
   registerGit,
   resetGitCallerCache,
   resetGitMintLimiter,
@@ -102,6 +103,21 @@ test("credentials are read from Basic (git) and Bearer headers", () => {
   assert.equal(readGitPublicHost({}), null);
 });
 
+test("the helper's scheme follows GITEA_PUBLIC_URL, https unless it says http", () => {
+  assert.equal(readGitPublicScheme({ GITEA_PUBLIC_URL: "https://gitea.example.com/" }), "https");
+  assert.equal(readGitPublicScheme({ GITEA_PUBLIC_URL: "http://gitea.localhost:8080" }), "http");
+  assert.equal(readGitPublicScheme({}), "https");
+  assert.equal(readGitPublicScheme({ GITEA_PUBLIC_URL: "not a url" }), "https");
+});
+
+test("with per-account git off, no git token is minted even if the secret is set", async () => {
+  const off = setup({}, { accountAuth: () => false });
+  await assert.rejects(
+    () => off.call("POST /v1/git/token", { authorization: "Bearer alice-session" }),
+    (e: any) => e.statusCode === 503 && e.code === "git_token_unavailable",
+  );
+});
+
 test("git tokens are git-only, carry their epoch, and expire after 30 days", async () => {
   const now = Date.parse("2026-11-17T08:00:00Z");
   const { token } = await signGitToken({ userId: ALICE, epoch: 2 }, SECRET, now);
@@ -115,6 +131,7 @@ test("a person mints a git token with their session and it opens the gateway", a
   const minted = await call("POST /v1/git/token", { authorization: "Bearer alice-session" });
   assert.equal(minted.body.userName, giteaUserName(ALICE));
   assert.equal(minted.body.gitHost, "gitea.example.com");
+  assert.equal(minted.body.gitScheme, "https");
 
   const ok = await call("GET /v1/git/authz", { authorization: basic(minted.body.token) });
   assert.equal(ok.statusCode, 200);

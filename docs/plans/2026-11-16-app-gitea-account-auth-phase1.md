@@ -38,7 +38,7 @@ FC 新增两个环境变量，按 CLAUDE.md 的要求同时加进 `deploy/self-h
 `deploy/belayo/cloud-api.env.keys`，并让 `services/fc/test/deploy-env-parity.test.ts` 通过：
 
 - `GITEA_ACCOUNT_AUTH`（`off` 默认 / `on`）：总开关。belayo 不设值。
-- `GIT_TOKEN_SECRET`：git 专用 token 的签名密钥。没设时 `/v1/git/token` 返回 503。
+- `GIT_TOKEN_SECRET`：git 专用 token 的签名密钥。没设时，或 `GITEA_ACCOUNT_AUTH` 不是 `on` 时，`/v1/git/token` 返回 503（桌面端静默忽略，不写凭证、不改全局 git 配置）。
 
 ---
 
@@ -367,6 +367,7 @@ GITEA__security__REVERSE_PROXY_AUTHENTICATION_USER: "X-WEBAUTH-USER"
   git config --global credential.https://<git host>.useHttpPath true
   ```
   第一行的空值清掉这个主机已有的 helper，避免 macOS 自带的 osxkeychain 把 token 存下来、过期后重放导致 401。
+  `GITEA_PUBLIC_URL` 是 `http://` 的部署，token 接口返回 `gitScheme: "http"`，这三行改用 `credential.http://<git host>`。
   amuxd 路径用 `<amuxd home>/bin/amuxd` 这种稳定路径，自更新后不用改配置。
 - **app checkout**（`apps/daemon/src/sync/app_git.rs`）：app 带 `gitAccountAuth: true` 时，`origin` 设成 `gitHttpUrl`，
   不写 `core.sshCommand`，checkout 本地也写一份上面的 helper 配置（没装全局配置、或者 agent 的 HOME 不同也能用）。
@@ -413,7 +414,7 @@ GITEA__security__REVERSE_PROXY_AUTHENTICATION_USER: "X-WEBAUTH-USER"
 ## belayo 上线（以后）
 
 第一期合并后，belayo 只会执行 PR1 的迁移（belayo 的迁移要手动跑，`RUN_MIGRATIONS=1`），`GITEA_ACCOUNT_AUTH` 不设，
-其余改动在 belayo 上不生效：`gitAccountAuth` 恒为 false，`/v1/git/token` 因为没有 `GIT_TOKEN_SECRET` 返回 503（桌面端静默忽略），
+其余改动在 belayo 上不生效：`gitAccountAuth` 恒为 false，`/v1/git/token` 因为开关没开（也没有 `GIT_TOKEN_SECRET`）返回 503（桌面端静默忽略），
 self-host 的 Caddyfile、compose 和 bootstrap 脚本 belayo 都不读。要在 belayo 上打开，按下面的顺序做。
 
 belayo 的 Gitea 在一台专用节点上（私网，无公网 IP），HTTP 经 Dokploy 的 Traefik 以 `git.service.ucar.cc` 对外，

@@ -10,10 +10,14 @@
 //! The same call installs the global git config for that host:
 //!
 //! ```text
-//! credential.https://<host>.helper = ""            (forget earlier helpers for this host)
-//! credential.https://<host>.helper = !<amuxd> git-credential [--brand <b>]
-//! credential.https://<host>.useHttpPath = true
+//! credential.<scheme>://<host>.helper = ""            (forget earlier helpers for this host)
+//! credential.<scheme>://<host>.helper = !<amuxd> git-credential [--brand <b>]
+//! credential.<scheme>://<host>.useHttpPath = true
 //! ```
+//!
+//! `<scheme>` is `https` unless the server says its git host is plain `http`
+//! (a self-host test box without TLS): git only consults a helper whose scheme
+//! matches the URL it is fetching.
 //!
 //! The empty entry matters on macOS: the system git's osxkeychain helper would
 //! otherwise store the short-lived token and replay it after it expires.
@@ -34,6 +38,9 @@ const TOKEN_FILE_NAME: &str = "git-credential.json";
 #[serde(rename_all = "camelCase")]
 pub struct GitCredentialFile {
     pub git_host: Option<String>,
+    /// `https` (default) or `http`, from `POST /v1/git/token`'s `gitScheme`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_scheme: Option<String>,
     pub api_base: Option<String>,
     pub user_id: Option<String>,
     pub user_name: Option<String>,
@@ -121,15 +128,24 @@ fn git(args: &[&str]) -> std::io::Result<std::process::Output> {
     cmd.output()
 }
 
-/// Install the global helper config for `host`. Idempotent.
-fn install_global_helper(host: &str, amuxd: &Path) -> Result<(), String> {
+/// The scheme the helper is keyed on: only an explicit `http` drops TLS.
+fn helper_scheme(scheme: Option<&str>) -> &'static str {
+    match scheme.map(str::trim) {
+        Some(s) if s.eq_ignore_ascii_case("http") => "http",
+        _ => "https",
+    }
+}
+
+/// Install the global helper config for `<scheme>://<host>`. Idempotent.
+fn install_global_helper(host: &str, scheme: Option<&str>, amuxd: &Path) -> Result<(), String> {
     let host = host.trim();
     if host.is_empty() || host.contains(['\n', '\r', ' ']) {
         return Err(format!(
             "refusing a git host that is not a host name: {host:?}"
         ));
     }
-    let key = format!("credential.https://{host}.helper");
+    let scheme = helper_scheme(scheme);
+    let key = format!("credential.{scheme}://{host}.helper");
     // Exit 5: nothing to unset.
     let out = git(&["config", "--global", "--unset-all", &key]).map_err(|e| e.to_string())?;
     if !out.status.success() && out.status.code() != Some(5) {
@@ -141,7 +157,7 @@ fn install_global_helper(host: &str, amuxd: &Path) -> Result<(), String> {
             return Err(String::from_utf8_lossy(&out.stderr).into_owned());
         }
     }
-    let path_key = format!("credential.https://{host}.useHttpPath");
+    let path_key = format!("credential.{scheme}://{host}.useHttpPath");
     let out = git(&["config", "--global", &path_key, "true"]).map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).into_owned());
@@ -182,7 +198,7 @@ pub fn git_credential_write(credential: GitCredentialFile) -> Result<(), String>
     write_private(&token_file(), &bytes)
         .map_err(|e| format!("could not write git credential: {e}"))?;
     if let (Some(host), Some(amuxd)) = (credential.git_host.as_deref(), amuxd_path()) {
-        if let Err(e) = install_global_helper(host, &amuxd) {
+        if let Err(e) = install_global_helper(host, credential.git_scheme.as_deref(), &amuxd) {
             tracing::warn!(error = %e, "git credential: could not install the global git helper");
         }
     }
@@ -226,7 +242,22 @@ mod tests {
 
     #[test]
     fn a_host_with_spaces_or_newlines_is_refused() {
-        assert!(install_global_helper("evil host", Path::new("/x/amuxd")).is_err());
-        assert!(install_global_helper("a\nb", Path::new("/x/amuxd")).is_err());
+        assert!(install_global_helper("evil host", None, Path::new("/x/amuxd")).is_err());
+        assert!(install_global_helper("a\nb", None, Path::new("/x/amuxd")).is_err());
+    }
+
+    #[test]
+    fn the_helper_is_keyed_on_https_unless_the_server_says_http() {
+        assert_eq!(helper_scheme(None), "https");
+        assert_eq!(helper_scheme(Some("https")), "https");
+        assert_eq!(helper_scheme(Some("HTTP")), "http");
+        assert_eq!(helper_scheme(Some("ftp")), "https");
+    }
+
+    #[test]
+    fn an_older_token_file_without_a_scheme_still_reads() {
+        let f: GitCredentialFile =
+            serde_json::from_str(r#"{"gitHost":"g.example","token":"t"}"#).unwrap();
+        assert_eq!(f.git_scheme, None);
     }
 }

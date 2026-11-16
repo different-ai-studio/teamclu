@@ -11,6 +11,7 @@ import {
   GIT_TOKEN_TTL_SECONDS,
 } from "../git-token.js";
 import { giteaUserName } from "../provisioning/gitea.js";
+import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
 
 /**
  * Per-account git over HTTPS (docs/specs/2026-11-16-app-platform-identity-design.md §4, §6).
@@ -36,6 +37,10 @@ export interface GitRouteDeps {
   now(): number;
   /** Public git host the desktop configures its credential helper for. */
   gitHost(): string | null;
+  /** `https` or `http` — the scheme of that host, so the helper matches it. */
+  gitScheme?(): "https" | "http";
+  /** `GITEA_ACCOUNT_AUTH=on`. Off: no git tokens, clients stay on SSH. */
+  accountAuth?(): boolean;
   trustedExternalJwtSecret(): string | undefined;
 }
 
@@ -45,6 +50,8 @@ function defaultDeps(): GitRouteDeps {
     admin: () => createServiceRoleClient(),
     now: () => Date.now(),
     gitHost: () => readGitPublicHost(),
+    gitScheme: () => readGitPublicScheme(),
+    accountAuth: () => giteaAccountAuthEnabled(),
     trustedExternalJwtSecret: () => process.env.TRUSTED_EXTERNAL_JWT_SECRET || undefined,
   };
 }
@@ -57,6 +64,21 @@ export function readGitPublicHost(env: NodeJS.ProcessEnv = process.env): string 
     return new URL(raw).host || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Scheme of `GITEA_PUBLIC_URL`. Anything but an explicit `http:` is `https`:
+ * the desktop keys its credential helper on `<scheme>://<host>`, and git only
+ * consults a helper whose scheme matches the URL it is fetching.
+ */
+export function readGitPublicScheme(env: NodeJS.ProcessEnv = process.env): "https" | "http" {
+  const raw = env.GITEA_PUBLIC_URL?.trim();
+  if (!raw) return "https";
+  try {
+    return new URL(raw).protocol === "http:" ? "http" : "https";
+  } catch {
+    return "https";
   }
 }
 
@@ -162,6 +184,11 @@ const APP_REPO = /^tc-app-([0-9a-f-]{36})(?:\.git)?$/i;
 
 export function registerGit(router, deps: GitRouteDeps = defaultDeps()) {
   router.post("/v1/git/token", { auth: "none" }, async (ctx) => {
+    // A token is only useful while per-account git is on; minting one with the
+    // flag off would still make the desktop install a global git helper.
+    if (deps.accountAuth && !deps.accountAuth()) {
+      throw new ApiError(503, "git_token_unavailable", "per-account git is not enabled on this deployment");
+    }
     const secret = deps.secret();
     if (!secret) throw new ApiError(503, "git_token_unavailable", "GIT_TOKEN_SECRET is not configured");
     const user = await requireLoginUser(ctx, deps);
@@ -183,6 +210,7 @@ export function registerGit(router, deps: GitRouteDeps = defaultDeps()) {
         userId: user.id,
         userName: giteaUserName(user.id),
         gitHost: deps.gitHost(),
+        gitScheme: deps.gitScheme?.() ?? "https",
       },
     };
   });

@@ -145,6 +145,32 @@ pub fn caller_from_env(var: impl Fn(&str) -> Option<String>) -> Caller {
 const UNCONFIRMED_AGENT: &str = "could not confirm this agent's identity (a background process \
      outlives the agent that started it) — run git in the foreground";
 
+/// Unix agent with the TCP variables but no socket variable: amuxd sets the
+/// socket whenever it could bind one, and the TCP route refuses to issue the
+/// token on unix, so asking would only end in the misleading "background
+/// process" refusal above.
+#[cfg(unix)]
+const NO_IDENTITY_SOCKET: &str = "this agent's daemon has no identity socket (amuxd could not \
+     create run/runtime-context.sock — see the amuxd log), so git cannot act as this agent";
+
+/// The login for an agent that arrived without a socket variable.
+fn agent_login_without_socket(
+    url: &str,
+    bearer: &str,
+    host_generation_id: &str,
+    backend_kind: &str,
+) -> Result<Login, String> {
+    #[cfg(unix)]
+    {
+        let _ = (url, bearer, host_generation_id, backend_kind);
+        Err(NO_IDENTITY_SOCKET.into())
+    }
+    #[cfg(not(unix))]
+    {
+        agent_login_bearer(url, bearer, host_generation_id, backend_kind)
+    }
+}
+
 /// The login an agent gets from the daemon's token, named after its account.
 fn agent_login_from_token(token: String) -> Login {
     let username = jwt_subject(&token)
@@ -341,7 +367,7 @@ pub fn run(brand: Option<&str>, operation: &str) -> i32 {
             token,
             host_generation_id,
             backend_kind,
-        } => agent_login_bearer(&url, &token, &host_generation_id, &backend_kind),
+        } => agent_login_without_socket(&url, &token, &host_generation_id, &backend_kind),
         Caller::Person => person_login(file.as_ref(), chrono::Utc::now()),
     };
     let login = match login {
@@ -501,6 +527,17 @@ mod tests {
                 backend_kind: "pi".into(),
             }
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_unix_agent_without_the_socket_is_told_why_and_never_asks_over_tcp() {
+        // Port 9 (discard) on loopback: if this ever tried TCP it would fail
+        // with a connect error, not the socket sentence.
+        let err =
+            agent_login_without_socket("http://127.0.0.1:9", "rtctx", "gen-1", "pi").unwrap_err();
+        assert!(err.contains("runtime-context.sock"), "{err}");
+        assert!(!err.contains("background process"), "{err}");
     }
 
     #[test]

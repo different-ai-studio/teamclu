@@ -676,7 +676,7 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
               ? t('apps.visibilityTeamHint', '团队里每个人都能在应用列表里看到它。')
               : t(
                   'apps.visibilityPersonalHint',
-                  '只有你、以及在「协作权限」里被授权的成员看得到。本机 daemon 也看不到它。',
+                  '只有你、以及在「协作权限」里被授权的成员和 agent 看得到。',
                 )
           }
         >
@@ -1080,7 +1080,7 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
             <AlertDialogDescription>
               {t(
                 'apps.visibilityNarrowConfirm',
-                '团队里其他人会在应用列表里看不到它。在「协作权限」里授权过的成员不受影响 —— 他们仍然看得到。本机 daemon 拿不到授权，所以它会看不到这个应用。',
+                '团队里其他人会在应用列表里看不到它。在「协作权限」里授权过的成员和 agent 不受影响 —— 他们仍然看得到；没有授权的 agent 也会看不到它。',
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>

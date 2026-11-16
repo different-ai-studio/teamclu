@@ -58,6 +58,7 @@ export function syncGitCredential(
       await invoke("git_credential_write", {
         credential: {
           gitHost: grant.gitHost,
+          gitScheme: grant.gitScheme === 'http' ? 'http' : 'https',
           apiBase: getEffectiveServerConfigSync().cloudApiUrl ?? null,
           userId: grant.userId,
           userName: grant.userName,

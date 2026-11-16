@@ -7887,12 +7887,13 @@ paths:
       summary: Mint the caller's git-only token
       description: |
         For a person's machine: the desktop calls this after sign-in and writes
-        the result to `<amuxd home>/git-token.json`, where `amuxd
+        the result to `~/.{brand}/git-credential.json`, where `amuxd
         git-credential` hands it to git. The token is a git credential and
         nothing else — `/v1/git/authz` accepts it, every other endpoint does
         not — and lives 30 days. Authenticated with the caller's TeamClu
         session (`Authorization: Bearer`); a git token cannot mint another.
-        At most 10 per account per hour. 503 `git_token_unavailable` when the
+        At most 10 per account per hour. 503 `git_token_unavailable` when
+        per-account git is off (`GITEA_ACCOUNT_AUTH` is not `on`) or the
         deployment has no `GIT_TOKEN_SECRET`.
       tags: [Apps]
       responses:
@@ -7914,6 +7915,13 @@ paths:
                   gitHost:
                     type: [string, "null"]
                     description: Host of `GITEA_PUBLIC_URL`, for scoping the credential helper.
+                  gitScheme:
+                    type: string
+                    enum: [https, http]
+                    description: >-
+                      Scheme of `GITEA_PUBLIC_URL` (`https` unless it is explicitly
+                      `http`). The helper is configured for `<gitScheme>://<gitHost>`,
+                      since git only consults a helper whose scheme matches the URL.
         "401":
           $ref: "#/components/responses/Error"
         "429":

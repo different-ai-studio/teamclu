@@ -199,6 +199,8 @@ git config --global credential.https://<git host>.useHttpPath true
 
 第一行的空值清掉这个主机已有的 helper：macOS 自带的 osxkeychain 会把 token 存下来，过期后拿出来重放，导致 401。
 
+`https` 是默认值。`GITEA_PUBLIC_URL` 明确写成 `http://` 的部署（没有 TLS 的本机测试环境），`POST /v1/git/token` 会返回 `gitScheme: "http"`，桌面端改写 `credential.http://<git host>.*`：git 只会调用协议和 URL 一致的 helper。TeamClu 自己的 checkout 不受影响，它们的 helper 写在仓库配置里，不限定协议。
+
 **库里的仓库地址不变。** `apps.git_remote_url` 继续存 SSH 地址，`git_auth_kind` 继续是 `gitea_deploy_key`；
 app 接口多返回 `gitHttpUrl` 和 `gitAccountAuth: true`，新版客户端看到才把 checkout 的 remote 设成 HTTPS。
 原因：旧版 daemon 看到 HTTPS 地址会把它当成导入的外部仓库去要 token。daemon 自己的 seed push、部署前 fetch
