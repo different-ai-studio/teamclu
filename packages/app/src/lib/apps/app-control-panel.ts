@@ -1,15 +1,20 @@
 /**
- * Resolve which app the control panel should show.
+ * Resolve which app the control panel should show: the app the open session
+ * belongs to, and nothing else.
  *
- * Design §2.4: selected app in column 1 ?? active session's linked app.
- * Never infer from workspace path.
+ * The session's own `app_id` (server column, carried on the session list row)
+ * decides. `appIdBySessionId` covers a session opened or created from the apps
+ * section before the list row carrying that column has landed.
+ *
+ * Never the app selected in the sidebar: that selection outlives leaving the
+ * apps section, and honouring it hung the last app's panel over every ordinary
+ * chat opened afterwards. Never inferred from the workspace path either.
  */
 export function resolveControlPanelAppId(args: {
-  selectedAppId: string | null;
   activeSessionId: string | null;
+  sessionAppId: string | null | undefined;
   appIdBySessionId: Record<string, string>;
 }): string | null {
-  if (args.selectedAppId) return args.selectedAppId;
   if (!args.activeSessionId) return null;
-  return args.appIdBySessionId[args.activeSessionId] ?? null;
+  return args.sessionAppId || args.appIdBySessionId[args.activeSessionId] || null;
 }
