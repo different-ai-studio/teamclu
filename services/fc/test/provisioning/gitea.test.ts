@@ -157,3 +157,24 @@ test("listDeployKeys reports id + title for the sweep", async () => {
     { id: 2, title: "" },
   ]);
 });
+
+test("users FC creates get a noreply address under the public git host, not FC's internal route", async () => {
+  const { giteaNoreplyHost, makeGiteaClient } = await import("../../src/lib/provisioning/gitea.js");
+  assert.equal(giteaNoreplyHost("http://caddy:8081", { GITEA_PUBLIC_URL: "https://git.example.com" }), "git.example.com");
+  assert.equal(giteaNoreplyHost("http://caddy:8081", {}), "caddy");
+  assert.equal(giteaNoreplyHost("not a url", { GITEA_PUBLIC_URL: "" }), "gitea.local");
+
+  const bodies: any[] = [];
+  const client = makeGiteaClient({
+    url: "http://caddy:8081",
+    token: "t",
+    owner: "o",
+    noreplyHost: "git.example.com",
+    fetch: (async (url: string, init?: any) => {
+      if (init?.method === "POST") bodies.push(JSON.parse(init.body));
+      return new Response(init?.method === "POST" ? "{}" : "", { status: init?.method === "POST" ? 201 : 404 });
+    }) as any,
+  } as any);
+  await client.ensureUser("uabc", "Alice");
+  assert.equal(bodies[0].email, "uabc@users.noreply.git.example.com");
+});

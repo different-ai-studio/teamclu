@@ -156,7 +156,23 @@ export type GiteaCollaboratorPermission = "read" | "write" | "admin";
 
 export type GiteaClientOptions = GiteaConfig & {
   fetch?: typeof fetch;
+  /** Host for the noreply addresses of the users FC creates. Defaults to the
+   * host of `GITEA_PUBLIC_URL`, then of the API URL. */
+  noreplyHost?: string;
 };
+
+/** The domain people know the git server by, not FC's internal route to it. */
+export function giteaNoreplyHost(apiUrl: string, env: NodeJS.ProcessEnv = process.env): string {
+  for (const raw of [env.GITEA_PUBLIC_URL, apiUrl]) {
+    try {
+      const host = raw ? new URL(raw.trim()).hostname : "";
+      if (host) return host;
+    } catch {
+      /* next */
+    }
+  }
+  return "gitea.local";
+}
 
 export function makeGiteaClient(opts: GiteaClientOptions) {
   const base = opts.url.replace(/\/+$/, "");
@@ -220,7 +236,9 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
      * away.
      */
     async ensureUser(username: string, fullName: string): Promise<void> {
-      const host = new URL(base).hostname || "gitea.local";
+      // GITEA_URL is FC's internal entrance (`http://caddy:8081` on
+      // self-host); an address under it would read `…@users.noreply.caddy`.
+      const host = opts.noreplyHost ?? giteaNoreplyHost(base);
       const existing = await giteaGetOrNull(`/api/v1/users/${enc(username)}`);
       if (!existing) {
         const res = await fetchFn(`${base}/api/v1/admin/users`, {
