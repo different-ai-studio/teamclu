@@ -196,6 +196,15 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
       }
     },
 
+    async getAppCustomDomain(appId) {
+      try {
+        return await client.get<AppCustomDomain>(`/v1/apps/${encodeURIComponent(appId)}/custom-domain`);
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
     async setAppCustomDomain(appId, domain) {
       try {
         return await client.put<AppCustomDomain>(

@@ -317,6 +317,15 @@ export function registerApps(router, tickDeps = { createServiceRoleClient, makeA
     return { body: out };
   });
 
+  router.get("/v1/apps/:appId/custom-domain", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.getAppCustomDomain(appId);
+    // Admin only: the DNS records carry the verification token. Everyone else
+    // reads the domain and its state off the app row.
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
   router.put("/v1/apps/:appId/custom-domain", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const body = ctx.json ?? {};

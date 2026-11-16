@@ -1656,6 +1656,11 @@ export interface AppsBackend {
    * across two PATCHes would be rejected on the intermediate state.
    */
   updateAppAuth(appId: string, patch: AppAuthPatch): Promise<AppRow | null>;
+  /**
+   * The bound domain with the DNS records to publish. Admin only: null (404)
+   * for anyone who may not change it, who reads the domain off the app row.
+   */
+  getAppCustomDomain(appId: string): Promise<AppCustomDomain | null>;
   /** Bind a domain the owner controls. Returns the DNS records to publish. */
   setAppCustomDomain(appId: string, domain: string): Promise<AppCustomDomain | null>;
   /** Check the published TXT proof. */

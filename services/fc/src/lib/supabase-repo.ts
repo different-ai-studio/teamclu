@@ -5443,6 +5443,19 @@ export function createSupabaseBusinessRepository(options) {
       return { cur, writer };
     },
 
+    /**
+     * The custom domain with the DNS records to publish, for whoever may
+     * change it. The records embed the verification token, which is not on the
+     * app row, so this is how a client shows them again after a reload —
+     * without re-binding, which only an admin could do anyway. Null for a
+     * caller who is not an admin of a visible app (404, same as the writes).
+     */
+    async getAppCustomDomain(appId: string) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      return customDomainView(gate.cur);
+    },
+
     async setAppCustomDomain(appId: string, rawDomain: unknown) {
       const gate = await this.authorizeCustomDomainWrite(appId);
       if (!gate) return null;

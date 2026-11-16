@@ -120,7 +120,7 @@ export function mapSetTeamMemberRoleError(error: any) {
 // the client contract. Selecting it keeps finalizeDeploy and the data browser
 // from needing a second round trip.
 export const APP_COLUMNS =
-  "id, team_id, org_id, created_by_actor_id, name, slug, app_code, function_naming_mode, uses_app_code_domain, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, start_spec, artifact_verification, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, undeploy_operation, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, deploy_token, deploy_attempt_id, deploy_started_at, created_at, updated_at";
+  "id, team_id, org_id, created_by_actor_id, name, slug, app_code, function_naming_mode, uses_app_code_domain, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, start_spec, artifact_verification, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, undeploy_operation, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, deploy_token, deploy_attempt_id, deploy_started_at, custom_domain, custom_domain_verified_at, created_at, updated_at";
 
 export function slugify(name: string): string {
   return (
@@ -257,6 +257,17 @@ export function mapApp(r: any) {
     publicUrl: appPublicUrl(r.slug, r.id, process.env, r.uses_app_code_domain === true ? appCode : null),
     fcFunctionName: r.fc_function_name ?? null,
     fcRegion: r.fc_region ?? null,
+    // Only when the row was read with the columns. A query that selected a
+    // narrower set must not report "no domain": the client merges this row
+    // over the one it holds, and a null here would blank a bound domain.
+    // `custom_domain_token` never leaves the server; the DNS records that
+    // embed it come from GET /v1/apps/:id/custom-domain, for admins only.
+    ...("custom_domain" in r
+      ? {
+          customDomain: r.custom_domain ?? null,
+          customDomainVerifiedAt: appIso(r.custom_domain_verified_at),
+        }
+      : {}),
     createdAt: appIso(r.created_at)!,
     updatedAt: appIso(r.updated_at)!,
   };

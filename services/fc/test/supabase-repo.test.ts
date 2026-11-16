@@ -2584,6 +2584,67 @@ test("apps: getApp carries the caller's relationship too", async () => {
   assert.equal(app?.invitedByActorId, "actor-lin");
 });
 
+test("apps: list and get read the custom domain back, never its token", async () => {
+  const bound = {
+    ...APP_ROW,
+    custom_domain: "shop.example.org",
+    custom_domain_token: "secret-token",
+    custom_domain_verified_at: "2026-11-01T00:00:00Z",
+  };
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ seed: { apps: [bound] }, calls }));
+
+  const [listed] = await repo.listApps({ teamId: "team-1", limit: 25 });
+  const got = await repo.getApp("app-1");
+  for (const app of [listed, got]) {
+    assert.equal(app?.customDomain, "shop.example.org");
+    assert.equal(app?.customDomainVerifiedAt, "2026-11-01T00:00:00.000Z");
+    assert.ok(!JSON.stringify(app).includes("secret-token"));
+  }
+  // The columns have to be asked for; a fake that returns the whole row would
+  // otherwise pass this without the select ever naming them.
+  for (const call of calls.filter((c) => c.table === "apps" && c.op === "select" && c.columns !== "*")) {
+    assert.ok(call.columns.includes("custom_domain"), call.columns);
+    assert.ok(call.columns.includes("custom_domain_verified_at"), call.columns);
+    assert.ok(!call.columns.includes("custom_domain_token"), call.columns);
+  }
+});
+
+test("apps: an unbound app reads back as no domain, not a missing field", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, custom_domain: null, custom_domain_verified_at: null }] } }));
+  const app = await repo.getApp("app-1");
+  assert.equal(app?.customDomain, null);
+  assert.equal(app?.customDomainVerifiedAt, null);
+});
+
+test("apps: getAppCustomDomain hands an admin the DNS records again", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  try {
+    const repo = appsRepo(appsSupabase({
+      seed: { apps: [{ ...APP_ROW, custom_domain: "shop.example.org", custom_domain_token: "tok-1", custom_domain_verified_at: null }] },
+    }));
+    const out = await repo.getAppCustomDomain("app-1");
+    assert.equal(out?.domain, "shop.example.org");
+    assert.equal(out?.verified, false);
+    assert.ok(out?.dns.length > 0);
+    assert.ok(out?.dns.some((r: any) => String(r.value).includes("tok-1")), "the TXT proof carries the stored token");
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+  }
+});
+
+test("apps: getAppCustomDomain is null for a member without admin", async () => {
+  const row = { ...APP_ROW, custom_domain: "shop.example.org", custom_domain_token: "tok-1" };
+  const admin = appsSupabase({ seed: { apps: [row] } });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [row] }, actorRow: { id: "actor-other" } }),
+    { createServiceRoleClient: () => admin },
+  );
+  assert.equal(await repo.getAppCustomDomain("app-1"), null);
+});
+
 test("apps: getApp returns null when RLS hides the row", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [] } }));
   assert.equal(await repo.getApp("missing"), null);
