@@ -18,11 +18,21 @@
 set -eu
 
 ENV_FILE="${ENV_FILE:-.env}"
-if [ -f "$ENV_FILE" ]; then
-  case "$ENV_FILE" in /*) env_path="$ENV_FILE" ;; *) env_path="./$ENV_FILE" ;; esac
-  # shellcheck disable=SC1090
-  set -a && . "$env_path" && set +a
-fi
+# Read only the keys used here, never `.` the file: compose's .env is not shell
+# (`CADDY_GLOBAL_TLS=auto_https off`, `STUDIO_DEFAULT_ORGANIZATION=Default
+# Organization`), and sourcing it runs the word after the space as a command.
+# A value already in the environment wins, as it would with compose.
+env_value() { # $1=key → last `key=value` in ENV_FILE, quotes stripped
+  [ -f "$ENV_FILE" ] || return 0
+  sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
+}
+for key in GITEA_PUBLIC_URL GITEA_DOMAIN GITEA_BOT_USERNAME GITEA_OWNER GITEA_TOKEN; do
+  eval "current=\${$key:-}"
+  if [ -z "$current" ]; then
+    value=$(env_value "$key")
+    [ -z "$value" ] || export "$key=$value"
+  fi
+done
 
 BASE="${GITEA_GATEWAY_URL:-${GITEA_PUBLIC_URL:-}}"
 if [ -z "$BASE" ] && [ -n "${GITEA_DOMAIN:-}" ]; then BASE="https://${GITEA_DOMAIN}"; fi
