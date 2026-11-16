@@ -25,6 +25,7 @@ import { isGiteaManaged, useAppsStore } from '@/stores/apps-store'
 import { AppStatusDot } from './AppStatusDot'
 import { AppDeployActions } from './AppDeployActions'
 import { AppLocalPathRow } from './AppLocalPathRow'
+import { AppGitUrlRow, appGitCloneUrl } from './AppGitUrlRow'
 import type { AppGitHead, AppRow } from '@/lib/backend/types'
 
 /**
@@ -537,6 +538,11 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
         <Group title={t('apps.localPath.title', '本地路径')}>
           <AppLocalPathRow app={app} />
         </Group>
+        {appGitCloneUrl(app) && (
+          <Group title={t('apps.gitUrl.title', 'Git 地址')}>
+            <AppGitUrlRow app={app} />
+          </Group>
+        )}
         <Group title={t('apps.controlPanel.runtimeGroup', '运行与数据')}>
           <SummaryRow
             label={t('apps.data.section', '线上数据')}

@@ -144,7 +144,7 @@ FC 新增的端点：
 
 **真人：桌面端登录即完成。** 桌面端登录成功后调 `POST /v1/git/token`，把结果写进 `<amuxd home>/git-token.json`（0600）。
 helper 直接读这个文件，不用续期、不用联网、不用文件锁。桌面端每次启动时，token 剩余不足 7 天就重新签一个；
-退出登录时调 `revoke` 并删掉文件。token 过期或文件不存在 → helper 在 stderr 提示「请打开 TeamClu 桌面端登录」。
+退出登录时调 `revoke`，并把文件里的 token 和账号清空、只留主机信息（helper 据此认出主机，提示重新登录；整个删掉的话 helper 不认主机，git 只会报 `could not read Username`）。token 过期或文件不存在 → helper 在 stderr 提示「请打开 TeamClu 桌面端登录」。
 
 **关掉桌面端以后 git 照常能用**，最长 30 天不打开桌面端也行。真人这条路只依赖三样东西：`git-token.json`、
 `amuxd` 这个可执行文件、云端的 FC 和 Caddy；不依赖桌面端进程，也不依赖 daemon 进程。

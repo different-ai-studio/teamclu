@@ -1463,6 +1463,12 @@
     "deployPrompt": "请把应用「{{name}}」部署上线。\n\n按 deploy-app 技能的流程来：先用 manage_app status 看清当前状态；有没提交或没推送的改动就先提交并推送；然后调用 manage_app deploy 发布。部署完成后告诉我线上地址、部署的版本，以及你验证了什么。",
     "deployPromptFailed": "没能把部署请求发给 AI，请打开应用会话后重试。",
     "deployViaAgentHint": "发一条消息让 AI 检查、提交并部署",
+    "gitUrl": {
+      "title": "Git 地址",
+      "copy": "复制 git 地址",
+      "copyFailed": "复制失败",
+      "hint": "在任意终端里 git clone 这个地址即可，用的是你在 TeamClu 登录的身份，不用输密码。"
+    },
     "localPath": {
       "title": "本地路径",
       "none": "这台电脑上还没有这个应用的代码",

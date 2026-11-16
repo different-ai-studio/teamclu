@@ -627,6 +627,17 @@ mod tests {
     }
 
     #[test]
+    fn a_signed_out_file_keeps_the_host_known_and_asks_to_sign_in() {
+        // What the desktop leaves on sign-out (git_credential_clear): host, no token.
+        let raw = r#"{"gitHost":"gitea.example.com","gitScheme":"https","apiBase":null,"userId":null,"userName":null,"token":"","expiresAt":null}"#;
+        let file: TokenFile = serde_json::from_str(raw).unwrap();
+        assert!(known_hosts(Some(&file), &AccountCache::default())
+            .contains(&"gitea.example.com".to_string()));
+        let err = person_login(Some(&file), now()).unwrap_err();
+        assert!(err.contains("not signed in"), "{err}");
+    }
+
+    #[test]
     fn a_person_answers_with_the_token_file() {
         let file = TokenFile {
             git_host: Some("gitea.example.com".into()),

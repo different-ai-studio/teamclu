@@ -22,8 +22,11 @@
 //! The empty entry matters on macOS: the system git's osxkeychain helper would
 //! otherwise store the short-lived token and replay it after it expires.
 //!
-//! Sign-out removes the file. The token itself is revoked server-side by the
-//! frontend before calling `git_credential_clear`.
+//! Sign-out empties the token but keeps the host (and scheme, API base): with
+//! no record of the host at all, the helper would treat it as a stranger's and
+//! stay silent, and git would only say "could not read Username". Keeping it
+//! lets the helper say "not signed in — open TeamClu". The token itself is
+//! revoked server-side by the frontend before calling `git_credential_clear`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -205,15 +208,48 @@ pub fn git_credential_write(credential: GitCredentialFile) -> Result<(), String>
     Ok(())
 }
 
-/// Sign-out: forget the token. The global helper config stays; with no token
-/// file it answers nothing and git falls through to its own prompt.
+/// What sign-out leaves behind: where the git host is, and nothing about who.
+fn signed_out(file: GitCredentialFile) -> GitCredentialFile {
+    GitCredentialFile {
+        git_host: file.git_host,
+        git_scheme: file.git_scheme,
+        api_base: file.api_base,
+        user_id: None,
+        user_name: None,
+        token: String::new(),
+        expires_at: None,
+    }
+}
+
+fn clear_at(path: &Path) -> Result<(), String> {
+    let current: Option<GitCredentialFile> = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    match current {
+        // Keep the host so the helper can tell the person to sign in again.
+        Some(file)
+            if file
+                .git_host
+                .as_deref()
+                .is_some_and(|h| !h.trim().is_empty()) =>
+        {
+            let bytes = serde_json::to_vec_pretty(&signed_out(file)).map_err(|e| e.to_string())?;
+            write_private(path, &bytes).map_err(|e| format!("could not clear git credential: {e}"))
+        }
+        // Nothing worth keeping (no host, or unreadable): remove it.
+        _ => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("could not remove git credential: {e}")),
+        },
+    }
+}
+
+/// Sign-out: forget the token and who it belonged to; keep the host. The
+/// global helper config stays, and now answers "not signed in" for that host.
 #[tauri::command]
 pub fn git_credential_clear() -> Result<(), String> {
-    match std::fs::remove_file(token_file()) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("could not remove git credential: {e}")),
-    }
+    clear_at(&token_file())
 }
 
 #[cfg(test)]
@@ -252,6 +288,45 @@ mod tests {
         assert_eq!(helper_scheme(Some("https")), "https");
         assert_eq!(helper_scheme(Some("HTTP")), "http");
         assert_eq!(helper_scheme(Some("ftp")), "https");
+    }
+
+    #[test]
+    fn sign_out_keeps_the_host_and_drops_the_token_and_the_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(TOKEN_FILE_NAME);
+        let file = GitCredentialFile {
+            git_host: Some("git.example.com".into()),
+            git_scheme: Some("https".into()),
+            api_base: Some("https://api.example.com".into()),
+            user_id: Some("u-1".into()),
+            user_name: Some("uabc".into()),
+            token: "secret-token".into(),
+            expires_at: Some("2027-01-01T00:00:00Z".into()),
+        };
+        write_private(&path, &serde_json::to_vec(&file).unwrap()).unwrap();
+        clear_at(&path).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains("secret-token") && !raw.contains("u-1") && !raw.contains("uabc"),
+            "{raw}"
+        );
+        let left: GitCredentialFile = serde_json::from_str(&raw).unwrap();
+        assert_eq!(left.git_host.as_deref(), Some("git.example.com"));
+        assert_eq!(left.git_scheme.as_deref(), Some("https"));
+        assert!(left.token.is_empty());
+        // and the status the frontend reads says there is no token
+        assert!(left.token.trim().is_empty());
+    }
+
+    #[test]
+    fn sign_out_with_no_file_or_no_host_leaves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(TOKEN_FILE_NAME);
+        clear_at(&path).unwrap();
+        assert!(!path.exists());
+        std::fs::write(&path, r#"{"token":"t"}"#).unwrap();
+        clear_at(&path).unwrap();
+        assert!(!path.exists());
     }
 
     #[test]

@@ -145,6 +145,22 @@ describe('AppControlPanel', () => {
     })
   })
 
+  it('shows the HTTPS git address of a per-account app, and copies it', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    const url = 'https://git.example.com/o1/tc-app-1.git'
+    render(<AppControlPanel app={{ ...baseApp, gitAccountAuth: true, gitHttpUrl: url }} />)
+    expect(screen.getByTestId('app-git-url-value').textContent).toBe(url)
+    await userEvent.click(screen.getByTestId('app-git-url-copy'))
+    expect(writeText).toHaveBeenCalledWith(url)
+  })
+
+  it('shows no git address for an app still on SSH deploy keys', () => {
+    // Its checkout's origin is SSH; there is no address a terminal could use.
+    render(<AppControlPanel app={{ ...baseApp, gitAccountAuth: false, gitHttpUrl: null }} />)
+    expect(screen.queryByTestId('app-git-url')).toBeNull()
+  })
+
   it('shows a count on every management row', async () => {
     render(<AppControlPanel app={baseApp} />)
     await waitFor(() => {

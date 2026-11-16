@@ -7,7 +7,8 @@
  * is good for at least another week; otherwise it mints one with
  * `POST /v1/git/token` and hands it to the Rust side, which writes the file
  * (0600) and points the global git config for the git host at the helper.
- * Sign-out revokes every git token of the account and deletes the file.
+ * Sign-out revokes every git token of the account and empties the file (the
+ * host stays, so the helper can say "not signed in" instead of nothing).
  *
  * Everything here is best-effort: a deployment without per-account git (no
  * GIT_TOKEN_SECRET → 503) simply has no token, and git keeps working the way it
@@ -78,7 +79,7 @@ export function syncGitCredential(
 
 /**
  * Sign-out: revoke the account's git tokens everywhere (while the session can
- * still authenticate the call), then delete the local file either way.
+ * still authenticate the call), then clear the local token either way.
  */
 export async function revokeGitCredential(): Promise<void> {
   if (!isTauri()) return;
