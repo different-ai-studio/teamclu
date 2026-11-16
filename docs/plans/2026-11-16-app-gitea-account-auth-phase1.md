@@ -410,6 +410,127 @@ GITEA__security__REVERSE_PROXY_AUTHENTICATION_USER: "X-WEBAUTH-USER"
 
 **时机**：选一个没人在部署的时间，先在 self-host 上跑；脚本输出每个 app 的结果，失败的单独重跑。
 
+## belayo 上线（以后）
+
+第一期合并后，belayo 只会执行 PR1 的迁移（belayo 的迁移要手动跑，`RUN_MIGRATIONS=1`），`GITEA_ACCOUNT_AUTH` 不设，
+其余改动在 belayo 上不生效：`gitAccountAuth` 恒为 false，`/v1/git/token` 因为没有 `GIT_TOKEN_SECRET` 返回 503（桌面端静默忽略），
+self-host 的 Caddyfile、compose 和 bootstrap 脚本 belayo 都不读。要在 belayo 上打开，按下面的顺序做。
+
+belayo 的 Gitea 在一台专用节点上（私网，无公网 IP），HTTP 经 Dokploy 的 Traefik 以 `git.service.ucar.cc` 对外，
+SSH 走专用 TCP entrypoint（`docs/specs/2026-09-11-belayo-dokploy-target-architecture.md`）。
+
+### B1 · 网络隔离（前置条件，不满足就不能开）
+
+Gitea 认任何能连到它 HTTP 端口的请求里的 `X-WEBAUTH-USER`，`REVERSE_PROXY_TRUSTED_PROXIES` 拦不住（spec §9.1 第 10 行）。
+self-host 靠 compose 网络隔离；belayo 的 Gitea 节点和 Dokploy 集群在同一个 VPC 里，**VPC 里的其他服务都能直连它的 3000 端口**，
+包括部署在 VPC 里的用户应用（应用的 FC 函数配置了 VPC，见 `readAppsFcVpcConfig`）。所以：
+
+1. 查清 Traefik 跑在哪几个节点上（Dokploy manager / worker），以及 Gitea 节点安全组现在的入站规则。
+2. 安全组只允许 Traefik 所在节点访问 Gitea 节点的 3000 端口；SSH 端口规则不变。
+3. 从 VPC 里另一台机器（不是 Traefik 节点）`curl http://<gitea 私网地址>:3000/api/healthz`，必须连不上。
+
+做不到（比如 Traefik 节点不固定、安全组不能按来源收窄），belayo 就不开代理头鉴权，改走 spec §9.2 的退路：
+FC 为每个账号签发短期 Gitea 令牌，网关把 Basic 改写成这个令牌。这条退路第一期没有实现。
+
+### B2 · Traefik：对外的 git 入口
+
+对应 self-host Caddyfile 的 Gitea 站点块（§3.2）。Traefik 没有「按路径直接返回 404」的写法，拆成两个 router：
+
+```yaml
+http:
+  routers:
+    gitea-git:
+      rule: Host(`git.service.ucar.cc`) && PathRegexp(`^/[^/]+/[^/]+(\.git)?/(info/refs|git-upload-pack|git-receive-pack)$`)
+      entryPoints: [websecure]
+      middlewares: [gitea-drop-identity, gitea-forward-auth, gitea-drop-authorization]
+      service: gitea
+      priority: 100
+    gitea-closed:
+      rule: Host(`git.service.ucar.cc`)
+      entryPoints: [websecure]
+      service: noop@internal          # 或一个只返回 404 的服务
+      priority: 1
+  middlewares:
+    gitea-drop-identity:
+      headers:
+        customRequestHeaders:
+          X-WEBAUTH-USER: ""          # 空值 = 删除客户端带来的头
+    gitea-forward-auth:
+      forwardAuth:
+        address: https://teamclaw-api.ucar.cc/v1/git/authz
+        authResponseHeaders: [X-WEBAUTH-USER]
+    gitea-drop-authorization:
+      headers:
+        customRequestHeaders:
+          Authorization: ""           # 有效的 Basic 会压过代理头（spec §9.1 第 8 行）
+```
+
+上线前要实测的（和 self-host 的 §9.8 一样逐项过）：
+
+- middleware 按列出的顺序执行：先删身份头，再 forwardAuth，最后删 `Authorization`。forwardAuth 要拿到原始的 `Authorization`，
+  所以删除必须排在它后面。
+- `authResponseHeaders` 会用鉴权服务返回的值覆盖请求里的同名头；鉴权失败（401）时 Traefik 把 401 和 `WWW-Authenticate` 原样回给 git。
+- `PathRegexp` 在 belayo 的 Traefik 版本里可用（v3 起有；v2 要写成 `PathPrefix` + `Path` 组合或换成 `Path` 正则语法）。
+- forwardAuth 的 `address` 走公网域名会多一跳；能走 Dokploy 内网地址（FC 服务的 swarm 服务名）更好，但要确认 Traefik 能解析。
+
+### B3 · FC 访问 Gitea 管理 API 的内部入口
+
+公网域名只放行 git 路径之后，FC 现在的 `GITEA_URL`（公网域名）就调不通 API 了。对应 self-host 的 `caddy:8081`：
+
+- 方案一：Traefik 再开一个只在内网 entrypoint 上的 router，`Host` 用内部域名，挂 `gitea-drop-identity`，转给 Gitea；
+  FC 的 `GITEA_URL` 指向它。
+- 方案二：FC 直连 Gitea 节点的私网地址。**不推荐**：B1 收窄安全组后 FC 节点本来就连不上；放开 FC 节点又会把
+  「FC 应用代理转发客户端头 + `fc_endpoint` 可被改写」的口子带回来（spec §6）。
+
+无论哪种，入口都必须删掉 `X-WEBAUTH-USER`。
+
+### B4 · Gitea 配置和 bot
+
+belayo 不跑 `gitea-bootstrap.sh`，手动做：
+
+1. Gitea 的 `app.ini`（或容器环境变量）加上与 self-host 相同的四项：`ENABLE_REVERSE_PROXY_AUTHENTICATION=true`、
+   `ENABLE_REVERSE_PROXY_AUTHENTICATION_API=false`、`ENABLE_REVERSE_PROXY_AUTO_REGISTRATION=true`、
+   `REVERSE_PROXY_AUTHENTICATION_USER=X-WEBAUTH-USER`。**必须在 B1、B2 都生效之后再改**，否则中间那段时间谁都能冒充谁。
+2. bot 提为站点管理员：`PATCH /api/v1/admin/users/<bot>`，`{"admin": true, "login_name": "<bot>", "source_id": 0}`。
+3. 用 bot 自己的密码新签一个 token，scopes `["write:repository","write:organization","write:user","write:admin"]`，
+   替换 Dokploy 里的 `GITEA_TOKEN`。旧 token 的 scope 改不了。
+4. 验证：新 token 调 `GET /api/v1/admin/users?limit=1` 返回 200。
+
+### B5 · Dokploy 环境变量
+
+变量名已在 `deploy/belayo/cloud-api.env.keys` 里，只需在 Dokploy 填值并重新部署 Cloud API：
+
+| 变量 | 值 |
+|---|---|
+| `GITEA_ACCOUNT_AUTH` | `on` |
+| `GIT_TOKEN_SECRET` | `openssl rand -hex 32`，之后不要换（换了所有桌面端的 git 凭证都会失效） |
+| `GITEA_PUBLIC_URL` | `https://git.service.ucar.cc` |
+| `GITEA_URL` | B3 的内部入口 |
+| `GITEA_TOKEN` | B4 第 3 步的新 token |
+
+### B6 · 冒烟测试
+
+`deploy/self-host/smoke/gitea-gateway-smoke.sh` 的前 5 项可以直接对 belayo 跑：
+
+```bash
+GITEA_GATEWAY_URL=https://git.service.ucar.cc GITEA_TOKEN=<bot token> SKIP_CONTAINER_CHECKS=1 \
+  sh deploy/self-host/smoke/gitea-gateway-smoke.sh
+```
+
+后 2 项（容器间直连）在 belayo 上换成：
+
+- 从 VPC 内一台非 Traefik 节点访问 Gitea 节点的 3000 端口：必须连不上（B1 第 3 步）。
+- 从 FC 节点经 B3 的内部入口带伪造的 `X-WEBAUTH-USER` 调 `/api/v1/user`（不带令牌）：必须 401。
+
+再按「目标与验收」走一遍真人和 agent 的推送，确认 Gitea 记下的推送人正确。
+
+### B7 · 顺序和回滚
+
+顺序：B1 → B2 → B3 → B5（先不填 `GITEA_ACCOUNT_AUTH`）→ B4 → B6 → 最后填 `GITEA_ACCOUNT_AUTH=on`。
+
+回滚：先把 `GITEA_ACCOUNT_AUTH` 清空（客户端回到 SSH），再在 Gitea 上关掉 `ENABLE_REVERSE_PROXY_AUTHENTICATION`，
+最后再动 Traefik。**Gitea 的代理头鉴权和 Traefik 的网关必须一起回滚或先关 Gitea 一侧**，否则网关撤了而 Gitea 还认代理头，等于任何人都能冒充任何人。
+
 ## 回滚
 
 | 出问题的地方 | 回滚方式 |

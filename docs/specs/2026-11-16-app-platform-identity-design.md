@@ -322,7 +322,7 @@ agent 在会话里 `git push`，Gitea 里分别记在各自名下；AGit 提 PR 
 - 下线 JIT deploy key 和 `amuxd git-ssh`，关闭 SSH 2222，清理残留 key。
 - PR 进产品：`amuxd app pr`、TeamClu 里的 PR 列表。
 - 纯命令行（§5a 方式 1）。
-- belayo（取决于 §9.2）。
+- belayo：步骤见计划文档的「belayo 上线（以后）」一节（B1–B7），前置条件是 §9.2 的网络隔离。
 - 以后要把 app infra 拆成独立服务时，再考虑自己签发 token。
 
 ## 9. 待核实
