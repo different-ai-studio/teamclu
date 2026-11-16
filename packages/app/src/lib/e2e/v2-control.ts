@@ -15,6 +15,8 @@ import { isTauri } from "@/lib/utils";
 import { useActorsStore } from "@/stores/actors-store";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useSessionListStore, type SessionListEntry } from "@/stores/session-list-store";
+import { useSessionSelectionStore } from "@/stores/session-selection-store";
+import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useUIStore } from "@/stores/ui";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
@@ -688,6 +690,12 @@ const control: V2E2EControl = {
       pendingPermissions: [],
       pendingQuestions: [],
     });
+    // useSessionStore is a facade now: its message and selection fields only
+    // mirror useSessionMessageStore / useSessionSelectionStore, and setState on
+    // it reaches neither. The list and chat read those stores, so a seed that
+    // wrote only the facade showed no active row and an empty thread.
+    useSessionMessageStore.setState({ messages: nextMessages });
+    useSessionSelectionStore.getState().setCurrent(activeSessionId);
 
     return { runId: input.runId, warnings };
   },
@@ -702,6 +710,7 @@ const control: V2E2EControl = {
       sidebarFilter: { kind: "all" },
     });
     useSessionStore.setState({ activeSessionId: sessionId, currentSessionId: sessionId });
+    useSessionSelectionStore.getState().setCurrent(sessionId);
   },
 
   appendMessage: async (input) => {
@@ -828,6 +837,12 @@ const control: V2E2EControl = {
         sessionError: null,
       };
     });
+    useSessionMessageStore.setState((state) => {
+      const messages = { ...state.messages };
+      for (const sessionId of sessionsToClear) delete messages[sessionId];
+      return { messages };
+    });
+    useSessionSelectionStore.getState().clearActiveSession();
     useV2StreamingStore.setState((state) => {
       const byKey = { ...state.byKey };
       for (const [key, entry] of Object.entries(byKey)) {

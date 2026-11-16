@@ -205,13 +205,15 @@ describe("V2 PR streaming integrity (spec D8/D9)", () => {
 
     const line = "这是一段用于撑高消息列表的较长文本,确保内容超过视口高度。";
     for (let i = 0; i < 80; i++) {
-      await v2Call("emitAgentDelta", { sessionId, actorId: agentId, delta: `${i}. ${line}\n` });
+      // Not "79. …": Markdown turns numbered lines into an <ol>, whose markers
+      // are not text, so the wait below could never match.
+      await v2Call("emitAgentDelta", { sessionId, actorId: agentId, delta: `第${i}行：${line}\n\n` });
     }
     await waitForSelector(
       `[data-testid="v2-streaming-agent"][data-session-id="${sessionId}"][data-actor-id="${agentId}"]`,
     );
     // Wait for the last delta line to be rendered before checking scroll position.
-    await waitForText(`79. ${line}`);
+    await waitForText(`第79行：${line}`);
 
     await waitFor(
       "message list pinned to bottom during long stream",

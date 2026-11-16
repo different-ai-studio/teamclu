@@ -402,9 +402,22 @@ pub fn run() {
         .plugin({
             #[cfg(debug_assertions)]
             {
+                // TAURI_MCP_SOCKET lets an E2E run drive its own app while a
+                // developer's `tauri dev` keeps the default socket. The pid
+                // file next to it tells the harness which process that is,
+                // so it never has to guess by name.
+                let socket = std::env::var("TAURI_MCP_SOCKET")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp/tauri-mcp.sock"));
+                let pid_file = std::path::PathBuf::from(format!("{}.pid", socket.display()));
+                if let Err(e) = std::fs::write(&pid_file, std::process::id().to_string()) {
+                    tracing::debug!(error = %e, path = %pid_file.display(), "tauri-mcp pid file not written");
+                }
                 tauri_plugin_mcp::init_with_config(
                     tauri_plugin_mcp::PluginConfig::new(String::from("teamclu"))
-                        .socket_path(std::path::PathBuf::from("/tmp/tauri-mcp.sock"))
+                        .socket_path(socket),
                 )
             }
             #[cfg(not(debug_assertions))]
