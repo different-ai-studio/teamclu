@@ -235,6 +235,7 @@ impl Backend for MockBackend {
     /// on a fully onboarded daemon.
     async fn app_git_credential(&self, app_id: &str) -> BackendResult<AppGitCredential> {
         Ok(AppGitCredential {
+            git_http_url: None,
             remote_url: format!("ssh://git@gitea.test/apps/{app_id}.git"),
             auth_kind: Some("deploy_key".to_string()),
             private_key_pem: "mock-key".to_string(),

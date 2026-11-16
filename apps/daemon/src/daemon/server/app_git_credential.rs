@@ -76,6 +76,7 @@ async fn app_git_credential_reply(backend: Arc<dyn Backend>, payload: &Value) ->
                 "deployKeyId": cred.deploy_key_id,
                 "username": cred.username,
                 "token": cred.token,
+                "gitHttpUrl": cred.git_http_url,
             },
         })
         .to_string(),

@@ -55,13 +55,146 @@ export function deletedAppRepoName(appId: string): string {
  */
 export const GITEA_AUTH_KIND = "gitea_deploy_key";
 
+// ── Names derived from TeamClu ids ──────────────────────────────────────────
+//
+// Gitea mirrors TeamClu's identities rather than holding its own (spec
+// docs/specs/2026-11-16-app-platform-identity-design.md §3): every name is
+// computed from an immutable TeamClu id, so nothing maps one to the other and
+// nothing can drift. 33 characters each — Gitea 1.22 caps a username at 40
+// (verified 2026-11-16: 41 is rejected with `[Username]: MaxSize`).
+
+const hex = (id: string) => id.replace(/-/g, "").toLowerCase();
+
+/** The Gitea user of a TeamClu account (`auth.users.id`) — a person or an agent. */
+export function giteaUserName(authUserId: string): string {
+  return `u${hex(authUserId)}`;
+}
+
+/** The Gitea organisation of a TeamClu org (`public.orgs.id`). */
+export function giteaOrgName(orgId: string): string {
+  return `o${hex(orgId)}`;
+}
+
+/** The Gitea team that carries a TeamClu team's read access to its team-visible apps. */
+export function giteaTeamName(teamId: string): string {
+  return `t${hex(teamId)}`;
+}
+
+/** True for an owner this deployment created for a TeamClu org (`o<32 hex>`). */
+export function isTeamCluOrgOwner(owner: string | null | undefined): boolean {
+  return typeof owner === "string" && /^o[0-9a-f]{32}$/.test(owner);
+}
+
+/**
+ * The repo owner named in an app's stored remote, or null when it cannot be
+ * read. Handles every shape Gitea hands out or a person might paste:
+ * `git@host:owner/repo.git`, `ssh://git@host:2222/owner/repo.git`,
+ * `https://host/owner/repo.git`.
+ */
+export function repoOwnerFromRemote(remote: string | null | undefined): string | null {
+  if (typeof remote !== "string") return null;
+  const url = remote.trim();
+  if (!url) return null;
+  let path: string;
+  const scp = /^[^\s:/@]+@[^\s:/]+:(?!\/)(.+)$/.exec(url);
+  if (scp && !/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+    path = scp[1];
+  } else {
+    try {
+      path = new URL(url).pathname;
+    } catch {
+      return null;
+    }
+  }
+  const parts = path.replace(/^\/+/, "").split("/").filter(Boolean);
+  if (parts.length < 2) return null;
+  return decodeURIComponent(parts[parts.length - 2]);
+}
+
+/**
+ * The HTTPS clone address for a repo whose stored remote is the SSH one Gitea
+ * hands out. `publicBase` (GITEA_PUBLIC_URL) wins when given; otherwise the
+ * SSH remote's host, which on both deploy targets also serves HTTPS through
+ * the proxy (SSH is on a separate port).
+ */
+export function giteaHttpUrlFromRemote(remote: string | null | undefined, publicBase?: string | null): string | null {
+  if (typeof remote !== "string" || !remote.trim()) return null;
+  const url = remote.trim();
+  let host: string;
+  let path: string;
+  const scp = /^[^\s:/@]+@([^\s:/]+):(?!\/)(.+)$/.exec(url);
+  if (scp && !/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+    host = scp[1];
+    path = scp[2];
+  } else {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === "https:" || parsed.protocol === "http:") return `${parsed.origin}${parsed.pathname}`;
+      host = parsed.hostname;
+      path = parsed.pathname;
+    } catch {
+      return null;
+    }
+  }
+  const clean = path.replace(/^\/+/, "");
+  if (!host || clean.split("/").filter(Boolean).length < 2) return null;
+  const repoPath = clean.endsWith(".git") ? clean : `${clean}.git`;
+  const base = publicBase?.trim().replace(/\/+$/, "");
+  if (base) {
+    try {
+      const parsed = new URL(base);
+      return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}/${repoPath}`;
+    } catch {
+      // A malformed override falls back to the remote's own host.
+    }
+  }
+  return `https://${host}/${repoPath}`;
+}
+
+/** Gitea's repository collaborator levels — the same words as TeamClu's app levels. */
+export type GiteaCollaboratorPermission = "read" | "write" | "admin";
+
 export type GiteaClientOptions = GiteaConfig & {
   fetch?: typeof fetch;
+  /** Host for the noreply addresses of the users FC creates. Defaults to the
+   * host of `GITEA_PUBLIC_URL`, then of the API URL. */
+  noreplyHost?: string;
 };
+
+/** The domain people know the git server by, not FC's internal route to it. */
+export function giteaNoreplyHost(apiUrl: string, env: NodeJS.ProcessEnv = process.env): string {
+  for (const raw of [env.GITEA_PUBLIC_URL, apiUrl]) {
+    try {
+      const host = raw ? new URL(raw.trim()).hostname : "";
+      if (host) return host;
+    } catch {
+      /* next */
+    }
+  }
+  return "gitea.local";
+}
+
+/** Gitea's own page cap; asking for more is silently clamped to it. */
+const LIST_PAGE_SIZE = 50;
+const LIST_MAX_PAGES = 200;
 
 export function makeGiteaClient(opts: GiteaClientOptions) {
   const base = opts.url.replace(/\/+$/, "");
   const fetchFn = opts.fetch ?? fetch;
+  const enc = encodeURIComponent;
+
+  /** GET that answers null on 404 instead of throwing. */
+  async function giteaGetOrNull(path: string): Promise<Response | null> {
+    const res = await fetchFn(`${base}${path}`, {
+      headers: { Authorization: `token ${opts.token}`, "Content-Type": "application/json" },
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new ApiError(res.status >= 500 ? 502 : res.status, "gitea_error", detail || res.statusText || "gitea request failed");
+    }
+    return res;
+  }
 
   async function giteaFetch(path: string, init: RequestInit = {}) {
     const res = await fetchFn(`${base}${path}`, {
@@ -83,7 +216,245 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
     return res;
   }
 
+  /**
+   * Every item of a paged Gitea list, or null when the first page is a 404.
+   *
+   * The callers treat the answer as the complete current state and remove what
+   * is missing from it, so one page is not enough: Gitea caps a page at 50
+   * (`MAX_RESPONSE_ITEMS`), and a 51st team member read as "not a member" would
+   * never be removed again. Bounded so a server that ignores `page` cannot loop.
+   */
+  async function giteaListAll<T>(path: string): Promise<T[] | null> {
+    const out: T[] = [];
+    for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
+      const res = await giteaGetOrNull(`${path}${path.includes("?") ? "&" : "?"}limit=${LIST_PAGE_SIZE}&page=${page}`);
+      if (!res) {
+        if (page === 1) return null;
+        break;
+      }
+      const items = (await res.json()) as T[];
+      if (!Array.isArray(items) || items.length === 0) break;
+      out.push(...items);
+      if (items.length < LIST_PAGE_SIZE) break;
+    }
+    return out;
+  }
+
   return {
+    /** The repo owner every per-app call below acts on. */
+    owner: opts.owner,
+
+    /**
+     * The same client bound to another repo owner. Apps created before
+     * per-org repos live under the configured `GITEA_OWNER`; newer ones live
+     * under their TeamClu org's `o<uuid>` — see `repoOwnerFromRemote`.
+     */
+    withOwner(owner: string) {
+      return owner === opts.owner ? this : makeGiteaClient({ ...opts, owner });
+    },
+
+    // ── Accounts, orgs and teams (admin token) ────────────────────────────
+
+    /**
+     * Make sure the Gitea user exists, and carries `fullName`.
+     *
+     * The address is a noreply one on purpose: a person's real email is
+     * TeamClu's to show, not Gitea's, and the user never logs in with a
+     * password (the gateway names them). The password is random and thrown
+     * away.
+     */
+    async ensureUser(username: string, fullName: string): Promise<void> {
+      // GITEA_URL is FC's internal entrance (`http://caddy:8081` on
+      // self-host); an address under it would read `…@users.noreply.caddy`.
+      const host = opts.noreplyHost ?? giteaNoreplyHost(base);
+      const existing = await giteaGetOrNull(`/api/v1/users/${enc(username)}`);
+      if (!existing) {
+        const res = await fetchFn(`${base}/api/v1/admin/users`, {
+          method: "POST",
+          headers: { Authorization: `token ${opts.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username,
+            full_name: fullName,
+            email: `${username}@users.noreply.${host}`,
+            password: `${crypto.randomUUID()}${crypto.randomUUID()}`,
+            must_change_password: false,
+            send_notify: false,
+            visibility: "private",
+          }),
+        });
+        // 422 "user already exists" is a race with another sync, not a failure.
+        if (!res.ok && res.status !== 422) {
+          const detail = await res.text().catch(() => "");
+          throw new ApiError(res.status >= 500 ? 502 : res.status, "gitea_error", detail || "create user failed");
+        }
+        return;
+      }
+      const user = (await existing.json()) as { full_name?: string };
+      if ((user.full_name ?? "") !== fullName) {
+        await giteaFetch(`/api/v1/admin/users/${enc(username)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ full_name: fullName, login_name: username, source_id: 0 }),
+        });
+      }
+    },
+
+    /** Make sure the org exists (private, owned by this deployment's bot). */
+    async ensureOrg(org: string): Promise<void> {
+      if (await giteaGetOrNull(`/api/v1/orgs/${enc(org)}`)) return;
+      const res = await fetchFn(`${base}/api/v1/orgs`, {
+        method: "POST",
+        headers: { Authorization: `token ${opts.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ username: org, visibility: "private", repo_admin_change_team_access: false }),
+      });
+      if (!res.ok && res.status !== 422) {
+        const detail = await res.text().catch(() => "");
+        throw new ApiError(res.status >= 500 ? 502 : res.status, "gitea_error", detail || "create org failed");
+      }
+    },
+
+    /**
+     * The id of the org's read-only team `name`, created on first use. It
+     * carries one TeamClu team's read access to its team-visible apps, so it
+     * covers code and pull requests and nothing else, on no repo by default.
+     */
+    async ensureReadTeam(org: string, name: string): Promise<number> {
+      const found = await this.findTeamId(org, name);
+      if (found !== null) return found;
+      const res = await giteaFetch(`/api/v1/orgs/${enc(org)}/teams`, {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          permission: "read",
+          units: ["repo.code", "repo.pulls"],
+          includes_all_repositories: false,
+          can_create_org_repo: false,
+        }),
+      });
+      const created = (await res.json()) as { id?: number };
+      if (!Number.isInteger(created.id)) throw new ApiError(502, "gitea_error", "create team returned no id");
+      return created.id!;
+    },
+
+    /** The id of the org's team `name`, or null when the org or the team does not exist. */
+    async findTeamId(org: string, name: string): Promise<number | null> {
+      const teams = await giteaListAll<{ id: number; name: string }>(`/api/v1/orgs/${enc(org)}/teams`);
+      const found = teams?.find((t) => t.name === name);
+      return found ? found.id : null;
+    },
+
+    async listTeamMembers(teamId: number): Promise<string[]> {
+      const users = await giteaListAll<{ login?: string }>(`/api/v1/teams/${teamId}/members`);
+      if (!users) throw new ApiError(404, "gitea_error", "team not found");
+      return users.map((u) => String(u.login ?? "")).filter(Boolean);
+    },
+
+    async addTeamMember(teamId: number, username: string): Promise<void> {
+      await giteaFetch(`/api/v1/teams/${teamId}/members/${enc(username)}`, { method: "PUT" });
+    },
+
+    async removeTeamMember(teamId: number, username: string): Promise<void> {
+      await giteaFetch(`/api/v1/teams/${teamId}/members/${enc(username)}`, { method: "DELETE" });
+    },
+
+    async setTeamRepo(teamId: number, appId: string, present: boolean): Promise<void> {
+      const path = `/api/v1/teams/${teamId}/repos/${enc(opts.owner)}/${enc(appRepoName(appId))}`;
+      if (present) {
+        await giteaFetch(path, { method: "PUT" });
+        return;
+      }
+      const res = await fetchFn(`${base}${path}`, {
+        method: "DELETE",
+        headers: { Authorization: `token ${opts.token}` },
+      });
+      if (!res.ok && res.status !== 404) {
+        const detail = await res.text().catch(() => "");
+        throw new ApiError(res.status >= 500 ? 502 : res.status, "gitea_error", detail || "remove team repo failed");
+      }
+    },
+
+    // ── Collaborators on the app's repo ───────────────────────────────────
+
+    /**
+     * Direct collaborators and their level.
+     *
+     * The list endpoint carries no level (verified on 1.22.6), so each one is
+     * asked separately. That answer is the EFFECTIVE level — direct grant or
+     * team, whichever is higher — which is exact here: the only team on an
+     * app repo grants `read`, and a direct grant is never below that.
+     */
+    async listCollaborators(appId: string): Promise<{ username: string; permission: GiteaCollaboratorPermission }[]> {
+      const repoPath = `/api/v1/repos/${enc(opts.owner)}/${enc(appRepoName(appId))}`;
+      const users = await giteaListAll<{ login?: string }>(`${repoPath}/collaborators`);
+      if (!users) throw new ApiError(404, "gitea_error", "repository not found");
+      const out: { username: string; permission: GiteaCollaboratorPermission }[] = [];
+      for (const u of users) {
+        const username = String(u.login ?? "");
+        if (!username) continue;
+        const permRes = await giteaFetch(`${repoPath}/collaborators/${enc(username)}/permission`);
+        const perm = ((await permRes.json()) as { permission?: string }).permission;
+        out.push({ username, permission: perm === "admin" || perm === "owner" ? "admin" : perm === "write" ? "write" : "read" });
+      }
+      return out;
+    },
+
+    async setCollaborator(appId: string, username: string, permission: GiteaCollaboratorPermission): Promise<void> {
+      await giteaFetch(
+        `/api/v1/repos/${enc(opts.owner)}/${enc(appRepoName(appId))}/collaborators/${enc(username)}`,
+        { method: "PUT", body: JSON.stringify({ permission }) },
+      );
+    },
+
+    async removeCollaborator(appId: string, username: string): Promise<void> {
+      const res = await fetchFn(
+        `${base}/api/v1/repos/${enc(opts.owner)}/${enc(appRepoName(appId))}/collaborators/${enc(username)}`,
+        { method: "DELETE", headers: { Authorization: `token ${opts.token}` } },
+      );
+      if (!res.ok && res.status !== 404) {
+        const detail = await res.text().catch(() => "");
+        throw new ApiError(res.status >= 500 ? 502 : res.status, "gitea_error", detail || "remove collaborator failed");
+      }
+    },
+
+    /**
+     * Take every account's access off the app's repo: direct collaborators and
+     * every team but the org's own `Owners`.
+     *
+     * For delete. Archiving only stops pushes, and the reconcile never visits a
+     * repo whose app row is gone, so whoever could clone the app would otherwise
+     * keep cloning `deleted-…` with their git token for good.
+     */
+    async removeAllAppAccess(appId: string): Promise<{ collaborators: number; teams: number }> {
+      const repoPath = `/api/v1/repos/${enc(opts.owner)}/${enc(appRepoName(appId))}`;
+      const drop = async (path: string, what: string) => {
+        const res = await fetchFn(`${base}${path}`, {
+          method: "DELETE",
+          headers: { Authorization: `token ${opts.token}` },
+        });
+        if (!res.ok && res.status !== 404) {
+          const detail = await res.text().catch(() => "");
+          throw new ApiError(res.status >= 500 ? 502 : res.status, "gitea_error", detail || `remove ${what} failed`);
+        }
+      };
+      const users = (await giteaListAll<{ login?: string }>(`${repoPath}/collaborators`)) ?? [];
+      let collaborators = 0;
+      for (const u of users) {
+        const username = String(u.login ?? "");
+        if (!username) continue;
+        await drop(`${repoPath}/collaborators/${enc(username)}`, "collaborator");
+        collaborators += 1;
+      }
+      const repoTeams = (await giteaListAll<{ name?: string }>(`${repoPath}/teams`)) ?? [];
+      let teams = 0;
+      for (const t of repoTeams) {
+        const name = String(t.name ?? "");
+        // `Owners` holds the service account alone and cannot be detached.
+        if (!name || name === "Owners") continue;
+        await drop(`${repoPath}/teams/${enc(name)}`, "team");
+        teams += 1;
+      }
+      return { collaborators, teams };
+    },
+
     /**
      * Create the app's private repo and report both of its URLs.
      *

@@ -200,6 +200,11 @@ pub struct TeamSkillDownload {
 #[serde(rename_all = "camelCase")]
 pub struct AppGitCredential {
     pub remote_url: String,
+    /// HTTPS address of the same repo when the app uses per-account Gitea
+    /// auth. The deploy key above stays the daemon's own way in over SSH; this
+    /// is where the checkout points people and agents (spec §6).
+    #[serde(default)]
+    pub git_http_url: Option<String>,
     /// `deploy_key` or `https_token`.
     #[serde(default)]
     pub auth_kind: Option<String>,

@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod env_vars;
 pub mod filewatcher;
 pub mod gateway;
+pub mod git_credential;
 pub mod introspect_api;
 pub mod introspect_auth;
 pub mod kb_maintainer;

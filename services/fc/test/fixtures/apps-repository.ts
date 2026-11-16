@@ -206,6 +206,13 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
             const matched = matchRows();
             state[table] = state[table].map((row: any) => matched.includes(row) ? { ...row, ...ctx.update } : row);
           }
+          if (ctx.op === "delete") {
+            // Removed from state (so a later read sees the delete) and returned,
+            // as PostgREST does for a delete followed by .select().
+            const matched = matchRows();
+            state[table] = (state[table] ?? []).filter((row: any) => !matched.includes(row));
+            return Promise.resolve({ data: matched.map(project), error: null }).then(resolve, reject);
+          }
           return Promise.resolve({ data: matchRows().map(project), error: null }).then(resolve, reject);
         },
       };
@@ -227,12 +234,82 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
   };
 }
 
-export function fakeGitea(over: Record<string, unknown> = {}) {
-  return {
-    createAppRepo: async (appId: string) => ({
-      cloneUrl: `https://gitea.example/teamclaw-apps/tc-app-${appId}.git`,
-      sshUrl: `git@gitea.example:teamclaw-apps/tc-app-${appId}.git`,
-    }),
+/**
+ * An in-memory Gitea. `withOwner` returns a view bound to another owner that
+ * shares the same state, so a test can see which owner each call acted on;
+ * `ops` records every admin call in order.
+ */
+export function fakeGitea(over: Record<string, unknown> = {}, owner = "teamclaw-apps", shared?: any) {
+  const state = shared ?? {
+    ops: [] as any[],
+    users: new Map<string, string>(),
+    orgs: new Set<string>(),
+    teams: new Map<string, { id: number; members: Set<string>; repos: Set<string> }>(),
+    collaborators: new Map<string, Map<string, string>>(),
+    nextTeamId: 1,
+  };
+  const repoKey = (appId: string) => `${owner}/tc-app-${appId}`;
+  const self: any = {
+    owner,
+    ops: state.ops,
+    state,
+    withOwner: (o: string) => (o === owner ? self : fakeGitea(over, o, state)),
+    ensureUser: async (username: string, fullName: string) => {
+      state.ops.push(["ensureUser", username, fullName]);
+      state.users.set(username, fullName);
+    },
+    ensureOrg: async (org: string) => {
+      state.ops.push(["ensureOrg", org]);
+      state.orgs.add(org);
+    },
+    findTeamId: async (org: string, name: string) => state.teams.get(`${org}/${name}`)?.id ?? null,
+    ensureReadTeam: async (org: string, name: string) => {
+      const key = `${org}/${name}`;
+      if (!state.teams.has(key)) state.teams.set(key, { id: state.nextTeamId++, members: new Set(), repos: new Set() });
+      return state.teams.get(key)!.id;
+    },
+    listTeamMembers: async (teamId: number) =>
+      [...([...state.teams.values()].find((t: any) => t.id === teamId)?.members ?? [])],
+    addTeamMember: async (teamId: number, username: string) => {
+      state.ops.push(["addTeamMember", teamId, username]);
+      [...state.teams.values()].find((t: any) => t.id === teamId)?.members.add(username);
+    },
+    removeTeamMember: async (teamId: number, username: string) => {
+      state.ops.push(["removeTeamMember", teamId, username]);
+      [...state.teams.values()].find((t: any) => t.id === teamId)?.members.delete(username);
+    },
+    setTeamRepo: async (teamId: number, appId: string, present: boolean) => {
+      state.ops.push(["setTeamRepo", teamId, repoKey(appId), present]);
+      const team = [...state.teams.values()].find((t: any) => t.id === teamId);
+      if (present) team?.repos.add(repoKey(appId));
+      else team?.repos.delete(repoKey(appId));
+    },
+    listCollaborators: async (appId: string) =>
+      [...(state.collaborators.get(repoKey(appId)) ?? new Map()).entries()].map(([username, permission]) => ({ username, permission })),
+    setCollaborator: async (appId: string, username: string, permission: string) => {
+      state.ops.push(["setCollaborator", repoKey(appId), username, permission]);
+      if (!state.collaborators.has(repoKey(appId))) state.collaborators.set(repoKey(appId), new Map());
+      state.collaborators.get(repoKey(appId))!.set(username, permission);
+    },
+    removeAllAppAccess: async (appId: string) => {
+      state.ops.push(["removeAllAppAccess", repoKey(appId)]);
+      const collaborators = state.collaborators.get(repoKey(appId))?.size ?? 0;
+      state.collaborators.delete(repoKey(appId));
+      let teams = 0;
+      for (const team of state.teams.values()) if (team.repos.delete(repoKey(appId))) teams += 1;
+      return { collaborators, teams };
+    },
+    removeCollaborator: async (appId: string, username: string) => {
+      state.ops.push(["removeCollaborator", repoKey(appId), username]);
+      state.collaborators.get(repoKey(appId))?.delete(username);
+    },
+    createAppRepo: async (appId: string) => {
+      state.ops.push(["createAppRepo", owner, appId]);
+      return {
+        cloneUrl: `https://gitea.example/${owner}/tc-app-${appId}.git`,
+        sshUrl: `git@gitea.example:${owner}/tc-app-${appId}.git`,
+      };
+    },
     createDeployKey: async () => ({ id: 1 }),
     listDeployKeys: async () => [],
     deleteDeployKey: async () => {},
@@ -243,6 +320,7 @@ export function fakeGitea(over: Record<string, unknown> = {}) {
     compareCommits: async () => 4,
     ...over,
   };
+  return self;
 }
 
 export function appsRepo(supabase: any, extra: any = {}) {

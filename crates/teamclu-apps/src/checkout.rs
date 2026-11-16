@@ -339,6 +339,9 @@ pub async fn run_seed(
     }
     if let Some(cred) = &credential {
         body["deployKeyPem"] = json!(cred.private_key_pem.trim());
+        if let Some(url) = &cred.git_http_url {
+            body["gitHttpUrl"] = json!(url);
+        }
     }
     if adopt_existing {
         body["adoptExisting"] = json!(true);
@@ -686,6 +689,9 @@ impl AppOps<'_> {
         });
         if let Some(cred) = &credential {
             body["deployKeyPem"] = json!(cred.private_key_pem.trim());
+            if let Some(url) = &cred.git_http_url {
+                body["gitHttpUrl"] = json!(url);
+            }
         }
         if let Some(name) = git_user_name {
             body["gitUserName"] = json!(name);
@@ -802,6 +808,42 @@ mod tests {
         }
         // With no remote there is nothing to fetch from, whatever the status.
         assert!(ok("error", false, false).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_per_account_app_download_tells_the_daemon_its_https_address() {
+        let cloud = FakeCloud::default();
+        cloud.reply(
+            Method::Get,
+            "/v1/apps/a1/git-credential",
+            json!({
+                "remoteUrl": "ssh://git@gitea/o1/a1.git",
+                "privateKeyPem": "PEM",
+                "deployKeyId": 3,
+                "gitAccountAuth": true,
+                "gitHttpUrl": "https://gitea/o1/a1.git",
+            }),
+        );
+        cloud.reply(Method::Delete, "/v1/apps/a1/git-credential/3", json!({}));
+        cloud.reply(
+            Method::Get,
+            "/v1/workspaces?teamId=t1&limit=200&agentId=agent-1",
+            json!({ "items": [{ "id": "ws-9", "path": "/nonexistent-checkout/a1" }] }),
+        );
+        let daemon = FakeDaemon::default();
+        *daemon.seed.lock().unwrap() = Some(Ok(
+            json!({ "status": "ready", "workdir": "/nonexistent-checkout/a1" }),
+        ));
+        let host = TestHost(Surface::Cli);
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let row = json!({ "id": "a1", "teamId": "t1", "provisionStatus": "ready", "gitAuthKind": "gitea_deploy_key" });
+
+        ops.download(&row).await.unwrap();
+        let seed = daemon.seeds.lock().unwrap()[0].clone();
+        // SSH + deploy key for the clone itself; HTTPS for whoever uses the checkout.
+        assert_eq!(seed["gitRemoteUrl"], "ssh://git@gitea/o1/a1.git");
+        assert_eq!(seed["deployKeyPem"], "PEM");
+        assert_eq!(seed["gitHttpUrl"], "https://gitea/o1/a1.git");
     }
 
     #[tokio::test]

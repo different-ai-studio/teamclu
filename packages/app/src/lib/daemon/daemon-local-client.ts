@@ -955,6 +955,8 @@ export async function cloneDaemonApp(
   gitRemoteUrl: string,
   deployKeyPem?: string | null,
   httpsCredential?: DaemonGitHttpsCredential | null,
+  /** Per-account git: where the checkout's people and agents should push. */
+  gitHttpUrl?: string | null,
 ): Promise<SeedAppResult> {
   try {
     const result = await daemonFetch<{ status: string; workdir?: string }>('/v1/apps/seed', {
@@ -965,6 +967,7 @@ export async function cloneDaemonApp(
         gitRemoteUrl: gitRemoteUrl.trim(),
         cloneOnly: true,
         ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
+        ...(gitHttpUrl?.trim() ? { gitHttpUrl: gitHttpUrl.trim() } : {}),
         ...httpsCredentialBody(httpsCredential),
         ...resolveSeedGitUserIdentity(),
       }),
@@ -1001,6 +1004,8 @@ export async function seedDaemonApp(
   adoptExisting?: boolean,
   /** The token for an http(s) `gitRemoteUrl` that needs a login. */
   httpsCredential?: DaemonGitHttpsCredential | null,
+  /** Per-account git: where the checkout's people and agents should push. */
+  gitHttpUrl?: string | null,
 ): Promise<SeedAppResult> {
   try {
     const result = await daemonFetch<{ status: string; workdir?: string }>('/v1/apps/seed', {
@@ -1013,6 +1018,7 @@ export async function seedDaemonApp(
         ...(gitRemoteUrl?.trim() ? { gitRemoteUrl: gitRemoteUrl.trim() } : {}),
         ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
         ...(adoptExisting ? { adoptExisting: true } : {}),
+        ...(gitHttpUrl?.trim() ? { gitHttpUrl: gitHttpUrl.trim() } : {}),
         ...httpsCredentialBody(httpsCredential),
         ...resolveSeedGitUserIdentity(),
       }),

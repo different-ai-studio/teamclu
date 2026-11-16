@@ -258,6 +258,29 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
         };
       });
     },
+    async listTeamActorsForAppAccess(teamId) {
+      const base = `/v1/teams/${encodeURIComponent(teamId)}/actors`;
+      const [members, agents] = await Promise.all([
+        client.get<Page<CloudActor>>(`${base}?kind=member&limit=500`),
+        client.get<Page<CloudActor>>(`${base}?kind=agent&limit=500`),
+      ]);
+      // Agents first: they are who an app is usually granted to now that an
+      // agent gets no access by default.
+      return [
+        ...agents.items.map((row) => ({
+          id: row.id,
+          displayName: row.displayName || row.id,
+          actorType: "agent" as const,
+          connected: !!row.userId,
+        })),
+        ...members.items.map((row) => ({
+          id: row.id,
+          displayName: row.displayName || row.id,
+          actorType: "member" as const,
+          connected: true,
+        })),
+      ];
+    },
     async upsertAgentAccess(input) {
       await afterWrite(
         client.post<CloudAgentAccess>(`/v1/agents/${encodeURIComponent(input.agentId)}/access`, {

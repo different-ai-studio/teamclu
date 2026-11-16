@@ -141,8 +141,46 @@
 # GITEA_DOMAIN falls back to gitea.localhost (internal CA, no ACME) on a box
 # that has not set one, for the same reason S3_DOMAIN does: a nameless block is
 # read as global configuration and Caddy refuses to start.
+#
+# Per-account git over HTTPS (docs/specs/2026-11-16-app-platform-identity-design.md §6).
+# Gitea trusts X-WEBAUTH-USER as the logged-in user, and it trusts it from
+# ANYONE who can reach it — REVERSE_PROXY_TRUSTED_PROXIES does not restrict
+# that (verified on 1.22.6). So this block is the only door, and it:
+#   1. drops any X-WEBAUTH-USER the client sent;
+#   2. lets through only git's own smart-HTTP paths, `.git` optional;
+#   3. asks FC who the credential belongs to (forward_auth), and copies the
+#      answer into X-WEBAUTH-USER only when FC says 200;
+#   4. strips Authorization before Gitea sees it — a valid Gitea password or
+#      token would otherwise win over the header.
+# The web UI and /api/* answer 404: an admin collaborator could use the API to
+# change collaborators or add deploy keys behind TeamClu's back.
+# Verified end to end with Caddy 2.10 + Gitea 1.22.6 (spec §9.8).
 {$CADDY_SITE_SCHEME}{$GITEA_DOMAIN} {
 	{$CADDY_SITE_TLS}
+	request_header -X-WEBAUTH-USER
+
+	@git path_regexp git ^/[^/]+/[^/]+(\.git)?/(info/refs|git-upload-pack|git-receive-pack)$
+	handle @git {
+		forward_auth fc:9000 {
+			uri /v1/git/authz
+			copy_headers X-WEBAUTH-USER
+		}
+		reverse_proxy gitea:3000 {
+			header_up -Authorization
+		}
+	}
+	handle {
+		respond 404
+	}
+}
+
+# FC's door to the Gitea admin API. Only on the compose network (not published
+# to the host), and it strips X-WEBAUTH-USER so nothing that reaches it can
+# claim a user: callers authenticate with a Gitea token, as before. FC talks to
+# Gitea only through here — it is not on gitea-net, because FC's app proxy
+# forwards client headers to a stored endpoint an app's creator can change.
+http://:8081 {
+	request_header -X-WEBAUTH-USER
 	reverse_proxy gitea:3000
 }
 

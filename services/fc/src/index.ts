@@ -42,6 +42,7 @@ import {
 import { resolveAppsSls, getSlsClient, makeSlsOps, type SlsOps } from "./lib/provisioning/sls-client.js";
 import { makeAppLogsReader } from "./lib/provisioning/app-logs.js";
 import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
+import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "./lib/provisioning/gitea-sync-runner.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
 import { makeSupabaseLoginAppLookup } from "./lib/apps-login-service.js";
@@ -504,7 +505,22 @@ export function makeAuthRepoFactory() {
       // Whose SMS account sends verification codes. Falls back to DEFAULT_ORG_ID,
       // which is being retired (docs/plans/2026-10-08-staff-only-identity-model.md).
       smsConfigOrgId: process.env.SMS_CONFIG_ORG_ID || undefined,
+      syncTeamToGitea: makeTeamGiteaSync(),
     });
+}
+
+/** Team re-sync for the auth repository's join paths; a no-op unless GITEA_ACCOUNT_AUTH=on. */
+function makeTeamGiteaSync() {
+  const { gitea } = makeGiteaDeps();
+  const runner = makeGiteaSyncRunner({
+    gitea,
+    enabled: giteaAccountAuthEnabled(),
+    serviceRoleClient: async () => {
+      const { createServiceRoleClient } = await import("./lib/supabase.js");
+      return createServiceRoleClient();
+    },
+  });
+  return (teamId: string) => runner.team(teamId);
 }
 
 /**

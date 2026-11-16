@@ -7438,6 +7438,15 @@ paths:
                     with 400, since git reads some other forms as commands to
                     run rather than as addresses.
                   example: https://github.com/owner/repo.git
+                grantActorIds:
+                  type: array
+                  items: { type: string, format: uuid }
+                  description: >-
+                    Actors in the team (in practice agents) to grant `write` on
+                    the new app. Agents get no access by default; this is the
+                    create dialog's "also grant these agents" list. A grant
+                    that cannot be made (an agent with no account yet) is
+                    skipped and does not fail the create.
       responses:
         "201":
           description: |
@@ -7707,7 +7716,7 @@ paths:
       summary: Start a deploy — mint the artifact upload handle (admin required)
       description: |
         Requires `provisionStatus: ready` and `admin` permission on the app
-        (the creator is treated as admin). Members with `prompt` or `view`
+        (the creator is treated as admin). Actors with `write` or `read`
         receive 404. Moves `fcStatus` to `awaiting_build` and returns a
         short-lived presigned OSS PUT URL. The caller then kicks its local
         daemon to build the app and upload the artifact there, and calls
@@ -7782,7 +7791,7 @@ paths:
       summary: Finish a deploy — provision the schema, publish the code, return the live URL
       description: |
         Requires `admin` permission on the app (the creator is treated as
-        admin); members with `prompt` or `view` receive 404. Provisions
+        admin); actors with `write` or `read` receive 404. Provisions
         (idempotently) the app's Postgres schema and scoped role, points the
         FC function at the uploaded artifact with a matching `DATABASE_URL`,
         disables the default public URL and verifies HTTP JWT origin routing
@@ -7872,6 +7881,164 @@ paths:
                         updatedAt: { type: string, format: date-time }
         "400":
           $ref: "#/components/responses/Error"
+  /v1/git/token:
+    post:
+      operationId: mintGitToken
+      summary: Mint the caller's git-only token
+      description: |
+        For a person's machine: the desktop calls this after sign-in and writes
+        the result to `~/.{brand}/git-credential.json`, where `amuxd
+        git-credential` hands it to git. The token is a git credential and
+        nothing else — `/v1/git/authz` accepts it, every other endpoint does
+        not — and lives 30 days. Authenticated with the caller's TeamClu
+        session (`Authorization: Bearer`); a git token cannot mint another.
+        At most 10 per account per hour. 503 `git_token_unavailable` when
+        per-account git is off (`GITEA_ACCOUNT_AUTH` is not `on`) or the
+        deployment has no `GIT_TOKEN_SECRET`.
+      tags: [Apps]
+      responses:
+        "200":
+          description: The token.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, expiresAt, ttlSeconds, userId, userName]
+                properties:
+                  token: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  ttlSeconds: { type: integer }
+                  userId: { type: string, format: uuid }
+                  userName:
+                    type: string
+                    description: The caller's Gitea username (`u` + their account id without dashes).
+                  gitHost:
+                    type: [string, "null"]
+                    description: Host of `GITEA_PUBLIC_URL`, for scoping the credential helper.
+                  gitScheme:
+                    type: string
+                    enum: [https, http]
+                    description: >-
+                      Scheme of `GITEA_PUBLIC_URL` (`https` unless it is explicitly
+                      `http`). The helper is configured for `<gitScheme>://<gitHost>`,
+                      since git only consults a helper whose scheme matches the URL.
+        "401":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/git/token/revoke:
+    post:
+      operationId: revokeGitTokens
+      summary: Revoke every git token of the caller's account
+      description: |
+        Called on sign-out. Bumps the account's `git_token_epoch`, so every git
+        token it was ever given — on every machine — stops working within the
+        60-second verification cache. Authenticated with the TeamClu session.
+      tags: [Apps]
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked, epoch]
+                properties:
+                  revoked: { type: boolean }
+                  epoch: { type: integer }
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/git/authz:
+    get:
+      operationId: authorizeGitRequest
+      summary: Identify a git request (Caddy forward_auth only)
+      x-internal: true
+      description: |
+        Caddy's `forward_auth` sends every git smart-HTTP request here first.
+        The password of its `Authorization: Basic` is either a git token or a
+        TeamClu login token (an agent's, from its daemon). On success the
+        answer names the Gitea user in `X-WEBAUTH-USER`, which Caddy copies
+        onto the request it forwards to Gitea; Gitea then decides read/push
+        from the collaborators FC mirrors onto the repo. This endpoint never
+        decides repository access.
+      tags: [Apps]
+      responses:
+        "200":
+          description: Identified.
+          headers:
+            X-WEBAUTH-USER:
+              schema: { type: string }
+              description: The caller's Gitea username.
+        "401":
+          description: >-
+            No valid credential. Carries `WWW-Authenticate: Basic` so git asks
+            its credential helper.
+  /v1/git/access:
+    get:
+      operationId: describeGitAccess
+      summary: What the caller may do on an app repository
+      description: |
+        For `amuxd git-credential`, to print a sentence instead of Gitea's bare
+        "Repository not found" when an agent or person was never granted an
+        app. Same credentials as `/v1/git/authz`. 404 when the caller is not in
+        the app's team — whether the app exists is not disclosed.
+      tags: [Apps]
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema: { type: string }
+          description: "`<owner>/<repo>` from the remote URL, `.git` optional."
+      responses:
+        "200":
+          description: The caller's standing on the app.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [appId, appName, permission, actorType]
+                properties:
+                  appId: { type: string, format: uuid }
+                  appName: { type: string }
+                  permission:
+                    oneOf:
+                      - $ref: "#/components/schemas/AppPermissionLevel"
+                      - type: "null"
+                  actorName: { type: [string, "null"] }
+                  actorType: { type: string, enum: [member, agent] }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/git/host:
+    get:
+      operationId: getGitHost
+      summary: The deployment's public git host
+      description: |
+        Unauthenticated. Names the host (and scheme) apps are cloned from, the
+        same one every clone address shows. The daemon asks before it accepts
+        the `gitHttpUrl` a local caller passed to seed or build. Its credential
+        helper sends a login to the host it trusts, so that host has to come
+        from the cloud and not from the caller. 503 when per-account git is off.
+      tags: [Apps]
+      security: []
+      responses:
+        "200":
+          description: The git host.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [gitHost, gitScheme]
+                properties:
+                  gitHost:
+                    type: string
+                    description: Host of `GITEA_PUBLIC_URL`, with its port when not the default.
+                  gitScheme: { type: string, enum: [https, http] }
+        "503":
+          $ref: "#/components/responses/Error"
   /v1/apps/{appId}/git-credential:
     get:
       operationId: getAppGitCredential
@@ -7896,9 +8063,9 @@ paths:
 
         Two kinds of caller are authorised, for either kind:
 
-        - A **member** with `prompt` or `admin` permission on the app (the
+        - A **member or agent** with `write` or `admin` permission on the app (the
           creator is treated as admin) gets a key that can push. A member who
-          can only see the app — a `view` grant, or no grant on a team-visible
+          can only see the app — a `read` grant, or no grant on a team-visible
           app — gets a deploy key with `readOnly` set (or the stored token), so
           a download works for everyone the app list shows the app to. A
           member who cannot see the app receives 404.
@@ -8215,8 +8382,8 @@ paths:
       summary: Read the deployed app's own logs
       description: |
         What the running function printed, and one entry per HTTP request with
-        its status code and duration. Requires `prompt` or `admin` on the app;
-        `view` and non-members receive 404, exactly as the data browser does —
+        its status code and duration. Requires `write` or `admin` on the app;
+        `read` and non-members receive 404, exactly as the data browser does —
         a log line carries whatever the app decided to print, which is its
         users' data.
 
@@ -8437,7 +8604,7 @@ paths:
       summary: The app's environment variables
       description: |
         The operator's own variables, injected into the deployed function at
-        `finalizeDeploy`. Readable by anyone with `prompt` or `admin` on the app
+        `finalizeDeploy`. Readable by anyone with `write` or `admin` on the app
         — the people who write its code need to know what its environment holds.
 
         A secret's `value` is always `null`, for everyone, including whoever set
@@ -8789,9 +8956,13 @@ paths:
       operationId: setAppAccess
       summary: Grant or update a member's app permission
       description: |
-        Upserts `app_member_access` for `(appId, memberId)`. `permissionLevel`
-        must be `view`, `prompt`, or `admin`. Only the app creator or a member
-        with existing `admin` on this app may call; others receive 404.
+        Upserts `app_member_access` for `(appId, memberId)`. `memberId` is any
+        member or agent actor in the app's team. `permissionLevel` is `read`,
+        `write` or `admin` (`view` / `prompt` are accepted as their old names).
+        Only the app creator or an actor with existing `admin` on this app may
+        call; others receive 404. 422 `grantee_not_in_team` when the actor is
+        not a member or agent of the app's team; 422 `agent_not_connected`
+        when the agent has no account yet.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
@@ -8818,6 +8989,8 @@ paths:
         "401":
           $ref: "#/components/responses/Error"
         "404":
+          $ref: "#/components/responses/Error"
+        "422":
           $ref: "#/components/responses/Error"
     delete:
       operationId: removeAppAccess
@@ -8852,8 +9025,8 @@ paths:
       summary: List the tables in this app's own database
       description: |
         Introspects the app's Postgres schema and returns every base table with
-        its columns and primary key. Requires `prompt` or `admin` on the app;
-        `view` (and non-members) receive 404 so the tier does not learn the
+        its columns and primary key. Requires `write` or `admin` on the app;
+        `read` (and non-members) receive 404 so the tier does not learn the
         feature exists.
 
         An empty `items` is the normal state right after the first deploy: the
@@ -8957,7 +9130,7 @@ paths:
       operationId: updateAppDataRow
       summary: Update one row
       description: |
-        Requires `admin` on the app; `prompt` receives 403. Updates exactly one
+        Requires `admin` on the app; `write` receives 403. Updates exactly one
         row, addressed only by its primary key — never by any other column the
         caller can see. A statement that matches anything other than one row
         aborts the transaction.
@@ -9044,7 +9217,7 @@ paths:
       operationId: getAppStorageUsage
       summary: How much of its quota this app's files use
       description: |
-        Requires `view`. `bytes` is EVENTUALLY CONSISTENT and `countedAt` says
+        Requires `read`. `bytes` is EVENTUALLY CONSISTENT and `countedAt` says
         how stale it is: an app holding STS credentials writes straight to OSS
         without passing through this API, so the number comes from a periodic
         sweep rather than a running total. `bytes: null` means never measured,
@@ -9070,7 +9243,7 @@ paths:
       operationId: refreshAppStorageUsage
       summary: Re-measure this app's files now
       description: |
-        Requires `view`. Lists the app's prefix and writes the result back, so
+        Requires `read`. Lists the app's prefix and writes the result back, so
         the panel can show a fresh number instead of waiting for the sweep.
         `truncated: true` means the listing hit its page cap and the count is a
         floor, not a total.
@@ -9102,10 +9275,10 @@ paths:
       operationId: listAppFiles
       summary: List this app's files
       description: |
-        Requires `view`. `prefix` filters within the app's own space and can
+        Requires `read`. `prefix` filters within the app's own space and can
         never address another app's; `after` is the opaque cursor from a
         previous page. `canWrite` tells the panel whether to render upload and
-        delete, so a `view` member is not shown controls that would 404.
+        delete, so a `read` member is not shown controls that would 404.
 
         With `delimiter=/` the store collapses everything below the next
         separator into `folders`, and `items` holds only the objects sitting
@@ -9182,7 +9355,7 @@ paths:
       operationId: deleteAppFolder
       summary: Delete every file under one folder
       description: |
-        Requires `prompt`, the same tier as deleting a single file — a folder is
+        Requires `write`, the same tier as deleting a single file — a folder is
         not a different kind of object in a store like this, it is a prefix, and
         whoever may delete each of its files one at a time may delete them
         together.
@@ -9221,7 +9394,7 @@ paths:
       operationId: createAppFileDownloadUrl
       summary: Signed URL for one file
       description: |
-        Requires `view`. The URL forces `Content-Disposition: attachment`, so an
+        Requires `read`. The URL forces `Content-Disposition: attachment`, so an
         HTML file one member uploads cannot execute on the storage origin when
         another opens it.
       tags: [Apps]
@@ -9256,7 +9429,7 @@ paths:
       operationId: createAppFileUploadUrl
       summary: Signed URL to upload one file
       description: |
-        Requires `prompt`. The bytes go from the browser straight to OSS; this
+        Requires `write`. The bytes go from the browser straight to OSS; this
         API only signs. 409 `app_storage_quota_exceeded` when the app is already
         over quota - the check happens here, where we are still in the path, and
         not per write.
@@ -9308,7 +9481,7 @@ paths:
     delete:
       operationId: deleteAppFile
       summary: Delete one file
-      description: Requires `prompt`.
+      description: Requires `write`.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
@@ -10457,6 +10630,21 @@ components:
             imported from an http(s) repo whose admin stored a token (see
             `setAppGitHttpsCredential`). Null for an import with neither. Every
             app that is not `gitea_deploy_key` deploys its local checkout.
+        gitAccountAuth:
+          type: boolean
+          description: >-
+            True when the deployment runs per-account Gitea auth
+            (`GITEA_ACCOUNT_AUTH=on`) and this app's repo is under its TeamClu
+            org: a client points the checkout at `gitHttpUrl` and authenticates
+            with the caller's own account through `amuxd git-credential`. The
+            stored `gitRemoteUrl` and `gitAuthKind` are unchanged so older
+            daemons keep using SSH and deploy keys.
+        gitHttpUrl:
+          type: [string, "null"]
+          description: >-
+            HTTPS clone address of the app's repo. Set only when
+            `gitAccountAuth` is true.
+          example: https://gitea.example.com/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/tc-app-1.git
         gitCommitSha:
           type: [string, "null"]
           pattern: "^[0-9a-f]{7,40}$"
@@ -10613,11 +10801,23 @@ components:
           type: boolean
           description: >-
             True when the key can fetch but not push. Issued to a member who
-            can see the app but holds no `prompt` or `admin` permission on it.
+            can see the app but holds no `write` or `admin` permission on it.
         expiresAt:
           type: string
           format: date-time
           description: Informational TTL (~15m); the key remains until deleted on Gitea.
+        gitAccountAuth:
+          type: boolean
+          description: >-
+            Same meaning as on `App`: the deployment runs per-account Gitea
+            auth and this repo is under its TeamClu org. The key above still
+            serves the daemon's own seed push and deploy fetch over SSH.
+        gitHttpUrl:
+          type: [string, "null"]
+          description: >-
+            HTTPS address the daemon points the checkout at for people and
+            agents (`url.<https>.insteadOf` in the checkout). Set only when
+            `gitAccountAuth` is true.
     AppLogEntry:
       type: object
       required: [ts, kind, level, message]
@@ -10959,11 +11159,16 @@ components:
             is not the creator).
     AppPermissionLevel:
       type: string
-      enum: [view, prompt, admin]
+      enum: [read, write, admin]
       description: >-
-        Per-member app capability. `view` — see metadata only; `prompt` — git
-        write (clone/push) but no deploy or grant management; `admin` — full
-        control including deploy and access management.
+        Per-actor app capability, named after Gitea's repository collaborator
+        levels so the two map one to one. `read` — see the app and download
+        its code; `write` — change the code (git push), read and write the
+        app's data and files, but no deploy or grant management; `admin` —
+        full control including deploy, settings, environment variables and
+        access management. These were `view` / `prompt` / `admin` before
+        2026-11-17: requests carrying `view` or `prompt` are still accepted and
+        stored as `read` / `write`, and responses only ever use the new names.
     AppMemberAccessRow:
       type: object
       required: [memberId, permissionLevel, createdAt]
@@ -10971,16 +11176,30 @@ components:
         memberId:
           type: string
           format: uuid
-          description: Granted team member actor id.
+          description: >-
+            The grantee's actor id in the app's team — a member or an agent.
+            Named `memberId` for history.
         permissionLevel:
           $ref: "#/components/schemas/AppPermissionLevel"
         grantedByMemberId:
           type: [string, "null"]
           format: uuid
-          description: Member who last wrote this grant.
+          description: Actor (member or agent) who last wrote this grant.
         createdAt:
           type: string
           format: date-time
+        actorType:
+          type: [string, "null"]
+          enum: [member, agent, null]
+          description: >-
+            What the grantee is. Present on `listAppAccess`; null when the
+            actor row could not be read.
+        connected:
+          type: [boolean, "null"]
+          description: >-
+            False for an agent whose daemon has not claimed an account yet —
+            it holds the grant but cannot act on it. Always true for a member.
+            Present on `listAppAccess`.
     AppDataColumn:
       type: object
       required: [name, dataType, nullable]

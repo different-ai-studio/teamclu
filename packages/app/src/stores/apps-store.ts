@@ -83,6 +83,8 @@ interface AppsState {
      * resolves the app's workdir from that binding.
      */
     adoptLocalDir?: string | null;
+    /** Agents to grant `write` on the new app (they get nothing by default). */
+    grantActorIds?: string[];
   }) => Promise<AppRow>;
   /** Re-ask the daemon which apps are on this machine. */
   refreshLocalApps: (teamId?: string | null) => Promise<void>;
@@ -447,6 +449,7 @@ async function runSeed(
   let result: SeedAppResult = { outcome: "unreachable", workdir: null, error: null };
   try {
     const cloneFrom = cloneUrl?.trim() || app.gitRemoteUrl;
+    const httpUrl = accountGitUrl(app);
     result = cloneCredential
       ? await seedDaemonApp(
           app.id,
@@ -458,15 +461,29 @@ async function runSeed(
           adoptExisting,
           cloneCredential,
         )
-      : await seedDaemonApp(
-          app.id,
-          app.teamId,
-          app.name,
-          app.type,
-          cloneFrom,
-          deployKeyPem,
-          adoptExisting,
-        );
+      : httpUrl
+        ? // Per-account git: no http(s) import credential, then the HTTPS
+          // address the checkout's people and agents should push to.
+          await seedDaemonApp(
+            app.id,
+            app.teamId,
+            app.name,
+            app.type,
+            cloneFrom,
+            deployKeyPem,
+            adoptExisting,
+            null,
+            httpUrl,
+          )
+        : await seedDaemonApp(
+            app.id,
+            app.teamId,
+            app.name,
+            app.type,
+            cloneFrom,
+            deployKeyPem,
+            adoptExisting,
+          );
   } catch (e) {
     console.warn("app seed kick failed (non-fatal)", e);
   } finally {
@@ -488,6 +505,11 @@ async function runSeed(
 }
 
 /** The deploy-key half of a credential reply, or null for any other kind. */
+/** The HTTPS address a per-account app's checkout should use, or null to stay on SSH. */
+function accountGitUrl(app: AppRow): string | null {
+  return app.gitAccountAuth && app.gitHttpUrl?.trim() ? app.gitHttpUrl.trim() : null;
+}
+
 function deployKeyOf(cred: AppGitCredential | null): AppGitDeployKeyCredential | null {
   return cred?.authKind === "deploy_key" ? cred : null;
 }
@@ -618,7 +640,9 @@ export async function ensureAppCheckout(
   try {
     result = httpsCredential
       ? await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem, httpsCredential)
-      : await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem);
+      : accountGitUrl(app)
+        ? await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem, null, accountGitUrl(app))
+        : await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem);
   } catch (e) {
     console.warn("app clone kick failed (non-fatal)", e);
   } finally {

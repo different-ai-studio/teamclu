@@ -271,7 +271,11 @@ fn main() -> anyhow::Result<()> {
                 .clone()
                 .unwrap_or_else(config::DaemonConfig::sock_path);
             // stdout is git's to read, so nothing else may print there.
-            std::process::exit(cli::git_credential::run(&sock, &args.app, &args.operation));
+            let code = match args.app.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+                Some(app) => cli::git_credential::run(&sock, app, &args.operation),
+                None => cli::git_account::run(args.brand.as_deref(), &args.operation),
+            };
+            std::process::exit(code);
         }
         Commands::TestClient { config, action } => {
             tracing_subscriber::fmt()

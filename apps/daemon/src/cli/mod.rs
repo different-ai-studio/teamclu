@@ -4,6 +4,7 @@ pub mod clear;
 pub mod config_cmd;
 pub mod daemon_http;
 pub mod doctor;
+pub mod git_account;
 pub mod git_credential;
 pub mod git_ssh;
 pub mod manage;
@@ -230,9 +231,15 @@ pub struct GitSshArgs {
 
 #[derive(Args, Debug)]
 pub struct GitCredentialArgs {
-    /// App whose repo git is asking about. Baked into `credential.helper`.
+    /// App whose repo git is asking about (an imported http(s) repo's stored
+    /// token). Without it: per-account git for the TeamClu git host — the
+    /// agent's or the person's own identity (see `cli::git_account`).
     #[arg(long)]
-    pub app: String,
+    pub app: Option<String>,
+    /// Brand whose desktop wrote the person's git token. Baked in for a
+    /// white-label brand; git runs the helper with no brand in its environment.
+    #[arg(long)]
+    pub brand: Option<String>,
     #[arg(long)]
     pub sock: Option<std::path::PathBuf>,
     /// `get`, `store` or `erase` — appended by git.

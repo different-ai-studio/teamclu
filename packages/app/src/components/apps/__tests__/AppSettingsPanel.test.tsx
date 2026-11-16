@@ -451,7 +451,7 @@ describe('AppSettingsPanel', () => {
       expect(screen.getByTestId('app-control-visibility').textContent).toContain(
         '仅自己和被授权的人',
       )
-      expect(screen.getByText(/本机 daemon 也看不到它/)).toBeTruthy()
+      expect(screen.getByText(/被授权的成员和 agent 看得到/)).toBeTruthy()
     })
 
     it('does not open a confirm before anything is asked for', () => {

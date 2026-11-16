@@ -77,6 +77,12 @@ until [ "$i" -ge 30 ]; do
 done
 [ "$i" -lt 30 ] || echo "WARN: gotrue health via kong still not 200 after 30s; running the suite anyway"
 
+# ── Gitea gateway ──────────────────────────────────────────────────────────
+#
+# Fatal on purpose: Gitea trusts X-WEBAUTH-USER from anyone who reaches it, so
+# a gateway that leaks is "anyone can push as anyone", not a flaky test.
+ENV_FILE="$REPO_ROOT/deploy/self-host/.env" sh "$REPO_ROOT/deploy/self-host/smoke/gitea-gateway-smoke.sh"
+
 cd "$REPO_ROOT/services/fc"
 FC_E2E=1 \
 FC_E2E_BASE_URL="http://$FC_IP:9000" \

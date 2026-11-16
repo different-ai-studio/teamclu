@@ -25,6 +25,7 @@ import type {
   AppCronJobInput,
   AppCronRun,
   AppCronRunOutcome,
+  GitTokenGrant,
 } from "@/lib/backend/types";
 import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
 
@@ -141,6 +142,12 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;
       }
+    },
+    async mintGitToken() {
+      return client.post<GitTokenGrant>("/v1/git/token", {});
+    },
+    async revokeGitTokens() {
+      await client.post<unknown>("/v1/git/token/revoke", {});
     },
     async listAppAccess(appId) {
       try {
