@@ -58,6 +58,13 @@ GITEA_BOT_PASSWORD="${GITEA_BOT_PASSWORD:-}"
 GITEA_BOT_EMAIL="${GITEA_BOT_EMAIL:-${GITEA_BOT_USERNAME}@${GITEA_ADMIN_EMAIL#*@}}"
 GITEA_TOKEN="${GITEA_TOKEN:-}"
 TOKEN_NAME="${GITEA_TOKEN_NAME:-teamclu-fc}"
+# Per-account Gitea auth (GITEA_ACCOUNT_AUTH=on): FC creates a Gitea user for
+# every TeamClu account and an org for every TeamClu org, which only a SITE
+# admin can do, with a token that carries the admin scope. Off: the bot stays
+# an ordinary org member, as before.
+account_auth_on() {
+  [ "$(printf '%s' "${GITEA_ACCOUNT_AUTH:-}" | tr '[:upper:]' '[:lower:]' | tr -d ' ')" = "on" ]
+}
 
 use_podman_compose() {
   command -v podman-compose >/dev/null || return 1
@@ -203,10 +210,32 @@ ensure_bot_in_org() {
     "${GITEA_INTERNAL_URL}/api/v1/teams/${team_id}/members/${GITEA_BOT_USERNAME}"
 }
 
+ensure_bot_site_admin() {
+  account_auth_on || return 0
+  local is_admin
+  is_admin="$(gitea_curl "${admin_auth[@]}" "${GITEA_INTERNAL_URL}/api/v1/users/${GITEA_BOT_USERNAME}" \
+    | jq -r '.is_admin // false')"
+  if [ "$is_admin" = "true" ]; then
+    echo "gitea-bootstrap: ${GITEA_BOT_USERNAME} is already a site admin" >&2
+    return 0
+  fi
+  echo "gitea-bootstrap: making ${GITEA_BOT_USERNAME} a site admin (GITEA_ACCOUNT_AUTH=on)…" >&2
+  gitea_curl "${admin_auth[@]}" -X PATCH "${GITEA_INTERNAL_URL}/api/v1/admin/users/${GITEA_BOT_USERNAME}" \
+    -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg user "$GITEA_BOT_USERNAME" '{login_name: $user, source_id: 0, admin: true}')" >/dev/null
+}
+
 verify_existing_token() {
   [ -n "$GITEA_TOKEN" ] || return 1
   if gitea_curl -H "Authorization: token ${GITEA_TOKEN}" \
     "${GITEA_INTERNAL_URL}/api/v1/user" >/dev/null 2>&1; then
+    # A token minted before account auth cannot create users: its scopes are
+    # fixed at creation. Replace it rather than let FC fail on the first sync.
+    if account_auth_on && ! gitea_curl -H "Authorization: token ${GITEA_TOKEN}" \
+      "${GITEA_INTERNAL_URL}/api/v1/admin/users?limit=1" >/dev/null 2>&1; then
+      echo "gitea-bootstrap: GITEA_TOKEN lacks the admin scope account auth needs — minting a new token" >&2
+      return 1
+    fi
     echo "gitea-bootstrap: GITEA_TOKEN in .env is valid — nothing to mint" >&2
     return 0
   fi
@@ -242,11 +271,16 @@ mint_bot_token() {
   # user, so admin credentials here would mint an admin token (or be rejected).
   # `scopes` is required since Gitea 1.20 — omit it and the token can do nothing,
   # which surfaces much later as a 403 on createAppRepo.
+  local scopes='["write:repository", "write:organization", "read:user"]'
+  if account_auth_on; then
+    # Creating users and orgs, editing display names: the admin and user scopes.
+    scopes='["write:repository", "write:organization", "write:user", "write:admin"]'
+  fi
   resp="$(gitea_curl -u "${GITEA_BOT_USERNAME}:${GITEA_BOT_PASSWORD}" -X POST \
     "${GITEA_INTERNAL_URL}/api/v1/users/${GITEA_BOT_USERNAME}/tokens" \
     -H 'Content-Type: application/json' \
-    -d "$(jq -nc --arg name "$TOKEN_NAME" \
-      '{name: $name, scopes: ["write:repository", "write:organization", "read:user"]}')")"
+    -d "$(jq -nc --arg name "$TOKEN_NAME" --argjson scopes "$scopes" \
+      '{name: $name, scopes: $scopes}')")"
   token="$(echo "$resp" | jq -r '.sha1 // empty')"
   if [ -z "$token" ]; then
     echo "gitea-bootstrap: token creation failed: $resp" >&2
@@ -278,6 +312,7 @@ main() {
   ensure_org
   ensure_bot_user
   ensure_bot_in_org
+  ensure_bot_site_admin
   mint_bot_token
 
   echo "gitea-bootstrap: done" >&2

@@ -66,6 +66,11 @@ test("repo owner and HTTPS address are read from every remote shape", () => {
   assert.equal(giteaHttpUrlFromRemote(`ssh://git@gitea.example:2222/${OWNER}/tc-app-1.git`), `https://gitea.example/${OWNER}/tc-app-1.git`);
   assert.equal(giteaHttpUrlFromRemote(`https://gitea.example/${OWNER}/tc-app-1.git`), `https://gitea.example/${OWNER}/tc-app-1.git`);
   assert.equal(giteaHttpUrlFromRemote(""), null);
+  // GITEA_PUBLIC_URL wins over the SSH host.
+  assert.equal(
+    giteaHttpUrlFromRemote(`git@gitea.internal:${OWNER}/tc-app-1.git`, "https://git.example.com/"),
+    `https://git.example.com/${OWNER}/tc-app-1.git`,
+  );
 });
 
 test("GITEA_ACCOUNT_AUTH is off unless it says on", () => {

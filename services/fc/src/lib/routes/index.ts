@@ -2,6 +2,7 @@ import { registerAuth } from "./auth.js";
 import { registerTeams } from "./teams.js";
 import { registerSessions } from "./sessions.js";
 import { registerApps } from "./apps.js";
+import { registerGit } from "./git.js";
 import { registerMessages } from "./messages.js";
 import { registerSessionAttachments } from "./session-attachments.js";
 import { registerInvites } from "./invites.js";
@@ -37,6 +38,7 @@ export function registerAllRoutes(router) {
   registerTeams(router);
   registerSessions(router);
   registerApps(router);
+  registerGit(router);
   registerMessages(router);
   registerSessionAttachments(router);
   registerInvites(router);

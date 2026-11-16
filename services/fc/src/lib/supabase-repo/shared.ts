@@ -175,7 +175,7 @@ function appGitAccountFields(r: any): { gitAccountAuth: boolean; gitHttpUrl: str
     isTeamCluOrgOwner(repoOwnerFromRemote(r.git_remote_url));
   return {
     gitAccountAuth: accountAuth,
-    gitHttpUrl: accountAuth ? giteaHttpUrlFromRemote(r.git_remote_url) : null,
+    gitHttpUrl: accountAuth ? giteaHttpUrlFromRemote(r.git_remote_url, process.env.GITEA_PUBLIC_URL) : null,
   };
 }
 

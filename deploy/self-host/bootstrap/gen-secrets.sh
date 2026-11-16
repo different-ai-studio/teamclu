@@ -56,6 +56,14 @@ if [ -z "$AI_GATEWAY_SERVICE_TOKEN" ]; then
 fi
 set_kv AI_GATEWAY_SERVICE_TOKEN "$AI_GATEWAY_SERVICE_TOKEN"
 
+# Signs the git-only tokens desktops hold (services/fc/src/lib/git-token.ts).
+# Preserved across runs: a new value would sign every desktop out of git.
+GIT_TOKEN_SECRET="$(grep '^GIT_TOKEN_SECRET=' "$ENV_FILE" | cut -d= -f2- || true)"
+if [ -z "$GIT_TOKEN_SECRET" ]; then
+  GIT_TOKEN_SECRET="$(openssl rand -hex 32)"
+fi
+set_kv GIT_TOKEN_SECRET "$GIT_TOKEN_SECRET"
+
 # Password on Kong's `dashboard` route — the only thing in front of Supabase
 # Studio, which has no login of its own and connects to Postgres as
 # supabase_admin. Upstream Supabase ships a placeholder that is printed in its

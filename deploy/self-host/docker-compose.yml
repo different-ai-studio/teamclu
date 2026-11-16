@@ -239,6 +239,12 @@ services:
     # NOTE: the ECS security group must also allow inbound TCP on GITEA_SSH_PORT.
     image: gitea/gitea:1.22
     restart: unless-stopped
+    # Only Caddy shares this network. Gitea trusts X-WEBAUTH-USER from anyone
+    # who can reach its HTTP port (REVERSE_PROXY_TRUSTED_PROXIES does not limit
+    # that — verified on 1.22.6), so nothing but the gateway may. Not
+    # `internal: true`: a container only on an internal network loses its
+    # published ports, and SSH below would stop working (verified).
+    networks: [gitea-net]
     ports:
       - "${GITEA_SSH_PORT:-2222}:22"
     environment:
@@ -267,6 +273,15 @@ services:
       # operator creates. Leaving registration open would expose a public
       # sign-up form on GITEA_DOMAIN.
       GITEA__service__DISABLE_REGISTRATION: "true"
+      # Per-account git over HTTPS: Caddy's forward_auth asks FC who a git
+      # request is and passes the answer as X-WEBAUTH-USER (see the Caddyfile).
+      # Safe only because of `networks: [gitea-net]` above. The API never takes
+      # the header — FC calls it with the bot token — and an unknown user is
+      # created on first sight only as a fallback (FC creates them up front).
+      GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION: "true"
+      GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION_API: "false"
+      GITEA__service__ENABLE_REVERSE_PROXY_AUTO_REGISTRATION: "true"
+      GITEA__security__REVERSE_PROXY_AUTHENTICATION_USER: "X-WEBAUTH-USER"
     volumes:
       - gitea_data:/data
     healthcheck:
@@ -482,11 +497,11 @@ services:
       # endpoint answers 401 rather than running jobs for anyone who finds it.
       # The `app-cron` service below reads the same variable.
       APP_CRON_SECRET: "${APP_CRON_SECRET:-}"
-      # Per-app git repos on Gitea. Blank disables repo provisioning (503
-      # gitea_unavailable naming the empty variable). May be the Caddy-proxied
-      # public HTTPS URL (https://${GITEA_DOMAIN}) or the in-network address
-      # (http://gitea:3000) — both work from this container.
-      GITEA_URL: "${GITEA_URL:-}"
+      # Per-app git repos on Gitea. Fixed, not read from .env: Gitea is only
+      # reachable from Caddy now (gitea-net), and the public HTTPS name serves
+      # git paths only, so FC's API calls go through Caddy's internal :8081
+      # entrance. A value in .env would be either unreachable or 404.
+      GITEA_URL: "http://caddy:8081"
       GITEA_TOKEN: "${GITEA_TOKEN:-}"
       GITEA_OWNER: "${GITEA_OWNER:-}"
       # Per-account Gitea auth (docs/specs/2026-11-16-app-platform-identity-design.md).
@@ -494,6 +509,12 @@ services:
       # mirrored to Gitea collaborators, and clients are told to use HTTPS
       # through the forward_auth gateway. Blank/"off" changes nothing.
       GITEA_ACCOUNT_AUTH: "${GITEA_ACCOUNT_AUTH:-}"
+      # Signs the git-only tokens desktops hold (src/lib/git-token.ts). >= 32
+      # chars; gen-secrets.sh writes one. Blank: POST /v1/git/token answers 503.
+      GIT_TOKEN_SECRET: "${GIT_TOKEN_SECRET:-}"
+      # The HTTPS base clients clone from; its host is where desktops point
+      # their credential helper, and app responses build gitHttpUrl from it.
+      GITEA_PUBLIC_URL: "${GITEA_PUBLIC_URL:-https://${GITEA_DOMAIN:-gitea.localhost}}"
       # 32-byte base64 AES-GCM key for app_secrets at rest. Blank disables
       # secret storage until encrypt/decrypt is wired.
       APP_SECRETS_ENCRYPTION_KEY: "${APP_SECRETS_ENCRYPTION_KEY:-}"
@@ -713,6 +734,8 @@ services:
     logging: *default-logging
     image: caddy:2
     restart: unless-stopped
+    # default: every other service; gitea-net: the only way to Gitea's HTTP.
+    networks: [default, gitea-net]
     ports:
       - "${CADDY_HTTP_PORT:-80}:80"
       - "${CADDY_HTTPS_PORT:-443}:443"
@@ -896,6 +919,11 @@ services:
     logging: *default-logging
   supavisor:
     logging: *default-logging
+
+networks:
+  default: {}
+  # Gitea and Caddy only. See the gitea service for why nothing else joins.
+  gitea-net: {}
 
 volumes:
   emqx_data:

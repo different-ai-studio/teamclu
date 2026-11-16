@@ -659,6 +659,26 @@ test("proxyToApp strips client-supplied identity headers", async () => {
   assert.equal(seen!.get("x-teamclu-org-id"), null);
 });
 
+test("proxyToApp never forwards Gitea's reverse-proxy identity headers", async () => {
+  let seen: Headers | null = null;
+  const fake = (async (_u: any, init: any) => {
+    seen = init.headers as Headers;
+    return new Response("ok", { status: 200 });
+  }) as unknown as typeof fetch;
+
+  await proxyToApp(
+    new Request(`${ORIGIN}/`, {
+      headers: { "X-WEBAUTH-USER": "uadmin", "x-webauth-email": "a@b.c", "x-keep": "1" },
+    }),
+    "https://up.example",
+    fake,
+    null,
+  );
+  assert.equal(seen!.get("x-webauth-user"), null);
+  assert.equal(seen!.get("x-webauth-email"), null);
+  assert.equal(seen!.get("x-keep"), "1");
+});
+
 test("proxyToApp forwards the gateway's identity, overriding any forgery", async () => {
   let seen: Headers | null = null;
   const fake = (async (_u: any, init: any) => {

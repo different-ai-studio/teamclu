@@ -7881,6 +7881,129 @@ paths:
                         updatedAt: { type: string, format: date-time }
         "400":
           $ref: "#/components/responses/Error"
+  /v1/git/token:
+    post:
+      operationId: mintGitToken
+      summary: Mint the caller's git-only token
+      description: |
+        For a person's machine: the desktop calls this after sign-in and writes
+        the result to `<amuxd home>/git-token.json`, where `amuxd
+        git-credential` hands it to git. The token is a git credential and
+        nothing else — `/v1/git/authz` accepts it, every other endpoint does
+        not — and lives 30 days. Authenticated with the caller's TeamClu
+        session (`Authorization: Bearer`); a git token cannot mint another.
+        At most 10 per account per hour. 503 `git_token_unavailable` when the
+        deployment has no `GIT_TOKEN_SECRET`.
+      tags: [Apps]
+      responses:
+        "200":
+          description: The token.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, expiresAt, ttlSeconds, userId, userName]
+                properties:
+                  token: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  ttlSeconds: { type: integer }
+                  userId: { type: string, format: uuid }
+                  userName:
+                    type: string
+                    description: The caller's Gitea username (`u` + their account id without dashes).
+                  gitHost:
+                    type: [string, "null"]
+                    description: Host of `GITEA_PUBLIC_URL`, for scoping the credential helper.
+        "401":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/git/token/revoke:
+    post:
+      operationId: revokeGitTokens
+      summary: Revoke every git token of the caller's account
+      description: |
+        Called on sign-out. Bumps the account's `git_token_epoch`, so every git
+        token it was ever given — on every machine — stops working within the
+        60-second verification cache. Authenticated with the TeamClu session.
+      tags: [Apps]
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked, epoch]
+                properties:
+                  revoked: { type: boolean }
+                  epoch: { type: integer }
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/git/authz:
+    get:
+      operationId: authorizeGitRequest
+      summary: Identify a git request (Caddy forward_auth only)
+      x-internal: true
+      description: |
+        Caddy's `forward_auth` sends every git smart-HTTP request here first.
+        The password of its `Authorization: Basic` is either a git token or a
+        TeamClu login token (an agent's, from its daemon). On success the
+        answer names the Gitea user in `X-WEBAUTH-USER`, which Caddy copies
+        onto the request it forwards to Gitea; Gitea then decides read/push
+        from the collaborators FC mirrors onto the repo. This endpoint never
+        decides repository access.
+      tags: [Apps]
+      responses:
+        "200":
+          description: Identified.
+          headers:
+            X-WEBAUTH-USER:
+              schema: { type: string }
+              description: The caller's Gitea username.
+        "401":
+          description: >-
+            No valid credential. Carries `WWW-Authenticate: Basic` so git asks
+            its credential helper.
+  /v1/git/access:
+    get:
+      operationId: describeGitAccess
+      summary: What the caller may do on an app repository
+      description: |
+        For `amuxd git-credential`, to print a sentence instead of Gitea's bare
+        "Repository not found" when an agent or person was never granted an
+        app. Same credentials as `/v1/git/authz`. 404 when the caller is not in
+        the app's team — whether the app exists is not disclosed.
+      tags: [Apps]
+      parameters:
+        - name: repo
+          in: query
+          required: true
+          schema: { type: string }
+          description: "`<owner>/<repo>` from the remote URL, `.git` optional."
+      responses:
+        "200":
+          description: The caller's standing on the app.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [appId, appName, permission, actorType]
+                properties:
+                  appId: { type: string, format: uuid }
+                  appName: { type: string }
+                  permission:
+                    oneOf:
+                      - $ref: "#/components/schemas/AppPermissionLevel"
+                      - type: "null"
+                  actorName: { type: [string, "null"] }
+                  actorType: { type: string, enum: [member, agent] }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/apps/{appId}/git-credential:
     get:
       operationId: getAppGitCredential

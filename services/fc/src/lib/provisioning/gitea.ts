@@ -113,10 +113,11 @@ export function repoOwnerFromRemote(remote: string | null | undefined): string |
 
 /**
  * The HTTPS clone address for a repo whose stored remote is the SSH one Gitea
- * hands out. Same host as the SSH remote: on both deploy targets the git host
- * serves HTTPS through the proxy and SSH on a separate port.
+ * hands out. `publicBase` (GITEA_PUBLIC_URL) wins when given; otherwise the
+ * SSH remote's host, which on both deploy targets also serves HTTPS through
+ * the proxy (SSH is on a separate port).
  */
-export function giteaHttpUrlFromRemote(remote: string | null | undefined): string | null {
+export function giteaHttpUrlFromRemote(remote: string | null | undefined, publicBase?: string | null): string | null {
   if (typeof remote !== "string" || !remote.trim()) return null;
   const url = remote.trim();
   let host: string;
@@ -137,7 +138,17 @@ export function giteaHttpUrlFromRemote(remote: string | null | undefined): strin
   }
   const clean = path.replace(/^\/+/, "");
   if (!host || clean.split("/").filter(Boolean).length < 2) return null;
-  return `https://${host}/${clean.endsWith(".git") ? clean : `${clean}.git`}`;
+  const repoPath = clean.endsWith(".git") ? clean : `${clean}.git`;
+  const base = publicBase?.trim().replace(/\/+$/, "");
+  if (base) {
+    try {
+      const parsed = new URL(base);
+      return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}/${repoPath}`;
+    } catch {
+      // A malformed override falls back to the remote's own host.
+    }
+  }
+  return `https://${host}/${repoPath}`;
 }
 
 /** Gitea's repository collaborator levels — the same words as TeamClu's app levels. */

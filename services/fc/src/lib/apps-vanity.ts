@@ -436,6 +436,13 @@ export async function proxyToApp(
   headers.delete("x-teamclu-user-id");
   headers.delete("x-teamclu-user-email");
   headers.delete("x-teamclu-org-id");
+  // Gitea's reverse-proxy identity headers. An app endpoint is a stored URL its
+  // creator can change; if it ever pointed at a Gitea, these would name the
+  // Gitea user. FC is not on Gitea's network, but the proxy never forwards
+  // them anyway.
+  for (const name of [...headers.keys()]) {
+    if (name.toLowerCase().startsWith("x-webauth-")) headers.delete(name);
+  }
   if (identity) {
     headers.set("x-teamclu-user-id", identity.userId);
     headers.set("x-teamclu-user-email", identity.email);
