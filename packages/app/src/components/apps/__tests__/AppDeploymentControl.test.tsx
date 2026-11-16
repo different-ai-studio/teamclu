@@ -4,6 +4,7 @@ import {AppDeploymentControl} from '../AppDeploymentControl';
 const mocks=vi.hoisted(()=>({getApp:vi.fn(),undeployApp:vi.fn(),refreshApp:vi.fn(),syncApp:vi.fn(),deploy:vi.fn()}));
 vi.mock('@/lib/backend/provider',()=>({getBackend:()=>({apps:{getApp:mocks.getApp}})}));
 vi.mock('@/stores/apps-store',()=>({useAppsStore:(s:any)=>s(mocks)}));
+vi.mock('@/lib/apps/app-deploy-prompt',()=>({requestAgentDeploy:(...args:unknown[])=>mocks.deploy(...args)}));
 vi.mock('react-i18next',()=>({useTranslation:()=>({t:(_key:string,fallback:string)=>fallback})}));
 const row:any={id:'a',name:'App',fcStatus:'live',canManageDeployment:true};
 beforeEach(()=>{vi.clearAllMocks();mocks.getApp.mockResolvedValue(row);mocks.undeployApp.mockResolvedValue(true);});
@@ -41,6 +42,6 @@ it('offers normal redeployment instead of a disabled uninstall after cleanup', a
  expect(await screen.findByRole('button',{name:'重新部署'})).toBeEnabled();
  expect(screen.queryByRole('button',{name:'卸载部署'})).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:'重新部署'}));
- expect(mocks.deploy).toHaveBeenCalledWith('a');
+ expect(mocks.deploy).toHaveBeenCalledWith(expect.objectContaining({id:'a'}));
  expect(screen.getByText('查看清理详情')).toBeInTheDocument();
 });

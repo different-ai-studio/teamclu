@@ -14,8 +14,6 @@ import { normalizeDaemonEnvActivationDiagnostics } from '@/lib/diagnostics/env-d
 import { useAuthStore } from '@/stores/auth-store'
 import { isTauri, openExternalUrl } from '@/lib/utils'
 import { textToBase64Url } from '@/lib/base64'
-import type { AppDeployDeclaration } from '@/lib/backend/types'
-import type { ArtifactVerification } from '@/lib/apps/artifact-verification'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
 
@@ -1035,65 +1033,6 @@ export async function seedDaemonApp(
 }
 
 /**
- * Kick the local daemon to build an app's artifact and upload it to OSS via the
- * presigned PUT URL minted by the cloud `deploy` call. The daemon runs the build
- * in `<amuxd home>/apps/<appId>` (it must already be seeded) and PUTs the zip.
- *
- * Three-state outcome (never throws), mirroring {@link seedDaemonApp}:
- * - `"built"`       — the daemon built + uploaded successfully.
- * - `"failed"`      — daemon reachable but the build/upload failed (terminal).
- * - `"unreachable"` — daemon down/unreachable; the caller should not finalize.
- */
-type BuildAppOutcome = "built" | "failed" | "unreachable";
-
-export interface BuildAppResult {
-  outcome: BuildAppOutcome
-  /** Why it failed, for the toast. Null unless the outcome is `failed`. */
-  error: string | null
-  /** The exact Gitea commit the daemon built; null for imported checkouts. */
-  gitCommitSha: string | null
-  revision: string | null
-  artifactVerification: ArtifactVerification | null
-  /**
-   * The validated build and start declaration from `teamclu.app.json`. Handed
-   * to finalize so the function is built and started the way the app expects.
-   */
-  declaration: AppDeployDeclaration | null
-  /**
-   * The image this build pushed, for an app whose `build.kind` is
-   * `"container"`. Null for every other app — that one uploaded an archive to
-   * the presigned URL instead.
-   */
-  image: string | null
-}
-
-/**
- * The three git fields are all-or-nothing, and the daemon enforces that.
- *
- * With them it fetches the app's Gitea repo and builds that exact commit; with
- * none of them it builds the workdir as it sits, which is the only thing it can
- * do for an app imported from a remote this deployment has no credential for.
- */
-interface BuildDaemonAppInput {
-  revision: string
-  gitCommitSha?: string | null
-  gitRemoteUrl?: string | null
-  deployKeyPem?: string | null
-  /** Archive deploys. Exactly one of this and `image` is set. */
-  presignedPut?: string | null
-  /** Container deploys: where to push the image, minted by the control plane. */
-  image?: AppImagePushHandle | null
-}
-
-/** Registry handle for one container deploy. Carries a password — never log it. */
-export interface AppImagePushHandle {
-  reference: string
-  registry: string
-  username: string
-  password: string
-}
-
-/**
  * Where the local daemon keeps this app's checkout.
  *
  * Asked, never derived. The desktop used to compute `~/.amuxd/apps/<id>` from
@@ -1124,34 +1063,6 @@ interface DaemonAppWorkdirInfo {
  * from "no apps are local", because the two mean opposite things for what the
  * sidebar should show.
  */
-/**
- * What the app's checkout declares about how it is built (`teamclu.app.json`).
- *
- * Asked before the deploy is minted, because the answer decides which kind of
- * handle the control plane hands back: a container app pushes an image, every
- * other app uploads an archive. Null when the daemon cannot say; callers must
- * stop before minting a deploy with the wrong destination.
- */
-export async function daemonAppManifest(
-  appId: string,
-  teamId?: string | null,
-): Promise<{ declaration: AppDeployDeclaration; gitCommitSha: string | null; clean: boolean; contentDigest: string }> {
-  // Throws with the daemon's own detail: a deploy cannot go on without the
-  // declaration, and the reason (no checkout here, bad teamclu.app.json, git
-  // failing) is the only thing the user can act on.
-  const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
-  const result = await daemonFetch<{ declaration?: AppDeployDeclaration; gitCommitSha?: string; clean?: boolean; contentDigest?: string }>(
-    `/v1/apps/${encodeURIComponent(appId)}/manifest${query}`,
-  )
-  if (!result.ok) {
-    throw new Error(problemDetailFromErrorBody(result.error).detail || `amuxd could not read the app declaration (${result.status})`)
-  }
-  if (!result.data?.declaration || !result.data?.contentDigest) {
-    throw new Error('amuxd did not return the app declaration')
-  }
-  return { declaration: result.data.declaration, gitCommitSha: result.data.gitCommitSha ?? null, clean: result.data.clean === true, contentDigest: result.data.contentDigest }
-}
-
 export async function daemonLocalAppIds(teamId?: string | null): Promise<string[] | null> {
   try {
     const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
@@ -1296,63 +1207,6 @@ export async function moveDaemonAppWorkdir(
   } catch (err) {
     console.warn('[daemon-local-client] app workdir move unavailable:', err)
     return { outcome: 'unreachable', workdir: null, error: null }
-  }
-}
-
-export async function buildDaemonApp(
-  appId: string,
-  teamId: string,
-  input: BuildDaemonAppInput,
-): Promise<BuildAppResult> {
-  try {
-    const result = await daemonFetch<{
-      status: string
-      gitCommitSha?: string
-      revision?: string
-      image?: string
-      declaration?: AppDeployDeclaration
-      artifactVerification?: ArtifactVerification
-    }>('/v1/apps/build', {
-      method: 'POST',
-      body: JSON.stringify({
-        appId,
-        teamId,
-        revision: input.revision,
-        ...(input.gitCommitSha?.trim() ? { gitCommitSha: input.gitCommitSha.trim() } : {}),
-        ...(input.gitRemoteUrl?.trim() ? { gitRemoteUrl: input.gitRemoteUrl.trim() } : {}),
-        ...(input.deployKeyPem?.trim() ? { deployKeyPem: input.deployKeyPem.trim() } : {}),
-        ...(input.image ? { image: input.image } : {}),
-        ...(input.presignedPut?.trim() ? { presignedPut: input.presignedPut.trim() } : {}),
-      }),
-    })
-    if (result.ok) {
-      return {
-        outcome: "built",
-        error: null,
-        gitCommitSha: result.data?.gitCommitSha?.trim() || null,
-        revision: result.data?.revision?.trim() || null,
-        declaration: result.data?.declaration ?? null,
-        artifactVerification: result.data?.artifactVerification ?? null,
-        image: result.data?.image?.trim() || null,
-      }
-    }
-    if (result.status === 0) {
-      console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null, gitCommitSha: null, revision: null, declaration: null, artifactVerification: null, image: null }
-    }
-    console.warn('[daemon-local-client] app build failed:', result.error)
-    return {
-      outcome: "failed",
-      error: problemDetailFromErrorBody(result.error).detail || null,
-      gitCommitSha: null,
-      revision: null,
-      declaration: null,
-      artifactVerification: null,
-      image: null,
-    }
-  } catch (err) {
-    console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null, gitCommitSha: null, revision: null, declaration: null, artifactVerification: null, image: null }
   }
 }
 

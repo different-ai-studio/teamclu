@@ -25,8 +25,6 @@ import type {
   AppCronJobInput,
   AppCronRun,
   AppCronRunOutcome,
-  DeployAppResult,
-  AppDeployPreflightResult,
 } from "@/lib/backend/types";
 import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
 
@@ -66,14 +64,6 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         throw e;
       }
     },
-    async updateAppDeployStatus(appId, fcStatus, deployError, deployToken) {
-      try {
-        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { fcStatus, deployError, deployToken });
-      } catch (e) {
-        if (e instanceof CloudApiError && e.status === 404) return null;
-        throw e;
-      }
-    },
     async renameApp(appId, name) {
       try {
         return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { name });
@@ -101,18 +91,6 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;
       }
-    },
-    async deployApp(appId, input) {
-      return client.post<DeployAppResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy`, input);
-    },
-    async preflightAppDeploy(appId, input) {
-      return client.post<AppDeployPreflightResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy/preflight`, input);
-    },
-    async cancelAppDeployPreflight(appId, deployToken) {
-      return client.delete<{ cancelled: boolean }>(`/v1/apps/${encodeURIComponent(appId)}/deploy/preflight`, { body: { deployToken } });
-    },
-    async finalizeDeploy(appId, input) {
-      return client.post<AppRow>(`/v1/apps/${encodeURIComponent(appId)}/deploy/finalize`, input);
     },
     async getGitCredential(appId) {
       try {
@@ -212,6 +190,15 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
     async updateAppAuth(appId, patch) {
       try {
         return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, patch);
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async getAppCustomDomain(appId) {
+      try {
+        return await client.get<AppCustomDomain>(`/v1/apps/${encodeURIComponent(appId)}/custom-domain`);
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;

@@ -10,7 +10,6 @@ import { cn } from '@/lib/utils'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useSidebar } from '@/components/ui/sidebar'
-import { AppDeployFooter } from '@/components/apps/AppDeployFooter'
 import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
@@ -233,8 +232,6 @@ export function AppSessionsColumn({ app }: { app: AppRow }) {
           ))
         )}
       </div>
-
-      <AppDeployFooter app={app} />
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { canReseed, appStatusMeta, deployDisabledReason, showsPublicBadge } from '@/lib/apps/app-list-helpers'
+import { canReseed, appStatusMeta, deployDisabledReason, showsPublicBadge, isDeployInFlight } from '@/lib/apps/app-list-helpers'
 import { pickMostRecentSession, firstPromptForApp } from '@/lib/apps/app-session'
 import type { AppSessionRow } from '@/lib/backend/types'
 
@@ -73,32 +73,33 @@ describe('appStatusMeta', () => {
     ...p,
   })
 
-  test('an in-flight deploy wins over everything', () => {
-    expect(appStatusMeta(app({ fcStatus: 'live', fcEndpoint: 'https://x' }), true).key)
-      .toBe('apps.deploying')
+  test('a deploy the server reports in flight reads as deploying', () => {
+    expect(isDeployInFlight(app({ fcStatus: 'building' }))).toBe(true)
+    expect(isDeployInFlight(app({ fcStatus: 'live' }))).toBe(false)
+    expect(isDeployInFlight({ fcStatus: null })).toBe(false)
   })
 
   test('live requires both fcStatus and an endpoint', () => {
-    expect(appStatusMeta(app({ fcStatus: 'live', fcEndpoint: 'https://x' }), false).dot).toBe('live')
-    expect(appStatusMeta(app({ fcStatus: 'live', fcEndpoint: null }), false).key).toBe('apps.ready')
+    expect(appStatusMeta(app({ fcStatus: 'live', fcEndpoint: 'https://x' })).dot).toBe('live')
+    expect(appStatusMeta(app({ fcStatus: 'live', fcEndpoint: null })).key).toBe('apps.ready')
   })
 
   test('a persisted failed deploy is surfaced, not hidden behind "Ready"', () => {
-    const meta = appStatusMeta(app({ fcStatus: 'deploy_error' }), false)
+    const meta = appStatusMeta(app({ fcStatus: 'deploy_error' }))
     expect(meta.dot).toBe('failed')
     expect(meta.key).toBe('apps.deployFailed')
   })
 
   test('every in-progress deploy state reads as deploying', () => {
     for (const s of ['awaiting_build', 'building', 'deploying']) {
-      expect(appStatusMeta(app({ fcStatus: s }), false).key).toBe('apps.deploying')
+      expect(appStatusMeta(app({ fcStatus: s })).key).toBe('apps.deploying')
     }
   })
 
   test('falls back to the provision lifecycle when never deployed', () => {
-    expect(appStatusMeta(app({ provisionStatus: 'ready' }), false).key).toBe('apps.ready')
-    expect(appStatusMeta(app({ provisionStatus: 'error' }), false).key).toBe('apps.error')
-    expect(appStatusMeta(app({ provisionStatus: 'repo_created' }), false).key).toBe('apps.provisioning')
+    expect(appStatusMeta(app({ provisionStatus: 'ready' })).key).toBe('apps.ready')
+    expect(appStatusMeta(app({ provisionStatus: 'error' })).key).toBe('apps.error')
+    expect(appStatusMeta(app({ provisionStatus: 'repo_created' })).key).toBe('apps.provisioning')
   })
 })
 
@@ -154,7 +155,7 @@ describe('firstPromptForApp', () => {
 })
 
 it.each([['uninstalling','卸载中…'],['uninstall_failed','清理未完成'],['uninstalled','已卸载']])('shows %s lifecycle distinctly', (fcStatus,fallback)=>{
- expect(appStatusMeta({provisionStatus:'ready',fcStatus,fcEndpoint:null},false).fallback).toBe(fallback);
+ expect(appStatusMeta({provisionStatus:'ready',fcStatus,fcEndpoint:null}).fallback).toBe(fallback);
 });
 
 it.each(['uninstalling','uninstall_failed'])('blocks deploy while %s cleanup owns app',fcStatus=>{

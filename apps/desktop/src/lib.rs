@@ -453,6 +453,7 @@ pub fn run() {
             commands::acp_debug_log::acp_debug_reveal_log,
             commands::open_with_default_app,
             commands::open_in_terminal,
+            commands::open_with_app::open_path_with_app,
             commands::system_appearance::get_system_accent_color,
             commands::system_share::system_share_text,
             commands::window::open_local_agent_panel_window,

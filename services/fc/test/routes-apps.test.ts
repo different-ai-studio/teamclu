@@ -375,6 +375,25 @@ test("GET /v1/apps/:id/git-head returns the head, and compares only when asked",
   assert.deepEqual(seen, [{ compare: true }, { compare: false }, { compare: false }]);
 });
 
+test("GET /v1/apps/:id/custom-domain returns the domain with its records", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/custom-domain")[2];
+  const view = { domain: "shop.example.org", verified: false, verifiedAt: null, dns: [{ type: "TXT" }] };
+  const res = await handler({ params: { appId: "app-1" }, repository: { getAppCustomDomain: async () => view } });
+  assert.deepEqual(res.body, view);
+});
+
+test("GET /v1/apps/:id/custom-domain 404s for a caller who may not change it", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/custom-domain")[2];
+  await assert.rejects(
+    () => handler({ params: { appId: "app-1" }, repository: { getAppCustomDomain: async () => null } }),
+    (e) => (e as { statusCode?: number }).statusCode === 404,
+  );
+});
+
 test("GET /v1/apps/:id/membership returns member verdict", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);

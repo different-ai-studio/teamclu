@@ -37,6 +37,10 @@ vi.mock('@/lib/backend', () => ({
 
 vi.mock('@/lib/tabs/app-tabs', () => tabMocks)
 
+// Covered by their own tests; here they only need to be placed.
+vi.mock('../AppDeployActions', () => ({ AppDeployActions: () => <div data-testid="app-deploy-actions" /> }))
+vi.mock('../AppLocalPathRow', () => ({ AppLocalPathRow: () => <div data-testid="app-local-path" /> }))
+
 vi.mock('@/lib/utils', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
@@ -240,6 +244,13 @@ describe('AppControlPanel', () => {
     await waitFor(() =>
       expect(screen.getByTestId('app-control-open-data').textContent).toContain('1 张表'),
     )
+  })
+
+  it('carries deploy, preview, uninstall and the local path', async () => {
+    render(<AppControlPanel app={baseApp} />)
+    await waitFor(() => expect(backendMocks.listAppCronJobs).toHaveBeenCalled())
+    expect(screen.getByTestId('app-deploy-actions')).toBeInTheDocument()
+    expect(screen.getByTestId('app-local-path')).toBeInTheDocument()
   })
 
   it('opens the matching tab from each row', async () => {

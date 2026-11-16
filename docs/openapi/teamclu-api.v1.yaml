@@ -8304,6 +8304,31 @@ paths:
         "404":
           $ref: "#/components/responses/Error"
   /v1/apps/{appId}/custom-domain:
+    get:
+      operationId: getAppCustomDomain
+      summary: Read the app's custom domain with its DNS records
+      description: |
+        The bound domain, whether it is verified, and the DNS records the owner
+        must publish. The records embed the verification token, which is not
+        on the app row, so this is how a client shows them again after a
+        reload. `domain` is null and `dns` empty when nothing is bound.
+
+        Only the app creator or a member with `admin` on the app may call this;
+        others receive 404 and read `customDomain` / `customDomainVerifiedAt`
+        off the app row instead.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: The stored domain and the DNS records that prove it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppCustomDomain" }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
     put:
       operationId: setAppCustomDomain
       summary: Bind a domain the app owner controls

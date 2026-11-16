@@ -38,19 +38,26 @@ function provisionMeta(status: string): { dot: 'ready' | 'failed' | 'idle'; key:
 /**
  * Status line for an app row, resolved from deploy + provision lifecycles.
  */
+/** Deploy states the server reports while a deploy is under way. */
+const DEPLOY_IN_FLIGHT = ['awaiting_build', 'building', 'deploying']
+
+/**
+ * True while the server says a deploy is running. The agent runs deploys now,
+ * so the row's `fcStatus` is the only witness the desktop has.
+ */
+export function isDeployInFlight(app: Partial<Pick<AppRow, 'fcStatus'>>): boolean {
+  return DEPLOY_IN_FLIGHT.includes(app.fcStatus ?? '')
+}
+
 export function appStatusMeta(
   app: Pick<AppRow, 'provisionStatus' | 'fcStatus' | 'fcEndpoint'>,
-  deploying: boolean,
 ): { dot: 'live' | 'ready' | 'failed' | 'idle'; key: string; fallback: string } {
   if (app.fcStatus === 'uninstalling') return { dot: 'idle', key: 'apps.undeploy.running', fallback: '卸载中…' }
   if (app.fcStatus === 'uninstall_failed') return { dot: 'failed', key: 'apps.undeploy.incomplete', fallback: '清理未完成' }
   if (app.fcStatus === 'uninstalled') return { dot: 'idle', key: 'apps.undeploy.done', fallback: '已卸载' }
-  if (deploying) return { dot: 'idle', key: 'apps.deploying', fallback: '部署中…' }
   if (app.fcStatus === 'live' && app.fcEndpoint) return { dot: 'live', key: 'apps.live', fallback: '已上线' }
   if (app.fcStatus === 'deploy_error') return { dot: 'failed', key: 'apps.deployFailed', fallback: '部署失败' }
-  if (app.fcStatus === 'awaiting_build' || app.fcStatus === 'building' || app.fcStatus === 'deploying') {
-    return { dot: 'idle', key: 'apps.deploying', fallback: '部署中…' }
-  }
+  if (isDeployInFlight(app)) return { dot: 'idle', key: 'apps.deploying', fallback: '部署中…' }
   return provisionMeta(app.provisionStatus)
 }
 
