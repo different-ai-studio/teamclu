@@ -16,6 +16,7 @@ import { createShortcutsModule } from "@/lib/backend/cloud-api/shortcuts";
 import { createNotificationsModule } from "@/lib/backend/cloud-api/notifications";
 import { createRuntimeModule } from "@/lib/backend/cloud-api/runtime";
 import { createAttachmentsModule } from "@/lib/backend/cloud-api/attachments";
+import { createDiagnosticsModule } from "@/lib/backend/cloud-api/diagnostics";
 import { createTelemetryModule } from "@/lib/backend/cloud-api/telemetry";
 import { createSyncModule } from "@/lib/backend/cloud-api/sync";
 import { createSystemModule } from "@/lib/backend/cloud-api/system";
@@ -63,6 +64,7 @@ export function createCloudApiBackend(
     runtime: createRuntimeModule(client),
     attachments: createAttachmentsModule(client),
     telemetry: createTelemetryModule(client),
+    diagnostics: createDiagnosticsModule(client),
     sync: createSyncModule(client),
     system: createSystemModule(client),
     teamSkills: createTeamSkillsModule(client),

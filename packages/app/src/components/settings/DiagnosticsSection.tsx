@@ -39,6 +39,7 @@ import {
   type DiagnosticCheck,
   type DiagnosticStatus,
 } from '@/lib/diagnostics/diagnostic-report'
+import { DiagnosticUpload } from './DiagnosticUpload'
 import { LiveDebugConsole } from './LiveDebugConsole'
 import { DaemonResetRemediationCard } from './DaemonResetRemediationCard'
 import { AuthSyncBanner, DiagnosticSymptomPanel } from './DiagnosticSymptomPanel'
@@ -440,6 +441,7 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
             <h4 className="text-[13px] font-semibold mb-3">
               {t('settings.diagnostics.exportTitle', '导出与反馈')}
             </h4>
+            <DiagnosticUpload report={report} disabled={running || exporting} />
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" size="sm" onClick={handleCopy} className="gap-2">
                 <Copy className="h-4 w-4" />

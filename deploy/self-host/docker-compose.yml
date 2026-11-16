@@ -307,6 +307,8 @@ services:
       emqx:
         condition: service_healthy
     environment:
+      # Opt-in private diagnostics bucket; empty keeps uploads disabled.
+      DIAGNOSTICS_STORAGE_BUCKET: "${DIAGNOSTICS_STORAGE_BUCKET:-}"
       PORT: "9000"
       HOST: "0.0.0.0"
       # FC may target a separately hosted Supabase project. Keep the bundled

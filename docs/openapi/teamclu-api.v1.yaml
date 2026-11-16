@@ -34,7 +34,94 @@ tags:
     description: Per-app repo provisioning and the deploy pipeline (FC function + Postgres schema).
   - name: Admin
     description: Platform operators of this deployment. Not a team or org role.
+  - name: Diagnostics
+    description: Private diagnostic uploads and authenticated support retrieval.
 paths:
+  /v1/diagnostics:
+    post:
+      operationId: uploadDiagnosticZip
+      summary: Upload a diagnostic ZIP after user consent
+      description: |
+        Stores the native local-export ZIP unchanged in private OSS/S3 storage.
+        Maximum 10 MiB; 3 uploads/minute/user per API process. Receipt expires in
+        7 days. No client filenames, owner ids or team ids are accepted. Uploads
+        require DIAGNOSTICS_STORAGE_BUCKET; unset deployments return 503.
+      tags: [Diagnostics]
+      requestBody:
+        required: true
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Stored successfully; receipt is not a public download URL.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosticReceipt"
+        "401":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+        "415":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/diagnostics/{receiptId}:
+    get:
+      operationId: resolveDiagnosticReceipt
+      summary: Get a short-lived private diagnostic download URL
+      description: |
+        Only the uploader or a platform operator may resolve a receipt. Others
+        receive 404 even when it exists. Receipt ids alone grant no access.
+        Signed download URLs last at most 15 minutes, bounded by the receipt's
+        7-day expiry; do not share or log that bearer capability. All diagnostic
+        responses use Cache-Control no-store.
+      tags: [Diagnostics]
+      parameters:
+        - name: receiptId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Authenticated download capability.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/DiagnosticReceipt"
+                  - type: object
+                    required: [downloadUrl, downloadExpiresAt]
+                    properties:
+                      downloadUrl:
+                        type: string
+                        format: uri
+                      downloadExpiresAt:
+                        type: string
+                        format: date-time
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "410":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
   /v1/auth/refresh:
     post:
       operationId: refreshAccessToken
@@ -9777,6 +9864,16 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    DiagnosticReceipt:
+      type: object
+      required: [receiptId, expiresAt]
+      properties:
+        receiptId:
+          type: string
+          format: uuid
+        expiresAt:
+          type: string
+          format: date-time
     AdminOrg:
       type: object
       required: [id, name, code, status, createdAt, teamCount, memberCount]

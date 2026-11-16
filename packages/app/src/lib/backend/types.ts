@@ -1920,6 +1920,15 @@ export interface SystemBackend {
   heartbeat(): Promise<void>;
 }
 
+export interface DiagnosticReceipt {
+  receiptId: string;
+  expiresAt: string;
+}
+
+export interface DiagnosticsBackend {
+  uploadZip(body: Blob): Promise<DiagnosticReceipt>;
+}
+
 export interface TeamCluBackend {
   kind: BackendKind;
   auth: AuthBackend;
@@ -1939,6 +1948,7 @@ export interface TeamCluBackend {
   workspaces: WorkspacesBackend;
   sync: SyncBackend;
   telemetry: TelemetryBackend;
+  diagnostics: DiagnosticsBackend;
   system: SystemBackend;
   teamSkills: TeamSkillsBackend;
   marketplace: MarketplaceBackend;
