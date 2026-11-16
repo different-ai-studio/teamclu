@@ -19,6 +19,20 @@ CREATE TABLE amux.org_roles_users (
 COMMENT ON TABLE amux.org_roles_users IS
   'TeamClu collaboration grants only. Never grants Betly employee or organization-node permissions.';
 CREATE INDEX ON amux.org_roles_users(org_id,user_id,status);
+COMMENT ON COLUMN amux.org_roles_users.id IS 'Collaboration grant identifier';
+COMMENT ON COLUMN amux.org_roles_users.user_id IS 'Authenticated TeamClu identity';
+COMMENT ON COLUMN amux.org_roles_users.role_id IS 'Shared role catalog identifier; retains document ACL identity';
+COMMENT ON COLUMN amux.org_roles_users.org_id IS 'Organization owning this collaboration grant';
+COMMENT ON COLUMN amux.org_roles_users.store_id IS 'Legacy document ACL distinction only; never an employee node';
+COMMENT ON COLUMN amux.org_roles_users.status IS 'Whether the collaboration grant is active';
+COMMENT ON COLUMN amux.org_roles_users.is_primary IS 'Primary role preference retained from the source grant';
+COMMENT ON COLUMN amux.org_roles_users.expires_at IS 'Optional collaboration grant expiration';
+COMMENT ON COLUMN amux.org_roles_users.created_at IS 'Grant creation timestamp';
+COMMENT ON COLUMN amux.org_roles_users.updated_at IS 'Last grant update timestamp';
+COMMENT ON COLUMN amux.org_roles_users.created_by IS 'Identity that created the grant';
+COMMENT ON COLUMN amux.org_roles_users.updated_by IS 'Identity that last updated the grant';
+COMMENT ON COLUMN amux.org_roles_users.updated_note IS 'Audit note for the grant update';
+
 
 ALTER TABLE amux.org_roles_users ENABLE ROW LEVEL SECURITY;
 CREATE POLICY org_roles_users_select ON amux.org_roles_users
