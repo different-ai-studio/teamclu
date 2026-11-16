@@ -3,10 +3,14 @@
 set -euo pipefail
 redirects="${1:-}"
 domain="${2:-}"
+# Literal membership. `grep -q` under pipefail exits at the first hit and
+# SIGPIPEs `tr`, so the pipeline looks like a miss and the same callback is
+# appended again.
 append() {
-  if ! printf '%s' "$redirects" | tr ',' '\n' | grep -Fxq "$1"; then
-    redirects="${redirects:+$redirects,}$1"
-  fi
+  case ",${redirects}," in
+    *,"$1",*) ;;
+    *) redirects="${redirects:+$redirects,}$1" ;;
+  esac
 }
 append 'http://127.0.0.1:*/callback'
 append 'teamclu://auth-callback'

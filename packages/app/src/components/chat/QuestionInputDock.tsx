@@ -122,7 +122,7 @@ export function QuestionInputDock({
   const lastReportedHeight = React.useRef(0);
   const questions = pendingQuestion.questions;
   const [questionIndex, setQuestionIndex] = React.useState(0);
-  const [answers, setAnswers] = React.useState<Record<string, string>>({});
+  const [answers, setAnswers] = React.useState<Record<string, string[]>>({});
   const [customInputs, setCustomInputs] = React.useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [hasSubmitted, setHasSubmitted] = React.useState(false);
@@ -153,10 +153,11 @@ export function QuestionInputDock({
 
   const currentQuestion = questions[questionIndex];
   const currentQuestionId = currentQuestion?.id || String(questionIndex);
-  const hasSelectedAnswer = Object.prototype.hasOwnProperty.call(answers, currentQuestionId);
-  const selectedAnswer = hasSelectedAnswer ? answers[currentQuestionId] : "";
+  const selectedAnswers = answers[currentQuestionId] ?? [];
+  const hasSelectedAnswer = selectedAnswers.length > 0;
   const customAnswer = customInputs[currentQuestionId] || "";
   const trimmedCustomAnswer = customAnswer.trim();
+  const allowsMultiple = currentQuestion?.multiple === true;
   const isLastQuestion = questionIndex >= questions.length - 1;
   const canContinue =
     (!!trimmedCustomAnswer || hasSelectedAnswer) &&
@@ -168,15 +169,22 @@ export function QuestionInputDock({
 
   const hasAnswerForQuestion = React.useCallback((question: { id?: string }, index: number) => {
     const questionId = getQuestionId(question, index);
-    return !!customInputs[questionId]?.trim() || Object.prototype.hasOwnProperty.call(answers, questionId);
+    return !!customInputs[questionId]?.trim() || (answers[questionId]?.length ?? 0) > 0;
   }, [answers, customInputs]);
 
   const buildFinalAnswers = React.useCallback(() => {
-    const finalAnswers: Record<string, string> = {};
+    const finalAnswers: Record<string, string | string[]> = {};
     questions.forEach((question, index) => {
       const questionId = getQuestionId(question, index);
       const custom = customInputs[questionId]?.trim();
-      finalAnswers[questionId] = custom || (answers[questionId] ?? "");
+      if (custom) {
+        finalAnswers[questionId] = custom;
+        return;
+      }
+      const selected = answers[questionId] ?? [];
+      finalAnswers[questionId] = question.multiple
+        ? selected.filter((item) => item.length > 0)
+        : (selected[0] ?? "");
     });
     return finalAnswers;
   }, [answers, customInputs, questions]);
@@ -191,9 +199,17 @@ export function QuestionInputDock({
   );
 
   const handleOptionSelect = (value: string) => {
-    setAnswers((prev) => ({ ...prev, [currentQuestionId]: value }));
+    setAnswers((prev) => {
+      const current = prev[currentQuestionId] ?? [];
+      const next = allowsMultiple
+        ? current.includes(value)
+          ? current.filter((item) => item !== value)
+          : [...current, value]
+        : [value];
+      return { ...prev, [currentQuestionId]: next };
+    });
     setCustomInputs((prev) => ({ ...prev, [currentQuestionId]: "" }));
-    if (!isLastQuestion) {
+    if (!allowsMultiple && !isLastQuestion) {
       setQuestionIndex((index) => Math.min(index + 1, questions.length - 1));
     }
   };
@@ -312,15 +328,21 @@ export function QuestionInputDock({
 
           <div className={cn(isStack ? "px-3.5 pb-3 pt-2" : "px-4 pb-3 pt-3")}>
             <QuestionMarkdown>{currentQuestion.question ?? ""}</QuestionMarkdown>
+            {allowsMultiple ? (
+              <p className="mb-2 text-[11px] text-faint">
+                {t("chat.toolCall.question.selectMultiple", "Select all that apply")}
+              </p>
+            ) : null}
 
             <div className="space-y-1">
               {currentQuestion.options?.map((option: any, optionIndex: number) => {
                 const optionValue = getOptionValue(option);
-                const isSelected = hasSelectedAnswer && selectedAnswer === optionValue && !customAnswer.trim();
+                const isSelected = !customAnswer.trim() && selectedAnswers.includes(optionValue);
                 return (
                   <button
                     key={`${optionValue}-${optionIndex}`}
                     type="button"
+                    aria-pressed={isSelected}
                     onClick={() => handleOptionSelect(optionValue)}
                     disabled={isSubmitting || hasSubmitted}
                     className={cn(

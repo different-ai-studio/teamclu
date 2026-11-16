@@ -857,6 +857,7 @@
         "skippedBy": "{{name}} 跳过了",
         "processingAnswer": "正在处理回答...",
         "waitingForResponse": "等待响应中...",
+        "selectMultiple": "可多选",
         "customAnswerPlaceholder": "或输入自定义回答...",
         "answerPlaceholder": "输入你的回答...",
         "answerLabel": "回答：",

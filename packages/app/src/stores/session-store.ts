@@ -125,7 +125,7 @@ export interface SessionState {
    * card and shows the same result.
    */
   settleQuestionFromPeer: (settlement: QuestionPeerSettlement) => void;
-  answerQuestion: (answers: Record<string, string>, questionId?: string) => Promise<void>;
+  answerQuestion: (answers: Record<string, string | string[]>, questionId?: string) => Promise<void>;
   skipQuestion: (questionId?: string) => Promise<void>;
 }
 
@@ -135,23 +135,43 @@ function localAnsweredBy(): string {
 
 function snapshotFromLocal(
   questions: Question[],
-  answers: Record<string, string>,
+  answers: Record<string, string | string[]>,
   rejected: boolean,
 ): AnsweredQuestionSnapshot {
   const answeredBy = localAnsweredBy();
   return {
     questions,
-    answers,
+    answers: displayAnswers(answers),
     ...(answeredBy ? { answeredBy } : {}),
     ...(rejected ? { rejected: true } : {}),
   };
 }
 
-/** `Record<questionId|index, label>` → `[[label], ...]` in question order. */
-function orderAnswers(questions: Question[], answers: Record<string, string>): string[][] {
+/** Multi-select rows become one display string. A plain string is kept, including "". */
+function displayAnswers(answers: Record<string, string | string[]>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(answers)) {
+    if (Array.isArray(value)) {
+      const text = value.map((item) => item.trim()).filter(Boolean).join(", ");
+      if (text) out[key] = text;
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+/** One row per question. A string is a single pick; an array is every pick, in click order. */
+function orderAnswers(
+  questions: Question[],
+  answers: Record<string, string | string[]>,
+): string[][] {
   return questions.map((q, idx) => {
     const key = q.id || String(idx);
     const answer = answers[key];
+    if (Array.isArray(answer)) {
+      return answer.map((item) => item.trim()).filter((item) => item.length > 0);
+    }
     return answer ? [answer] : [];
   });
 }
