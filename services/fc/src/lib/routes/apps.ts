@@ -5,6 +5,26 @@ import { parseLimit, requireString } from "../routing-utils.js";
 import { runDueAppCronJobs } from "../app-cron-runner.js";
 import { createServiceRoleClient } from "../supabase.js";
 import { parseGitHttpsCredentialInput } from "../app-git-credential.js";
+import { makeGiteaClient, readGiteaConfig } from "../provisioning/gitea.js";
+import { reconcileGiteaApps } from "../provisioning/gitea-sync.js";
+import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
+
+/**
+ * The Gitea repair pass for the heartbeat, or null when there is nothing to
+ * repair: GITEA_ACCOUNT_AUTH off, or no Gitea configured.
+ */
+function defaultGiteaReconcile(): ((client: any, deadline: number) => Promise<unknown>) | null {
+  if (!giteaAccountAuthEnabled()) return null;
+  const resolved = readGiteaConfig();
+  if (resolved.error) return null;
+  const gitea = makeGiteaClient(resolved.config);
+  return (admin, deadline) => reconcileGiteaApps({ gitea, admin, log: (m) => console.warn(m) }, { deadline });
+}
+
+/** Every tenth minute: often enough that a failed request-path sync heals quickly, rarely enough to stay cheap. */
+export function isGiteaReconcileMinute(now: Date): boolean {
+  return now.getUTCMinutes() % 10 === 0;
+}
 
 /**
  * Object paths travel as base64url, the same trick the data browser plays with
@@ -94,7 +114,10 @@ function normalizeGitRemoteUrl(raw: unknown): string | null {
   return stripUrlCredentials(url);
 }
 
-export function registerApps(router, tickDeps = { createServiceRoleClient, makeAppUndeployDeps }) {
+export function registerApps(
+  router,
+  tickDeps: any = { createServiceRoleClient, makeAppUndeployDeps, giteaReconcile: defaultGiteaReconcile, now: () => new Date() },
+) {
   router.get("/v1/apps", async (ctx) => {
     const teamId = ctx.query.get("teamId");
     requireString(teamId, "teamId");
@@ -586,7 +609,17 @@ export function registerApps(router, tickDeps = { createServiceRoleClient, makeA
     const started = Date.now();
     const cleanup = await runAppUndeployTick({ store: makeUndeployStore(client), deps: tickDeps.makeAppUndeployDeps(), maxTickMs: 25_000 });
     const out = await runDueAppCronJobs({ client, maxTickMs: Math.max(0, 45_000 - (Date.now() - started)) });
-    return { body: { ...out, cleanup } };
+    // Gitea repair rides the same heartbeat, in whatever is left of the window.
+    let gitea: unknown = null;
+    const reconcile = tickDeps.giteaReconcile?.() ?? null;
+    if (reconcile && isGiteaReconcileMinute(tickDeps.now?.() ?? new Date())) {
+      try {
+        gitea = await reconcile(client, started + 50_000);
+      } catch (e) {
+        gitea = { error: String((e as Error)?.message ?? e) };
+      }
+    }
+    return { body: { ...out, cleanup, ...(gitea ? { gitea } : {}) } };
   });
 
   // The deployed app asking for its own credentials. `auth: "app-token"` gets a

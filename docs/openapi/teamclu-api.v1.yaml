@@ -10472,6 +10472,21 @@ components:
             imported from an http(s) repo whose admin stored a token (see
             `setAppGitHttpsCredential`). Null for an import with neither. Every
             app that is not `gitea_deploy_key` deploys its local checkout.
+        gitAccountAuth:
+          type: boolean
+          description: >-
+            True when the deployment runs per-account Gitea auth
+            (`GITEA_ACCOUNT_AUTH=on`) and this app's repo is under its TeamClu
+            org: a client points the checkout at `gitHttpUrl` and authenticates
+            with the caller's own account through `amuxd git-credential`. The
+            stored `gitRemoteUrl` and `gitAuthKind` are unchanged so older
+            daemons keep using SSH and deploy keys.
+        gitHttpUrl:
+          type: [string, "null"]
+          description: >-
+            HTTPS clone address of the app's repo. Set only when
+            `gitAccountAuth` is true.
+          example: https://gitea.example.com/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/tc-app-1.git
         gitCommitSha:
           type: [string, "null"]
           pattern: "^[0-9a-f]{7,40}$"

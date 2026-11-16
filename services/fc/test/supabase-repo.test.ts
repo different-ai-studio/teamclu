@@ -2375,7 +2375,7 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
     "envPendingRedeploy", "typePendingRedeploy", "artifactVerification", "deployProgress",
     "createdAt", "createdByActorId",
     "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
-    "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "invitedByActorId", "name", "oauthClientId",
+    "gitAccountAuth", "gitAuthKind", "gitCommitSha", "gitHttpUrl", "gitRemoteUrl", "id", "invitedByActorId", "name", "oauthClientId",
     "provisionStatus", "publicUrl", "relationship",
     "runtime", "slug", "startSpec", "teamId", "type", "updatedAt", "visibility", "workspaceId",
   ].sort());
@@ -3232,13 +3232,13 @@ test("apps: git head compares against the deployed commit only when asked", asyn
     git_commit_sha: "deadbee",
   };
   let compares = 0;
-  const gitea = {
+  const gitea = fakeGitea({
     getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
     compareCommits: async () => {
       compares += 1;
       return 4;
     },
-  };
+  });
   const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }), { gitea });
 
   const plain = await repo.getAppGitHead("app-1");
@@ -3260,12 +3260,12 @@ test("apps: a deployed commit that IS the head needs no forge round trip", async
     git_auth_kind: "gitea_deploy_key",
     git_commit_sha: "abc123",
   };
-  const gitea = {
+  const gitea = fakeGitea({
     getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
     compareCommits: async () => {
       throw new Error("must not be called");
     },
-  };
+  });
   const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }), { gitea });
   const out = await repo.getAppGitHead("app-1", { compare: true });
   assert.equal(out.undeployedCommits, 0);
@@ -3279,12 +3279,12 @@ test("apps: an app that never deployed reports an unknown distance, not zero", a
     git_auth_kind: "gitea_deploy_key",
     git_commit_sha: null,
   };
-  const gitea = {
+  const gitea = fakeGitea({
     getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
     compareCommits: async () => {
       throw new Error("must not be called");
     },
-  };
+  });
   const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }), { gitea });
   const out = await repo.getAppGitHead("app-1", { compare: true });
   assert.equal(out.deployedSha, null);

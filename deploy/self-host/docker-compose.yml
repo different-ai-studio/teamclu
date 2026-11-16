@@ -489,6 +489,11 @@ services:
       GITEA_URL: "${GITEA_URL:-}"
       GITEA_TOKEN: "${GITEA_TOKEN:-}"
       GITEA_OWNER: "${GITEA_OWNER:-}"
+      # Per-account Gitea auth (docs/specs/2026-11-16-app-platform-identity-design.md).
+      # "on": new apps get their repo under their TeamClu org, app access is
+      # mirrored to Gitea collaborators, and clients are told to use HTTPS
+      # through the forward_auth gateway. Blank/"off" changes nothing.
+      GITEA_ACCOUNT_AUTH: "${GITEA_ACCOUNT_AUTH:-}"
       # 32-byte base64 AES-GCM key for app_secrets at rest. Blank disables
       # secret storage until encrypt/decrypt is wired.
       APP_SECRETS_ENCRYPTION_KEY: "${APP_SECRETS_ENCRYPTION_KEY:-}"

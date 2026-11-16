@@ -149,7 +149,13 @@ import {
 import type { AppLogKind } from "./provisioning/app-logs.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
-import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
+import {
+  giteaOrgName,
+  giteaUnavailable,
+  GITEA_AUTH_KIND,
+  repoOwnerFromRemote,
+} from "./provisioning/gitea.js";
+import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "./provisioning/gitea-sync-runner.js";
 import {
   APP_GIT_HTTPS_CREDENTIAL_KIND,
   deserializeGitHttpsCredential,
@@ -673,6 +679,10 @@ export function createSupabaseBusinessRepository(options) {
     deployUnavailableReason,
     gitea,
     giteaUnavailableReason,
+    // GITEA_ACCOUNT_AUTH: new apps under the TeamClu org, access mirrored to
+    // Gitea (provisioning/gitea-sync.ts). Read from the environment unless a
+    // caller (a test) says otherwise.
+    giteaAccountAuth = giteaAccountAuthEnabled(),
     gotrue,
     gotrueUnavailableReason,
     teardownDeps,
@@ -895,6 +905,18 @@ export function createSupabaseBusinessRepository(options) {
     return createServiceRoleClient();
   }
 
+  const giteaSync = makeGiteaSyncRunner({ gitea, enabled: giteaAccountAuth, serviceRoleClient });
+
+  /**
+   * The Gitea client bound to the owner an app's repo actually lives under:
+   * `GITEA_OWNER` for apps created before per-org repos, the TeamClu org's
+   * `o<uuid>` for newer ones. Read from the stored remote, so no column says it.
+   */
+  function appGitea(app: { git_remote_url?: string | null }) {
+    if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
+    return gitea.withOwner(repoOwnerFromRemote(app.git_remote_url) ?? gitea.owner);
+  }
+
   function scheduleSessionParticipantsChanged(sessionId: string, removedUserId: string | null = null) {
     if (!publishSessionParticipantInbox) return;
     void publishSessionParticipantsChanged({
@@ -1051,12 +1073,12 @@ export function createSupabaseBusinessRepository(options) {
       const admin = await serviceRoleClient("revoke deploy keys on deauth");
       const { data: app, error } = await admin
         .from("apps")
-        .select("id, git_auth_kind")
+        .select("id, git_auth_kind, git_remote_url")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
       if (!app || app.git_auth_kind !== GITEA_AUTH_KIND) return;
-      await revokeActorDeployKeys(gitea, appId, memberId);
+      await revokeActorDeployKeys(appGitea(app), appId, memberId);
     } catch (e) {
       console.warn("[apps] deploy key revoke failed after deauth (non-fatal)", e);
     }
@@ -1115,7 +1137,7 @@ export function createSupabaseBusinessRepository(options) {
     if (app.git_auth_kind !== GITEA_AUTH_KIND) return null;
     if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
 
-    const jit = await issueJitDeployKey(gitea, appId, actorId, Date.now(), { readOnly });
+    const jit = await issueJitDeployKey(appGitea(app), appId, actorId, Date.now(), { readOnly });
     return {
       remoteUrl: app.git_remote_url,
       authKind: "deploy_key" as const,
@@ -1293,6 +1315,8 @@ export function createSupabaseBusinessRepository(options) {
         userId: caller.user.id,
         code: joinedRole,
       });
+      // A new teammate reads the team's team-visible apps through its Gitea team.
+      await giteaSync.team(joinedTeamId);
       return mapTeam({
         id: joinedTeamId,
         name: row.team_name ?? row.name,
@@ -1576,12 +1600,20 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async removeTeamActor(_teamId, actorId) {
+      // Read the team before the actor is gone: the removal cascades their app
+      // grants away, and Gitea has to drop the same access.
+      let teamId: string | null = _teamId ?? null;
+      if (!teamId) {
+        const { data: actorRow } = await supabase.from("actors").select("team_id").eq("id", actorId).maybeSingle();
+        teamId = actorRow?.team_id ?? null;
+      }
       // Explicit amux schema: client default is already amux, but keep this
       // belt-and-suspenders so we never resolve a stale public.remove_team_actor.
       const { error } = await supabase
         .schema("amux")
         .rpc("remove_team_actor", { p_actor_id: actorId });
       if (error) throw error;
+      if (teamId) await giteaSync.team(teamId);
     },
 
     async updateCurrentActorProfile(actorId, { displayName, avatarUrl }) {
@@ -5168,7 +5200,15 @@ export function createSupabaseBusinessRepository(options) {
       try {
         // The SSH URL, not `clone_url`: the deploy key is the only credential
         // we hand out for this repo, and it is useless over HTTPS.
-        const { sshUrl } = await gitea!.createAppRepo(row.id);
+        // Per-org repos (GITEA_ACCOUNT_AUTH): the repo lives under the app's
+        // TeamClu org, so Gitea's org is TeamClu's. Otherwise the shared owner.
+        let repoGitea = gitea!;
+        if (giteaAccountAuth && row.org_id) {
+          const owner = giteaOrgName(row.org_id);
+          await gitea!.ensureOrg(owner);
+          repoGitea = gitea!.withOwner(owner);
+        }
+        const { sshUrl } = await repoGitea.createAppRepo(row.id);
         const { data: updated, error: updErr } = await supabase
           .from("apps")
           .update({
@@ -5182,6 +5222,7 @@ export function createSupabaseBusinessRepository(options) {
           .select(APP_COLUMNS)
           .single();
         if (updErr) throw updErr;
+        await giteaSync.app(row.id);
         return mapApp(updated);
       } catch (e: unknown) {
         const msg = e instanceof ApiError ? e.message : String((e as Error)?.message ?? e);
@@ -5231,7 +5272,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain, deploy_token, deploy_started_at",
+          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain, deploy_token, deploy_started_at, visibility",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -5421,6 +5462,8 @@ export function createSupabaseBusinessRepository(options) {
       }
       // The proxy caches auth settings per host; without this a saved rule waits out the TTL.
       invalidateAppHosts({ id: appId, slug: cur.slug, appCode: cur.app_code, usesAppCodeDomain: cur.uses_app_code_domain, customDomain: cur.custom_domain });
+      // Team visibility is read access for the whole team in Gitea too.
+      if (set.visibility !== undefined && set.visibility !== cur.visibility) await giteaSync.app(appId);
       return mapApp(data);
     },
 
@@ -6507,7 +6550,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!resolved) return null;
       const { actorId } = resolved;
       if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
-      const revoked = await revokeOwnJitDeployKey(gitea, appId, actorId, deployKeyId);
+      const revoked = await revokeOwnJitDeployKey(appGitea(resolved.app), appId, actorId, deployKeyId);
       // `revoked: false` is not an error the caller can act on — the key is
       // unusable either way, which is the whole point of asking.
       return { revoked };
@@ -6523,7 +6566,7 @@ export function createSupabaseBusinessRepository(options) {
     async getAppGitHead(appId: string, opts: { compare?: boolean } = {}) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, git_auth_kind, git_commit_sha")
+        .select("id, git_auth_kind, git_commit_sha, git_remote_url")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -6534,7 +6577,8 @@ export function createSupabaseBusinessRepository(options) {
       if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
       if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
 
-      const head = await gitea.getRepoHead(appId);
+      const repoGitea = appGitea(existing);
+      const head = await repoGitea.getRepoHead(appId);
       const deployedSha = existing.git_commit_sha ?? null;
       if (!opts.compare) return { ...head, deployedSha, undeployedCommits: null };
 
@@ -6546,7 +6590,7 @@ export function createSupabaseBusinessRepository(options) {
       if (deployedSha === head.sha) {
         undeployedCommits = 0;
       } else if (deployedSha) {
-        undeployedCommits = await gitea.compareCommits(appId, deployedSha, head.sha);
+        undeployedCommits = await repoGitea.compareCommits(appId, deployedSha, head.sha);
       }
       return { ...head, deployedSha, undeployedCommits };
     },
@@ -6687,6 +6731,7 @@ export function createSupabaseBusinessRepository(options) {
       if (level === "read" && priorLevel && appLevelAtLeast(priorLevel, "write")) {
         await revokeAppMemberDeployKeysIfGitea(appId, memberId);
       }
+      await giteaSync.app(appId);
       return mapAppAccessRow(data);
     },
 
@@ -6701,6 +6746,7 @@ export function createSupabaseBusinessRepository(options) {
         .eq("member_id", memberId);
       if (error) throw error;
       await revokeAppMemberDeployKeysIfGitea(appId, memberId);
+      await giteaSync.app(appId);
       return true;
     },
 
@@ -7369,7 +7415,7 @@ export function createSupabaseBusinessRepository(options) {
       };
       const teardown: TeardownAppDeps = {
         // Explicit uninstall already removed deployment resources.
-        gitea,
+        gitea: gitea ? appGitea(existing) : gitea,
         deleteSecret: (kind) => deleteAppSecretSupabase(admin, appId, kind),
       };
       const { archivedRepoUrl } = await teardownAppResources(teardown, teardownInput);
