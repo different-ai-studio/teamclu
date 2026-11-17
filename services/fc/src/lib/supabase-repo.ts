@@ -578,6 +578,13 @@ function mapAppCronRunRow(r: any) {
  * of the offending value in `detail`. Rethrowing one as-is puts the user's
  * business data into an HTTP body and, worse, into whatever logs the error.
  */
+const APP_DATA_CONSTRAINT_ERRORS: Record<string, { status: number; code: string; message: string }> = {
+  "23505": { status: 409, code: "duplicate_key", message: "a row with this unique value already exists" },
+  "23502": { status: 400, code: "not_null_violation", message: "a required column was left empty" },
+  "23503": { status: 409, code: "foreign_key_violation", message: "the row refers to a row that does not exist, or is still referred to" },
+  "23514": { status: 400, code: "check_violation", message: "a value breaks one of the table's check constraints" },
+};
+
 async function runAppData<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
@@ -591,8 +598,13 @@ async function runAppData<T>(fn: () => Promise<T>): Promise<T> {
     // the column's type ("abc" against an integer column). That is the caller's
     // input being wrong, not the database failing.
     if (sqlstate === "22P02" || sqlstate === "22007") {
-      throw new ApiError(400, "invalid_filter_value", "the filter value does not match the column's type");
+      throw new ApiError(400, "invalid_filter_value", "a value does not match the column's type");
     }
+    // Constraint violations on a write are the row being wrong, not the
+    // database failing — and the user can fix them. Named by SQLSTATE only:
+    // the driver's message and detail carry the offending value.
+    const constraint = APP_DATA_CONSTRAINT_ERRORS[sqlstate ?? ""];
+    if (constraint) throw new ApiError(constraint.status, constraint.code, constraint.message);
     console.warn(`[apps] app data query failed (sqlstate ${sqlstate ?? "unknown"})`);
     throw new ApiError(502, "app_data_query_failed", `the app database rejected the query${sqlstate ? ` (${sqlstate})` : ""}`);
   }
@@ -6082,6 +6094,18 @@ export function createSupabaseBusinessRepository(options) {
           limit: parsePageLimit(query.limit),
         }),
       );
+    },
+
+    async insertAppDataRow(appId: string, table: string, body: any = {}) {
+      const resolved = await this.resolveAppDataTarget(appId, "admin");
+      if (!resolved) return null;
+      const ops = this.requireAppData();
+      const values = body?.values ?? {};
+      if (!values || typeof values !== "object" || Array.isArray(values)) {
+        throw new ApiError(400, "validation_failed", "values must be an object of column values");
+      }
+      const row = await runAppData(() => ops.insertRow(resolved.target, { table, values }));
+      return { row };
     },
 
     async updateAppDataRow(appId: string, table: string, rowKey: string, body: any = {}) {

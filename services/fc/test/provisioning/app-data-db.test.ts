@@ -7,6 +7,7 @@ import {
   runAppQuery,
   listTables,
   readRows,
+  insertRow,
   updateRow,
   deleteRow,
   parsePageLimit,
@@ -457,6 +458,91 @@ test("updateRow requires the whole key", async () => {
   await assert.rejects(
     () => updateRow(TARGET, opts(pg), { table: "items", key: [], patch: { title: "x" } }),
     (e: any) => e?.statusCode === 400 && /row key must have 1 value/.test(e?.message ?? ""),
+  );
+});
+
+test("insertRow returns the stored row, defaults and generated key included", async () => {
+  const pg = await seedApp();
+  await pg.exec(`
+    create table ${SCHEMA}.notes (
+      id serial primary key,
+      body text not null,
+      created_at timestamptz not null default '2021-02-03T00:00:00Z'
+    );
+    grant all on all tables in schema ${SCHEMA} to ${ROLE};
+    grant all on all sequences in schema ${SCHEMA} to ${ROLE};
+  `);
+  const first = await insertRow(TARGET, opts(pg), { table: "notes", values: { body: "hello" } });
+  assert.equal(first.id, 1);
+  assert.equal(first.body, "hello");
+  assert.equal(new Date(first.created_at as string).toISOString(), "2021-02-03T00:00:00.000Z");
+  const second = await insertRow(TARGET, opts(pg), { table: "notes", values: { body: "again" } });
+  assert.equal(second.id, 2);
+});
+
+test("insertRow reads back what a trigger rewrote", async () => {
+  const pg = await seedApp();
+  await seedItems(pg, 0);
+  await pg.exec(`
+    create function ${SCHEMA}.stamp() returns trigger language plpgsql as $$
+      begin new.updated_at := '2030-06-01T00:00:00Z'; return new; end $$;
+    create trigger items_stamp before insert on ${SCHEMA}.items
+      for each row execute function ${SCHEMA}.stamp();
+  `);
+  const row = await insertRow(TARGET, opts(pg), { table: "items", values: { id: 5, title: "t" } });
+  assert.equal(new Date(row.updated_at as string).toISOString(), "2030-06-01T00:00:00.000Z");
+});
+
+test("insertRow with no values inserts the defaults", async () => {
+  const pg = await seedApp();
+  await pg.exec(`
+    create table ${SCHEMA}.ticks (id serial primary key, at int not null default 7);
+    grant all on all tables in schema ${SCHEMA} to ${ROLE};
+    grant all on all sequences in schema ${SCHEMA} to ${ROLE};
+  `);
+  const row = await insertRow(TARGET, opts(pg), { table: "ticks", values: {} });
+  assert.deepEqual({ id: row.id, at: row.at }, { id: 1, at: 7 });
+});
+
+test("insertRow works on a table with no primary key", async () => {
+  const pg = await seedApp();
+  await pg.exec(`
+    create table ${SCHEMA}.audit_log (at int not null, what text);
+    grant all on all tables in schema ${SCHEMA} to ${ROLE};
+  `);
+  const row = await insertRow(TARGET, opts(pg), { table: "audit_log", values: { at: 3, what: "x" } });
+  assert.deepEqual(row, { at: 3, what: "x" });
+});
+
+test("insertRow rejects a column that is not in the table, and writes nothing", async () => {
+  const pg = await seedApp();
+  await seedItems(pg, 0);
+  await assert.rejects(
+    () => insertRow(TARGET, opts(pg), {
+      table: "items", values: { id: 1, "title) values (1, 'pwned'); --": "x" },
+    }),
+    (e: any) => e?.statusCode === 400 && e?.code === "unknown_column",
+  );
+  const n = await pg.query<{ n: number }>(`select count(*)::int as n from ${SCHEMA}.items`);
+  assert.equal(n.rows[0].n, 0);
+});
+
+test("insertRow surfaces a duplicate key as the database's error and rolls back", async () => {
+  const pg = await seedApp();
+  await seedItems(pg, 1);
+  await assert.rejects(
+    () => insertRow(TARGET, opts(pg), { table: "items", values: { id: 1, title: "dup" } }),
+    (e: any) => e?.code === "23505",
+  );
+  const n = await pg.query<{ n: number }>(`select count(*)::int as n from ${SCHEMA}.items`);
+  assert.equal(n.rows[0].n, 1);
+});
+
+test("insertRow refuses a table outside this app's schema", async () => {
+  const pg = await seedApp();
+  await assert.rejects(
+    () => insertRow(TARGET, opts(pg), { table: "pg_class", values: {} }),
+    (e: any) => e?.statusCode === 404 && e?.code === "table_not_found",
   );
 });
 

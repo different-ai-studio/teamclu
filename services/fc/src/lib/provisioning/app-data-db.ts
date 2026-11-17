@@ -610,6 +610,72 @@ export async function updateRow(
   });
 }
 
+export interface InsertRowInput {
+  table: string;
+  /** Column → value. Columns left out take their default (or NULL). */
+  values: Record<string, unknown>;
+}
+
+/**
+ * Insert exactly one row, then read it back.
+ *
+ * Read back for the same reason {@link updateRow} does: defaults, sequences
+ * and triggers decide much of what is stored, and the caller needs the row as
+ * it is — its generated key above all, or it cannot address the row it just
+ * made. A table with no primary key cannot be read back by key, so it gets
+ * what `RETURNING *` saw instead.
+ */
+export async function insertRow(
+  target: AppDataTarget,
+  opts: Omit<RunAppQueryOptions, "readOnly">,
+  input: InsertRowInput,
+): Promise<Record<string, unknown>> {
+  return runAppQuery(target, { ...opts, readOnly: false }, async (tx, schema) => {
+    const info = await requireTable(tx, schema, input.table);
+    const qualified = `${quoteIdent(schema)}.${quoteIdent(info.name)}`;
+
+    const values = input.values ?? {};
+    if (typeof values !== "object" || Array.isArray(values)) {
+      throw new ApiError(400, "validation_failed", "values must be an object of column values");
+    }
+    const cols = requireColumns(info, Object.keys(values));
+    const params: unknown[] = [];
+    const statement = cols.length === 0
+      ? `insert into ${qualified} default values`
+      : `insert into ${qualified} (${cols.map(quoteIdent).join(", ")}) values (${cols
+          .map((c) => {
+            params.push(values[c]);
+            return `$${params.length}`;
+          })
+          .join(", ")})`;
+
+    if (info.primaryKey.length === 0) {
+      const rows = await tx.unsafe<Record<string, unknown>>(`${statement} returning *`, params);
+      if (rows.length !== 1) {
+        throw new ApiError(502, "row_read_back_failed", "the inserted row could not be read back");
+      }
+      return rows[0];
+    }
+
+    const keyCols = info.primaryKey.map(quoteIdent).join(", ");
+    const inserted = await tx.unsafe<Record<string, unknown>>(`${statement} returning ${keyCols}`, params);
+    if (inserted.length !== 1) {
+      throw new ApiError(502, "row_read_back_failed", "the inserted row could not be read back");
+    }
+    const key = info.primaryKey.map((c) => inserted[0][c]);
+    const readParams: unknown[] = [];
+    const readPredicate = buildKeyPredicate(info, key, readParams);
+    const rows = await tx.unsafe<Record<string, unknown>>(
+      `select * from ${qualified} where ${readPredicate} limit 1`,
+      readParams,
+    );
+    if (rows.length !== 1) {
+      throw new ApiError(502, "row_read_back_failed", "the inserted row could not be read back");
+    }
+    return rows[0];
+  });
+}
+
 export interface DeleteRowInput {
   table: string;
   key: RowKey;
@@ -657,7 +723,7 @@ function assertExactlyOne(count: number, op: "update" | "delete"): void {
 // --- Bound facade ----------------------------------------------------------
 
 /**
- * The four operations with the admin URL already bound.
+ * The operations with the admin URL already bound.
  *
  * The repository takes this rather than the URL so tests can substitute the
  * whole surface without standing up a database, and so nothing above this file
@@ -666,6 +732,7 @@ function assertExactlyOne(count: number, op: "update" | "delete"): void {
 export interface AppDataOps {
   listTables(target: AppDataTarget): Promise<AppDataTableInfo[]>;
   readRows(target: AppDataTarget, input: ReadRowsInput): Promise<ReadRowsResult>;
+  insertRow(target: AppDataTarget, input: InsertRowInput): Promise<Record<string, unknown>>;
   updateRow(target: AppDataTarget, input: UpdateRowInput): Promise<Record<string, unknown>>;
   deleteRow(target: AppDataTarget, input: DeleteRowInput): Promise<void>;
 }
@@ -675,6 +742,7 @@ export function makeAppDataOps(adminUrl: string, connect?: ConnectOrgDb): AppDat
   return {
     listTables: (target) => listTables(target, opts),
     readRows: (target, input) => readRows(target, opts, input),
+    insertRow: (target, input) => insertRow(target, opts, input),
     updateRow: (target, input) => updateRow(target, opts, input),
     deleteRow: (target, input) => deleteRow(target, opts, input),
   };
