@@ -99,9 +99,9 @@ pub(crate) struct Shared {
     pub(crate) routes: parking_lot::Mutex<HashMap<String, Route>>,
     /// extension_ui_request id → pending permission bookkeeping.
     pub(crate) permissions: parking_lot::Mutex<HashMap<String, PendingPermission>>,
-/// extension_ui_request id → session, for pending `question` selects
-/// (answered via `AcpCommand::AnswerQuestion`).
-pub(crate) questions: parking_lot::Mutex<HashMap<String, PendingQuestion>>,
+    /// extension_ui_request id → session, for pending `question` selects
+    /// (answered via `AcpCommand::AnswerQuestion`).
+    pub(crate) questions: parking_lot::Mutex<HashMap<String, PendingQuestion>>,
 }
 
 impl Shared {
@@ -112,6 +112,73 @@ impl Shared {
             permissions: parking_lot::Mutex::new(HashMap::new()),
             questions: parking_lot::Mutex::new(HashMap::new()),
         })
+    }
+}
+
+/// How long a pi host may sit with no attached session before it is killed.
+///
+/// Long enough that a prewarmed host is still there for the session it was
+/// started for, and that detaching and reopening a chat does not pay a cold
+/// start; short enough that a machine does not carry every workspace anyone
+/// touched today.
+const UNATTACHED_HOST_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// How often the idle sweep runs.
+const HOST_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Pool keys that have a turn running.
+fn busy_pool_keys(shared: &Shared) -> std::collections::HashSet<process::PoolKey> {
+    shared
+        .routes
+        .lock()
+        .values()
+        .filter(|r| r.turn_active)
+        .map(|r| r.pool_key.clone())
+        .collect()
+}
+
+/// Pool keys some session routes to.
+fn attached_pool_keys(shared: &Shared) -> std::collections::HashSet<process::PoolKey> {
+    shared
+        .routes
+        .lock()
+        .values()
+        .map(|r| r.pool_key.clone())
+        .collect()
+}
+
+/// After a turn on `key` settled: replace the host if a credential refresh
+/// spared it while it was busy, unless another session on it is still mid-turn.
+pub(crate) fn retire_stale_host_after_turn(shared: &Shared, key: &process::PoolKey) {
+    if !shared.pool.is_pending_retire(key) {
+        return;
+    }
+    if busy_pool_keys(shared).contains(key) {
+        return;
+    }
+    shared.pool.retire_if_pending(key);
+}
+
+/// Periodically kill hosts nobody is attached to. Ends when the backend does.
+async fn reap_idle_hosts_loop(shared: std::sync::Weak<Shared>) {
+    let mut tick = tokio::time::interval(HOST_REAP_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let Some(shared) = shared.upgrade() else {
+            return;
+        };
+        let attached = attached_pool_keys(&shared);
+        let killed =
+            shared
+                .pool
+                .reap_idle(&attached, std::time::Instant::now(), UNATTACHED_HOST_TTL);
+        if killed > 0 {
+            info!(
+                killed,
+                live = shared.pool.live_count(),
+                "reaped pi hosts with no attached session"
+            );
+        }
     }
 }
 
@@ -1176,13 +1243,17 @@ async fn do_prompt(
         )
         .await;
         // Close the turn — no turn_end/agent_settled arrives for a failed submit.
-        {
+        let settled_key = {
             let mut routes = shared.routes.lock();
-            if let Some(route) = routes.get_mut(session_id) {
+            routes.get_mut(session_id).map(|route| {
                 route.turn_active = false;
                 route.turn_reply_to = None;
                 route.turn_requester = None;
-            }
+                route.pool_key.clone()
+            })
+        };
+        if let Some(key) = settled_key {
+            retire_stale_host_after_turn(shared, &key);
         }
         emit_frame(
             &event_tx,
@@ -1602,6 +1673,7 @@ impl PiRpcBackend {
             .get_or_init(|| {
                 let (tx, rx) = mpsc::channel::<AcpCommand>(64);
                 tokio::spawn(command_loop(Arc::clone(&self.shared), rx));
+                tokio::spawn(reap_idle_hosts_loop(Arc::downgrade(&self.shared)));
                 tx
             })
             .clone()
@@ -1732,7 +1804,9 @@ impl AgentBackend for PiRpcBackend {
         // ANY agent type tore down every pi child when e.g. opencode auth
         // changed.
         if agent_types.contains(&amux::AgentType::Pi) {
-            self.shared.pool.kill_all()
+            // Not `kill_all()`: that ended turns running in other workspaces.
+            let busy = busy_pool_keys(&self.shared);
+            self.shared.pool.refresh_sparing(&busy)
         } else {
             0
         }
@@ -1745,7 +1819,10 @@ impl AgentBackend for PiRpcBackend {
     }
 
     fn invalidate_all_workspace_hosts(&mut self) -> usize {
-        self.shared.pool.kill_all()
+        // Reached from saving or removing a device-level provider credential.
+        // Hosts mid-turn are replaced when the turn settles, not under it.
+        let busy = busy_pool_keys(&self.shared);
+        self.shared.pool.refresh_sparing(&busy)
     }
 
     fn invalidate_unattached_workspace_hosts(&mut self) -> usize {

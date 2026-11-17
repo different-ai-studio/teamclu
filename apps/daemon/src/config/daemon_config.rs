@@ -1017,7 +1017,7 @@ impl DaemonConfig {
         }
         let content = toml::to_string_pretty(self)
             .map_err(|e| crate::error::AmuxError::Config(e.to_string()))?;
-        std::fs::write(path, content)?;
+        super::atomic_file::write(path, &content)?;
         Ok(())
     }
 

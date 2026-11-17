@@ -243,7 +243,9 @@ fn compaction_wire_payload(event: &serde_json::Value, completed: bool) -> serde_
         .and_then(|v| v.as_str())
         .unwrap_or("threshold");
     let result = event.get("result");
-    let tokens_before = result.and_then(|r| r.get("tokensBefore")).and_then(json_u64);
+    let tokens_before = result
+        .and_then(|r| r.get("tokensBefore"))
+        .and_then(json_u64);
     let tokens_after = result
         .and_then(|r| r.get("estimatedTokensAfter"))
         .and_then(json_u64);
@@ -307,10 +309,15 @@ pub(super) async fn close_turn(shared: &Arc<Shared>, session_id: &str) {
             } else {
                 route.translate.take_turn_error()
             };
-            Some((route.event_tx.clone(), reply_to, failure))
+            Some((
+                route.event_tx.clone(),
+                reply_to,
+                failure,
+                route.pool_key.clone(),
+            ))
         }
     };
-    if let Some((event_tx, reply_to, failure)) = closed {
+    if let Some((event_tx, reply_to, failure, pool_key)) = closed {
         // Failure first: `turn_aggregator` decides the turn's outcome from an
         // Error seen *before* Active→Idle.
         if let Some(ev) = failure {
@@ -327,6 +334,9 @@ pub(super) async fn close_turn(shared: &Arc<Shared>, session_id: &str) {
         let _ = event_tx
             .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to))
             .await;
+        // After the frames, so the client sees the turn end before its host is
+        // replaced: a credential change that arrived mid-turn waited for this.
+        super::retire_stale_host_after_turn(shared, &pool_key);
     }
 }
 
@@ -863,7 +873,9 @@ mod tests {
             shared.permissions.lock().contains_key("perm_ask_1"),
             "Ask mode must register a pending permission for ACP grant/deny"
         );
-        let frame = rx.try_recv().expect("Ask mode must emit AcpPermissionRequest");
+        let frame = rx
+            .try_recv()
+            .expect("Ask mode must emit AcpPermissionRequest");
         match frame.event.event.as_ref().unwrap() {
             amux::acp_event::Event::PermissionRequest(pr) => {
                 assert_eq!(pr.request_id, "perm_ask_1");

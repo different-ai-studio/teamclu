@@ -16,19 +16,24 @@ impl PermissionManager {
         }
     }
 
+    /// Whether [`Self::check_command_permission`] looks at the caller's role
+    /// for this command. The role costs a Cloud API round trip to resolve, so
+    /// callers ask this first and skip the lookup when the answer cannot
+    /// change the outcome.
+    pub fn command_is_role_gated(command: &amux::acp_command::Command) -> bool {
+        matches!(
+            command,
+            amux::acp_command::Command::StartAgent(_) | amux::acp_command::Command::StopAgent(_)
+        )
+    }
+
     pub fn check_command_permission(
         &self,
         role: amux::MemberRole,
         command: &amux::acp_command::Command,
     ) -> Result<(), String> {
-        match command {
-            amux::acp_command::Command::StartAgent(_)
-            | amux::acp_command::Command::StopAgent(_) => {
-                if role != amux::MemberRole::Owner {
-                    return Err("permission denied: owner only".into());
-                }
-            }
-            _ => {}
+        if Self::command_is_role_gated(command) && role != amux::MemberRole::Owner {
+            return Err("permission denied: owner only".into());
         }
         Ok(())
     }
@@ -150,6 +155,22 @@ mod tests {
             .is_ok());
     }
 
+    /// The gate and the "is it gated" question must agree, or a caller that
+    /// skips the role lookup would let a gated command through as a Member.
+    #[test]
+    fn only_start_and_stop_are_role_gated() {
+        let pm = PermissionManager::new();
+        for cmd in [start_agent_cmd(), stop_agent_cmd(), send_prompt_cmd()] {
+            let gated = PermissionManager::command_is_role_gated(&cmd);
+            let member_refused = pm
+                .check_command_permission(amux::MemberRole::Member, &cmd)
+                .is_err();
+            assert_eq!(gated, member_refused);
+        }
+        assert!(PermissionManager::command_is_role_gated(&start_agent_cmd()));
+        assert!(!PermissionManager::command_is_role_gated(&send_prompt_cmd()));
+    }
+
     #[test]
     fn active_agent_is_busy() {
         let pm = PermissionManager::new();
@@ -178,7 +199,10 @@ mod tests {
         let drained = pm.take_pending_for_session("sess-1");
         assert_eq!(drained, vec!["req-1".to_string()]);
         assert_eq!(pm.take_pending_for_session("sess-1"), Vec::<String>::new());
-        assert_eq!(pm.take_pending_for_session("sess-2"), vec!["req-2".to_string()]);
+        assert_eq!(
+            pm.take_pending_for_session("sess-2"),
+            vec!["req-2".to_string()]
+        );
     }
 
     #[test]
