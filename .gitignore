@@ -193,3 +193,6 @@ playwright-report/
 screenshots/
 tmp/
 log/
+
+# Android SDK location, machine-specific
+local.properties

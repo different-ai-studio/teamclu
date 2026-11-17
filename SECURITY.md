@@ -13,8 +13,9 @@ receiving such patches depends on the CVSS v3.0 Rating:
 
 ## Reporting a Vulnerability
 
-Please report (suspected) security vulnerabilities to
-**[your-security-email@example.com]** or through GitHub Security Advisories.
+Please report (suspected) security vulnerabilities privately through
+[GitHub Security Advisories](https://github.com/different-ai-studio/teamclu/security/advisories/new).
+Do not open a public issue for a vulnerability.
 
 When reporting a vulnerability, please include:
 
@@ -64,6 +65,5 @@ None at this time.
 
 ## Acknowledgments
 
-We thank the following people for responsibly disclosing security issues:
-
-- [Your name and contribution details]
+We thank everyone who responsibly discloses security issues. Reporters are
+credited in the advisory unless they ask not to be.

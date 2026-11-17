@@ -348,18 +348,6 @@ export function createApp(deps: AppDeps): Hono {
     return sendLegacy(c, r);
   });
 
-  // Admin/provisioning endpoints (all POST). Each parses JSON body then calls the handler.
-  const adminRoutes: Array<[string, (body: any) => Promise<any>]> = [
-    ["/reset-secret", (b) => admin.handleResetSecret(b)],
-  ];
-  for (const [path, fn] of adminRoutes) {
-    app.post(path, async (c) => {
-      const t = await c.req.text();
-      let body: any = {};
-      if (t) { try { body = JSON.parse(t); } catch { return c.json({ error: "Invalid JSON body" }, 400); } }
-      return sendLegacy(c, await fn(body));
-    });
-  }
   app.post("/push/dispatch", async (c) => {
     const headers = Object.fromEntries(c.req.raw.headers);
     const t = await c.req.text();
