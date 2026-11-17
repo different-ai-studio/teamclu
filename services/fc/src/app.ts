@@ -327,7 +327,7 @@ export function createApp(deps: AppDeps): Hono {
     await next();
   });
 
-  // Legacy /sync/* (set-mode, team-mode, manifest, upload/*, download, delete, versions)
+  // Legacy /sync/* (manifest, upload/*, download, delete, versions)
   // Mounted under /v1/sync/* so a gateway that basicauth-gates the bare
   // /sync* prefix (Shopee test) can't block JWT-authed sync ticks. The /v1
   // mount is stripped before dispatch so the spec names (/sync/manifest, …)
@@ -342,7 +342,9 @@ export function createApp(deps: AppDeps): Hono {
       url.searchParams.forEach((v, k) => { body[k] = v; });
     } else {
       const t = await c.req.text();
-      body = t ? JSON.parse(t) : {};
+      // A body that does not parse is the caller's mistake; unguarded it
+      // reached onError and answered 500.
+      if (t) { try { body = JSON.parse(t); } catch { return c.json({ error: "Invalid JSON body" }, 400); } }
     }
     const r = await handleSyncRequest({ path: url.pathname.replace(/^\/v1\/sync/, "/sync"), httpMethod: c.req.method, headers, body });
     return sendLegacy(c, r);
