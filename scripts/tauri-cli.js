@@ -9,6 +9,7 @@ const { ensureAmuxdSidecar } = require("./ensure-amuxd-sidecar");
 const { ensureFunASRSidecar } = require("./ensure-funasr-sidecar");
 const { assertMacosReleaseBundles, repoRoot } = require("./lib/wiki-maintainer-bundle");
 const { applyDevSkipFlags } = require("./lib/dev-flags");
+const { applyE2eCsp, defaultConfPath } = require("./lib/e2e-csp");
 const { createPhaseTimer } = require("./lib/dev-timing");
 const { platform } = process;
 
@@ -40,6 +41,7 @@ if (isWindows && (sub === "dev" || sub === "build")) {
 
 const env = createRustBuildEnv(process.env, __dirname);
 args = applyDevSkipFlags(args, env);
+args = applyE2eCsp(args, env, defaultConfPath());
 timing.mark("flags+env");
 
 // Before the sidecar builds below: they are the first cargo to fan out.

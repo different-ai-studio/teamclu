@@ -11,6 +11,29 @@ psql -v ON_ERROR_STOP=1 -c \
   "create schema if not exists _selfhost;
    create table if not exists _selfhost.schema_migrations(filename text primary key, applied_at timestamptz default now());"
 
+# Migrations that write into a schema `postgres` cannot create in. On the
+# supabase/postgres 17 image `postgres` is not a superuser and `auth` belongs
+# to supabase_admin, so creating auth._mint_session as `postgres` fails with
+# "permission denied for schema auth" — on a fresh database only: an existing
+# one applied it long ago and skips it. Those run as the role that owns the
+# objects they touch. Format: one "<file>=<role>" per line.
+#
+# How we become that role depends on who we connected as:
+# - a superuser (CI's pgTAP job connects as supabase_admin over a peer-auth
+#   socket, where logging in as another role is refused) switches in-session
+#   with SET ROLE, which a superuser may do to any role;
+# - anyone else (self-host's `postgres`, which is not a member of these roles)
+#   reconnects as the role: every Supabase role shares POSTGRES_PASSWORD
+#   (supabase/volumes/db/roles.sql).
+# Either way the objects end up owned by that role.
+RUN_AS="
+20260706000000_add_auth_mint_session.sql=supabase_auth_admin
+"
+role_for() { # $1=filename -> role to apply it as, or empty for the default
+  printf '%s\n' "$RUN_AS" | sed -n "s/^$1=//p"
+}
+IS_SUPERUSER="$(psql -tAc "select rolsuper from pg_roles where rolname = current_user")"
+
 is_applied() { # $1=filename -> "t" if present
   psql -tAc "select 1 from _selfhost.schema_migrations where filename = '$1'"
 }
@@ -18,8 +41,18 @@ apply_file() { # $1=path $2=marker-name
   if [ -n "$(is_applied "$2")" ]; then
     echo "skip (already applied): $2"; return 0
   fi
-  echo "apply: $2"
-  psql -v ON_ERROR_STOP=1 -1 -f "$1"
+  role="$(role_for "$2")"
+  if [ -n "$role" ]; then
+    echo "apply (as $role): $2"
+    if [ "$IS_SUPERUSER" = "t" ]; then
+      PGOPTIONS="${PGOPTIONS:-} -c role=$role" psql -v ON_ERROR_STOP=1 -1 -f "$1"
+    else
+      PGUSER="$role" psql -v ON_ERROR_STOP=1 -1 -f "$1"
+    fi
+  else
+    echo "apply: $2"
+    psql -v ON_ERROR_STOP=1 -1 -f "$1"
+  fi
   psql -v ON_ERROR_STOP=1 -c \
     "insert into _selfhost.schema_migrations(filename) values ('$2');"
 }
