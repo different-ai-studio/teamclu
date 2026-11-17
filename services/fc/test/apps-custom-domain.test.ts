@@ -171,7 +171,16 @@ test("a resolver that throws is 'not proven', not an error", async () => {
 test("a hanging resolver does not hang the request", async () => {
   const never = () => new Promise<string[][]>(() => {});
   const started = Date.now();
-  assert.equal(await verifyDomainOwnership("app.example.com", "t", never, 30), false);
+  // The timeout timer is unref'd so it never holds a shutting-down server
+  // open. Here nothing else is pending, so without a ref'd handle the event
+  // loop drains before the timer fires and Node 20/22 cancel the test
+  // ("Promise resolution is still pending") along with the rest of the file.
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    assert.equal(await verifyDomainOwnership("app.example.com", "t", never, 30), false);
+  } finally {
+    clearInterval(keepAlive);
+  }
   assert.ok(Date.now() - started < 2000, "must give up on its own");
 });
 

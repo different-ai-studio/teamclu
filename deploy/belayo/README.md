@@ -55,8 +55,10 @@ remains **尚未执行** until live FC and gateway behavior are measured.
 
 `.github/workflows/belayo-cloud-api.yml` builds `services/fc` as an immutable
 amd64 image, pushes it to Alibaba ACR through the Dokploy manager, rolls
-`teamclu-cloud-api-shadow-qjau6z` on `dokploy-worker-2`, and verifies both the
-internal and public health endpoints before updating Dokploy's desired image.
+`teamclu-cloud-api-shadow-qjau6z` on `dokploy-worker-2`, and asks the new task
+for `/healthz` over the overlay network before updating Dokploy's desired image
+(`.github/scripts/belayo-rollout.sh`; a failed check rolls the service back).
+A last step then checks the public endpoint from the runner.
 It runs automatically for Cloud API changes merged to `main` and can also be
 started manually.
 
