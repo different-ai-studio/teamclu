@@ -8,7 +8,7 @@ name = "teamclu-introspect"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # default-features off, rustls only: release-oss builds this sidecar in the

@@ -781,6 +781,9 @@ type McpTool = { name: string; description?: string; inputSchema?: unknown };
  *  hang session startup. */
 const MAX_TOOL_PAGES = 50;
 
+/** Upper bound on one MCP tool call that keeps reporting progress. */
+const MCP_CALL_MAX_TOTAL_MS = 60 * 60_000;
+
 /** One connected MCP server. */
 class McpBridge {
   private constructor(
@@ -852,8 +855,18 @@ class McpBridge {
   callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
     return this.client.callTool({ name, arguments: args ?? {} }, undefined, {
       signal,
-      // A tool that reports progress is working, not stuck.
+      // A tool that reports progress is working, not stuck. The SDK only sends
+      // a progressToken — the server's cue that progress is wanted — when
+      // `onprogress` is set, so without it this reset never fired and every
+      // call died at the SDK's 60 s default. A TeamClu app deploy (build,
+      // upload, finalize) takes minutes; teamclu-introspect heartbeats while a
+      // call runs, so the 60 s now means "silent for 60 s", not "slow".
+      onprogress: () => {},
       resetTimeoutOnProgress: true,
+      // Still bounded: a server that heartbeats forever cannot hold a turn
+      // longer than the slowest deploy the desktop allows (a container build
+      // is given 50 minutes).
+      maxTotalTimeout: MCP_CALL_MAX_TOTAL_MS,
     });
   }
 
