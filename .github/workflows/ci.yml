@@ -290,6 +290,34 @@ jobs:
           npm run build       # tsconfig.json — what the image actually compiles
           npm test
 
+  # services/fc sits outside the pnpm workspace, so `pnpm test:unit` never
+  # reaches it, and until this job its ~105 test files ran in no workflow: two
+  # of them sat red on main for weeks. The env-parity guard CLAUDE.md calls
+  # "enforced" also only ran after merge, inside the Belayo deploy.
+  #
+  # Node 22, not the image's Node 20: `npm test` passes a quoted glob to
+  # `node --test`, which only expands it from Node 21 on. The tests that need
+  # a local Supabase skip themselves when it is not reachable.
+  cloud-api:
+    name: Cloud API (typecheck, build, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/fc/package-lock.json
+
+      - name: Cloud API — typecheck, build, tests
+        working-directory: services/fc
+        run: |
+          npm ci
+          npm run typecheck   # tsconfig.test.json — covers test/ too
+          npm run build       # tsconfig.json — what the image actually compiles
+          npm test
+
   daemon-linux:
     name: Daemon Unit Tests (Linux)
     runs-on: ubuntu-latest
