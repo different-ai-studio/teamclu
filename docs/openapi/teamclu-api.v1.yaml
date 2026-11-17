@@ -7115,55 +7115,6 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/workspace-git-config:
-    get:
-      operationId: loadTeamWorkspaceGitConfig
-      summary: Load team workspace git/AI gateway config
-      tags: [Workspaces]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: Config row or null
-          content:
-            application/json:
-              schema:
-                type: [object, "null"]
-                properties:
-                  team_id: { type: string }
-                  workspace_path: { type: [string, "null"] }
-                  git_url: { type: [string, "null"] }
-                  git_branch: { type: [string, "null"] }
-                  git_token: { type: [string, "null"] }
-                  ai_gateway_endpoint: { type: [string, "null"] }
-                  enabled: { type: boolean }
-                  metadata: { type: [object, "null"] }
-                  updated_at: { type: [string, "null"] }
-    put:
-      operationId: saveTeamWorkspaceGitConfig
-      summary: Upsert team workspace git/AI gateway config
-      tags: [Workspaces]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                workspace_path: { type: [string, "null"] }
-                git_url: { type: [string, "null"] }
-                git_branch: { type: [string, "null"] }
-                git_token: { type: [string, "null"] }
-                ai_gateway_endpoint: { type: [string, "null"] }
-                enabled: { type: boolean }
-                metadata: { type: [object, "null"] }
-      responses:
-        "204":
-          description: Saved
-        "400":
-          $ref: "#/components/responses/Error"
   /v1/auth/signin-otp:
     post:
       operationId: signInOtp

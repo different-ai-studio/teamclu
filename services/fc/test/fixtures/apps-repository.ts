@@ -40,6 +40,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
     agents: [...(seed.agents ?? [])],
     session_participants: [...(seed.session_participants ?? [])],
     agent_member_access: [...(seed.agent_member_access ?? [])],
+    session_read_markers: [...(seed.session_read_markers ?? [])],
   };
   return {
     auth: appsAuth(),

@@ -32,6 +32,19 @@ test("missing bearer on /v1/teams -> 401", async () => {
   assert.equal(res.status, 401);
 });
 
+// Unguarded, the JSON.parse threw into onError and a caller's bad body came
+// back as a 500 "Internal server error".
+test("POST /v1/sync/* with a body that is not JSON -> 400", async () => {
+  const app = createApp(deps() as any);
+  const res = await app.request("/v1/sync/manifest", {
+    method: "POST",
+    headers: { authorization: "Bearer abc", "content-type": "application/json" },
+    body: "{not json",
+  });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json() as any).error, "Invalid JSON body");
+});
+
 test("parseAppDeployDeclaration: a declaration is required", () => {
   assert.throws(() => parseAppDeployDeclaration(undefined), /must be an object/);
   assert.throws(() => parseAppDeployDeclaration(null), /must be an object/);

@@ -1,4 +1,4 @@
-import { authenticateSyncCall, authenticateJwtOnly } from './sync-auth.js';
+import { authenticateSyncCall } from './sync-auth.js';
 import { logSyncEvent } from './sync-log.js';
 import {
   handleSyncManifest,
@@ -7,8 +7,6 @@ import {
   handleSyncDownload,
   handleSyncDelete,
   handleSyncVersions,
-  handleSyncSetMode,
-  handleSyncTeamMode,
   handleSyncUploadPrepareBatch,
   handleSyncUploadCompleteBatch,
   handleSyncDownloadBatch,
@@ -28,19 +26,11 @@ interface SyncRequest {
  * Contains the exact logic of the original inline switch in handler().
  */
 export async function handleSyncRequest({ path, httpMethod, headers, body }: SyncRequest): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
-  if (path === "/sync/set-mode") {
-    const auth = await authenticateJwtOnly({ headers });
-    if (!auth.ok) { const a = auth as any; return json(a.status, { error: a.error }); }
-    return await handleSyncSetMode((auth as any).userId, body);
-  }
-
-  if (path === "/sync/team-mode") {
-    const auth = await authenticateJwtOnly({ headers });
-    if (!auth.ok) { const a = auth as any; return json(a.status, { error: a.error }); }
-    return await handleSyncTeamMode((auth as any).userId, body);
-  }
-
-  // All other /sync/* routes require teamId + full sync auth
+  // `/sync/set-mode` and `/sync/team-mode` are gone. There is no share-mode
+  // switch any more (see CLAUDE.md, "Team Collaboration"): set-mode called an
+  // RPC that rejects every service-role caller, so it could only answer 403,
+  // and the last client that read team-mode was removed in #1067.
+  // Every /sync/* route requires teamId + full sync auth
   const teamId = body.teamId || body.team_id;
   if (!teamId) return json(400, { error: "teamId is required" });
 

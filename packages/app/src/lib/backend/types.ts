@@ -1014,18 +1014,6 @@ export interface NotificationsBackend {
   listMutedSessionIds(userId: string): Promise<string[]>;
 }
 
-export interface TeamWorkspaceConfigRow {
-  team_id: string;
-  workspace_path?: string | null;
-  git_url?: string | null;
-  git_branch?: string | null;
-  git_token?: string | null;
-  ai_gateway_endpoint?: string | null;
-  enabled?: boolean;
-  updated_at?: string | null;
-  metadata?: Record<string, unknown> | null;
-}
-
 /** A single LLM model entry ({id, name}). */
 interface TeamLlmModel {
   id: string;
@@ -1051,8 +1039,6 @@ export interface TeamLlmConfigInput {
 }
 
 export interface TeamWorkspaceConfigBackend {
-  load(teamId: string): Promise<TeamWorkspaceConfigRow | null>;
-  save(input: TeamWorkspaceConfigRow): Promise<void>;
   /** Read the per-team LLM config block from the cloud workspace-config. */
   loadLlmConfig(teamId: string): Promise<TeamLlmConfig | null>;
   /** Persist the per-team LLM config to the cloud; returns the saved config. */

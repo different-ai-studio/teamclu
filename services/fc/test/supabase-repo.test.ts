@@ -4951,6 +4951,122 @@ test("setParticipantWorkspace answers 404 for a session the caller cannot see", 
   assert.equal(seatWrites().length, 0);
 });
 
+// The cursor and the model live on the agent's seat (ADR-0005). The table has
+// no UPDATE policy, so on the caller's token both writes matched nothing and
+// still answered 204: belayo had no row with a model and no cursor newer than
+// the backfill. They are authorized here and written through the service role.
+function seatStateFixture({ actorRow = { id: "agent-1" }, access = [], seated = true }: any = {}) {
+  const seed = {
+    sessions: [{ id: "sess-1", team_id: "team-1" }],
+    agents: [{ id: "agent-1", owner_member_id: "member-1" }],
+    agent_member_access: access,
+    session_participants: seated ? [{ session_id: "sess-1", actor_id: "agent-1" }] : [],
+  };
+  const callerCalls: any[] = [];
+  const adminCalls: any[] = [];
+  const caller = appsSupabase({ seed, actorRow, calls: callerCalls });
+  const admin = appsSupabase({ seed, actorRow, calls: adminCalls });
+  const repo = appsRepo(caller, { createServiceRoleClient: () => admin });
+  const writes = (calls: any[]) =>
+    calls.filter((c) => c.table === "session_participants" && c.op === "update");
+  return { repo, seatWrites: () => writes(adminCalls), callerWrites: () => writes(callerCalls), adminCalls };
+}
+
+test("updateParticipantCursor writes the agent's own cursor through the service role", async () => {
+  const { repo, seatWrites, callerWrites, adminCalls } = seatStateFixture();
+  await repo.updateParticipantCursor("sess-1", "agent-1", { lastProcessedMessageId: "msg-9" });
+  assert.equal(callerWrites().length, 0);
+  assert.equal(seatWrites().length, 1);
+  assert.equal(seatWrites()[0].row.last_processed_message_id, "msg-9");
+  // The agent writing its own seat needs no agent lookup.
+  assert.equal(adminCalls.filter((c) => c.table === "agents").length, 0);
+});
+
+test("updateParticipantModel writes the agent's own model through the service role", async () => {
+  const { repo, seatWrites, callerWrites } = seatStateFixture();
+  await repo.updateParticipantModel("sess-1", "agent-1", { model: "team/fable" });
+  assert.equal(callerWrites().length, 0);
+  assert.equal(seatWrites().length, 1);
+  assert.equal(seatWrites()[0].row.model, "team/fable");
+});
+
+test("updateParticipantModel lets the agent's owner write it", async () => {
+  const { repo, seatWrites } = seatStateFixture({ actorRow: { id: "member-1" } });
+  await repo.updateParticipantModel("sess-1", "agent-1", { model: "team/fable" });
+  assert.equal(seatWrites().length, 1);
+});
+
+for (const method of ["updateParticipantCursor", "updateParticipantModel"] as const) {
+  const input: any = method === "updateParticipantCursor"
+    ? { lastProcessedMessageId: "msg-9" }
+    : { model: "team/fable" };
+
+  test(`${method} refuses a member who neither owns nor administers the agent`, async () => {
+    const { repo, seatWrites } = seatStateFixture({
+      actorRow: { id: "member-2" },
+      access: [{ agent_id: "agent-1", member_id: "member-2", permission_level: "member" }],
+    });
+    await assert.rejects(
+      () => (repo as any)[method]("sess-1", "agent-1", input),
+      (err: any) => err?.statusCode === 403,
+    );
+    assert.equal(seatWrites().length, 0);
+  });
+
+  test(`${method} answers 404 when the actor has no seat in the session`, async () => {
+    const { repo } = seatStateFixture({ seated: false });
+    await assert.rejects(
+      () => (repo as any)[method]("sess-1", "agent-1", input),
+      (err: any) => err?.statusCode === 404,
+    );
+  });
+
+  test(`${method} answers 404 for a session the caller cannot see`, async () => {
+    const { repo, seatWrites } = seatStateFixture();
+    await assert.rejects(
+      () => (repo as any)[method]("sess-missing", "agent-1", input),
+      (err: any) => err?.statusCode === 404,
+    );
+    assert.equal(seatWrites().length, 0);
+  });
+}
+
+// `session_read_markers` has no DELETE policy either: "mark as unread" deleted
+// nothing on the caller's token and answered 204.
+function readMarkerFixture({ actorRow = { id: "member-1" } }: any = {}) {
+  const seed = {
+    sessions: [{ id: "sess-1", team_id: "team-1" }],
+    session_read_markers: [
+      { id: "m-1", session_id: "sess-1", actor_id: "member-1" },
+      { id: "m-2", session_id: "sess-1", actor_id: "member-2" },
+      { id: "m-3", session_id: "sess-2", actor_id: "member-1" },
+    ],
+  };
+  const callerCalls: any[] = [];
+  const caller = appsSupabase({ seed, actorRow, calls: callerCalls });
+  const admin = appsSupabase({ seed, actorRow });
+  const repo = appsRepo(caller, { createServiceRoleClient: () => admin });
+  return { repo, admin, callerCalls };
+}
+
+test("markSessionUnread deletes only the caller's own marker for that session", async () => {
+  const { repo, admin, callerCalls } = readMarkerFixture();
+  await repo.markSessionUnread("sess-1");
+  const { data: left } = await admin.from("session_read_markers").select("id");
+  assert.deepEqual(left.map((r: any) => r.id).sort(), ["m-2", "m-3"]);
+  assert.equal(callerCalls.filter((c) => c.table === "session_read_markers").length, 0);
+});
+
+test("markSessionUnread answers 404 for a session the caller cannot see", async () => {
+  const { repo, admin } = readMarkerFixture();
+  await assert.rejects(
+    () => repo.markSessionUnread("sess-missing"),
+    (err: any) => err?.statusCode === 404,
+  );
+  const { data: left } = await admin.from("session_read_markers").select("id");
+  assert.equal(left.length, 3);
+});
+
 test("listWorkspacesByIdsSlim says who holds each row and whether it is archived", async () => {
   const repo = appsRepo(appsSupabase({
     seed: {

@@ -772,7 +772,28 @@ export function createSupabaseBusinessRepository(options) {
 
   // A partner-issued session has no auth.sessions row in this Supabase project.
   // Its JWT is verified locally only when the explicit trust secret is set.
-  async function getCurrentUser() {
+  //
+  // Every caller-identity read in this file goes through here. Eighteen of
+  // them used to call `supabase.auth.getUser()` directly, which skipped the
+  // trusted-JWT branch (those endpoints answered 401 to a partner session) and
+  // cost a GoTrue round trip each time - several per request on the paths that
+  // check membership more than once.
+  //
+  // The answer is remembered for the life of this repository, which is one
+  // request and one access token, so it cannot change underneath a caller.
+  // Only a resolved user is remembered: a failed lookup is retried.
+  let currentUser: Promise<any> | null = null;
+  function getCurrentUser(): Promise<any> {
+    if (currentUser) return currentUser;
+    const lookup = resolveCurrentUser();
+    currentUser = lookup;
+    void lookup.then(
+      (out) => { if (out?.error || !out?.data?.user?.id) currentUser = null; },
+      () => { currentUser = null; },
+    );
+    return lookup;
+  }
+  async function resolveCurrentUser() {
     if (!trustedExternalJwtSecret) return supabase.auth.getUser();
     try {
       const user = await verifyTrustedExternalJwt(accessToken, trustedExternalJwtSecret);
@@ -863,7 +884,7 @@ export function createSupabaseBusinessRepository(options) {
   }
 
   async function requireCallerTeamOwner(targetTeamId) {
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    const { data: authData, error: authErr } = await getCurrentUser();
     if (authErr || !authData?.user?.id) {
       throw new ApiError(401, "missing_auth", "authenticated user required");
     }
@@ -890,7 +911,7 @@ export function createSupabaseBusinessRepository(options) {
   }
 
   async function requireCallerTeamMember(targetTeamId) {
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    const { data: authData, error: authErr } = await getCurrentUser();
     if (authErr || !authData?.user?.id) {
       throw new ApiError(401, "missing_auth", "authenticated user required");
     }
@@ -913,7 +934,7 @@ export function createSupabaseBusinessRepository(options) {
   // which returns the oldest actor across ALL teams (not team-scoped) and has
   // caused cross-team leakage bugs.
   async function requireCallerTeamMemberActor(targetTeamId) {
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    const { data: authData, error: authErr } = await getCurrentUser();
     if (authErr || !authData?.user?.id) {
       throw new ApiError(401, "missing_auth", "authenticated user required");
     }
@@ -992,6 +1013,53 @@ export function createSupabaseBusinessRepository(options) {
       .maybeSingle();
     if (error) throw error;
     return Boolean(grant);
+  }
+
+  /**
+   * Write an agent's own working state on its seat in a session - the cursor
+   * and the model (ADR-0005).
+   *
+   * `session_participants` has no UPDATE policy, so an update on the caller's
+   * token matches nothing; PostgREST reports that as success and the routes
+   * answered 204 while the columns stayed frozen. As with
+   * `setParticipantWorkspace`, the write goes through the service role after
+   * the checks a policy would have made: the caller must see the session and
+   * speak for the agent (be it, own it, or hold admin on it). The daemon is
+   * the caller in practice and is the agent itself, so the common case costs
+   * no agent lookup.
+   *
+   * 404 when the actor has no seat: a write that changes nothing is the bug
+   * this replaces, not a success.
+   */
+  async function writeAgentSeat(sessionId, actorId, patch, what) {
+    const { data: session, error: sessionErr } = await supabase
+      .from("sessions")
+      .select("id, team_id")
+      .eq("id", sessionId)
+      .maybeSingle();
+    if (sessionErr) throw sessionErr;
+    if (!session) throw new ApiError(404, "not_found", "session not found");
+    const callerActorId = await requireCallerTeamMemberActor(String(session.team_id));
+    const admin = await serviceRoleClient(what);
+    if (callerActorId !== actorId) {
+      const agent = await findAgent(admin, actorId);
+      if (!(await callerSpeaksForAgent(admin, callerActorId, actorId, agent))) {
+        throw new ApiError(
+          403,
+          "forbidden",
+          "only the agent, its owner or one of its admins can write its session state",
+        );
+      }
+    }
+    const { data: seat, error } = await admin
+      .from("session_participants")
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq("session_id", sessionId)
+      .eq("actor_id", actorId)
+      .select("actor_id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!seat) throw new ApiError(404, "not_found", "participant not found");
   }
 
   /**
@@ -1142,7 +1210,7 @@ export function createSupabaseBusinessRepository(options) {
    * this is the daemon's own actor and never a human's.
    */
   async function resolveCurrentAgentActor(teamId: string): Promise<string | null> {
-    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    const { data: userData, error: userErr } = await getCurrentUser();
     if (userErr) throw userErr;
     const userId = userData?.user?.id;
     if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -1189,7 +1257,7 @@ export function createSupabaseBusinessRepository(options) {
 
   /** The bearer caller's actor in `teamId`, or null; same lookup as the `resolveCallerActorForTeam` method, for the module hosts below. */
   async function callerActorForTeam(teamId: string): Promise<{ id: string } | null> {
-    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    const { data: userData, error: userErr } = await getCurrentUser();
     if (userErr) throw userErr;
     const userId = userData?.user?.id;
     if (!userId) return null;
@@ -2785,7 +2853,7 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async writeForegroundPresence({ deviceId, foregroundUntil }) {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) {
@@ -2828,7 +2896,7 @@ export function createSupabaseBusinessRepository(options) {
     async registerDevicePushToken(input) {
       // Identity comes from the bearer token, not the client, mirroring
       // writeForegroundPresence. Clients send device/platform/provider/token.
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -2850,7 +2918,7 @@ export function createSupabaseBusinessRepository(options) {
     async putNotificationPrefs(input) {
       // Identity comes from the bearer token (auth.getUser), not the body —
       // CloudAPI clients no longer hold a Supabase user id.
-      const { data: prefUser, error: prefUserErr } = await supabase.auth.getUser();
+      const { data: prefUser, error: prefUserErr } = await getCurrentUser();
       if (prefUserErr) throw prefUserErr;
       const prefUserId = input.user_id ?? prefUser?.user?.id;
       if (!prefUserId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -3134,7 +3202,7 @@ export function createSupabaseBusinessRepository(options) {
     async ensureAgentTypes({ supportedTypes, defaultAgentType }) {
       // Keep the default a member of the supported set (see normalizeAgentTypes).
       const norm = normalizeAgentTypes(supportedTypes, defaultAgentType);
-      const { data: authData, error: authErr } = await supabase.auth.getUser();
+      const { data: authData, error: authErr } = await getCurrentUser();
       if (authErr || !authData?.user?.id) {
         throw new Error("ensureAgentTypes: authenticated user required");
       }
@@ -3357,7 +3425,7 @@ export function createSupabaseBusinessRepository(options) {
       // and team MCP / team skills / team env must resolve that actor so the
       // daemon can install/read them — `resolveCurrentMemberActor` below is
       // member-only and is reserved for the human member directory.
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) return null;
@@ -3394,7 +3462,7 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async resolveWorkspaceUpsertAuth(input) {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -3717,7 +3785,10 @@ export function createSupabaseBusinessRepository(options) {
         }));
         const { error: partErr } = await supabase
           .from("session_participants")
-          .upsert(rows, { onConflict: "session_id,actor_id" });
+          // `ignoreDuplicates`: without it this is ON CONFLICT DO UPDATE, and
+          // the table has no UPDATE policy - a seat that already exists (the
+          // creator's, for one) would fail the whole call on RLS.
+          .upsert(rows, { onConflict: "session_id,actor_id", ignoreDuplicates: true });
         if (partErr) throw partErr;
       }
 
@@ -3840,23 +3911,6 @@ export function createSupabaseBusinessRepository(options) {
       return data ?? [];
     },
 
-    async loadTeamWorkspaceGitConfig(teamId) {
-      const { data, error } = await supabase
-        .from("team_workspace_config")
-        .select("team_id, git_url, git_branch, git_token, ai_gateway_endpoint, enabled, updated_at")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (error) throw error;
-      return data ?? null;
-    },
-
-    async saveTeamWorkspaceGitConfig(input) {
-      const { error } = await supabase
-        .from("team_workspace_config")
-        .upsert(input, { onConflict: "team_id" });
-      if (error) throw error;
-    },
-
     // --- Sessions CRUD (single-session ops; list uses listSessions above) ---
 
     async getSession(sessionId, { teamId = null }: any = {}) {
@@ -3906,7 +3960,7 @@ export function createSupabaseBusinessRepository(options) {
       // (`created_by_actor_id = current_actor_id_for_team(team_id)`) then
       // rejects with a 403. Deriving it here guarantees the row always
       // satisfies RLS regardless of what the client sends.
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -4039,14 +4093,31 @@ export function createSupabaseBusinessRepository(options) {
       }
     },
 
+    /**
+     * Drop the caller's read marker so the session derives as unread again (no
+     * marker reads as "never read" in `list_current_actor_sessions`).
+     *
+     * `session_read_markers` has insert, select and update policies but no
+     * DELETE one, so this used to run on the caller's token, match nothing and
+     * still answer 204 - "mark as unread" did nothing on any client. The delete
+     * goes through the service role, pinned to the caller's own actor in the
+     * session's team, which is the row an "own marker" policy would have named.
+     */
     async markSessionUnread(sessionId) {
-      // Delete the caller's read marker so the session re-derives as unread.
-      // RLS scopes the delete to the current actor via the "write own markers"
-      // FOR ALL policy, so no explicit actor filter is needed here.
-      const { error } = await supabase
+      const { data: session, error: sessionErr } = await supabase
+        .from("sessions")
+        .select("id, team_id")
+        .eq("id", sessionId)
+        .maybeSingle();
+      if (sessionErr) throw sessionErr;
+      if (!session) throw new ApiError(404, "not_found", "session not found");
+      const callerActorId = await requireCallerTeamMemberActor(String(session.team_id));
+      const admin = await serviceRoleClient("clear a session read marker");
+      const { error } = await admin
         .from("session_read_markers")
         .delete()
-        .eq("session_id", sessionId);
+        .eq("session_id", sessionId)
+        .eq("actor_id", callerActorId);
       if (error) throw error;
     },
 
@@ -4191,7 +4262,8 @@ export function createSupabaseBusinessRepository(options) {
               workspaceByActor.get(input.primaryAgentActorId) ?? null,
             ),
           ],
-          { onConflict: "session_id,actor_id" },
+          // ON CONFLICT DO NOTHING - see createThread: no UPDATE policy here.
+          { onConflict: "session_id,actor_id", ignoreDuplicates: true },
         );
       if (partError) throw partError;
 
@@ -4212,7 +4284,7 @@ export function createSupabaseBusinessRepository(options) {
           .from("session_participants")
           .upsert(
             adminActorIds.map((actor_id) => ({ session_id: id, actor_id })),
-            { onConflict: "session_id,actor_id" },
+            { onConflict: "session_id,actor_id", ignoreDuplicates: true },
           );
         if (adminPartErr) throw adminPartErr;
       }
@@ -4513,16 +4585,17 @@ export function createSupabaseBusinessRepository(options) {
       };
     },
 
+    /**
+     * The agent's catch-up cursor for this session (ADR-0005).
+     *
+     * Written through `writeAgentSeat`: on the caller's token this matched no
+     * row and still answered 204, so the cursor never moved after the
+     * ADR-0005 backfill and a restarted daemon had nothing to resume from.
+     */
     async updateParticipantCursor(sessionId, actorId, { lastProcessedMessageId }) {
-      const { error } = await supabase
-        .from("session_participants")
-        .update({
-          last_processed_message_id: lastProcessedMessageId,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("session_id", sessionId)
-        .eq("actor_id", actorId);
-      if (error) throw error;
+      await writeAgentSeat(sessionId, actorId, {
+        last_processed_message_id: lastProcessedMessageId,
+      }, "advance a session participant's cursor");
     },
 
     /**
@@ -4531,15 +4604,12 @@ export function createSupabaseBusinessRepository(options) {
      * The column landed with the ADR-0005 migration alongside `workspace_id`
      * and the cursor, but only those two got writers: `model` was backfilled
      * from `agent_runtimes.current_model` and then never touched again, so
-     * every reader trusting the ADR got a frozen value. This is that writer.
+     * every reader trusting the ADR got a frozen value. This is that writer -
+     * and it only became one once it stopped writing on the caller's token
+     * (see `writeAgentSeat`).
      */
     async updateParticipantModel(sessionId, actorId, { model }) {
-      const { error } = await supabase
-        .from("session_participants")
-        .update({ model, updated_at: new Date().toISOString() })
-        .eq("session_id", sessionId)
-        .eq("actor_id", actorId);
-      if (error) throw error;
+      await writeAgentSeat(sessionId, actorId, { model }, "record a session participant's model");
     },
 
     /**
@@ -5077,7 +5147,7 @@ export function createSupabaseBusinessRepository(options) {
       teamId: string,
       appIds: string[],
     ): Promise<{ actorId: string | null; grants: Map<string, string | null> | null }> {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -5133,7 +5203,7 @@ export function createSupabaseBusinessRepository(options) {
       // (created_by_actor_id = amux.current_actor_id_for_team(team_id)) requires
       // it. A member or an agent: a daemon's agent creates apps for the agents
       // on its machine (`amuxd app create`), and that policy takes any actor.
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -6343,7 +6413,7 @@ export function createSupabaseBusinessRepository(options) {
      * itself; this only makes sure nothing irreversible happens first.
      */
     async isAppCreator(teamId: string, createdByActorId: string | null): Promise<boolean> {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -6387,7 +6457,7 @@ export function createSupabaseBusinessRepository(options) {
       team_id: string;
       created_by_actor_id: string | null;
     }): Promise<{ level: AppPermissionLevel; callerActorId: string; callerMemberId: string | null } | null> {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -6449,7 +6519,7 @@ export function createSupabaseBusinessRepository(options) {
         // button a dead end — while their own daemon, on the agent path below,
         // could already push to it. Same terms as `read`.
         if (visible.visibility === "team") {
-          const { data: userData, error: userErr } = await supabase.auth.getUser();
+          const { data: userData, error: userErr } = await getCurrentUser();
           if (userErr) throw userErr;
           const userId = userData?.user?.id;
           const member = userId
@@ -6657,7 +6727,7 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async getAppMembership(appId: string) {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -7529,11 +7599,19 @@ export function createSupabaseBusinessRepository(options) {
       let rows = data ?? [];
 
       // Lazy marketplace align (§7.1).
+      // A few at a time rather than one after another: each alignment is its
+      // own two-to-five queries against a different skill, and a team that
+      // subscribes to a dozen marketplace skills paid for them in series on
+      // every poll.
       let alignedAny = false;
-      for (const r of rows) {
-        if (r.upstream_subscribed && r.origin === "marketplace") {
-          if (await this._alignMarketplaceSkillRow(r)) alignedAny = true;
-        }
+      const subscribed = rows.filter((r) => r.upstream_subscribed && r.origin === "marketplace");
+      for (let i = 0; i < subscribed.length; i += MARKETPLACE_ALIGN_CONCURRENCY) {
+        const moved = await Promise.all(
+          subscribed
+            .slice(i, i + MARKETPLACE_ALIGN_CONCURRENCY)
+            .map((r) => this._alignMarketplaceSkillRow(r)),
+        );
+        if (moved.some(Boolean)) alignedAny = true;
       }
       // Re-read only when something moved, and keep the filters on the server.
       // This is the endpoint every daemon polls on a 10-minute tick: the old
@@ -8598,6 +8676,8 @@ function mapTeamEnvSecretRow(row: any) {
 // ─── Team skills helpers ─────────────────────────────────────────────────────
 
 const TEAM_SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
+// How many marketplace-subscribed skills `listTeamSkills` aligns at once.
+const MARKETPLACE_ALIGN_CONCURRENCY = 4;
 
 const TEAM_SKILL_CATEGORIES = [
   "general", "coding", "devops", "data",
