@@ -18,10 +18,10 @@ crate-type = ["rlib"]
 [features]
 default = []
 # Enables the WebKit/WebView2 inspector ("Inspect Element" + open_devtools) in
-# RELEASE builds. Off by default so stable/branded builds ship without devtools;
-# the beta pipeline (release-beta.yml) passes `--features beta-devtools` so we can
-# inspect the live beta app's console/network. Does not affect build profile or
-# cloud config.
+# RELEASE builds. Off by default, and no release pipeline passes it: beta and
+# branded builds ship without devtools. Build one by hand with
+# `--features beta-devtools` to inspect a release build's console/network. Does
+# not affect build profile or cloud config.
 beta-devtools = ["tauri/devtools"]
 
 [build-dependencies]
@@ -129,8 +129,11 @@ toml = "0.8"
 md5 = "0.7"
 rayon = "1.10"  # Parallel iterator for recursive skill search
 
-# MCP plugin for AI agent integration (debug only)
-tauri-plugin-mcp = { path = "tauri-plugin-mcp-local", features = ["devtools"] }
+# MCP plugin for AI agent integration (registered in debug builds only, see
+# lib.rs). Do NOT enable its `devtools` feature here: Cargo features are
+# additive, so that turned on `tauri/devtools` for every build, release
+# included. The plugin's manage_devtools tool keys on debug_assertions instead.
+tauri-plugin-mcp = { path = "tauri-plugin-mcp-local" }
 
 # Crypto (used by shared_secrets_crypto, device_token)
 aes-gcm = "0.10"
