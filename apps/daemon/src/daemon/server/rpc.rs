@@ -461,9 +461,9 @@ impl DaemonServer {
                             error: String::new(),
                             requester_client_id: String::new(),
                             requester_actor_id: String::new(),
-                            result: Some(
-                                crate::proto::teamclu::rpc_response::Result::SessionInfo(info),
-                            ),
+                            result: Some(crate::proto::teamclu::rpc_response::Result::SessionInfo(
+                                info,
+                            )),
                         };
                     }
                 }
@@ -1279,7 +1279,15 @@ impl DaemonServer {
         // looks up `agent_member_access.permission_level` via the cloud backend and
         // reduces that to a MemberRole. Legacy path: fall back to the
         // peer's MQTT-era role when the cloud backend lookup is unavailable.
-        let role = self.resolve_role(&sender_actor_id, &peer_id).await;
+        //
+        // Only start/stop are gated on the role. Resolving it for every
+        // command put a Cloud API round trip in front of cancels, prompts and
+        // permission replies, on the main loop, for an answer nobody read.
+        let role = if crate::collab::PermissionManager::command_is_role_gated(&cmd) {
+            self.resolve_role(&sender_actor_id, &peer_id).await
+        } else {
+            amux::MemberRole::Member
+        };
 
         if let Err(reason) = self.permissions.check_command_permission(role, &cmd) {
             warn!(

@@ -88,7 +88,8 @@ test("listSessions maps current actor session rpc rows", async () => {
     },
   }]);
   // The row grew after this test was written: source/cronJobId came with cron
-  // sessions, participantCount with the list redesign. A fixture that omits
+  // sessions, participantCount with the list redesign, hasMention with the
+  // mention badge (#1835). A fixture that omits
   // them exercises the defaults, which is the contract clients rely on.
   assert.deepEqual(rows, [{
     id: "session-1",
@@ -99,6 +100,7 @@ test("listSessions maps current actor session rpc rows", async () => {
     lastMessageAt: "2026-05-27T01:00:00Z",
     lastMessagePreview: "hello",
     hasUnread: true,
+    hasMention: false,
     source: "user",
     cronJobId: null,
     summary: null,

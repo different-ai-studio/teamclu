@@ -69,6 +69,16 @@ pub async fn handle(
         return Err("At least one of 'message' or 'file_path' is required.".to_string());
     }
 
+    // Only WeCom can carry a file on this path. The others used to take the
+    // text and drop the file without a word, so the agent reported an
+    // attachment as sent that never left the machine.
+    if file_path.is_some() && channel != "wecom" {
+        return Err(format!(
+            "Channel '{channel}' cannot send a file from this tool. Send the file \
+             through 'wecom' or with this chat's 'reply_token', or send text only."
+        ));
+    }
+
     if channel == "all" {
         send_broadcast(workspace, api_port, message, target).await
     } else {
@@ -95,7 +105,10 @@ async fn send_broadcast(
     let config = crate::config::read_teamclu_config(workspace)?;
     let channels_val = config.get("channels").cloned().unwrap_or(json!({}));
 
-    let channel_names = ["wecom", "discord", "feishu", "kook", "wechat", "seatalk"];
+    // SeaTalk is configurable but has no sender here; listing it only added
+    // an "Unknown channel" failure to every broadcast from a workspace that
+    // had it bound.
+    let channel_names = ["wecom", "discord", "feishu", "kook", "wechat"];
     let mut results = serde_json::Map::new();
     let mut sent_count = 0usize;
     let mut failed_count = 0usize;

@@ -12,15 +12,102 @@ pub struct EventHistory {
     dir: PathBuf,
     /// In-memory index: agent_id -> vec of (sequence, file_offset)
     index: HashMap<String, Vec<(u64, u64)>>,
+    /// Size at which one agent's file is trimmed to its newest half.
+    max_file_bytes: u64,
 }
+
+/// Ceiling on one agent's history file.
+///
+/// The file had none: every streamed event of every turn was appended for as
+/// long as the runtime id lived, and both readers load the whole file. What
+/// the history serves is recent — a turn detail, a client catching up after a
+/// reconnect — so the oldest half goes when the ceiling is reached.
+const MAX_HISTORY_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// A history file nobody has appended to for this long belongs to a runtime
+/// that is gone; nothing asks for its turns any more.
+const STALE_HISTORY_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
 impl EventHistory {
     pub fn new(dir: &Path) -> Self {
         std::fs::create_dir_all(dir).ok();
-        Self {
+        let store = Self {
             dir: dir.to_path_buf(),
             index: HashMap::new(),
+            max_file_bytes: MAX_HISTORY_FILE_BYTES,
+        };
+        store.remove_stale_files(std::time::SystemTime::now());
+        store
+    }
+
+    /// Delete history files last written more than [`STALE_HISTORY_AGE`] ago.
+    /// Runs once at start: files were never removed, so the directory held one
+    /// for every runtime this machine ever ran.
+    fn remove_stale_files(&self, now: std::time::SystemTime) {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let mut removed = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("bin") {
+                continue;
+            }
+            let stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age >= STALE_HISTORY_AGE);
+            if stale && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
         }
+        if removed > 0 {
+            tracing::info!(removed, "removed event history files of runtimes long gone");
+        }
+    }
+
+    /// Rewrite an agent's file keeping its newest entries, about half the
+    /// ceiling's worth. Returns the new file length.
+    fn trim_to_newest(&mut self, agent_id: &str) -> u64 {
+        let path = self.agent_path(agent_id);
+        let Ok(data) = std::fs::read(&path) else {
+            return 0;
+        };
+        // Entry boundaries, oldest first.
+        let mut bounds = Vec::new();
+        let mut pos = 0usize;
+        while pos + 4 <= data.len() {
+            let len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                as usize;
+            if pos + 4 + len > data.len() {
+                break;
+            }
+            bounds.push(pos);
+            pos += 4 + len;
+        }
+        let end = pos;
+        let keep_bytes = (self.max_file_bytes / 2) as usize;
+        // First boundary from which the remainder fits. Always drops at least
+        // one entry, or a single oversized one would be rewritten every append.
+        let cut = bounds
+            .iter()
+            .copied()
+            .skip(1)
+            .find(|start| end - start <= keep_bytes)
+            .unwrap_or(end);
+        let kept = &data[cut..end];
+        let tmp = path.with_extension("bin.tmp");
+        let written = std::fs::write(&tmp, kept).and_then(|()| std::fs::rename(&tmp, &path));
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            warn!("history trim failed for {}: {}", agent_id, e);
+            return data.len() as u64;
+        }
+        // Offsets all moved: rebuild from the file just written.
+        self.load_index(agent_id);
+        kept.len() as u64
     }
 
     fn agent_path(&self, agent_id: &str) -> PathBuf {
@@ -33,7 +120,10 @@ impl EventHistory {
     pub fn append(&mut self, agent_id: &str, envelope: &Envelope) {
         use std::io::Write;
         let path = self.agent_path(agent_id);
-        let offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let mut offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if offset >= self.max_file_bytes {
+            offset = self.trim_to_newest(agent_id);
+        }
         let bytes = envelope.encode_to_vec();
         let len = bytes.len() as u32;
 
@@ -217,6 +307,60 @@ mod tests {
         let mut store = EventHistory::new(tmp.path());
         store.append("agent", &env(1, "abc"));
         assert!(store.read_turn("agent", "").is_empty());
+    }
+
+    /// The file had no ceiling. At the ceiling the oldest entries go and the
+    /// newest stay readable, with offsets that still point at them.
+    #[test]
+    fn a_full_file_keeps_its_newest_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = EventHistory::new(tmp.path());
+        let entry_bytes = {
+            store.append("probe", &env(1, "t"));
+            std::fs::metadata(store.agent_path("probe")).unwrap().len()
+        };
+        // Room for ten entries; the eleventh append trims first.
+        store.max_file_bytes = entry_bytes * 10;
+        for seq in 1..=25 {
+            store.append("agent", &env(seq, "t"));
+        }
+        let size = std::fs::metadata(store.agent_path("agent")).unwrap().len();
+        assert!(size <= store.max_file_bytes, "{size}");
+
+        let seqs: Vec<u64> = store
+            .read_turn("agent", "t")
+            .iter()
+            .map(|e| e.sequence)
+            .collect();
+        assert_eq!(seqs.last(), Some(&25), "the newest entry survives");
+        assert!(seqs.len() >= 5 && seqs.len() <= 10, "{seqs:?}");
+        assert!(
+            seqs.windows(2).all(|w| w[1] == w[0] + 1),
+            "what is kept is one unbroken tail: {seqs:?}"
+        );
+        // Paging from the middle of what is left still lines up.
+        let (page, _) = store.read_page("agent", seqs[0], 2);
+        assert_eq!(
+            page.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            vec![seqs[1], seqs[2]]
+        );
+    }
+
+    #[test]
+    fn files_of_long_gone_runtimes_are_removed_at_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = EventHistory::new(tmp.path());
+        store.append("old", &env(1, "t"));
+        store.append("recent", &env(1, "t"));
+        let later = std::time::SystemTime::now() + STALE_HISTORY_AGE / 2;
+        store.remove_stale_files(later);
+        assert!(store.agent_path("old").exists(), "not stale yet");
+        let much_later = std::time::SystemTime::now() + STALE_HISTORY_AGE * 2;
+        std::fs::write(tmp.path().join("notes.txt"), "keep").unwrap();
+        store.remove_stale_files(much_later);
+        assert!(!store.agent_path("old").exists());
+        assert!(!store.agent_path("recent").exists());
+        assert!(tmp.path().join("notes.txt").exists(), "only history files");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 pub mod amuxd_client;
 pub mod delivery;
+pub mod expr;
 pub mod scheduler;
 pub mod storage;
 pub mod types;
@@ -124,9 +125,9 @@ async fn require_instance(
 
 /// Initialize the cron system for the calling window's workspace.
 ///
-/// Re-initializing the same workspace stops only that workspace's scheduler
-/// (so its job-list and delivery config can be reloaded). Other workspaces
-/// are untouched — the previous singleton design would have killed them.
+/// Idempotent per storage root: a second call for a workspace that is already
+/// running leaves its scheduler, and any job mid-run, alone. Other workspaces
+/// are never touched.
 #[tauri::command]
 pub async fn cron_init(
     app: AppHandle,
@@ -145,7 +146,23 @@ pub async fn cron_init(
     }
 
     let instance = cron_state.instance_for(&storage_path).await;
-    instance.scheduler.stop().await;
+
+    // Already running for this storage root: refresh what a new window can
+    // change and leave the scheduler alone. The frontend calls this every time
+    // the daemon connection comes back, which a workspace switch causes;
+    // restarting here bumped the generation, so a job mid-turn was recorded as
+    // "Aborted due to workspace change" and its delivery skipped even though
+    // the turn went on to succeed. `reconcile_interrupted_runs` would also mark
+    // this process's own live runs stale.
+    if instance.storage.is_initialized().await {
+        instance
+            .scheduler
+            .set_execution_workspace(execution_workspace)
+            .await;
+        instance.scheduler.set_app_handle(app);
+        log::info!("[Cron] Already initialized (scope={scope:?}, storage={storage_path})");
+        return Ok(());
+    }
 
     instance.storage.init(&storage_path).await;
     instance
@@ -204,7 +221,7 @@ pub async fn cron_add_job(
     )
     .await?;
 
-    let job = create_job_on_instance(&instance, request).await;
+    let job = create_job_on_instance(&instance, request).await?;
     log::info!("[Cron] Job created: {} ({})", job.name, job.id);
     Ok(job)
 }
@@ -212,7 +229,8 @@ pub async fn cron_add_job(
 pub(crate) async fn create_job_on_instance(
     instance: &CronInstance,
     request: CreateCronJobRequest,
-) -> CronJob {
+) -> Result<CronJob, String> {
+    expr::validate_schedule(&request.schedule)?;
     let now = chrono::Utc::now();
     let mut job = CronJob {
         id: uuid::Uuid::new_v4().to_string(),
@@ -232,7 +250,7 @@ pub(crate) async fn create_job_on_instance(
     job.next_run_at = instance.scheduler.compute_next_run(&job, None);
     instance.storage.add_job(job.clone()).await;
     instance.scheduler.emit_jobs_updated();
-    job
+    Ok(job)
 }
 
 /// MCP / HTTP entry: mutate the same CronState the settings UI lists.
@@ -264,7 +282,7 @@ pub(crate) async fn mcp_manage(
             if let Some(delivery) = request.delivery.as_mut() {
                 pin_announce_delivery_target(delivery).await?;
             }
-            let job = create_job_on_instance(&instance, request).await;
+            let job = create_job_on_instance(&instance, request).await?;
             log::info!("[Cron] MCP job created: {} ({})", job.name, job.id);
             let job = serde_json::to_value(job).map_err(|e| e.to_string())?;
             Ok(serde_json::json!({
@@ -511,6 +529,7 @@ pub async fn cron_update_job(
         job.enabled = enabled;
     }
     if let Some(schedule) = request.schedule {
+        expr::validate_schedule(&schedule)?;
         job.schedule = schedule;
         job.next_run_at = instance.scheduler.compute_next_run(&job, None);
     }
@@ -717,7 +736,9 @@ mod mcp_create_tests {
         let instance = state.instance_for(path).await;
         instance.storage.init(path).await;
 
-        let created = create_job_on_instance(&instance, sample_request()).await;
+        let created = create_job_on_instance(&instance, sample_request())
+            .await
+            .unwrap();
         let listed = state
             .try_instance_for(path)
             .await

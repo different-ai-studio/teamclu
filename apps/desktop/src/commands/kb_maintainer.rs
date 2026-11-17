@@ -1181,11 +1181,21 @@ pub async fn kb_maintainer_cancel(
     };
     let root = work_root(&run.team_id)?;
     let _ = fs::write(root.join("state/cancel-requested"), b"1");
-    stop_compiler(&root.join("state/compiler.pid"));
-    rollback_unfinished_wiki(&root.join("wiki"))?;
+    // `kill` and the two git commands block; keep them off the async runtime.
+    let rollback = tokio::task::spawn_blocking(move || {
+        stop_compiler(&root.join("state/compiler.pid"));
+        rollback_unfinished_wiki(&root.join("wiki"))
+    })
+    .await
+    .map_err(|error| format!("Cancelling the Wiki run did not finish: {error}"))
+    .and_then(|result| result);
+    // Release the run lock whether or not the rollback worked. The in-memory
+    // run is already gone, and the lock file names this process — which is
+    // alive — so a lock left behind here made every later run report "already
+    // active" until the app was restarted.
     let _ = fs::remove_file(run.lock_path);
     let _ = fs::remove_file(run.input_path);
-    Ok(())
+    rollback
 }
 
 fn stop_compiler(pid_path: &Path) {

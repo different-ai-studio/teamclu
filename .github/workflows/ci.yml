@@ -28,10 +28,17 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6.1.1
 
+      # Ask pnpm where its store is instead of guessing: the path moved with
+      # pnpm 11 (…/store/v11 under the setup-pnpm dir), and the hard-coded v3
+      # path made every run log "Cache not found" and then save nothing.
+      - name: Locate pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
       - name: Cache pnpm store
         uses: actions/cache@v6
         with:
-          path: ~/.local/share/pnpm/store/v3
+          path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: pnpm-store-${{ runner.os }}-
 
@@ -79,12 +86,11 @@ jobs:
       - name: Run script tests
         run: pnpm test:scripts
 
-      # Smoke/E2E use tauri-mcp and require a built Tauri app (pnpm tauri:build),
-      # which this job does not build — so this stays advisory and never gates.
-      # Run locally or in a job that builds the app to execute smoke/e2e.
-      - name: Run smoke tests
-        run: pnpm test:smoke
-        continue-on-error: true
+      # Smoke/E2E (pnpm test:smoke) use tauri-mcp and need a built Tauri app,
+      # which this job does not build. The step that used to run them here
+      # failed on every run ("TeamClu binary not found") behind
+      # continue-on-error, so it told nobody anything; run them locally or in
+      # a job that builds the app.
 
   rust-check:
     name: Rust Format & Clippy
@@ -284,6 +290,34 @@ jobs:
         env:
           DATABASE_URL: postgres://ai_gateway:ci@${{ env.PGHOST_IP }}:5432/postgres
           ADMIN_DATABASE_URL: postgres://supabase_admin:postgres@${{ env.PGHOST_IP }}:5432/postgres
+        run: |
+          npm ci
+          npm run typecheck   # tsconfig.test.json — covers test/ too
+          npm run build       # tsconfig.json — what the image actually compiles
+          npm test
+
+  # services/fc sits outside the pnpm workspace, so `pnpm test:unit` never
+  # reaches it, and until this job its ~105 test files ran in no workflow: two
+  # of them sat red on main for weeks. The env-parity guard CLAUDE.md calls
+  # "enforced" also only ran after merge, inside the Belayo deploy.
+  #
+  # Node 22, not the image's Node 20: `npm test` passes a quoted glob to
+  # `node --test`, which only expands it from Node 21 on. The tests that need
+  # a local Supabase skip themselves when it is not reachable.
+  cloud-api:
+    name: Cloud API (typecheck, build, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/fc/package-lock.json
+
+      - name: Cloud API — typecheck, build, tests
+        working-directory: services/fc
         run: |
           npm ci
           npm run typecheck   # tsconfig.test.json — covers test/ too

@@ -61,7 +61,7 @@ pub fn write_config(path: &Path, root: &Value) -> anyhow::Result<()> {
     let content = toml::to_string_pretty(root)?;
     toml::from_str::<crate::config::DaemonConfig>(&content)
         .map_err(|e| anyhow::anyhow!("validate {}: {e}", path.display()))?;
-    std::fs::write(path, content)?;
+    super::atomic_file::write(path, &content)?;
     Ok(())
 }
 

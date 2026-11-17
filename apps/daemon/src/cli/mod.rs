@@ -31,6 +31,9 @@ pub struct Cli {
 pub enum Commands {
     /// Start the daemon (writes ~/.amuxd/amuxd.pid while running).
     Start {
+        /// Accepted and ignored: `start` always runs in the foreground and
+        /// leaves backgrounding to whatever launched it (the desktop app, a
+        /// service manager, `nohup`). Kept so older scripts still parse.
         #[arg(short, long)]
         daemonize: bool,
         #[arg(long)]
@@ -161,9 +164,10 @@ pub struct TeamArgs {
 pub enum TeamAction {
     /// Provision the secrets a headless daemon cannot obtain on its own.
     ///
-    /// `--team-secret` decrypts the team's shared env vars (`_secrets/`) and
-    /// encrypts OSS blobs. It is user-held and has no server-side copy, so a
-    /// headless install can only be handed one here.
+    /// `--team-secret` seals this machine's copy of the team's secrets and
+    /// decrypts team files uploaded before sync switched to plaintext
+    /// (ADR-0008). Sync itself does not need it. It is user-held and has no
+    /// server-side copy, so a headless install can only be handed one here.
     Secrets(TeamSecretsArgs),
 }
 
@@ -176,14 +180,13 @@ pub struct TeamSecretsArgs {
 #[derive(Subcommand, Debug)]
 pub enum TeamSecretsAction {
     /// Set one or more secrets. Omitted fields keep their stored value.
-    /// Restart the daemon afterwards: the sync timer snapshots its workspace
-    /// list at startup.
+    /// Restart the daemon afterwards so it picks the new value up.
     Set {
         /// Team to write. Defaults to `team_id` from daemon.toml.
         #[arg(long)]
         team_id: Option<String>,
-        /// Team secret, 64 hex chars. Decrypts the team's shared env vars and
-        /// encrypts the blobs OSS sync uploads.
+        /// Team secret, 64 hex chars. Seals the local secrets file and
+        /// decrypts team files uploaded before sync switched to plaintext.
         #[arg(long, alias = "oss-secret")]
         team_secret: Option<String>,
     },

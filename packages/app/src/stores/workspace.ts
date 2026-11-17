@@ -534,7 +534,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       useTeamModeStore.setState({
         teamModelConfig: null,
         _appliedConfigKey: null,
-        teamGitSyncing: false,
       });
       // Load team config immediately so sidebar shows team tag on startup
       useTeamModeStore.getState().loadTeamConfig(expandedPath).catch(() => {});
@@ -598,12 +597,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     } catch {
       /* ignore storage errors */
     }
-    if (isTauri()) {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("clear_last_workspace");
-      } catch { /* ignore */ }
-    }
 
     // Reset team mode state
     try {
@@ -613,7 +606,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       useTeamModeStore.setState({
         teamModelConfig: null,
         _appliedConfigKey: null,
-        teamGitSyncing: false,
       });
     } catch { /* ignore */ }
 

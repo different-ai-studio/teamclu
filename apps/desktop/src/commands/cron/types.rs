@@ -285,9 +285,48 @@ pub struct UpdateCronJobRequest {
     pub schedule: Option<CronSchedule>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<CronPayload>,
-    /// Use Some(None) to clear delivery, Some(Some(...)) to set, None to leave unchanged
-    #[serde(default)]
+    /// Absent leaves delivery unchanged, `null` clears it, an object sets it.
+    /// The custom deserializer is what tells the first two apart: plain serde
+    /// reads `null` as the outer `None`, so turning delivery off in the dialog
+    /// (which sends `null`) used to be silently ignored.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub delivery: Option<Option<CronDelivery>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delete_after_run: Option<bool>,
+}
+
+/// Deserialize a field that is present, keeping `null` as `Some(None)`.
+/// Pair with `#[serde(default)]` so an absent field stays `None`.
+fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+#[cfg(test)]
+mod update_request_tests {
+    use super::*;
+
+    fn parse(json: &str) -> UpdateCronJobRequest {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn absent_delivery_leaves_it_unchanged() {
+        assert!(parse(r#"{"id":"j1"}"#).delivery.is_none());
+    }
+
+    #[test]
+    fn null_delivery_clears_it() {
+        assert!(matches!(
+            parse(r#"{"id":"j1","delivery":null}"#).delivery,
+            Some(None)
+        ));
+    }
 }
