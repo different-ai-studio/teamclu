@@ -798,6 +798,40 @@ async fn handle_request(
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// How often a call that is still running tells the client so.
+///
+/// The MCP client in pi gives up on a request after 60 s of silence, and some
+/// calls here legitimately take minutes — a deploy builds, uploads and
+/// finalizes. Progress notifications reset that clock (the client asks for them
+/// by sending a `progressToken`), so a call stays alive exactly as long as it is
+/// actually running, with no fixed cap that a slow build could outgrow.
+const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The request's `params._meta.progressToken`, when the client sent one.
+fn progress_token(req: &Value) -> Option<Value> {
+    req.get("params")?
+        .get("_meta")?
+        .get("progressToken")
+        .filter(|token| token.is_string() || token.is_number())
+        .cloned()
+}
+
+/// `notifications/progress` for one heartbeat. MCP requires `progress` to grow
+/// with every notification for a token; there is no total, the work has none.
+fn progress_notification(token: &Value, progress: u64) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": { "progressToken": token, "progress": progress }
+    })
+}
+
+fn write_line(stdout: &std::sync::Mutex<std::io::Stdout>, message: &Value) {
+    let mut out = stdout.lock().unwrap();
+    let _ = writeln!(out, "{}", message);
+    let _ = out.flush();
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -861,10 +895,27 @@ async fn main() {
         let workspace = workspace.clone();
         let sock = sock.clone();
         requests.spawn(async move {
-            if let Some(response) = handle_request(&req, &workspace, api_port, &sock).await {
-                let mut out = stdout.lock().unwrap();
-                let _ = writeln!(out, "{}", response);
-                let _ = out.flush();
+            let work = handle_request(&req, &workspace, api_port, &sock);
+            let response = match progress_token(&req) {
+                None => work.await,
+                Some(token) => {
+                    tokio::pin!(work);
+                    let start = tokio::time::Instant::now() + PROGRESS_INTERVAL;
+                    let mut tick = tokio::time::interval_at(start, PROGRESS_INTERVAL);
+                    let mut beats = 0u64;
+                    loop {
+                        tokio::select! {
+                            response = &mut work => break response,
+                            _ = tick.tick() => {
+                                beats += 1;
+                                write_line(&stdout, &progress_notification(&token, beats));
+                            }
+                        }
+                    }
+                }
+            };
+            if let Some(response) = response {
+                write_line(&stdout, &response);
             }
         });
     }
@@ -880,6 +931,28 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_token_is_read_from_request_meta() {
+        let req =
+            json!({"id":1,"method":"tools/call","params":{"_meta":{"progressToken":7},"name":"x"}});
+        assert_eq!(progress_token(&req), Some(json!(7)));
+        let req = json!({"id":1,"method":"tools/call","params":{"_meta":{"progressToken":"t"}}});
+        assert_eq!(progress_token(&req), Some(json!("t")));
+        let req = json!({"id":1,"method":"tools/call","params":{"name":"x"}});
+        assert_eq!(progress_token(&req), None);
+        let req = json!({"id":1,"method":"tools/call","params":{"_meta":{"progressToken":null}}});
+        assert_eq!(progress_token(&req), None);
+    }
+
+    #[test]
+    fn progress_notification_carries_the_token_and_count() {
+        let n = progress_notification(&json!("t"), 3);
+        assert_eq!(n["method"], "notifications/progress");
+        assert_eq!(n["params"]["progressToken"], "t");
+        assert_eq!(n["params"]["progress"], 3);
+        assert!(n.get("id").is_none());
+    }
 
     #[test]
     fn tool_names_are_unique() {

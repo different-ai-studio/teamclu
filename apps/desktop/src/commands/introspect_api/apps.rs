@@ -681,7 +681,7 @@ pub(super) async fn handle_app_manage(
                 // The approval dialog asks; nothing is switched unasked.
                 use_app_code_domain: false,
             };
-            ops.deploy(&row, args).await?
+            deploy_to_completion(app, &api, row.clone(), args).await?
         }
         "logs" => ops.logs(&row, &logs_args(&v)).await?,
         "delete" => ops.delete(&row).await?,
@@ -689,6 +689,36 @@ pub(super) async fn handle_app_manage(
         other => return Err(format!("Unknown action: {other}")),
     };
     Ok(out.to_string())
+}
+
+/// Run a deploy on its own task and wait for it.
+///
+/// A deploy takes minutes (build, upload, finalize), and the request that asked
+/// for it is not guaranteed to stay open that long: the sidecar exits with its
+/// pi host, and the MCP client gives up on a quiet call. axum drops a handler
+/// whose connection closed, and with it whatever leg of the deploy was running.
+/// Dropped after the build, that left the app at `awaiting_build` with nothing
+/// either finalizing it or reporting the failure — every later deploy refused
+/// for 30 minutes. On 2026-11-17 a build that succeeded sat there for two hours.
+///
+/// Spawned, the deploy finishes either way: it finalizes, or `AppOps::deploy`
+/// writes the failure back. The caller, if still there, gets the outcome.
+async fn deploy_to_completion(
+    app: &AppHandle,
+    api: &AppApi,
+    row: Value,
+    args: teamclu_apps::DeployArgs,
+) -> Result<Value, String> {
+    let app = app.clone();
+    let api = AppApi {
+        fc: FcClient::new(api.fc.base_url.clone(), api.fc.jwt.clone()),
+    };
+    tauri::async_runtime::spawn(async move {
+        let host = DesktopHost::new(&app, &api);
+        app_ops(&api, &host).deploy(&row, args).await
+    })
+    .await
+    .map_err(|e| format!("The deploy task stopped unexpectedly: {e}"))?
 }
 
 /// Fast recovery read after an ambiguous MCP timeout: no daemon build or
