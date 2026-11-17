@@ -942,6 +942,7 @@ jobs:
     needs: build-windows
     if: needs.build-windows.outputs.installer_url != ''
     uses: ./.github/workflows/windows-install-smoke.yml
+    secrets: inherit
     with:
       installer_url: ${{ needs.build-windows.outputs.installer_url }}
 

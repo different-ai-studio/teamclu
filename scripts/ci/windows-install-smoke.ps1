@@ -16,8 +16,13 @@
 #      software on the image may keep its own copy in System32); the static
 #      check is the gate.
 #
+# Then, when a test account is configured, windows-agent-smoke.ps1 drives the
+# installed daemon through one real agent turn (login, onboard, pi install,
+# reply).
+#
 # Not covered: WebView2 stays installed (it cannot be removed cleanly from the
-# image), and nothing logs in or sends a message — that needs credentials.
+# image), and the desktop UI itself is never logged in — the released build has
+# no automation bridge and email OTP cannot be scripted.
 #
 # Usage: windows-install-smoke.ps1 -Installer <path to *-setup.exe> -OutDir <dir>
 
@@ -162,7 +167,18 @@ if ($app.HasExited) {
 & taskkill /F /T /IM teamclu-introspect.exe 2>$null | Out-Null
 Start-Sleep -Seconds 2
 
-# --- 6. Silent uninstall removes the sidecars -------------------------------
+# --- 6. One real agent turn through the installed daemon --------------------
+# Needs a test account; skipped (with a warning) when the secrets are absent,
+# e.g. on a fork. Runs after the VC++ runtime was removed, so the daemon is
+# exercised the way a clean machine would run it.
+if ($env:SMOKE_EMAIL -and $env:SMOKE_PASSWORD) {
+  & (Join-Path $PSScriptRoot 'windows-agent-smoke.ps1') -Amuxd $amuxd.FullName -OutDir (Join-Path $OutDir 'agent')
+  if ($LASTEXITCODE -ne 0) { Fail 'Agent turn through the installed daemon failed (see the step log above)' }
+} else {
+  Write-Host '::warning::SMOKE_EMAIL / SMOKE_PASSWORD not set; skipping the login + message check.'
+}
+
+# --- 7. Silent uninstall removes the sidecars -------------------------------
 # The NSIS uninstaller re-launches itself from %TEMP% and returns at once, so
 # poll for the result instead of trusting -Wait.
 $uninst = Join-Path $installDir 'uninstall.exe'

@@ -4,8 +4,15 @@ name: Windows install smoke
 # checks it would start on a machine with nothing else installed: no binary
 # imports the VC++ runtime (the installer does not ship it — #1905), the
 # sidecars run, the desktop app stays up with a webview, and a silent uninstall
-# removes the sidecars. See scripts/ci/windows-install-smoke.ps1 for what is and
-# is not covered.
+# removes the sidecars. With a test account configured it then drives the
+# installed daemon through one real agent turn against the self-host test
+# environment (scripts/ci/windows-agent-smoke.ps1): password login, agent
+# invite, `amuxd init`, pi install, a mention, a reply.
+#
+# Secrets (both optional — without them the agent turn is skipped with a
+# warning):
+#   WINDOWS_SMOKE_EMAIL / WINDOWS_SMOKE_PASSWORD   self-host test account with
+#                                                  password login enabled
 #
 # Runs after every OSS release (release-oss.yml calls it with the installer it
 # just uploaded) and on demand. Manual runs default to the current TeamClu Beta.
@@ -29,7 +36,9 @@ permissions:
 jobs:
   smoke:
     runs-on: windows-latest
-    timeout-minutes: 20
+    # Install + checks take ~3 min; the managed Node/pi install and the agent
+    # turn (up to 5 min of waiting) are the rest.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
         with:
@@ -52,6 +61,10 @@ jobs:
 
       - name: Install and check
         shell: pwsh
+        env:
+          SMOKE_EMAIL: ${{ secrets.WINDOWS_SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.WINDOWS_SMOKE_PASSWORD }}
+          SMOKE_CLOUD_API_URL: https://api.teamclu-dev.ucar.cc
         run: ./scripts/ci/windows-install-smoke.ps1 -Installer "$env:RUNNER_TEMP\setup.exe" -OutDir "$env:RUNNER_TEMP\smoke"
 
       - name: Upload screenshot and logs
