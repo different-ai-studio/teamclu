@@ -319,6 +319,14 @@ export function registerApps(
     return { body: out };
   });
 
+  router.post("/v1/apps/:appId/data/tables/:table/rows", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const table = decodeURIComponent(ctx.params.table);
+    const out = await ctx.repository.insertAppDataRow(appId, table, ctx.json ?? {});
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { statusCode: 201, body: out };
+  });
+
   router.patch("/v1/apps/:appId/data/tables/:table/rows/:rowKey", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const table = decodeURIComponent(ctx.params.table);

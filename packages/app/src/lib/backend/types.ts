@@ -1733,6 +1733,13 @@ export interface AppsBackend {
     rowKey: string,
     patch: Record<string, unknown>,
   ): Promise<Record<string, unknown>>;
+  /** Insert one row; columns left out take their default. Returns the row
+   *  **re-read after the write**, generated key included. */
+  insertAppDataRow(
+    appId: string,
+    table: string,
+    values: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
   /** Delete one row by key. */
   deleteAppDataRow(appId: string, table: string, rowKey: string): Promise<void>;
 

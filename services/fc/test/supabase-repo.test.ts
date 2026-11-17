@@ -5158,6 +5158,7 @@ function fakeAppData(over: Record<string, unknown> = {}) {
   return {
     listTables: async () => [{ name: "items", columns: [], primaryKey: ["id"], editable: true }],
     readRows: async () => ({ table: "items", columns: [], primaryKey: ["id"], editable: true, rows: [], nextCursor: null }),
+    insertRow: async () => ({ id: 2, title: "inserted" }),
     updateRow: async () => ({ id: 1, title: "stored" }),
     deleteRow: async () => {},
     ...over,
@@ -5186,7 +5187,32 @@ test("app data: the creator (admin) can read and write", async () => {
   assert.deepEqual(await repo.updateAppDataRow("app-1", "items", "WzFd", { patch: { title: "x" } }), {
     row: { id: 1, title: "stored" },
   });
+  assert.deepEqual(await repo.insertAppDataRow("app-1", "items", { values: { title: "x" } }), {
+    row: { id: 2, title: "inserted" },
+  });
   assert.deepEqual(await repo.deleteAppDataRow("app-1", "items", "WzFd"), { ok: true });
+});
+
+test("app data: insert needs values as an object", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP);
+  await assert.rejects(
+    () => repo.insertAppDataRow("app-1", "items", { values: [1, 2] }),
+    (e: any) => e?.statusCode === 400 && e?.code === "validation_failed",
+  );
+});
+
+test("app data: a constraint violation is the caller's 4xx, named by SQLSTATE only", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({
+      insertRow: async () => {
+        throw Object.assign(new Error("duplicate key value violates unique constraint (secret value)"), { code: "23505" });
+      },
+    }),
+  });
+  await assert.rejects(
+    () => repo.insertAppDataRow("app-1", "items", { values: { id: 1 } }),
+    (e: any) => e?.statusCode === 409 && e?.code === "duplicate_key" && !/secret/.test(e?.message ?? ""),
+  );
 });
 
 test("app data: prompt reads, but PATCH and DELETE are 403", async () => {
@@ -5202,6 +5228,10 @@ test("app data: prompt reads, but PATCH and DELETE are 403", async () => {
     () => repo.deleteAppDataRow("app-1", "items", "WzFd"),
     (e: any) => e?.statusCode === 403,
   );
+  await assert.rejects(
+    () => repo.insertAppDataRow("app-1", "items", { values: { title: "x" } }),
+    (e: any) => e?.statusCode === 403,
+  );
 });
 
 test("app data: view tier cannot see the feature at all", async () => {
@@ -5209,6 +5239,7 @@ test("app data: view tier cannot see the feature at all", async () => {
   assert.equal(await repo.listAppDataTables("app-1"), null);
   assert.equal(await repo.readAppDataRows("app-1", "items", {}), null);
   assert.equal(await repo.updateAppDataRow("app-1", "items", "WzFd", { patch: { t: 1 } }), null);
+  assert.equal(await repo.insertAppDataRow("app-1", "items", { values: { t: 1 } }), null);
 });
 
 test("app data: a non-member gets nothing", async () => {
@@ -5537,7 +5568,9 @@ test("app data: a driver error never carries the SQL or the row values out", asy
     appData: fakeAppData({
       readRows: async () => {
         throw Object.assign(new Error('duplicate key value violates unique constraint'), {
-          code: "23505",
+          // Not one of the constraint codes mapped to a 4xx: this exercises the
+          // generic path, where only the SQLSTATE may come through.
+          code: "XX000",
           query: "select * from app_x.customers where email = $1",
           parameters: ["ceo@example.com"],
           detail: "Key (email)=(ceo@example.com) already exists.",

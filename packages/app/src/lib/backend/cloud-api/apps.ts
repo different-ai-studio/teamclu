@@ -298,6 +298,14 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
       return out.row;
     },
 
+    async insertAppDataRow(appId, table, values) {
+      const out = await client.post<{ row: Record<string, unknown> }>(
+        `/v1/apps/${encodeURIComponent(appId)}/data/tables/${encodeURIComponent(table)}/rows`,
+        { values },
+      );
+      return out.row;
+    },
+
     async deleteAppDataRow(appId, table, rowKey) {
       await client.delete<{ ok: true }>(
         `/v1/apps/${encodeURIComponent(appId)}/data/tables/${encodeURIComponent(table)}/rows/${encodeURIComponent(rowKey)}`,
