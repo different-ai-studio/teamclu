@@ -27,6 +27,8 @@ const EXCLUDED_FILES: &[&str] = &[".DS_Store"];
 const TEMPLATES: &[&str] = &["static-web", "slides", "tanstack-postgres"];
 
 fn main() {
+    // Static VC runtime on MSVC; see the build-dependency comment in Cargo.toml.
+    static_vcruntime::metabuild();
     bake_update_channel();
 
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
