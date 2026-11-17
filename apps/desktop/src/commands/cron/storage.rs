@@ -37,6 +37,11 @@ impl Clone for CronStorage {
     }
 }
 
+/// How many run records a job's history file keeps. The history view shows
+/// 50 and the MCP tool 10; before this cap a job that ran every few minutes
+/// grew its file without bound.
+const MAX_RUN_RECORDS_PER_JOB: usize = 200;
+
 impl CronStorage {
     pub fn new() -> Self {
         Self {
@@ -384,6 +389,12 @@ impl CronStorage {
                     }
 
                     if found {
+                        // The file is rewritten on every heartbeat of a run, so
+                        // its size is what each of those rewrites costs. Nothing
+                        // reads further back than the newest few records.
+                        if lines.len() > MAX_RUN_RECORDS_PER_JOB {
+                            lines.drain(..lines.len() - MAX_RUN_RECORDS_PER_JOB);
+                        }
                         let new_content = lines.join("\n") + "\n";
                         if let Err(e) = std::fs::write(&run_file, new_content) {
                             log::error!("[Cron] Failed to update run file: {}", e);
@@ -523,6 +534,32 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].status, RunStatus::Success);
         assert_eq!(runs[0].finished_at, Some(finished_at));
+    }
+
+    #[tokio::test]
+    async fn run_history_is_capped_when_a_run_is_updated() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let storage = CronStorage::new();
+        storage.init(tempdir.path().to_str().unwrap()).await;
+
+        let total = MAX_RUN_RECORDS_PER_JOB + 25;
+        for i in 0..total {
+            storage
+                .append_run(&make_run(&format!("run-{i}"), RunStatus::Success))
+                .await;
+        }
+        let last = format!("run-{}", total - 1);
+        storage
+            .update_last_run(&make_run(&last, RunStatus::Failed))
+            .await;
+
+        let runs = storage.get_runs("job-1", None).await;
+        assert_eq!(runs.len(), MAX_RUN_RECORDS_PER_JOB);
+        // The newest record survived, with its update applied; the oldest went.
+        assert!(runs
+            .iter()
+            .any(|r| r.run_id == last && r.status == RunStatus::Failed));
+        assert!(!runs.iter().any(|r| r.run_id == "run-0"));
     }
 
     fn make_job(id: &str) -> CronJob {

@@ -14,15 +14,18 @@
 /// Normalise an archive entry name, or reject it.
 ///
 /// Returns `None` for anything that must not be written: directory entries,
-/// absolute paths, parent-directory traversal, and backslashes (which some
+/// absolute paths, parent-directory traversal, backslashes (which some
 /// archivers emit as separators and which would otherwise slip past a `/`-only
-/// check on Windows).
+/// check on Windows), and colons. A colon is how a Windows name carries a
+/// drive (`C:/x/evil.cmd`) — and `target.join("C:/x")` *replaces* the target
+/// rather than extending it — or an NTFS alternate data stream. No file name
+/// that is valid on every platform a skill ships to contains one.
 pub fn sanitize_zip_path(raw: &str) -> Option<String> {
     let normalized = raw.trim_start_matches("./").trim_start_matches('/');
     if normalized.is_empty() || normalized.ends_with('/') {
         return None;
     }
-    if normalized.contains("..") || normalized.contains('\\') {
+    if normalized.contains("..") || normalized.contains('\\') || normalized.contains(':') {
         return None;
     }
     Some(normalized.to_string())
@@ -115,6 +118,10 @@ mod tests {
         assert_eq!(sanitize_zip_path("a/../../b"), None);
         // Backslash separators would survive a `/`-only traversal check.
         assert_eq!(sanitize_zip_path("a\\..\\b"), None);
+        // A drive prefix makes `join` discard the target directory on Windows.
+        assert_eq!(sanitize_zip_path("C:/Users/x/evil.cmd"), None);
+        assert_eq!(sanitize_zip_path("/C:/Users/x/evil.cmd"), None);
+        assert_eq!(sanitize_zip_path("SKILL.md:stream"), None);
         assert_eq!(sanitize_zip_path("scripts/"), None);
         assert_eq!(sanitize_zip_path(""), None);
         assert_eq!(sanitize_zip_path("/"), None);

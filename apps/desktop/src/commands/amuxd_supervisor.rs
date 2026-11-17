@@ -645,6 +645,15 @@ async fn wait_reap_child_async(child: &mut tokio::process::Child, grace: Duratio
 fn stop_with_child_fallback(inner: &mut SupervisorInner, grace: Duration) {
     if let Some(mut child) = inner.child.take() {
         signal_child_stop(&child);
+        // No signal to send on Windows, so `signal_child_stop` is a no-op
+        // there and the wait below used to run out its whole grace period
+        // before hard-killing a daemon nobody had asked to stop. `amuxd stop`
+        // is the graceful request on that platform (a shutdown command over
+        // the control pipe); issue it before waiting, not after.
+        #[cfg(not(unix))]
+        if let Err(e) = run_bundled_once(&["stop"]) {
+            log::warn!("[amuxd-supervisor] amuxd stop (graceful): {e}");
+        }
         if !wait_reap_child(&mut child, grace) {
             log::warn!("[amuxd-supervisor] warning: amuxd child did not reap after kill");
         }
@@ -663,6 +672,11 @@ fn stop_with_child_fallback(inner: &mut SupervisorInner, grace: Duration) {
 async fn stop_with_child_fallback_async(inner: &mut SupervisorInner, grace: Duration) {
     if let Some(mut child) = inner.child.take() {
         signal_child_stop(&child);
+        // See `stop_with_child_fallback`: on Windows this is the stop request.
+        #[cfg(not(unix))]
+        if let Err(e) = run_bundled_once_async(&["stop"]).await {
+            log::warn!("[amuxd-supervisor] amuxd stop (graceful): {e}");
+        }
         if !wait_reap_child_async(&mut child, grace).await {
             log::warn!("[amuxd-supervisor] warning: amuxd child did not reap after kill");
         }
