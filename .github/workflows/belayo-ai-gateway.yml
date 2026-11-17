@@ -42,6 +42,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Since 2026-11-11 the Dokploy manager takes SSH only from the company
+      # VPN (headscale); BELAYO_DOKPLOY_HOST holds its private address, and the
+      # public one times out on port 22. Same step as belayo-cloud-api.yml.
+      # No --accept-routes in `args`: v4 always passes it itself.
+      - name: Join company VPN
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.BELAYO_CI_TS_AUTHKEY }}
+          args: --login-server=https://hs.mx5.cn
+          hostname: gha-teamclu-ai-gateway-${{ github.run_id }}
+
       - name: Start ssh-agent
         run: |
           eval "$(ssh-agent -s)"
