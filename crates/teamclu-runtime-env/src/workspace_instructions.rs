@@ -9,19 +9,21 @@
 
 use std::path::Path;
 
-use crate::storage_namespace::WORKSPACE_CONFIG_FILE as CONFIG_FILE_NAME;
-use crate::WORKSPACE_META_DIR as TEAMCLU_DIR;
+use crate::storage_namespace::{
+    resolve_workspace_config_path_from_env, workspace_meta_write_path_from_env,
+};
 
-fn ensure_teamclu_dir(workspace_path: &str) -> Result<(), String> {
-    let dir = format!("{workspace_path}/{TEAMCLU_DIR}");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create {TEAMCLU_DIR} directory: {e}"))
-}
+// Every path here goes through the brand-aware helpers. They used to be
+// spelled `.teamclu/teamclu.json` outright, which is right for the official
+// build only: a white-label desktop keeps the workspace config in `.{brand}/`,
+// so its system prompt was read from a file that did not exist and the
+// instructions were written beside, not into, the directory everything else
+// uses (`skill_creation_policy` already resolved it this way).
 
 /// The workspace config as raw JSON. Deliberately untyped: this module only
 /// wants `systemPrompt`, and typing it would drag the channel config along.
 fn read_config_json(workspace_path: &str) -> Option<serde_json::Value> {
-    let path = format!("{workspace_path}/{TEAMCLU_DIR}/{CONFIG_FILE_NAME}");
+    let path = resolve_workspace_config_path_from_env(Path::new(workspace_path));
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
@@ -30,7 +32,8 @@ const CLAUDE_MD_REL: &str = "instructions/CLAUDE.md";
 const BLOCK_START: &str = "<!-- teamclu:system-prompt v1 -->";
 const BLOCK_END: &str = "<!-- /teamclu:system-prompt -->";
 
-/// Load `systemPrompt` from `{workspace}/.teamclu/teamclu.json`. Returns "" if unset.
+/// Load `systemPrompt` from the workspace config (`.teamclu/teamclu.json` on the
+/// official build). Returns "" if unset.
 pub fn load_system_prompt(workspace_path: &str) -> String {
     read_config_json(workspace_path)
         .and_then(|config| {
@@ -44,8 +47,8 @@ pub fn load_system_prompt(workspace_path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn claude_md_path(workspace_path: &str) -> String {
-    format!("{workspace_path}/{TEAMCLU_DIR}/{CLAUDE_MD_REL}")
+fn claude_md_path(workspace_path: &str) -> std::path::PathBuf {
+    workspace_meta_write_path_from_env(Path::new(workspace_path), CLAUDE_MD_REL)
 }
 
 fn render_marked_block(prompt: &str) -> String {
@@ -92,9 +95,8 @@ fn upsert_marked_block(existing: &str, prompt: &str) -> String {
 
 /// Upsert the TeamClu-managed block in `<workspace>/.teamclu/instructions/CLAUDE.md`.
 pub fn sync_teamclu_claude_md(workspace_path: &str, prompt: &str) -> Result<(), String> {
-    ensure_teamclu_dir(workspace_path)?;
     let path = claude_md_path(workspace_path);
-    if let Some(parent) = Path::new(&path).parent() {
+    if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create instructions dir: {e}"))?;
     }
@@ -102,7 +104,7 @@ pub fn sync_teamclu_claude_md(workspace_path: &str, prompt: &str) -> Result<(), 
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let next = upsert_marked_block(&existing, prompt);
     if next.trim().is_empty() {
-        if Path::new(&path).exists() {
+        if path.exists() {
             std::fs::remove_file(&path)
                 .map_err(|e| format!("Failed to remove empty CLAUDE.md: {e}"))?;
         }
@@ -128,10 +130,10 @@ mod tests {
     #[test]
     fn load_system_prompt_reads_teamclu_json() {
         let dir = tempfile::tempdir().unwrap();
-        let teamclu = dir.path().join(TEAMCLU_DIR);
+        let teamclu = dir.path().join(crate::WORKSPACE_META_DIR);
         std::fs::create_dir_all(&teamclu).unwrap();
         std::fs::write(
-            teamclu.join(CONFIG_FILE_NAME),
+            teamclu.join(crate::storage_namespace::WORKSPACE_CONFIG_FILE),
             r#"{"systemPrompt":"请使用中文回答"}"#,
         )
         .unwrap();

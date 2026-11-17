@@ -323,6 +323,8 @@ async fn not_found(method: axum::http::Method, uri: axum::http::Uri) -> impl Int
 fn router(app: AppHandle, token: Arc<str>, verifier: caller::CallerVerifier) -> Router {
     Router::new()
         .route("/send-wecom", post_route!(handle_send_wecom))
+        .route("/send-seatalk", post_route!(handle_send_seatalk))
+        .route("/channel-state", post_route!(handle_channel_state))
         .route("/cron-run", post_route!(handle_cron_run))
         .route("/cron-manage", post_route!(handle_cron_manage))
         .route("/team-sync-all", post_route!(handle_team_sync_all))
@@ -739,6 +741,48 @@ async fn handle_env_var_delete(app: &AppHandle, body: &[u8]) -> Result<String, S
     .await?;
 
     Ok(format!(r#"{{"ok":true,"key":"{}"}}"#, key))
+}
+
+/// Proactive SeaTalk send, forwarded to amuxd like `/send-wecom`.
+///
+/// There is no owner to fall back to, so a target is required. Files are
+/// rejected by the daemon ("file send not supported yet"); the sidecar refuses
+/// them before getting here.
+async fn handle_send_seatalk(_app: &AppHandle, body: &[u8]) -> Result<String, String> {
+    let v: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
+    let target = v
+        .get("target")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let message = v.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    if message.trim().is_empty() {
+        return Err("send-seatalk: 'message' is required".to_string());
+    }
+    let dispatch_target = super::cron::delivery::seatalk_cron_target_to_dispatch(target)?;
+
+    super::cron::amuxd_client::channel_send_at(
+        &super::amuxd_control::endpoint(),
+        "seatalk",
+        &dispatch_target,
+        message,
+    )
+    .await?;
+
+    Ok(serde_json::json!({ "ok": true, "target": dispatch_target }).to_string())
+}
+
+/// Which channels are configured in the team's gateway config.
+///
+/// Names only. The sidecar asks so the agent's view of "what can I send
+/// through" matches the settings page instead of a workspace file that page no
+/// longer writes.
+async fn handle_channel_state(_app: &AppHandle, _body: &[u8]) -> Result<String, String> {
+    let configured = tokio::task::spawn_blocking(super::gateway::configured_channels_blocking)
+        .await
+        .map_err(|e| format!("channel-state task failed: {e}"))?;
+    Ok(serde_json::json!({ "configured": configured }).to_string())
 }
 
 // ─── Channel Handler ─────────────────────────────────────────────────────────

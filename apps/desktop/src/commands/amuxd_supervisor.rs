@@ -371,12 +371,19 @@ async fn daemon_healthz_ok() -> bool {
         return false;
     };
     let url = format!("http://127.0.0.1:{port}/v1/healthz");
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_millis(400))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
+    // One client for every probe. This runs on a 200 ms poll while the daemon
+    // starts, and building a client each time rebuilt its TLS and connection
+    // state for a loopback GET. `no_proxy`: a system proxy has no business
+    // seeing a request to 127.0.0.1, and some answer it with their own error.
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    let Some(client) = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_millis(400))
+            .no_proxy()
+            .build()
+            .ok()
+    }) else {
+        return false;
     };
     match client.get(&url).send().await {
         Ok(resp) => resp.status().is_success(),

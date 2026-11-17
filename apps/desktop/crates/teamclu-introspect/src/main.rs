@@ -1,5 +1,6 @@
 mod apps;
 mod capabilities;
+mod channel_state;
 mod channels;
 mod config;
 mod cron;
@@ -88,7 +89,7 @@ fn tool_definitions() -> Value {
                     "channel": {
                         "type": "string",
                         "description": "The channel to send through, or 'all' to broadcast to all configured channels.",
-                        "enum": ["all", "wecom", "discord", "email", "feishu", "kook", "wechat"]
+                        "enum": ["all", "wecom", "seatalk", "discord", "email", "feishu", "kook", "wechat"]
                     },
                     "message": {
                         "type": "string",
@@ -649,13 +650,15 @@ async fn handle_request(
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             let tool_result = match tool_name {
-                "get_my_capabilities" => match capabilities::handle(workspace, &arguments).await {
-                    Ok(v) => {
-                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                        tool_ok(&text)
+                "get_my_capabilities" => {
+                    match capabilities::handle(workspace, api_port, &arguments).await {
+                        Ok(v) => {
+                            let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                            tool_ok(&text)
+                        }
+                        Err(e) => tool_err(&e),
                     }
-                    Err(e) => tool_err(&e),
-                },
+                }
                 "send_channel_message" => {
                     match send::handle(workspace, api_port, sock, &arguments).await {
                         Ok(v) => {

@@ -40,12 +40,18 @@ fn non_empty_str(v: Option<&Value>) -> bool {
 
 // ─── Main handler ────────────────────────────────────────────────────────────
 
-pub async fn handle(workspace: &str, arguments: &Value) -> Result<Value, String> {
+pub async fn handle(workspace: &str, api_port: u16, arguments: &Value) -> Result<Value, String> {
     let category = arguments.get("category").and_then(|v| v.as_str());
 
     match category {
-        None => build_overview(workspace),
-        Some("channels") => build_channels(workspace),
+        None => {
+            let daemon = crate::channel_state::daemon_configured(api_port).await;
+            build_overview(workspace, &daemon)
+        }
+        Some("channels") => {
+            let daemon = crate::channel_state::daemon_configured(api_port).await;
+            build_channels(workspace, &daemon)
+        }
         Some("role") => build_role(workspace),
         Some("env_vars") => build_env_vars(workspace),
         Some("team_info") => build_team_info(workspace),
@@ -56,7 +62,7 @@ pub async fn handle(workspace: &str, arguments: &Value) -> Result<Value, String>
 
 // ─── Overview ────────────────────────────────────────────────────────────────
 
-fn build_overview(workspace: &str) -> Result<Value, String> {
+fn build_overview(workspace: &str, daemon: &[String]) -> Result<Value, String> {
     let config = crate::config::read_teamclu_config(workspace)?;
 
     let channels_val = config.get("channels").cloned().unwrap_or(json!({}));
@@ -66,7 +72,7 @@ fn build_overview(workspace: &str) -> Result<Value, String> {
     let mut bound = Vec::new();
     let mut unbound = Vec::new();
     for name in channel_names {
-        if is_channel_bound_pub(name, &channels_val) {
+        if crate::channel_state::is_bound(name, &channels_val, daemon) {
             bound.push(name);
         } else {
             unbound.push(name);
@@ -120,15 +126,22 @@ fn build_overview(workspace: &str) -> Result<Value, String> {
 
 // ─── Channels ────────────────────────────────────────────────────────────────
 
-fn build_channels(workspace: &str) -> Result<Value, String> {
+fn build_channels(workspace: &str, daemon: &[String]) -> Result<Value, String> {
     let config = crate::config::read_teamclu_config(workspace)?;
     let channels = config.get("channels").cloned().unwrap_or(json!({}));
 
     let mut result = json!({});
 
-    // wecom
+    // seatalk — configured in settings and run by amuxd; nothing about it is
+    // in the workspace file.
+    result["seatalk"] = json!({
+        "bound": crate::channel_state::is_bound("seatalk", &channels, daemon),
+    });
+
+    // wecom — same owner. `bot_name` and `enabled` below describe only a
+    // legacy workspace entry and are absent for a bot set up in settings.
     {
-        let bound = is_channel_bound_pub("wecom", &channels);
+        let bound = crate::channel_state::is_bound("wecom", &channels, daemon);
         let ch = &channels["wecom"];
         let bot_name = ch
             .get("botId")
