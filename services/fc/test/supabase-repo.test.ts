@@ -5046,6 +5046,63 @@ test("upsertWorkspace writes path_key and treats trailing slash plus .. as the s
   assert.equal(out.id, "ws-existing");
 });
 
+// amuxd used Path::canonicalize, which returns a verbatim path on Windows.
+// Normalized naively, `\\?\C:\...` became `/?/C:/...`: a path no machine can
+// open (runtimes failed with WORKSPACE_PATH_UNAVAILABLE), stored next to the
+// plain row the desktop had registered for the same folder. Found by the
+// Windows install smoke.
+test("upsertWorkspace strips a Windows verbatim prefix and reuses the plain row", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({
+    calls,
+    seed: {
+      workspaces: [{
+        id: "ws-plain",
+        team_id: "team-b",
+        name: "proj",
+        path: "C:/Users/dev/proj",
+        path_key: "C:/Users/dev/proj",
+        agent_id: "agent-1",
+        archived: false,
+      }],
+    },
+  }));
+
+  const out = await repo.upsertWorkspace({
+    teamId: "team-b",
+    name: "proj",
+    path: "\\\\?\\C:\\Users\\dev\\proj",
+    agentId: "agent-1",
+  });
+
+  const upsert = calls.find((c) => c.table === "workspaces" && c.op === "upsert");
+  assert.equal(upsert?.row.id, "ws-plain", "must reuse the row the desktop registered");
+  assert.equal(upsert?.row.path, "C:/Users/dev/proj");
+  assert.equal(upsert?.row.path_key, "C:/Users/dev/proj");
+  assert.equal(out.id, "ws-plain");
+});
+
+test("upsertWorkspace stores a verbatim Windows path in plain form when it is new", async () => {
+  for (const [input, expected] of [
+    ["\\\\?\\D:\\work\\app", "D:/work/app"],
+    // The collapsed form such rows were stored with before this fix.
+    ["/?/D:/work/app", "D:/work/app"],
+    // A verbatim UNC path lands where a plain UNC path does today.
+    ["\\\\?\\UNC\\server\\share\\app", "/server/share/app"],
+    ["\\\\server\\share\\app", "/server/share/app"],
+    // Plain paths are untouched.
+    ["C:\\Users\\dev\\proj", "C:/Users/dev/proj"],
+    ["/home/dev/proj", "/home/dev/proj"],
+  ]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls }));
+    await repo.upsertWorkspace({ teamId: "team-b", name: "w", path: input, agentId: "agent-1" });
+    const upsert = calls.find((c) => c.table === "workspaces" && c.op === "upsert");
+    assert.equal(upsert?.row.path, expected, `path for ${JSON.stringify(input)}`);
+    assert.equal(upsert?.row.path_key, expected, `path_key for ${JSON.stringify(input)}`);
+  }
+});
+
 test("createCronSession stamps the primary agent's default_workspace_id", async () => {
   const calls: any[] = [];
   const supabase = appsSupabase({

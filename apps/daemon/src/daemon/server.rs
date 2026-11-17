@@ -5630,7 +5630,10 @@ pub(crate) mod tests {
         assert_eq!(value["ok"], serde_json::json!(true), "reply: {reply}");
         assert_eq!(
             value["result"]["path"].as_str().unwrap(),
-            workspace_dir.canonicalize().unwrap().to_str().unwrap()
+            dunce::canonicalize(&workspace_dir)
+                .unwrap()
+                .to_str()
+                .unwrap()
         );
         assert!(!value["result"]["workspace_id"].as_str().unwrap().is_empty());
 
@@ -5668,8 +5671,42 @@ pub(crate) mod tests {
 
         assert_eq!(
             registry.workspace_paths().await,
-            vec![workspace_dir.canonicalize().unwrap()]
+            vec![dunce::canonicalize(&workspace_dir).unwrap()]
         );
+    }
+
+    /// The path sent to the cloud must be an ordinary Windows path. A verbatim
+    /// `\\?\D:\...` is stored by FC as `/?/D:/...`, which no machine can open,
+    /// so every runtime on the workspace fails with WORKSPACE_PATH_UNAVAILABLE.
+    /// Found by the Windows install smoke (windows-install-smoke.yml). CI's
+    /// Windows job only builds the daemon, so this runs on a Windows dev box.
+    #[cfg(windows)]
+    #[tokio::test]
+    pub(crate) async fn apply_add_workspace_sends_a_non_verbatim_path_on_windows() {
+        let mock = Arc::new(crate::backend::mock::MockBackend::with_identity(
+            "team-test",
+            "agent-actor",
+        ));
+        let mut ts = test_server_with_cloud_api(mock.clone());
+        let workspace_dir = ts._tmp.path().join("plain-path");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        seed_startup_workspace_sync(&mock, "plain-path", "remote-plain");
+
+        let add = amux::AddWorkspace {
+            path: workspace_dir.to_string_lossy().to_string(),
+        };
+        let (accepted, error, workspace) = ts.server.apply_add_workspace(&add).await;
+        assert!(accepted, "add workspace failed: {error}");
+
+        let sent = mock.state().upserted_workspaces[0]
+            .path
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            !sent.starts_with(r"\\?\"),
+            "verbatim path sent to the cloud: {sent}"
+        );
+        assert!(!workspace.unwrap().path.starts_with(r"\\?\"));
     }
 
     #[test]
