@@ -9212,6 +9212,60 @@ paths:
           $ref: "#/components/responses/Error"
         "504":
           $ref: "#/components/responses/Error"
+    post:
+      operationId: insertAppDataRow
+      summary: Insert one row
+      description: |
+        Requires `admin` on the app; `write` receives 403. Inserts exactly one
+        row. Every column name is checked against the table's catalog entry and
+        every value is a bound parameter; columns left out take their default.
+        An empty `values` inserts a row of defaults.
+
+        The response carries the row **re-read after the write** (by the key
+        the insert returned), so sequences, defaults and triggers are visible —
+        the generated key above all. A table with no primary key returns what
+        `RETURNING *` saw.
+
+        Constraint violations are the caller's to fix and come back as 4xx
+        named only by kind (`duplicate_key`, `not_null_violation`,
+        `foreign_key_violation`, `check_violation`), never with the value.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppDataTable"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                values:
+                  type: object
+                  additionalProperties: true
+                  description: Column name → value.
+      responses:
+        "201":
+          description: The row as the database stored it.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [row]
+                properties:
+                  row:
+                    type: object
+                    additionalProperties: true
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
   /v1/apps/{appId}/data/tables/{table}/rows/{rowKey}:
     patch:
       operationId: updateAppDataRow

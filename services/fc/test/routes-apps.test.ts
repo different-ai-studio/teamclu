@@ -609,6 +609,37 @@ test("PATCH .../rows/:rowKey forwards the opaque key and body", async () => {
   assert.deepEqual(res.body, { row: { id: 2 } });
 });
 
+test("POST .../rows inserts through the repository and answers 201", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find(
+    (r) => r[0] === "POST" && r[1] === "/v1/apps/:appId/data/tables/:table/rows",
+  )[2];
+  let seen: any;
+  const res = await handler({
+    params: { appId: "app-1", table: "items" },
+    json: { values: { title: "new" } },
+    repository: {
+      insertAppDataRow: async (appId: string, table: string, body: any) => {
+        seen = { appId, table, body };
+        return { row: { id: 9, title: "new" } };
+      },
+    },
+  });
+  assert.deepEqual(seen, { appId: "app-1", table: "items", body: { values: { title: "new" } } });
+  assert.equal(res.statusCode, 201);
+  assert.deepEqual(res.body, { row: { id: 9, title: "new" } });
+
+  await assert.rejects(
+    () => handler({
+      params: { appId: "app-1", table: "items" },
+      json: { values: {} },
+      repository: { insertAppDataRow: async () => null },
+    }),
+    (e: any) => e?.statusCode === 404,
+  );
+});
+
 test("DELETE .../rows/:rowKey 404s when the repo says the app is invisible", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);

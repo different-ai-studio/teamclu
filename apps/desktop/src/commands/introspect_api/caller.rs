@@ -284,6 +284,7 @@ mod tests {
         assert!(!reads("/app-manage", r#"{"action":"create"}"#));
         assert!(!reads("/app-manage", r#"{"action":"deploy"}"#));
         assert!(!reads("/app-data", r#"{"action":"update_row"}"#));
+        assert!(!reads("/app-data", r#"{"action":"insert_row"}"#));
         // No action, a body that does not parse, a route with no reads.
         assert!(!reads("/app-manage", "{}"));
         assert!(!reads("/app-manage", "not json"));
