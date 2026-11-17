@@ -72,6 +72,11 @@ CREATE TABLE IF NOT EXISTS auth.sessions (
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now()
 );
+-- GoTrue creates this table as supabase_auth_admin, the role that also owns
+-- auth.users / auth.refresh_tokens in the image. auth._mint_session is applied
+-- as that role (apply-migrations.sh RUN_AS), so a stub owned by anyone else
+-- denies it the INSERT that production allows.
+ALTER TABLE auth.sessions OWNER TO supabase_auth_admin;
 
 -- ── storage ─────────────────────────────────────────────────────────────────
 -- The baseline seeds buckets and defines RLS policies on storage.objects for
