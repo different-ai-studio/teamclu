@@ -440,11 +440,11 @@
     "recommended": "推荐",
     "justNow": "刚刚",
     "minutesAgo": "{{count}} 分钟前",
-    "minutesAgo_plural": "{{count}} 分钟前",
+    "minutesAgo_other": "{{count}} 分钟前",
     "hoursAgo": "{{count}} 小时前",
-    "hoursAgo_plural": "{{count}} 小时前",
+    "hoursAgo_other": "{{count}} 小时前",
     "daysAgo": "{{count}} 天前",
-    "daysAgo_plural": "{{count}} 天前",
+    "daysAgo_other": "{{count}} 天前",
     "refresh": "刷新",
     "dismiss": "忽略",
     "showLess": "收起",
@@ -1026,15 +1026,15 @@
     "commandPopover": {
       "prompt": "选择角色、技能或命令",
       "itemCount": "{{count}} 项",
-      "itemCount_plural": "{{count}} 项",
+      "itemCount_other": "{{count}} 项",
       "noMatch": "没有匹配 \"{{query}}\" 的结果",
       "empty": "未找到技能或命令",
       "roles": "{{count}} 个角色",
-      "roles_plural": "{{count}} 个角色",
+      "roles_other": "{{count}} 个角色",
       "skills": "{{count}} 个技能",
-      "skills_plural": "{{count}} 个技能",
+      "skills_other": "{{count}} 个技能",
       "commands": "{{count}} 个命令",
-      "commands_plural": "{{count}} 个命令",
+      "commands_other": "{{count}} 个命令",
       "navigate": "导航",
       "enterOrTab": "↵/Tab",
       "select": "选择",
@@ -1101,8 +1101,7 @@
     },
     "acpDebug": {
       "title": "ACP 流调试",
-      "lineCount": "{{count}} 条",
-      "lineCount_plural": "{{count}} 条",
+      "lineCount": "{{shown}} / {{total}} 条",
       "scopeCurrentSession": "当前会话",
       "copy": "复制",
       "clear": "清空",
@@ -3852,7 +3851,7 @@
     "rating": {
       "question": "这次结果怎么样？",
       "starLabel": "{{count}} 星",
-      "starLabel_plural": "{{count}} 星"
+      "starLabel_other": "{{count}} 星"
     }
   },
   "shortcuts": {

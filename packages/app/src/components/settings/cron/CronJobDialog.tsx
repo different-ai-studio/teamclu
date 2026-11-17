@@ -525,7 +525,7 @@ export function CronJobDialog({
                           type="button"
                           title={
                             form.model
-                              ? t('settings.cron.modelSelected', `Using: ${form.model}`)
+                              ? t('settings.cron.modelSelected', 'Using: {{model}}', { model: form.model })
                               : t('settings.cron.modelRequiredHint', 'Pick the model this job runs on.')
                           }
                           className={cn(
