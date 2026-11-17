@@ -44,7 +44,7 @@ export function NewChatSplitButton({
 
   return (
     <div className="flex w-full flex-col gap-1.5">
-      <div className="flex w-full overflow-hidden rounded-[10px] bg-coral shadow-[0_4px_14px_rgba(232,90,74,0.22)]">
+      <div className="flex w-full overflow-hidden rounded-[10px] bg-coral shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)]">
         <button
           type="button"
           onClick={onPrimaryClick}

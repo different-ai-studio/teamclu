@@ -67,3 +67,36 @@ export function supportsPreview(filename: string): 'html' | 'markdown' | null {
   if (ext === 'md' || ext === 'markdown') return 'markdown';
   return null;
 }
+
+/**
+ * The smallest single replacement that turns `oldStr` into `newStr`: everything
+ * between their common prefix and common suffix. `null` when they are equal.
+ *
+ * Both editors sync an external `content` prop through this. A wholesale
+ * replace of the document — even with `Transaction.addToHistory.of(false)` —
+ * maps every prior undo entry through a change that covers it, which collapses
+ * them all and leaves one step of undo. Narrowing the change keeps the history
+ * outside the differing region.
+ */
+export function computeMinimalChange(
+  oldStr: string,
+  newStr: string,
+): { from: number; to: number; insert: string } | null {
+  if (oldStr === newStr) return null;
+  let prefix = 0;
+  const minLen = Math.min(oldStr.length, newStr.length);
+  while (prefix < minLen && oldStr.charCodeAt(prefix) === newStr.charCodeAt(prefix)) {
+    prefix++;
+  }
+  let oldEnd = oldStr.length;
+  let newEnd = newStr.length;
+  while (
+    oldEnd > prefix &&
+    newEnd > prefix &&
+    oldStr.charCodeAt(oldEnd - 1) === newStr.charCodeAt(newEnd - 1)
+  ) {
+    oldEnd--;
+    newEnd--;
+  }
+  return { from: prefix, to: oldEnd, insert: newStr.slice(prefix, newEnd) };
+}

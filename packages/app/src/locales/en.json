@@ -624,6 +624,9 @@
     "settings": "Settings"
   },
   "chat": {
+    "attachFiles": "Attach files",
+    "attachmentTooLarge": "\"{{name}}\" exceeds the 20MB limit",
+    "attachmentsTooLarge": "{{count}} files exceed the 20MB limit",
     "diagnoseSession": "Diagnose this session",
     "exportTranscript": "Export session transcript",
     "exportTranscriptSaved": "Transcript saved",

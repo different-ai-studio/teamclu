@@ -62,7 +62,7 @@ function RuntimeStatusDot({
           status === 'online' && 'bg-emerald-500 shadow-[0_0_0_2px_rgba(46,184,114,0.18)]',
           status === 'daemonMqttDisconnected' &&
             'bg-amber-400 shadow-[0_0_0_2px_rgba(251,191,36,0.22)]',
-          status === 'offline' && 'bg-coral shadow-[0_0_0_2px_rgba(232,90,74,0.18)]',
+          status === 'offline' && 'bg-coral shadow-[0_0_0_2px_color-mix(in_srgb,var(--coral)_18%,transparent)]',
           status === 'checking' && 'animate-pulse bg-foreground/25',
         )}
       />

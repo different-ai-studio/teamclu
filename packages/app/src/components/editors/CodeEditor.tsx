@@ -20,7 +20,7 @@ import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter,
 import { oneDark } from '@codemirror/theme-one-dark';
 import { cn } from '@/lib/utils';
 import type { EditorProps } from './types';
-import { getLanguageFromFilename } from './utils';
+import { computeMinimalChange, getLanguageFromFilename } from './utils';
 import {
   gitGutterExtension,
   gitGutterAutoUpdate,
@@ -302,39 +302,14 @@ export function CodeEditor({
     const view = viewRef.current;
     if (!view) return;
 
-    const currentDoc = view.state.doc.toString();
-    if (currentDoc === content) return;
-
-    // Use a minimal diff (common prefix + common suffix) instead of a wholesale
-    // replacement. Even with `Transaction.addToHistory.of(false)`, the history
-    // extension calls `state.addMapping(tr.changes.desc)` which maps every prior
-    // undo/redo entry through this transaction's changes. A wholesale replace of
-    // the entire document collapses every prior entry to an empty change, so
-    // `addMappingToBranch` drops them all — leaving only one step of undo
-    // available after any external sync. Narrowing the change to just the
-    // differing region preserves history outside that region.
-    let prefix = 0;
-    const minLen = Math.min(currentDoc.length, content.length);
-    while (
-      prefix < minLen &&
-      currentDoc.charCodeAt(prefix) === content.charCodeAt(prefix)
-    ) {
-      prefix++;
-    }
-    let oldEnd = currentDoc.length;
-    let newEnd = content.length;
-    while (
-      oldEnd > prefix &&
-      newEnd > prefix &&
-      currentDoc.charCodeAt(oldEnd - 1) === content.charCodeAt(newEnd - 1)
-    ) {
-      oldEnd--;
-      newEnd--;
-    }
+    // A minimal diff, not a wholesale replace: see computeMinimalChange for
+    // why that is what keeps undo history across an external sync.
+    const change = computeMinimalChange(view.state.doc.toString(), content);
+    if (!change) return;
 
     isExternalUpdate.current = true;
     view.dispatch({
-      changes: { from: prefix, to: oldEnd, insert: content.slice(prefix, newEnd) },
+      changes: change,
       annotations: Transaction.addToHistory.of(false),
     });
     isExternalUpdate.current = false;

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Plus } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { capabilities } from "@/lib/config/platform";
 import { readDesktopPathsAsFiles } from "@/lib/workspace/read-desktop-files";
@@ -12,16 +13,17 @@ interface FileInputButtonProps {
 
 export function FileInputButton({ onFilesSelected }: FileInputButtonProps) {
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const { t } = useTranslation();
 
   const rejectOversize = React.useCallback(async (names: string[]) => {
     if (names.length === 0) return;
     const { toast } = await import("sonner");
     toast.error(
       names.length === 1
-        ? `"${names[0]}" exceeds the 20MB limit`
-        : `${names.length} files exceed the 20MB limit`,
+        ? t("chat.attachmentTooLarge", '"{{name}}" exceeds the 20MB limit', { name: names[0] })
+        : t("chat.attachmentsTooLarge", "{{count}} files exceed the 20MB limit", { count: names.length }),
     );
-  }, []);
+  }, [t]);
 
   const handleClick = async () => {
     if (!capabilities.tauriInvoke) {
@@ -74,7 +76,7 @@ export function FileInputButton({ onFilesSelected }: FileInputButtonProps) {
         size="icon"
         className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
         onClick={handleClick}
-        aria-label="Attach files"
+        aria-label={t("chat.attachFiles", "Attach files")}
       >
         <Plus className="h-4 w-4" />
       </Button>
