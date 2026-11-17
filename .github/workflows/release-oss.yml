@@ -472,6 +472,9 @@ jobs:
     # starve publish-manifest. Healthy peak over the last 6 releases was
     # 42.2 min.
     timeout-minutes: 90
+    outputs:
+      # The installer just uploaded to OSS, for windows-install-smoke.
+      installer_url: ${{ steps.upload-installer.outputs.installer_url }}
     # See build-macos: hoisted off the tauri-action step so the amuxd (~495s) and
     # introspect (~87s) sidecar builds get sccache too.
     env:
@@ -656,6 +659,7 @@ jobs:
           args: "--bundles nsis -- --no-default-features"
 
       - name: Upload installer to OSS + emit updater fragment
+        id: upload-installer
         shell: bash
         env:
           # Windows runner Python defaults to cp1252 stdout; force UTF-8 so the
@@ -746,6 +750,9 @@ jobs:
           with open(f'frag/{plat_key}.json', 'w') as f:
               json.dump(frag, f)
           print('Fragment:', json.dumps(frag)[:300])
+          if downloads:
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+                  f.write(f"installer_url={downloads[0]['url']}\n")
           EOF
 
       - name: Upload standalone amuxd to OSS + emit amuxd fragment
@@ -927,6 +934,17 @@ jobs:
           name: frag-amuxd-linux-${{ matrix.target }}
           path: frag/*.json
           if-no-files-found: error
+
+  # Install the Windows build on a fresh runner and check it would start on a
+  # clean machine. Not a gate: publish-manifest does not wait for it, so a
+  # failure here shows up as a red job on the release run, not a held release.
+  windows-install-smoke:
+    needs: build-windows
+    if: needs.build-windows.outputs.installer_url != ''
+    uses: ./.github/workflows/windows-install-smoke.yml
+    secrets: inherit
+    with:
+      installer_url: ${{ needs.build-windows.outputs.installer_url }}
 
   publish-manifest:
     needs: [build-macos, build-windows, build-amuxd-linux]
