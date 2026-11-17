@@ -100,7 +100,17 @@ pub fn resolve_team_env_secret(
     team_id: Option<&str>,
     brand_short_name: Option<&str>,
 ) -> Option<String> {
-    let brand = brand_short_name.unwrap_or("teamclu");
+    // No brand passed means "this process's brand", not the official one: the
+    // agent-side callers pass `None`, and on a white-label build that read the
+    // official store, where the user's values are not.
+    let from_env;
+    let brand = match brand_short_name.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(brand) => brand,
+        None => {
+            from_env = crate::storage_namespace::brand_short_name_from_env();
+            from_env.as_str()
+        }
+    };
     if let Some(secret) = read_team_json_env_secret(workspace, brand) {
         return Some(secret);
     }
@@ -322,10 +332,14 @@ pub fn load_personal_env_listings(
     workspace: &Path,
     brand_short_name: Option<&str>,
 ) -> Vec<PersonalEnvListing> {
-    let brand = brand_short_name
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("teamclu");
+    let from_env;
+    let brand = match brand_short_name.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(brand) => brand,
+        None => {
+            from_env = crate::storage_namespace::brand_short_name_from_env();
+            from_env.as_str()
+        }
+    };
 
     // Machine-level index first; a workspace copy an older build wrote is folded
     // in behind it so nothing disappears before the desktop rewrites the index.
@@ -652,7 +666,9 @@ mod tests {
             listings.iter().map(|e| (e.key.as_str(), e)).collect();
         assert!(by_key.contains_key("ANTHROPIC_AUTH_TOKEN"));
         assert_eq!(
-            by_key.get("tc_gateway_token").and_then(|e| e.category.as_deref()),
+            by_key
+                .get("tc_gateway_token")
+                .and_then(|e| e.category.as_deref()),
             Some("system")
         );
         assert!(!by_key.contains_key("_team_secret.abc"));

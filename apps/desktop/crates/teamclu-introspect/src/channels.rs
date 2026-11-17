@@ -21,7 +21,8 @@ pub async fn handle(workspace: &str, api_port: u16, arguments: &Value) -> Result
     match action {
         "get" => {
             let channel = arguments.get("channel").and_then(|v| v.as_str());
-            get_channels(workspace, channel)
+            let daemon = crate::channel_state::daemon_configured(api_port).await;
+            get_channels(workspace, channel, &daemon)
         }
 
         "set" => {
@@ -48,7 +49,11 @@ pub async fn handle(workspace: &str, api_port: u16, arguments: &Value) -> Result
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-fn get_channels(workspace: &str, channel: Option<&str>) -> Result<Value, String> {
+fn get_channels(
+    workspace: &str,
+    channel: Option<&str>,
+    daemon: &[String],
+) -> Result<Value, String> {
     let cfg = config::read_teamclu_config(workspace)?;
     let empty = json!({});
     let channels = cfg.get("channels").unwrap_or(&empty);
@@ -57,7 +62,7 @@ fn get_channels(workspace: &str, channel: Option<&str>) -> Result<Value, String>
         let ch_cfg = channels.get(name).unwrap_or(&empty);
         Ok(json!({
             "channel": name,
-            "bound": is_bound(name, channels),
+            "bound": crate::channel_state::is_bound(name, channels, daemon),
             "config": redact(name, ch_cfg),
         }))
     } else {
@@ -69,7 +74,7 @@ fn get_channels(workspace: &str, channel: Option<&str>) -> Result<Value, String>
             .map(|name| {
                 let ch_cfg = channels.get(*name).unwrap_or(&empty);
                 let v = json!({
-                    "bound": is_bound(name, channels),
+                    "bound": crate::channel_state::is_bound(name, channels, daemon),
                     "config": redact(name, ch_cfg),
                 });
                 (name.to_string(), v)
@@ -104,11 +109,6 @@ fn redact(channel: &str, config: &Value) -> Value {
         }
     }
     Value::Object(out)
-}
-
-fn is_bound(name: &str, channels: &Value) -> bool {
-    use crate::capabilities::is_channel_bound_pub;
-    is_channel_bound_pub(name, channels)
 }
 
 async fn post_api(api_port: u16, path: &str, body: &Value) -> Result<Value, String> {

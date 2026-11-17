@@ -242,8 +242,17 @@ pub async fn git_credential_verify() -> &'static str {
 /// Store the minted token and point git at the helper for its host. The git
 /// config step is best-effort: without git on PATH the file is still useful to
 /// TeamClu's own checkouts, which carry their own repo-local helper config.
+///
+/// Async with the work on the blocking pool: a plain `fn` command runs on the
+/// IPC thread, and this spawns `git config` several times.
 #[tauri::command]
-pub fn git_credential_write(credential: GitCredentialFile) -> Result<(), String> {
+pub async fn git_credential_write(credential: GitCredentialFile) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || write_git_credential(credential))
+        .await
+        .map_err(|e| format!("git credential write did not finish: {e}"))?
+}
+
+fn write_git_credential(credential: GitCredentialFile) -> Result<(), String> {
     if credential.token.trim().is_empty() || credential.token.contains(['\n', '\r']) {
         return Err("git credential token is empty or malformed".into());
     }

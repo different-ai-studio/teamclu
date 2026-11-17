@@ -128,15 +128,12 @@ fn role_dir(workspace: &str, slug: &str) -> Result<std::path::PathBuf, String> {
             "Invalid role slug '{slug}': use a single directory name"
         ));
     }
-    Ok(Path::new(workspace)
-        .join(config::TEAMCLU_DIR)
-        .join("roles")
-        .join(slug))
+    Ok(config::roles_dir(workspace).join(slug))
 }
 
 /// Like `read_roles` but includes the slug (directory name) in each entry.
 fn roles_with_slugs(workspace: &str) -> Vec<Value> {
-    let roles_dir = Path::new(workspace).join(config::TEAMCLU_DIR).join("roles");
+    let roles_dir = config::roles_dir(workspace);
 
     if !roles_dir.exists() {
         return vec![];
@@ -286,7 +283,7 @@ mod tests {
     async fn delete_with_an_empty_slug_keeps_the_other_roles() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().to_str().unwrap();
-        let kept = tmp.path().join(config::TEAMCLU_DIR).join("roles/dev");
+        let kept = config::roles_dir(ws).join("dev");
         std::fs::create_dir_all(&kept).unwrap();
         std::fs::write(kept.join("ROLE.md"), "---\nname: \"Dev\"\n---\n").unwrap();
 

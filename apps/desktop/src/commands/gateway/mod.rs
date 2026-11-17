@@ -38,6 +38,41 @@ fn team_config_path() -> Option<PathBuf> {
     Some(crate::commands::amuxd_team_state_dir(&team).join("team.toml"))
 }
 
+/// The platforms with an enabled `[channels.<name>]` section in the team's
+/// `team.toml` — i.e. the ones configured through settings and run by amuxd.
+///
+/// Presence only, no credentials (those are sealed in `secrets.enc`). This is
+/// what lets the agent-side tools answer "is WeCom set up?" from where the
+/// configuration actually lives; they used to look in the workspace
+/// `teamclu.json`, which settings stopped writing.
+pub(crate) fn configured_channels_blocking() -> Vec<String> {
+    let Some(path) = team_config_path() else {
+        return Vec::new();
+    };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    configured_channels_in(&content)
+}
+
+fn configured_channels_in(team_toml: &str) -> Vec<String> {
+    let Ok(parsed) = toml::from_str::<toml::Value>(team_toml) else {
+        return Vec::new();
+    };
+    let Some(channels) = parsed.get("channels").and_then(|c| c.as_table()) else {
+        return Vec::new();
+    };
+    // Only table-valued entries are platforms (`channels.model` is a string),
+    // and each carries its own `enabled` switch.
+    let mut names: Vec<String> = channels
+        .iter()
+        .filter(|(_, v)| v.is_table() && v.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true))
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
 /// List the six known channel platforms with their `enabled` / `connected`
 /// state as reported by amuxd over its control channel. Errors out clearly when the
 /// daemon is not running so the UI can surface an "amuxd unreachable" state.
@@ -347,4 +382,35 @@ pub async fn set_config_locale(locale: String) -> Result<(), String> {
         locale.trim().replace('\n', " ")
     ))
     .await
+}
+
+#[cfg(test)]
+mod configured_channels_tests {
+    use super::configured_channels_in;
+
+    #[test]
+    fn lists_enabled_platform_sections_only() {
+        let toml = r#"
+[channels]
+model = "team/fast"
+
+[channels.wecom]
+enabled = true
+bots = [{ bot_id = "b-1" }]
+
+[channels.seatalk]
+enabled = false
+app_id = "a"
+
+[channels.discord]
+enabled = true
+"#;
+        assert_eq!(configured_channels_in(toml), vec!["discord", "wecom"]);
+    }
+
+    #[test]
+    fn a_team_without_channels_has_none() {
+        assert!(configured_channels_in("[team_share]\nenabled = true\n").is_empty());
+        assert!(configured_channels_in("not toml [").is_empty());
+    }
 }

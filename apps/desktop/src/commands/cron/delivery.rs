@@ -36,7 +36,23 @@ impl DeliveryManager {
             _ => {}
         }
 
-        let config = self.read_teamclu_config()?;
+        // The remaining senders read credentials from the workspace file,
+        // which settings no longer writes: a channel set up there has nothing
+        // here to send with. Say that, rather than "failed to read
+        // teamclu.json" or "token not configured" about a channel the user
+        // can see is configured.
+        let config = self.read_teamclu_config().unwrap_or_default();
+        let key = legacy_channel_key(channel);
+        let present = config
+            .get("channels")
+            .and_then(|c| c.get(key))
+            .is_some_and(|c| c.as_object().is_some_and(|o| !o.is_empty()));
+        if !present {
+            return Err(format!(
+                "Scheduled delivery to {key} is not available: only WeCom and SeaTalk \
+                 can be delivered to. Change this job's delivery channel."
+            ));
+        }
         match channel {
             DeliveryChannel::Discord => self.send_discord(&config, target, message).await,
             DeliveryChannel::Feishu => self.send_feishu(&config, target, message).await,
@@ -381,9 +397,23 @@ fn wecom_cron_target_to_dispatch(target: &str) -> Result<String, String> {
     Ok(format!("user:{target}"))
 }
 
+/// The `channels.<key>` name a delivery channel's credentials sit under in the
+/// workspace config.
+fn legacy_channel_key(channel: &DeliveryChannel) -> &'static str {
+    match channel {
+        DeliveryChannel::Discord => "discord",
+        DeliveryChannel::Feishu => "feishu",
+        DeliveryChannel::Email => "email",
+        DeliveryChannel::Kook => "kook",
+        DeliveryChannel::Wechat => "wechat",
+        DeliveryChannel::Wecom => "wecom",
+        DeliveryChannel::Seatalk => "seatalk",
+    }
+}
+
 /// Map SeaTalk cron UI targets (`single:` / `group:` / raw, optional
 /// `bot:<app_id>/` prefix) to amuxd dispatch.
-fn seatalk_cron_target_to_dispatch(target: &str) -> Result<String, String> {
+pub(crate) fn seatalk_cron_target_to_dispatch(target: &str) -> Result<String, String> {
     let (prefix, body) = match target.strip_prefix("bot:") {
         Some(rest) => {
             let (app, rest) = rest.split_once('/').ok_or_else(|| {
