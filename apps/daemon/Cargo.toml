@@ -37,6 +37,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 toml = "0.8"
 dirs = "6"
+# `canonicalize` without Windows' `\\?\` verbatim prefix — a workspace path
+# goes to the cloud and must round-trip as an ordinary `C:\...` path.
+dunce = "1"
 teamclu-binpath = { path = "../../crates/teamclu-binpath" }
 
 # Utilities

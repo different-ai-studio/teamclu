@@ -369,7 +369,7 @@ function applySyncKeyset(query, cursor, limit) {
 
 function normalizeWorkspacePath(path: string | null | undefined): string | null {
   if (path == null) return null;
-  const trimmed = path.trim().replace(/\\/g, "/");
+  const trimmed = stripWindowsVerbatimPrefix(path.trim().replace(/\\/g, "/"));
   if (!trimmed) return null;
   const isAbs = trimmed.startsWith("/");
   const parts: string[] = [];
@@ -384,6 +384,31 @@ function normalizeWorkspacePath(path: string | null | undefined): string | null 
   const joined = parts.join("/");
   if (isAbs) return joined ? `/${joined}` : "/";
   return joined || null;
+}
+
+/**
+ * Drop Windows' verbatim prefix (`\\?\`), given a path whose backslashes are
+ * already forward slashes. Rust's `Path::canonicalize` returns verbatim paths
+ * on Windows, and amuxd before the `dunce` fix sent them as-is. Kept, the
+ * prefix made the path read as unix-absolute and normalize to `/?/C:/...`,
+ * which exists on no machine — every runtime on such a workspace failed with
+ * WORKSPACE_PATH_UNAVAILABLE, and the row never matched the same directory
+ * registered in plain form, so it was inserted as a duplicate.
+ *
+ * Also accepts the already-collapsed `/?/` form those rows were stored with.
+ *
+ * A verbatim UNC path (`\\?\UNC\server\share`) becomes `//server/share` and
+ * then normalizes exactly like a plain UNC path does today. That plain-UNC
+ * result (one leading slash) is its own, older problem and deliberately not
+ * changed here: changing it would re-key existing UNC rows.
+ */
+function stripWindowsVerbatimPrefix(path: string): string {
+  const verbatim = /^\/\/?\?\//.exec(path);
+  if (!verbatim) return path;
+  const rest = path.slice(verbatim[0].length);
+  if (/^UNC\//i.test(rest)) return `//${rest.slice(4)}`;
+  if (/^[A-Za-z]:(\/|$)/.test(rest)) return rest;
+  return path;
 }
 
 /**

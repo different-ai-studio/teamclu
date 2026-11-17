@@ -223,7 +223,14 @@ impl DaemonServer {
                 None,
             );
         }
-        let canonical = match p.canonicalize() {
+        // `dunce`, not `Path::canonicalize`: on Windows the std version returns
+        // a verbatim path (`\\?\D:\proj`). That string is what goes to the
+        // cloud, and FC's path normalization turns it into `/?/D:/proj` — a
+        // path that exists nowhere, so every runtime on the workspace then
+        // fails with WORKSPACE_PATH_UNAVAILABLE. dunce drops the prefix
+        // whenever the plain form means the same file; elsewhere it is
+        // `canonicalize`.
+        let canonical = match dunce::canonicalize(p) {
             Ok(c) => c,
             Err(e) => return (false, format!("canonicalize {}: {}", add.path, e), None),
         };
