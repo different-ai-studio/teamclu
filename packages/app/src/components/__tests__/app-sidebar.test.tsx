@@ -23,7 +23,6 @@ const workspaceStoreMocks = vi.hoisted(() => ({
 
 const teamModeStoreMocks = vi.hoisted(() => ({
   teamModeType: null as string | null,
-  loadTeamGitFileSyncStatus: vi.fn(),
 }))
 
 const authStoreMocks = vi.hoisted(() => ({

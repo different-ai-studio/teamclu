@@ -38,6 +38,10 @@ fn shell_profile_files(shell: &str, home: &str) -> Vec<String> {
         &[".zshrc", ".zprofile", ".zshenv", ".zlogin"]
     } else if shell.ends_with("bash") {
         &[".bashrc", ".bash_profile", ".bash_login", ".profile"]
+    } else if shell.ends_with("fish") {
+        // Without an entry here the mtime is always 0, the cache never
+        // matches, and a fish user paid for the probe on every launch.
+        &[".config/fish/config.fish"]
     } else {
         return Vec::new();
     };
@@ -113,7 +117,9 @@ fn parse_probed_path(stdout: &str) -> Option<String> {
         .rev()
         .find_map(|line| line.trim().strip_prefix(PATH_PROBE_SENTINEL))
         .map(str::to_string)
-        .filter(|path| !path.is_empty())
+        // A second marker inside the value means the shell expanded `$PATH` as
+        // a list and repeated our prefix per entry. That is not a PATH.
+        .filter(|path| !path.is_empty() && !path.contains(PATH_PROBE_SENTINEL))
 }
 
 /// Run `<shell> [-i] -l -c 'echo <sentinel>$PATH'` with a hard wall-clock
@@ -133,7 +139,11 @@ fn spawn_shell_path_probe(shell: &str, interactive: bool) -> std::io::Result<std
     use crate::process_util::CommandNoWindow;
     use std::process::Stdio;
 
-    let script = format!("echo {PATH_PROBE_SENTINEL}$PATH");
+    // Quoted on purpose. In fish `$PATH` is a list, and an unquoted
+    // `marker$PATH` expands to one `marker/dir` word per entry — the app then
+    // set PATH to that string. Quoted, fish joins the list with `:`; bash and
+    // zsh print the same thing either way.
+    let script = format!("echo \"{PATH_PROBE_SENTINEL}$PATH\"");
     let mut args: Vec<&str> = Vec::new();
     if interactive {
         args.push("-i");
@@ -1072,6 +1082,13 @@ mod path_env_tests {
     }
 
     #[test]
+    fn a_list_expanded_per_entry_is_not_a_path() {
+        // What an unquoted `marker$PATH` prints in fish.
+        let stdout = format!("{PATH_PROBE_SENTINEL}/a/bin {PATH_PROBE_SENTINEL}/b/bin\n");
+        assert_eq!(parse_probed_path(&stdout), None);
+    }
+
+    #[test]
     fn zsh_profiles_cover_the_interactive_file_version_managers_write_to() {
         let files = shell_profile_files("/bin/zsh", "/home/u");
         assert!(files.contains(&"/home/u/.zshrc".to_string()), "{files:?}");
@@ -1079,7 +1096,11 @@ mod path_env_tests {
             files.contains(&"/home/u/.zprofile".to_string()),
             "{files:?}"
         );
-        assert!(shell_profile_files("/usr/bin/fish", "/home/u").is_empty());
+        assert_eq!(
+            shell_profile_files("/usr/bin/fish", "/home/u"),
+            vec!["/home/u/.config/fish/config.fish".to_string()]
+        );
+        assert!(shell_profile_files("/bin/sh", "/home/u").is_empty());
     }
 
     #[test]

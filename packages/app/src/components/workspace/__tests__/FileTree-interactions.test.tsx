@@ -102,10 +102,7 @@ vi.mock('@/stores/team-mode', () => ({
   useTeamModeStore: (sel: (s: Record<string, unknown>) => unknown) =>
     sel({
       myRole: 'admin',
-      teamGitFileSyncStatusMap: {},
       teamModeType: null,
-      teamGitSyncing: false,
-      teamGitLastSyncAt: null,
     }),
 }));
 
