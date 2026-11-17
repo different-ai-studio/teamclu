@@ -1,0 +1,35 @@
+1
+00:00:00,000 --> 00:00:05,000
+TeamClu — the loop your team’s AI work actually runs on.
+
+2
+00:00:05,000 --> 00:00:12,000
+Most AI tooling starts at build and stops there. TeamClu is the claim that the loop closes.
+
+3
+00:00:12,000 --> 00:00:25,000
+One session. Teammates and agents in the same context — @mention an agent and it answers as a participant.
+
+4
+00:00:25,000 --> 00:00:34,000
+The agent runs on your machine. Only the assets are shared.
+
+5
+00:00:34,000 --> 00:00:49,000
+An agent does not talk in bubbles. It answers in notes — and the diff reviewer is built the same way.
+
+6
+00:00:49,000 --> 00:01:04,000
+The result becomes a team asset, not a dotfile. Publish once with a changelog and every teammate’s agent follows it.
+
+7
+00:01:04,000 --> 00:01:13,000
+And the next round starts faster. That is the whole loop.
+
+8
+00:01:13,000 --> 00:01:21,000
+And it runs when you are not at the desk — same session, same capabilities, in WeCom, Feishu, Discord, KOOK, WeChat or Email.
+
+9
+00:01:21,000 --> 00:01:27,000
+TeamClu — MIT licensed, open source, in beta. teamclu.ai
