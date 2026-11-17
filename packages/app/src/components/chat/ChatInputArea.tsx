@@ -445,15 +445,15 @@ export function ChatInputArea({
       void import("sonner").then(({ toast }) => {
         toast.error(
           oversize.length === 1
-            ? `"${oversize[0]}" exceeds the 20MB limit`
-            : `${oversize.length} files exceed the 20MB limit`,
+            ? t("chat.attachmentTooLarge", '"{{name}}" exceeds the 20MB limit', { name: oversize[0] })
+            : t("chat.attachmentsTooLarge", "{{count}} files exceed the 20MB limit", { count: oversize.length }),
         );
       });
     }
     if (accepted.length > 0) {
       onAppendPendingFiles(accepted);
     }
-  }, [onAppendPendingFiles]);
+  }, [onAppendPendingFiles, t]);
 
   const imagePreviewUrls = React.useMemo(() => {
     return pendingFiles.filter(isImageFile).map((file) => URL.createObjectURL(file));

@@ -440,11 +440,11 @@
     "recommended": "推荐",
     "justNow": "刚刚",
     "minutesAgo": "{{count}} 分钟前",
-    "minutesAgo_plural": "{{count}} 分钟前",
+    "minutesAgo_other": "{{count}} 分钟前",
     "hoursAgo": "{{count}} 小时前",
-    "hoursAgo_plural": "{{count}} 小时前",
+    "hoursAgo_other": "{{count}} 小时前",
     "daysAgo": "{{count}} 天前",
-    "daysAgo_plural": "{{count}} 天前",
+    "daysAgo_other": "{{count}} 天前",
     "refresh": "刷新",
     "dismiss": "忽略",
     "showLess": "收起",
@@ -624,6 +624,9 @@
     "settings": "设置"
   },
   "chat": {
+    "attachFiles": "添加附件",
+    "attachmentTooLarge": "「{{name}}」超过 20MB 上限",
+    "attachmentsTooLarge": "{{count}} 个文件超过 20MB 上限",
     "diagnoseSession": "诊断此会话",
     "exportTranscript": "导出完整会话记录",
     "exportTranscriptSaved": "会话记录已保存",
@@ -1026,15 +1029,15 @@
     "commandPopover": {
       "prompt": "选择角色、技能或命令",
       "itemCount": "{{count}} 项",
-      "itemCount_plural": "{{count}} 项",
+      "itemCount_other": "{{count}} 项",
       "noMatch": "没有匹配 \"{{query}}\" 的结果",
       "empty": "未找到技能或命令",
       "roles": "{{count}} 个角色",
-      "roles_plural": "{{count}} 个角色",
+      "roles_other": "{{count}} 个角色",
       "skills": "{{count}} 个技能",
-      "skills_plural": "{{count}} 个技能",
+      "skills_other": "{{count}} 个技能",
       "commands": "{{count}} 个命令",
-      "commands_plural": "{{count}} 个命令",
+      "commands_other": "{{count}} 个命令",
       "navigate": "导航",
       "enterOrTab": "↵/Tab",
       "select": "选择",
@@ -1101,8 +1104,7 @@
     },
     "acpDebug": {
       "title": "ACP 流调试",
-      "lineCount": "{{count}} 条",
-      "lineCount_plural": "{{count}} 条",
+      "lineCount": "{{shown}} / {{total}} 条",
       "scopeCurrentSession": "当前会话",
       "copy": "复制",
       "clear": "清空",
@@ -2043,6 +2045,12 @@
       "run": "运行诊断",
       "running": "正在诊断…",
       "runComplete": "诊断完成",
+      "symptomNoConclusion": "此症状暂无结论。先运行一次诊断。",
+      "openHintSection": "前往相关设置 →",
+      "noTraces": "没有可展示的发送轨迹。",
+      "noEvidence": "没有额外证据。",
+      "timelineHeading": "时间线",
+      "evidenceHeading": "证据",
       "runFailed": "诊断失败：{{message}}",
       "summary": "{{ok}} 通过 · {{warn}} 警告 · {{fail}} 失败",
       "results": "检查结果",
@@ -3275,7 +3283,7 @@
     "roles": {
       "title": "角色",
       "description": "按需渐进披露 role skill 的工作区角色",
-      "descriptionDetail": "存储在 .opencode/roles 中，并由 role 插件加载的工作区角色",
+      "descriptionDetail": "存储在 {{dir}} 中的工作区角色",
       "selectWorkspace": "请先选择工作区目录",
       "searchPlaceholder": "搜索角色...",
       "addRole": "新增角色",
@@ -3312,7 +3320,7 @@
       "workingStylePlaceholder": "描述该角色的工作方式",
       "workingStyleHint": "描述这个角色的行为偏好、审阅风格、优先级和沟通/取舍方式。",
       "availableRoleSkills": "可用角色技能",
-      "availableRoleSkillsHint": "从工作区本地 skills 中挂载，并选择复制或迁移到 .opencode/roles/skills",
+      "availableRoleSkillsHint": "从工作区本地 skills 中挂载，并选择复制或迁移到 {{dir}}",
       "roleSkillsCount": "角色技能 {{count}}",
       "sourceWorkspace": "工作区",
       "sourceExternal": "外部路径",
@@ -3327,7 +3335,7 @@
       "openLinkedSkill": "打开关联技能 {{name}}",
       "markdownContent": "ROLE.md 内容",
       "deleteTitle": "删除角色",
-      "deleteConfirm": "确定删除“{{name}}”吗？.opencode/roles/skills 下的角色技能会被保留。",
+      "deleteConfirm": "确定删除“{{name}}”吗？{{dir}} 下的角色技能会被保留。",
       "parseFailed": "解析角色 Markdown 失败",
       "noLinkedSkills": "未关联技能"
     },
@@ -3852,7 +3860,7 @@
     "rating": {
       "question": "这次结果怎么样？",
       "starLabel": "{{count}} 星",
-      "starLabel_plural": "{{count}} 星"
+      "starLabel_other": "{{count}} 星"
     }
   },
   "shortcuts": {
@@ -4152,6 +4160,19 @@
     "signInFirst": "会先登录，登录后立即加入团队。",
     "cancel": "暂不",
     "accept": "加入团队"
+  },
+  "teamJoinLink": {
+    "ttl7d": "7 天",
+    "ttl30d": "30 天",
+    "ttlNever": "不限期",
+    "ttlLabel": "有效期",
+    "capLabel": "人数上限（可选）",
+    "urlLabel": "加入链接",
+    "copy": "复制",
+    "copyFailed": "复制失败",
+    "revoke": "作废",
+    "rotate": "换一条新链接",
+    "create": "生成链接"
   },
   "skills": {
     "access": {

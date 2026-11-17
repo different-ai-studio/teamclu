@@ -914,6 +914,16 @@ function mergeDuplicateAssistantSdkRow(prev: SdkMessage, next: SdkMessage): SdkM
   };
 }
 
+/**
+ * Two adjacent rows are the same reply only when nothing says they are
+ * different turns. Text equivalence alone is not enough: two empty strings are
+ * "equivalent", so back-to-back tool-only turns — and two turns that both
+ * answered "好的" — used to fold into one bubble.
+ */
+function sameTurnOrUnknown(prev: SdkMessage, next: SdkMessage): boolean {
+  return !prev.turnId || !next.turnId || prev.turnId === next.turnId;
+}
+
 /** Live flush + late MQTT append can yield two SDK rows for one turn-final reply. */
 function collapseDuplicateAssistantSdkMessages(msgs: SdkMessage[]): SdkMessage[] {
   const out: SdkMessage[] = [];
@@ -926,6 +936,7 @@ function collapseDuplicateAssistantSdkMessages(msgs: SdkMessage[]): SdkMessage[]
     if (
       prev?.role === "assistant" &&
       prev.senderActorId === msg.senderActorId &&
+      sameTurnOrUnknown(prev, msg) &&
       agentReplyTextsEquivalent(prev.content || "", msg.content || "")
     ) {
       out[out.length - 1] = mergeDuplicateAssistantSdkRow(prev, msg);

@@ -440,11 +440,11 @@
     "recommended": "Recommended",
     "justNow": "Just now",
     "minutesAgo": "{{count}} minute ago",
-    "minutesAgo_plural": "{{count}} minutes ago",
+    "minutesAgo_other": "{{count}} minutes ago",
     "hoursAgo": "{{count}} hour ago",
-    "hoursAgo_plural": "{{count}} hours ago",
+    "hoursAgo_other": "{{count}} hours ago",
     "daysAgo": "{{count}} day ago",
-    "daysAgo_plural": "{{count}} days ago",
+    "daysAgo_other": "{{count}} days ago",
     "refresh": "Refresh",
     "dismiss": "Dismiss",
     "showLess": "Show less",
@@ -624,6 +624,9 @@
     "settings": "Settings"
   },
   "chat": {
+    "attachFiles": "Attach files",
+    "attachmentTooLarge": "\"{{name}}\" exceeds the 20MB limit",
+    "attachmentsTooLarge": "{{count}} files exceed the 20MB limit",
     "diagnoseSession": "Diagnose this session",
     "exportTranscript": "Export session transcript",
     "exportTranscriptSaved": "Transcript saved",
@@ -1026,15 +1029,15 @@
     "commandPopover": {
       "prompt": "Select role, skill, or command",
       "itemCount": "{{count}} item",
-      "itemCount_plural": "{{count}} items",
+      "itemCount_other": "{{count}} items",
       "noMatch": "No match for \"{{query}}\"",
       "empty": "No skills or commands found",
       "roles": "{{count}} role",
-      "roles_plural": "{{count}} roles",
+      "roles_other": "{{count}} roles",
       "skills": "{{count}} skill",
-      "skills_plural": "{{count}} skills",
+      "skills_other": "{{count}} skills",
       "commands": "{{count}} command",
-      "commands_plural": "{{count}} commands",
+      "commands_other": "{{count}} commands",
       "navigate": "navigate",
       "enterOrTab": "↵/Tab",
       "select": "select",
@@ -1101,8 +1104,7 @@
     },
     "acpDebug": {
       "title": "ACP stream debug",
-      "lineCount": "{{count}} line",
-      "lineCount_plural": "{{count}} lines",
+      "lineCount": "{{shown}} / {{total}} lines",
       "scopeCurrentSession": "Current session",
       "copy": "Copy",
       "clear": "Clear",
@@ -2043,6 +2045,12 @@
       "run": "Run Diagnostics",
       "running": "Running diagnostics…",
       "runComplete": "Diagnostics complete",
+      "symptomNoConclusion": "No conclusion for this symptom yet. Run diagnostics first.",
+      "openHintSection": "Open the related settings →",
+      "noTraces": "No send trace to show.",
+      "noEvidence": "No further evidence.",
+      "timelineHeading": "Timeline",
+      "evidenceHeading": "Evidence",
       "runFailed": "Diagnostics failed: {{message}}",
       "summary": "{{ok}} passed · {{warn}} warnings · {{fail}} failed",
       "results": "Check Results",
@@ -3275,7 +3283,7 @@
     "roles": {
       "title": "Roles",
       "description": "Workspace roles that progressively expose role-specific skills",
-      "descriptionDetail": "Workspace roles stored in .opencode/roles and loaded by the role plugin",
+      "descriptionDetail": "Workspace roles stored in {{dir}}",
       "selectWorkspace": "Please select a workspace directory first",
       "searchPlaceholder": "Search roles...",
       "addRole": "Add Role",
@@ -3312,7 +3320,7 @@
       "workingStylePlaceholder": "Describe how this role should operate",
       "workingStyleHint": "Capture behavioral guidelines, review style, priorities, and how the role should communicate or make tradeoffs.",
       "availableRoleSkills": "Available role skills",
-      "availableRoleSkillsHint": "Attach local workspace skills and choose whether to copy or migrate them into .opencode/roles/skills",
+      "availableRoleSkillsHint": "Attach local workspace skills and choose whether to copy or migrate them into {{dir}}",
       "roleSkillsCount": "role skills {{count}}",
       "sourceWorkspace": "Workspace",
       "sourceExternal": "External path",
@@ -3327,7 +3335,7 @@
       "openLinkedSkill": "Open linked skill {{name}}",
       "markdownContent": "ROLE.md Content",
       "deleteTitle": "Delete Role",
-      "deleteConfirm": "Delete \"{{name}}\"? Role skills under .opencode/roles/skills are preserved.",
+      "deleteConfirm": "Delete \"{{name}}\"? Role skills under {{dir}} are preserved.",
       "parseFailed": "Failed to parse role markdown",
       "noLinkedSkills": "No linked skills"
     },
@@ -3852,7 +3860,7 @@
     "rating": {
       "question": "How was this result?",
       "starLabel": "{{count}} star",
-      "starLabel_plural": "{{count}} stars"
+      "starLabel_other": "{{count}} stars"
     }
   },
   "shortcuts": {
@@ -4152,6 +4160,19 @@
     "signInFirst": "You'll sign in first; the team is joined right after.",
     "cancel": "Not now",
     "accept": "Join team"
+  },
+  "teamJoinLink": {
+    "ttl7d": "7 days",
+    "ttl30d": "30 days",
+    "ttlNever": "No expiry",
+    "ttlLabel": "Valid for",
+    "capLabel": "Member limit (optional)",
+    "urlLabel": "Join link",
+    "copy": "Copy",
+    "copyFailed": "Could not copy",
+    "revoke": "Revoke",
+    "rotate": "Replace with a new link",
+    "create": "Create link"
   },
   "skills": {
     "access": {

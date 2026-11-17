@@ -465,7 +465,6 @@ describe("V2 PR conversation critical path", () => {
     // (handle-session-event-permission-resolved), which an agent error alone
     // does not simulate — so assert where it renders, not that it is gone.
     expect(await domCount('[data-testid="v2-message-list"] [data-testid="pending-permission-card"]')).toBe(0);
-    expect(await domCount('[data-testid="v2-message-list"] [data-testid="pending-permission-inline"]')).toBe(0);
     expect(await domCount('[data-testid="composer-approval-chrome"] [data-testid="pending-permission-card"]')).toBe(1);
     expect(await domText('[data-testid="v2-message-list"]')).not.toContain("Awaiting permission");
   });

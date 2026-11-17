@@ -2,6 +2,7 @@ import * as React from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Copy } from 'lucide-react'
 import { toast } from 'sonner'
+import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -27,10 +28,10 @@ function isUpgradeRequired(error: unknown): boolean {
   return (error as { code?: unknown })?.code === 'upgrade_required'
 }
 
-const TTL_OPTIONS: { value: TeamJoinLinkTtl; label: string }[] = [
-  { value: '7d', label: '7 天' },
-  { value: '30d', label: '30 天' },
-  { value: 'never', label: '不限期' },
+const TTL_OPTIONS: { value: TeamJoinLinkTtl; labelKey: string; fallback: string }[] = [
+  { value: '7d', labelKey: 'teamJoinLink.ttl7d', fallback: '7 天' },
+  { value: '30d', labelKey: 'teamJoinLink.ttl30d', fallback: '30 天' },
+  { value: 'never', labelKey: 'teamJoinLink.ttlNever', fallback: '不限期' },
 ]
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -56,6 +57,7 @@ function parseCap(raw: string): { ok: true; value: number | null } | { ok: false
 }
 
 export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkSectionProps) {
+  const { t } = useTranslation()
   const [link, setLink] = React.useState<TeamJoinLink | null>(null)
   const [ttl, setTtl] = React.useState<TeamJoinLinkTtl>('7d')
   const [cap, setCap] = React.useState('')
@@ -143,7 +145,7 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
     try {
       await navigator.clipboard.writeText(link.url)
     } catch {
-      toast.error('复制失败')
+      toast.error(t('teamJoinLink.copyFailed', '复制失败'))
     }
   }
 
@@ -166,7 +168,7 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
   return (
     <div className="flex flex-col gap-3 rounded-md border border-border p-3">
       <div className="flex flex-col gap-2">
-        <label className="block text-xs font-medium text-muted-foreground" htmlFor="join-link-ttl">有效期</label>
+        <label className="block text-xs font-medium text-muted-foreground" htmlFor="join-link-ttl">{t('teamJoinLink.ttlLabel', '有效期')}</label>
         <Select value={ttl} onValueChange={(next) => onTtlChange(next as TeamJoinLinkTtl)} disabled={busy}>
           <SelectTrigger id="join-link-ttl" className="h-9">
             <SelectValue />
@@ -174,14 +176,14 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
           <SelectContent>
             {TTL_OPTIONS.map((option) => (
               <SelectItem key={option.value} value={option.value}>
-                {option.label}
+                {t(option.labelKey, option.fallback)}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="join-link-cap">人数上限（可选）</label>
+        <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="join-link-cap">{t('teamJoinLink.capLabel', '人数上限（可选）')}</label>
         <Input
           id="join-link-cap"
           inputMode="numeric"
@@ -194,10 +196,10 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
       {link ? (
         <>
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">加入链接</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('teamJoinLink.urlLabel', '加入链接')}</label>
             <div className="flex items-center gap-2">
               <Input value={link.url} readOnly className="font-mono text-xs" />
-              <Button variant="outline" size="icon" onClick={() => void copyUrl()} title="复制">
+              <Button variant="outline" size="icon" onClick={() => void copyUrl()} title={t('teamJoinLink.copy', '复制')}>
                 <Copy className="h-4 w-4" />
               </Button>
             </div>
@@ -212,7 +214,7 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
           </p>
           <div className="flex gap-2">
             <Button variant="outline" disabled={busy} onClick={() => void revoke()}>
-              作废
+              {t('teamJoinLink.revoke', '作废')}
             </Button>
             <Button
               variant="outline"
@@ -222,7 +224,7 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
                 if (parsed.ok) void put({ ttl, maxUses: parsed.value, rotate: true })
               }}
             >
-              换一条新链接
+              {t('teamJoinLink.rotate', '换一条新链接')}
             </Button>
           </div>
         </>
@@ -234,7 +236,7 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
             if (parsed.ok) void put({ ttl, maxUses: parsed.value, rotate: false })
           }}
         >
-          生成链接
+          {t('teamJoinLink.create', '生成链接')}
         </Button>
       )}
     </div>

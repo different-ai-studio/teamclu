@@ -74,4 +74,37 @@ describe('FileMentionPopover', () => {
 
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
+
+  it('shows a file created after the popover was first opened', async () => {
+    const props = {
+      onOpenChange: vi.fn(),
+      searchQuery: '',
+      onSearchChange: vi.fn(),
+      onSelect: vi.fn(),
+    }
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+    const view = render(<FileMentionPopover open={true} {...props} />)
+    await waitFor(() => {
+      expect(screen.getByText('README.md')).toBeTruthy()
+    })
+    view.rerender(<FileMentionPopover open={false} {...props} />)
+
+    // The agent writes a file while the popover is closed; nothing in the UI
+    // hears about it.
+    mockReadDir.mockImplementation(async (dir: string) =>
+      dir === '/workspace/project'
+        ? [
+            { name: 'README.md', isDirectory: false },
+            { name: 'report.md', isDirectory: false },
+          ]
+        : [],
+    )
+    now.mockReturnValue(1_000_000 + 60_000)
+    view.rerender(<FileMentionPopover open={true} {...props} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('report.md')).toBeTruthy()
+    })
+    now.mockRestore()
+  })
 })

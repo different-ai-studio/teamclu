@@ -48,9 +48,16 @@ type SelectableRow =
   | { kind: "session"; attachment: SessionAttachmentRef }
   | { kind: "workspace"; entry: FlatEntry }
 
-// Module-level cache so re-opening the popover is instant
+// Module-level cache so re-opening the popover is instant. It is only a first
+// paint: every open rescans behind it, because files appear without any UI
+// event to hang an invalidation on (the agent writes them, so does a terminal).
+// A cache that only a workspace switch cleared hid every file created after the
+// first open until the app restarted.
 let cachedWorkspace: string | null = null
 let cachedEntries: FlatEntry[] = []
+let cachedAt = 0
+/** Reopening within this window reuses the scan instead of walking the tree again. */
+const RESCAN_MIN_INTERVAL_MS = 3000
 
 function getRelativePath(fullPath: string, workspacePath: string): string {
   if (fullPath.startsWith(workspacePath)) {
@@ -158,20 +165,30 @@ export function FileMentionPopover({
   React.useEffect(() => {
     if (!open || !workspacePath || !isTauri()) return
 
-    if (cachedWorkspace === workspacePath && cachedEntries.length > 0) {
+    const hasCache = cachedWorkspace === workspacePath && cachedEntries.length > 0
+    if (hasCache) {
       setAllEntries(cachedEntries)
-      return
+      if (Date.now() - cachedAt < RESCAN_MIN_INTERVAL_MS) return
     }
 
     let cancelled = false
-    setIsLoading(true)
+    // The spinner is for an empty list only; a refresh behind a painted list
+    // swaps the rows in place when it lands.
+    if (!hasCache) setIsLoading(true)
 
     ;(async () => {
       const result: FlatEntry[] = []
-      await scanRecursive(workspacePath, workspacePath, 0, 8, result)
+      try {
+        await scanRecursive(workspacePath, workspacePath, 0, 8, result)
+      } catch (e) {
+        console.warn('[FileMentionPopover] workspace scan failed', e)
+        if (!cancelled) setIsLoading(false)
+        return
+      }
       if (cancelled) return
       cachedWorkspace = workspacePath
       cachedEntries = result
+      cachedAt = Date.now()
       setAllEntries(result)
       setIsLoading(false)
     })()
@@ -400,4 +417,5 @@ export function FileMentionPopover({
 export function invalidateFileMentionCache(): void {
   cachedWorkspace = null
   cachedEntries = []
+  cachedAt = 0
 }

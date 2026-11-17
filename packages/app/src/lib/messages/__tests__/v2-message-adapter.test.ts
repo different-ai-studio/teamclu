@@ -1048,4 +1048,20 @@ describe("adaptTeamcluMessages", () => {
     expect(result[0].processDeferred).toBeUndefined();
     expect(result[0].toolCalls).toHaveLength(1);
   });
+
+  it("keeps two turns that gave the same answer as two rows", () => {
+    const result = adaptTeamcluMessages([
+      tmsg({ content: "好的", turnId: "turn-1", t: 1 }),
+      tmsg({ content: "好的", turnId: "turn-2", t: 2 }),
+    ])!;
+    expect(result.map((m) => m.turnId)).toEqual(["turn-1", "turn-2"]);
+  });
+
+  it("still folds a late duplicate of the same turn's reply into one row", () => {
+    const result = adaptTeamcluMessages([
+      tmsg({ content: "好的", turnId: "turn-1", t: 1 }),
+      tmsg({ content: "好的 ", turnId: "", t: 2 }),
+    ])!;
+    expect(result).toHaveLength(1);
+  });
 });

@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { CheckCircle2, AlertTriangle, XCircle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
 import type { SettingsSection } from '@/stores/ui'
 import type { DiagnosticFinding, FindingStatus, TraceEvent } from '@/lib/diagnostics/types'
@@ -60,10 +61,11 @@ function ConclusionCard({
   onOpenHint: (section: SettingsSection) => void
   onRemediate: (id: RemediationId) => void
 }) {
+  const { t } = useTranslation()
   if (!finding) {
     return (
       <div className="rounded-[10px] border border-border-soft bg-panel px-3 py-2.5">
-        <p className="text-[13px] text-muted-foreground">此症状暂无结论。先运行一次诊断。</p>
+        <p className="text-[13px] text-muted-foreground">{t('settings.diagnostics.symptomNoConclusion', '此症状暂无结论。先运行一次诊断。')}</p>
       </div>
     )
   }
@@ -82,7 +84,7 @@ function ConclusionCard({
               onClick={() => onOpenHint(finding.hintSection!)}
               className="mt-1 text-[12px] text-coral hover:underline"
             >
-              前往相关设置 →
+              {t('settings.diagnostics.openHintSection', '前往相关设置 →')}
             </button>
           )}
           <RemediationButtons finding={finding} onRemediate={onRemediate} />
@@ -109,8 +111,9 @@ function SendStrip({ stages }: { stages: SendStripStage[] }) {
 }
 
 function TraceList({ traces }: { traces: TraceEvent[] }) {
+  const { t } = useTranslation()
   if (traces.length === 0) {
-    return <p className="text-[12px] text-muted-foreground">没有可展示的发送轨迹。</p>
+    return <p className="text-[12px] text-muted-foreground">{t('settings.diagnostics.noTraces', '没有可展示的发送轨迹。')}</p>
   }
   return (
     <ol className="space-y-1.5">
@@ -132,11 +135,12 @@ function TraceList({ traces }: { traces: TraceEvent[] }) {
 }
 
 function EvidenceList({ findings }: { findings: DiagnosticFinding[] }) {
+  const { t } = useTranslation()
   const evidence = findings.flatMap((item) =>
     item.evidence.map((entry) => ({ ...entry, code: item.code })),
   )
   if (evidence.length === 0) {
-    return <p className="text-[12px] text-muted-foreground">没有额外证据。</p>
+    return <p className="text-[12px] text-muted-foreground">{t('settings.diagnostics.noEvidence', '没有额外证据。')}</p>
   }
   return (
     <ul className="space-y-1.5">
@@ -166,6 +170,7 @@ export function DiagnosticSymptomPanel({
   onOpenHint: (section: SettingsSection) => void
   onRemediate: (id: RemediationId) => void
 }) {
+  const { t } = useTranslation()
   const scopedFindings = findingsForSymptom(findings, tab)
   const conclusion = primaryFinding(findings, tab)
   const scopedTraces = tracesForSymptom(
@@ -195,13 +200,13 @@ export function DiagnosticSymptomPanel({
       )}
       <div>
         <h5 className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.8px] text-faint">
-          Timeline
+          {t('settings.diagnostics.timelineHeading', 'Timeline')}
         </h5>
         <TraceList traces={scopedTraces} />
       </div>
       <div>
         <h5 className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.8px] text-faint">
-          证据
+          {t('settings.diagnostics.evidenceHeading', '证据')}
         </h5>
         <EvidenceList findings={scopedFindings} />
       </div>
