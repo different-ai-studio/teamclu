@@ -47,6 +47,13 @@ import {
 } from "@/lib/roles/loader"
 import type { AttachableSkill, RoleEditorState, RoleRecord } from "@/lib/roles/types"
 import { useEffectiveWorkspacePath } from "@/lib/workspace/effective-workspace"
+import { TEAMCLU_DIR } from "@/lib/config/build-config"
+
+// Where the role loader keeps workspace roles (lib/roles/loader.ts). This page
+// still tested for `.opencode/roles`, so every workspace role was labelled
+// "External path" and never sorted first.
+const ROLES_DIR = `${TEAMCLU_DIR}/roles`
+const ROLE_SKILLS_DIR = `${ROLES_DIR}/skills`
 
 type EditorMode = "structured" | "markdown"
 
@@ -94,8 +101,8 @@ export const RolesSection = React.memo(function RolesSection({
 
   const sortedRoles = React.useMemo(() => {
     return [...filteredRoles].sort((a, b) => {
-      const aDefault = workspacePath ? a.filePath.startsWith(`${workspacePath}/.opencode/roles`) : false
-      const bDefault = workspacePath ? b.filePath.startsWith(`${workspacePath}/.opencode/roles`) : false
+      const aDefault = workspacePath ? a.filePath.startsWith(`${workspacePath}/${ROLES_DIR}`) : false
+      const bDefault = workspacePath ? b.filePath.startsWith(`${workspacePath}/${ROLES_DIR}`) : false
       if (aDefault !== bDefault) return aDefault ? -1 : 1
       return a.slug.localeCompare(b.slug)
     })
@@ -341,7 +348,7 @@ export const RolesSection = React.memo(function RolesSection({
         <SectionHeader
           icon={UserRound}
           title={t("settings.roles.title", "Roles")}
-          description={t("settings.roles.descriptionDetail", "Workspace roles stored in .opencode/roles and loaded by the role plugin")}
+          description={t("settings.roles.descriptionDetail", "Workspace roles stored in {{dir}}", { dir: ROLES_DIR })}
           iconColor="text-sky-500"
         />
       ) : null}
@@ -463,7 +470,7 @@ export const RolesSection = React.memo(function RolesSection({
                           {t("settings.roles.roleSkillsCount", "role skills {{count}}", { count: role.roleSkills.length })}
                         </span>
                         <span className="inline-flex max-w-full items-center rounded-full border border-border/70 bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
-                          {role.filePath.startsWith(`${workspacePath}/.opencode/roles`)
+                          {role.filePath.startsWith(`${workspacePath}/${ROLES_DIR}`)
                             ? t("settings.roles.sourceWorkspace", "Workspace")
                             : t("settings.roles.sourceExternal", "External path")}
                         </span>
@@ -668,7 +675,7 @@ export const RolesSection = React.memo(function RolesSection({
                     <div>
                       <p className="text-[13px] font-medium">{t("settings.roles.availableRoleSkills", "Available role skills")}</p>
                       <p className="text-xs text-muted-foreground">
-                        {t("settings.roles.availableRoleSkillsHint", "Attach local workspace skills and choose whether to copy or migrate them into .opencode/roles/skills")}
+                        {t("settings.roles.availableRoleSkillsHint", "Attach local workspace skills and choose whether to copy or migrate them into {{dir}}", { dir: ROLE_SKILLS_DIR })}
                       </p>
                     </div>
                     <span className="text-xs text-muted-foreground">
@@ -788,7 +795,8 @@ export const RolesSection = React.memo(function RolesSection({
                 "settings.roles.deleteConfirm",
                 {
                   name: roleToDelete?.slug ?? "",
-                  defaultValue: `Delete "${roleToDelete?.slug ?? ""}"? Role skills under .opencode/roles/skills are preserved.`,
+                  dir: ROLE_SKILLS_DIR,
+                  defaultValue: 'Delete "{{name}}"? Role skills under {{dir}} are preserved.',
                 },
               )}
             </DialogDescription>

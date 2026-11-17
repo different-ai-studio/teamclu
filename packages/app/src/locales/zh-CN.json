@@ -2042,6 +2042,12 @@
       "run": "运行诊断",
       "running": "正在诊断…",
       "runComplete": "诊断完成",
+      "symptomNoConclusion": "此症状暂无结论。先运行一次诊断。",
+      "openHintSection": "前往相关设置 →",
+      "noTraces": "没有可展示的发送轨迹。",
+      "noEvidence": "没有额外证据。",
+      "timelineHeading": "时间线",
+      "evidenceHeading": "证据",
       "runFailed": "诊断失败：{{message}}",
       "summary": "{{ok}} 通过 · {{warn}} 警告 · {{fail}} 失败",
       "results": "检查结果",
@@ -3274,7 +3280,7 @@
     "roles": {
       "title": "角色",
       "description": "按需渐进披露 role skill 的工作区角色",
-      "descriptionDetail": "存储在 .opencode/roles 中，并由 role 插件加载的工作区角色",
+      "descriptionDetail": "存储在 {{dir}} 中的工作区角色",
       "selectWorkspace": "请先选择工作区目录",
       "searchPlaceholder": "搜索角色...",
       "addRole": "新增角色",
@@ -3311,7 +3317,7 @@
       "workingStylePlaceholder": "描述该角色的工作方式",
       "workingStyleHint": "描述这个角色的行为偏好、审阅风格、优先级和沟通/取舍方式。",
       "availableRoleSkills": "可用角色技能",
-      "availableRoleSkillsHint": "从工作区本地 skills 中挂载，并选择复制或迁移到 .opencode/roles/skills",
+      "availableRoleSkillsHint": "从工作区本地 skills 中挂载，并选择复制或迁移到 {{dir}}",
       "roleSkillsCount": "角色技能 {{count}}",
       "sourceWorkspace": "工作区",
       "sourceExternal": "外部路径",
@@ -3326,7 +3332,7 @@
       "openLinkedSkill": "打开关联技能 {{name}}",
       "markdownContent": "ROLE.md 内容",
       "deleteTitle": "删除角色",
-      "deleteConfirm": "确定删除“{{name}}”吗？.opencode/roles/skills 下的角色技能会被保留。",
+      "deleteConfirm": "确定删除“{{name}}”吗？{{dir}} 下的角色技能会被保留。",
       "parseFailed": "解析角色 Markdown 失败",
       "noLinkedSkills": "未关联技能"
     },
@@ -4151,6 +4157,19 @@
     "signInFirst": "会先登录，登录后立即加入团队。",
     "cancel": "暂不",
     "accept": "加入团队"
+  },
+  "teamJoinLink": {
+    "ttl7d": "7 天",
+    "ttl30d": "30 天",
+    "ttlNever": "不限期",
+    "ttlLabel": "有效期",
+    "capLabel": "人数上限（可选）",
+    "urlLabel": "加入链接",
+    "copy": "复制",
+    "copyFailed": "复制失败",
+    "revoke": "作废",
+    "rotate": "换一条新链接",
+    "create": "生成链接"
   },
   "skills": {
     "access": {

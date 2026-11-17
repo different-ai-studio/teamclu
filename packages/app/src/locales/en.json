@@ -2042,6 +2042,12 @@
       "run": "Run Diagnostics",
       "running": "Running diagnostics…",
       "runComplete": "Diagnostics complete",
+      "symptomNoConclusion": "No conclusion for this symptom yet. Run diagnostics first.",
+      "openHintSection": "Open the related settings →",
+      "noTraces": "No send trace to show.",
+      "noEvidence": "No further evidence.",
+      "timelineHeading": "Timeline",
+      "evidenceHeading": "Evidence",
       "runFailed": "Diagnostics failed: {{message}}",
       "summary": "{{ok}} passed · {{warn}} warnings · {{fail}} failed",
       "results": "Check Results",
@@ -3274,7 +3280,7 @@
     "roles": {
       "title": "Roles",
       "description": "Workspace roles that progressively expose role-specific skills",
-      "descriptionDetail": "Workspace roles stored in .opencode/roles and loaded by the role plugin",
+      "descriptionDetail": "Workspace roles stored in {{dir}}",
       "selectWorkspace": "Please select a workspace directory first",
       "searchPlaceholder": "Search roles...",
       "addRole": "Add Role",
@@ -3311,7 +3317,7 @@
       "workingStylePlaceholder": "Describe how this role should operate",
       "workingStyleHint": "Capture behavioral guidelines, review style, priorities, and how the role should communicate or make tradeoffs.",
       "availableRoleSkills": "Available role skills",
-      "availableRoleSkillsHint": "Attach local workspace skills and choose whether to copy or migrate them into .opencode/roles/skills",
+      "availableRoleSkillsHint": "Attach local workspace skills and choose whether to copy or migrate them into {{dir}}",
       "roleSkillsCount": "role skills {{count}}",
       "sourceWorkspace": "Workspace",
       "sourceExternal": "External path",
@@ -3326,7 +3332,7 @@
       "openLinkedSkill": "Open linked skill {{name}}",
       "markdownContent": "ROLE.md Content",
       "deleteTitle": "Delete Role",
-      "deleteConfirm": "Delete \"{{name}}\"? Role skills under .opencode/roles/skills are preserved.",
+      "deleteConfirm": "Delete \"{{name}}\"? Role skills under {{dir}} are preserved.",
       "parseFailed": "Failed to parse role markdown",
       "noLinkedSkills": "No linked skills"
     },
@@ -4151,6 +4157,19 @@
     "signInFirst": "You'll sign in first; the team is joined right after.",
     "cancel": "Not now",
     "accept": "Join team"
+  },
+  "teamJoinLink": {
+    "ttl7d": "7 days",
+    "ttl30d": "30 days",
+    "ttlNever": "No expiry",
+    "ttlLabel": "Valid for",
+    "capLabel": "Member limit (optional)",
+    "urlLabel": "Join link",
+    "copy": "Copy",
+    "copyFailed": "Could not copy",
+    "revoke": "Revoke",
+    "rotate": "Replace with a new link",
+    "create": "Create link"
   },
   "skills": {
     "access": {
