@@ -31,7 +31,10 @@ function mapRow(r: SessionSyncRow): cache.SessionRow {
     cronJobId: r.cron_job_id ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
-    deletedAt: null,
+    // An archive is this cache's soft delete. Carrying it on the upsert (rather
+    // than dropping the row) is what lets a session archived on another device
+    // leave the local list, and a later unarchive bring it back as null.
+    deletedAt: r.archived_at ?? null,
     syncedAt: new Date().toISOString(),
   };
 }
@@ -61,9 +64,14 @@ export async function syncSessionsForTeam(
     console.warn("[session-sync] pull failed:", error);
     return 0;
   }
-  const rows = data.filter((row) => row.archived_at == null).map(mapRow);
+  // Archived rows used to be filtered out before both the upsert and the
+  // watermark. A session archived elsewhere then stayed live in the cache and
+  // came back in the cold-start paint, and a delta holding only archived rows
+  // never moved the watermark, so every sync pulled it again.
+  const rows = data.map(mapRow);
+  const live = rows.filter((row) => row.deletedAt == null);
   if (rows.length > 0) {
-    seedSessionCreatedByFromRows(rows);
+    seedSessionCreatedByFromRows(live);
     await cache.upsertSessionsBatch(rows);
     const maxUpdated = rows.reduce(
       (acc, row) => (row.updatedAt > acc ? row.updatedAt : acc),
@@ -73,5 +81,5 @@ export async function syncSessionsForTeam(
       await cache.setWatermark("sessions", teamId, maxUpdated);
     }
   }
-  return rows.length;
+  return live.length;
 }

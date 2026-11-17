@@ -143,6 +143,42 @@ describe("session and message cache sync", () => {
     );
   });
 
+  it("soft-deletes a session archived elsewhere and still advances the watermark", async () => {
+    mocks.getWatermark.mockResolvedValueOnce("2026-05-25T00:00:00.000Z");
+    mocks.backend.sessions.listSessionsForTeamSince.mockResolvedValueOnce([
+      {
+        id: "session-archived",
+        team_id: "team-1",
+        title: "Old",
+        mode: "collab",
+        primary_agent_id: null,
+        idea_id: null,
+        summary: null,
+        last_message_preview: null,
+        last_message_at: null,
+        created_by_actor_id: "actor-1",
+        created_at: "2026-05-25T00:01:00.000Z",
+        updated_at: "2026-05-25T00:30:00.000Z",
+        archived_at: "2026-05-25T00:30:00.000Z",
+      },
+    ] satisfies SessionSyncRow[]);
+
+    // Nothing live came back, but the archive must reach the cache.
+    await expect(syncSessionsForTeam("team-1")).resolves.toBe(0);
+
+    expect(mocks.upsertSessionsBatch).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: "session-archived",
+        deletedAt: "2026-05-25T00:30:00.000Z",
+      }),
+    ]);
+    expect(mocks.setWatermark).toHaveBeenCalledWith(
+      "sessions",
+      "team-1",
+      "2026-05-25T00:30:00.000Z",
+    );
+  });
+
   it("does a full session sync without reading the previous watermark", async () => {
     mocks.backend.sessions.listSessionsForTeamSince.mockResolvedValueOnce([]);
 
