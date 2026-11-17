@@ -128,6 +128,14 @@ openssl = { version = "0.10", features = ["vendored"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
+# Link the MSVC VC runtime statically (UCRT stays dynamic, it ships with
+# Windows). Without it this binary imports VCRUNTIME140.dll, which a clean
+# Windows install does not have, and fails to start with "找不到
+# VCRUNTIME140.dll". The desktop exe gets the same treatment from the Tauri CLI
+# (STATIC_VCRUNTIME); sidecars built with plain cargo do not. No-op off MSVC.
+[build-dependencies]
+static_vcruntime = "3.0"
+
 [dev-dependencies]
 tokio-tungstenite = "0.29"
 wiremock = "0.6"

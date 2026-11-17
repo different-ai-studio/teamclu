@@ -380,7 +380,30 @@ jobs:
         run: cargo check -p amuxd --locked
 
       - name: Build amuxd on Windows
-        run: cargo build -p amuxd --locked
+        run: cargo build -p amuxd -p teamclu-introspect --locked
+
+      # Both sidecars are built with plain cargo, so they only skip
+      # VCRUNTIME140.dll because their build.rs links the VC runtime statically
+      # (static_vcruntime). A clean Windows install has no VC++ Redistributable,
+      # and an import here shows up as "找不到 VCRUNTIME140.dll" when the desktop
+      # starts the sidecar. The desktop exe is covered by the Tauri CLI.
+      - name: Sidecars must not import VCRUNTIME140.dll
+        shell: bash
+        run: |
+          set -euo pipefail
+          READOBJ="$(command -v llvm-readobj || true)"
+          [ -n "$READOBJ" ] || READOBJ="/c/Program Files/LLVM/bin/llvm-readobj.exe"
+          [ -x "$READOBJ" ] || { echo "::error::llvm-readobj not found on the runner"; exit 1; }
+          fail=0
+          for exe in target/debug/amuxd.exe target/debug/teamclu-introspect.exe; do
+            imports="$("$READOBJ" --coff-imports "$exe" | grep -i 'Name: .*\.dll' || true)"
+            echo "== $exe"; echo "$imports"
+            if echo "$imports" | grep -qi 'vcruntime'; then
+              echo "::error::$exe imports the VC runtime DLL; it will not start without the VC++ Redistributable"
+              fail=1
+            fi
+          done
+          exit $fail
 
   desktop-windows:
     name: Desktop (Windows)
