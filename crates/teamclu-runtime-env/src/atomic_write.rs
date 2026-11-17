@@ -50,6 +50,11 @@ pub fn opencode_write_lock(config_path: &Path) -> Arc<Mutex<()>> {
 /// The temp file is created next to `path` (same directory, so `rename` stays
 /// on one filesystem). On success `path` is replaced atomically; on any error
 /// the temp file is best-effort removed and the original `path` is untouched.
+///
+/// On unix the file is created owner-only (0600). These files carry
+/// credentials — the team `opencode.json` holds the live AI-gateway token — and
+/// the rename replaces the target's inode, so the mode set here is the mode the
+/// final file has, whatever the previous file's was.
 pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
     let seq = WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
     let file_name = path
@@ -62,7 +67,7 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
         None => Path::new(&tmp_name).to_path_buf(),
     };
 
-    if let Err(e) = std::fs::write(&tmp, content) {
+    if let Err(e) = write_private(&tmp, content) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
@@ -71,4 +76,51 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
         return Err(e);
     }
     Ok(())
+}
+
+/// Create `path` fresh and write `content` to it, owner-only on unix.
+fn write_private(path: &Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(content.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replaces_the_target_with_the_new_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.json");
+        std::fs::write(&path, "a much longer previous body").unwrap();
+        atomic_write(&path, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn written_file_is_owner_only_even_over_a_world_readable_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        atomic_write(&path, r#"{"apiKey":"secret"}"#).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 }
