@@ -195,15 +195,21 @@ jobs:
             sync_env OPENCODE_PROVIDER_ID "$OPENCODE_PROVIDER_ID"
             sync_env OPENCODE_PROVIDER_NAME "$OPENCODE_PROVIDER_NAME"
 
+            # --no-deps on both `up` calls below: fc depends on the one-shot
+            # `migrate` service, so without it every daemon push re-ran
+            # migrations from the just-reset checkout while FC was still last
+            # night's image (self-host builds FC nightly, not per merge). The
+            # schema then led the code that reads it until 00:00. Migrations
+            # belong to self-host-deploy.yml alone.
             echo "=== ensure fc + emqx healthy ==="
-            docker compose up -d fc emqx
+            docker compose up -d --no-deps fc emqx
             timeout 180 sh -c \
               'until docker compose ps fc | grep -q healthy; do sleep 5; done'
             timeout 180 sh -c \
               'until docker compose ps emqx | grep -q healthy; do sleep 5; done'
 
             echo "=== recreate amuxd (image streamed from CI) ==="
-            docker compose --profile daemon up -d --pull never --remove-orphans amuxd
+            docker compose --profile daemon up -d --no-deps --pull never --remove-orphans amuxd
 
             echo "=== prune dangling images from docker load ==="
             docker image prune -f
