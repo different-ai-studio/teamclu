@@ -1,3 +1,4 @@
+mod atomic_file;
 mod daemon_config;
 pub mod device_mcp;
 pub mod edit;
