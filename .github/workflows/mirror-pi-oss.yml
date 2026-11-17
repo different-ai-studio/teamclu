@@ -184,7 +184,19 @@ jobs:
           # release (run 32605980446: "Failed to connect to teamclaw.ucar.cc
           # port 443 after 300450 ms"). Bound the wait and retry instead.
           RETRY=(--connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 --retry-connrefused)
-          MANIFEST=$(curl -fsSL "${RETRY[@]}" "$OSS_BASE/$VERSION/manifest.json")
+          # Not reaching the CDN at all says nothing about the upload, which
+          # already succeeded against OSS: warn and stop. A manifest that does
+          # come back and is wrong still fails the run below.
+          unreachable() { case "$1" in 5|6|7|28|35) return 0 ;; *) return 1 ;; esac; }
+          rc=0
+          MANIFEST=$(curl -fsSL "${RETRY[@]}" "$OSS_BASE/$VERSION/manifest.json") || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            if unreachable "$rc"; then
+              echo "::warning::CDN not reachable from this runner (curl exit $rc); read-back skipped"
+              exit 0
+            fi
+            exit "$rc"
+          fi
           echo "$MANIFEST" | node -e '
             let s=""; process.stdin.on("data", x => s += x).on("end", () => {
               const m = JSON.parse(s)
@@ -192,7 +204,15 @@ jobs:
               console.log(m.version + " " + m.asset)
             })'
           ASSET=$(echo "$MANIFEST" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).asset")
-          curl -fsI "${RETRY[@]}" "$OSS_BASE/$VERSION/$ASSET" >/dev/null
+          rc=0
+          curl -fsI "${RETRY[@]}" "$OSS_BASE/$VERSION/$ASSET" >/dev/null || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            if unreachable "$rc"; then
+              echo "::warning::CDN not reachable from this runner (curl exit $rc); asset read-back skipped"
+              exit 0
+            fi
+            exit "$rc"
+          fi
 
   mirror-mcp-sdk:
     # The pi extension is the host's MCP client (pi's own is CLI-only) and imports
@@ -343,7 +363,19 @@ jobs:
           # GitHub runners only most of the time, and a bare curl has no connect
           # timeout.
           RETRY=(--connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 --retry-connrefused)
-          MANIFEST=$(curl -fsSL "${RETRY[@]}" "$OSS_BASE/$VERSION/manifest.json")
+          # Not reaching the CDN at all says nothing about the upload, which
+          # already succeeded against OSS: warn and stop. A manifest that does
+          # come back and is wrong still fails the run below.
+          unreachable() { case "$1" in 5|6|7|28|35) return 0 ;; *) return 1 ;; esac; }
+          rc=0
+          MANIFEST=$(curl -fsSL "${RETRY[@]}" "$OSS_BASE/$VERSION/manifest.json") || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            if unreachable "$rc"; then
+              echo "::warning::CDN not reachable from this runner (curl exit $rc); read-back skipped"
+              exit 0
+            fi
+            exit "$rc"
+          fi
           echo "$MANIFEST" | node -e '
             let s=""; process.stdin.on("data", x => s += x).on("end", () => {
               const m = JSON.parse(s)
@@ -351,4 +383,12 @@ jobs:
               console.log(m.version + " " + m.asset)
             })'
           ASSET=$(echo "$MANIFEST" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).asset")
-          curl -fsI "${RETRY[@]}" "$OSS_BASE/$VERSION/$ASSET" >/dev/null
+          rc=0
+          curl -fsI "${RETRY[@]}" "$OSS_BASE/$VERSION/$ASSET" >/dev/null || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            if unreachable "$rc"; then
+              echo "::warning::CDN not reachable from this runner (curl exit $rc); asset read-back skipped"
+              exit 0
+            fi
+            exit "$rc"
+          fi
