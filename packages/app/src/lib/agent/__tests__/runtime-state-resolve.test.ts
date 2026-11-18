@@ -8,7 +8,6 @@ import {
   normalizeAgentModelId,
   resolveCommandRuntimeId,
   resolvePermissionCommandTarget,
-  resolveRuntimeIdForAgent,
   resolveRuntimeStateEntryForAgent,
   resolveSetModelId,
   selectAgentModel,
@@ -57,7 +56,6 @@ describe("resolveRuntimeStateEntryForAgent", () => {
     ]);
     const resolved = resolveRuntimeStateEntryForAgent("agent-mac", byRuntimeId, "uuid-from-db");
     expect(resolved?.info.availableModels).toHaveLength(1);
-    expect(resolveRuntimeIdForAgent("agent-mac", byRuntimeId, "uuid-from-db")).toBe("uuid-from-db");
   });
 
   it("prefers the newest attachment when multiple sessions are live", () => {
@@ -88,19 +86,6 @@ describe("resolveRuntimeStateEntryForAgent", () => {
       "stale-db-uuid": entry("other-agent", "other-session"),
     };
     expect(resolveRuntimeStateEntryForAgent(agentUuid, byRuntimeId, "stale-db-uuid")).toBe(live);
-    expect(resolveRuntimeIdForAgent(agentUuid, byRuntimeId, "stale-db-uuid")).toBe("session-1");
-  });
-
-  it("returns session id from the matched attachment", () => {
-    const agentUuid = "b3cbc44e-0000-4000-8000-000000000001";
-    const byRuntimeId = attachmentStore(agentUuid, "session-1", [
-      { id: "opencode/big-pickle", displayName: "Big Pickle" },
-    ]);
-    expect(resolveRuntimeIdForAgent(agentUuid, byRuntimeId)).toBe("session-1");
-  });
-
-  it("falls back to DB runtime id when no retain exists yet", () => {
-    expect(resolveRuntimeIdForAgent("a-1", {}, "rt-from-db")).toBe("rt-from-db");
   });
 
   it("derives backend type as pi for any live runtime entry", () => {

@@ -839,6 +839,3 @@ export function ComposerStack({
     </div>
   );
 }
-
-/** @deprecated Use ComposerStack — kept for tests importing the old name. */
-export const StreamingAgentsBar = ComposerStack;

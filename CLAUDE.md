@@ -126,7 +126,7 @@ nowhere else; this describes what exists, it decides nothing):
   servers waits for a native approval dialog that times out when nobody is at
   this machine (`introspect_api/confirm.rs`).
 
-**Editor system:** Markdown (Tiptap) / HTML (Tiptap + sandbox preview) / Code (CodeMirror 6 + Shiki)
+**Editor system:** Markdown and Code both on CodeMirror 6 (Shiki for highlighting); HTML is CodeMirror plus a sandboxed iframe preview
 
 **Agent runtime:** the amuxd daemon drives **pi** exclusively (ADR-0014) over
 stdio JSONL host processes — one pi child per (isolation domain, env revision,

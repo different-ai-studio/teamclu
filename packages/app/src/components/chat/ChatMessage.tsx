@@ -9,9 +9,9 @@ import {
   MessageContent,
   MessageResponse,
 } from "@/packages/ai/message";
-// Leaf imports on purpose: the dynamic-ui barrel pulls the component catalog
-// (zod + json-render schema) and the renderer, none of which a message needs
-// until it actually carries a UI tree. The renderer loads on first use.
+// Leaf imports on purpose: the component catalog (zod + json-render schema)
+// and the renderer are not needed until a message actually carries a UI tree.
+// The renderer loads on first use.
 import { extractUITreeFromResponse } from "@/lib/dynamic-ui/generator";
 import { parseStreamingUITree } from "@/lib/dynamic-ui/streaming";
 import { lazyNamed } from "@/lib/lazy-component";

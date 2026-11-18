@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/dialog'
 import { SettingCard, SectionHeader } from './shared'
 import { useEnvVarsStore } from '@/stores/env-vars'
-import { useTeamMembersStore } from '@/stores/team-members'
+import { useDeviceIdentityStore } from '@/stores/device-identity'
 import { useTeamPermissions } from '@/lib/team/team-permissions'
 import { encodeWorkspaceId, notifyDaemonRuntimePendingChanges } from '@/lib/daemon/daemon-local-client'
 import { formatEnvKeyActivationStatus } from '@/lib/diagnostics/env-diagnostics'
@@ -697,9 +697,9 @@ export const EnvVarsSection = React.memo(function EnvVarsSection() {
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
   const teamName = useCurrentTeamStore((s) => s.team?.name ?? null)
-  const currentNodeId = useTeamMembersStore((s) => s.currentNodeId)
-  // currentNodeId is hydrated here (and via useAppInit) since the Team panel no longer owns it.
-  const loadCurrentNodeId = useTeamMembersStore((s) => s.loadCurrentNodeId)
+  const currentActorId = useDeviceIdentityStore((s) => s.currentActorId)
+  // currentActorId is hydrated here (and via useAppInit) since the Team panel no longer owns it.
+  const loadCurrentActorId = useDeviceIdentityStore((s) => s.loadCurrentActorId)
   const { isOwner } = useTeamPermissions()
 
   const [addDialogOpen, setAddDialogOpen] = React.useState(false)
@@ -729,7 +729,7 @@ export const EnvVarsSection = React.memo(function EnvVarsSection() {
       }
     })()
 
-    loadCurrentNodeId()
+    loadCurrentActorId()
     let unlistenSync: (() => void) | undefined
     listen<void>('secrets-changed', () => {
       void (async () => {
@@ -750,7 +750,7 @@ export const EnvVarsSection = React.memo(function EnvVarsSection() {
     return () => {
       unlistenSync?.()
     }
-  }, [loadEnvCatalog, loadCurrentNodeId, workspacePath, t])
+  }, [loadEnvCatalog, loadCurrentActorId, workspacePath, t])
 
   // Files under teamclu-team/_secrets may exist while this daemon lacks the
   // team key needed to decrypt them. Ask the daemon rather than inferring from
@@ -896,7 +896,7 @@ export const EnvVarsSection = React.memo(function EnvVarsSection() {
       await setCatalogEntry('team', key, value, {
         description,
         category: 'custom',
-        nodeId: currentNodeId ?? '',
+        nodeId: currentActorId ?? '',
       })
     } else {
       await setCatalogEntry('personal', key, value, { description: description || undefined })
@@ -910,7 +910,7 @@ export const EnvVarsSection = React.memo(function EnvVarsSection() {
     try {
       if (deleteTarget.scope === 'team') {
         await deleteCatalogEntry('team', deleteTarget.key, {
-          nodeId: currentNodeId ?? '',
+          nodeId: currentActorId ?? '',
           role: isOwner ? 'owner' : 'member',
         })
       } else if (deleteTarget.scope === 'personal') {
@@ -934,7 +934,7 @@ export const EnvVarsSection = React.memo(function EnvVarsSection() {
     if (entry.scope === 'personal') return true
     if (entry.scope === 'team' && entry.category === 'system-shared') return false
     if (isOwner) return true
-    if (entry.scope === 'team' && entry.createdBy === currentNodeId) return true
+    if (entry.scope === 'team' && entry.createdBy === currentActorId) return true
     return false
   }
 

@@ -10,7 +10,6 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
-import { normalizeDaemonEnvActivationDiagnostics } from '@/lib/diagnostics/env-diagnostics'
 import { useAuthStore } from '@/stores/auth-store'
 import { isTauri, openExternalUrl } from '@/lib/utils'
 import { textToBase64Url } from '@/lib/base64'
@@ -1264,14 +1263,6 @@ export async function installDaemonTeamMcp(name: string): Promise<DaemonTeamMcpI
   )
 }
 
-/** Uninstall a team MCP server for the daemon's own agent actor. */
-export async function uninstallDaemonTeamMcp(name: string): Promise<DaemonTeamMcpInstallOutcome> {
-  return daemonFetchData<DaemonTeamMcpInstallOutcome>(
-    `/v1/team/mcp-servers/${encodeURIComponent(name)}/install`,
-    { method: 'DELETE' },
-  )
-}
-
 // ─── Runtime ──────────────────────────────────────────────────────────────────
 
 export type DaemonRuntimeRefreshStatus = 'clean' | 'pending' | 'applying' | 'failed'
@@ -1391,17 +1382,6 @@ export interface DaemonEnvActivationDiagnostics {
   opencode_serve_cached_env_keys: string[]
   missing_served_env_keys: string[]
   active_handle_env_keys: string[]
-}
-
-export async function getDaemonEnvActivationDiagnostics(
-  workspaceId: string,
-  teamId?: string | null,
-): Promise<DaemonEnvActivationDiagnostics | null> {
-  const query = teamId?.trim() ? `?team_id=${encodeURIComponent(teamId.trim())}` : ''
-  const result = await daemonFetch<DaemonEnvActivationDiagnostics>(
-    `/v1/workspaces/${workspaceId}/runtime/env-diagnostics${query}`,
-  )
-  return result.ok ? normalizeDaemonEnvActivationDiagnostics(result.data) : null
 }
 
 // ─── Team share ───────────────────────────────────────────────────────────────

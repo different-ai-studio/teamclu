@@ -15,7 +15,7 @@ const {
   mockExists,
   mockInvoke,
   mockListen,
-  mockLoadCurrentNodeId,
+  mockLoadCurrentActorId,
   mockLoadMembers,
   mockHydrateFromCache,
   mockLoadPersonal,
@@ -29,7 +29,7 @@ const {
   mockExists: vi.fn(),
   mockInvoke: vi.fn(),
   mockListen: vi.fn(),
-  mockLoadCurrentNodeId: vi.fn(),
+  mockLoadCurrentActorId: vi.fn(),
   mockLoadMembers: vi.fn(),
   mockHydrateFromCache: vi.fn(),
   mockLoadPersonal: vi.fn(),
@@ -131,10 +131,10 @@ vi.mock('@/stores/git-repos', () => ({
   }),
 }))
 
-vi.mock('@/stores/team-members', () => ({
-  useTeamMembersStore: {
+vi.mock('@/stores/device-identity', () => ({
+  useDeviceIdentityStore: {
     getState: () => ({
-      loadCurrentNodeId: mockLoadCurrentNodeId,
+      loadCurrentActorId: mockLoadCurrentActorId,
       loadMembers: mockLoadMembers,
     }),
   },
@@ -189,7 +189,7 @@ beforeEach(() => {
   mockExists.mockResolvedValue(true)
   mockInvoke.mockResolvedValue(null)
   mockListen.mockResolvedValue(vi.fn())
-  mockLoadCurrentNodeId.mockResolvedValue(undefined)
+  mockLoadCurrentActorId.mockResolvedValue(undefined)
   mockLoadMembers.mockResolvedValue(undefined)
   mockHydrateFromCache.mockResolvedValue(undefined)
   mockLoadPersonal.mockResolvedValue(undefined)
@@ -303,7 +303,7 @@ describe('useGitReposInit', () => {
     renderHook(() => useGitReposInit())
 
     await waitFor(() => {
-      expect(mockLoadCurrentNodeId).toHaveBeenCalled()
+      expect(mockLoadCurrentActorId).toHaveBeenCalled()
     })
   })
 })

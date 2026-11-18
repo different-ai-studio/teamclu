@@ -99,7 +99,6 @@ vi.mock('@/lib/utils', () => ({
 }))
 
 vi.mock('@/lib/ui/date-format', () => ({
-  formatSessionDate: (d: Date) => d.toISOString(),
   formatRelativeTime: (d: Date) => d.toISOString(),
 }))
 

@@ -94,13 +94,3 @@ export function generateAgentPrompt(
       return `Review the following changes in ${filePath}:\n\n${diffBlock}`;
   }
 }
-
-/**
- * Labels for Agent operations (for UI display).
- */
-export const agentOperationLabels: Record<AgentOperation, { label: string; icon: string }> = {
-  explain: { label: 'Explain Change', icon: 'MessageSquare' },
-  refactor: { label: 'Suggest Refactor', icon: 'Wand2' },
-  generatePatch: { label: 'Generate Patch', icon: 'FileCode' },
-  review: { label: 'Review Code', icon: 'Send' },
-};

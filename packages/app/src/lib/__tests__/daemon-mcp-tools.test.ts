@@ -14,7 +14,6 @@ import {
   getDaemonMcpTools,
   installDaemonTeamMcp,
   reconcileDaemonTeamCloudConfig,
-  uninstallDaemonTeamMcp,
   invalidateDaemonConnection,
 } from '@/lib/daemon/daemon-local-client'
 
@@ -92,15 +91,6 @@ describe('team MCP install/uninstall', () => {
     const call = calls.find((c) => String(c[0]).includes('/v1/team/mcp-servers/weather/install'))
     expect(call).toBeTruthy()
     expect((call?.[1] as RequestInit)?.method).toBe('PUT')
-  })
-
-  it('uninstalls for the daemon actor via DELETE', async () => {
-    const result = await uninstallDaemonTeamMcp('weather')
-    expect(result).toEqual({ teamId: 'team-x', mcpChanged: true })
-    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
-    const call = calls.find((c) => String(c[0]).includes('/v1/team/mcp-servers/weather/install'))
-    expect(call).toBeTruthy()
-    expect((call?.[1] as RequestInit)?.method).toBe('DELETE')
   })
 
   it('reconciles the daemon team cloud cache after catalog writes', async () => {

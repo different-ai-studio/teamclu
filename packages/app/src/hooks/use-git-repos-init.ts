@@ -6,7 +6,7 @@
 import { useEffect } from "react";
 import { isTauri } from "@/lib/utils";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { useTeamMembersStore } from "@/stores/team-members";
+import { useDeviceIdentityStore } from "@/stores/device-identity";
 import { useShortcutsStore } from "@/stores/shortcuts";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useOssSyncStore } from "@/stores/oss-sync";
@@ -33,7 +33,7 @@ export function useGitReposInit() {
 
     void (async () => {
       try {
-        await useTeamMembersStore.getState().loadCurrentNodeId();
+        await useDeviceIdentityStore.getState().loadCurrentActorId();
       } catch (err: unknown) {
         console.warn("[App] Failed to load current team member identity (non-critical):", err);
       }

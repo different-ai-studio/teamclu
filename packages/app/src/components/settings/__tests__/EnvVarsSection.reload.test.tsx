@@ -48,7 +48,6 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
   notifyDaemonRuntimePendingChanges: (...args: unknown[]) =>
     mockNotifyDaemonRuntimePendingChanges(...args),
   encodeWorkspaceId: (path: string) => mockEncodeWorkspaceId(path),
-  getDaemonEnvActivationDiagnostics: vi.fn(),
 }))
 
 vi.mock('@/stores/workspace', () => ({
@@ -112,11 +111,11 @@ vi.mock('@/stores/env-vars', () => ({
   ),
 }))
 
-vi.mock('@/stores/team-members', () => ({
-  useTeamMembersStore: (selector: (s: Record<string, unknown>) => unknown) =>
+vi.mock('@/stores/device-identity', () => ({
+  useDeviceIdentityStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
-      currentNodeId: 'node-1',
-      loadCurrentNodeId: vi.fn(),
+      currentActorId: 'node-1',
+      loadCurrentActorId: vi.fn(),
     }),
 }))
 

@@ -90,7 +90,7 @@ describe('CreateAppView', () => {
       name: 'My app',
       // Pinned deliberately: this is DEFAULT_APP_TYPE, and an unintended
       // change to it silently alters what every new app gets built as.
-      // `fullstack_tanstack_postgres` is now LEGACY_DATA_APP_TYPE — the id
+      // `fullstack_tanstack_postgres` is the legacy data_app id — the id
       // stored on apps created before the type split, never a new default.
       type: 'static_web',
       visibility: 'personal',

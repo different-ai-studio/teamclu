@@ -29,12 +29,6 @@ export function resolveAppLocality(
   return localAppIds.includes(appId)
 }
 
-/** Reactive {@link resolveAppLocality} for one app id. */
-export function useAppLocality(appId: string | null | undefined): boolean | null {
-  const localAppIds = useAppsStore((s) => s.localAppIds)
-  return React.useMemo(() => resolveAppLocality(localAppIds, appId), [localAppIds, appId])
-}
-
 /**
  * The app a session belongs to, and whether that app is on this machine.
  *
