@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Inbox, Lightbulb, Keyboard, ChevronDown } from 'lucide-react'
+import { Inbox, Keyboard } from 'lucide-react'
 import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
 import {
@@ -22,10 +22,7 @@ import { useCronStore } from '@/stores/cron'
 import { createQuickSession, describeQuickSessionFailure } from '@/lib/session/create-quick-session'
 import { useQuickChatReadiness } from '@/hooks/use-quick-chat-readiness'
 import { ContactsNavEntry } from '@/components/sidebar/ContactsNavEntry'
-import {
-  TeamShareNavSection,
-  useTeamShareCountsLoader,
-} from '@/components/sidebar/TeamShareNavSection'
+import { NavGroupEntries, useTeamShareCountsLoader } from '@/components/sidebar/NavGroupEntries'
 import { NewChatSplitButton } from '@/components/sidebar/NewChatSplitButton'
 import { AppsNavSection } from '@/components/sidebar/AppsNavSection'
 import { useFeatures } from '@/lib/config/remote-features'
@@ -82,9 +79,6 @@ export function NavRail() {
   const embedMode = useUIStore((s) => s.embedMode)
   const filter = useUIStore((s) => s.sidebarFilter)
   const setFilter = useUIStore((s) => s.setSidebarFilter)
-  const moreExpanded = useUIStore((s) => s.moreNavExpanded)
-  const toggleMore = useUIStore((s) => s.toggleMoreNav)
-  const setMoreExpanded = useUIStore((s) => s.setMoreNavExpanded)
   const showCronSessions = useCronStore((s) => s.showCronSessions)
   const setShowCronSessions = useCronStore((s) => s.setShowCronSessions)
   const attentionBySessionId = useSessionListStore((s) => s.attentionBySessionId)
@@ -115,22 +109,9 @@ export function NavRail() {
     return null
   }, [sessionsAttention, t])
 
-  // Counts feed rows in both groups, so the fetch lives here rather than in
-  // either TeamShareNavSection instance.
+  // Team-share catalogs back both grouped entries and their columns; the nav is
+  // always mounted, so the one fetch lives here.
   useTeamShareCountsLoader()
-
-  // Something else can select one of the folded destinations (default-tab
-  // setting, deep link, a link from the chat pane) — unfold the group so the
-  // active row is never hidden behind a collapsed rule.
-  const moreFilterActive =
-    filter.kind === 'ideas' ||
-    filter.kind === 'shortcuts' ||
-    (filter.kind === 'teamShare' &&
-      (filter.section === 'knowledge' || filter.section === 'mcp' || filter.section === 'env'))
-
-  React.useEffect(() => {
-    if (moreFilterActive) setMoreExpanded(true)
-  }, [moreFilterActive, setMoreExpanded])
 
   const handleQuickNewChat = React.useCallback(() => {
     if (creating) return
@@ -187,8 +168,13 @@ export function NavRail() {
         onPrimaryClick={handleQuickNewChat}
       />
 
-      {/* Everyday destinations. Everything else folds into 更多 below. */}
-      <div className="flex shrink-0 flex-col gap-0.5">
+      {/*
+        One list, no fold. Grouping knowledge + ideas into 知识 and skills + MCP
+        + secrets into 能力 keeps it to six entries, few enough that every one
+        shows with its label on the rail and in the list alike. Scrolls rather
+        than clips, for a short window.
+      */}
+      <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto overflow-x-hidden">
         <TopEntry
           label={t('sidebar.sessions', 'Sessions')}
           icon={Inbox}
@@ -201,74 +187,16 @@ export function NavRail() {
           }}
         />
         <ContactsNavEntry />
-        <TeamShareNavSection sections={['skills']} />
+        <NavGroupEntries />
         {features.apps && <AppsNavSection />}
-      </div>
-
-      <div className="flex min-h-0 flex-1 flex-col">
-        {/*
-          A rule with the label floated in it, rather than another left-aligned
-          header: the line is what separates the everyday rows from the folded
-          ones, and the chevron rotating in place is the only motion needed to
-          say which way it goes.
-        */}
-        {rail ? (
-          // The rail has no room for a labelled toggle, and a fold would make
-          // the expanded rail a different list from the collapsed one. Every
-          // entry shows; a plain rule keeps the everyday group apart.
-          <div aria-hidden className="mx-[18px] my-2 h-px bg-border-soft" />
-        ) : (
-        <button
-          type="button"
-          onClick={toggleMore}
-          aria-expanded={moreExpanded}
-          className="group flex w-full items-center gap-2.5 py-2"
-        >
-          <span
-            aria-hidden
-            className="h-px flex-1 bg-border-soft transition-colors duration-150 group-hover:bg-border"
+        {!embedMode ? (
+          <TopEntry
+            label={t('common.shortcuts', 'Shortcuts')}
+            icon={Keyboard}
+            active={filter.kind === 'shortcuts'}
+            onClick={() => setFilter({ kind: 'shortcuts' })}
           />
-          <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-faint transition-colors duration-150 group-hover:text-ink-2">
-            {t('sidebar.more', 'More')}
-            <ChevronDown
-              className={cn(
-                'h-3 w-3 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]',
-                moreExpanded && 'rotate-180',
-              )}
-            />
-          </span>
-          <span
-            aria-hidden
-            className="h-px flex-1 bg-border-soft transition-colors duration-150 group-hover:bg-border"
-          />
-        </button>
-        )}
-        {/* Scrolls rather than clips: nothing in here grows to absorb slack any
-            more (the app list that used to moved to column two), so on a short
-            window the last rows would otherwise be cut off by the rail's own
-            overflow-hidden. */}
-        {(rail || moreExpanded) && (
-          <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto overflow-x-hidden">
-            <TeamShareNavSection sections={['knowledge']} />
-            {!embedMode ? (
-              <TopEntry
-                label={t('sidebar.ideas', 'Ideas')}
-                icon={Lightbulb}
-                active={filter.kind === 'ideas'}
-                onClick={() => setFilter({ kind: 'ideas' })}
-              />
-            ) : null}
-            {!embedMode ? (
-              <TopEntry
-                label={t('common.shortcuts', 'Shortcuts')}
-                icon={Keyboard}
-                active={filter.kind === 'shortcuts'}
-                onClick={() => setFilter({ kind: 'shortcuts' })}
-              />
-            ) : null}
-            <TeamShareNavSection sections={['mcp', 'env']} />
-          </div>
-        )}
+        ) : null}
       </div>
     </div>
   )

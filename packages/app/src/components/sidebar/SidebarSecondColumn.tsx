@@ -4,6 +4,7 @@ import { SessionListColumn } from './SessionListColumn'
 import { useFeatures } from '@/lib/config/remote-features'
 import { lazyNamed } from '@/lib/lazy-component'
 import { PaneLoading } from '@/components/ui/pane-loading'
+import { NavGroupSwitch } from './NavGroupSwitch'
 
 // The session list is the default column and stays in the startup chunk. The
 // other columns are opened deliberately and each drags a sizeable subtree
@@ -28,7 +29,16 @@ export function SidebarSecondColumn({
   const filter = useUIStore((s) => s.sidebarFilter)
   const features = useFeatures()
   const column = resolveLazyColumn({ embedMode, filter, appsEnabled: features.apps })
-  if (column) return <Suspense fallback={<PaneLoading />}>{column}</Suspense>
+  if (column) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <NavGroupSwitch />
+        <div className="min-h-0 flex-1">
+          <Suspense fallback={<PaneLoading />}>{column}</Suspense>
+        </div>
+      </div>
+    )
+  }
   return <SessionListColumn showNewSessionActions={showNewSessionActions} onDismiss={onDismiss} />
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import React from 'react'
 
 vi.mock('react-i18next', () => ({
@@ -37,10 +37,10 @@ vi.mock('@/stores/team-share-browser', () => ({
 }))
 vi.mock('@/stores/ui', () => ({
   useUIStore: (selector: (state: Record<string, unknown>) => unknown) =>
-    selector({ sidebarFilter: { kind: 'sessions' }, setSidebarFilter }),
+    selector({ sidebarFilter: { kind: 'all' }, embedMode: false, navGroupLast: {}, setSidebarFilter }),
 }))
 
-import { TeamShareNavSection, useTeamShareCountsLoader } from '../TeamShareNavSection'
+import { NavGroupEntries, useTeamShareCountsLoader } from '../NavGroupEntries'
 
 function CountsLoaderHarness() {
   useTeamShareCountsLoader()
@@ -93,14 +93,27 @@ describe('useTeamShareCountsLoader', () => {
   })
 })
 
-describe('TeamShareNavSection', () => {
-  it('renders only the requested sections', () => {
+describe('NavGroupEntries', () => {
+  it('renders one entry per group, not one per section', () => {
     teamState.id = 'team-1'
-    const { getByText, queryByText } = render(<TeamShareNavSection sections={['skills', 'knowledge']} />)
+    const { getByText, queryByText } = render(<NavGroupEntries />)
 
-    expect(getByText('Skills')).toBeTruthy()
     expect(getByText('Knowledge')).toBeTruthy()
+    expect(getByText('Abilities')).toBeTruthy()
+    expect(queryByText('Skills')).toBeNull()
     expect(queryByText('MCP')).toBeNull()
     expect(queryByText('Team Env')).toBeNull()
+  })
+
+  it('opening a team-share member refreshes its catalog', () => {
+    teamState.id = 'team-1'
+    setSidebarFilter.mockReset()
+    loadSection.mockReset()
+    const { getByText } = render(<NavGroupEntries />)
+
+    fireEvent.click(getByText('Knowledge'))
+
+    expect(setSidebarFilter).toHaveBeenCalledWith({ kind: 'teamShare', section: 'knowledge' })
+    expect(loadSection).toHaveBeenCalledWith('knowledge', { force: true, withTools: false })
   })
 })

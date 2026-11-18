@@ -1,31 +1,16 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Sparkles, Plug, Box, Bookmark } from 'lucide-react'
-import { useUIStore } from '@/stores/ui'
+import { Sparkles, Bookmark } from 'lucide-react'
+import { useUIStore, type SidebarFilter } from '@/stores/ui'
+import { navGroupEntryFilter, navGroupMemberOf, type NavGroupId } from '@/lib/layout/nav-groups'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
 import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
-import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-share-browser'
+import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { cn } from '@/lib/utils'
 import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 import { navRowBox, navRowIcon, navRowLabel, navRowSignal, useNavRailMode } from '@/components/sidebar/nav-rail-mode'
-
-interface SectionDef {
-  section: TeamShareSection
-  icon: React.ComponentType<{ className?: string }>
-  labelKey: string
-  fallback: string
-}
-
-const SECTION_DEFS: Record<TeamShareSection, SectionDef> = {
-  skills: { section: 'skills', icon: Sparkles, labelKey: 'teamShare.skills', fallback: 'Skills' },
-  mcp: { section: 'mcp', icon: Plug, labelKey: 'teamShare.mcp', fallback: 'MCP' },
-  env: { section: 'env', icon: Box, labelKey: 'teamShare.env', fallback: 'Team Env' },
-  knowledge: { section: 'knowledge', icon: Bookmark, labelKey: 'teamShare.knowledge', fallback: 'Knowledge' },
-}
-
-const ALL_SECTIONS: TeamShareSection[] = ['skills', 'mcp', 'env', 'knowledge']
 
 /**
  * Prefetches every team-share catalog once. Split out of the rows because the
@@ -107,14 +92,58 @@ function SectionRow({
   )
 }
 
-export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: TeamShareSection[] }) {
+/**
+ * Opens one member of a grouped destination. Team-share sections also need
+ * their catalog refreshed and, for skills, a default detail view; the rail
+ * tile and column two's switch both go through here so they behave the same.
+ */
+export function useSelectNavGroupMember(): (filter: SidebarFilter) => void {
+  const setFilter = useUIStore((s) => s.setSidebarFilter)
+  const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
+  return React.useCallback(
+    (filter: SidebarFilter) => {
+      setFilter(filter)
+      if (filter.kind !== 'teamShare') return
+      const section = filter.section
+      void loadSection(section, { force: true, withTools: section === 'mcp' })
+      // Skills with nothing selected used to leave the main column blank. Default
+      // to the marketplace browse view — same entry as the store button, so the
+      // list header stays consistent with what's on the right.
+      if (section === 'skills') {
+        const detail = useTeamShareBrowserStore.getState().detailTarget
+        const skillSelected =
+          detail?.kind === 'skill' ||
+          detail?.kind === 'skill-file' ||
+          detail?.kind === 'marketplace' ||
+          detail?.kind === 'marketplace-item'
+        if (!skillSelected) {
+          useTeamShareBrowserStore.getState().openDetail({ kind: 'marketplace' })
+        }
+      }
+    },
+    [setFilter, loadSection],
+  )
+}
+
+const GROUP_DEFS: Record<NavGroupId, { icon: React.ComponentType<{ className?: string }>; labelKey: string; fallback: string }> = {
+  knowledge: { icon: Bookmark, labelKey: 'sidebar.groupKnowledge', fallback: 'Knowledge' },
+  abilities: { icon: Sparkles, labelKey: 'sidebar.groupAbilities', fallback: 'Abilities' },
+}
+
+/**
+ * The two grouped rail entries: 知识 (knowledge base + ideas) and 能力 (skills,
+ * MCP, secrets). Each opens the member last used in it; column two's switch
+ * moves between members. Each tile carries its members' attention dot.
+ */
+export function NavGroupEntries() {
   const { t } = useTranslation()
   const filter = useUIStore((s) => s.sidebarFilter)
-  const setFilter = useUIStore((s) => s.setSidebarFilter)
+  const embedMode = useUIStore((s) => s.embedMode)
+  const navGroupLast = useUIStore((s) => s.navGroupLast)
+  const select = useSelectNavGroupMember()
+  const activeGroup = navGroupMemberOf(filter)?.group ?? null
 
-  const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
   const skillLocalState = useTeamShareBrowserStore((s) => s.skillLocalState)
-
   const skillConflicts = React.useMemo(
     () => Object.values(skillLocalState).filter((s) => s.state === 'dirty' || s.state === 'stale_dirty').length,
     [skillLocalState],
@@ -149,53 +178,32 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
     }
   }, [conflictTeamId, loadConflicts])
 
-  const handleSelect = React.useCallback(
-    (section: TeamShareSection) => {
-      setFilter({ kind: 'teamShare', section })
-      void loadSection(section, { force: true, withTools: section === 'mcp' })
-      // Skills with nothing selected used to leave the main column blank. Default
-      // to the marketplace browse view — same entry as the store button, so the
-      // list header stays consistent with what's on the right.
-      if (section === 'skills') {
-        const detail = useTeamShareBrowserStore.getState().detailTarget
-        const skillSelected =
-          detail?.kind === 'skill' ||
-          detail?.kind === 'skill-file' ||
-          detail?.kind === 'marketplace' ||
-          detail?.kind === 'marketplace-item'
-        if (!skillSelected) {
-          useTeamShareBrowserStore.getState().openDetail({ kind: 'marketplace' })
-        }
-      }
+  const attention: Record<NavGroupId, { count: number; label: string }> = {
+    knowledge: {
+      count: knowledgeConflicts,
+      label: t('teamShare.knowledgeConflictCount', '{{count}} document needs a decision', {
+        count: knowledgeConflicts,
+      }),
     },
-    [setFilter, loadSection],
-  )
+    abilities: {
+      count: skillConflicts,
+      label: t('teamShare.skillConflictCount', '{{count}} skill needs a decision', {
+        count: skillConflicts,
+      }),
+    },
+  }
 
   return (
     <>
-      {sections.map((section) => SECTION_DEFS[section]).map((def) => (
+      {(['knowledge', 'abilities'] as const).map((group) => (
         <SectionRow
-          key={def.section}
-          label={t(def.labelKey, def.fallback)}
-          icon={def.icon}
-          active={filter.kind === 'teamShare' && filter.section === def.section}
-          needsAttention={
-            def.section === 'skills'
-              ? skillConflicts
-              : def.section === 'knowledge'
-                ? knowledgeConflicts
-                : 0
-          }
-          attentionLabel={
-            def.section === 'knowledge'
-              ? t('teamShare.knowledgeConflictCount', '{{count}} document needs a decision', {
-                  count: knowledgeConflicts,
-                })
-              : t('teamShare.skillConflictCount', '{{count}} skill needs a decision', {
-                  count: skillConflicts,
-                })
-          }
-          onClick={() => handleSelect(def.section)}
+          key={group}
+          label={t(GROUP_DEFS[group].labelKey, GROUP_DEFS[group].fallback)}
+          icon={GROUP_DEFS[group].icon}
+          active={activeGroup === group}
+          needsAttention={attention[group].count}
+          attentionLabel={attention[group].label}
+          onClick={() => select(navGroupEntryFilter(group, navGroupLast[group], { embedMode }))}
         />
       ))}
     </>

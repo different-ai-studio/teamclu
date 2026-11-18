@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import { NavRail } from '../NavRail'
 import { useUIStore } from '@/stores/ui'
 import { useSessionStore } from '@/stores/session-store'
@@ -42,16 +42,12 @@ vi.mock('sonner', () => ({
   toast: vi.fn(),
 }))
 
-function expandMore() {
-  fireEvent.click(screen.getByRole('button', { name: /更多|More/ }))
-}
-
 describe('NavRail', () => {
   beforeEach(() => {
     useUIStore.setState({
       sidebarFilter: { kind: 'all' },
       embedMode: false,
-      moreNavExpanded: false,
+      navGroupLast: {},
     })
     useSessionListStore.setState({
       rows: [mkListRow('s1', 'A'), mkListRow('s2', 'B')],
@@ -85,70 +81,69 @@ describe('NavRail', () => {
     expect(sessions.textContent).not.toMatch(/\d/)
   })
 
-  it('shows only Sessions, Contacts, Skills and Apps by default', () => {
+  it('shows six entries, with knowledge + ideas as 知识 and skills + MCP + secrets as 能力', () => {
     render(<NavRail />)
     expect(screen.getByRole('button', { name: /会话|Sessions/ })).toBeInTheDocument()
     expect(screen.getByTestId('contacts-nav-entry')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /技能|Skills/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^知识$/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^能力$/ })).toBeInTheDocument()
     expect(screen.getByTestId('apps-nav-section')).toBeInTheDocument()
-
-    expect(screen.queryByRole('button', { name: /知识库|Knowledge/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Ideas|想法/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /快捷方式|Shortcuts/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /MCP/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /密钥保险箱|Secret Vault/ })).not.toBeInTheDocument()
-  })
-
-  it('reveals Knowledge, Ideas, Shortcuts, MCP and 密钥保险箱 once 更多 is expanded', () => {
-    render(<NavRail />)
-    expandMore()
-    expect(screen.getByRole('button', { name: /知识库|Knowledge/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Ideas|想法/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /快捷方式|Shortcuts/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /MCP/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /密钥保险箱|Secret Vault/ })).toBeInTheDocument()
+
+    // The members are column two's switch, not rail entries.
+    expect(screen.queryByRole('button', { name: /知识库/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /想法/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /技能/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /MCP/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /密钥保险箱/ })).not.toBeInTheDocument()
+    // No fold any more.
+    expect(screen.queryByRole('button', { name: /^更多$/ })).not.toBeInTheDocument()
   })
 
-  it('puts 知识库 first in 更多, before 想法', () => {
+  it('知识 opens the knowledge base first, then whichever member was last open', () => {
     render(<NavRail />)
-    expandMore()
-    const knowledge = screen.getByRole('button', { name: /知识库|Knowledge/ })
-    const ideas = screen.getByRole('button', { name: /Ideas|想法/ })
-    expect(knowledge.compareDocumentPosition(ideas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^知识$/ }))
+    expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'teamShare', section: 'knowledge' })
+
+    act(() => {
+      useUIStore.getState().setSidebarFilter({ kind: 'ideas' })
+      useUIStore.getState().setSidebarFilter({ kind: 'all' })
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^知识$/ }))
+    expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'ideas' })
   })
 
-  it('auto-expands 更多 when Knowledge is already selected', () => {
-    useUIStore.setState({ sidebarFilter: { kind: 'teamShare', section: 'knowledge' } })
+  it('能力 opens skills first, then whichever member was last open', () => {
     render(<NavRail />)
-    expect(useUIStore.getState().moreNavExpanded).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: /^能力$/ }))
+    expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'teamShare', section: 'skills' })
+
+    act(() => {
+      useUIStore.getState().setSidebarFilter({ kind: 'teamShare', section: 'env' })
+      useUIStore.getState().setSidebarFilter({ kind: 'all' })
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^能力$/ }))
+    expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'teamShare', section: 'env' })
   })
 
-  it('clicking Shortcuts inside 更多 sets filter to { kind: "shortcuts" }', () => {
+  it('marks a group entry active while any of its members is open', () => {
+    useUIStore.setState({ sidebarFilter: { kind: 'teamShare', section: 'mcp' } })
     render(<NavRail />)
-    expandMore()
+    expect(screen.getByRole('button', { name: /^能力$/ }).className).toMatch(/font-semibold/)
+    expect(screen.getByRole('button', { name: /^知识$/ }).className).not.toMatch(/font-semibold/)
+  })
+
+  it('clicking Shortcuts sets filter to { kind: "shortcuts" }', () => {
+    render(<NavRail />)
     fireEvent.click(screen.getByRole('button', { name: /快捷方式/ }))
     expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'shortcuts' })
   })
 
-  it('auto-expands 更多 when one of its destinations is already selected', () => {
-    useUIStore.setState({ sidebarFilter: { kind: 'shortcuts' } })
+  it('in embed (plugin) mode hides Shortcuts and 知识 skips ideas', () => {
+    useUIStore.setState({ embedMode: true, navGroupLast: { knowledge: 'ideas' } })
     render(<NavRail />)
-    expect(screen.getByRole('button', { name: /快捷方式|Shortcuts/ })).toBeInTheDocument()
-    expect(useUIStore.getState().moreNavExpanded).toBe(true)
-  })
-
-  it('hides Ideas and Shortcuts in embed (plugin) mode', () => {
-    useUIStore.setState({ embedMode: true })
-    render(<NavRail />)
-    expandMore()
-    expect(screen.queryByRole('button', { name: /Ideas|想法/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /快捷方式|Shortcuts/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /会话|Sessions/ })).toBeInTheDocument()
-  })
-
-  it('renders AppsNavSection without expanding 更多', () => {
-    render(<NavRail />)
-    expect(screen.getByTestId('apps-nav-section')).toBeInTheDocument()
-    expect(useUIStore.getState().moreNavExpanded).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: /^知识$/ }))
+    expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'teamShare', section: 'knowledge' })
   })
 })
