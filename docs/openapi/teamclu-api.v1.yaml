@@ -10200,6 +10200,14 @@ components:
         id: { type: string, format: uuid }
         teamId: { type: string, format: uuid }
         slug: { type: string }
+        displayName:
+          type: string
+          maxLength: 120
+          description: >
+            Human-readable title. Any language, including Chinese. The slug
+            stays an ASCII id used in URLs and as the install folder, so a
+            Chinese-named skill can be shared without renaming what people
+            see. Older rows omit it; clients fall back to the slug.
         ownerActorId:
           type: string
           format: uuid
@@ -10283,6 +10291,12 @@ components:
       required: [slug, summary, category, changelog, contentHash]
       properties:
         slug: { $ref: "#/components/schemas/TeamSkillSlug" }
+        displayName:
+          type: string
+          maxLength: 120
+          description: >
+            Optional title shown in the team. Defaults to the slug. Use this
+            to keep a Chinese name when the slug is generated.
         summary: { type: string, maxLength: 200 }
         category: { $ref: "#/components/schemas/TeamSkillCategory" }
         whenToUse: { type: string }

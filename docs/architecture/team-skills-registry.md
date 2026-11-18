@@ -72,7 +72,8 @@
 |---|---|---|
 | `id` | uuid pk | |
 | `team_id` | uuid fk teams.id cascade | |
-| `slug` | text | 团队内唯一，`^[a-z0-9][a-z0-9-]{1,63}$` |
+| `slug` | text | 团队内唯一，`^[a-z0-9][a-z0-9-]{1,63}$`。也是安装目录名，所以保持 ASCII：Windows 设备名、大小写和 macOS NFD 都不能进这条 id |
+| `display_name` | text null | 给人看的标题，可以是中文。空则界面回退到 slug。中文个人技能分享时 slug 由名称生成（拼音），标题留在这一列 |
 | `owner_actor_id` | uuid fk actors.id restrict | **负责人**，默认发布者，可转交 |
 | `summary` | text | 一句话，≤80 字 |
 | `category` | text | **枚举**，不是自由文本 |
