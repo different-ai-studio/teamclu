@@ -9,6 +9,14 @@
 # OTP cannot be scripted. The account logs in with a password through FC
 # (/v1/auth/signin-password), which only test accounts have.
 #
+# A second turn asks the agent to print an environment variable holding a
+# random nonce with its shell tool. Only a command that really ran can answer
+# it, so this fails when the agent has no working shell. Before the daemon
+# starts, Git Bash is hidden: the runner image ships Git for Windows, a user's
+# machine often does not, and pi's bash tool needs Git Bash with no fallback.
+# That is how a clean machine got an agent that could not run `winget` or
+# `python` at all; the host now gives Windows sessions pi's powershell tool.
+#
 # Targets the self-host test environment by default, never production. Each
 # run creates one agent actor and one session and deletes both at the end.
 #
@@ -110,8 +118,76 @@ function Invoke-Local([string]$Method, [string]$Path, [string]$Bearer, [string]$
   }
 }
 
+# Hide every bash a Windows pi could resolve (getShellConfig in pi's
+# utils/shell.js): Git Bash under Program Files, then any bash.exe on PATH.
+# The Git directories are renamed back in `finally`, so a later step that
+# needs git (actions/checkout's post-job cleanup) still finds it, and PATH is
+# put back because windows-install-smoke.ps1 runs this script in its own
+# process (`&`), where the change would otherwise outlive it.
+$hiddenGitDirs = @()
+$pathBeforeHiding = $null
+function Hide-GitBash {
+  if (-not $IsWindows) { return }
+  $script:pathBeforeHiding = $env:PATH
+  foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+    if (-not $root) { continue }
+    $git = Join-Path $root 'Git'
+    if (-not (Test-Path (Join-Path $git 'bin\bash.exe'))) { continue }
+    Rename-Item -Path $git -NewName 'Git.smoke-hidden' -ErrorAction Stop
+    $script:hiddenGitDirs += (Join-Path $root 'Git.smoke-hidden')
+  }
+  # System32 holds the WSL launcher bash.exe on some images; dropping System32
+  # from PATH would break far more than bash, so leave it and say so.
+  $system32 = Join-Path $env:SystemRoot 'System32'
+  $env:PATH = (($env:PATH -split ';') | Where-Object {
+      $_ -and ($_.TrimEnd('\') -ieq $system32 -or -not (Test-Path (Join-Path $_ 'bash.exe')))
+    }) -join ';'
+  $left = & where.exe bash.exe 2>$null
+  if ($left) { Write-Host "::warning::bash.exe still resolvable after hiding Git Bash: $($left -join ', ')" }
+  Write-Host "Git Bash hidden: $($script:hiddenGitDirs -join ', ')"
+}
+function Restore-GitBash {
+  if ($null -ne $script:pathBeforeHiding) { $env:PATH = $script:pathBeforeHiding }
+  foreach ($dir in $script:hiddenGitDirs) {
+    try { Rename-Item -Path $dir -NewName 'Git' -ErrorAction Stop }
+    catch { Write-Host "::warning::Could not restore ${dir}: $_" }
+  }
+}
+
+# Send one mention to the agent and wait for its next reply. A turn that ends
+# in a provider failure still posts an agent_reply, marked with
+# metadata.turn_status (turn_aggregator.rs): that is a failure, not an answer.
+$seenReplies = @{}
+function Invoke-Turn([string]$Content) {
+  $msgId = [guid]::NewGuid().ToString()
+  Invoke-Api POST "/v1/sessions/$script:sessionId/messages" @{
+    id = $msgId; teamId = $script:teamId; senderActorId = $script:member.id
+    content = $Content
+    metadata = @{ mention_actor_ids = @($script:agentId) }
+  } @{ 'idempotency-key' = $msgId } | Out-Null
+  Write-Host "Message sent; waiting up to ${replyTimeoutSec}s for the agent"
+
+  $reply = $null
+  $deadline = (Get-Date).AddSeconds($replyTimeoutSec)
+  while ((Get-Date) -lt $deadline -and -not $reply) {
+    Start-Sleep -Seconds 5
+    if ($script:daemon.HasExited) { throw "amuxd exited with $($script:daemon.ExitCode) while the turn was running" }
+    $page = Invoke-Api GET "/v1/sessions/$script:sessionId/messages?limit=50"
+    $reply = $page.items |
+      Where-Object { $_.senderActorId -eq $script:agentId -and $_.content -and -not $script:seenReplies.ContainsKey($_.id) } |
+      Select-Object -Last 1
+  }
+  if (-not $reply) { throw "No reply from the agent within ${replyTimeoutSec}s" }
+  $script:seenReplies[$reply.id] = $true
+  Write-Host "Agent replied ($($reply.kind)): $($reply.content)"
+  $status = $reply.metadata.turn_status
+  if ($status) { throw "The turn ended as '$status', not with an answer: $($reply.content)" }
+  return $reply
+}
+
 $token = $null
 $teamId = $null
+$member = $null
 $agentId = $null
 $sessionId = $null
 $daemon = $null
@@ -141,12 +217,21 @@ try {
   $agentId = $Matches[1]
   Write-Host "Daemon onboarded as agent $agentId"
 
+  # From here on the machine looks like a user's without Git: the pi install
+  # and the agent's turns must both work that way.
+  Hide-GitBash
+
   # Install the managed Node + pi explicitly so a failure here is reported as
   # an install failure, not as a missing reply five minutes later.
   $piOut = & $Amuxd install-pi 2>&1 | Out-String
   $piOut | Set-Content (Join-Path $OutDir 'install-pi.txt')
   if ($LASTEXITCODE -ne 0) { throw "amuxd install-pi exited $LASTEXITCODE`n$piOut" }
   (& $Amuxd doctor 2>&1 | Out-String) | Set-Content (Join-Path $OutDir 'doctor.json')
+
+  # Inherited by the pi host and every command its shell tool runs; the model
+  # cannot know it any other way.
+  $shellNonce = "nonce-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
+  $env:SMOKE_SHELL_NONCE = $shellNonce
 
   $daemon = Start-Process -FilePath $Amuxd -ArgumentList 'start' -PassThru -NoNewWindow `
     -RedirectStandardOutput (Join-Path $OutDir 'amuxd.stdout.txt') `
@@ -194,38 +279,27 @@ try {
   Write-Host "Runtime $(PbText $start 2) started on session $sessionId"
 
   $pong = "pong-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
-  $msgId = [guid]::NewGuid().ToString()
-  Invoke-Api POST "/v1/sessions/$sessionId/messages" @{
-    id = $msgId; teamId = $teamId; senderActorId = $member.id
-    content = "This is an automated install check. Reply with exactly this word and nothing else: $pong"
-    metadata = @{ mention_actor_ids = @($agentId) }
-  } @{ 'idempotency-key' = $msgId } | Out-Null
-  Write-Host "Message sent; waiting up to ${replyTimeoutSec}s for the agent"
-
-  $reply = $null
-  $deadline = (Get-Date).AddSeconds($replyTimeoutSec)
-  while ((Get-Date) -lt $deadline -and -not $reply) {
-    Start-Sleep -Seconds 5
-    if ($daemon.HasExited) { throw "amuxd exited with $($daemon.ExitCode) while the turn was running" }
-    $page = Invoke-Api GET "/v1/sessions/$sessionId/messages?limit=50"
-    $reply = $page.items | Where-Object { $_.senderActorId -eq $agentId -and $_.content } | Select-Object -Last 1
-  }
-  if (-not $reply) { throw "No reply from the agent within ${replyTimeoutSec}s" }
-  Write-Host "Agent replied ($($reply.kind)): $($reply.content)"
-  # A provider failure still lands as an agent_reply — a placeholder marked
-  # metadata.turn_status (turn_aggregator.rs). Anything but a real answer
-  # fails: the gateway, credits or model config is broken for a new install.
-  $status = $reply.metadata.turn_status
-  if ($status) { throw "The turn ended as '$status', not with an answer: $($reply.content)" }
+  $reply = Invoke-Turn "This is an automated install check. Reply with exactly this word and nothing else: $pong"
   if ($reply.content -notmatch [regex]::Escape($pong)) {
     # A model paraphrasing is not an install failure; the turn completed.
     Write-Host "::warning::The reply does not contain $pong — the turn ran, the model just did not follow the instruction."
   }
+
+  # --- A turn that needs the shell ------------------------------------------
+  # Unlike the word above, the nonce is unguessable: a reply carrying it
+  # proves a shell command ran on this machine. No shell is a hard failure.
+  $reply = Invoke-Turn ("This is an automated install check. Use your shell tool to print the value of " +
+    "the environment variable SMOKE_SHELL_NONCE, then reply with exactly that value and nothing else.")
+  if ($reply.content -notmatch [regex]::Escape($shellNonce)) {
+    throw "The agent could not run a shell command: its reply does not contain the value of SMOKE_SHELL_NONCE"
+  }
+  Write-Host 'Agent ran a shell command.'
 }
 catch {
   $failed = $_.Exception.Message
 }
 finally {
+  Restore-GitBash
   if ($daemon -and -not $daemon.HasExited) {
     & $Amuxd stop 2>&1 | Out-Null
     Start-Sleep -Seconds 3

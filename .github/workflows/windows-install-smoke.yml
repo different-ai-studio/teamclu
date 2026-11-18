@@ -7,7 +7,10 @@ name: Windows install smoke
 # removes the sidecars. With a test account configured it then drives the
 # installed daemon through one real agent turn against the self-host test
 # environment (scripts/ci/windows-agent-smoke.ps1): password login, agent
-# invite, `amuxd init`, pi install, a mention, a reply.
+# invite, `amuxd init`, pi install, a mention, a reply, and a second turn the
+# agent can only answer by running a shell command. The image ships Git for
+# Windows, so the script hides Git Bash first: a user's machine often has no
+# Git, and that is where the agent used to end up with no shell at all.
 #
 # Secrets (both optional — without them the agent turn is skipped with a
 # warning):
