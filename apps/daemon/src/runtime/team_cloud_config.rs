@@ -16,8 +16,7 @@
 //! More fundamentally, agents have to run offline. A cloud round-trip on the
 //! spawn path would make "the network is down" mean "your agent starts with no
 //! team env", which silently produces literal `${KEY}` strings in MCP configs
-//! (`resolve_config_secret_refs` short-circuits on an empty secret map) and a
-//! runtime that fails with opaque 401s.
+//! and a runtime that fails with opaque 401s.
 //!
 //! So the fetch is a background reconcile and the readers stay on the
 //! filesystem. The cache is the contract between them.

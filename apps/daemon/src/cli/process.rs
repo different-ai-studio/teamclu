@@ -271,11 +271,7 @@ pub fn run_stop() -> anyhow::Result<()> {
             // Last resort: managed child trees first (their process groups),
             // then the daemon itself (its own process group when it is leader).
             println!("amuxd: still running after 3s; force-stopping managed trees then daemon…");
-            let report = reap_managed_agent_trees();
-            log_managed_process_cleanup("stop-force", &report);
-            if report.has_survivors() {
-                return Err(managed_process_survivor_error(&report));
-            }
+            reap_managed_agent_trees();
             force_stop_daemon(pid);
             let force_deadline = Instant::now() + Duration::from_secs(1);
             while Instant::now() < force_deadline && is_alive(pid) {
@@ -305,96 +301,27 @@ pub fn cleanup_runtime_artifacts() {
     let _ = fs::remove_file(DaemonConfig::http_port_path());
 }
 
-/// Best-effort cleanup report for managed agent process trees left by a prior
-/// daemon instance. Pi-only: no registry; legacy opencode pgid files may still
-/// be reaped for compatibility.
-#[derive(Default, Debug)]
-pub struct ManagedProcessReapReport {
-    pub reaped: Vec<String>,
-    pub stale_or_reused: Vec<String>,
-    pub survivors: Vec<ManagedProcessSurvivor>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ManagedProcessSurvivor {
-    pub generation_id: String,
-    pub pgid: u32,
-}
-
-impl ManagedProcessReapReport {
-    pub fn registered_count(&self) -> usize {
-        0
-    }
-
-    pub fn has_survivors(&self) -> bool {
-        !self.survivors.is_empty()
-    }
-}
-
-/// Kill leftover managed agent process groups (legacy opencode pgid files and
-/// best-effort MCP) so a prior crashed/hard-killed daemon cannot block start.
-pub fn reap_managed_agent_trees() -> ManagedProcessReapReport {
-    let mut report = ManagedProcessReapReport::default();
+/// Kill leftover helper processes (best-effort MCP children that escaped a
+/// prior daemon's process tree) so a crashed/hard-killed daemon cannot block
+/// start. pi hosts are stdio children and die with the daemon.
+pub fn reap_managed_agent_trees() {
     #[cfg(unix)]
-    {
-        // Read compatibility for the pre-registry single-PGID file.
-        reap_opencode_pgid_file();
-        reap_remote_tools_mcp_best_effort();
-    }
-    #[cfg(windows)]
-    {
-        // Read compatibility for the pre-registry single-PID file.
-        reap_opencode_pid_file_windows();
-    }
-    report
+    reap_remote_tools_mcp_best_effort();
 }
 
-/// Reap process groups left by a previously hard-killed daemon.
+/// Reap processes left by a previously hard-killed daemon.
 ///
-/// The caller must hold the daemon singleton lock so this cannot signal serve
-/// generations owned by another live daemon.
+/// The caller must hold the daemon singleton lock so this cannot signal
+/// processes owned by another live daemon.
 pub fn prepare_daemon_start() -> anyhow::Result<()> {
-    let report = reap_managed_agent_trees();
-    log_managed_process_cleanup("start", &report);
-    if report.has_survivors() {
-        return Err(managed_process_survivor_error(&report));
-    }
+    reap_managed_agent_trees();
     Ok(())
 }
 
 fn finalize_stop() -> anyhow::Result<()> {
-    let report = reap_managed_agent_trees();
-    log_managed_process_cleanup("stop", &report);
+    reap_managed_agent_trees();
     cleanup_runtime_artifacts();
-    if report.has_survivors() {
-        return Err(managed_process_survivor_error(&report));
-    }
     Ok(())
-}
-
-fn log_managed_process_cleanup(phase: &str, report: &ManagedProcessReapReport) {
-    println!(
-        "managed_process_cleanup phase={phase} registered={} reaped={} stale={} survivors={}",
-        report.registered_count(),
-        report.reaped.len(),
-        report.stale_or_reused.len(),
-        report.survivors.len(),
-    );
-}
-
-fn managed_process_survivor_error(report: &ManagedProcessReapReport) -> anyhow::Error {
-    let home = teamclu_runtime_env::amuxd_home_from_env();
-    let details: Vec<String> = report
-        .survivors
-        .iter()
-        .map(|group| format!("generation={} pgid={}", group.generation_id, group.pgid))
-        .collect();
-    anyhow::anyhow!(
-        "managed agent process groups still alive after cleanup at {}: {}. \
-         Stop them manually or investigate why SIGKILL did not terminate the group.",
-        home.display(),
-        details.join(", "),
-    )
 }
 
 #[cfg(unix)]
@@ -405,95 +332,7 @@ fn cmdline_of(pid: i32) -> Option<String> {
         .or_else(|| read_macos_cmdline(pid))
 }
 
-#[cfg(unix)]
-fn looks_like_opencode_serve(cmdline: &str) -> bool {
-    let lower = cmdline.to_ascii_lowercase();
-    lower.contains("opencode") && lower.contains("serve")
-}
-
-/// True when any live member of `pgid` has a cmdline that looks like part of
-/// the managed opencode serve tree (the serve leader or an MCP child it
-/// spawned). Guards group-kill against PGID reuse when the leader is gone.
-#[cfg(unix)]
-fn group_has_managed_member(pgid: i32) -> bool {
-    let Ok(out) = std::process::Command::new("pgrep")
-        .args(["-g", &pgid.to_string()])
-        .output()
-    else {
-        return false;
-    };
-    if !out.status.success() {
-        return false;
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.trim().parse::<i32>().ok())
-        .any(|pid| {
-            cmdline_of(pid).is_some_and(|cmd| {
-                let lower = cmd.to_ascii_lowercase();
-                looks_like_opencode_serve(&cmd) || lower.contains("remote-tools-mcp")
-            })
-        })
-}
-
-#[cfg(unix)]
-fn reap_opencode_pgid_file() {
-    let path = DaemonConfig::opencode_serve_pgid_path();
-    let Ok(body) = fs::read_to_string(&path) else {
-        return;
-    };
-    let Ok(pgid) = body.trim().parse::<i32>() else {
-        let _ = fs::remove_file(&path);
-        return;
-    };
-    if pgid <= 1 {
-        let _ = fs::remove_file(&path);
-        return;
-    }
-    // Identity check before signaling the whole group (PID/PGID reuse safety).
-    match cmdline_of(pgid) {
-        Some(cmd) if looks_like_opencode_serve(&cmd) => {}
-        Some(cmd) => {
-            println!("amuxd: refusing to reap pgid {pgid}: cmdline is not opencode serve ({cmd})");
-            let _ = fs::remove_file(&path);
-            return;
-        }
-        None if !is_alive(pgid) => {
-            // Leader is dead, but MCP children in the same group may survive
-            // (e.g. the daemon reaped the leader before the group finished
-            // dying). Only reap when a surviving member is verifiably ours.
-            if !(process_group_alive(pgid) && group_has_managed_member(pgid)) {
-                let _ = fs::remove_file(&path);
-                return;
-            }
-            println!("amuxd: opencode serve leader {pgid} is gone but group members remain");
-        }
-        None => {
-            println!("amuxd: refusing to reap pgid {pgid}: cannot verify process identity");
-            let _ = fs::remove_file(&path);
-            return;
-        }
-    }
-    println!("amuxd: reaping opencode serve process group {pgid}…");
-    kill_process_group(pgid, libc::SIGTERM);
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline && process_group_alive(pgid) {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    if process_group_alive(pgid) {
-        // Re-check identity before SIGKILL.
-        if cmdline_of(pgid)
-            .as_deref()
-            .is_some_and(looks_like_opencode_serve)
-            || !is_alive(pgid)
-        {
-            kill_process_group(pgid, libc::SIGKILL);
-        }
-    }
-    let _ = fs::remove_file(&path);
-}
-
-/// MCP children that escaped the serve PG still hold our sock path in argv.
+/// MCP children that escaped a prior daemon's tree still hold our sock path in argv.
 #[cfg(unix)]
 fn reap_remote_tools_mcp_best_effort() {
     let sock = DaemonConfig::sock_path();
@@ -548,67 +387,6 @@ fn read_macos_cmdline(pid: i32) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-#[cfg(windows)]
-fn reap_opencode_pid_file_windows() {
-    use crate::process_util::CommandNoWindow;
-    let path = DaemonConfig::opencode_serve_pgid_path();
-    let Ok(body) = fs::read_to_string(&path) else {
-        return;
-    };
-    let Ok(pid) = body.trim().parse::<i32>() else {
-        let _ = fs::remove_file(&path);
-        return;
-    };
-    if pid <= 0 || !is_alive(pid) {
-        let _ = fs::remove_file(&path);
-        return;
-    }
-    // Verify image name looks like opencode before taskkill /T.
-    let verified = std::process::Command::new("tasklist")
-        .no_window()
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).to_ascii_lowercase();
-            if s.contains("opencode") {
-                Some(())
-            } else {
-                None
-            }
-        });
-    if verified.is_none() {
-        println!("amuxd: refusing to taskkill pid {pid}: not an opencode process");
-        let _ = fs::remove_file(&path);
-        return;
-    }
-    println!("amuxd: taskkill /T opencode tree pid {pid}…");
-    let _ = std::process::Command::new("taskkill")
-        .no_window()
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .status();
-    let _ = fs::remove_file(&path);
-}
-
-#[cfg(unix)]
-fn kill_process_group(pgid: i32, sig: i32) {
-    if pgid <= 1 {
-        return;
-    }
-    unsafe {
-        let _ = libc::kill(-pgid, sig);
-    }
-}
-
-#[cfg(unix)]
-fn process_group_alive(pgid: i32) -> bool {
-    // kill(-pgid, 0) succeeds if any member of the group is alive.
-    if pgid <= 1 {
-        return false;
-    }
-    unsafe { libc::kill(-pgid, 0) == 0 }
 }
 
 #[cfg(unix)]

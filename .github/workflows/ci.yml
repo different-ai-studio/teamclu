@@ -54,14 +54,12 @@ jobs:
       - name: Run unit tests
         run: pnpm test:unit
 
-      # The agent bridges are plain Node packages outside the pnpm workspace, so
-      # nothing here ever ran their tests. Both suites import only node builtins
-      # and their own module, so they need no install step.
-      - name: Run agent bridge tests
+      # The pi extension is plain Node outside the pnpm workspace, so nothing
+      # else runs its tests. Both suites import only node builtins and their
+      # own module, so they need no install step.
+      - name: Run pi extension tests
         run: >-
           node --test
-          apps/daemon/shared/session-context-client.test.mjs
-          apps/daemon/shared/session-context-plugin-install.test.mjs
           apps/daemon/assets/pi-extension/session-context.test.mjs
           apps/daemon/assets/pi-extension/cloud-token-redaction.test.mjs
 

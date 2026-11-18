@@ -18,11 +18,10 @@ pi 子进程有两种模式（`pi_rpc/process.rs`）：
   和每条事件都带 `sessionId`，同 worktree 的多个会话并发 prompt / 流式 /
   cancel 互不影响。extension、MCP 桥、model registry 进程内共享——会话数
   增长不重复付 MCP 冷启动和基础内存。
-- **LegacyRpc（回退）**：`pi --mode rpc`，单活动会话协议（命令/事件不带
-  session 标识，`switch_session` 会销毁在跑的 turn，因此有 mid-turn 守卫，
-  第二个会话发消息会被拒绝重试）。两种情况走这条路：pi 装的是 Bun 单二进制
-  （解析不到可 import 的 npm 包根目录），或 `daemon.toml` 里
-  `[agents.pi] session_host = "rpc"`（一键回退开关）。
+- **LegacyRpc（回退）**：`node <pi>/dist/cli.js --mode rpc`，单活动会话协议
+  （命令/事件不带 session 标识，`switch_session` 会销毁在跑的 turn，因此有
+  mid-turn 守卫，第二个会话发消息会被拒绝重试）。只在 `daemon.toml` 里
+  `[agents.pi] session_host = "rpc"`（一键回退开关）时走这条路，不会被自动选中。
 
 进程池键 = **(isolation domain, process-env revision, canonical worktree)**
 （对齐 opencode 的 host pool 维度；此前只按 worktree 分、env 池全局
@@ -158,7 +157,10 @@ provider 面板因此不是自己实现一套登录，而是**把 pi 的
 - **HTTP 状态区分**：子进程答复并拒绝（未知 provider、不支持的 authType）
   是 422，取不到 host（不是 pi、二进制缺失、子进程死了）是 503。
 
-## 4. `localAgent` 参数落点与数据流
+## 4. `localAgent` 参数落点与数据流（已废弃）
+
+> 以下 §4–§5 是 2026-07 的落地计划，留作历史。ADR-0014 之后没有 `localAgent` /
+> `agents.local_agent` 选择，opencode 后端已删除。
 
 1. **build config**（`build.config.*.json`）：顶层新增
    `"localAgent": "opencode" | "pi"`（缺省 `opencode`）。vite 注入

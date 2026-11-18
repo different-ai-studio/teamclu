@@ -2,7 +2,6 @@ pub mod attachment_filename;
 pub mod acp_envelope;
 pub mod acp_event_frame;
 pub mod acp_live_transport;
-pub mod acp_translate;
 mod agent_runtime_state;
 mod agent_trace;
 pub mod backend;
