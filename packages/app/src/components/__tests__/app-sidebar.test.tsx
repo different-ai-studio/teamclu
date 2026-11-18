@@ -127,9 +127,10 @@ vi.mock('@/stores/workspace', () => ({
 
 vi.mock('@/stores/tabs', () => ({
   useTabsStore: Object.assign(
-    (sel: (s: Record<string, unknown>) => unknown) => sel({}),
+    (sel: (s: Record<string, unknown>) => unknown) => sel({ activeTabId: null }),
     { getState: () => ({ hideAll: vi.fn() }) },
   ),
+  selectActiveTab: () => null,
 }))
 
 vi.mock('@/stores/team-mode', () => ({

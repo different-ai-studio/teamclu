@@ -46,6 +46,11 @@ import {
   type NavRailMode,
 } from "@/components/sidebar/nav-rail-mode"
 import { useLayoutBreakpoint } from "@/hooks/use-layout-breakpoint"
+import { useTabsStore, selectActiveTab } from "@/stores/tabs"
+import {
+  useContentColumnVisible,
+  useEffectiveContentColumnMode,
+} from "@/components/content-column/content-column-state"
 
 /** Sidebar collapse / expand control (sidebar header, and second-column headers while the sidebar is collapsed or a drawer). */
 export function SidebarCollapseToggle({ className }: { className?: string }) {
@@ -532,7 +537,15 @@ export function AppSidebar({
   // would leave the chat too little room, so it stays a rail there.
   const canPin = useLayoutBreakpoint() === "wide"
   const rail = !isMobile && !open
-  const hover = useRailHover(rail)
+  // A web tab in a full-width column four sits right against the rail, and a
+  // native webview always draws above the page: the widened rail would open
+  // *underneath* it, unreachable. The rail stays narrow then; its icons still
+  // work, and pinning still gives the labelled list.
+  const contentColumnVisible = useContentColumnVisible()
+  const contentColumnMode = useEffectiveContentColumnMode()
+  const contentColumnFull = contentColumnVisible && contentColumnMode === "full"
+  const activeTabIsWebview = useTabsStore((s) => selectActiveTab(s)?.type === "webview")
+  const hover = useRailHover(rail && !(contentColumnFull && activeTabIsWebview))
   const mode: NavRailMode = rail ? (hover.expanded ? "rail-expanded" : "rail-collapsed") : "list"
   const railCollapsed = mode === "rail-collapsed"
   const railExpanded = mode === "rail-expanded"

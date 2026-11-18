@@ -10,7 +10,8 @@ import {
   sidebarPreviewKind,
   supportsSidebarPreview,
 } from "@/lib/messages/chat-open-target";
-import { useChatFilePreviewStore } from "@/stores/chat-file-preview-store";
+import { openPreviewTab, previewTabSource } from "@/lib/tabs/preview-tabs";
+import { useTabsStore } from "@/stores/tabs";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useSessionStore } from "@/stores/session-store";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
@@ -58,10 +59,11 @@ async function pathExists(path: string): Promise<boolean> {
   return attachmentPathExists(path);
 }
 
+/** Show the file in the content column, as a tab of the open session. */
 function rememberPreview(id: string, name: string, path?: string, text?: string) {
   const kind = sidebarPreviewKind(name);
   if (!kind) return;
-  useChatFilePreviewStore.getState().openTab({ id, name, kind, path, text });
+  openPreviewTab(id, { name, kind, path, text });
 }
 
 async function openTrustedFile(path: string, name: string, intent: ChatOpenIntent, text?: string) {
@@ -346,9 +348,14 @@ export async function openPreviewTabFile(
   intent: ChatOpenIntent,
 ): Promise<void> {
   if (intent === "sidebar" || intent === "primary") {
-    const tab = useChatFilePreviewStore.getState().tabs.find((item) => item.path === path || item.name === name);
+    const tabs = useTabsStore.getState();
+    const tab = tabs.tabs.find((item) => {
+      if (item.type !== "preview") return false;
+      const source = previewTabSource(item.target);
+      return source ? source.path === path || source.name === name : false;
+    });
     if (tab) {
-      useChatFilePreviewStore.getState().setActive(tab.id);
+      tabs.setActiveTab(tab.id);
       return;
     }
   }

@@ -618,7 +618,6 @@
     "shortcuts": "快捷方式",
     "files": "文件",
     "filesUnavailableRemoteAgent": "此会话的 agent 在 {{agents}} 上运行，文件不在这台电脑。换成本机 Agent 会保留聊天记录，但看不到那边的文件。",
-    "hideTabs": "隐藏文件",
     "restoreTabs": "显示文件",
     "collapseSidebar": "收起侧边栏",
     "expandSidebar": "展开侧边栏",
@@ -1145,11 +1144,6 @@
       "openWithDefaultApp": "用默认程序打开",
       "download": "下载",
       "reveal": "打开文件所在位置",
-      "panel": "阅读面板",
-      "collapse": "收起阅读面板",
-      "expand": "展开阅读面板",
-      "resize": "拖动改变宽度",
-      "closeTab": "关闭 {{name}}",
       "notFound": "找不到这个文件",
       "readFailed": "读不到这个文件",
       "outsideWorkspace": "这个路径不在当前会话的目录里",
@@ -4242,6 +4236,12 @@
     "loadFailed": "页面加载失败",
     "retry": "重试",
     "openInBrowser": "在浏览器中打开"
+  },
+  "contentColumn": {
+    "half": "半屏",
+    "full": "全屏",
+    "hide": "隐藏",
+    "resize": "拖动调整宽度"
   },
   "tabBar": {
     "closeAria": "关闭标签页",

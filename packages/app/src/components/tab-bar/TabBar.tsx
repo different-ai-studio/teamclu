@@ -1,3 +1,4 @@
+import type * as React from "react";
 import { useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -44,7 +45,11 @@ interface ContextMenuState {
   y: number;
 }
 
-export function TabBar() {
+export function TabBar({ trailing }: {
+  /** Controls pinned to the right end of the bar (the content column's layout
+   * switcher). The tabs scroll; this does not. */
+  trailing?: React.ReactNode;
+} = {}) {
   const { t } = useTranslation();
   const tabs = useTabsStore((s) => s.tabs);
   const activeTabId = useTabsStore((s) => s.activeTabId);
@@ -84,7 +89,11 @@ export function TabBar() {
 
   return (
     <div
-      className="flex items-center overflow-x-auto border-b bg-muted/30 shrink-0"
+      className="flex h-10 shrink-0 items-stretch border-b bg-muted/30"
+      data-tauri-drag-region
+    >
+    <div
+      className="flex min-w-0 flex-1 items-stretch overflow-x-auto"
       role="tablist"
     >
       {tabs.map((tab) => {
@@ -144,6 +153,12 @@ export function TabBar() {
         );
       })}
 
+    </div>
+      {trailing ? (
+        <div className="flex shrink-0 items-center gap-0.5 border-l border-border px-1.5">
+          {trailing}
+        </div>
+      ) : null}
       {contextMenu && createPortal(
         <div
           className="fixed z-[9999] bg-popover border rounded-md shadow-lg py-1 text-xs min-w-[120px]"

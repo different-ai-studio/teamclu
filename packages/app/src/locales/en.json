@@ -618,7 +618,6 @@
     "shortcuts": "Shortcuts",
     "files": "Files",
     "filesUnavailableRemoteAgent": "This session's agent runs on {{agents}}, so its files are not on this machine. Switching to this machine's agent keeps the chat history but not those files.",
-    "hideTabs": "Hide files",
     "restoreTabs": "Show files",
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
@@ -1145,11 +1144,6 @@
       "openWithDefaultApp": "Open with default app",
       "download": "Download",
       "reveal": "Show in folder",
-      "panel": "Reading panel",
-      "collapse": "Collapse reading panel",
-      "expand": "Expand reading panel",
-      "resize": "Drag to resize",
-      "closeTab": "Close {{name}}",
       "notFound": "File not found",
       "readFailed": "Could not read this file",
       "outsideWorkspace": "This path is outside the current session",
@@ -4242,6 +4236,12 @@
     "loadFailed": "Failed to load page",
     "retry": "Retry",
     "openInBrowser": "Open in browser"
+  },
+  "contentColumn": {
+    "half": "Half width",
+    "full": "Full width",
+    "hide": "Hide",
+    "resize": "Drag to resize"
   },
   "tabBar": {
     "closeAria": "Close tab",

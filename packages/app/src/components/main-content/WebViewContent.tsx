@@ -47,7 +47,12 @@ function initTabCleanup() {
 
     // Find removed webview tabs
     const currIds = new Set(currTabs.map((t) => t.id))
-    const removed = prevTabs.filter((t) => t.type === "webview" && !currIds.has(t.id))
+    // A tab that left the list because its session was switched away is
+    // parked, not closed: it is already off screen (the content unmounted) and
+    // must keep its page for when that session comes back.
+    const removed = prevTabs.filter(
+      (t) => t.type === "webview" && !currIds.has(t.id) && !state.hasTabInAnyScope(t.id),
+    )
 
     for (const tab of removed) {
       const label = urlToLabel(normalizeUrl(tab.target))

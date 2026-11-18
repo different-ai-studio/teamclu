@@ -25,7 +25,12 @@ function releaseStuckModalLayersAfterViewSwitch(): void {
 }
 
 type LayoutMode = 'task'
-type MainContentLayout = 'stacked' | 'split'
+/**
+ * How the content column (column four: file previews, editors, web tabs) sits
+ * next to the conversation while it has a tab showing. Hidden is not a mode:
+ * the column is hidden exactly when no tab is active (see stores/tabs).
+ */
+export type ContentColumnMode = 'half' | 'full'
 
 // Right panel tab in file mode
 type FileModeRightTab = 'shortcuts' | 'changes' | 'files' | 'agent'
@@ -65,7 +70,9 @@ interface UIState {
   embedMode: boolean
   currentView: View
   layoutMode: LayoutMode
-  mainContentLayout: MainContentLayout
+  contentColumnMode: ContentColumnMode
+  /** Share of the row the content column takes in `half` mode (0.3–0.7). */
+  contentColumnRatio: number
   fileModeRightTab: FileModeRightTab
   defaultNavTab: DefaultPrimaryTab
   defaultMoreOpen: boolean
@@ -145,7 +152,8 @@ interface UIState {
   closeSettings: () => void
   setLayoutMode: (mode: LayoutMode) => void
   toggleLayoutMode: () => void
-  toggleMainContentLayout: () => void
+  setContentColumnMode: (mode: ContentColumnMode) => void
+  setContentColumnRatio: (ratio: number) => void
   setFileModeRightTab: (tab: FileModeRightTab) => void
   startNewChat: () => void
   /** Incremented to request focus on the chat composer (e.g. after quick new session). */
@@ -171,7 +179,8 @@ export const useUIStore = create<UIState>((set, get) => ({
       : import.meta.env.VITE_FORCE_EMBED === 'chat',
   currentView: 'chat',
   layoutMode: 'task',
-  mainContentLayout: 'stacked',
+  contentColumnMode: 'half',
+  contentColumnRatio: 0.5,
   fileModeRightTab: 'agent',
   defaultNavTab: 'session',
   defaultMoreOpen: false,
@@ -475,9 +484,9 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   toggleLayoutMode: () => set({ layoutMode: 'task' }),
 
-  toggleMainContentLayout: () => set((state) => ({
-    mainContentLayout: state.mainContentLayout === 'stacked' ? 'split' : 'stacked'
-  })),
+  setContentColumnMode: (mode) => set({ contentColumnMode: mode }),
+  setContentColumnRatio: (ratio) =>
+    set({ contentColumnRatio: Math.min(0.7, Math.max(0.3, ratio)) }),
 
   setFileModeRightTab: (tab) => set({ fileModeRightTab: tab }),
 }))

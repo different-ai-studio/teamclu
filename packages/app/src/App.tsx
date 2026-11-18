@@ -12,7 +12,7 @@ import { appDisplayName } from "@/lib/config/build-config";
 import { daemonHomeDisplayPath } from "@/lib/daemon/daemon-paths";
 import { parseSessionDeeplink } from "@/lib/session/session-deeplink";
 import { markStartup } from "@/lib/telemetry/startup-perf";
-import { BookOpen, ChevronLeft, X, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
+import { BookOpen, ChevronLeft, X, Loader2, RotateCw, MessageSquarePlus, Users, SlidersHorizontal } from "lucide-react";
 import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
 import { SessionShareButton } from "@/components/chat/SessionShareButton";
 import { ExportPiTranscriptButton } from "@/components/chat/ExportPiTranscriptButton";
@@ -27,7 +27,13 @@ import { useWorkspaceRuntimeRefreshPoll } from "@/hooks/use-workspace-runtime-re
 import { useOpenCodePreload } from "@/hooks/use-opencode-preload";
 import { useExternalLinkHandler } from "@/hooks/use-external-link-handler";
 import { ChatFileMenuHost } from "@/components/chat/ChatFileMenuHost";
-import { ChatFilePreviewColumn, ChatFilePreviewToggle } from "@/components/chat/ChatFilePreviewColumn";
+import {
+  ContentColumn,
+  ContentColumnRestoreButton,
+  useContentColumnVisible,
+  useEffectiveContentColumnMode,
+} from "@/components/content-column/ContentColumn";
+import { useSessionScopedTabs } from "@/hooks/use-session-scoped-tabs";
 import { useTauriBodyClass } from "@/hooks/use-tauri-body-class";
 import { useMemberPresenceHeartbeat } from "@/hooks/use-member-presence-heartbeat";
 import { useExtensionSessionCleanup } from "@/hooks/use-extension-session-cleanup";
@@ -68,7 +74,7 @@ import { startEmbedPageContextListener, consumePendingLinkContext } from "@/lib/
 import { startEmbedLinkOpenListener } from "@/lib/embed/embed-link-session";
 import { useUIStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { useTabsStore, selectActiveTab, selectHasHiddenTabs } from "@/stores/tabs";
+import { useTabsStore } from "@/stores/tabs";
 import { isTeamShareOwnedTarget } from "@/lib/tabs/teamshare-target";
 import { useTeamShareBrowserStore } from "@/stores/team-share-browser";
 import { useHeaderPreferencesStore } from "@/stores/header-preferences-store";
@@ -199,14 +205,16 @@ function AppContent() {
   // Team-share state drives the top-right "team shared files" tab visibility.
   // Refresh it centrally (below) so the tab reflects the true share mode even
   // before the user ever opens the panel or Settings → Team.
-  const mainContentLayout = useUIStore((s) => s.mainContentLayout);
+  // Column four covers columns two and three in full mode; the conversation
+  // stays mounted underneath, only out of sight.
+  const contentColumnVisible = useContentColumnVisible();
+  const contentColumnMode = useEffectiveContentColumnMode();
+  const contentColumnFull = contentColumnVisible && contentColumnMode === "full";
   // Header icon visibility — additive gates on top of the capability/session
   // conditions below. Defaults hidden; users enable per-icon in Settings →
   // General → "会话头部图标". See stores/header-preferences-store.ts.
   const showSkillsRefresh = useHeaderPreferencesStore((s) => s.showSkillsRefresh);
   const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
-  const hasActiveFileTab = !!useTabsStore(selectActiveTab);
-  const hasHiddenTabs = useTabsStore(selectHasHiddenTabs);
   /** Shortcuts open in the left dock for both shells.
    * Only the workspace shell temporarily replaces the sidebar with that dock.
    * Files pops out from the right (via the top-right files icon). */
@@ -307,6 +315,7 @@ function AppContent() {
   useAgentsSkillsAccessInit();
   useExternalLinkHandler();
   useFileTabSync();
+  useSessionScopedTabs();
   useEffect(() => {
     const stopPageContext = startEmbedPageContextListener()
     const stopLinkOpen = startEmbedLinkOpenListener()
@@ -572,7 +581,7 @@ function AppContent() {
       {showSidebar && (
         <AppSidebar onPickSection={breakpoint === 'narrow' ? openNarrowListSheet : undefined} />
       )}
-      {breakpoint !== 'narrow' && (
+      {breakpoint !== 'narrow' && !contentColumnFull && (
         <div className={cn('w-(--session-list-width) shrink-0 h-svh overflow-hidden', SIDEBAR_INTERACTIVE_CURSOR)}>
           <SidebarSecondColumn />
         </div>
@@ -621,8 +630,13 @@ function AppContent() {
             )}
           </div>
         </div>
-        {/* Main column: header + main content */}
-        <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+        {/* Column three: header + conversation (+ its side panel). */}
+        <div
+          className={cn(
+            "flex flex-1 flex-col min-w-[360px] overflow-hidden",
+            contentColumnFull && "hidden",
+          )}
+        >
           {breakpoint === 'narrow' && <NarrowChatHeader />}
           <>
           {/* Header with breadcrumb - sticky */}
@@ -633,20 +647,9 @@ function AppContent() {
           >
             {collapsedInsetLeading}
 
-            <button
-              className={cn(
-                "min-w-0 truncate text-sm text-left",
-                hasActiveFileTab && "cursor-pointer hover:text-foreground/70 transition-colors"
-              )}
-              onClick={() => {
-                if (hasActiveFileTab) {
-                  useTabsStore.getState().hideAll();
-                }
-              }}
-              disabled={!hasActiveFileTab}
-            >
+            <span className="min-w-0 truncate text-sm text-left">
               {sectionHeaderTitle || activeSession?.title || t("chat.newChat", "New Chat")}
-            </button>
+            </span>
             {activeSession && !isSoloBuild() && (
               <button
                 onClick={async () => {
@@ -672,27 +675,8 @@ function AppContent() {
 
             {/* Panel tabs - right side of header */}
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
-              {mainContentLayout === "stacked" && (hasActiveFileTab || hasHiddenTabs) && (
-                <button
-                  className={cn(
-                    "rounded p-1 transition-colors hover:bg-muted hover:text-foreground",
-                    hasActiveFileTab ? "text-foreground" : "text-muted-foreground",
-                  )}
-                  onClick={() => {
-                    if (hasActiveFileTab) {
-                      useTabsStore.getState().hideAll();
-                    } else {
-                      useTabsStore.getState().restoreLastTab();
-                    }
-                  }}
-                  title={hasActiveFileTab
-                    ? t("navigation.hideTabs", "Hide files")
-                    : t("navigation.restoreTabs", "Show files")
-                  }
-                >
-                  <AppWindow className="h-4 w-4" />
-                </button>
-              )}
+              {/* Column four is hidden but still holds tabs: bring it back. */}
+              <ContentColumnRestoreButton />
               {capabilities.workspace && sessionWorkspacePath && showSkillsRefresh && (
                 <RefreshSkillsHeaderButton workspacePath={sessionWorkspacePath} />
               )}
@@ -747,7 +731,6 @@ function AppContent() {
                   onClick={() => toggleAppControlPanel()}
                 />
               )}
-              <ChatFilePreviewToggle />
             </div>
           </header>
           ) : null}
@@ -756,38 +739,40 @@ function AppContent() {
           <RuntimeRefreshWorkspaceBanner />
           <AgentsSkillsAccessBanner />
 
-          {/* Main content - Chat or file preview */}
+          {/* Conversation, with the session's side panel (files, actors, app
+              settings) at its right edge: the panel belongs to the session,
+              so it sits inside column three rather than after column four. */}
           <div className="relative flex min-h-0 flex-1 overflow-hidden">
             <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <MainContent />
             </div>
-            <ChatFilePreviewColumn />
+            <div
+              className={cn(
+                "shrink-0 overflow-hidden border-l border-border bg-background transition-[width,opacity,transform] duration-500 ease-out",
+                showRightSidePanel
+                  ? "w-72 translate-x-0 opacity-100"
+                  : "pointer-events-none w-0 translate-x-4 border-l-0 opacity-0",
+              )}
+            >
+              <div className="h-full w-72">
+                {showRightWorkspacePanel && (
+                  <React.Suspense fallback={<PaneLoading />}>
+                    <RightPanel />
+                  </React.Suspense>
+                )}
+                {showAppControlPanel && controlPanelApp && (
+                  <React.Suspense fallback={<PaneLoading />}>
+                    <AppControlPanel app={controlPanelApp} />
+                  </React.Suspense>
+                )}
+              </div>
+            </div>
           </div>
           </>
         </div>
 
-        {/* Right Panel - full height (RightPanel or AppControlPanel, mutually exclusive) */}
-        <div
-          className={cn(
-            "shrink-0 overflow-hidden border-l border-border bg-background transition-[width,opacity,transform] duration-500 ease-out",
-            showRightSidePanel
-              ? "w-72 translate-x-0 opacity-100"
-              : "pointer-events-none w-0 translate-x-4 border-l-0 opacity-0",
-          )}
-        >
-          <div className="h-full w-72">
-            {showRightWorkspacePanel && (
-              <React.Suspense fallback={<PaneLoading />}>
-                <RightPanel />
-              </React.Suspense>
-            )}
-            {showAppControlPanel && controlPanelApp && (
-              <React.Suspense fallback={<PaneLoading />}>
-                <AppControlPanel app={controlPanelApp} />
-              </React.Suspense>
-            )}
-          </div>
-        </div>
+        {/* Column four: files, previews, web and app tabs. */}
+        <ContentColumn />
       </SidebarInset>
       {settingsModal}
       {automationPanelDialog}

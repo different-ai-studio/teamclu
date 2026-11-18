@@ -17,7 +17,7 @@ describe('startNewChat detail cleanup', () => {
     })
     useUIStore.setState({
       currentView: 'chat',
-      mainContentLayout: 'split',
+      contentColumnMode: 'full',
       sidebarFilter: { kind: 'teamShare', section: 'knowledge' },
     } as Partial<ReturnType<typeof useUIStore.getState>>)
   })
