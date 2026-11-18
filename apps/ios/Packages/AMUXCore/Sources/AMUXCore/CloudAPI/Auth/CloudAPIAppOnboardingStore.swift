@@ -23,12 +23,17 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
 
     private var didStart = false
 
+    /// `sessionStore`: pass the process-wide one (`CloudAccessToken`) so the
+    /// app's other Cloud API callers refresh through the same store. When nil
+    /// a private store is built over `storage`.
     public init(
         configuration: CloudAPIConfiguration,
         storage: SessionStorage,
+        sessionStore: SessionStore? = nil,
         send: @escaping CloudAPISend = CloudAPIClient.urlSessionSend
     ) {
-        let sessionStore = SessionStore(baseURL: configuration.baseURL, storage: storage, send: send)
+        let sessionStore = sessionStore
+            ?? SessionStore(baseURL: configuration.baseURL, storage: storage, send: send)
         self.sessionStore = sessionStore
         self.auth = AuthHTTP(baseURL: configuration.baseURL, send: send)
         self.api = CloudAPIClient(
@@ -52,7 +57,7 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
     private func ensureStarted() async {
         guard !didStart else { return }
         didStart = true
-        await sessionStore.start()
+        await sessionStore.startIfNeeded()
     }
 
     // MARK: - Session presence

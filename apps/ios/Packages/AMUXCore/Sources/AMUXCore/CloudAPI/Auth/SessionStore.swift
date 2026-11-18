@@ -5,12 +5,19 @@ import Synchronization
 /// managed: Keychain persistence, proactive + reactive refresh, and the
 /// `tokenRefreshes()` stream that MQTT depends on.
 public actor SessionStore {
-    private let baseURL: URL
+    public nonisolated let baseURL: URL
     private let storage: SessionStorage
+    private var started = false
     private let http: AuthHTTP
 
     private var session: StoredSession?
     private var refreshTask: Task<Void, Never>?
+    /// The refresh request in flight, if any. Concurrent callers (the
+    /// proactive timer, `accessToken()` from every Cloud API caller sharing
+    /// this store) await it instead of each spending the same rotating
+    /// refresh token — the loser of that race gets a 4xx and the session is
+    /// dropped.
+    private var inFlightRefresh: Task<StoredSession, Error>?
     /// Subscribers are registered synchronously, under a lock, the moment a
     /// stream is created. Registering through a `Task` hop onto the actor let
     /// an event emitted right after subscribing go out before the subscriber
@@ -28,8 +35,16 @@ public actor SessionStore {
     }
 
     public func start() {
+        started = true
         session = (try? storage.load()) ?? nil
         scheduleProactiveRefresh()
+    }
+
+    /// `start()` once: the store is shared (`CloudAccessToken`), and a second
+    /// load from storage must not clobber what an earlier caller already holds.
+    public func startIfNeeded() {
+        guard !started else { return }
+        start()
     }
 
     public func setSession(_ new: StoredSession) {
@@ -145,6 +160,14 @@ public actor SessionStore {
     }
 
     private func refreshLocked() async throws -> StoredSession {
+        if let inFlightRefresh { return try await inFlightRefresh.value }
+        let task = Task { try await self.performRefresh() }
+        inFlightRefresh = task
+        defer { inFlightRefresh = nil }
+        return try await task.value
+    }
+
+    private func performRefresh() async throws -> StoredSession {
         guard let s = session else { throw AuthRequired.notAuthenticated }
         struct Req: Encodable { let refreshToken: String }
         struct Res: Decodable { let accessToken: String; let refreshToken: String; let expiresAt: Int }
