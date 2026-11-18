@@ -11,7 +11,7 @@
  *   Re-read on every tool call (the daemon appends patterns to it when the
  *   host approves a permission with option_id "always"). Missing or invalid
  *   file ⇒ { defaultAction: "ask", alwaysAllowed: [] }.
- *   Pattern semantics: for `bash` the match key is the command string, for
+ *   Pattern semantics: for `bash` and `powershell` the match key is the command string, for
  *   every other tool it is the tool name. A pattern ending in " *" is a
  *   prefix match on the first word(s); otherwise exact string equality.
  *
@@ -562,17 +562,23 @@ function loadRules(): Rules {
   }
 }
 
-/** Match key: bash → the command string; other tools → the tool name. */
+/** Tools whose `command` input is a shell command line. pi registers
+ * `powershell` alongside `bash` on Windows (see `assets/pi-host/host.mjs`).
+ * Keyed on the command, not the tool name, so "always allow" on one command
+ * does not approve every later command in that shell. */
+const SHELL_TOOLS = new Set(["bash", "powershell"]);
+
+/** Match key: shell tools → the command string; other tools → the tool name. */
 function matchKey(toolName: string, input: Record<string, unknown>): string {
-  if (toolName === "bash" && typeof input.command === "string") return input.command.trim();
+  if (SHELL_TOOLS.has(toolName) && typeof input.command === "string") return input.command.trim();
   return toolName;
 }
 
 /** Persisted "always allow" pattern for this call (what the daemon appends). */
 function alwaysPattern(toolName: string, input: Record<string, unknown>): string {
-  if (toolName === "bash" && typeof input.command === "string") {
+  if (SHELL_TOOLS.has(toolName) && typeof input.command === "string") {
     const first = input.command.trim().split(/\s+/)[0] ?? "";
-    return first ? `${first} *` : "bash";
+    return first ? `${first} *` : toolName;
   }
   return toolName;
 }

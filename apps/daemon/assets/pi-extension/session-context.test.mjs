@@ -809,6 +809,25 @@ test("before_agent_start and tool_call swallow stale extension ctx", () => {
   assert.match(src, /tool_call skipped stale ctx/);
 });
 
+test("Windows hosts get pi's powershell tool, and the gate keys it on the command", () => {
+  // Without Git Bash, pi's bash tool fails every call and the agent had no
+  // shell at all (could not even run `winget install`). The host adds the
+  // powershell tool on Windows; the permission gate must treat it like bash,
+  // or one "always allow" would approve every later PowerShell command.
+  const host = fs.readFileSync(
+    fileURLToPath(new URL("../pi-host/host.mjs", import.meta.url)),
+    "utf8",
+  );
+  assert.match(host, /process\.platform !== "win32"/);
+  assert.match(host, /"\+powershell"/);
+  assert.match(host, /"-bash"/);
+  assert.match(host, /tools: sessionTools/);
+
+  const ext = fs.readFileSync(fileURLToPath(new URL("./teamclu.ts", import.meta.url)), "utf8");
+  assert.match(ext, /const SHELL_TOOLS = new Set\(\["bash", "powershell"\]\)/);
+  assert.match(ext, /SHELL_TOOLS\.has\(toolName\) && typeof input\.command === "string"\) return input\.command/);
+});
+
 test("extension tells the agent to read wiki/index.md first and lets the Wiki win", () => {
   const src = fs.readFileSync(fileURLToPath(new URL("./teamclu.ts", import.meta.url)), "utf8");
   assert.match(src, /wiki\/index\.md/);

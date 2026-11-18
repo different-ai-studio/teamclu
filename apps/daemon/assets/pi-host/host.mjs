@@ -246,6 +246,36 @@ try {
   log(`http dispatcher setup skipped: ${e}`);
 }
 
+/** Built-in tool modifiers for every session in this host, or `undefined` for
+ * pi's default selection (`read`, `bash`, `edit`, `write`).
+ *
+ * On Windows, pi's `bash` tool needs Git Bash (or another `bash.exe` on PATH)
+ * and does not fall back to anything when it is missing. A machine without Git
+ * then gives the agent no way to run a command at all: not `winget`, not
+ * `python`, not even `powershell`, because those would go through `bash` too.
+ * pi ships a `powershell` tool for this (pwsh 7, else Windows PowerShell, both
+ * always present), it is just off by default. So on Windows add it, and drop
+ * `bash` when pi cannot resolve a bash shell, so the model is not offered a tool
+ * whose every call fails.
+ *
+ * `+name`/`-name` modify pi's default selection (and any `defaultTools` the
+ * user set in pi's settings) instead of replacing it. */
+function windowsToolModifiers() {
+  if (process.platform !== "win32") return undefined;
+  const modifiers = ["+powershell"];
+  if (typeof pi.getShellConfig === "function") {
+    try {
+      pi.getShellConfig(services.settingsManager.getShellPath?.());
+    } catch (e) {
+      log(`no bash shell on this machine, disabling the bash tool: ${String(e).split("\n")[0]}`);
+      modifiers.push("-bash");
+    }
+  }
+  return modifiers;
+}
+
+const sessionTools = windowsToolModifiers();
+
 const sessionDir = args.sessionDir;
 
 // ---------------------------------------------------------------------------
@@ -377,7 +407,11 @@ function makeUiContext(sessionId) {
 }
 
 async function adoptSession(sessionManager) {
-  const { session } = await pi.createAgentSessionFromServices({ services, sessionManager });
+  const { session } = await pi.createAgentSessionFromServices({
+    services,
+    sessionManager,
+    tools: sessionTools,
+  });
   const sessionId = sessionIdFor(session);
 
   await session.bindExtensions({
