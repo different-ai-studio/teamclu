@@ -104,32 +104,9 @@ pub struct SkillListItem {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-struct ApiSkillListResponse {
-    items: Vec<SkillListItem>,
-    next_cursor: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct ApiSearchBrowseResponse {
     results: Vec<SearchResultEntry>,
     next_marker: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-struct ApiResolveResponse {
-    #[serde(rename = "match")]
-    matched: Option<VersionRef>,
-    latest_version: Option<VersionRef>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct VersionRef {
-    version: String,
 }
 
 // ─── Frontend-facing types ───────────────────────────────────────────────────
@@ -154,15 +131,6 @@ pub struct ClawHubSearchResults {
 pub struct ClawHubExploreResults {
     pub items: Vec<SkillListItem>,
     pub next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClawHubUpdateInfo {
-    pub slug: String,
-    pub current_version: Option<String>,
-    pub latest_version: Option<String>,
-    pub has_update: bool,
 }
 
 // ─── Lockfile ────────────────────────────────────────────────────────────────

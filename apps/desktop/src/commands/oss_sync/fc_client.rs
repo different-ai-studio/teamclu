@@ -14,28 +14,9 @@
 //! onboarding and LiteLLM provisioning still call.
 
 use reqwest::Client;
-use serde::Deserialize;
 use serde_json::Value;
 
 use super::error::SyncError;
-
-/// Result of POST /v1/teams.
-///
-/// The Cloud API response shape: `{ id, name, slug, createdAt, aiGatewayEndpoint, litellmKey }`.
-/// `aiGatewayEndpoint` and `litellmKey` are nullable when LiteLLM provisioning
-/// is skipped (e.g. local dev with LITELLM_MASTER_KEY unset).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateTeamResult {
-    #[serde(rename = "id")]
-    pub team_id: String,
-    #[serde(rename = "slug")]
-    pub team_slug: String,
-    #[serde(default)]
-    pub ai_gateway_endpoint: Option<String>,
-    #[serde(default)]
-    pub litellm_key: Option<String>,
-}
 
 pub struct FcClient {
     pub client: Client,
@@ -55,45 +36,6 @@ impl FcClient {
             base_url,
             jwt,
         }
-    }
-
-    /// POST /v1/teams — unified team creation. Provisions LiteLLM team + key
-    /// server-side and seeds team_workspace_config in one call. The legacy
-    /// `/sync/create-team` endpoint was removed in 2026-05.
-    ///
-    /// `node_id` is accepted for backward compatibility with the previous
-    /// signature but is no longer forwarded — the /v1/teams handler derives
-    /// the owning actor's node from the JWT-authenticated user.
-    pub async fn create_team(
-        &self,
-        team_name: &str,
-        _node_id: Option<&str>,
-    ) -> Result<CreateTeamResult, SyncError> {
-        let body = serde_json::json!({ "name": team_name });
-        let resp = self.post("/v1/teams", &body).await?;
-        Ok(resp)
-    }
-
-    /// POST /sync/set-mode — owner-only sync_mode switch (Tranche 5).
-    pub async fn set_team_sync_mode(&self, team_id: &str, mode: &str) -> Result<String, SyncError> {
-        let body = serde_json::json!({ "teamId": team_id, "mode": mode });
-        #[derive(serde::Deserialize)]
-        struct ModeResp {
-            mode: String,
-        }
-        let resp: ModeResp = self.post("/sync/set-mode", &body).await?;
-        Ok(resp.mode)
-    }
-
-    /// POST /sync/team-mode — read sync_mode (Tranche 5).
-    pub async fn get_team_sync_mode(&self, team_id: &str) -> Result<Option<String>, SyncError> {
-        let body = serde_json::json!({ "teamId": team_id });
-        #[derive(serde::Deserialize)]
-        struct ModeResp {
-            mode: Option<String>,
-        }
-        let resp: ModeResp = self.post("/sync/team-mode", &body).await?;
-        Ok(resp.mode)
     }
 
     /// Generic POST helper for ad-hoc endpoints (e.g. team_share enable flow).

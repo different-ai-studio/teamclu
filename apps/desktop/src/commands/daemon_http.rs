@@ -18,8 +18,6 @@ use serde::Serialize;
 
 use crate::daemon_client::{self as daemon, wire, DaemonError, RequestSpec, NO_BODY};
 
-pub use wire::MaterializeTeamMcpResponse;
-
 const WORKSPACE_READ: &[&str] = &["workspace:read"];
 const WORKSPACE_WRITE: &[&str] = &["workspace:write"];
 const WORKSPACE_READ_WRITE: &[&str] = &["workspace:read", "workspace:write"];
@@ -107,19 +105,6 @@ pub async fn list_local_daemon_workspaces() -> Result<Vec<LocalDaemonWorkspace>,
 fn encode_workspace_id(workspace_path: &str) -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     URL_SAFE_NO_PAD.encode(workspace_path.as_bytes())
-}
-
-/// Ask the local daemon to materialize team MCP definitions into `opencode.json`.
-///
-/// Best-effort from team-git join: returns `Err` when the daemon HTTP listener
-/// is unavailable; callers should log and continue (materialization also happens
-/// lazily on `GET /v1/workspaces/:id/mcp`).
-pub async fn materialize_team_mcp_via_daemon(
-    workspace_path: &str,
-) -> Result<MaterializeTeamMcpResponse, String> {
-    let ws_id = encode_workspace_id(workspace_path);
-    let path = format!("/v1/workspaces/{ws_id}/mcp/materialize-team");
-    Ok(daemon::call_discovered(RequestSpec::post(&path, WORKSPACE_WRITE), NO_BODY).await?)
 }
 
 /// `GET /v1/workspaces/:id/mcp` — merged MCP map for the workspace.

@@ -2,13 +2,11 @@
 //!
 //! Plan B Task 8: the desktop OSS sync ENGINE has been deleted — the daemon
 //! owns all team sync now (pull/push/conflict/version). What remains here is the
-//! shared FC HTTP client and helpers that team-share onboarding and LiteLLM
-//! provisioning still depend on:
+//! shared FC HTTP client and helpers that team-share onboarding still
+//! depends on:
 //!
 //!   fc_client.rs      — reqwest FC client with JWT injection and error mapping
 //!   error.rs          — SyncError unified error type
-//!   path_validator.rs — client-side mirror of FC validateSyncPath (referenced
-//!                       by error.rs's From impl)
 //!   get_fc_endpoint() — reads teamclu.json for the FC endpoint (callers
 //!                       supply their own fresh user JWT; see Design 2)
 //!
@@ -19,7 +17,6 @@
 
 pub mod error;
 pub mod fc_client;
-pub mod path_validator;
 
 // ---------------------------------------------------------------------------
 // Shared helpers

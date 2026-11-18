@@ -1,26 +1,5 @@
-use serde::{Deserialize, Serialize};
-use std::path::Path;
-
 // Re-export for backward compat (other modules use `crate::commands::team::TEAM_REPO_DIR`)
 pub use super::TEAM_REPO_DIR;
-
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-/// Team metadata stored in `teamclu-team/_meta/team.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamMeta {
-    pub team_id: String,
-    pub team_name: String,
-    /// HMAC-SHA256(team_secret, "teamclu-verify") as hex — for join verification.
-    pub secret_verify: String,
-    pub created_at: String,
-    pub owner_node_id: String,
-    /// LiteLLM/FC endpoint URL. When set, joining members register their key
-    /// via this endpoint.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fc_endpoint: Option<String>,
-}
 
 // ─── Workspace Helpers ───────────────────────────────────────────────────────
 
@@ -73,59 +52,4 @@ pub fn resolve_workspace_path(
     }
     daemon_default_workspace_path()
         .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())
-}
-
-// ─── Config Helpers ──────────────────────────────────────────────────────────
-
-pub fn read_workspace_config(workspace_path: &str) -> Result<serde_json::Value, String> {
-    let config_path = Path::new(workspace_path)
-        .join(crate::commands::TEAMCLU_DIR)
-        .join(super::CONFIG_FILE_NAME);
-
-    if !config_path.exists() {
-        return Ok(serde_json::json!({}));
-    }
-
-    let content = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read {}: {}", super::CONFIG_FILE_NAME, e))?;
-    serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse {}: {}", super::CONFIG_FILE_NAME, e))
-}
-
-pub fn write_workspace_config(
-    workspace_path: &str,
-    json: &serde_json::Value,
-) -> Result<(), String> {
-    let teamclu_dir = Path::new(workspace_path).join(crate::commands::TEAMCLU_DIR);
-    std::fs::create_dir_all(&teamclu_dir)
-        .map_err(|e| format!("Failed to create {}: {}", super::TEAMCLU_DIR, e))?;
-
-    let config_path = teamclu_dir.join(super::CONFIG_FILE_NAME);
-    let content = serde_json::to_string_pretty(json)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    std::fs::write(&config_path, content)
-        .map_err(|e| format!("Failed to write {}: {}", super::CONFIG_FILE_NAME, e))
-}
-
-// ─── Tauri Commands ───────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn team_meta_round_trips_camel_case() {
-        let meta: TeamMeta = serde_json::from_value(serde_json::json!({
-            "teamId": "t-1",
-            "teamName": "Demo",
-            "secretVerify": "ab12",
-            "createdAt": "2026-06-01T00:00:00Z",
-            "ownerNodeId": "node-1"
-        }))
-        .unwrap();
-
-        let value = serde_json::to_value(meta).unwrap();
-        assert_eq!(value["teamId"], "t-1");
-        assert!(value.get("fcEndpoint").is_none());
-    }
 }

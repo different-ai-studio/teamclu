@@ -547,12 +547,6 @@ describe('cron store actions', () => {
     vi.useRealTimers()
   })
 
-  it('refreshDelivery invokes cron_refresh_delivery', async () => {
-    mockInvoke.mockResolvedValueOnce(undefined)
-    await useCronStore.getState().refreshDelivery()
-    expect(mockInvoke).toHaveBeenCalledWith('cron_refresh_delivery')
-  })
-
   it('toggleShowCronSessions flips the flag', () => {
     expect(useCronStore.getState().showCronSessions).toBe(false)
     useCronStore.getState().toggleShowCronSessions()

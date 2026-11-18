@@ -133,14 +133,9 @@ pub async fn send(request: &str) -> Result<(), String> {
         .map_err(|e| format!("amuxd control task failed: {e}"))?
 }
 
-/// Send `request` (terminate the last line with `\n` yourself) and read the
-/// whole reply. Blocking; prefer [`request`] from async code.
-pub fn request_blocking(request: &str) -> Result<String, String> {
-    request_blocking_at(&endpoint(), request)
-}
-
-/// [`request_blocking`] against an explicit endpoint, so tests can point at a
-/// server they control.
+/// Send `request` (terminate the last line with `\n` yourself) to `endpoint`
+/// and read the whole reply. Blocking; prefer [`request`] from async code.
+/// Takes an explicit endpoint so tests can point at a server they control.
 pub fn request_blocking_at(endpoint: &Path, request: &str) -> Result<String, String> {
     let mut stream = connect_blocking(endpoint)?;
     stream
@@ -154,20 +149,9 @@ pub fn request_blocking_at(endpoint: &Path, request: &str) -> Result<String, Str
     Ok(buf)
 }
 
-/// Send `request` and read the reply as JSON.
-pub fn request_json<T: serde::de::DeserializeOwned>(request: &str) -> Result<T, String> {
-    let body = request_blocking(request)?;
-    serde_json::from_str(body.trim())
-        .map_err(|e| format!("bad response from amuxd: {e} (body={body:?})"))
-}
-
-/// Send `request` without waiting for a reply — for the commands the daemon
-/// acts on but does not answer (`channel-save`, `gateway-model`, `channel-reload`).
-pub fn send_blocking(request: &str) -> Result<(), String> {
-    send_blocking_at(&endpoint(), request)
-}
-
-/// [`send_blocking`] against an explicit endpoint.
+/// Send `request` to `endpoint` without waiting for a reply — for the commands
+/// the daemon acts on but does not answer (`channel-save`, `gateway-model`,
+/// `channel-reload`).
 pub fn send_blocking_at(endpoint: &Path, request: &str) -> Result<(), String> {
     let mut stream = connect_blocking(endpoint)?;
     stream

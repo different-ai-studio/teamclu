@@ -2,7 +2,6 @@
 //
 // Listens on 127.0.0.1:13144 and handles:
 //   POST /send-wecom        — send a proactive WeCom message
-//   POST /cron-run          — manually trigger a cron job
 //   POST /cron-manage       — create/list/pause/resume/delete/run/get_runs (MCP)
 //   POST /team-sync-all     — trigger team sync
 //   POST /env-var-set       — create or update an env var (`scope`: personal | team)
@@ -325,7 +324,6 @@ fn router(app: AppHandle, token: Arc<str>, verifier: caller::CallerVerifier) -> 
         .route("/send-wecom", post_route!(handle_send_wecom))
         .route("/send-seatalk", post_route!(handle_send_seatalk))
         .route("/channel-state", post_route!(handle_channel_state))
-        .route("/cron-run", post_route!(handle_cron_run))
         .route("/cron-manage", post_route!(handle_cron_manage))
         .route("/team-sync-all", post_route!(handle_team_sync_all))
         .route("/env-var-set", post_route!(handle_env_var_set))
@@ -502,53 +500,6 @@ async fn handle_team_sync_all(app: &AppHandle, _body: &[u8]) -> Result<String, S
     let result =
         super::team_sync_proxy::daemon_team_sync(workspace.as_deref(), true, false).await?;
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
-}
-
-async fn handle_cron_run(app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
-
-    let job_id = v
-        .get("job_id")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing field: job_id")?;
-
-    // introspect_api has no calling-window context (it's an HTTP server).
-    // The request payload may carry an explicit workspace_path; otherwise we
-    // fall back to single-instance inference (which errors in multi-window).
-    let workspace_path = match v.get("workspace_path").and_then(|v| v.as_str()) {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => {
-            let registry = app.state::<super::window::WindowRegistry>();
-            registry
-                .current_workspace
-                .lock()
-                .ok()
-                .and_then(|cw| cw.clone())
-                .ok_or_else(|| {
-                    "No workspace path set. Please select a workspace first.".to_string()
-                })?
-        }
-    };
-
-    let cron_state = app.state::<super::cron::CronState>();
-    let instance = cron_state
-        .try_instance_for(&workspace_path)
-        .await
-        .ok_or_else(|| format!("Cron not initialized for workspace: {}", workspace_path))?;
-
-    let job = instance
-        .storage
-        .get_job(job_id)
-        .await
-        .ok_or_else(|| format!("Job not found: {}", job_id))?;
-
-    let scheduler = instance.scheduler.clone();
-    tokio::spawn(async move {
-        scheduler.execute_job(job).await;
-    });
-
-    Ok(format!(r#"{{"ok":true,"job_id":"{}"}}"#, job_id))
 }
 
 async fn handle_cron_manage(app: &AppHandle, body: &[u8]) -> Result<String, String> {

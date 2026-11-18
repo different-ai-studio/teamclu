@@ -668,13 +668,6 @@ pub async fn cron_get_runs(
     Ok(instance.storage.get_runs(&job_id, Some(limit)).await)
 }
 
-/// Refresh delivery configs (no-op now — `DeliveryManager` reads config on demand).
-#[tauri::command]
-pub async fn cron_refresh_delivery() -> Result<(), String> {
-    log::info!("[Cron] Delivery config refresh requested (no-op, config is read on demand)");
-    Ok(())
-}
-
 /// True if any cron job, in any workspace (global included), is currently
 /// mid-execution on this process. Used by the desktop auto-restart update
 /// mode as one of its "safe to restart" signals.
