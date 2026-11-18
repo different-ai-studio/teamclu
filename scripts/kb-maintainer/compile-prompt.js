@@ -4,6 +4,12 @@ function buildCompilePrompt(ctx) {
   const locators = (ctx.locators || []).join(", ") || "(none)";
   const affected = (ctx.affectedPages || []).join(", ") || "(none)";
   const action = ctx.action || "add";
+  const part = ctx.parts
+    ? `Source part: ${ctx.part} of ${ctx.parts}. This source was too long to compile at once, so it is split; each part is compiled in its own turn. Pages listed under "Previously affected pages" came from earlier parts: extend those pages instead of writing duplicates. A page you emit replaces the whole file, so keep what an earlier part wrote and keep the locators it already cites.
+${(ctx.priorPageContents || [])
+  .map((page) => `\n<current-page path="${page.rel}">\n${page.text}\n</current-page>\n`)
+  .join("")}`
+    : "";
   return `You are a Wiki compiler, not a creative writer.
 
 Do not use tools. Do not create or edit files in the working directory.
@@ -36,7 +42,7 @@ Source sha256: ${ctx.sourceSha256}
 Page type hint: ${ctx.pageType || "policy"}
 Locators: ${locators}
 Previously affected pages: ${affected}
-
+${part}
 Schema:
 ${ctx.schemaMarkdown || ""}
 

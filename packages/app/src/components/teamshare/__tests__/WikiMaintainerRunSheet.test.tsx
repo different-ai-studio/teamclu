@@ -518,6 +518,206 @@ describe('WikiMaintainerRunSheet', () => {
     expect(screen.queryByRole('checkbox', { name: 'Accept estimated vision cost' })).toBeNull()
   })
 
+  it('asks how to handle each large file before compiling, then compiles with the answers', async () => {
+    const table = 'documents/营运部/整车成本_已拆分司机信息.csv'
+    const longText = 'documents/营运部/会议纪要.txt'
+    const base = {
+      sourceCount: 3,
+      updated: 0,
+      deleted: 0,
+      failed: 0,
+      visionPages: 0,
+      estimatedCost: null,
+      currency: 'CNY',
+      blockers: [],
+    }
+    const prepare = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...base,
+        runId: 'run-ask',
+        added: 0,
+        canPublish: false,
+        needsLargeSourceDecision: true,
+        largeSources: [
+          {
+            path: table,
+            chars: 186000,
+            limit: 50000,
+            kind: 'table',
+            encoding: 'gb18030',
+            parts: 6,
+            maxParts: 20,
+            options: ['profile', 'segment', 'skip'],
+            defaultChoice: 'profile',
+          },
+          {
+            path: longText,
+            chars: 64000,
+            limit: 50000,
+            kind: 'document',
+            parts: 0,
+            maxParts: 20,
+            reason: 'no_breaks',
+            options: ['skip'],
+            defaultChoice: 'skip',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ ...base, runId: 'run-done', added: 3, canPublish: true })
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/营运部/', label: '营运部' }]}
+        initialSelected={['documents/营运部/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
+        onPrepare={prepare}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+
+    expect(await screen.findByText(/2 files are too long to compile at once/)).toBeTruthy()
+    expect(screen.getByText('186,000 / 50,000 chars')).toBeTruthy()
+    expect(screen.getByText(`${table} · GB18030`)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Confirm publish' })).toBeNull()
+    const profile = screen.getByRole('radio', {
+      name: '整车成本_已拆分司机信息.csv: Summarize the table structure only',
+    })
+    expect(profile).toBeChecked()
+    expect(screen.getByText('6 parts, 6 model calls.')).toBeTruthy()
+    const textParts = screen.getByRole('radio', { name: '会议纪要.txt: Compile in parts' })
+    expect(textParts).toBeDisabled()
+    expect(screen.getByText('No pages, rows, or headings to split at.')).toBeTruthy()
+    expect(screen.getByRole('radio', { name: '会议纪要.txt: Skip this run' })).toBeChecked()
+
+    fireEvent.click(
+      screen.getByRole('radio', { name: '整车成本_已拆分司机信息.csv: Compile in parts' }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Compile as chosen' }))
+
+    expect(await screen.findByRole('button', { name: 'Confirm publish' })).toBeEnabled()
+    expect(prepare).toHaveBeenLastCalledWith(
+      'team-1',
+      ['documents/营运部/'],
+      'glm-4.6',
+      undefined,
+      { [table]: 'segment', [longText]: 'skip' },
+    )
+  })
+
+  it('keeps the vision answer when the large-file step comes after it', async () => {
+    const source = 'documents/handbook/big.md'
+    const base = {
+      sourceCount: 1,
+      updated: 0,
+      deleted: 0,
+      failed: 0,
+      visionPages: 1,
+      estimatedCost: 0.12,
+      currency: 'CNY',
+      blockers: [],
+    }
+    const prepare = vi
+      .fn()
+      .mockResolvedValueOnce({ ...base, runId: 'r1', added: 0, canPublish: false, needsVisionAcceptance: true })
+      .mockResolvedValueOnce({
+        ...base,
+        runId: 'r2',
+        added: 0,
+        canPublish: false,
+        needsLargeSourceDecision: true,
+        largeSources: [
+          {
+            path: source,
+            chars: 90000,
+            limit: 50000,
+            kind: 'document',
+            parts: 3,
+            maxParts: 20,
+            options: ['segment', 'skip'],
+            defaultChoice: 'segment',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ ...base, runId: 'r3', added: 1, canPublish: true })
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
+        initialSelected={['documents/handbook/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
+        onPrepare={prepare}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Agree and compile' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Compile as chosen' }))
+    expect(await screen.findByRole('button', { name: 'Confirm publish' })).toBeEnabled()
+    expect(prepare).toHaveBeenLastCalledWith(
+      'team-1',
+      ['documents/handbook/'],
+      'glm-4.6',
+      'accept',
+      { [source]: 'segment' },
+    )
+  })
+
+  it('explains an over-long source and a failed part in plain words', () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[]}
+        initialSelected={[]}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        initialSummary={{
+          runId: 'run-x',
+          sourceCount: 2,
+          added: 1,
+          updated: 0,
+          deleted: 0,
+          failed: 2,
+          visionPages: 0,
+          estimatedCost: null,
+          currency: 'CNY',
+          canPublish: true,
+          blockers: [
+            'documents/a.txt: This source is too long after extraction (64000 characters, limit 50000). Split it into shorter files, then compile again.',
+            'documents/b.csv: Part 3 of 12 failed: Compiler model failed: 429 Too Many Requests The 2 parts before it were kept, and the whole source compiles again next time.',
+          ],
+        }}
+        onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
+        onPrepare={vi.fn()}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(
+      screen.getByText(
+        'documents/a.txt: This source is too long after extraction (64,000 characters, limit 50,000). Split it into shorter files, then compile again.',
+      ),
+    ).toBeTruthy()
+    expect(
+      screen.getByText(
+        'documents/b.csv: Part 3 of 12 failed: Compiler model failed: 429 Too Many Requests The 2 parts before it were kept, and the whole source compiles again next time.',
+      ),
+    ).toBeTruthy()
+  })
+
   it('compiles with the model the user picked', async () => {
     const prepare = vi.fn().mockResolvedValue({
       runId: 'run-model',

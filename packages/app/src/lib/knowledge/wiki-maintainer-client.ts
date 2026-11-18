@@ -10,6 +10,7 @@ import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type {
   WikiCompilerModel,
+  WikiLargeSourceChoice,
   WikiPrepareSummary,
   WikiPublishResult,
   WikiSourceDirectory,
@@ -349,6 +350,7 @@ export async function prepareWikiMaintenance(
   sourceDirectories: string[],
   compilerModel: string,
   visionChoice?: 'accept' | 'decline',
+  largeSourceChoices?: Record<string, WikiLargeSourceChoice>,
 ): Promise<WikiPrepareSummary> {
   const folders = wikiSourceFolders(sourceDirectories)
   if (folders.length === 0) {
@@ -480,6 +482,7 @@ export async function prepareWikiMaintenance(
         aclPrefixes: acl.map((rule) => rule.pathPrefix),
         known: selectedKnown,
         visionChoice: visionChoice ?? 'ask',
+        largeSourceChoices: largeSourceChoices ?? null,
       },
     })
   } catch (error) {

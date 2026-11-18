@@ -1,13 +1,14 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { decodeText, parseCsv, markdownHeader, markdownRow } = require("./table-source");
 
 const EXTRACTORS = {
   md: { name: "text-md-v1", version: "1", mediaType: "text/markdown" },
   txt: { name: "text-txt-v1", version: "1", mediaType: "text/plain" },
   html: { name: "text-html-v1", version: "1", mediaType: "text/html" },
   htm: { name: "text-html-v1", version: "1", mediaType: "text/html" },
-  csv: { name: "text-csv-v1", version: "1", mediaType: "text/csv" },
+  csv: { name: "text-csv-v2", version: "2", mediaType: "text/csv" },
   json: { name: "text-json-v1", version: "1", mediaType: "application/json" },
   yaml: { name: "text-yaml-v1", version: "1", mediaType: "application/yaml" },
   yml: { name: "text-yaml-v1", version: "1", mediaType: "application/yaml" },
@@ -75,20 +76,13 @@ function extractMarkdownBody(text) {
 }
 
 function extractCsv(text) {
-  const rows = text
-    .replace(/\r\n/g, "\n")
-    .trim()
-    .split("\n")
-    .map((line) => line.split(",").map((cell) => cell.trim()));
+  const rows = parseCsv(text);
   if (rows.length === 0) return { body: "", locators: [] };
   const header = rows[0];
-  const lines = [
-    `<!-- source-locator: table -->`,
-    `| ${header.join(" | ")} |`,
-    `| ${header.map(() => "---").join(" | ")} |`,
-  ];
+  const width = Math.max(...rows.map((row) => row.length));
+  const lines = [`<!-- source-locator: table -->`, ...markdownHeader(header)];
   for (const row of rows.slice(1)) {
-    lines.push(`| ${row.join(" | ")} |`);
+    lines.push(markdownRow(row, width));
   }
   return { body: `${lines.join("\n")}\n`, locators: ["table"] };
 }
@@ -126,7 +120,7 @@ function extractText({ sourcePath, bytes, sourceSha256 }) {
   if (!extractor) {
     throw new Error(`unsupported text extension: ${ext || "(none)"}`);
   }
-  const text = Buffer.from(bytes).toString("utf8");
+  const text = ext === "csv" ? decodeText(bytes).text : Buffer.from(bytes).toString("utf8");
   let converted;
   if (ext === "html" || ext === "htm") converted = extractMarkdownBody(stripHtml(text));
   else if (ext === "csv") converted = extractCsv(text);

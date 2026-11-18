@@ -19,6 +19,7 @@ const {
   ingestMessage,
 } = require("./git-store");
 const { limitCompileDiff } = require("./repair");
+const { planLargeSource } = require("./large-source");
 const { documentsFilePath } = require("./win-path");
 
 function loadState(statePath) {
@@ -47,11 +48,100 @@ function sha256String(text) {
   return crypto.createHash("sha256").update(text).digest("hex");
 }
 
-async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot }) {
+const MAX_PRIOR_PAGE_CHARS = 60000;
+
+function currentPages(wikiRoot, rels) {
+  const pages = [];
+  let total = 0;
+  for (const rel of [...rels].filter((item) => item.startsWith("pages/")).sort()) {
+    const abs = path.join(wikiRoot, rel);
+    if (!fs.existsSync(abs)) continue;
+    const text = fs.readFileSync(abs, "utf8");
+    if (total + text.length > MAX_PRIOR_PAGE_CHARS) break;
+    total += text.length;
+    pages.push({ rel, text });
+  }
+  return pages;
+}
+
+async function compileUnit({ action, item, opts, config, wikiRoot, rawRoot, rawRel, rawMarkdown, unit, priorPages, touched }) {
+  const beforeCommit = headCommit(wikiRoot);
+  const pageType = item.class === "training" ? "training" : item.class;
+  const compiled = await compile({
+    runner: opts.runner || "fake",
+    workRoot: opts.workRoot,
+    rawRoot,
+    action,
+    sourcePath: item.path,
+    sourceSha256: item.sourceSha256,
+    rawMarkdown: unit.rawMarkdown,
+    locators: unit.locators,
+    pageType,
+    affectedPages: priorPages,
+    part: unit.part,
+    parts: unit.parts,
+    priorPageContents: unit.part > 1 ? currentPages(wikiRoot, touched) : undefined,
+    schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
+    indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
+    compilerModel: opts.compilerModel,
+    createSession: opts.createSession,
+  });
+  normalizeCompiledPages(wikiRoot, beforeCommit, {
+    pageType,
+    sourcePath: item.path,
+    sourceSha256: item.sourceSha256,
+    locators: unit.locators,
+    rawMarkdown,
+    maxBytes: config.limits?.maxIndexChars || 8000,
+    maxSourceSummaryChars: config.limits?.maxSourceSummaryChars || 4000,
+  });
+  const cap = config.limits?.maxPagesChangedPerSource ?? 15;
+  // Parts share the per-source page cap: a later part may revise pages an
+  // earlier part wrote, but only add new ones while the source is under it.
+  const revisits = changedRelPaths(wikiRoot, beforeCommit).filter(
+    (rel) => rel.startsWith("pages/") && touched.has(rel),
+  ).length;
+  limitCompileDiff(wikiRoot, beforeCommit, item.path, revisits + Math.max(0, cap - touched.size));
+  rebuildIndex(wikiRoot);
+  normalizeWikiLinks(wikiRoot);
+  dropDeadWikiLinks(wikiRoot);
+  rebuildIndex(wikiRoot);
+  const pageHits = (compiled.affectedPages || []).filter((rel) => rel.startsWith("pages/"));
+  if (pageHits.length === 0) {
+    throw new Error(
+      String(unit.extractorName || "").includes("vision")
+        ? "vision transcribed but compiler produced no wiki pages"
+        : "compiler produced no wiki pages",
+    );
+  }
+  const changed = changedRelPaths(wikiRoot, beforeCommit);
+  const verdict = validateSourceDiff({
+    workRoot: opts.workRoot,
+    wikiRoot,
+    rawRoot,
+    changedRelPaths: changed,
+    currentSource: {
+      path: item.path,
+      sourceSha256: item.sourceSha256,
+      rawRelPath: rawRel,
+    },
+    config,
+  });
+  if (!verdict.ok) {
+    throw new Error(verdict.errors.join("; "));
+  }
+  const suffix = unit.parts ? ` (part ${unit.part}/${unit.parts})` : "";
+  const commit = commitAll(wikiRoot, `${ingestMessage(action, item.path, item.sourceSha256)}${suffix}`);
+  for (const rel of compiled.affectedPages || []) touched.add(rel);
+  return commit;
+}
+
+async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot, progress = {} }) {
   const abs = sourceAbs(opts.documentsRoot, item.path);
+  const bytes = fs.readFileSync(abs);
   const extracted = await extractSource({
     sourcePath: item.path,
-    bytes: fs.readFileSync(abs),
+    bytes,
     sourceSha256: item.sourceSha256,
     visionExtract: opts.visionExtract,
     visionModel: opts.visionModel || config.models?.vision,
@@ -63,14 +153,22 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
   if (extracted.quality !== "accepted") {
     throw new Error(`extraction ${extracted.quality}`);
   }
-  if (extracted.markdown.replace(/^---[\s\S]*?\n---\n/, "").length > (config.limits.maxExtractedChars || 50000)) {
-    throw new Error("too_large");
-  }
+  const large = planLargeSource({
+    sourcePath: item.path,
+    bytes,
+    extracted,
+    choice: opts.largeSourceChoices ? opts.largeSourceChoices[item.path] : undefined,
+    limit: config.limits.maxExtractedChars,
+  });
+  const rawMarkdown = large ? large.rawMarkdown : extracted.markdown;
+  const units = large
+    ? large.units
+    : [{ rawMarkdown: extracted.markdown, locators: extracted.locators }];
 
   const rawRel = rawRelativePath(item.path);
   const rawAbs = path.join(rawRoot, rawRel);
   fs.mkdirSync(path.dirname(rawAbs), { recursive: true });
-  fs.writeFileSync(rawAbs, extracted.markdown);
+  fs.writeFileSync(rawAbs, rawMarkdown);
 
   const beforeCommit = headCommit(wikiRoot);
   const previous = state.sources[item.path] ? { ...state.sources[item.path] } : null;
@@ -80,83 +178,63 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
   };
   saveState(opts.statePath, state);
 
+  const importedEntry = (commit, touched, sourceSha256) => ({
+    sourceSha256,
+    extractorCacheKey: extractorCacheKey({
+      sourceSha256: item.sourceSha256,
+      extractorName: extracted.extractorName,
+      extractorVersion: extracted.extractorVersion,
+    }),
+    rawMarkdownSha256: sha256String(rawMarkdown),
+    affectedPages: [...touched],
+    status: "imported",
+    lastImportedCommit: commit,
+    ...(large ? { largeSourceMode: large.mode, parts: units.length } : {}),
+  });
+
+  const touched = new Set();
+  let commit = beforeCommit;
+  let keptParts = 0;
   try {
-    const compiled = await compile({
-      runner: opts.runner || "fake",
-      workRoot: opts.workRoot,
-      rawRoot,
-      action,
-      sourcePath: item.path,
-      sourceSha256: item.sourceSha256,
-      rawMarkdown: extracted.markdown,
-      locators: extracted.locators,
-      pageType: item.class === "training" ? "training" : item.class,
-      affectedPages: previous?.affectedPages,
-      schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
-      indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
-      compilerModel: opts.compilerModel,
-      createSession: opts.createSession,
-    });
-    normalizeCompiledPages(wikiRoot, beforeCommit, {
-      pageType: item.class === "training" ? "training" : item.class,
-      sourcePath: item.path,
-      sourceSha256: item.sourceSha256,
-      locators: extracted.locators,
-      rawMarkdown: extracted.markdown,
-      maxBytes: config.limits?.maxIndexChars || 8000,
-      maxSourceSummaryChars: config.limits?.maxSourceSummaryChars || 4000,
-    });
-    limitCompileDiff(
-      wikiRoot,
-      beforeCommit,
-      item.path,
-      config.limits?.maxPagesChangedPerSource ?? 15,
-    );
-    rebuildIndex(wikiRoot);
-    normalizeWikiLinks(wikiRoot);
-    dropDeadWikiLinks(wikiRoot);
-    rebuildIndex(wikiRoot);
-    const pageHits = (compiled.affectedPages || []).filter((rel) =>
-      rel.startsWith("pages/"),
-    );
-    if (pageHits.length === 0) {
-      throw new Error(
-        String(extracted.extractorName || "").includes("vision")
-          ? "vision transcribed but compiler produced no wiki pages"
-          : "compiler produced no wiki pages",
-      );
+    // Parts of a re-split source do not line up with the old parts, so pages
+    // only this source wrote are rebuilt from the new parts.
+    if (large?.mode === "segment" && previous) dropPagesOnlyCiting(wikiRoot, item.path);
+    for (const unit of units) {
+      if (unit.parts && typeof opts.onProgress === "function") {
+        opts.onProgress({ stage: "ingest", action, path: item.path, ...progress, part: unit.part, parts: unit.parts });
+      }
+      const unitBefore = headCommit(wikiRoot);
+      try {
+        if (unit.part > 1) assertMaintenanceNotCancelled(opts.cancelPath);
+        commit = await compileUnit({
+          action,
+          item,
+          opts,
+          config,
+          wikiRoot,
+          rawRoot,
+          rawRel,
+          rawMarkdown,
+          unit: { ...unit, extractorName: extracted.extractorName },
+          priorPages: touched.size > 0 ? [...touched] : previous?.affectedPages,
+          touched,
+        });
+        keptParts += 1;
+      } catch (error) {
+        if (keptParts === 0) throw error;
+        resetHard(wikiRoot, unitBefore);
+        // The earlier parts stay publishable. A null sha sends the whole source
+        // back through compile next run, the same way markForRecompile does.
+        state.sources[item.path] = importedEntry(commit, touched, null);
+        saveState(opts.statePath, state);
+        if (error.message === "maintenance cancelled") throw error;
+        throw new Error(`segment ${unit.part}/${unit.parts} kept=${keptParts}: ${error.message}`);
+      }
     }
-    const changed = changedRelPaths(wikiRoot, beforeCommit);
-    const verdict = validateSourceDiff({
-      workRoot: opts.workRoot,
-      wikiRoot,
-      rawRoot,
-      changedRelPaths: changed,
-      currentSource: {
-        path: item.path,
-        sourceSha256: item.sourceSha256,
-        rawRelPath: rawRel,
-      },
-      config,
-    });
-    if (!verdict.ok) {
-      throw new Error(verdict.errors.join("; "));
-    }
-    const commit = commitAll(wikiRoot, ingestMessage(action, item.path, item.sourceSha256));
-    state.sources[item.path] = {
-      sourceSha256: item.sourceSha256,
-      extractorCacheKey: extractorCacheKey({
-        sourceSha256: item.sourceSha256,
-        extractorName: extracted.extractorName,
-        extractorVersion: extracted.extractorVersion,
-      }),
-      rawMarkdownSha256: sha256String(extracted.markdown),
-      affectedPages: compiled.affectedPages,
-      status: "imported",
-      lastImportedCommit: commit,
-    };
+    state.sources[item.path] = importedEntry(commit, touched, item.sourceSha256);
     saveState(opts.statePath, state);
   } catch (error) {
+    if (keptParts > 0) throw error;
     resetHard(wikiRoot, beforeCommit);
     const priorPages = (previous?.affectedPages || []).filter((rel) =>
       rel.startsWith("pages/"),
@@ -483,7 +561,16 @@ async function ingestBatch(opts) {
         await retractOne({ item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
         retracted += 1;
       } else {
-        await ingestOne({ action, item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
+        await ingestOne({
+          action,
+          item,
+          opts: ingestOpts,
+          config,
+          state,
+          wikiRoot,
+          rawRoot,
+          progress: { current, total: queue.length },
+        });
         imported += 1;
       }
       succeeded = true;
