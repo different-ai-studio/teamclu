@@ -622,6 +622,8 @@
     "restoreTabs": "显示文件",
     "collapseSidebar": "收起侧边栏",
     "expandSidebar": "展开侧边栏",
+    "collapseToRail": "收起为图标栏",
+    "pinSidebar": "固定侧边栏",
     "settings": "设置"
   },
   "chat": {

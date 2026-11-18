@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next'
-import { Loader2, SlidersHorizontal } from 'lucide-react'
+import { Loader2, SlidersHorizontal, SquarePen } from 'lucide-react'
 import type { QuickChatState } from '@/hooks/use-quick-chat-readiness'
 import { useUIStore } from '@/stores/ui'
 import { cn } from '@/lib/utils'
@@ -9,6 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { isRailMode, useNavRailMode } from '@/components/sidebar/nav-rail-mode'
 
 type NewChatSplitButtonProps = {
   quickChatState: QuickChatState
@@ -41,9 +42,38 @@ export function NewChatSplitButton({
       : undefined
 
   const advancedLabel = t('chat.advancedSession', 'Advanced session')
+  const mode = useNavRailMode()
+
+  if (mode === 'rail-collapsed') {
+    // The split cannot fit in 72px. The rail keeps the primary action; the
+    // advanced half is one hover away, when the rail widens into the full
+    // button in the same spot.
+    const label = `${t('chat.newChat', 'New Chat')} (${formatShortcut('mod+N')})`
+    return (
+      <div className="flex h-10 w-full items-center px-[6px]">
+        <button
+          type="button"
+          onClick={onPrimaryClick}
+          disabled={primaryDisabled}
+          title={primaryTitle ?? label}
+          aria-label={label}
+          className={cn(
+            'flex h-10 w-10 items-center justify-center rounded-[10px] bg-coral text-coral-foreground shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)] transition-[filter] duration-150',
+            'hover:brightness-[1.04] disabled:cursor-not-allowed disabled:opacity-40',
+          )}
+        >
+          {creating ? (
+            <Loader2 className="h-[15px] w-[15px] animate-spin" />
+          ) : (
+            <SquarePen className="h-[15px] w-[15px]" />
+          )}
+        </button>
+      </div>
+    )
+  }
 
   return (
-    <div className="flex w-full flex-col gap-1.5">
+    <div className={cn('flex w-full flex-col gap-1.5', isRailMode(mode) && 'h-10 justify-center whitespace-nowrap')}>
       <div className="flex w-full overflow-hidden rounded-[10px] bg-coral shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)]">
         <button
           type="button"

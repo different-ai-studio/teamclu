@@ -622,6 +622,8 @@
     "restoreTabs": "Show files",
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
+    "collapseToRail": "Collapse to icons",
+    "pinSidebar": "Keep sidebar open",
     "settings": "Settings"
   },
   "chat": {

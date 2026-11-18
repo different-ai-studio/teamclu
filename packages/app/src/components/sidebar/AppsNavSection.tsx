@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
+import { navRowBox, navRowLabel, useNavRailMode } from '@/components/sidebar/nav-rail-mode'
 
 /**
  * One nav row, nothing more — the app list lives in column two now.
@@ -25,6 +26,8 @@ export function AppsNavSection() {
   const selectApp = useAppsStore((s) => s.selectApp)
 
   const active = filter.kind === 'apps'
+  const mode = useNavRailMode()
+  const label = t('sidebar.apps', '应用')
 
   // Prefetch so column two is warm when the row is clicked. AppListColumn also
   // loads on mount; this just starts earlier from the always-mounted rail.
@@ -47,8 +50,10 @@ export function AppsNavSection() {
     <button
       type="button"
       onClick={openApps}
+      title={mode === 'rail-collapsed' ? label : undefined}
       className={cn(
-        'flex w-full items-center gap-2.5 rounded-lg px-[9px] py-[7px] text-left text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]',
+        navRowBox(mode),
+        'flex w-full items-center gap-2.5 rounded-lg text-left text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]',
         active
           ? 'bg-paper font-semibold text-foreground shadow-[0_1px_2px_rgba(28,27,25,0.04)] ring-1 ring-black/[0.05]'
           : 'font-normal text-ink-2 hover:bg-black/[0.04]',
@@ -57,7 +62,7 @@ export function AppsNavSection() {
       <AppWindow
         className={cn('h-[15px] w-[15px] shrink-0', active ? 'text-foreground' : 'text-muted-foreground')}
       />
-      <span className="min-w-0 flex-1 truncate">{t('sidebar.apps', '应用')}</span>
+      <span className={navRowLabel(mode)}>{label}</span>
     </button>
   )
 }

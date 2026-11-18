@@ -6,6 +6,10 @@ import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-s
 import { resolveEmbedMode } from '@/lib/embed/embed-mode'
 import { scheduleReleaseStuckModalLayers } from '@/lib/ui/modal-layer-cleanup'
 import type { PageContext } from '@/lib/embed/embed-page-context'
+import { loadFromStorage, saveToStorage } from '@/lib/config/storage'
+import { appStoragePrefix } from '@/lib/config/build-config'
+
+const NAV_PINNED_STORAGE_KEY = `${appStoragePrefix}-nav-pinned`
 
 type View = 'chat' | 'settings'
 
@@ -83,6 +87,12 @@ interface UIState {
   ideasSectionCollapsed: boolean
   /** 更多 nav group (想法 / 应用 / 快捷方式 / MCP / 环境变量) is expanded. */
   moreNavExpanded: boolean
+  /**
+   * First column pinned open as the full list. Off (the default) it is the
+   * icon rail that widens on hover. Wide windows only — App ignores it below
+   * that. Persisted per install.
+   */
+  navPinned: boolean
   /** Workspace list expanded (「管理 Workspace 列表」). */
   localDaemonExpanded: boolean
   /** Action sheet open (⋯ menu). */
@@ -109,6 +119,7 @@ interface UIState {
   toggleIdeasSection: () => void
   toggleMoreNav: () => void
   setMoreNavExpanded: (expanded: boolean) => void
+  setNavPinned: (pinned: boolean) => void
   toggleLocalDaemon: () => void
   toggleLocalDaemonSheet: () => void
   setLocalDaemonSheetOpen: (open: boolean) => void
@@ -172,6 +183,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   sidebarFilter: { kind: 'all' },
   ideasSectionCollapsed: false,
   moreNavExpanded: false,
+  navPinned: loadFromStorage<boolean>(NAV_PINNED_STORAGE_KEY, false),
   localDaemonExpanded: false,
   localDaemonSheetOpen: false,
   narrowListSheetOpen: false,
@@ -431,6 +443,10 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleIdeasSection: () => set((s) => ({ ideasSectionCollapsed: !s.ideasSectionCollapsed })),
   toggleMoreNav: () => set((s) => ({ moreNavExpanded: !s.moreNavExpanded })),
   setMoreNavExpanded: (expanded) => set({ moreNavExpanded: expanded }),
+  setNavPinned: (pinned) => {
+    saveToStorage(NAV_PINNED_STORAGE_KEY, pinned)
+    set({ navPinned: pinned })
+  },
   toggleLocalDaemon: () => set((s) => ({ localDaemonExpanded: !s.localDaemonExpanded })),
   toggleLocalDaemonSheet: () => set((s) => ({ localDaemonSheetOpen: !s.localDaemonSheetOpen })),
   setLocalDaemonSheetOpen: (open) => set({ localDaemonSheetOpen: open }),

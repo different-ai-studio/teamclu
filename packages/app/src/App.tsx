@@ -574,7 +574,7 @@ function AppContent() {
       )}
       {breakpoint !== 'narrow' && (
         <div className={cn('w-(--session-list-width) shrink-0 h-svh overflow-hidden', SIDEBAR_INTERACTIVE_CURSOR)}>
-          <SidebarSecondColumn showNewSessionActions={breakpoint === 'medium'} />
+          <SidebarSecondColumn />
         </div>
       )}
       <SidebarInset className="flex flex-row h-svh overflow-hidden relative">
@@ -808,6 +808,8 @@ function App() {
   }, []);
 
   const breakpoint = useLayoutBreakpoint()
+  const navPinned = useUIStore((s) => s.navPinned)
+  const setNavPinned = useUIStore((s) => s.setNavPinned)
 
   // ── Global webview shortcuts (find, zoom, context menu) ──
   useWebviewShortcuts()
@@ -932,10 +934,15 @@ function App() {
   const mainContent = (
     <>
       <SidebarProvider
-        overlay={breakpoint !== 'wide'}
+        // Inline (pinned list or icon rail) on desktop widths; a drawer only
+        // where there is no room for even the rail.
+        overlay={breakpoint === 'narrow'}
+        open={navPinned && breakpoint === 'wide'}
+        onOpenChange={setNavPinned}
         style={
           {
             "--sidebar-width": "220px",
+            "--sidebar-width-icon": "72px",
             "--session-list-width": "280px",
           } as React.CSSProperties
         }

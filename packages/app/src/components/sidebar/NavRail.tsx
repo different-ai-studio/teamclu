@@ -32,6 +32,13 @@ import { useFeatures } from '@/lib/config/remote-features'
 import { cn } from '@/lib/utils'
 import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 import { MentionSignal, UnreadSignal } from '@/components/sidebar/session-attention-signal'
+import {
+  isRailMode,
+  navRowBox,
+  navRowLabel,
+  navRowSignal,
+  useNavRailMode,
+} from '@/components/sidebar/nav-rail-mode'
 
 interface TopEntryProps {
   label: string
@@ -43,12 +50,15 @@ interface TopEntryProps {
 }
 
 function TopEntry({ label, icon: Icon, active, signal, onClick }: TopEntryProps) {
+  const mode = useNavRailMode()
   return (
     <button
       type="button"
       onClick={onClick}
+      title={mode === 'rail-collapsed' ? label : undefined}
       className={cn(
-        'flex w-full items-center gap-2.5 rounded-lg px-[9px] py-[7px] text-left text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]',
+        'flex w-full items-center gap-2.5 rounded-lg text-left text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]',
+        navRowBox(mode),
         active
           ? 'bg-paper font-semibold text-foreground shadow-[0_1px_2px_rgba(28,27,25,0.04)] ring-1 ring-black/[0.05]'
           : 'font-normal text-ink-2 hover:bg-black/[0.04]',
@@ -57,14 +67,16 @@ function TopEntry({ label, icon: Icon, active, signal, onClick }: TopEntryProps)
       <Icon
         className={cn('h-[15px] w-[15px] shrink-0', active ? 'text-foreground' : 'text-muted-foreground')}
       />
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {signal ? <span className={NAV_ROW_TRAILING_SLOT}>{signal}</span> : null}
+      <span className={navRowLabel(mode)}>{label}</span>
+      {signal ? <span className={cn(NAV_ROW_TRAILING_SLOT, navRowSignal(mode))}>{signal}</span> : null}
     </button>
   )
 }
 
 export function NavRail() {
   const { t } = useTranslation()
+  const mode = useNavRailMode()
+  const rail = isRailMode(mode)
   const features = useFeatures()
   const embedMode = useUIStore((s) => s.embedMode)
   const filter = useUIStore((s) => s.sidebarFilter)
@@ -199,6 +211,12 @@ export function NavRail() {
           ones, and the chevron rotating in place is the only motion needed to
           say which way it goes.
         */}
+        {rail ? (
+          // The rail has no room for a labelled toggle, and a fold would make
+          // the expanded rail a different list from the collapsed one. Every
+          // entry shows; a plain rule keeps the everyday group apart.
+          <div aria-hidden className="mx-[18px] my-2 h-px bg-border-soft" />
+        ) : (
         <button
           type="button"
           onClick={toggleMore}
@@ -223,11 +241,12 @@ export function NavRail() {
             className="h-px flex-1 bg-border-soft transition-colors duration-150 group-hover:bg-border"
           />
         </button>
+        )}
         {/* Scrolls rather than clips: nothing in here grows to absorb slack any
             more (the app list that used to moved to column two), so on a short
             window the last rows would otherwise be cut off by the rail's own
             overflow-hidden. */}
-        {moreExpanded && (
+        {(rail || moreExpanded) && (
           <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto overflow-x-hidden">
             <TeamShareNavSection sections={['knowledge']} />
             {!embedMode ? (
