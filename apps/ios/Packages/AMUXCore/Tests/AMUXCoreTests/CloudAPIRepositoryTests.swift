@@ -219,6 +219,32 @@ struct CloudAPIRepositoryTests {
         #expect(json["lastReadMessageId"] as? String == "msg-42")
     }
 
+    /// Ids spliced into a path are escaped as one segment, so a stray `/` or
+    /// `?` cannot redirect the request to another route.
+    @Test
+    func sessionIDsAreEscapedAsOnePathSegment() async throws {
+        let recorder = RequestRecorder()
+        let client = CloudAPIClient(
+            configuration: configuration(),
+            accessToken: { "access-token" },
+            send: { request in
+                await recorder.append(request)
+                let url = URL(string: "https://fc.example.com")!
+                let http = try #require(HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil))
+                return (Data(), http)
+            }
+        )
+        let repo = CloudAPISessionsRepository(client: client)
+        try await repo.markSessionViewed(sessionId: "a/b?c", lastReadMessageId: nil)
+        try await repo.markSessionUnread(sessionId: "a/b?c")
+
+        let urls = await recorder.requests.compactMap { $0.url?.absoluteString }
+        #expect(urls == [
+            "https://fc.example.com/v1/sessions/a%2Fb%3Fc/mark-viewed",
+            "https://fc.example.com/v1/sessions/a%2Fb%3Fc/mark-unread",
+        ])
+    }
+
     @Test
     func actorsAndWorkspacesDecodeContractShapes() async throws {
         let client = CloudAPIClient(
