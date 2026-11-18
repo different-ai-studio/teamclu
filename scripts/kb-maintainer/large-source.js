@@ -1,7 +1,6 @@
 "use strict";
 
 const fs = require("node:fs");
-const path = require("node:path");
 const { extensionOf } = require("./extract-text");
 const {
   decodeText,
@@ -11,6 +10,7 @@ const {
   markdownRow,
   profileTableLines,
 } = require("./table-source");
+const { documentsFilePath } = require("./win-path");
 
 const DEFAULT_MAX_EXTRACTED_CHARS = 50000;
 // A part leaves room under the limit for the repeated table header and the
@@ -253,7 +253,7 @@ async function preflightLargeSources({ documentsRoot, plan, limit }) {
   const { extractSource } = require("./extract");
   const found = [];
   for (const item of [...(plan.add || []), ...(plan.update || [])]) {
-    const abs = path.join(documentsRoot, item.path.slice("documents/".length));
+    const abs = documentsFilePath(documentsRoot, item.path);
     if (!fs.existsSync(abs)) continue;
     let bytes;
     let extracted;
