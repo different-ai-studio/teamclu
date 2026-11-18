@@ -10,7 +10,7 @@
 #   scripts/reset-local-state.sh -n              # dry-run (list only)
 #   scripts/reset-local-state.sh -y --short-name copilot361 --app-id com.copilot361.app
 #   scripts/reset-local-state.sh -y --keep-workspace      # skip <workspace>/.<brand>
-#   scripts/reset-local-state.sh -y --keep-opencode      # skip global OpenCode dirs
+#   scripts/reset-local-state.sh -y --include-opencode   # also remove global OpenCode dirs
 #   scripts/reset-local-state.sh -y --purge-workspaces   # delete workspace dirs whole
 #
 # Does NOT delete:
@@ -55,7 +55,7 @@ TEAM_SHARED_LINK_NAMES=(
 yes_mode=0
 dry_run=0
 include_workspace=1
-include_opencode=1
+include_opencode=0
 purge_workspaces=0
 explicit_workspace=0
 brand_only=0
@@ -93,8 +93,10 @@ Options:
   --workspace PATH          Extra workspace whose .<brand>/ dir to remove (repeatable)
   --app-id ID               Limit reset to one brand (e.g. com.copilot361.app)
   --short-name NAME         Limit reset to one brand (e.g. copilot361)
-  --include-opencode        Remove global OpenCode data (default: on)
-  --keep-opencode           Do not remove global OpenCode data
+  --include-opencode        Also remove global OpenCode data (default: off — the
+                            product no longer ships opencode; these dirs belong
+                            to the user's own OpenCode install)
+  --keep-opencode           Do not remove global OpenCode data (default)
   -h, --help                Show this help
 
 Removes (user-level):
@@ -117,7 +119,7 @@ Removes (user-level):
   - Legacy product generations   teamclaw / betly / amux / seamux profiles,
                                  ~/.teamclaw-seed (old P2P sync state)
   - ~/.opencode (+ ~/.local/share/opencode, ~/.config/opencode, ~/.cache/opencode)
-    global OpenCode runtime and data (default: on; use --keep-opencode to skip)
+    global OpenCode runtime and data (only with --include-opencode)
 
 Quit the desktop app before running. The script unloads the amuxd launchd/systemd
 job before killing the process so KeepAlive cannot recreate ~/.amuxd.
