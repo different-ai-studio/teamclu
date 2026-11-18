@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Match scripts/run-daemon.js (pnpm daemon:run) — never use stale target/debug/amuxd.
+# Match scripts/daemon-cargo.js (pnpm daemon:run) — never use stale target/debug/amuxd.
 CARGO_TARGET_DIR="${ROOT_DIR}/.cargo-target"
 export CARGO_TARGET_DIR
 CONFIG_DIR="${HOME}/Library/Application Support/amux"

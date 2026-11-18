@@ -292,7 +292,7 @@ Settings 显示 Backend types 为空
 │         • daemon 启动后是否只尝试一次上报
 │
 └─ daemon 是否在跑？ get_daemon_http_info 是否可用？
-    └─ 否 → 先解决 onboarding / foreground start / deploy-daemon.sh
+    └─ 否 → 先解决 onboarding / foreground start / deploy-daemon-binaries.sh
 ```
 
 ---

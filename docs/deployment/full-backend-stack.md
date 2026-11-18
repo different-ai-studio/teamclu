@@ -280,7 +280,7 @@ LiteLLM 容器（`ghcr.io/berriai/litellm-database`，库 `_litellm` 由 `litell
 
 - Desktop 安装包自带 + launchd/systemd 服务
 - Self-host 可选：`docker compose --profile daemon up -d --build amuxd`
-- 开发机：`scripts/deploy-daemon.sh`
+- 开发机：`scripts/deploy-daemon-binaries.sh`
 
 Daemon 需要：
 
