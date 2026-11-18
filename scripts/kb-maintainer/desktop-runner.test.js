@@ -292,6 +292,34 @@ test("explainFailure blames the filename, not the folder, for a sensitive name",
   );
 });
 
+test("explainFailure tells an oversized file apart from an over-long extraction", () => {
+  const { explainFailure } = require("./desktop-runner");
+  assert.equal(
+    explainFailure("size 209715200"),
+    "This file is larger than 100 MiB, so it is not compiled.",
+  );
+  assert.equal(
+    explainFailure("too_large chars=186000 limit=50000"),
+    "This source is too long after extraction (186000 characters, limit 50000). Split it into shorter files, then compile again.",
+  );
+  assert.equal(
+    explainFailure("too_large_unsplittable chars=64000 limit=50000"),
+    "This source is too long after extraction (64000 characters, limit 50000) and has no pages, rows, or headings to split at. Split it into shorter files, then compile again.",
+  );
+  assert.equal(
+    explainFailure("too_many_parts parts=31 max=20"),
+    "This source would need 31 parts, more than the 20-part limit. Split it into shorter files, then compile again.",
+  );
+  assert.equal(
+    explainFailure("large_skipped"),
+    "This source was skipped this run and will be compiled again next time.",
+  );
+  assert.equal(
+    explainFailure("segment 3/12 kept=2: Compiler model failed: 429 Too Many Requests"),
+    "Part 3 of 12 failed: Compiler model failed: 429 Too Many Requests The 2 parts before it were kept, and the whole source compiles again next time.",
+  );
+});
+
 test("explainFailure names each vision outcome separately", () => {
   const { explainFailure } = require("./desktop-runner");
   assert.equal(explainFailure("extraction vision_declined"), "This run did not look at images.");
@@ -555,7 +583,7 @@ test("prepare accept sends an image to the current model and publishes the page"
   assert.deepEqual(summary.blockers, []);
 });
 
-test("prepare emits plan → estimate → ingest → lint → done progress", async () => {
+test("prepare emits plan → estimate → preflight → ingest → lint → done progress", async () => {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");
@@ -617,12 +645,12 @@ test("prepare emits plan → estimate → ingest → lint → done progress", as
 
   assert.deepEqual(
     events.map((event) => event.stage),
-    ["plan", "estimate", "ingest", "lint", "done"],
+    ["plan", "estimate", "preflight", "ingest", "lint", "done"],
   );
-  assert.equal(events[2].current, 1);
-  assert.equal(events[2].total, 1);
-  assert.equal(events[2].path, "documents/handbook/leave.md");
-  assert.equal(events[2].action, "add");
+  assert.equal(events[3].current, 1);
+  assert.equal(events[3].total, 1);
+  assert.equal(events[3].path, "documents/handbook/leave.md");
+  assert.equal(events[3].action, "add");
   assert.deepEqual(
     checkpoints.map((checkpoint) => ({
       generation: checkpoint.manifest.generation,

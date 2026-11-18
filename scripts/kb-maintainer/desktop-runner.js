@@ -20,6 +20,7 @@ const { createCheckpoint, restoreCheckpoint } = require("./checkpoint");
 const { createDaemonSession } = require("./daemon-session");
 const { createVisionExtract, findPdftoppm, transcribeWithSession } = require("./vision");
 const { seedSchema } = require("./schema-seed");
+const { preflightLargeSources } = require("./large-source");
 
 function renderPdfPage(bytes, pageNumber) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-pdf-page-"));
@@ -74,6 +75,26 @@ function redactLocalPaths(text) {
 
 function explainFailure(error) {
   const text = String(error || "");
+  const part = /^segment (\d+)\/(\d+) kept=(\d+): ([\s\S]*)$/.exec(text);
+  if (part) {
+    return `Part ${part[1]} of ${part[2]} failed: ${explainFailure(part[4])} The ${part[3]} parts before it were kept, and the whole source compiles again next time.`;
+  }
+  if (text === "large_skipped") return SKIPPED;
+  const tooLong = /^too_large chars=(\d+) limit=(\d+)$/.exec(text);
+  if (tooLong) {
+    return `This source is too long after extraction (${tooLong[1]} characters, limit ${tooLong[2]}). Split it into shorter files, then compile again.`;
+  }
+  const unsplittable = /^too_large_unsplittable chars=(\d+) limit=(\d+)$/.exec(text);
+  if (unsplittable) {
+    return `This source is too long after extraction (${unsplittable[1]} characters, limit ${unsplittable[2]}) and has no pages, rows, or headings to split at. Split it into shorter files, then compile again.`;
+  }
+  const tooManyParts = /^too_many_parts parts=(\d+) max=(\d+)$/.exec(text);
+  if (tooManyParts) {
+    return `This source would need ${tooManyParts[1]} parts, more than the ${tooManyParts[2]}-part limit. Split it into shorter files, then compile again.`;
+  }
+  if (/^size \d+/.test(text)) {
+    return "This file is larger than 100 MiB, so it is not compiled.";
+  }
   const modelFailed = /Compiler model failed:\s*([\s\S]*)/.exec(text);
   if (modelFailed) {
     return redactLocalPaths(`Compiler model failed: ${modelFailed[1].trim()}`);
@@ -84,7 +105,7 @@ function explainFailure(error) {
   if (/compiler produced no wiki pages/.test(text)) {
     return NO_PAGES;
   }
-  if (text === "too_large" || /\btoo_large\b/.test(text) || /^size \d+/.test(text)) {
+  if (text === "too_large" || /\btoo_large\b/.test(text)) {
     return "This source is too long. Split it into shorter files, then compile again.";
   }
   if (/vision_declined/.test(text)) return "This run did not look at images.";
@@ -140,9 +161,9 @@ function summarizePreparedRun({
   // A restricted source is never named: the person running the maintainer may
   // not be allowed to see that folder.
   const failedRestricts = (ingest.failures || []).filter((failure) => failure.action === "restrict");
-  const failures = (ingest.failures || [])
-    .filter((failure) => failure.action !== "restrict")
-    .map((failure) => `${failure.path}: ${explainFailure(failure.error)}`);
+  const sourceFailures = (ingest.failures || []).filter((failure) => failure.action !== "restrict");
+  const failures = sourceFailures.map((failure) => `${failure.path}: ${explainFailure(failure.error)}`);
+  const chosenSkips = sourceFailures.filter((failure) => failure.error === "large_skipped").length;
   const lintBlockers = [];
   let skippedLint = false;
   for (const error of lint.errors || []) {
@@ -198,7 +219,7 @@ function summarizePreparedRun({
     added,
     updated,
     deleted,
-    failed: failures.length + failedRestricts.length,
+    failed: failures.length - chosenSkips + failedRestricts.length,
     visionPages: estimate.visionPages,
     estimatedCost: estimate.estimatedCost,
     currency: estimate.currency,
@@ -291,11 +312,7 @@ async function prepare(input, hooks = {}) {
   onProgress({ stage: "estimate" });
   const estimate = await estimateVision(common);
   const visionChoice = input.visionChoice || "ask";
-  if (
-    estimate.requiresAccept &&
-    visionChoice !== "accept" &&
-    visionChoice !== "decline"
-  ) {
+  const awaitingDecision = (fields) => {
     onProgress({ stage: "done" });
     return {
       runId: input.runId,
@@ -321,6 +338,16 @@ async function prepare(input, hooks = {}) {
       estimatedCost: estimate.estimatedCost,
       currency: estimate.currency,
       canPublish: false,
+      blockers: [],
+      ...fields,
+    };
+  };
+  if (
+    estimate.requiresAccept &&
+    visionChoice !== "accept" &&
+    visionChoice !== "decline"
+  ) {
+    return awaitingDecision({
       blockers: [
         ...(estimate.unreadable || []).map(
           (item) => `${item.path}: ${explainFailure("vision_unreadable")}`,
@@ -330,8 +357,24 @@ async function prepare(input, hooks = {}) {
         ),
       ],
       needsVisionAcceptance: true,
-    };
+    });
   }
+  onProgress({ stage: "preflight" });
+  const largeSources = await preflightLargeSources({
+    documentsRoot: input.documentsRoot,
+    plan: dry.plan,
+    limit: loadConfig(input.configPath).limits.maxExtractedChars,
+  });
+  const choices =
+    input.largeSourceChoices && typeof input.largeSourceChoices === "object"
+      ? input.largeSourceChoices
+      : {};
+  if (largeSources.some((source) => !source.options.includes(choices[source.path]))) {
+    return awaitingDecision({ largeSources, needsLargeSourceDecision: true });
+  }
+  common.largeSourceChoices = Object.fromEntries(
+    largeSources.map((source) => [source.path, choices[source.path]]),
+  );
   const ingest = await ingestBatch(common);
   onProgress({ stage: "lint" });
   const config = loadConfig(input.configPath);
