@@ -1,7 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { SessionActorPanel } from '@/components/chat/SessionActorSheet'
-import { ShortcutsPanel } from './ShortcutsPanel'
 import { FileBrowser } from '@/components/workspace/FileBrowser'
 import { ActorsView } from '@/components/panel/ActorsView'
 import { SessionWorkspacePicker } from '@/components/panel/SessionWorkspacePicker'
@@ -168,9 +167,6 @@ export function RightPanel({ defaultTab, compact }: RightPanelProps) {
     <div
       className={`h-full min-h-0 ${selfScrolling ? 'overflow-hidden flex flex-col' : 'overflow-auto'} ${noPadding ? '' : (compact ? 'p-1' : 'p-2')}`}
     >
-      {activeTab === 'shortcuts' && (
-        <ShortcutsPanel />
-      )}
       {activeTab === 'files' && (
         <WorkspaceFilesPane />
       )}

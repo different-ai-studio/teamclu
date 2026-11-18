@@ -10,6 +10,7 @@ import { loadFromStorage, saveToStorage } from '@/lib/config/storage'
 import { appStoragePrefix } from '@/lib/config/build-config'
 
 const NAV_PINNED_STORAGE_KEY = `${appStoragePrefix}-nav-pinned`
+const SESSION_DRAWER_PINNED_STORAGE_KEY = `${appStoragePrefix}-session-drawer-pinned`
 
 type View = 'chat' | 'settings'
 
@@ -100,6 +101,12 @@ interface UIState {
    * that. Persisted per install.
    */
   navPinned: boolean
+  /**
+   * The session drawer (files / actors / app settings) docked into column
+   * three, pushing the conversation, instead of floating over its right edge.
+   * Persisted per install.
+   */
+  sessionDrawerPinned: boolean
   /** Workspace list expanded (「管理 Workspace 列表」). */
   localDaemonExpanded: boolean
   /** Action sheet open (⋯ menu). */
@@ -127,6 +134,7 @@ interface UIState {
   toggleMoreNav: () => void
   setMoreNavExpanded: (expanded: boolean) => void
   setNavPinned: (pinned: boolean) => void
+  setSessionDrawerPinned: (pinned: boolean) => void
   toggleLocalDaemon: () => void
   toggleLocalDaemonSheet: () => void
   setLocalDaemonSheetOpen: (open: boolean) => void
@@ -193,6 +201,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   ideasSectionCollapsed: false,
   moreNavExpanded: false,
   navPinned: loadFromStorage<boolean>(NAV_PINNED_STORAGE_KEY, false),
+  sessionDrawerPinned: loadFromStorage<boolean>(SESSION_DRAWER_PINNED_STORAGE_KEY, false),
   localDaemonExpanded: false,
   localDaemonSheetOpen: false,
   narrowListSheetOpen: false,
@@ -455,6 +464,10 @@ export const useUIStore = create<UIState>((set, get) => ({
   setNavPinned: (pinned) => {
     saveToStorage(NAV_PINNED_STORAGE_KEY, pinned)
     set({ navPinned: pinned })
+  },
+  setSessionDrawerPinned: (pinned) => {
+    saveToStorage(SESSION_DRAWER_PINNED_STORAGE_KEY, pinned)
+    set({ sessionDrawerPinned: pinned })
   },
   toggleLocalDaemon: () => set((s) => ({ localDaemonExpanded: !s.localDaemonExpanded })),
   toggleLocalDaemonSheet: () => set((s) => ({ localDaemonSheetOpen: !s.localDaemonSheetOpen })),

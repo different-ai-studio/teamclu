@@ -10,7 +10,7 @@ vi.mock('react-i18next', () => ({
 }))
 
 // Mutable so tests can change the store's activeTab
-const mockStoreState = { activeTab: 'shortcuts' as string }
+const mockStoreState = { activeTab: 'files' as string }
 
 vi.mock('@/stores/workspace', () => ({
   useWorkspaceStore: (selector: (s: Record<string, unknown>) => unknown) =>
@@ -38,9 +38,6 @@ vi.mock('@/components/workspace/FileBrowser', () => ({
     React.createElement('div', { 'data-testid': 'file-browser', 'data-variant': variant }),
 }))
 
-vi.mock('@/components/panel/ShortcutsPanel', () => ({
-  ShortcutsPanel: () => React.createElement('div', { 'data-testid': 'shortcuts-panel' }),
-}))
 
 vi.mock('@/components/panel/ActorsView', () => ({
   ActorsView: () => React.createElement('div', { 'data-testid': 'actors-view' }),
@@ -77,7 +74,7 @@ vi.mock('@/hooks/use-session-local-workspace', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockStoreState.activeTab = 'shortcuts'
+  mockStoreState.activeTab = 'files'
   mockSelection.activeSessionId = null
   mockSelection.currentSessionId = null
   mockLocalWorkspace.hasLocalAgent = true
@@ -90,24 +87,16 @@ beforeEach(() => {
 })
 
 describe('RightPanel', () => {
-  it('renders the shortcuts tab from the store', () => {
-    render(React.createElement(RightPanel))
-    expect(screen.getByTestId('shortcuts-panel')).toBeDefined()
-    expect(screen.queryByTestId('file-browser')).toBeNull()
-  })
-
   it('renders the files tab as a panel-variant FileBrowser', () => {
     mockStoreState.activeTab = 'files'
     render(React.createElement(RightPanel))
     expect(screen.getByTestId('file-browser').getAttribute('data-variant')).toBe('panel')
-    expect(screen.queryByTestId('shortcuts-panel')).toBeNull()
   })
 
   it('defaultTab overrides the store tab', () => {
-    mockStoreState.activeTab = 'shortcuts'
+    mockStoreState.activeTab = 'actors'
     render(React.createElement(RightPanel, { defaultTab: 'files' }))
     expect(screen.getByTestId('file-browser')).toBeDefined()
-    expect(screen.queryByTestId('shortcuts-panel')).toBeNull()
   })
 
   // A session created a second ago may still be switching the workspace store.

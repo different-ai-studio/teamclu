@@ -12,7 +12,7 @@ import { appDisplayName } from "@/lib/config/build-config";
 import { daemonHomeDisplayPath } from "@/lib/daemon/daemon-paths";
 import { parseSessionDeeplink } from "@/lib/session/session-deeplink";
 import { markStartup } from "@/lib/telemetry/startup-perf";
-import { BookOpen, ChevronLeft, X, Loader2, RotateCw, MessageSquarePlus, Users, SlidersHorizontal } from "lucide-react";
+import { BookOpen, X, Loader2, RotateCw, MessageSquarePlus, Users, SlidersHorizontal } from "lucide-react";
 import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
 import { SessionShareButton } from "@/components/chat/SessionShareButton";
 import { ExportPiTranscriptButton } from "@/components/chat/ExportPiTranscriptButton";
@@ -34,6 +34,8 @@ import {
   useEffectiveContentColumnMode,
 } from "@/components/content-column/ContentColumn";
 import { useSessionScopedTabs } from "@/hooks/use-session-scoped-tabs";
+import { SessionDrawer } from "@/components/session-drawer/SessionDrawer";
+import { useOneSessionSidePanel } from "@/components/session-drawer/use-one-side-panel";
 import { useTauriBodyClass } from "@/hooks/use-tauri-body-class";
 import { useMemberPresenceHeartbeat } from "@/hooks/use-member-presence-heartbeat";
 import { useExtensionSessionCleanup } from "@/hooks/use-extension-session-cleanup";
@@ -89,8 +91,7 @@ import { useCurrentTeamStore } from "@/stores/current-team";
 import { useLocalAgentInstallStore } from "@/stores/local-agent-install";
 import { useAppsStore } from "@/stores/apps-store";
 import { E2E_BUILD, isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
-import { TrafficLights } from "@/components/ui/traffic-lights";
-import { SidebarInset, SidebarProvider, useSidebar } from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { HeaderPanelTab } from "@/app/chrome";
 import { MainContent } from "@/app/MainContent";
 import {
@@ -214,13 +215,6 @@ function AppContent() {
   // conditions below. Defaults hidden; users enable per-icon in Settings →
   // General → "会话头部图标". See stores/header-preferences-store.ts.
   const showSkillsRefresh = useHeaderPreferencesStore((s) => s.showSkillsRefresh);
-  const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
-  /** Shortcuts open in the left dock for both shells.
-   * Only the workspace shell temporarily replaces the sidebar with that dock.
-   * Files pops out from the right (via the top-right files icon). */
-  const leftDockActive =
-    isPanelOpen &&
-    activeTab === "shortcuts";
   const showAppControlPanel = appControlPanelOpen && !!controlPanelApp;
   // The file tree reaches this machine's filesystem, so it only means
   // something for a session the local agent is in. Without this gate it kept
@@ -231,8 +225,18 @@ function AppContent() {
     path: sessionWorkspacePath,
     otherAgentNames: sessionOtherAgentNames,
   } = useSessionLocalWorkspace();
-  const showRightWorkspacePanel = isPanelOpen && !leftDockActive && !showAppControlPanel;
+  const showRightWorkspacePanel = isPanelOpen && !showAppControlPanel;
   const showRightSidePanel = showRightWorkspacePanel || showAppControlPanel;
+  const sessionDrawerTitle = showAppControlPanel
+    ? t("apps.controlPanel.title", "应用设置")
+    : activeTab === "actors"
+      ? t("chat.actorSheet.title", "Actors")
+      : t("navigation.files", "files");
+  const closeSessionDrawer = React.useCallback(() => {
+    if (useUIStore.getState().appControlPanelOpen) closeAppControlPanel();
+    closePanel();
+  }, [closeAppControlPanel, closePanel]);
+  useOneSessionSidePanel(showRightSidePanel, closeSessionDrawer);
   const settingsOpen = currentView === "settings";
   /** Extension welcome has its own empty state — skip duplicate "New Chat" header. */
   const showChatSessionHeader = !(embedMode && !activeSession);
@@ -458,28 +462,6 @@ function AppContent() {
     useSessionSelectionStore((s) => s.currentSessionId),
   );
 
-  /** When left dock opens, hide the main sidebar; restore prior expansion when it closes. */
-  const restoreSidebarAfterLeftDockRef = useRef<boolean | null>(null);
-  useEffect(() => {
-    if (leftDockActive) {
-      if (restoreSidebarAfterLeftDockRef.current === null) {
-        restoreSidebarAfterLeftDockRef.current = sidebarOpen;
-        if (sidebarOpen) {
-          setSidebarOpen(false);
-        }
-      } else if (sidebarOpen) {
-        // User re-opened sidebar while left dock is active — close the dock.
-        closePanel();
-      }
-    } else {
-      const shouldExpand = restoreSidebarAfterLeftDockRef.current === true;
-      restoreSidebarAfterLeftDockRef.current = null;
-      if (shouldExpand) {
-        setSidebarOpen(true);
-      }
-    }
-  }, [leftDockActive, sidebarOpen, setSidebarOpen, closePanel]);
-
   const settingsModal = (
     <Dialog
       open={settingsOpen}
@@ -587,49 +569,6 @@ function AppContent() {
         </div>
       )}
       <SidebarInset className="flex flex-row h-svh overflow-hidden relative">
-        <div
-          className={cn(
-            "shrink-0 overflow-hidden border-border bg-background transition-[width,opacity,transform] duration-500 ease-out",
-            leftDockActive
-              ? "w-(--sidebar-width) translate-x-0 border-r opacity-100"
-              : "pointer-events-none w-0 -translate-x-4 border-r-0 opacity-0",
-          )}
-        >
-          <div className="flex h-full w-(--sidebar-width) flex-col overflow-hidden bg-background">
-            {leftDockActive && (
-              <>
-                <div
-                  className="flex h-12 shrink-0 items-center gap-1 border-b border-border bg-background px-2"
-                  data-tauri-drag-region
-                >
-                  <TrafficLights />
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 shrink-0 rounded-lg"
-                    onClick={() => closePanel()}
-                    title={t("shortcuts.backToSidebar", "Back to sidebar")}
-                    aria-label={t(
-                      "shortcuts.backToSidebar",
-                      "Back to sidebar",
-                    )}
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </Button>
-                  <span className="min-w-0 truncate text-sm font-medium">
-                    {t("navigation.shortcuts", "Shortcuts")}
-                  </span>
-                  <div className="min-w-0 flex-1" data-tauri-drag-region />
-                </div>
-                <div className="min-h-0 flex-1 overflow-hidden">
-                  <React.Suspense fallback={<PaneLoading />}>
-                    <RightPanel />
-                  </React.Suspense>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
         {/* Column three: header + conversation (+ its side panel). */}
         <div
           className={cn(
@@ -746,27 +685,22 @@ function AppContent() {
             <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <MainContent />
             </div>
-            <div
-              className={cn(
-                "shrink-0 overflow-hidden border-l border-border bg-background transition-[width,opacity,transform] duration-500 ease-out",
-                showRightSidePanel
-                  ? "w-72 translate-x-0 opacity-100"
-                  : "pointer-events-none w-0 translate-x-4 border-l-0 opacity-0",
-              )}
+            <SessionDrawer
+              open={showRightSidePanel}
+              title={sessionDrawerTitle}
+              onClose={closeSessionDrawer}
             >
-              <div className="h-full w-72">
-                {showRightWorkspacePanel && (
-                  <React.Suspense fallback={<PaneLoading />}>
-                    <RightPanel />
-                  </React.Suspense>
-                )}
-                {showAppControlPanel && controlPanelApp && (
-                  <React.Suspense fallback={<PaneLoading />}>
-                    <AppControlPanel app={controlPanelApp} />
-                  </React.Suspense>
-                )}
-              </div>
-            </div>
+              {showRightWorkspacePanel && (
+                <React.Suspense fallback={<PaneLoading />}>
+                  <RightPanel />
+                </React.Suspense>
+              )}
+              {showAppControlPanel && controlPanelApp && (
+                <React.Suspense fallback={<PaneLoading />}>
+                  <AppControlPanel app={controlPanelApp} />
+                </React.Suspense>
+              )}
+            </SessionDrawer>
           </div>
           </>
         </div>

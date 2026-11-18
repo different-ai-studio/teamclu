@@ -615,7 +615,6 @@
     }
   },
   "navigation": {
-    "shortcuts": "快捷方式",
     "files": "文件",
     "filesUnavailableRemoteAgent": "此会话的 agent 在 {{agents}} 上运行，文件不在这台电脑。换成本机 Agent 会保留聊天记录，但看不到那边的文件。",
     "restoreTabs": "显示文件",
@@ -3863,9 +3862,7 @@
   "shortcuts": {
     "personal": "个人",
     "team": "团队",
-    "refreshTeam": "刷新团队快捷方式",
-    "configurePersonal": "设置个人收藏",
-    "backToSidebar": "返回侧边栏"
+    "refreshTeam": "刷新团队快捷方式"
   },
   "clawhub": {
     "author": "作者",
@@ -4242,6 +4239,10 @@
     "full": "全屏",
     "hide": "隐藏",
     "resize": "拖动调整宽度"
+  },
+  "sessionDrawer": {
+    "pin": "固定在会话旁",
+    "unpin": "浮在会话上方"
   },
   "tabBar": {
     "closeAria": "关闭标签页",

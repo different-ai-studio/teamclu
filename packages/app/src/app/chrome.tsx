@@ -37,6 +37,9 @@ export function HeaderPanelTab({
       // events in WebKit, so the title explaining why would never show.
       aria-disabled={disabled || undefined}
       aria-label={label}
+      // The floating session drawer closes on a click outside it; its own
+      // toggles must not count, or a click would close it and reopen it.
+      data-session-drawer-toggle=""
       title={title ?? label}
       onClick={disabled ? undefined : onClick}
     >
