@@ -44,6 +44,12 @@ export type SessionLocalWorkspace = {
    * confirmed — a failed read must not invite overwriting a bound seat.
    */
   needsWorkspace: boolean
+  /**
+   * Display names of the session's agents that run on other machines. Lets the
+   * header explain why the files entry is unavailable instead of dropping it.
+   * Filled whether or not the local agent is seated.
+   */
+  otherAgentNames: string[]
 }
 
 const EMPTY: SessionLocalWorkspace = {
@@ -54,6 +60,7 @@ const EMPTY: SessionLocalWorkspace = {
   bindingResolved: false,
   boundPath: null,
   needsWorkspace: false,
+  otherAgentNames: [],
 }
 
 type ResolvedBinding = { path: string | null; needsWorkspace: boolean }
@@ -189,9 +196,14 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
   }, [sessionId, teamId, localAgentId, workspacePath, rebindRevision])
 
   return React.useMemo(() => {
-    if (!sessionId || !localAgentId) return EMPTY
+    if (!sessionId) return EMPTY
+    const otherAgentNames = (participants ?? [])
+      .filter((p) => p.isAgent && p.actorId !== localAgentId)
+      .map((p) => p.displayName?.trim())
+      .filter((name): name is string => !!name)
+    if (!localAgentId) return otherAgentNames.length ? { ...EMPTY, otherAgentNames } : EMPTY
     const participant = (participants ?? []).find((p) => p.actorId === localAgentId)
-    if (!participant) return EMPTY
+    if (!participant) return otherAgentNames.length ? { ...EMPTY, otherAgentNames } : EMPTY
 
     const bindingResolved = bound?.sessionId === sessionId
     const boundPath = bindingResolved ? bound.path : null
@@ -206,6 +218,7 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
       bindingResolved,
       boundPath,
       needsWorkspace: bindingResolved && !boundPath && bound.needsWorkspace,
+      otherAgentNames,
     }
   }, [sessionId, localAgentId, participants, bound, workspacePath])
 }

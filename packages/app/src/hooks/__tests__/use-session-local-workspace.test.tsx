@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   currentSessionId: 'sess-a' as string | null,
   teamId: 'team-1' as string | null,
   workspacePath: '/tmp/a' as string | null,
-  participantsBySession: {} as Record<string, Array<{ actorId: string; displayName: string }>>,
+  participantsBySession: {} as Record<string, Array<{ actorId: string; displayName: string; isAgent?: boolean }>>,
   ensureParticipants: vi.fn(),
   getLocalDaemonActorId: vi.fn(),
   resolveSessionWorkspacePath: vi.fn(),
@@ -71,6 +71,35 @@ describe('useSessionLocalWorkspace', () => {
       id === 'sess-a' ? '/tmp/a' : '/tmp/b',
     )
     mocks.localSeatNeedsWorkspace.mockResolvedValue(true)
+  })
+
+  // The header greys the files entry out for a session started on another
+  // machine and names that machine's agent; it needs the names without the
+  // local agent being seated.
+  it('names the agents from other machines when the local agent is not seated', async () => {
+    mocks.participantsBySession = {
+      'sess-a': [
+        { actorId: 'member-1', displayName: 'Matt', isAgent: false },
+        { actorId: 'agent-remote', displayName: 'Mac.lan', isAgent: true },
+      ],
+    }
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.otherAgentNames).toEqual(['Mac.lan']))
+    expect(result.current.hasLocalAgent).toBe(false)
+    expect(result.current.path).toBeNull()
+  })
+
+  it('leaves the local agent out of the other-agent names', async () => {
+    mocks.participantsBySession = {
+      'sess-a': [
+        { actorId: 'agent-local', displayName: 'Mac-mini-3', isAgent: true },
+        { actorId: 'agent-remote', displayName: 'Mac.lan', isAgent: true },
+      ],
+    }
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.path).toBe('/tmp/a'))
+    expect(result.current.hasLocalAgent).toBe(true)
+    expect(result.current.otherAgentNames).toEqual(['Mac.lan'])
   })
 
   it('reports the session folder once the workspace store agrees', async () => {

@@ -64,6 +64,7 @@ const mockLocalWorkspace = {
   bindingResolved: true,
   boundPath: '/Volumes/openbeta/workspace/teamclu' as string | null,
   needsWorkspace: false,
+  otherAgentNames: [] as string[],
 }
 const { switchToSessionWorkspaceIfNeeded } = vi.hoisted(() => ({
   switchToSessionWorkspaceIfNeeded: vi.fn(async () => {}),

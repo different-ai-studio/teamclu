@@ -221,6 +221,7 @@ function AppContent() {
   const {
     hasLocalAgent: sessionHasLocalAgent,
     path: sessionWorkspacePath,
+    otherAgentNames: sessionOtherAgentNames,
   } = useSessionLocalWorkspace();
   const showRightWorkspacePanel = isPanelOpen && !leftDockActive && !showAppControlPanel;
   const showRightSidePanel = showRightWorkspacePanel || showAppControlPanel;
@@ -707,15 +708,31 @@ function AppContent() {
                 />
               )}
               {/* Workspace file tree — the folder the local agent works in for
-                  the open session. No local agent in it, no folder to show, so
-                  the entry disappears rather than pointing at whatever was open
-                  before. */}
+                  the open session. With no local agent in it there is no
+                  folder on this machine to show, so the entry is greyed out
+                  with a hint naming where the session's agent runs, rather
+                  than vanishing (which read as a bug) or pointing at whatever
+                  was open before. */}
               {capabilities.workspace && sessionHasLocalAgent && (
                 <HeaderPanelTab
                   icon={BookOpen}
                   label={t("navigation.files", "files")}
                   isActive={isPanelOpen && activeTab === "files"}
                   onClick={() => isPanelOpen && activeTab === "files" ? closePanel() : openPanel("files")}
+                />
+              )}
+              {capabilities.workspace && !sessionHasLocalAgent && hasCurrentSession && sessionOtherAgentNames.length > 0 && (
+                <HeaderPanelTab
+                  icon={BookOpen}
+                  label={t("navigation.files", "files")}
+                  isActive={false}
+                  disabled
+                  title={t(
+                    "navigation.filesUnavailableRemoteAgent",
+                    "This session's agent runs on {{agents}}, so its files are not on this machine. Switching to this machine's agent keeps the chat history but not those files.",
+                    { agents: sessionOtherAgentNames.join(", ") },
+                  )}
+                  onClick={() => {}}
                 />
               )}
               {/* The team shared files tab moved to the Knowledge entry in the
