@@ -60,6 +60,8 @@ describe("Expo Cloud API provider", () => {
     // The team filter has to reach the server: post-filtering a paginated list
     // in the client would drop matches that land on a later page.
     expect(String(fetchMock.mock.calls[0][0])).toContain("teamId=team-1");
+    // Cron runs are filtered by the server; Expo has no view for them.
+    expect(String(fetchMock.mock.calls[0][0])).toContain("kind=regular");
     await expect(api.insertOutgoingMessage({
       id: "message-1",
       teamId: "team-1",
