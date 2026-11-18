@@ -25,9 +25,9 @@ private actor OutboxAttemptLeases {
 /// and bumping `attemptCount` + `nextAttemptAt` on each failure.
 ///
 /// Lifecycle: scoped to a chat detail view today. `start()` spawns a
-/// loop task; `stop()` cancels it. The loop wakes once per second when
-/// idle — or at once when a row is enqueued or re-armed — and drains all
-/// due rows in a single pass.
+/// loop task; `stop()` cancels it. When idle the loop sleeps until the
+/// earliest backed-off row is due (capped at `idleCeiling`), or until a row
+/// is enqueued or re-armed, and drains all due rows in a single pass.
 ///
 /// Concurrency model: this is an `actor` so all SwiftData mutations
 /// (insert, save, fetch) happen on a single isolation domain. Each
@@ -42,6 +42,11 @@ public actor OutboxSender {
     /// retries pace out at 30s — frequent enough that the user sees
     /// the dot fade to delivered shortly after airplane mode flips off.
     public static let maxAttempts = 20
+
+    /// Longest idle nap. Enqueue and retry wake the loop directly, so this is
+    /// only a backstop (a row written by another sender instance, say); it
+    /// replaces the old once-a-second fetch.
+    static let idleCeiling: TimeInterval = 30
 
     private weak var teamclu: TeamcluService?
     private let modelContainer: ModelContainer
@@ -141,13 +146,14 @@ public actor OutboxSender {
         outboxLogger.notice("outbox loop started")
         defer { outboxLogger.notice("outbox loop stopped") }
         while !Task.isCancelled {
-            let due = fetchDue()
+            let (due, nextAttemptAt) = fetchDue()
             for row in due {
                 if Task.isCancelled { return }
                 await attempt(rowID: row.persistentModelID, messageID: row.messageID)
             }
             if due.isEmpty {
-                let nap = Task<Void, Never> { try? await Task.sleep(for: .seconds(1)) }
+                let delay = Self.idleDelay(until: nextAttemptAt, now: Date())
+                let nap = Task<Void, Never> { try? await Task.sleep(for: .seconds(delay)) }
                 self.nap = nap
                 await nap.value
                 self.nap = nil
@@ -155,14 +161,23 @@ public actor OutboxSender {
         }
     }
 
+    /// How long an idle loop naps: until the earliest backed-off row is due,
+    /// never longer than `idleCeiling`.
+    static func idleDelay(until nextAttemptAt: Date?, now: Date) -> TimeInterval {
+        guard let nextAttemptAt else { return idleCeiling }
+        return min(max(nextAttemptAt.timeIntervalSince(now), 0.05), idleCeiling)
+    }
+
     /// Returns rows that should be attempted on this tick: pending state,
-    /// nextAttemptAt either nil or in the past. Ordered by createdAt so
+    /// nextAttemptAt either nil or in the past — plus the earliest
+    /// `nextAttemptAt` among the pending rows not yet due, so an idle loop
+    /// knows when to look again. Ordered by createdAt so
     /// the user sees their messages flush out FIFO under normal conditions.
     /// We do this in two phases — fetch with a coarse predicate, then
     /// filter in memory — because SwiftData's predicate compiler chokes
     /// on the `nextAttemptAt == nil || nextAttemptAt <= now` disjunction
     /// when the column is optional.
-    private func fetchDue() -> [OutboxMessage] {
+    private func fetchDue() -> (due: [OutboxMessage], nextAttemptAt: Date?) {
         let ctx = ModelContext(modelContainer)
         let pendingRaw = OutboxState.pending.rawValue
         let descriptor = FetchDescriptor<OutboxMessage>(
@@ -171,10 +186,16 @@ public actor OutboxSender {
         )
         let now = Date()
         let rows = (try? ctx.fetch(descriptor)) ?? []
-        return rows.filter { row in
-            guard let next = row.nextAttemptAt else { return true }
-            return next <= now
+        var due: [OutboxMessage] = []
+        var earliest: Date?
+        for row in rows {
+            if let next = row.nextAttemptAt, next > now {
+                earliest = min(earliest ?? next, next)
+            } else {
+                due.append(row)
+            }
         }
+        return (due, earliest)
     }
 
     private func fetchRow(messageID: String, in ctx: ModelContext) -> OutboxMessage? {
