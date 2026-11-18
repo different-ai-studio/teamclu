@@ -35,6 +35,7 @@ import { MentionSignal, UnreadSignal } from '@/components/sidebar/session-attent
 import {
   isRailMode,
   navRowBox,
+  navRowIcon,
   navRowLabel,
   navRowSignal,
   useNavRailMode,
@@ -65,7 +66,7 @@ function TopEntry({ label, icon: Icon, active, signal, onClick }: TopEntryProps)
       )}
     >
       <Icon
-        className={cn('h-[15px] w-[15px] shrink-0', active ? 'text-foreground' : 'text-muted-foreground')}
+        className={cn(navRowIcon(mode), active ? 'text-foreground' : 'text-muted-foreground')}
       />
       <span className={navRowLabel(mode)}>{label}</span>
       {signal ? <span className={cn(NAV_ROW_TRAILING_SLOT, navRowSignal(mode))}>{signal}</span> : null}
@@ -179,7 +180,7 @@ export function NavRail() {
   }, [handleQuickNewChat])
 
   return (
-    <div className="flex h-full w-full min-w-0 flex-col gap-2.5 overflow-hidden px-2.5 pt-0 pb-3">
+    <div className={cn('flex h-full w-full min-w-0 flex-col gap-2.5 overflow-hidden pt-0 pb-3', rail ? 'px-1.5' : 'px-2.5')}>
       <NewChatSplitButton
         quickChatState={quickChatState}
         creating={creating}

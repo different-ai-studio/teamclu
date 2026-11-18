@@ -9,7 +9,7 @@ import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { cn } from '@/lib/utils'
 import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
-import { navRowBox, navRowLabel, navRowSignal, useNavRailMode } from '@/components/sidebar/nav-rail-mode'
+import { navRowBox, navRowIcon, navRowLabel, navRowSignal, useNavRailMode } from '@/components/sidebar/nav-rail-mode'
 
 interface SectionDef {
   section: TeamShareSection
@@ -86,7 +86,7 @@ function SectionRow({
           : 'text-ink-2 hover:bg-black/[0.04]',
       )}
     >
-      <Icon className={cn('h-[15px] w-[15px] shrink-0', active ? 'text-foreground' : 'text-muted-foreground')} />
+      <Icon className={cn(navRowIcon(mode), active ? 'text-foreground' : 'text-muted-foreground')} />
       <span className={navRowLabel(mode)}>{label}</span>
       {/*
         The one thing in this panel that reaches out. Auto-follow means a member

@@ -5,7 +5,7 @@ import { useUIStore } from '@/stores/ui'
 import { InviteActorDialog } from '@/components/sidebar/InviteActorDialog'
 import { cn } from '@/lib/utils'
 import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
-import { navRowBox, navRowLabel, useNavRailMode } from '@/components/sidebar/nav-rail-mode'
+import { navRowBox, navRowIcon, navRowLabel, useNavRailMode } from '@/components/sidebar/nav-rail-mode'
 
 export function ContactsNavEntry() {
   const { t } = useTranslation()
@@ -22,8 +22,8 @@ export function ContactsNavEntry() {
     <>
       <div
         className={cn(
-          navRowBox(mode),
           'flex w-full items-center gap-2.5 rounded-lg transition-[background-color,box-shadow,color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]',
+          navRowBox(mode),
           active
             ? 'bg-paper shadow-[0_1px_2px_rgba(28,27,25,0.04)] ring-1 ring-black/[0.05]'
             : 'hover:bg-black/[0.04]',
@@ -35,11 +35,12 @@ export function ContactsNavEntry() {
           title={mode === 'rail-collapsed' ? label : undefined}
           className={cn(
             'flex min-w-0 flex-1 items-center gap-2.5 text-left text-[13px] transition-colors duration-150',
+            mode === 'rail-collapsed' && 'w-full flex-col gap-1 text-center',
             active ? 'font-semibold text-foreground' : 'font-normal text-ink-2',
           )}
         >
           <Users
-            className={cn('h-[15px] w-[15px] shrink-0', active ? 'text-foreground' : 'text-muted-foreground')}
+            className={cn(navRowIcon(mode), active ? 'text-foreground' : 'text-muted-foreground')}
           />
           <span className={navRowLabel(mode)}>{label}</span>
         </button>

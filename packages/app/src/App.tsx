@@ -860,7 +860,7 @@ function App() {
         style={
           {
             "--sidebar-width": "220px",
-            "--sidebar-width-icon": "72px",
+            "--sidebar-width-icon": "80px",
             "--session-list-width": "280px",
           } as React.CSSProperties
         }
