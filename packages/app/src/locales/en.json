@@ -617,6 +617,7 @@
   "navigation": {
     "shortcuts": "Shortcuts",
     "files": "Files",
+    "filesUnavailableRemoteAgent": "This session's agent runs on {{agents}}, so its files are not on this machine. Switching to this machine's agent keeps the chat history but not those files.",
     "hideTabs": "Hide files",
     "restoreTabs": "Show files",
     "collapseSidebar": "Collapse sidebar",

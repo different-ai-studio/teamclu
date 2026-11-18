@@ -617,6 +617,7 @@
   "navigation": {
     "shortcuts": "快捷方式",
     "files": "文件",
+    "filesUnavailableRemoteAgent": "此会话的 agent 在 {{agents}} 上运行，文件不在这台电脑。换成本机 Agent 会保留聊天记录，但看不到那边的文件。",
     "hideTabs": "隐藏文件",
     "restoreTabs": "显示文件",
     "collapseSidebar": "收起侧边栏",

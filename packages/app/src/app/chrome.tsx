@@ -10,21 +10,35 @@ export function HeaderPanelTab({
   count,
   isActive,
   onClick,
+  disabled = false,
+  title,
 }: {
   icon: ComponentType<{ className?: string }>;
   label: string;
   count?: number;
   isActive: boolean;
   onClick: () => void;
+  /** Shown but not clickable; `title` should say why. */
+  disabled?: boolean;
+  /** Hover text. Defaults to `label`. */
+  title?: string;
 }) {
   return (
     <button
+      type="button"
       className={`flex items-center gap-1.5 px-2 py-1 text-xs transition-colors rounded ${
-        isActive
-          ? "bg-muted text-foreground"
-          : "text-muted-foreground hover:text-foreground hover:bg-muted"
+        disabled
+          ? "text-muted-foreground/40 cursor-not-allowed"
+          : isActive
+            ? "bg-muted text-foreground"
+            : "text-muted-foreground hover:text-foreground hover:bg-muted"
       }`}
-      onClick={onClick}
+      // aria-disabled rather than disabled: a disabled button gets no hover
+      // events in WebKit, so the title explaining why would never show.
+      aria-disabled={disabled || undefined}
+      aria-label={label}
+      title={title ?? label}
+      onClick={disabled ? undefined : onClick}
     >
       <Icon className="h-4 w-4" />
       {isActive && <span>{label}</span>}
