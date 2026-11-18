@@ -171,7 +171,8 @@ fn params_from_args(args: Option<&serde_json::Value>) -> HashMap<String, String>
 /// clients already render (same buckets as the opencode mapping).
 fn tool_kind_for(tool: &str) -> &'static str {
     match tool {
-        "bash" => "execute",
+        // `powershell` is pi's Windows shell tool (enabled by `assets/pi-host/host.mjs`).
+        "bash" | "powershell" => "execute",
         "edit" | "write" | "multi_edit" => "edit",
         "read" => "read",
         "grep" | "glob" | "find" | "list" => "search",
@@ -775,6 +776,26 @@ mod tests {
         );
         match end[0].event.as_ref().unwrap() {
             amux::acp_event::Event::Output(o) => assert_eq!(o.text, "two"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn powershell_tool_renders_as_execute() {
+        let mut s = TranslateState::default();
+        let start = ev(
+            &mut s,
+            r#"{"type":"tool_execution_start","toolCallId":"call_ps","toolName":"powershell","args":{"command":"winget --version"}}"#,
+        );
+        match start[0].event.as_ref().unwrap() {
+            amux::acp_event::Event::ToolUse(t) => {
+                assert_eq!(t.tool_name, "powershell");
+                assert_eq!(t.tool_kind, "execute");
+                assert_eq!(
+                    t.params.get("command"),
+                    Some(&"winget --version".to_string())
+                );
+            }
             other => panic!("unexpected: {other:?}"),
         }
     }

@@ -17,8 +17,8 @@
 #      check is the gate.
 #
 # Then, when a test account is configured, windows-agent-smoke.ps1 drives the
-# installed daemon through one real agent turn (login, onboard, pi install,
-# reply).
+# installed daemon through real agent turns (login, onboard, pi install, a
+# reply, and a shell command run with Git Bash hidden).
 #
 # Not covered: WebView2 stays installed (it cannot be removed cleanly from the
 # image), and the desktop UI itself is never logged in — the released build has
