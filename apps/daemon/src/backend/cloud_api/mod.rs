@@ -4,10 +4,9 @@ mod messages;
 
 use super::{
     AgentDefaults, AppGitCredential, Backend, BackendError, BackendResult,
-    BackendSessionAndParticipants, BootstrapMqttOverride, ClaimResult, CloudAuthSnapshot,
-    GatewaySessionRow, ManagedLlmConfig, ManagedLlmModelInfo, StoredMessage, TeamEnvSecretRow,
-    TeamSkillDownload, TeamSkillRow, TurnTraceStatus, TurnTraceUpload, WorkspaceRow,
-    WorkspaceUpsert,
+    BackendSessionAndParticipants, BootstrapMqttOverride, CloudAuthSnapshot, GatewaySessionRow,
+    ManagedLlmConfig, ManagedLlmModelInfo, StoredMessage, TeamEnvSecretRow, TeamSkillDownload,
+    TeamSkillRow, TurnTraceStatus, TurnTraceUpload, WorkspaceRow, WorkspaceUpsert,
 };
 use crate::provider_config::CloudApiConfig;
 use async_trait::async_trait;
@@ -891,36 +890,6 @@ impl Backend for CloudApiBackend {
 
     fn invalidate_cached_credential(&self) {
         self.invalidate_access_token_cache();
-    }
-
-    async fn claim_team_invite(&self, token: &str) -> BackendResult<ClaimResult> {
-        #[derive(serde::Serialize)]
-        struct ClaimInviteRequest<'a> {
-            token: &'a str,
-        }
-        #[derive(serde::Deserialize)]
-        struct CloudClaimResult {
-            #[serde(rename = "actorId")]
-            actor_id: String,
-            #[serde(rename = "teamId")]
-            team_id: String,
-            #[serde(rename = "actorType")]
-            actor_type: String,
-            #[serde(rename = "displayName")]
-            display_name: String,
-            #[serde(rename = "refreshToken")]
-            refresh_token: Option<String>,
-        }
-        let row: CloudClaimResult = self
-            .post("/v1/invites/claim", &ClaimInviteRequest { token }, None)
-            .await?;
-        Ok(ClaimResult {
-            actor_id: row.actor_id,
-            team_id: row.team_id,
-            actor_type: row.actor_type,
-            display_name: row.display_name,
-            refresh_token: row.refresh_token,
-        })
     }
 
     async fn fetch_session_cursor(
@@ -2399,43 +2368,6 @@ mod tests {
             .filter(|r| r.url.path() == "/v1/auth/refresh")
             .count();
         assert_eq!(refreshes, 1, "404 must not trigger auth retry refresh");
-    }
-
-    #[tokio::test]
-    async fn claim_invite_uses_refreshed_bearer_against_cloud_api() {
-        let server = MockServer::start().await;
-        mount_refresh(&server).await;
-        Mock::given(method("POST"))
-            .and(path("/v1/invites/claim"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "actorId": "agent-1",
-                "teamId": "team-1",
-                "actorType": "agent",
-                "displayName": "Agent",
-                "refreshToken": "next-refresh"
-            })))
-            .mount(&server)
-            .await;
-        let backend = CloudApiBackend::new(config(&server));
-
-        let result = backend.claim_team_invite("invite-token").await.unwrap();
-
-        assert_eq!(result.actor_id, "agent-1");
-        assert_eq!(result.team_id, "team-1");
-        let requests = server.received_requests().await.unwrap();
-        let claim = requests
-            .iter()
-            .find(|request| request.url.path() == "/v1/invites/claim")
-            .expect("claim request");
-        assert_eq!(
-            claim
-                .headers
-                .get("authorization")
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            "Bearer access-token"
-        );
     }
 
     #[tokio::test]

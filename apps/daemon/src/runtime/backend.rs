@@ -40,9 +40,6 @@ pub enum AcpCommand {
         permission: PermissionPolicy,
         /// When resuming, fail instead of falling back to a new session.
         forbid_new_session_fallback: bool,
-        /// TeamClu cloud session this attachment belongs to.
-        #[allow(dead_code)]
-        teamclu_session_id: String,
     },
     /// Drop routing state for a session; the backend process keeps running.
     DetachSession {
@@ -91,9 +88,6 @@ pub enum AcpCommand {
         /// Pi-side pending permission ids auto-granted when switching to Full.
         cleared_tx: Option<oneshot::Sender<Vec<String>>>,
     },
-    /// Shut down the backend process (it respawns lazily on next use).
-    #[allow(dead_code)]
-    Shutdown,
 }
 
 #[derive(Debug)]

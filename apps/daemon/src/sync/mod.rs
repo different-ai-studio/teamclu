@@ -6,12 +6,12 @@
 pub mod app_build;
 pub mod app_clone;
 pub mod app_git;
-pub mod git_account_cache;
 pub mod app_seed;
 pub mod app_templates;
 pub mod app_workdir;
 pub mod bounded_proc;
 pub mod dispatch;
+pub mod git_account_cache;
 pub mod oss;
 pub mod scheduler;
 pub mod secret_store;

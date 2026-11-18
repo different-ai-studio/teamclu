@@ -151,9 +151,7 @@ impl DaemonServer {
             return;
         }
 
-        let approval_pending = self
-            .permissions
-            .session_has_pending(&snapshot.session_id);
+        let approval_pending = self.permissions.session_has_pending(&snapshot.session_id);
         let needs_synthetic = needs_synthetic || approval_pending;
 
         if needs_synthetic && publish_live {
@@ -177,12 +175,8 @@ impl DaemonServer {
             self.forward_agent_event(agent_id, frame).await;
         }
 
-        self.cancel_session_pending_permissions(
-            agent_id,
-            &snapshot.session_id,
-            publish_live,
-        )
-        .await;
+        self.cancel_session_pending_permissions(agent_id, &snapshot.session_id, publish_live)
+            .await;
 
         let _ = {
             let mut agents = self.agents.lock().await;
@@ -1886,7 +1880,9 @@ mod turn_trace_tests {
             status(amux::AgentStatus::Active, amux::AgentStatus::Idle),
         ];
         for event in turn {
-            ts.server.forward_agent_event("session-1", frame(event)).await;
+            ts.server
+                .forward_agent_event("session-1", frame(event))
+                .await;
         }
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -1964,9 +1960,10 @@ mod agent_inbox_tests {
 
     #[test]
     fn attachments_are_lifted_out_of_metadata() {
-        let env = decode(
-            &payload(r#"{"attachment_urls":["https://example.test/a.png"]}"#, "text"),
-        );
+        let env = decode(&payload(
+            r#"{"attachment_urls":["https://example.test/a.png"]}"#,
+            "text",
+        ));
         let message = agent_inbox_row_to_message(env.message);
         assert_eq!(message.attachment_urls, vec!["https://example.test/a.png"]);
     }
@@ -1975,10 +1972,16 @@ mod agent_inbox_tests {
     fn kind_strings_map_to_the_proto_enum() {
         use crate::proto::teamclu::MessageKind;
         assert_eq!(message_kind_from_str("text"), MessageKind::Text);
-        assert_eq!(message_kind_from_str("agent_reply"), MessageKind::AgentReply);
+        assert_eq!(
+            message_kind_from_str("agent_reply"),
+            MessageKind::AgentReply
+        );
         assert_eq!(message_kind_from_str("system"), MessageKind::System);
         // An unrecognised kind is still a message the agent was sent.
-        assert_eq!(message_kind_from_str("whatever-comes-next"), MessageKind::Text);
+        assert_eq!(
+            message_kind_from_str("whatever-comes-next"),
+            MessageKind::Text
+        );
     }
 
     #[test]

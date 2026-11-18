@@ -147,7 +147,6 @@ impl LocalCacheStore {
         }
         Ok(None)
     }
-
 }
 
 #[cfg(test)]

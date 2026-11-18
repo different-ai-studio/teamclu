@@ -158,7 +158,9 @@ fn main() -> anyhow::Result<()> {
                         tracing::warn!(error = %format!("{e:#}"), "start the restored amuxd");
                     }
                 }
-                anyhow::bail!("amuxd {failed} never stayed up after an update; restored {restored}");
+                anyhow::bail!(
+                    "amuxd {failed} never stayed up after an update; restored {restored}"
+                );
             }
             cli::process::prepare_daemon_start()?;
             config::layout::purge_v1_layout();

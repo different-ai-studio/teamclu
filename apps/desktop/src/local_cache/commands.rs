@@ -662,14 +662,9 @@ mod tests {
         db.session_upsert_batch(&[session("s-a", "teamA"), session("s-b", "teamB")])
             .await
             .unwrap();
-        let err = gate_parent_rows(
-            &db,
-            Some("teamA"),
-            "participant",
-            ["s-a", "s-b"],
-        )
-        .await
-        .unwrap_err();
+        let err = gate_parent_rows(&db, Some("teamA"), "participant", ["s-a", "s-b"])
+            .await
+            .unwrap_err();
         assert!(err.starts_with(ERR_TEAM_GATE_MISMATCH), "{err}");
         assert!(
             err.contains("participant: current=teamA, found=teamB"),

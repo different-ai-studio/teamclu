@@ -17,8 +17,8 @@ use super::app_ops;
 use super::apps;
 use super::auth;
 use super::config;
-use super::limit::{body_limit_layer, rate_limit_layer};
 use super::knowledge_inbox;
+use super::limit::{body_limit_layer, rate_limit_layer};
 use super::live_events;
 use super::live_ingest;
 use super::observ::request_id_layer;
@@ -295,7 +295,10 @@ pub fn build(state: HttpState) -> Router {
         )
         // Team-share: materialize the global dir + workspace symlink on demand
         // (called by the app right after enabling/joining team-share).
-        .route("/v1/knowledge/inbox", get(knowledge_inbox::list_inbox).post(knowledge_inbox::propose_inbox))
+        .route(
+            "/v1/knowledge/inbox",
+            get(knowledge_inbox::list_inbox).post(knowledge_inbox::propose_inbox),
+        )
         .route(
             "/v1/knowledge/inbox/:id",
             get(knowledge_inbox::get_inbox).delete(knowledge_inbox::discard_inbox),

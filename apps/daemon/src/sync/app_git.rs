@@ -659,7 +659,9 @@ pub fn set_repo_account_git(dir: &Path, ssh_remote: &str, http_url: &str) -> any
         &["config", "--local", "--get-regexp", r"^url\..*\.insteadof$"],
     )?;
     for line in String::from_utf8_lossy(&existing.stdout).lines() {
-        let Some((key, value)) = line.split_once(' ') else { continue };
+        let Some((key, value)) = line.split_once(' ') else {
+            continue;
+        };
         if value.trim() == ssh_prefix {
             let out = run_git_config_write(dir, None, &["config", "--local", "--unset-all", key])?;
             if out.status.code() != Some(5) {
@@ -668,20 +670,40 @@ pub fn set_repo_account_git(dir: &Path, ssh_remote: &str, http_url: &str) -> any
         }
     }
     let key = format!("url.{http_prefix}.insteadOf");
-    let out = run_git_config_write(dir, None, &["config", "--local", "--add", &key, &ssh_prefix])?;
+    let out = run_git_config_write(
+        dir,
+        None,
+        &["config", "--local", "--add", &key, &ssh_prefix],
+    )?;
     ensure_success(&out, "git config insteadOf")?;
 
     let helper = account_credential_helper_command()?;
-    let out = run_git_config_write(dir, None, &["config", "--local", "--unset-all", "credential.helper"])?;
+    let out = run_git_config_write(
+        dir,
+        None,
+        &["config", "--local", "--unset-all", "credential.helper"],
+    )?;
     if out.status.code() != Some(5) {
         ensure_success(&out, "git config --unset-all credential.helper")?;
     }
-    let out = run_git_config_write(dir, None, &["config", "--local", "--add", "credential.helper", ""])?;
+    let out = run_git_config_write(
+        dir,
+        None,
+        &["config", "--local", "--add", "credential.helper", ""],
+    )?;
     ensure_success(&out, "git config credential.helper")?;
-    let out = run_git_config_write(dir, None, &["config", "--local", "--add", "credential.helper", &helper])?;
+    let out = run_git_config_write(
+        dir,
+        None,
+        &["config", "--local", "--add", "credential.helper", &helper],
+    )?;
     ensure_success(&out, "git config credential.helper")?;
     // The helper uses the repo path to say which app an account lacks.
-    let out = run_git_config_write(dir, None, &["config", "--local", "credential.useHttpPath", "true"])?;
+    let out = run_git_config_write(
+        dir,
+        None,
+        &["config", "--local", "credential.useHttpPath", "true"],
+    )?;
     ensure_success(&out, "git config credential.useHttpPath")
 }
 
@@ -710,12 +732,20 @@ pub fn refresh_repo_credential_helper(dir: &Path, app_id: &str) -> anyhow::Resul
     if has_account_helper(&entries) {
         // Global mode: the same exclusive two-entry list, current binary.
         let helper = account_credential_helper_command()?;
-        let out = run_git_config_write(dir, None, &["config", "--local", "--unset-all", "credential.helper"])?;
+        let out = run_git_config_write(
+            dir,
+            None,
+            &["config", "--local", "--unset-all", "credential.helper"],
+        )?;
         if out.status.code() != Some(5) {
             ensure_success(&out, "git config --unset-all credential.helper")?;
         }
         for value in ["", helper.as_str()] {
-            let out = run_git_config_write(dir, None, &["config", "--local", "--add", "credential.helper", value])?;
+            let out = run_git_config_write(
+                dir,
+                None,
+                &["config", "--local", "--add", "credential.helper", value],
+            )?;
             ensure_success(&out, "git config credential.helper")?;
         }
         return Ok(true);
@@ -2271,8 +2301,10 @@ mod tests {
             .collect()
     }
 
-    const SSH_REMOTE: &str = "ssh://git@gitea.example.com:2222/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/tc-app-1.git";
-    const HTTP_REMOTE: &str = "https://gitea.example.com/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/tc-app-1.git";
+    const SSH_REMOTE: &str =
+        "ssh://git@gitea.example.com:2222/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/tc-app-1.git";
+    const HTTP_REMOTE: &str =
+        "https://gitea.example.com/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/tc-app-1.git";
 
     fn get_url(dir: &Path, ssh: Option<&SshEnv>) -> String {
         let out = run_git(dir, ssh, &["ls-remote", "--get-url", "origin"]).unwrap();
@@ -2285,9 +2317,19 @@ mod tests {
             repo_owner_prefix(SSH_REMOTE).as_deref(),
             Some("ssh://git@gitea.example.com:2222/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/")
         );
-        assert_eq!(repo_owner_prefix("git@gitea.example.com:oabc/tc-app-1.git").as_deref(), Some("git@gitea.example.com:oabc/"));
-        assert_eq!(repo_owner_prefix(HTTP_REMOTE).as_deref(), Some("https://gitea.example.com/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/"));
-        assert_eq!(repo_owner_prefix("git@host:repo.git"), None, "no owner: never rewrite a whole host");
+        assert_eq!(
+            repo_owner_prefix("git@gitea.example.com:oabc/tc-app-1.git").as_deref(),
+            Some("git@gitea.example.com:oabc/")
+        );
+        assert_eq!(
+            repo_owner_prefix(HTTP_REMOTE).as_deref(),
+            Some("https://gitea.example.com/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/")
+        );
+        assert_eq!(
+            repo_owner_prefix("git@host:repo.git"),
+            None,
+            "no owner: never rewrite a whole host"
+        );
     }
 
     #[test]
@@ -2302,7 +2344,9 @@ mod tests {
         // People and agents: the stored SSH origin reads as HTTPS.
         assert_eq!(get_url(&work, None), HTTP_REMOTE);
         // The daemon's keyed operations stay on SSH with their deploy key.
-        let ssh = SshEnv::from_deploy_key_pem("-----BEGIN TEST KEY-----\nx\n-----END TEST KEY-----").unwrap();
+        let ssh =
+            SshEnv::from_deploy_key_pem("-----BEGIN TEST KEY-----\nx\n-----END TEST KEY-----")
+                .unwrap();
         assert_eq!(get_url(&work, Some(&ssh)), SSH_REMOTE);
         // The stored origin itself is untouched, so an older daemon is unaffected.
         assert_eq!(raw_origin_url(&work).as_deref(), Some(SSH_REMOTE));
@@ -2311,9 +2355,18 @@ mod tests {
         let helpers = credential_helpers(&work);
         assert_eq!(helpers.len(), 2);
         assert_eq!(helpers[0], "");
-        assert!(helpers[1].ends_with(" git-credential"), "global mode: {}", helpers[1]);
+        assert!(
+            helpers[1].ends_with(" git-credential"),
+            "global mode: {}",
+            helpers[1]
+        );
         assert!(!helpers[1].contains("--app"));
-        let use_path = run_git(&work, None, &["config", "--local", "--get", "credential.useHttpPath"]).unwrap();
+        let use_path = run_git(
+            &work,
+            None,
+            &["config", "--local", "--get", "credential.useHttpPath"],
+        )
+        .unwrap();
         assert_eq!(String::from_utf8_lossy(&use_path.stdout).trim(), "true");
     }
 
@@ -2323,10 +2376,20 @@ mod tests {
         let work = tmp.path().join("app");
         init_if_needed(&work).unwrap();
         set_remote_origin(&work, SSH_REMOTE, None).unwrap();
-        set_repo_account_git(&work, SSH_REMOTE, "https://old.example.com/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/tc-app-1.git").unwrap();
+        set_repo_account_git(
+            &work,
+            SSH_REMOTE,
+            "https://old.example.com/o6f1c2d3e4b5a4c6d8e9f0a1b2c3d4e5f/tc-app-1.git",
+        )
+        .unwrap();
         set_repo_account_git(&work, SSH_REMOTE, HTTP_REMOTE).unwrap();
         assert_eq!(get_url(&work, None), HTTP_REMOTE);
-        let rules = run_git(&work, None, &["config", "--local", "--get-regexp", r"^url\..*\.insteadof$"]).unwrap();
+        let rules = run_git(
+            &work,
+            None,
+            &["config", "--local", "--get-regexp", r"^url\..*\.insteadof$"],
+        )
+        .unwrap();
         assert_eq!(String::from_utf8_lossy(&rules.stdout).lines().count(), 1);
         assert_eq!(credential_helpers(&work).len(), 2);
     }

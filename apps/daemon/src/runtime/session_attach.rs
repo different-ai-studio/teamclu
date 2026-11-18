@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::RuntimeManager;
 use super::attachment_filename::safe_object_name;
+use super::RuntimeManager;
 use crate::backend::Backend;
 use crate::runtime::context_registry::{ResolveError, ResolveRuntimeContextResponse};
 
@@ -93,9 +93,9 @@ impl SessionAttachService {
 
         let worktree = {
             let mgr = self.manager.lock().await;
-            let handle = mgr.get_handle(&resolved.runtime_id).ok_or(
-                SessionAttachError::SessionContextUnavailable,
-            )?;
+            let handle = mgr
+                .get_handle(&resolved.runtime_id)
+                .ok_or(SessionAttachError::SessionContextUnavailable)?;
             handle.worktree.clone()
         };
 
@@ -278,8 +278,7 @@ mod tests {
             raw_output_json: String::new(),
             content: vec![],
         };
-        let parsed =
-            super::parse_session_attach_tool_result("session_attach_file", &tr).unwrap();
+        let parsed = super::parse_session_attach_tool_result("session_attach_file", &tr).unwrap();
         assert_eq!(parsed.record.filename, "a.pdf");
         assert_eq!(parsed.public_url, "https://cdn/a.pdf");
     }

@@ -374,14 +374,11 @@ pub fn pi_prompt_images(entries: &[ResolvedEntry]) -> Vec<serde_json::Value> {
     entries
         .iter()
         .filter_map(|entry| {
-            let ResolvedAttachment::Image {
-                data_url, mime, ..
-            } = &entry.attachment
-            else {
+            let ResolvedAttachment::Image { data_url, mime, .. } = &entry.attachment else {
                 return None;
             };
-            let (decoded_mime, data) = decode_data_url(data_url)
-                .unwrap_or_else(|| (mime.clone(), data_url.clone()));
+            let (decoded_mime, data) =
+                decode_data_url(data_url).unwrap_or_else(|| (mime.clone(), data_url.clone()));
             Some(serde_json::json!({
                 "type": "image",
                 "data": data,
@@ -605,8 +602,7 @@ mod tests {
 
     #[test]
     fn decode_data_url_strips_prefix() {
-        let (mime, data) =
-            decode_data_url("data:image/png;base64,iVBORw0KGgo=").expect("decode");
+        let (mime, data) = decode_data_url("data:image/png;base64,iVBORw0KGgo=").expect("decode");
         assert_eq!(mime, "image/png");
         assert_eq!(data, "iVBORw0KGgo=");
     }

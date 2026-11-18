@@ -2,7 +2,7 @@ use crate::backend::Backend;
 use crate::mqtt::Topics;
 use crate::proto::teamclu::{self, RpcRequest, RpcResponse};
 use crate::teamclu::{
-    IdeaStore, LivePublisher, MessageStore, NotifyPublisher, RpcServer, StoredClaim, StoredIdea,
+    IdeaStore, LivePublisher, MessageStore, NotifyPublisher, StoredClaim, StoredIdea,
     StoredMessage, StoredParticipant, StoredSession, StoredSubmission, TeamcluSessionStore,
 };
 use chrono::Utc;
@@ -119,8 +119,6 @@ pub struct SessionManager {
     client: Arc<dyn MessagePublisher>,
     live_publisher: LivePublisher,
     notify_publisher: NotifyPublisher,
-    #[allow(dead_code)]
-    rpc_server: RpcServer,
     pub(crate) sessions: TeamcluSessionStore,
     pub(crate) config_dir: PathBuf,
     config_actor_id: String,
@@ -147,17 +145,11 @@ impl SessionManager {
             config_actor_id.to_string(),
         );
         let notify_publisher = NotifyPublisher::new(client.clone(), team_id.to_string());
-        let rpc_server = RpcServer::new(
-            client.clone(),
-            team_id.to_string(),
-            config_actor_id.to_string(),
-        );
         Ok(Self {
             topics,
             client,
             live_publisher,
             notify_publisher,
-            rpc_server,
             sessions: TeamcluSessionStore::default(),
             config_dir,
             config_actor_id: config_actor_id.to_string(),
