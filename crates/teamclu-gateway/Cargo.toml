@@ -19,9 +19,6 @@ flate2 = "1"
 # WebSocket-based gateways (Kook, Feishu, WeChat, WeCom)
 tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 
-# Image processing (WeChat/WeCom media)
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
-
 # WeCom AES decryption + media upload
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }

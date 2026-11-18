@@ -15,9 +15,6 @@
 pub fn wecom_dm(corp_id: &str, agent_id: &str, userid: &str) -> String {
     format!("wecom://{corp_id}/{agent_id}/single/{userid}")
 }
-pub fn wecom_external_dm(corp_id: &str, agent_id: &str, ext_userid: &str) -> String {
-    format!("wecom://{corp_id}/{agent_id}/external-single/{ext_userid}")
-}
 pub fn wecom_group(corp_id: &str, agent_id: &str, chat_id: &str) -> String {
     format!("wecom://{corp_id}/{agent_id}/group/{chat_id}")
 }
@@ -57,9 +54,6 @@ pub fn seatalk_dm_thread(app_id: &str, employee_code: &str, thread_id: &str) -> 
 
 pub fn urn_wecom_user(corp_id: &str, userid: &str) -> String {
     format!("wecom-user:{corp_id}:{userid}")
-}
-pub fn urn_wecom_ext(corp_id: &str, ext_userid: &str) -> String {
-    format!("wecom-ext:{corp_id}:{ext_userid}")
 }
 pub fn urn_feishu_user(app_id: &str, open_id: &str) -> String {
     format!("feishu-user:{app_id}:{open_id}")
