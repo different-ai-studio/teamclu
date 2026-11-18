@@ -16,6 +16,7 @@ pub mod team_crypto;
 pub mod team_provider;
 pub mod team_provider_sync;
 pub mod version;
+pub mod windows_path;
 pub mod workspace_instructions;
 
 /// Ratchet keeping home-directory names spelled in `storage_namespace` only.
@@ -82,6 +83,7 @@ pub use storage_namespace::{
     STORAGE_NAMESPACE_MIGRATION_MARKER, TEAM_SHARED_DIR_NAME, WORKSPACE_CONFIG_FILE,
     WORKSPACE_META_DIR,
 };
+pub use windows_path::{path_for_node, path_for_node_str};
 pub use workspace_instructions::{
     claude_md_block_present, load_system_prompt, sync_teamclu_claude_md,
 };

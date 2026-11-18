@@ -711,28 +711,80 @@ fn load_team_gateway() -> Result<(String, String), String> {
     gateway_from_disk_team(&team)
 }
 
+/// Node 22+ `lstat`s a bare `D:` when any path it realpaths still has the
+/// `\\?\` prefix. Rewrite those strings in the maintainer input before the
+/// compiler process starts.
+fn rewrite_verbatim_node_paths(value: &mut Value) -> bool {
+    match value {
+        Value::String(text) => {
+            let plain = teamclu_runtime_env::path_for_node_str(text);
+            if plain != *text {
+                *text = plain;
+                true
+            } else {
+                false
+            }
+        }
+        Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                changed |= rewrite_verbatim_node_paths(item);
+            }
+            changed
+        }
+        Value::Object(map) => {
+            let mut changed = false;
+            for item in map.values_mut() {
+                changed |= rewrite_verbatim_node_paths(item);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn sanitize_node_input(path: &Path) -> Result<(), String> {
+    let bytes = fs::read(path).map_err(|e| format!("Cannot read Wiki input: {e}"))?;
+    let mut value: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("Invalid Wiki input: {e}"))?;
+    if rewrite_verbatim_node_paths(&mut value) {
+        write_json(path, &value)?;
+    }
+    Ok(())
+}
+
 async fn run_node(
     app: &tauri::AppHandle,
     command: &str,
     input_path: &Path,
     gateway: Option<&(String, String)>,
 ) -> Result<Value, String> {
-    let node = node_path()?;
-    let script = script_path(app)?;
+    // Tauri's executable path is `canonicalize`d, so a build installed on D:
+    // launches this script as `\\?\D:\...\desktop-runner.js`. Node's module
+    // loader then `lstat`s `D:` and Wiki maintenance dies before it reads a
+    // single document. The plain path is the same file.
+    let node = teamclu_runtime_env::path_for_node(&node_path()?);
+    let script = teamclu_runtime_env::path_for_node(&script_path(app)?);
     let command = command.to_string();
-    let input_path = input_path.to_path_buf();
-    let amuxd_home = super::amuxd_home_dir();
+    let input_path = teamclu_runtime_env::path_for_node(input_path);
+    let amuxd_home = teamclu_runtime_env::path_for_node(&super::amuxd_home_dir());
     let gateway = gateway.cloned();
     let app = app.clone();
 
     tokio::task::spawn_blocking(move || {
-        let mut cmd = StdCommand::new(node);
+        sanitize_node_input(&input_path)?;
+        let mut cmd = StdCommand::new(&node);
         cmd.arg(&script)
             .arg(&command)
             .arg(&input_path)
-            .env(teamclu_runtime_env::AMUXD_HOME_ENV, amuxd_home)
+            .env(teamclu_runtime_env::AMUXD_HOME_ENV, &amuxd_home)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(dir) = script.parent() {
+            if dir.is_dir() {
+                cmd.current_dir(dir);
+            }
+        }
         if let Some((payload, token)) = gateway.as_ref() {
             cmd.env("TEAMCLU_TEAM_PROVIDER", payload)
                 .env("tc_gateway_token", token);
@@ -1333,6 +1385,24 @@ pub async fn kb_maintainer_adopt_wiki(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maintainer_input_drops_verbatim_drive_prefixes_before_node_sees_them() {
+        let mut input = json!({
+            "documentsRoot": r"\\?\D:\team\documents",
+            "knowledgeRoot": r"\\?\D:\team\knowledge",
+            "workRoot": "//?/D:/team/work",
+            "sources": ["documents/AI行业应用/"],
+            "compilerModel": "team/旗舰"
+        });
+        assert!(rewrite_verbatim_node_paths(&mut input));
+        assert_eq!(input["documentsRoot"], r"D:\team\documents");
+        assert_eq!(input["knowledgeRoot"], r"D:\team\knowledge");
+        assert_eq!(input["workRoot"], "D:/team/work");
+        assert_eq!(input["sources"][0], "documents/AI行业应用/");
+        assert_eq!(input["compilerModel"], "team/旗舰");
+        assert!(!rewrite_verbatim_node_paths(&mut input));
+    }
 
     #[test]
     fn source_directories_are_normalized_under_documents() {

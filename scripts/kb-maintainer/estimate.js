@@ -1,17 +1,17 @@
 "use strict";
 
 const fs = require("node:fs");
-const path = require("node:path");
 const { dryRun } = require("./dry-run");
 const { loadConfig } = require("./config");
 const { extensionOf } = require("./extract-text");
 const { parsePages } = require("./extract-pdf");
 const { imageLooksReadable } = require("./vision");
+const { documentsFilePath } = require("./win-path");
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp"]);
 
 function sourceAbs(documentsRoot, documentsPath) {
-  return path.join(documentsRoot, documentsPath.slice("documents/".length));
+  return documentsFilePath(documentsRoot, documentsPath);
 }
 
 function roundMoney(value) {

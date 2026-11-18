@@ -183,9 +183,15 @@ async fn reap_idle_hosts_loop(shared: std::sync::Weak<Shared>) {
 }
 
 fn canonical_dir(worktree: &str) -> String {
-    std::fs::canonicalize(worktree)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| worktree.to_string())
+    // `canonicalize` on Windows is `\\?\D:\...`. Node 22+ resolves that
+    // prefix by calling `lstat` on a bare `D:`, which fails with EISDIR and
+    // aborts Wiki compile when the workspace is on that drive. The plain path
+    // is the same directory.
+    let path = Path::new(worktree);
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    teamclu_runtime_env::path_for_node(&resolved)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Stamp a `sessionId` onto a command for host-mode children; legacy children
@@ -2039,7 +2045,24 @@ impl AgentBackend for PiRpcBackend {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+
+    #[test]
+    fn canonical_dir_does_not_keep_a_windows_verbatim_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = canonical_dir(dir.path().to_str().unwrap());
+        assert!(
+            !got.starts_with(r"\\?\"),
+            "node cannot realpath a verbatim path: {got}"
+        );
+        assert!(Path::new(&got).is_dir(), "{got}");
+        assert_eq!(
+            canonical_dir(r"\\?\D:\team\documents\AI行业应用"),
+            r"D:\team\documents\AI行业应用"
+        );
+    }
 
     #[test]
     fn mid_turn_prompt_plan_steers_without_turn_open() {
