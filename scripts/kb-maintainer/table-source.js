@@ -172,10 +172,16 @@ function profileColumn(name, values) {
   }
   const numeric = filled.length > 0 && filled.every((value) => NUMBER_RE.test(value.replace(/,/g, "")));
   const dated = !numeric && filled.length > 0 && filled.every((value) => DATE_RE.test(value));
+  // Phone, card, and order numbers parse as numbers, but a min~max range of
+  // them says nothing about the column.
+  const identifier = numeric && filled.every((value) => /^\d{9,}$/.test(value));
   let type = "文本";
   let detail = "";
   if (filled.length === 0) {
     type = "空";
+  } else if (identifier) {
+    type = "编号";
+    detail = `${filled[0].length === filled[filled.length - 1].length ? `${filled[0].length} 位数字` : "多位数字"}`;
   } else if (numeric) {
     type = "数值";
     const numbers = filled.map(numericValue).filter((value) => value !== null);
@@ -216,7 +222,7 @@ function profileTableLines({ header, rows, locatorPrefix, sampleRows = 5 }) {
     `<!-- source-locator: ${locatorPrefix}sample -->`,
     `示例行（前 ${Math.min(sampleRows, rows.length)} 行）：`,
     "",
-    ...markdownHeader(names.map(short)),
+    ...markdownHeader(names.map((name) => short(name))),
     ...rows.slice(0, sampleRows).map((row) => markdownRow(row.map((value) => short(value, 40)), width)),
   ];
   return { width, columnLines, sampleLines };

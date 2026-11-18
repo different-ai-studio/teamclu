@@ -61,11 +61,11 @@ test("xlsxSheets keeps empty cells in their column and reads shared, rich, and i
 
 test("profileTableLines types each column and shows a few sample rows", () => {
   const profile = profileTableLines({
-    header: ["日期", "车牌", "成本"],
+    header: ["日期", "车牌", "成本", "司机电话"],
     rows: [
-      ["2026-10-01", "粤A1", "1,200"],
-      ["2026-10-03", "粤A1", "80.5"],
-      ["2026-10-02", "粤B2", "-3"],
+      ["2026-10-01", "粤A1", "1,200", "13800000001"],
+      ["2026-10-03", "粤A1", "80.5", "13800000002"],
+      ["2026-10-02", "粤B2", "-3", "13800000003"],
     ],
     locatorPrefix: "",
     sampleRows: 2,
@@ -75,7 +75,9 @@ test("profileTableLines types each column and shows a few sample rows", () => {
   assert.match(columns, /\| 日期 \| 日期 \| 3 \| 3 \| 2026-10-01 ~ 2026-10-03 \|/);
   assert.match(columns, /\| 车牌 \| 文本 \| 3 \| 2 \| 粤A1（2）、粤B2（1） \|/);
   assert.match(columns, /\| 成本 \| 数值 \| 3 \| 3 \| -3 ~ 1200 \|/);
+  assert.match(columns, /\| 司机电话 \| 编号 \| 3 \| 3 \| 11 位数字 \|/);
   const sample = profile.sampleLines.join("\n");
+  assert.match(sample, /\| 日期 \| 车牌 \| 成本 \| 司机电话 \|/);
   assert.match(sample, /前 2 行/);
   assert.match(sample, /粤A1 \| 80\.5/);
   assert.doesNotMatch(sample, /粤B2/);
