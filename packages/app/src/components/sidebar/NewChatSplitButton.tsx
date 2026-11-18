@@ -11,6 +11,10 @@ import {
 } from '@/components/ui/tooltip'
 import { useNavRailMode } from '@/components/sidebar/nav-rail-mode'
 
+/** Outer box of the new-chat control on the rail, collapsed or widened, so
+ * the rows under it do not move when the rail widens. */
+const RAIL_NEW_CHAT_BOX = 'h-[61px] pt-1.5'
+
 type NewChatSplitButtonProps = {
   quickChatState: QuickChatState
   creating: boolean
@@ -47,11 +51,12 @@ export function NewChatSplitButton({
   if (mode === 'rail-collapsed') {
     // The split cannot fit on the rail. The tile is the primary action with
     // its label under the icon, like every other rail row; the advanced half
-    // shrinks to a badge on the tile's corner. It must stay reachable here —
-    // with no default agent it is the only way to start a chat at all.
+    // shrinks to a badge on the tile's corner rather than waiting for the
+    // hover — with no default agent it is the only way to start a chat at all.
+    // Same outer height as the widened rail's split button (RAIL_NEW_CHAT_BOX).
     const label = `${t('chat.newChat', 'New Chat')} (${formatShortcut('mod+N')})`
     return (
-      <div className="relative w-full px-1 pt-1.5">
+      <div className={cn('relative w-full px-1', RAIL_NEW_CHAT_BOX)}>
         <button
           type="button"
           onClick={onPrimaryClick}
@@ -59,7 +64,7 @@ export function NewChatSplitButton({
           title={primaryTitle ?? label}
           aria-label={label}
           className={cn(
-            'flex w-full flex-col items-center justify-center gap-1 rounded-[10px] bg-coral px-1 py-2 text-coral-foreground shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)] transition-[filter] duration-150',
+            'flex h-full w-full flex-col items-center justify-center gap-1 rounded-[10px] bg-coral px-1 text-coral-foreground shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)] transition-[filter] duration-150',
             'hover:brightness-[1.04] disabled:cursor-not-allowed disabled:opacity-40',
           )}
         >
@@ -87,8 +92,8 @@ export function NewChatSplitButton({
   }
 
   return (
-    <div className="flex w-full flex-col gap-1.5">
-      <div className="flex w-full overflow-hidden rounded-[10px] bg-coral shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)]">
+    <div className={cn('flex w-full flex-col gap-1.5', mode === 'rail-expanded' && cn(RAIL_NEW_CHAT_BOX, 'whitespace-nowrap'))}>
+      <div className={cn('flex w-full overflow-hidden rounded-[10px] bg-coral shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)]', mode === 'rail-expanded' && 'flex-1')}>
         <button
           type="button"
           onClick={onPrimaryClick}

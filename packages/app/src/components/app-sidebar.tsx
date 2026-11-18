@@ -47,6 +47,11 @@ import {
   type NavRailMode,
 } from "@/components/sidebar/nav-rail-mode"
 import { useLayoutBreakpoint } from "@/hooks/use-layout-breakpoint"
+import { useTabsStore, selectActiveTab } from "@/stores/tabs"
+import {
+  useContentColumnVisible,
+  useEffectiveContentColumnMode,
+} from "@/components/content-column/content-column-state"
 
 /** Sidebar collapse / expand control (sidebar header, and second-column headers while the sidebar is collapsed or a drawer). */
 export function SidebarCollapseToggle({ className }: { className?: string }) {
@@ -298,13 +303,13 @@ function SidebarUserAccountMenu() {
           className={cn(
             "min-w-0 rounded-lg text-ink-2 hover:bg-black/[0.04] hover:text-foreground",
             rail
-              ? cn("w-full justify-start gap-2.5 text-[13px] font-normal", navRowBox(railMode), railCollapsed && "h-auto justify-center")
+              ? cn("w-full justify-start gap-2.5 text-[13px] font-normal", navRowBox(railMode), railCollapsed && "justify-center")
               : "h-8 shrink max-w-full gap-1.5 px-2 text-[12px]",
           )}
           title={railCollapsed ? userName : undefined}
           data-testid="sidebar-user-menu-trigger"
         >
-          <span className={cn("relative flex shrink-0", railCollapsed ? "h-5 w-5" : "h-4 w-4")}>
+          <span className={cn("relative flex shrink-0", rail ? "h-5 w-5" : "h-4 w-4")}>
             {avatarUrl ? (
               <img
                 src={avatarUrl}
@@ -433,6 +438,87 @@ function useCloseDrawerOnNavigate(onPickSection?: () => void) {
   }, [sidebarFilter, currentView, activeSessionId, isMobile, openMobile, setOpenMobile, onPickSection])
 }
 
+/** How long the pointer has to rest on the rail before it widens, and how long
+ * it may wander off before it narrows again. The open delay keeps a pointer
+ * that only crosses the rail on its way to column two from flashing the
+ * labels; the close delay forgives overshooting the edge. */
+const RAIL_EXPAND_DELAY_MS = 200
+const RAIL_COLLAPSE_DELAY_MS = 250
+
+/**
+ * Hover state for the icon rail. Widening is purely visual — the same rows,
+ * in the same places, with their labels — so it can afford to be eager.
+ *
+ * It closes on navigation (picking a section, opening a session, opening
+ * settings): the user has gone where they meant to go. It does not re-open
+ * until the pointer leaves and comes back, which is what mouseenter gives.
+ */
+function useRailHover(enabled: boolean) {
+  const [expanded, setExpanded] = React.useState(false)
+  const openTimer = React.useRef<number | null>(null)
+  const closeTimer = React.useRef<number | null>(null)
+
+  const clearTimers = React.useCallback(() => {
+    if (openTimer.current !== null) window.clearTimeout(openTimer.current)
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
+    openTimer.current = null
+    closeTimer.current = null
+  }, [])
+
+  const collapse = React.useCallback(() => {
+    clearTimers()
+    setExpanded(false)
+  }, [clearTimers])
+
+  React.useEffect(() => {
+    if (!enabled) collapse()
+  }, [enabled, collapse])
+  React.useEffect(() => clearTimers, [clearTimers])
+
+  const sidebarFilter = useUIStore((s) => s.sidebarFilter)
+  const currentView = useUIStore((s) => s.currentView)
+  const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  React.useEffect(() => {
+    collapse()
+  }, [sidebarFilter, currentView, activeSessionId, collapse])
+
+  React.useEffect(() => {
+    if (!expanded) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") collapse()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [expanded, collapse])
+
+  const onMouseEnter = React.useCallback(() => {
+    if (!enabled) return
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current)
+      closeTimer.current = null
+    }
+    if (expanded || openTimer.current !== null) return
+    openTimer.current = window.setTimeout(() => {
+      openTimer.current = null
+      setExpanded(true)
+    }, RAIL_EXPAND_DELAY_MS)
+  }, [enabled, expanded])
+
+  const onMouseLeave = React.useCallback(() => {
+    if (openTimer.current !== null) {
+      window.clearTimeout(openTimer.current)
+      openTimer.current = null
+    }
+    if (!expanded || closeTimer.current !== null) return
+    closeTimer.current = window.setTimeout(() => {
+      closeTimer.current = null
+      setExpanded(false)
+    }, RAIL_COLLAPSE_DELAY_MS)
+  }, [expanded])
+
+  return { expanded: enabled && expanded, onMouseEnter, onMouseLeave }
+}
+
 export function AppSidebar({
   className,
   onPickSection,
@@ -454,8 +540,18 @@ export function AppSidebar({
   // Unpinned on a desktop window, the first column is a fixed rail of tiles —
   // icon over label — so every destination is readable without hovering.
   const rail = !isMobile && !open
-  const mode: NavRailMode = rail ? "rail-collapsed" : "list"
-  const railCollapsed = rail
+  // A web tab in a full-width column four sits right against the rail, and a
+  // native webview always draws above the page: the widened rail would open
+  // *underneath* it, unreachable. The rail stays narrow then; its tiles still
+  // work, and pinning still gives the full list.
+  const contentColumnVisible = useContentColumnVisible()
+  const contentColumnMode = useEffectiveContentColumnMode()
+  const contentColumnFull = contentColumnVisible && contentColumnMode === "full"
+  const activeTabIsWebview = useTabsStore((s) => selectActiveTab(s)?.type === "webview")
+  const hover = useRailHover(rail && !(contentColumnFull && activeTabIsWebview))
+  const mode: NavRailMode = rail ? (hover.expanded ? "rail-expanded" : "rail-collapsed") : "list"
+  const railCollapsed = mode === "rail-collapsed"
+  const railExpanded = mode === "rail-expanded"
 
   const [detailSessionId, setDetailSessionId] = React.useState<string | null>(null)
   const [detailHints, setDetailHints] = React.useState<SessionDetailListHints | null>(null)
@@ -474,8 +570,14 @@ export function AppSidebar({
       collapsible="icon"
       className={cn(
         SIDEBAR_INTERACTIVE_CURSOR,
+        // Widened over column two rather than pushing it: the rail's own gap
+        // stays 80px, only the fixed container grows.
+        railExpanded &&
+          "z-40 w-(--sidebar-width)! shadow-[8px_0_24px_-12px_rgba(28,27,25,0.18)]",
         className,
       )}
+      onMouseEnter={hover.onMouseEnter}
+      onMouseLeave={hover.onMouseLeave}
       data-nav-mode={mode}
       {...props}
     >
@@ -514,6 +616,14 @@ export function AppSidebar({
 
         {rail ? (
           <SidebarFooter className="gap-0.5 px-1.5 pb-3 pt-1">
+            {/* The team card has no tile form worth the room; it comes with
+                the widened rail. The footer grows upward, so the rows above it
+                and the two below it stay where they were. */}
+            {railExpanded ? (
+              <div className="mb-1.5 whitespace-nowrap">
+                <LocalDaemonCard />
+              </div>
+            ) : null}
             <button
               type="button"
               onClick={() => openSettings()}
