@@ -185,9 +185,4 @@ export function registerTeams(router) {
     await ctx.repository.removeTeamActor(ctx.params.teamId, ctx.params.actorId);
     return { statusCode: 204 };
   });
-
-  router.get("/v1/teams/:teamId/directory", async (ctx) => {
-    const result = await ctx.repository.getTeamDirectory(ctx.params.teamId);
-    return { body: result };
-  });
 }

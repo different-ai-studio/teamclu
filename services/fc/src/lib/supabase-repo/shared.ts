@@ -490,38 +490,6 @@ export function mapTeamRole(row) {
   };
 }
 
-export function mapPermission(row) {
-  return {
-    resourceId: requiredString(row?.resource_id, "permissions.mapPermission", "resource_id"),
-    roleIds: (row?.permission_roles ?? []).map((x) => requiredString(x?.role_id, "permissions.mapPermission", "role_id")),
-  };
-}
-
-export function mapActor(row) {
-  return {
-    id: requiredString(row?.id, "actors.mapActor", "id"),
-    teamId: requiredString(row?.team_id, "actors.mapActor", "team_id"),
-    kind: row?.kind ?? "user",
-    displayName: row?.display_name ?? "",
-    avatarUrl: row?.avatar_url ?? null,
-    userId: row?.user_id ?? null,
-    metadata: row?.metadata ?? null,
-    roles: row?.roles ?? [],
-    teamRole: row?.team_role ?? null,
-  };
-}
-
-export function mapTeamMember(row) {
-  return {
-    actorId: requiredString(row?.actor_id, "teamMembers.mapTeamMember", "actor_id"),
-    teamId: requiredString(row?.team_id, "teamMembers.mapTeamMember", "team_id"),
-    // Derived from roles_users after enrich; legacy team_members.role is unused.
-    roles: row?.roles ?? [],
-    role: row?.role ?? null,
-    joinedAt: row?.joined_at ?? null,
-  };
-}
-
 export function mapIdeaRow(row) {
   return {
     id: requiredString(row?.id, "ideas.mapIdeaRow", "id"),

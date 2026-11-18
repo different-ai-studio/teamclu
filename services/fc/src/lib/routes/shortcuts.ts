@@ -82,11 +82,6 @@ export function registerShortcuts(router) {
     return { body: { items } };
   });
 
-  router.get("/v1/teams/:teamId/permissions", async (ctx) => {
-    const items = await ctx.repository.listTeamPermissions(ctx.params.teamId);
-    return { body: { items } };
-  });
-
   router.get("/v1/teams/:teamId/shortcut-role-bindings", async (ctx) => {
     const teamId = decodeURIComponent(ctx.params.teamId);
     const items = await ctx.repository.listShortcutRoleBindings(teamId);

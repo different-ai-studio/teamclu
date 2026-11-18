@@ -71,14 +71,10 @@ function contractRepo() {
   // (team, device, owner) → agent actor, mirroring agents_team_device_uk.
   const deviceAgentStore = new Map<string, string>();
   let inviteSeq = 0;
-  const permissionStore = [
-    { resourceId: "resource-1", roleIds: ["role-1"] },
-  ];
   const workspaceStore = [
     { id: "workspace-1", teamId: "team-1", name: "Alpha", slug: null, archived: false, metadata: null, createdAt: "2026-05-01T00:00:00Z", updatedAt: "2026-05-01T00:00:00Z" },
   ];
   const ideaStore = fixture("ideas-list.json").items.slice();
-  const configStore: Record<string, any> = {};
   const wikiMaintainerStore: Record<string, any> = {};
   const messageStore: any[] = fixture("message-list.json").items.slice();
   const sessionStore: any[] = fixture("session-list.json").items.slice().map((s: any) => ({ ...s, participants: [{ sessionId: s.id, actorId: "actor-1", role: "owner", joinedAt: s.createdAt }] }));
@@ -349,55 +345,6 @@ function contractRepo() {
       if (patch.metadata !== undefined) w.metadata = patch.metadata;
       return w;
     },
-    async getTeamWorkspaceConfig(teamId) {
-      return configStore[teamId] ?? null;
-    },
-    async putTeamWorkspaceConfig(teamId, input) {
-      configStore[teamId] = {
-        teamId,
-        defaultWorkspaceId: input.defaultWorkspaceId ?? null,
-        pinnedWorkspaceIds: input.pinnedWorkspaceIds ?? [],
-        updatedAt: "2026-05-27T01:00:00Z",
-      };
-      return configStore[teamId];
-    },
-    async getTeamDirectory(teamId) {
-      assert.equal(teamId, "team-1");
-      return {
-        actors: [
-          {
-            id: "actor-1",
-            teamId: "team-1",
-            kind: "user",
-            displayName: "Alice",
-            avatarUrl: null,
-            metadata: null,
-          },
-          {
-            id: "actor-2",
-            teamId: "team-1",
-            kind: "agent",
-            displayName: "Bot",
-            avatarUrl: "https://example.com/avatar.png",
-            metadata: { type: "assistant" },
-          },
-        ],
-        members: [
-          {
-            actorId: "actor-1",
-            teamId: "team-1",
-            role: "member",
-            joinedAt: "2026-05-27T01:00:00Z",
-          },
-          {
-            actorId: "actor-2",
-            teamId: "team-1",
-            role: "admin",
-            joinedAt: "2026-05-27T02:00:00Z",
-          },
-        ],
-      };
-    },
     async listTeamActors(teamId, { kind, limit }) {
       assert.equal(teamId, "team-1");
       return {
@@ -659,9 +606,6 @@ function contractRepo() {
     async setShortcutVisibleRoles(shortcutId, { roleIds }) {},
     async listTeamRoles(teamId) {
       return roleStore.filter(r => r.teamId === teamId);
-    },
-    async listTeamPermissions(teamId) {
-      return permissionStore;
     },
     async uploadAttachment({ path, mime, bytes, bucket }) {
       const targetBucket = bucket || "attachments";

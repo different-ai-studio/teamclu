@@ -248,8 +248,8 @@ import {
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, MESSAGE_ATTACHMENT_SCAN_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
   appFunctionTargetFromRow, APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
-  mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
-  mapActor, mapTeamMember, mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
+  mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole,
+  mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
   mapFeedbackRow, mapLeaderboardRow, chunkedIn,
   appGitAccountFields,
 } from "./supabase-repo/shared.js";
@@ -1376,20 +1376,6 @@ export function createSupabaseBusinessRepository(options) {
       }
     },
 
-    async listDiscoverableTeams() {
-      const { data, error } = await supabase.rpc("list_discoverable_teams");
-      if (error) throw error;
-      return (data ?? []).map((r: any) => ({
-        id: r.team_id,
-        name: r.team_name,
-        slug: r.team_slug ?? null,
-        orgId: r.org_id ?? null,
-        orgName: r.org_name ?? null,
-        visibility: r.visibility ?? "public",
-        isMember: r.is_member === true,
-      }));
-    },
-
     // Self-service join of a PUBLIC team. Invoked when
     // the user picks a public team they are not yet a member of. The RPC adds a
     // plain 'member' actor (idempotent if already joined) and rejects anything
@@ -2404,46 +2390,6 @@ export function createSupabaseBusinessRepository(options) {
       return { items };
     },
 
-    async getTeamDirectory(teamId) {
-      // Column names here are PostgREST aliases, not a rename: `actor_directory`
-      // exposes the discriminator as `actor_type` and `team_members` keys the
-      // actor as `member_id`. Selecting the mapper-side names directly (`kind`,
-      // `actor_id`) made this endpoint a guaranteed 500 — "column
-      // actor_directory.kind does not exist" — at any team size. Aliasing keeps
-      // mapActor/mapTeamMember and the response shape untouched.
-      const [actorsRes, membersRes] = await Promise.all([
-        supabase
-          .from("actor_directory")
-          .select("id, team_id, kind:actor_type, display_name, avatar_url, user_id")
-          .eq("team_id", teamId)
-          .or(LISTABLE_AGENT_STATUS_OR_FILTER),
-        supabase
-          .from("team_members")
-          .select("actor_id:member_id, team_id, joined_at")
-          .eq("team_id", teamId),
-      ]);
-      if (actorsRes.error) throw actorsRes.error;
-      if (membersRes.error) throw membersRes.error;
-      const actors = await enrichActorsWithOrgRoles(
-        supabase,
-        teamId,
-        (actorsRes.data ?? []).map(mapActor),
-      );
-      const rolesByActorId = new Map(
-        actors.map((a) => [a.id, { roles: a.roles ?? [], teamRole: a.teamRole ?? null }]),
-      );
-      const members = (membersRes.data ?? []).map((row) => {
-        const base = mapTeamMember(row);
-        const enriched = rolesByActorId.get(base.actorId);
-        return {
-          ...base,
-          roles: enriched?.roles ?? [],
-          role: enriched?.teamRole ?? null,
-        };
-      });
-      return { actors, members };
-    },
-
     async listSessions({ limit = 50, cursor = null, teamId = null, ideaId = null, kind = "all" }: any = {}) {
       // p_team_id is what resolves the caller's actor as of 20260804020000,
       // since a user has one actor row per team. It is also load-bearing for
@@ -2816,43 +2762,6 @@ export function createSupabaseBusinessRepository(options) {
       return mapWorkspace(data);
     },
 
-    async getTeamWorkspaceConfig(teamId) {
-      const { data, error } = await supabase
-        .from("team_workspace_config")
-        .select("team_id, default_workspace_id, pinned_workspace_ids, updated_at")
-        .eq("team_id", teamId)
-        .limit(1);
-      if (error) throw error;
-      const row = Array.isArray(data) ? data[0] : data;
-      if (!row) return null;
-      return {
-        teamId: requiredString(row.team_id, "workspaces.getTeamWorkspaceConfig", "team_id"),
-        defaultWorkspaceId: row.default_workspace_id ?? null,
-        pinnedWorkspaceIds: row.pinned_workspace_ids ?? [],
-        updatedAt: row.updated_at ?? null,
-      };
-    },
-
-    async putTeamWorkspaceConfig(teamId, input) {
-      const row = {
-        team_id: teamId,
-        default_workspace_id: input.defaultWorkspaceId ?? null,
-        pinned_workspace_ids: input.pinnedWorkspaceIds ?? [],
-      };
-      const { data, error } = await supabase
-        .from("team_workspace_config")
-        .upsert(row, { onConflict: "team_id" })
-        .select("team_id, default_workspace_id, pinned_workspace_ids, updated_at")
-        .single();
-      if (error) throw error;
-      return {
-        teamId: requiredString(data.team_id, "workspaces.putTeamWorkspaceConfig", "team_id"),
-        defaultWorkspaceId: data.default_workspace_id ?? null,
-        pinnedWorkspaceIds: data.pinned_workspace_ids ?? [],
-        updatedAt: data.updated_at ?? null,
-      };
-    },
-
     async writeForegroundPresence({ deviceId, foregroundUntil }) {
       const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
@@ -3155,15 +3064,6 @@ export function createSupabaseBusinessRepository(options) {
         .eq("team_id", teamId);
       if (error) throw error;
       return (data ?? []).map((r) => ({ id: r.id, teamId: r.team_id, code: r.code, name: r.name }));
-    },
-
-    async listTeamPermissions(teamId) {
-      const { data, error } = await supabase
-        .from("permissions")
-        .select("resource_id, permission_roles(role_id)")
-        .eq("team_id", teamId);
-      if (error) throw error;
-      return (data ?? []).map((r) => ({ resourceId: r.resource_id, roleIds: (r.permission_roles ?? []).map((x) => x.role_id) }));
     },
 
     async createIdeaActivity(ideaId, body) {
@@ -8263,33 +8163,6 @@ export function createSupabaseBusinessRepository(options) {
           hasUpdate: (r.installed_version ?? 0) < (r.team_skills?.latest_version ?? 0),
         }))
         .sort((a: any, b: any) => String(a.slug).localeCompare(String(b.slug)));
-    },
-
-    /**
-     * Every actor carrying an install row for one skill.
-     *
-     * Only used to address the MQTT nudge after a publish — the reconcile is
-     * still what decides anything. Returns ids and nothing else, since the
-     * caller's entire job is to send "re-check now" to each of them.
-     */
-    async listTeamSkillInstallerActorIds(teamId, slug) {
-      const { data: skillRows, error: skillErr } = await supabase
-        .from("team_skills")
-        .select("id")
-        .eq("team_id", teamId)
-        .eq("slug", slug)
-        .limit(1);
-      if (skillErr) throw skillErr;
-      const skillId = skillRows?.[0]?.id;
-      if (!skillId) return [];
-
-      const { data, error } = await supabase
-        .from("team_skill_installs")
-        .select("actor_id")
-        .eq("team_id", teamId)
-        .eq("skill_id", skillId);
-      if (error) throw error;
-      return (data ?? []).map((r: any) => r.actor_id).filter(Boolean);
     },
 
     ...makeSupabaseMarketplaceMethods({

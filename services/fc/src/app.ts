@@ -230,30 +230,19 @@ export function createApp(deps: AppDeps): Hono {
     });
   }
 
-  // CORS — two modes depending on deployment:
-  //
-  // FC with custom domain (CORS_HANDLED_BY_PROXY=true): the FC gateway layer
-  // injects CORS headers on every response. Hono must stay silent to avoid
-  // duplicate Access-Control-Allow-Origin. We still return 204 for OPTIONS
-  // so the gateway can attach its CORS headers to the preflight response.
-  //
-  // Docker self-host + direct FC (CORS_HANDLED_BY_PROXY unset): Hono owns
-  // CORS entirely via middleware. Caddy is a transparent proxy that does NOT
-  // add CORS headers (see deploy/self-host/caddy/Caddyfile).
-  if (process.env.CORS_HANDLED_BY_PROXY) {
-    app.options("*", (c) => c.body(null, 204));
-  } else {
-    app.use("*", cors({
-      // Policy lives in lib/cors-origin.ts (Tauri, localhost dev servers,
-      // chrome-extension, plus CORS_ORIGINS). Returning null makes hono omit
-      // Access-Control-Allow-Origin, which is how a browser origin is refused.
-      // CORS_ORIGINS is read per request so tests and hot reconfiguration work.
-      origin: (origin) => resolveCorsAllowOrigin(origin, parseCorsOrigins(process.env.CORS_ORIGINS)),
-      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowHeaders: ["Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key", "X-Webhook-Secret"],
-      maxAge: 86400,
-    }));
-  }
+  // CORS: Hono owns it entirely via middleware. Caddy (self-host) and Traefik
+  // (belayo) are transparent proxies that do NOT add CORS headers (see
+  // deploy/self-host/caddy/Caddyfile).
+  app.use("*", cors({
+    // Policy lives in lib/cors-origin.ts (Tauri, localhost dev servers,
+    // chrome-extension, plus CORS_ORIGINS). Returning null makes hono omit
+    // Access-Control-Allow-Origin, which is how a browser origin is refused.
+    // CORS_ORIGINS is read per request so tests and hot reconfiguration work.
+    origin: (origin) => resolveCorsAllowOrigin(origin, parseCorsOrigins(process.env.CORS_ORIGINS)),
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key", "X-Webhook-Secret"],
+    maxAge: 86400,
+  }));
 
   // Container liveness/readiness probe — no DB access.
   app.get("/healthz", (c) => c.json({ ok: true }));
@@ -303,8 +292,7 @@ export function createApp(deps: AppDeps): Hono {
       !(url.pathname.startsWith("/v1/") ||
         url.pathname === "/v1" ||
         url.pathname.startsWith("/join/") ||
-        url.pathname.startsWith("/sync/") ||
-        url.pathname.startsWith("/api/auth/"))
+        url.pathname.startsWith("/sync/"))
     ) {
       const { ip, source } = resolveClientIp((n) => c.req.header(n));
       // The FC gateway forwards NO client-IP header at all (verified on the
