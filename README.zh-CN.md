@@ -50,11 +50,11 @@ TeamClu 分为客户端层、智能体宿主与云端后端三部分：
                              │
                     ┌────────┴────────┐
                     │   amux daemon   │  agent host + channel gateways
-                    │    (amuxd)      │  + team sync (git / OSS)
+                    │    (amuxd)      │  + team sync (OSS)
                     └────────┬────────┘
                              │ HTTP / RPC
                     ┌────────┴────────┐
-                    │ local agents    │  opencode (default), …
+                    │ local agents    │  pi
                     └─────────────────┘
 ```
 
@@ -174,7 +174,7 @@ Cloud API 的实现位于 `services/fc/`（Node.js 20），由 Supabase 提供�
 ## 技术栈
 
 - **桌面端**：Tauri 2.0 (Rust)
-- **守护进程**：Rust (`amuxd`)，本地智能体后端（opencode HTTP 等）
+- **守护进程**：Rust (`amuxd`)，本地智能体运行时（pi，stdio JSONL）
 - **前端**：React 19 + TypeScript、Tailwind CSS 4、Zustand
 - **iOS**：SwiftUI + SwiftPM (`AMUXCore`)
 - **编辑器**：Tiptap（Markdown / HTML）、CodeMirror 6（代码）、Shiki（语法高亮）

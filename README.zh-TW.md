@@ -50,11 +50,11 @@ TeamClu 分為用戶端層、智慧體宿主與雲端後端三部分：
                              │
                     ┌────────┴────────┐
                     │   amux daemon   │  agent host + channel gateways
-                    │    (amuxd)      │  + team sync (git / OSS)
+                    │    (amuxd)      │  + team sync (OSS)
                     └────────┬────────┘
                              │ HTTP / RPC
                     ┌────────┴────────┐
-                    │ local agents    │  opencode (default), …
+                    │ local agents    │  pi
                     └─────────────────┘
 ```
 
@@ -174,7 +174,7 @@ Cloud API 的實作位於 `services/fc/`（Node.js 20），以 Supabase 為後�
 ## 技術棧
 
 - **桌面端**：Tauri 2.0 (Rust)
-- **常駐程式**：Rust (`amuxd`)，本地智慧體後端（opencode HTTP 等）
+- **常駐程式**：Rust (`amuxd`)，本地智慧體執行環境（pi，stdio JSONL）
 - **前端**：React 19 + TypeScript、Tailwind CSS 4、Zustand
 - **iOS**：SwiftUI + SwiftPM (`AMUXCore`)
 - **編輯器**：Tiptap（Markdown / HTML）、CodeMirror 6（程式碼）、Shiki（語法高亮）
