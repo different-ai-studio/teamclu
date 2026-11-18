@@ -1431,43 +1431,6 @@ private struct MemberStatTap: ViewModifier {
     }
 }
 
-private struct ToolUsageRow: View {
-    let name: String
-    let count: Int
-    let max: Int
-
-    private var ratio: CGFloat {
-        max <= 0 ? 0 : CGFloat(count) / CGFloat(max)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(name)
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("\(count)")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.amux.pebble)
-                    Capsule()
-                        .fill(LinearGradient(
-                            colors: [Color.amux.pebble, Color.amux.cinnabar],
-                            startPoint: .leading, endPoint: .trailing
-                        ))
-                        .frame(width: proxy.size.width * ratio)
-                }
-            }
-            .frame(height: 4)
-        }
-        .padding(.vertical, 2)
-    }
-}
-
 private struct RecentSessionRow: View {
     let session: Session
 

@@ -26,13 +26,3 @@ public protocol AgentAccessRepository: Sendable {
     func teamAgentCount(teamID: String) async throws -> Int
 }
 
-public enum AgentAccessRepositoryError: LocalizedError {
-    case missingCurrentMember
-
-    public var errorDescription: String? {
-        switch self {
-        case .missingCurrentMember:
-            return "Current member actor was not found."
-        }
-    }
-}

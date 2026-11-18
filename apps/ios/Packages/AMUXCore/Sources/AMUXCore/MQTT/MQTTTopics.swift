@@ -53,11 +53,4 @@ public enum MQTTTopics {
     public static func actorState(teamID: String, actorID: String) -> String {
         "\(actorBase(teamID: teamID, actorID: actorID))/state"
     }
-
-    /// Team-scoped user notify channel. Requires broker JWT auth before use
-    /// (Phase 1d prerequisite); builder is available now so Phase 2 code can
-    /// reference it, but no subscribe happens until 1d ships.
-    public static func userNotify(teamID: String, actorID: String) -> String {
-        "\(teamcluBase(teamID: teamID))/user/\(actorID)/notify"
-    }
 }
