@@ -10,10 +10,6 @@ vi.mock('@tauri-apps/plugin-notification', () => ({
   onAction: onActionMock,
 }))
 
-vi.mock('@/lib/agent/permission-policy', () => ({
-  getPermissionPolicy: vi.fn(() => 'default'),
-}))
-
 const requestUserAttentionMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 const isFocusedMock = vi.hoisted(() => vi.fn().mockResolvedValue(false))
 

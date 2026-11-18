@@ -57,7 +57,7 @@ vi.mock('@/stores/runtime-state-store', () => ({
   },
 }))
 
-vi.mock('@/lib/opencode/config', () => ({
+vi.mock('@/lib/agent/provider-ids', () => ({
   providerApiKeyName: vi.fn((id: string) => `PROVIDER_${id.toUpperCase()}_API_KEY`),
 }))
 

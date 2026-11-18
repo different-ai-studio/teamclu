@@ -467,7 +467,7 @@ ${skillContent.trim()}`
       <p className="text-[11.5px] text-muted-foreground">
         {t(
           'settings.skills.installLocationAgentsHint',
-          'Shared with OpenCode, Claude Code, and Pi via skills.paths.',
+          'Shared with Pi and other agent tools via skills.paths.',
         )}
       </p>
     </div>
@@ -500,7 +500,7 @@ ${skillContent.trim()}`
         <SectionHeader
           icon={Sparkles}
           title={t('settings.skills.title', 'Skills')}
-          description={t('settings.skills.descriptionDetail', 'AI skills installed under ~/.agents/skills (shared with OpenCode, Claude Code, and Pi)')}
+          description={t('settings.skills.descriptionDetail', 'AI skills installed under ~/.agents/skills (shared with Pi and other agent tools)')}
           iconColor="text-yellow-500"
         />
       ) : null}
@@ -781,7 +781,6 @@ ${skillContent.trim()}`
                 shared: 'bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-300',
                 personal: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
                 team: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300',
-                'global-opencode': 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-300',
                 'global-claude': 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
                 'global-agent': 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-300',
               }
@@ -792,7 +791,6 @@ ${skillContent.trim()}`
                 shared: t('settings.skills.shared', 'Shared'),
                 personal: t('settings.skills.personal', 'Personal'),
                 team: 'Team',
-                'global-opencode': t('settings.skills.globalOpencode', 'Global'),
                 'global-claude': t('settings.skills.globalClaude', 'Global Claude'),
                 'global-agent': t('settings.skills.globalAgent', 'Global Agent'),
               }

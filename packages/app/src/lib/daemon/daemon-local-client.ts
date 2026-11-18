@@ -484,102 +484,6 @@ async function daemonFetchNoContent(
   return { ok: true, status: resp.status }
 }
 
-interface DaemonConfigEntry {
-  key: string
-  value: unknown
-  display: string
-  secret: boolean
-}
-
-interface DaemonMutateConfigResponse {
-  key: string
-  requiresReload?: boolean
-  requiresRestart?: boolean
-}
-
-/** Read a single daemon.toml key via `/v1/config/:key`. Returns null when absent (404). */
-async function getDaemonConfigEntry(key: string): Promise<DaemonConfigEntry | null> {
-  const result = await daemonFetch<DaemonConfigEntry>(`/v1/config/${encodeURIComponent(key)}`)
-  if (!result.ok) {
-    if (result.status === 404) return null
-    throw new Error(result.error || `failed to read config key ${key}`)
-  }
-  return result.data
-}
-
-/** Write a daemon.toml key. Secret values are write-only on read (see `getDaemonConfigEntry`). */
-async function setDaemonConfigValue(
-  key: string,
-  value: string | number | boolean,
-): Promise<DaemonMutateConfigResponse> {
-  const result = await daemonFetch<DaemonMutateConfigResponse>(`/v1/config/${encodeURIComponent(key)}`, {
-    method: 'PUT',
-    body: JSON.stringify({ value }),
-  })
-  if (!result.ok) throw new Error(result.error || `failed to set config key ${key}`)
-  return result.data
-}
-
-interface CursorAgentSettings {
-  apiKeyConfigured: boolean
-  defaultModel: string
-}
-
-const CURSOR_DEFAULT_MODEL = 'composer-2.5'
-const CURSOR_API_KEY_ENV = 'CURSOR_API_KEY'
-
-/**
- * Cursor SDK backend settings. The default model is machine config
- * (daemon.toml `[agents.cursor]`); the API key is a *personal* credential and
- * lives in the personal env store (`CURSOR_API_KEY`), where the daemon reads
- * it — never in daemon.toml.
- */
-export async function getCursorAgentSettings(): Promise<CursorAgentSettings> {
-  const [apiKeyValue, modelEntry] = await Promise.all([
-    // Presence only: `env_var_get` returns a mask when set, rejects when absent.
-    invoke<string>('env_var_get', { key: CURSOR_API_KEY_ENV }).catch(() => ''),
-    getDaemonConfigEntry('agents.cursor.default_model'),
-  ])
-  const defaultModel =
-    typeof modelEntry?.value === 'string' && modelEntry.value.trim()
-      ? modelEntry.value.trim()
-      : CURSOR_DEFAULT_MODEL
-  return {
-    apiKeyConfigured: typeof apiKeyValue === 'string' && apiKeyValue.trim().length > 0,
-    defaultModel,
-  }
-}
-
-export async function saveCursorAgentSettings(input: {
-  apiKey?: string
-  defaultModel?: string
-}): Promise<{ requiresRestart: boolean }> {
-  let requiresRestart = false
-  const trimmedKey = input.apiKey?.trim()
-  if (trimmedKey) {
-    await invoke('env_catalog_set', {
-      scope: 'personal',
-      key: CURSOR_API_KEY_ENV,
-      value: trimmedKey,
-    })
-    // The pool captures the key at config load; a running daemon picks the
-    // new one up on restart.
-    requiresRestart = true
-  }
-  const trimmedModel = input.defaultModel?.trim()
-  if (trimmedModel) {
-    const resp = await setDaemonConfigValue('agents.cursor.default_model', trimmedModel)
-    requiresRestart = requiresRestart || (resp.requiresRestart ?? true)
-  }
-  return { requiresRestart }
-}
-
-/** Restart the desktop-managed amuxd after config edits that require it. */
-export async function restartLocalDaemon(): Promise<void> {
-  invalidateDaemonConnection()
-  await invoke('restart_local_daemon')
-}
-
 // ─── Workspace-control types (mirrors Rust workspace_control.rs) ──────────────
 
 export interface DaemonProviderInfo {
@@ -684,8 +588,7 @@ export interface DaemonModelCatalog {
 
 /**
  * `GET /v1/workspaces/:id/model-catalog` — models grouped by the agent backend
- * that would run them (OpenCode, Claude Code, Codex). Source of truth for the
- * cron dialog, replacing the OpenCode-only provider list.
+ * that would run them (pi). Source of truth for the cron dialog.
  */
 export async function getDaemonModelCatalog(
   workspaceId: string,

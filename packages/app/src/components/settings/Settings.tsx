@@ -85,7 +85,7 @@ const daemonSections: Section[] = [
   { id: 'channels', label: 'Channels', labelKey: 'settings.nav.channels', icon: MessageSquare },
 ]
 
-// Local Agent (opencode) config sections.
+// Local Agent (pi) config sections.
 const localAgentSections: Section[] = [
   { id: 'llm', label: 'LLM Model', labelKey: 'settings.nav.llm', icon: Brain },
   { id: 'knowledgeAcl', label: 'Knowledge Access', labelKey: 'settings.nav.knowledgeAcl', icon: Lock },

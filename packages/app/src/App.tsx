@@ -24,7 +24,6 @@ import { useGitReposInit } from "@/hooks/use-git-repos-init";
 import { useCronInit } from "@/hooks/use-cron-init";
 import { useAgentAppChanges } from "@/hooks/use-agent-app-changes";
 import { useWorkspaceRuntimeRefreshPoll } from "@/hooks/use-workspace-runtime-refresh-poll";
-import { useOpenCodePreload } from "@/hooks/use-opencode-preload";
 import { useExternalLinkHandler } from "@/hooks/use-external-link-handler";
 import { ChatFileMenuHost } from "@/components/chat/ChatFileMenuHost";
 import { ChatFilePreviewColumn, ChatFilePreviewToggle } from "@/components/chat/ChatFilePreviewColumn";
@@ -266,7 +265,7 @@ function AppContent() {
   // Resolved by the MQTT-connect effect; used for presence + live wiring.
   const [myActorId, setMyActorId] = useState<string | null>(null);
   // Extracted hooks — initialization, panel state, keyboard shortcuts
-  const { initialWorkspaceResolved, openCodeError } = useWorkspaceInit();
+  const { initialWorkspaceResolved, daemonConnectionError } = useWorkspaceInit();
   const daemonHttpReady = useWorkspaceStore((s) => s.daemonHttpReady);
   const installTeamId = useCurrentTeamStore((s) => s.team?.id ?? null);
   const localAgentInstallStatus = useLocalAgentInstallStore((s) =>
@@ -280,8 +279,8 @@ function AppContent() {
     const DAEMON_TOAST_ID = "amuxd-daemon-unavailable";
     const suppressDaemonToast =
       localAgentInstallStatus === "absent" || localAgentInstallStatus === "pending";
-    if (isTauri() && workspacePath && !daemonHttpReady && openCodeError && !suppressDaemonToast) {
-      toast.error(openCodeError, {
+    if (isTauri() && workspacePath && !daemonHttpReady && daemonConnectionError && !suppressDaemonToast) {
+      toast.error(daemonConnectionError, {
         id: DAEMON_TOAST_ID,
         duration: Infinity,
         description: t("workspace.daemonUnavailableHint", {
@@ -297,7 +296,7 @@ function AppContent() {
     } else {
       toast.dismiss(DAEMON_TOAST_ID);
     }
-  }, [workspacePath, daemonHttpReady, openCodeError, localAgentInstallStatus, t]);
+  }, [workspacePath, daemonHttpReady, daemonConnectionError, localAgentInstallStatus, t]);
 
   useChannelGatewayInit();
   useGitReposInit();
@@ -924,7 +923,6 @@ function App() {
 
   // Extracted hooks — initialization
   useTauriBodyClass();
-  useOpenCodePreload();
 
   // First-run onboarding (welcome, dependency setup, role, model) all lives in
   // AuthGate now, ahead of this component — see #881. By the time App renders,
