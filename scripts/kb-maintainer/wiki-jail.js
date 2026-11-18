@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { plainPathForNode, safeRealpathSync } = require("./win-path");
 
 function stripNestedWikiPrefix(wikiRoot, candidate) {
   const nestedRoot = path.join(wikiRoot, "wiki");
@@ -16,7 +17,7 @@ function assertWikiPath(workRoot, input) {
   if (typeof input !== "string" || input.length === 0) {
     throw new Error("Wiki path is empty");
   }
-  const wikiRoot = fs.realpathSync(path.join(workRoot, "wiki"));
+  const wikiRoot = safeRealpathSync(plainPathForNode(path.join(workRoot, "wiki")));
   const relative = path.isAbsolute(input) ? input : input.replace(/\\/g, "/");
   const stripped = !path.isAbsolute(input) && (relative === "wiki" || relative.startsWith("wiki/"))
     ? relative === "wiki"
@@ -28,7 +29,7 @@ function assertWikiPath(workRoot, input) {
     : path.resolve(wikiRoot, stripped);
   let canonical = resolved;
   try {
-    canonical = fs.existsSync(resolved) ? fs.realpathSync(resolved) : path.resolve(resolved);
+    canonical = fs.existsSync(resolved) ? safeRealpathSync(resolved) : path.resolve(resolved);
   } catch {
     canonical = path.resolve(resolved);
   }

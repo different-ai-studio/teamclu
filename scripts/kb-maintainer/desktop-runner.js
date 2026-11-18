@@ -20,6 +20,7 @@ const { createCheckpoint, restoreCheckpoint } = require("./checkpoint");
 const { createDaemonSession } = require("./daemon-session");
 const { createVisionExtract, findPdftoppm, transcribeWithSession } = require("./vision");
 const { seedSchema } = require("./schema-seed");
+const { plainPathForNode } = require("./win-path");
 
 function renderPdfPage(bytes, pageNumber) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-pdf-page-"));
@@ -488,6 +489,21 @@ function restore(input) {
   return manifest;
 }
 
+function normalizeRuntimePaths(input) {
+  if (!input || typeof input !== "object") return input;
+  for (const key of [
+    "documentsRoot",
+    "knowledgeRoot",
+    "workRoot",
+    "configPath",
+    "statePath",
+    "checkpointPath",
+  ]) {
+    if (typeof input[key] === "string") input[key] = plainPathForNode(input[key]);
+  }
+  return input;
+}
+
 async function main() {
   const command = process.argv[2];
   const inputPath = process.argv[3];
@@ -496,7 +512,7 @@ async function main() {
       "usage: desktop-runner.js <prepare|publish|restore|baseline|adopt|inspect-vault> <input.json>",
     );
   }
-  const input = JSON.parse(fs.readFileSync(inputPath, "utf8"));
+  const input = normalizeRuntimePaths(JSON.parse(fs.readFileSync(inputPath, "utf8")));
   const result =
     command === "prepare"
       ? await prepare(input, {

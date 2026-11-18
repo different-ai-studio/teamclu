@@ -19,6 +19,7 @@ const {
   ingestMessage,
 } = require("./git-store");
 const { limitCompileDiff } = require("./repair");
+const { documentsFilePath } = require("./win-path");
 
 function loadState(statePath) {
   if (!statePath || !fs.existsSync(statePath)) {
@@ -35,7 +36,7 @@ function saveState(statePath, state) {
 }
 
 function sourceAbs(documentsRoot, documentsPath) {
-  return path.join(documentsRoot, documentsPath.slice("documents/".length));
+  return documentsFilePath(documentsRoot, documentsPath);
 }
 
 function readOptional(filePath) {
