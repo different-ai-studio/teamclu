@@ -43,17 +43,9 @@ public actor CloudAPISessionsRepository: SessionsRepository {
                 lastMessageAt: parseCloudDate(row.lastMessageAt),
                 createdAt: parseCloudDate(row.createdAt) ?? .distantPast,
                 source: row.source,
-                appID: row.appId
+                appID: row.appId,
+                hasUnread: row.hasUnread
             )
-        }
-    }
-
-    public func fetchUnreadFlags(teamID: String, limit: Int) async throws -> [String: Bool] {
-        let page: CloudPage<CloudSession> = try await client.get(
-            "/v1/sessions?teamId=\(urlEncoded(teamID))&limit=\(limit)"
-        )
-        return page.items.reduce(into: [String: Bool]()) { acc, row in
-            acc[row.id] = row.hasUnread
         }
     }
 
@@ -1032,18 +1024,6 @@ private struct CloudTeam: Decodable, Sendable {
     let slug: String?
     let createdAt: String?
     let orgName: String?
-}
-
-private struct CloudSession: Decodable, Sendable {
-    let id: String
-    let teamId: String
-    let title: String
-    let mode: String
-    let ideaId: String?
-    let lastMessageAt: String?
-    let lastMessagePreview: String?
-    let hasUnread: Bool
-    let createdAt: String?
 }
 
 /// Typed view of the freeform `messages.metadata` JSON column. Only the

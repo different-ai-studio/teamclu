@@ -94,6 +94,7 @@ struct CloudAPIRepositoryTests {
         #expect(sessions.first?.createdByActorID == "actor-1")
         #expect(sessions.first?.summary == "topic")
         #expect(sessions.first?.participantCount == 3)
+        #expect(sessions.first?.hasUnread == true)
         #expect(messages.map(\.id) == ["message-1", "message-2"])
         #expect(messages.first?.turnID == "turn-1")
         // Full contract round-trip: every field of the OpenAPI Message
