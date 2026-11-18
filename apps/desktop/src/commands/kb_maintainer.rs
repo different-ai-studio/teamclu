@@ -725,12 +725,20 @@ fn rewrite_verbatim_node_paths(value: &mut Value) -> bool {
                 false
             }
         }
-        Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
-            rewrite_verbatim_node_paths(item) || changed
-        }),
-        Value::Object(map) => map.values_mut().fold(false, |changed, item| {
-            rewrite_verbatim_node_paths(item) || changed
-        }),
+        Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                changed |= rewrite_verbatim_node_paths(item);
+            }
+            changed
+        }
+        Value::Object(map) => {
+            let mut changed = false;
+            for item in map.values_mut() {
+                changed |= rewrite_verbatim_node_paths(item);
+            }
+            changed
+        }
         _ => false,
     }
 }
