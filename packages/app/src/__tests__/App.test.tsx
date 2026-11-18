@@ -388,22 +388,40 @@ describe('App', () => {
     expect(screen.getByTitle('Show files')).toBeInTheDocument()
   })
 
-  it.each([
-    ['skills', 'Skills'],
-    ['mcp', 'MCP'],
-    ['env', 'Environment Variables'],
-    ['knowledge', 'Knowledge'],
-  ])('shows the %s page title instead of New Chat', (section, title) => {
+  it.each(['skills', 'mcp', 'env', 'knowledge'])(
+    'hides the conversation while the %s section is selected',
+    (section) => {
+      workspaceStoreState.workspacePath = '/workspace'
+      uiStoreState.sidebarFilter = { kind: 'teamShare', section }
+
+      render(<App />)
+
+      // Still mounted (it keeps its state), but out of sight.
+      expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
+      expect(screen.getByTestId('section-detail')).toHaveAttribute('data-section', section)
+    },
+  )
+
+  it.each([['ideas'], ['actors']])('hides the conversation for the %s section', (kind) => {
     workspaceStoreState.workspacePath = '/workspace'
-    uiStoreState.sidebarFilter = { kind: 'teamShare', section }
+    uiStoreState.sidebarFilter = { kind }
 
     render(<App />)
 
-    expect(screen.getByText(title)).toBeInTheDocument()
-    expect(screen.queryByText('New Chat')).toBeNull()
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
+    expect(screen.getByTestId('section-detail')).toHaveAttribute('data-section', kind)
   })
 
-  it('renders team-share item details in column three, leaving column four to its tabs', async () => {
+  it('keeps the conversation for the session list', () => {
+    workspaceStoreState.workspacePath = '/workspace'
+
+    render(<App />)
+
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).toBeNull()
+    expect(screen.queryByTestId('section-detail')).toBeNull()
+  })
+
+  it('shows a team-share item where the conversation was, with column four beside it', async () => {
     workspaceStoreState.workspacePath = '/workspace'
     uiStoreState.sidebarFilter = { kind: 'teamShare', section: 'mcp' }
     teamShareBrowserState.detailTarget = { kind: 'mcp', name: 'memory' }
@@ -416,9 +434,10 @@ describe('App', () => {
     // The team-share detail pane is lazy-loaded.
     const detail = await screen.findByTestId('team-share-detail')
     expect(detail).toHaveTextContent('mcp')
+    expect(screen.getByTestId('section-detail')).toContainElement(detail)
     const column = screen.getByTestId('content-column')
     expect(column).not.toContainElement(detail)
-    expect(column).toContainElement(screen.getByTestId('file-content-viewer'))
+    expect(column).toHaveAttribute('data-content-mode', 'half')
   })
 
   it('opens knowledge files in column four', () => {
@@ -433,6 +452,19 @@ describe('App', () => {
     const column = screen.getByTestId('content-column')
     expect(column).toContainElement(screen.getByTestId('tab-bar'))
     expect(column).toContainElement(screen.getByTestId('file-content-viewer'))
-    expect(screen.queryByTestId('team-share-detail')).toBeNull()
+    // A document takes the conversation's place: no empty-state prompt, no
+    // resize edge (there is nothing beside it to share the row with).
+    expect(screen.queryByTestId('section-detail')).toBeNull()
+    expect(screen.queryByTestId('content-column-resize')).toBeNull()
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
+  })
+
+  it('prompts for a knowledge document until one is open', () => {
+    workspaceStoreState.workspacePath = '/workspace'
+    uiStoreState.sidebarFilter = { kind: 'teamShare', section: 'knowledge' }
+
+    render(<App />)
+
+    expect(screen.getByTestId('knowledge-empty-state')).toBeInTheDocument()
   })
 })

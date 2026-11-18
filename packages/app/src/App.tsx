@@ -34,6 +34,8 @@ import {
   useEffectiveContentColumnMode,
 } from "@/components/content-column/ContentColumn";
 import { useSessionScopedTabs } from "@/hooks/use-session-scoped-tabs";
+import { SectionDetailColumn } from "@/components/content-column/SectionDetailColumn";
+import { useSectionMode } from "@/lib/layout/section-mode";
 import { SessionDrawer } from "@/components/session-drawer/SessionDrawer";
 import { useOneSessionSidePanel } from "@/components/session-drawer/use-one-side-panel";
 import { useTauriBodyClass } from "@/hooks/use-tauri-body-class";
@@ -195,7 +197,6 @@ function AppContent() {
   );
   const currentView = useUIStore((s) => s.currentView);
   const closeSettings = useUIStore((s) => s.closeSettings);
-  const sidebarFilter = useUIStore((s) => s.sidebarFilter);
   const authSession = useAuthStore((s) => s.session);
   // `load()` keeps the cached team while auth is still restoring, so it has to
   // run again once auth settles. The user id alone is not enough of a trigger:
@@ -211,6 +212,15 @@ function AppContent() {
   const contentColumnVisible = useContentColumnVisible();
   const contentColumnMode = useEffectiveContentColumnMode();
   const contentColumnFull = contentColumnVisible && contentColumnMode === "full";
+  // Skills / knowledge / ideas / contacts replace the conversation: column
+  // three steps aside (still mounted) and the section's item opens in its
+  // place — its detail view, or for knowledge, column four's documents.
+  const sectionMode = useSectionMode();
+  const conversationHidden = contentColumnFull || sectionMode !== null;
+  const showSectionDetail =
+    sectionMode !== null &&
+    !contentColumnFull &&
+    !(sectionMode === "knowledge" && contentColumnVisible);
   // Header icon visibility — additive gates on top of the capability/session
   // conditions below. Defaults hidden; users enable per-icon in Settings →
   // General → "会话头部图标". See stores/header-preferences-store.ts.
@@ -240,19 +250,6 @@ function AppContent() {
   const settingsOpen = currentView === "settings";
   /** Extension welcome has its own empty state — skip duplicate "New Chat" header. */
   const showChatSessionHeader = !(embedMode && !activeSession);
-  const sectionHeaderTitle =
-    sidebarFilter.kind === "teamShare"
-      ? sidebarFilter.section === "skills"
-        ? t("teamShare.skills", "Skills")
-        : sidebarFilter.section === "mcp"
-          ? t("teamShare.mcp", "MCP")
-          : sidebarFilter.section === "env"
-            ? t("teamShare.env", "Environment Variables")
-            : t("teamShare.knowledge", "Knowledge")
-      : sidebarFilter.kind === "ideas"
-        ? t("ideas.allTitle", "Ideas")
-        : null;
-
   const handleCloseSettings = React.useCallback(() => {
     setFeedbackOpen(false);
     closeSettings();
@@ -573,7 +570,7 @@ function AppContent() {
         <div
           className={cn(
             "flex flex-1 flex-col min-w-[360px] overflow-hidden",
-            contentColumnFull && "hidden",
+            conversationHidden && "hidden",
           )}
         >
           {breakpoint === 'narrow' && <NarrowChatHeader />}
@@ -587,7 +584,7 @@ function AppContent() {
             {collapsedInsetLeading}
 
             <span className="min-w-0 truncate text-sm text-left">
-              {sectionHeaderTitle || activeSession?.title || t("chat.newChat", "New Chat")}
+              {activeSession?.title || t("chat.newChat", "New Chat")}
             </span>
             {activeSession && !isSoloBuild() && (
               <button
@@ -704,6 +701,8 @@ function AppContent() {
           </div>
           </>
         </div>
+
+        {showSectionDetail && sectionMode ? <SectionDetailColumn section={sectionMode} /> : null}
 
         {/* Column four: files, previews, web and app tabs. */}
         <ContentColumn />

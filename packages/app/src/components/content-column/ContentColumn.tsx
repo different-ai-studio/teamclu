@@ -24,6 +24,7 @@ import { useWebviewUIStore } from "@/app/webview-ui-store";
 import { PreviewTabContent } from "@/components/content-column/PreviewTabContent";
 import { useLayoutBreakpoint } from "@/hooks/use-layout-breakpoint";
 import { useEffectiveContentColumnMode } from "@/components/content-column/content-column-state";
+import { useSectionMode } from "@/lib/layout/section-mode";
 
 export {
   useContentColumnVisible,
@@ -113,7 +114,10 @@ function LayoutButton({
 function LayoutSwitcher() {
   const { t } = useTranslation();
   const mode = useEffectiveContentColumnMode();
-  const canHalf = useLayoutBreakpoint() === "wide";
+  // In the knowledge section column four already has the row to itself, so
+  // "half" has nothing to share it with; "full" there means "hide the list".
+  const fills = useSectionMode() === "knowledge";
+  const canHalf = useLayoutBreakpoint() === "wide" && !fills;
   const setMode = useUIStore((s) => s.setContentColumnMode);
   return (
     <>
@@ -129,7 +133,7 @@ function LayoutSwitcher() {
       <LayoutButton
         label={t("contentColumn.full", "Full width")}
         active={mode === "full"}
-        onClick={() => setMode(mode === "full" && canHalf ? "half" : "full")}
+        onClick={() => setMode(mode === "full" ? "half" : "full")}
       >
         <Maximize2 className="h-3.5 w-3.5" />
       </LayoutButton>
@@ -186,6 +190,9 @@ export function ContentColumn() {
   const showFind = useWebviewUIStore((s) => s.showFind);
   const zoomLevels = useWebviewUIStore((s) => s.zoomLevels);
   const containerRef = useRef<HTMLElement | null>(null);
+  // Knowledge documents replace the conversation rather than sit beside it,
+  // so in that section a half-width column takes the whole row instead.
+  const fills = useSectionMode() === "knowledge" && mode === "half";
 
   if (!activeTab) return null;
 
@@ -196,11 +203,11 @@ export function ContentColumn() {
       data-content-mode={mode}
       className={cn(
         "relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background",
-        mode === "full" ? "flex-1" : "shrink-0 border-l border-border",
+        mode === "full" || fills ? "flex-1" : "shrink-0 border-l border-border",
       )}
-      style={mode === "half" ? { width: `${ratio * 100}%` } : undefined}
+      style={mode === "half" && !fills ? { width: `${ratio * 100}%` } : undefined}
     >
-      {mode === "half" ? <ResizeEdge containerRef={containerRef} /> : null}
+      {mode === "half" && !fills ? <ResizeEdge containerRef={containerRef} /> : null}
       <TabBar trailing={<LayoutSwitcher />} />
       {activeTab.type === "webview" && (
         <WebViewToolbar

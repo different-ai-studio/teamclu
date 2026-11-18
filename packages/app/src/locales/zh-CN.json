@@ -4240,6 +4240,9 @@
     "hide": "隐藏",
     "resize": "拖动调整宽度"
   },
+  "sectionDetail": {
+    "knowledgeEmpty": "在左侧选一个文档，在这里打开。"
+  },
   "sessionDrawer": {
     "pin": "固定在会话旁",
     "unpin": "浮在会话上方"

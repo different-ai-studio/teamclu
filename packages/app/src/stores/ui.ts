@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import { useDiagnosticsStore } from '@/stores/diagnostics-store'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { useTabsStore } from '@/stores/tabs'
 import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-share-browser'
 import { resolveEmbedMode } from '@/lib/embed/embed-mode'
 import { scheduleReleaseStuckModalLayers } from '@/lib/ui/modal-layer-cleanup'
@@ -320,7 +319,9 @@ export const useUIStore = create<UIState>((set, get) => ({
     })
     useWorkspaceStore.getState().clearSelection()
     useWorkspaceStore.getState().closePanel()
-    useTabsStore.getState().hideAll()
+    // No hideAll: column four's tabs are scoped per session
+    // (hooks/use-session-scoped-tabs), so the session being left keeps its
+    // tabs as they were and the new draft starts from its own scope.
     useTeamShareBrowserStore.getState().clearDetail()
 
     // Import session and other stores lazily to avoid circular dependencies
@@ -351,7 +352,6 @@ export const useUIStore = create<UIState>((set, get) => ({
     // Import stores lazily to avoid circular dependencies
     const { useSessionSelectionStore } = await import('@/stores/session-selection-store')
     const { useWorkspaceStore } = await import('@/stores/workspace')
-    const { useTabsStore } = await import('@/stores/tabs')
     const { useCurrentTeamStore } = await import('@/stores/current-team')
     const { switchToSessionWorkspaceIfNeeded } = await import('@/lib/session/session-by-workspace')
     
@@ -381,7 +381,6 @@ export const useUIStore = create<UIState>((set, get) => ({
       })
       releaseStuckModalLayersAfterViewSwitch()
       useWorkspaceStore.getState().clearSelection()
-      useTabsStore.getState().hideAll()
       resolveWorkspaceInBackground()
       return
     }
@@ -400,7 +399,6 @@ export const useUIStore = create<UIState>((set, get) => ({
     // a manual close. Run the same cleanup the Dialog's close path would.
     releaseStuckModalLayersAfterViewSwitch()
     useWorkspaceStore.getState().clearSelection()
-    useTabsStore.getState().hideAll()
 
     // Switch to the session. setActiveSession flips the selection state
     // synchronously; its read-marker network write runs in the background, so we
@@ -424,7 +422,6 @@ export const useUIStore = create<UIState>((set, get) => ({
       daemonGeneralPrompt: null,
       sidebarFilter: { kind: 'all' },
     })
-    useTabsStore.getState().hideAll()
     // Mirror startNewChat's clear-out so the chat view shows an empty
     // canvas with the preselected actor as the implicit recipient. We
     // dynamic-import to avoid a top-level cycle with session/workspace stores.
@@ -448,16 +445,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   clearActorDraft: () => set({ draftPreselectedActor: null }),
 
   setNarrowListSheetOpen: (open) => set({ narrowListSheetOpen: open }),
-  setSidebarFilter: (filter) => {
-    const current = get().sidebarFilter
-    const isLeavingKnowledge =
-      current.kind === 'teamShare' &&
-      current.section === 'knowledge' &&
-      !(filter.kind === 'teamShare' && filter.section === 'knowledge')
-
-    if (isLeavingKnowledge) useTabsStore.getState().hideAll()
-    set({ sidebarFilter: filter })
-  },
+  // Leaving a section needs no tab cleanup here: sections have their own tab
+  // scope (hooks/use-session-scoped-tabs), so their tabs park themselves.
+  setSidebarFilter: (filter) => set({ sidebarFilter: filter }),
   toggleIdeasSection: () => set((s) => ({ ideasSectionCollapsed: !s.ideasSectionCollapsed })),
   toggleMoreNav: () => set((s) => ({ moreNavExpanded: !s.moreNavExpanded })),
   setMoreNavExpanded: (expanded) => set({ moreNavExpanded: expanded }),

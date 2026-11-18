@@ -4240,6 +4240,9 @@
     "hide": "Hide",
     "resize": "Drag to resize"
   },
+  "sectionDetail": {
+    "knowledgeEmpty": "Pick a document on the left to open it here."
+  },
   "sessionDrawer": {
     "pin": "Dock beside the conversation",
     "unpin": "Float over the conversation"
