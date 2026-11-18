@@ -38,6 +38,11 @@ export interface TeamSkill {
   id: string;
   teamId: string;
   slug: string;
+  /**
+   * Title shown in the team. May be Chinese. Absent on rows published before
+   * the column existed — callers fall back to `slug`.
+   */
+  displayName?: string | null;
   ownerActorId: string;
   summary: string;
   category: TeamSkillCategory;
@@ -96,6 +101,8 @@ interface TeamSkillInstall {
 
 interface TeamSkillPublishInput {
   slug: string;
+  /** Kept when the slug is generated from a non-ASCII title. */
+  displayName?: string;
   summary: string;
   category: TeamSkillCategory;
   whenToUse: string;
@@ -143,7 +150,14 @@ export interface TeamSkillsBackend {
     patch: Partial<
       Pick<
         TeamSkill,
-        "summary" | "category" | "whenToUse" | "whenNotToUse" | "status" | "supersededBy" | "ownerActorId"
+        | "summary"
+        | "category"
+        | "whenToUse"
+        | "whenNotToUse"
+        | "status"
+        | "supersededBy"
+        | "ownerActorId"
+        | "displayName"
       >
     > & { requires?: string[] | null },
   ): Promise<TeamSkill>;

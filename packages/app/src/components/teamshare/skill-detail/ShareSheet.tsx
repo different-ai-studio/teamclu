@@ -11,6 +11,12 @@ import {
   clipTeamSkillSummary,
   hydrateTeamSkillPublishFields,
 } from '@/lib/skills/team-skill-summary'
+import {
+  allocateTeamSkillSlug,
+  isPublishableTeamSkillSlug,
+  teamSkillDisplayName,
+  teamSkillSlugIssue,
+} from '@/lib/skills/team-skill-slug'
 
 export function ShareSheet({
   item,
@@ -25,6 +31,7 @@ export function ShareSheet({
   onClose: () => void
   onSubmit: (input: {
     slug: string
+    displayName: string
     summary: string
     category: TeamSkillCategory
     whenToUse: string
@@ -36,7 +43,10 @@ export function ShareSheet({
   takenSlugs: ReadonlySet<string>
 }) {
   const { t } = useTranslation()
-  const [slug, setSlug] = React.useState(item.slug)
+  const displayName = (item.name || item.slug).trim()
+  const takenRef = React.useRef(takenSlugs)
+  takenRef.current = takenSlugs
+  const [slug, setSlug] = React.useState(() => allocateTeamSkillSlug(displayName, takenSlugs))
   const [summary, setSummary] = React.useState(item.summary ?? '')
   const [category, setCategory] = React.useState<TeamSkillCategory>(
     (TEAM_SKILL_CATEGORIES.includes(item.category as TeamSkillCategory)
@@ -54,7 +64,7 @@ export function ShareSheet({
       draftSummary: item.summary,
       draftWhenToUse: item.whenToUse,
     })
-    setSlug(item.slug)
+    setSlug(allocateTeamSkillSlug(item.name || item.slug, takenRef.current))
     setSummary(hydrated.summary)
     setSummaryWasClipped(hydrated.summaryWasClipped)
     setCategory(
@@ -69,17 +79,16 @@ export function ShareSheet({
 
   if (!open) return null
 
-  // The registry rejects a duplicate name, but only after the package has been
-  // uploaded. Everything needed to know that is already in this list, so say it
-  // while they are still typing.
-  const slugTaken = takenSlugs.has(slug.trim())
+  // The registry rejects a duplicate or non-ASCII id, but only after the
+  // package has been uploaded. Say it while they are still typing.
+  const slugIssue = teamSkillSlugIssue(slug, takenSlugs)
+  const showGeneratedHint = !slugIssue && !isPublishableTeamSkillSlug(displayName.trim().toLowerCase())
 
   // Guidance fields are not gates. Requiring them mostly bought placeholder
   // text, which reads as guidance without being any — worse than a blank the
   // author can come back and fill in.
   const canSubmit =
-    slug.trim() &&
-    !slugTaken &&
+    !slugIssue &&
     summary.trim() &&
     summary.trim().length <= TEAM_SKILL_SUMMARY_MAX &&
     changelog.trim() &&
@@ -110,19 +119,51 @@ export function ShareSheet({
             </span>
             <input
               value={slug}
-              onChange={(e) => setSlug(e.target.value)}
-              aria-invalid={slugTaken || undefined}
+              onChange={(e) => setSlug(e.target.value.toLowerCase())}
+              aria-invalid={slugIssue ? true : undefined}
+              spellCheck={false}
+              autoCapitalize="none"
               className={cn(
                 'w-full rounded-[8px] border bg-background px-3 py-2 font-mono text-[13px] outline-none',
-                slugTaken ? 'border-foreground' : 'border-border focus:border-coral/60',
+                slugIssue ? 'border-foreground' : 'border-border focus:border-coral/60',
               )}
             />
-            {slugTaken && (
+            {slugIssue === 'taken' && (
               <p className="text-[12px] leading-relaxed text-foreground">
                 {t(
                   'teamShare.skillShareSlugTaken',
                   'The team already has a skill called {{slug}}. Pick another name and share again.',
-                  { slug: slug.trim() },
+                  { slug: slug.trim().toLowerCase() },
+                )}
+              </p>
+            )}
+            {slugIssue === 'empty' && (
+              <p className="text-[12px] leading-relaxed text-foreground">
+                {t('teamShare.skillShareSlugEmpty', 'Enter an id')}
+              </p>
+            )}
+            {slugIssue === 'invalid' && (
+              <p className="text-[12px] leading-relaxed text-foreground">
+                {t(
+                  'teamShare.skillShareSlugInvalid',
+                  'Use 2-64 lowercase letters, numbers, or hyphens, starting with a letter or number',
+                )}
+              </p>
+            )}
+            {slugIssue === 'reserved' && (
+              <p className="text-[12px] leading-relaxed text-foreground">
+                {t(
+                  'teamShare.skillShareSlugReserved',
+                  'This id is reserved on Windows and cannot be a skill folder. Pick another.',
+                )}
+              </p>
+            )}
+            {showGeneratedHint && (
+              <p className="text-[12px] leading-relaxed text-muted-foreground">
+                {t(
+                  'teamShare.skillShareSlugGenerated',
+                  'A team id was generated from the name so it installs on Windows and macOS. The display name stays 「{{name}}」.',
+                  { name: displayName },
                 )}
               </p>
             )}
@@ -212,7 +253,8 @@ export function ShareSheet({
             disabled={!canSubmit}
             onClick={() =>
               void onSubmit({
-                slug: slug.trim(),
+                slug: slug.trim().toLowerCase(),
+                displayName: teamSkillDisplayName(displayName, slug.trim().toLowerCase()),
                 summary: clipTeamSkillSummary(summary),
                 category,
                 whenToUse: whenToUse.trim(),

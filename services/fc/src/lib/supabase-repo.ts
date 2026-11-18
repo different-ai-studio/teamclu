@@ -13,6 +13,7 @@ import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
+import { assertTeamSkillSlug, teamSkillDisplayName } from "./team-skill-slug.js";
 import {
   appLevelAtLeast,
   parseAppPermissionLevel,
@@ -7666,14 +7667,11 @@ export function createSupabaseBusinessRepository(options) {
 
     async createTeamSkill(teamId, body: any = {}) {
       const fields = requireTeamSkillFields(body);
-      const slug = String(body.slug ?? "").trim();
-      if (!TEAM_SKILL_SLUG_RE.test(slug)) {
-        throw new ApiError(
-          400,
-          "validation_failed",
-          "slug must be 2-64 chars of [a-z0-9-] and start with a letter or digit",
-        );
-      }
+      // Lowercase here so `Deploy-Check` and `deploy-check` are one folder.
+      // macOS volumes are case-insensitive; Linux is not.
+      const slug = String(body.slug ?? "").trim().toLowerCase();
+      assertTeamSkillSlug(slug);
+      const displayName = teamSkillDisplayName(body.displayName, slug);
       const changelog = String(body.changelog ?? "").trim();
       if (!changelog) throw new ApiError(400, "validation_failed", "changelog is required");
       const contentHash = String(body.contentHash ?? "").trim().toLowerCase();
@@ -7704,6 +7702,7 @@ export function createSupabaseBusinessRepository(options) {
         .insert({
           team_id: teamId,
           slug,
+          display_name: displayName,
           owner_actor_id: body.ownerActorId ?? callerActorId,
           summary: fields.summary,
           category: fields.category,
@@ -7918,6 +7917,9 @@ export function createSupabaseBusinessRepository(options) {
       if (fields.whenNotToUse !== undefined) update.when_not_to_use = fields.whenNotToUse;
       if (fields.requires !== undefined) update.requires = fields.requires;
       if (patch.ownerActorId !== undefined) update.owner_actor_id = patch.ownerActorId;
+      if (patch.displayName !== undefined) {
+        update.display_name = teamSkillDisplayName(patch.displayName, existing.slug);
+      }
       if (patch.status !== undefined) {
         if (!TEAM_SKILL_STATUSES.includes(patch.status)) {
           throw new ApiError(400, "validation_failed", `unknown status: ${patch.status}`);
@@ -8675,7 +8677,6 @@ function mapTeamEnvSecretRow(row: any) {
 
 // ─── Team skills helpers ─────────────────────────────────────────────────────
 
-const TEAM_SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
 // How many marketplace-subscribed skills `listTeamSkills` aligns at once.
 const MARKETPLACE_ALIGN_CONCURRENCY = 4;
 
@@ -8755,6 +8756,10 @@ function mapTeamSkillRow(r: any, install?: any) {
     id: r.id,
     teamId: r.team_id,
     slug: r.slug,
+    displayName:
+      typeof r.display_name === "string" && r.display_name.trim()
+        ? r.display_name.trim()
+        : r.slug,
     ownerActorId: r.owner_actor_id,
     summary: r.summary,
     category: r.category,
