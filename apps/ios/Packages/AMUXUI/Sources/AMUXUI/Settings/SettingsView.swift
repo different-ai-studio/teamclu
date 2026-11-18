@@ -295,15 +295,9 @@ public struct SettingsView: View {
             devicePresence: agentPresenceStore?.presence(forAgent: agent.id) ?? .unknown
         )
         let dotColor: Color = isOnline ? Color.amux.sage : Color.amux.slate
-        let agentTypeLabel: String = {
-            switch agent.defaultAgentType {
-            case "claude", "claude_code": return "Claude"
-            case "opencode":    return "OpenCode"
-            case "codex":       return "Codex"
-            default:            return ""
-            }
-        }()
-        let metaParts: [String] = [agentTypeLabel, agent.permissionLevel, agent.visibility]
+        // No runtime label: pi is the only runtime (ADR-0014), so naming it
+        // on every row says nothing.
+        let metaParts: [String] = [agent.permissionLevel, agent.visibility]
             .filter { !$0.isEmpty }
         let meta = metaParts.joined(separator: " · ")
         return HStack(spacing: 10) {
