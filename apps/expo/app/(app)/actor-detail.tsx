@@ -29,6 +29,7 @@ import {
 } from "../../src/features/actors/team-resources-api";
 import { createWorkspacesApi } from "../../src/features/workspaces/workspace-api";
 import { createConfiguredSessionsApi } from "../../src/features/sessions/api-provider";
+import { loadTeamSessionsPreferCache } from "../../src/features/sessions/session-cache";
 import { createIdeasApi } from "../../src/features/ideas/idea-api";
 import { supabase } from "../../src/lib/supabase/client";
 import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
@@ -280,7 +281,9 @@ export default function ActorDetailRoute() {
         if (cancelled) return;
         const sessionIdSet = new Set(sessionIds);
         const teamSessions = teamId
-          ? await createConfiguredSessionsApi(supabase).listSessions(teamId)
+          ? await loadTeamSessionsPreferCache(teamId, (id) =>
+              createConfiguredSessionsApi(supabase).listSessions(id),
+            )
           : [];
         if (cancelled) return;
         const sessions = teamSessions

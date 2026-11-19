@@ -6,7 +6,7 @@ import AMUXCore
 
 /// Sends a reply typed into a message notification. The app may have been
 /// launched just for this, so everything is rebuilt from disk: the bearer
-/// from the Keychain, the user's actor from `NotificationReply`, the
+/// from the Keychain (refreshed if it has lapsed), the user's actor from `NotificationReply`, the
 /// sender's kind from the SwiftData cache.
 @MainActor
 enum NotificationReplySender {
@@ -20,15 +20,12 @@ enum NotificationReplySender {
             guard let me = NotificationReply.actorID(team: target.teamID),
                   let config = CloudAPIConfigurationStore.configuration()
             else { throw CloudAPIError.missingAccessToken }
-            let storage = KeychainSessionStorage()
-            // No refresh here, as for push registration: the onboarding
-            // SessionStore owns it. An expired token fails over to the draft.
-            let repository = CloudAPIRepositoryFactory.messagesRepository(configuration: config) {
-                guard let session = try storage.load(), session.expiresAt.timeIntervalSinceNow > 0 else {
-                    throw CloudAPIError.missingAccessToken
-                }
-                return session.accessToken
-            }
+            // The shared SessionStore refreshes a lapsed token; only a
+            // revoked session (or no network) fails over to the draft.
+            let repository = CloudAPIRepositoryFactory.messagesRepository(
+                configuration: config,
+                accessToken: CloudAccessToken.provider()
+            )
             try await repository.insert(NotificationReply.insertInput(
                 text: trimmed,
                 target: target,

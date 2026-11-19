@@ -8,7 +8,7 @@ public actor CloudAPITeamRepository: TeamRepository {
     }
 
     public func loadDetails(teamID: String) async throws -> TeamDetails {
-        let row: CloudTeam = try await client.get("/v1/teams/\(teamID)")
+        let row: CloudTeam = try await client.get("/v1/teams/\(urlEncoded(teamID))")
         return TeamDetails(
             id: row.id,
             name: row.name,
@@ -43,29 +43,21 @@ public actor CloudAPISessionsRepository: SessionsRepository {
                 lastMessageAt: parseCloudDate(row.lastMessageAt),
                 createdAt: parseCloudDate(row.createdAt) ?? .distantPast,
                 source: row.source,
-                appID: row.appId
+                appID: row.appId,
+                hasUnread: row.hasUnread
             )
-        }
-    }
-
-    public func fetchUnreadFlags(teamID: String, limit: Int) async throws -> [String: Bool] {
-        let page: CloudPage<CloudSession> = try await client.get(
-            "/v1/sessions?teamId=\(urlEncoded(teamID))&limit=\(limit)"
-        )
-        return page.items.reduce(into: [String: Bool]()) { acc, row in
-            acc[row.id] = row.hasUnread
         }
     }
 
     public func markSessionViewed(sessionId: String, lastReadMessageId: String?) async throws {
         let body = CloudMarkViewedRequest(lastReadMessageId: lastReadMessageId)
-        try await client.postVoid("/v1/sessions/\(sessionId)/mark-viewed", body: body)
+        try await client.postVoid("/v1/sessions/\(urlEncoded(sessionId))/mark-viewed", body: body)
     }
 
     public func markSessionUnread(sessionId: String) async throws {
         // FC resolves the actor from the bearer token; the empty JSON body
         // just keeps the shared postVoid encoder path.
-        try await client.postVoid("/v1/sessions/\(sessionId)/mark-unread", body: CloudEmptyBody())
+        try await client.postVoid("/v1/sessions/\(urlEncoded(sessionId))/mark-unread", body: CloudEmptyBody())
     }
 
     public func renameSession(sessionId: String, title: String) async throws {
@@ -163,6 +155,8 @@ private enum CloudSessionPager {
 /// RFC 3986 unreserved set. Deliberately not `.alphanumerics` (which would
 /// escape the hyphens in a uuid) nor `.urlQueryAllowed` (which passes `&`
 /// and `=` through and would let a value forge extra query parameters).
+/// Also the encoder for an id spliced into a path segment: it escapes `/` and
+/// `?`, which `.urlPathAllowed` and `.urlQueryAllowed` let through.
 private let cloudQueryUnreserved = CharacterSet(
     charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
 )
@@ -328,7 +322,7 @@ public actor CloudAPIMessagesRepository: MessagesRepository {
         if let cursor, !cursor.isEmpty { query.append("cursor=\(Self.enc(cursor))") }
         let suffix = query.isEmpty ? "" : "?\(query.joined(separator: "&"))"
         let page: CloudPage<CloudMessage> = try await client.get(
-            "/v1/sessions/\(sessionID)/messages\(suffix)"
+            "/v1/sessions/\(urlEncoded(sessionID))/messages\(suffix)"
         )
         let messages = page.items.map { row in
             MessageRecord(
@@ -373,7 +367,7 @@ public actor CloudAPIMessagesRepository: MessagesRepository {
             createdAt: nil
         )
         let _: CloudMessage = try await client.post(
-            "/v1/sessions/\(input.sessionID)/messages",
+            "/v1/sessions/\(urlEncoded(input.sessionID))/messages",
             body: body,
             idempotencyKey: input.id
         )
@@ -900,7 +894,7 @@ public struct CloudAPIClientVersionRepository: Sendable {
     public func report(teamID: String, version: String, build: String?, deviceID: String) async {
         let body = ClientVersionReport(clientType: "ios", version: version, deviceId: deviceID, build: build)
         // ops telemetry only — swallow all errors so it never disrupts the app
-        _ = try? await client.post("/v1/teams/\(teamID)/client-version", body: body, as: OkAck.self)
+        _ = try? await client.post("/v1/teams/\(urlEncoded(teamID))/client-version", body: body, as: OkAck.self)
     }
 }
 
@@ -1030,18 +1024,6 @@ private struct CloudTeam: Decodable, Sendable {
     let slug: String?
     let createdAt: String?
     let orgName: String?
-}
-
-private struct CloudSession: Decodable, Sendable {
-    let id: String
-    let teamId: String
-    let title: String
-    let mode: String
-    let ideaId: String?
-    let lastMessageAt: String?
-    let lastMessagePreview: String?
-    let hasUnread: Bool
-    let createdAt: String?
 }
 
 /// Typed view of the freeform `messages.metadata` JSON column. Only the

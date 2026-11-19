@@ -38,6 +38,7 @@ import type { OutboxSqliteDb } from "../../../../src/features/sessions/outbox-db
 import { publishOutboxRowViaOptionalMqtt } from "../../../../src/features/sessions/session-outbox-publish";
 import { resetOutbox, syncOutboxFromDao } from "../../../../src/features/sessions/outbox-store";
 import { createConfiguredSessionsApi } from "../../../../src/features/sessions/api-provider";
+import { loadTeamSessionsPreferCache } from "../../../../src/features/sessions/session-cache";
 import { removeSessionParticipant } from "../../../../src/features/sessions/remove-participant";
 import type { FeedbackKind } from "../../../../src/features/sessions/cloud-api";
 import { myFeedbackByMessageId, nextFeedback } from "../../../../src/features/sessions/message-feedback";
@@ -544,8 +545,9 @@ export default function SessionDetailRoute() {
     if (forwardText === null || !currentTeam?.id) return;
     let cancelled = false;
     setForwardTargets(null);
-    void createConfiguredSessionsApi(supabase)
-      .listSessions(currentTeam.id)
+    void loadTeamSessionsPreferCache(currentTeam.id, (id) =>
+      createConfiguredSessionsApi(supabase).listSessions(id),
+    )
       .then((sessions) => {
         if (cancelled) return;
         setForwardTargets(

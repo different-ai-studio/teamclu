@@ -57,9 +57,12 @@ struct ContentView: View {
     /// — affected users re-authenticate once.
     private static func makeOnboardingCoordinator() -> AppOnboardingCoordinator {
         if let cloudConfig = CloudAPIConfigurationStore.configuration() {
+            // The process-wide SessionStore, so push, quick replies and
+            // attachments refresh through the same tokens as onboarding.
             let store = CloudAPIAppOnboardingStore(
                 configuration: cloudConfig,
-                storage: KeychainSessionStorage()
+                storage: KeychainSessionStorage(),
+                sessionStore: CloudAccessToken.sessionStore(for: cloudConfig)
             )
             return AppOnboardingCoordinator(store: store)
         }

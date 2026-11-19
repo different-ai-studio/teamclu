@@ -94,6 +94,7 @@ struct CloudAPIRepositoryTests {
         #expect(sessions.first?.createdByActorID == "actor-1")
         #expect(sessions.first?.summary == "topic")
         #expect(sessions.first?.participantCount == 3)
+        #expect(sessions.first?.hasUnread == true)
         #expect(messages.map(\.id) == ["message-1", "message-2"])
         #expect(messages.first?.turnID == "turn-1")
         // Full contract round-trip: every field of the OpenAPI Message
@@ -217,6 +218,32 @@ struct CloudAPIRepositoryTests {
         let body = try #require(request.httpBody)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(json["lastReadMessageId"] as? String == "msg-42")
+    }
+
+    /// Ids spliced into a path are escaped as one segment, so a stray `/` or
+    /// `?` cannot redirect the request to another route.
+    @Test
+    func sessionIDsAreEscapedAsOnePathSegment() async throws {
+        let recorder = RequestRecorder()
+        let client = CloudAPIClient(
+            configuration: configuration(),
+            accessToken: { "access-token" },
+            send: { request in
+                await recorder.append(request)
+                let url = URL(string: "https://fc.example.com")!
+                let http = try #require(HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil))
+                return (Data(), http)
+            }
+        )
+        let repo = CloudAPISessionsRepository(client: client)
+        try await repo.markSessionViewed(sessionId: "a/b?c", lastReadMessageId: nil)
+        try await repo.markSessionUnread(sessionId: "a/b?c")
+
+        let urls = await recorder.requests.compactMap { $0.url?.absoluteString }
+        #expect(urls == [
+            "https://fc.example.com/v1/sessions/a%2Fb%3Fc/mark-viewed",
+            "https://fc.example.com/v1/sessions/a%2Fb%3Fc/mark-unread",
+        ])
     }
 
     @Test

@@ -25,27 +25,28 @@ public struct SessionRecord: Equatable, Sendable {
     /// The app this session belongs to (`sessions.app_id`); nil for ordinary
     /// sessions and on servers predating the list column.
     public var appID: String? = nil
+    /// The caller's server-computed unread state (`list_current_actor_sessions`:
+    /// `sessions.last_message_at > session_read_markers.last_read_at`), carried
+    /// on every list page. nil when the source did not report it, in which case
+    /// the local flag is left alone.
+    public var hasUnread: Bool? = nil
 }
 
 public protocol SessionsRepository: Sendable {
-    func listSessions(teamID: String) async throws -> [SessionRecord]
-    /// Returns the `(session_id, has_unread)` map computed server-side by
-    /// `list_current_actor_sessions` (sessions.last_message_at > session_read_markers.last_read_at).
-    /// Used by the inbox red-dot feature to authoritatively know which
-    /// sessions have unseen peer messages without each client tracking the
-    /// state locally.
+    /// Every session of the team, with each row's server-side unread state
+    /// (`SessionRecord.hasUnread`) for the caller.
     ///
     /// `teamID` is required: the server resolves the caller's actor per team
     /// (one actor row per user per team), so an unscoped call has no identity
     /// to compute unread state against.
-    func fetchUnreadFlags(teamID: String, limit: Int) async throws -> [String: Bool]
+    func listSessions(teamID: String) async throws -> [SessionRecord]
     /// Marks the current actor as having viewed `sessionId` up to
     /// `lastReadMessageId`. Server upserts `session_read_markers` so other
-    /// devices' next `fetchUnreadFlags` reflects the read.
+    /// devices' next `listSessions` reflects the read.
     func markSessionViewed(sessionId: String, lastReadMessageId: String?) async throws
     /// Inverse of `markSessionViewed`: rewinds the actor's read marker so
     /// the session surfaces as unread again on every device's next
-    /// `fetchUnreadFlags`. The actor is resolved server-side from the
+    /// `listSessions`. The actor is resolved server-side from the
     /// bearer token — no body.
     func markSessionUnread(sessionId: String) async throws
     /// Renames the session for every participant (`PATCH /v1/sessions/:id`).

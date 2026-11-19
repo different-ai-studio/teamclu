@@ -315,6 +315,47 @@ struct IdeaStoreTests {
         #expect(store.activities(for: "idea-1").map(\.activityType) == ["reorder"])
         #expect(store.activities(for: "idea-1").first?.metadata["position"] == "2")
     }
+
+    @MainActor
+    @Test("status_change is written only by a status edit, never by diffing a stale cache")
+    func statusChangeOnlyFromTheStatusAction() async throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let repository = InMemoryIdeaRepository(
+            ideas: [
+                IdeaRecord(
+                    id: "idea-1",
+                    teamID: "team-1",
+                    workspaceID: "",
+                    createdByActorID: "member-1",
+                    title: "First",
+                    description: "",
+                    status: "open",
+                    archived: false,
+                    sortOrder: 1_000,
+                    createdAt: .distantPast,
+                    updatedAt: .distantPast
+                ),
+            ]
+        )
+        let store = IdeaStore(teamID: "team-1", repository: repository, modelContext: context)
+        await store.reload()
+
+        // Someone else moves it to done; this device's cache still says open.
+        await repository.setStatus(ideaID: "idea-1", status: "done")
+        await store.setArchived(ideaID: "idea-1", archived: true)
+        #expect(await repository.recordedActivityInputs().isEmpty)
+
+        await store.setArchived(ideaID: "idea-1", archived: false)
+        await store.updateIdea(
+            ideaID: "idea-1", title: "First", description: "",
+            status: "in_progress", workspaceID: ""
+        )
+        let inputs = await repository.recordedActivityInputs()
+        #expect(inputs.map(\.activityType) == ["status_change"])
+        #expect(inputs.first?.metadata["from_status"] == "done")
+        #expect(inputs.first?.metadata["to_status"] == "in_progress")
+    }
 }
 
 private actor InMemoryIdeaRepository: IdeaRepository {
@@ -325,6 +366,10 @@ private actor InMemoryIdeaRepository: IdeaRepository {
 
     init(ideas: [IdeaRecord]) {
         self.ideasByID = Dictionary(uniqueKeysWithValues: ideas.map { ($0.id, $0) })
+    }
+
+    func setStatus(ideaID: String, status: String) {
+        ideasByID[ideaID]?.status = status
     }
 
     func remove(id: String) {

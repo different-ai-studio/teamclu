@@ -8,6 +8,7 @@ import { createIdeasApi } from "../../../src/features/ideas/idea-api";
 import type { Idea } from "../../../src/features/ideas/idea-types";
 import { SearchScreen } from "../../../src/features/search/screens/SearchScreen";
 import { createConfiguredSessionsApi } from "../../../src/features/sessions/api-provider";
+import { loadTeamSessionsPreferCache } from "../../../src/features/sessions/session-cache";
 import type { SessionSummary } from "../../../src/features/sessions/session-types";
 import { supabase } from "../../../src/lib/supabase/client";
 import { supabaseAccessToken } from "../../../src/lib/cloud-api/client";
@@ -33,7 +34,7 @@ export default function SearchIndexRoute() {
       const actorsApi = createActorsApi({ getAccessToken: supabaseAccessToken(supabase) });
       try {
         const [nextSessions, nextIdeas, nextActors] = await Promise.all([
-          sessionsApi.listSessions(teamId),
+          loadTeamSessionsPreferCache(teamId, (id) => sessionsApi.listSessions(id)),
           ideasApi.listIdeas(teamId),
           actorsApi.listActors(teamId),
         ]);

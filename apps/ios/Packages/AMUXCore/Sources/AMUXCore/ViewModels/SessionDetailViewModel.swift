@@ -1597,7 +1597,7 @@ public final class SessionDetailViewModel {
         }
 
         // Inbox red-dot clear: local first for instant UI, then the
-        // server upsert so other devices' next fetchUnreadFlags() reflects
+        // server upsert so other devices' next session-list refresh reflects
         // the read. Building the repo on demand avoids plumbing it through
         // every SessionDetailView call site; the SupabaseClient is cheap.
         if let session, session.hasUnread {
@@ -1607,13 +1607,10 @@ public final class SessionDetailViewModel {
         if let sessionId = session?.sessionId {
             Task.detached {
                 guard let config = CloudAPIConfigurationStore.configuration() else { return }
-                let storage = KeychainSessionStorage()
-                let repo = CloudAPIRepositoryFactory.sessionsRepository(configuration: config) {
-                    guard let s = try storage.load(), s.expiresAt.timeIntervalSinceNow > 0 else {
-                        throw CloudAPIError.missingAccessToken
-                    }
-                    return s.accessToken
-                }
+                let repo = CloudAPIRepositoryFactory.sessionsRepository(
+                    configuration: config,
+                    accessToken: CloudAccessToken.provider()
+                )
                 try? await repo.markSessionViewed(sessionId: sessionId, lastReadMessageId: nil)
             }
         }
