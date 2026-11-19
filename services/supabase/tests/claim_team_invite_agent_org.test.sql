@@ -12,11 +12,9 @@
 --      carries the org claim.
 --   5. Agent claim on a team without oid keeps raw_app_meta_data empty.
 --
--- Run via:
---   supabase db reset
---   supabase test db
--- or:
---   pg_prove -d "$DATABASE_URL" services/supabase/tests/claim_team_invite_agent_org.test.sql
+-- Run via (against a database with the migrations applied; see
+-- services/supabase/migrations/README.md):
+--   services/supabase/tests/run.sh claim_team_invite_agent_org.test.sql
 
 begin;
 

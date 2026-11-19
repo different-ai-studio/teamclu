@@ -10,11 +10,9 @@
 --   (g) get_effective_default_agent prefers member default when set
 --   (h) ON DELETE SET NULL: deleting the agent row nulls teams.default_agent_id
 --
--- Run via:
---   supabase db reset
---   supabase test db
--- or:
---   pg_prove -d "$DATABASE_URL" services/supabase/tests/team_default_agent.test.sql
+-- Run via (against a database with the migrations applied; see
+-- services/supabase/migrations/README.md):
+--   services/supabase/tests/run.sh team_default_agent.test.sql
 
 begin;
 

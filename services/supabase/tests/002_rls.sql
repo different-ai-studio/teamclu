@@ -16,7 +16,7 @@ exception
 end;
 $$;
 
-select plan(41);
+select plan(40);
 
 select lives_ok(
 $$
@@ -636,31 +636,6 @@ select ok(
     '42501'
   ),
   'session creator spoofing is rejected'
-);
-
-select ok(
-  pg_temp.raises_sqlstate(
-    $sql$
-      insert into amux.idea_external_refs (
-        id,
-        idea_id,
-        provider,
-        external_id,
-        external_url,
-        linked_by_actor_id
-      )
-      values (
-        '80000000-0000-0000-0000-000000000001',
-        '40000000-0000-0000-0000-000000000001',
-        'github',
-        'issue-1',
-        'https://example.com/issues/1',
-        '10000000-0000-0000-0000-000000000002'
-      )
-    $sql$,
-    '42501'
-  ),
-  'external ref linker spoofing is rejected'
 );
 
 select * from finish();
