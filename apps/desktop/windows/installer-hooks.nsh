@@ -105,11 +105,80 @@ FunctionEnd
   ${EndIf}
 !macroend
 
+; Wait until the sidecar binaries can be opened for writing, killing them again
+; for as long as they cannot.
+;
+; TEAMCLU_STOP_SIDECARS runs once, at the very top of this hook, while the
+; desktop app is still alive — on an update it is only just exiting, and on a
+; manual install it is still running until the template's CheckIfAppIsRunning
+; closes it. An amuxd that comes up after that single taskkill (the app's
+; supervisor healing a daemon it just saw die, or a `git` credential helper
+; that runs `<install dir>\amuxd.exe`) outlives the app, because Windows does
+; not take children down with their parent, and the copy then fails with
+; "Error opening file for writing: ...\amuxd.exe".
+;
+; So probe again after the main binary is free — on an update the app is gone
+; by then and nothing is left to respawn the daemon — and re-kill until the
+; files open. Builds that tie amuxd to a kill-on-close job object (see
+; amuxd_supervisor.rs) should never need more than the first probe; this is
+; also what saves an update *from* a build that does not.
+;
+; Update mode only, like the main-binary wait. On a manual install the app is
+; still running at this point and would just respawn what we kill; there the
+; job object takes amuxd down when CheckIfAppIsRunning closes the app.
+;
+; Same append-mode probe as the main-binary wait, and the same registers
+; ($R7-$R9, nothing the template is known to hold here): re-kill and re-probe
+; every ~500 ms, give up after 25 rounds and let `File` raise its own Retry
+; dialog rather than hang the installer.
+!macro TEAMCLU_WAIT_FOR_WRITABLE_SIDECARS
+  ${If} $UpdateMode = 1
+  StrCpy $R7 0
+  teamclu_sidecars_probe:
+    StrCpy $R9 0
+    ${If} ${FileExists} "$INSTDIR\amuxd.exe"
+      ClearErrors
+      FileOpen $R8 "$INSTDIR\amuxd.exe" a
+      ${If} ${Errors}
+        StrCpy $R9 1
+      ${Else}
+        FileClose $R8
+      ${EndIf}
+    ${EndIf}
+    ${If} ${FileExists} "$INSTDIR\teamclu-introspect.exe"
+      ClearErrors
+      FileOpen $R8 "$INSTDIR\teamclu-introspect.exe" a
+      ${If} ${Errors}
+        StrCpy $R9 1
+      ${Else}
+        FileClose $R8
+      ${EndIf}
+    ${EndIf}
+    ${If} $R9 = 0
+      Goto teamclu_sidecars_done
+    ${EndIf}
+
+    IntOp $R7 $R7 + 1
+    ${If} $R7 > 25
+      Goto teamclu_sidecars_done
+    ${EndIf}
+    nsExec::ExecToLog 'taskkill /F /T /IM amuxd.exe'
+    Pop $R9
+    nsExec::ExecToLog 'taskkill /F /T /IM teamclu-introspect.exe'
+    Pop $R9
+    ; The kernel releases the image mapping a beat after the process is gone.
+    Sleep 400
+    Goto teamclu_sidecars_probe
+  teamclu_sidecars_done:
+  ${EndIf}
+!macroend
+
 ; Inserted exactly once — the labels above are plain, not ${UniqueID}-suffixed,
 ; so a second insertion would fail to compile with a duplicate label.
 !macro NSIS_HOOK_PREINSTALL
   !insertmacro TEAMCLU_STOP_SIDECARS
   !insertmacro TEAMCLU_WAIT_FOR_WRITABLE_MAIN_BINARY
+  !insertmacro TEAMCLU_WAIT_FOR_WRITABLE_SIDECARS
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

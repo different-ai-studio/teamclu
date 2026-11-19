@@ -350,6 +350,87 @@ fn pid_alive(_pid: i32) -> bool {
     false
 }
 
+/// Tie the managed amuxd's lifetime to this process on Windows.
+///
+/// Windows does not kill a child when its parent dies, and amuxd is spawned
+/// `kill_on_drop(false)`. So whenever the desktop goes away without running its
+/// own stop — the NSIS template's `CheckIfAppIsRunning` killing it during an
+/// update, a crash, Task Manager — amuxd (and its pi/node children) lives on,
+/// still mapping `<install dir>\amuxd.exe`, and the installer then fails with
+/// "Error opening file for writing: ...\amuxd.exe". The PREINSTALL hook's
+/// taskkill cannot cover that alone: it runs *before* the template closes the
+/// app, and an amuxd started in between survives it.
+///
+/// One job per desktop process, created lazily and never closed: its handle
+/// dies with the process, and `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` then kills
+/// every process in it. amuxd's own children inherit the job. Only amuxd is
+/// assigned — never the desktop itself, or everything it launches (the update
+/// installer included) would die with it. `BREAKAWAY_OK` leaves a way out for
+/// a child that is spawned with `CREATE_BREAKAWAY_FROM_JOB` on purpose.
+#[cfg(windows)]
+mod kill_on_exit_job {
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    /// The job handle as an integer so it can sit in a static; 0 = creation
+    /// failed (logged once), in which case assignment is skipped.
+    static JOB: OnceLock<usize> = OnceLock::new();
+
+    fn job() -> Option<HANDLE> {
+        let raw = *JOB.get_or_init(|| unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                log::warn!(
+                    "[amuxd-supervisor] CreateJobObjectW failed: {}",
+                    std::io::Error::last_os_error()
+                );
+                return 0;
+            }
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 {
+                log::warn!(
+                    "[amuxd-supervisor] SetInformationJobObject failed: {}",
+                    std::io::Error::last_os_error()
+                );
+                CloseHandle(job);
+                return 0;
+            }
+            job as usize
+        });
+        (raw != 0).then_some(raw as HANDLE)
+    }
+
+    /// Best-effort: a failure leaves amuxd exactly as before (outliving a
+    /// killed desktop), with the installer hook's taskkill as the backstop.
+    pub(super) fn assign(child: &tokio::process::Child) {
+        let Some(job) = job() else { return };
+        let Some(process) = child.raw_handle() else {
+            return;
+        };
+        let ok = unsafe { AssignProcessToJobObject(job, process as HANDLE) };
+        if ok == 0 {
+            log::warn!(
+                "[amuxd-supervisor] AssignProcessToJobObject failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
+
 async fn wait_for_amuxd_stopped(timeout: Duration) -> Result<(), String> {
     let start = std::time::Instant::now();
     while amuxd_pid_is_running() {
@@ -866,6 +947,9 @@ impl AmuxdSupervisor {
         let child = cmd
             .spawn()
             .map_err(|e| format!("spawn bundled amuxd start: {e}"))?;
+        // Before amuxd gets far enough to start pi hosts, so they inherit the job.
+        #[cfg(windows)]
+        kill_on_exit_job::assign(&child);
         inner.child = Some(child);
         // Release lifecycle lock during health wait so Cmd+Q is not blocked
         // behind HEALTH_TIMEOUT. app_exiting aborts the wait.
