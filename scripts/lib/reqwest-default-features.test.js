@@ -9,8 +9,7 @@
 // reqwest then defaults Client::new() to native-tls instead of rustls — the
 // beta.63 /v1/auth/refresh breakage. scripts/verify-reqwest-rustls.sh gates
 // the resolved unified graph in CI and before every release build; this test
-// guards the manifests themselves, including crates no gate resolves today
-// (autoui-mcp builds standalone).
+// guards the manifests themselves, including crates no gate resolves today.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
