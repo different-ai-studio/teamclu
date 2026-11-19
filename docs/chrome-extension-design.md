@@ -368,7 +368,7 @@ token，不碰 daemon root token。首登在 side panel 页面内完成；token 
 4. **build:web 跳过 `tsc -b`**：浏览器构建无 TS 类型门（仓库 `pnpm typecheck` 仍覆盖）。
 5. **`host_permissions` 收紧**：manifest 仅 `activeTab`+`scripting`，抓取依赖用户在工具栏
    动作后的手势授权。若将来加「自动抓取」（无手势），需补 `host_permissions`，否则注入失败。
-6. **正式图标**：当前从 `scripts/playwright-extension/icons/` 借用，待替换为 TeamClu 图标。
+6. **正式图标**：`apps/extension/icons/` 里是从已删除的 Playwright 扩展借来的占位图标，待替换为 TeamClu 图标。
 
 ---
 
