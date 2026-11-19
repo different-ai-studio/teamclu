@@ -78,12 +78,7 @@ import {
   resolveVoiceSendAgent,
   type VoiceSendIntent,
 } from "@/lib/messages/voice-send-intent";
-function parseSlashToken(body: string): { type: "role" | "skill" | "command"; name: string } {
-  if (body.startsWith("role:")) return { type: "role", name: body.slice("role:".length) };
-  if (body.startsWith("skill:")) return { type: "skill", name: body.slice("skill:".length) };
-  if (body.startsWith("command:")) return { type: "command", name: body.slice("command:".length) };
-  return { type: "skill", name: body };
-}
+import { parseSlashToken } from "@/lib/messages/slash-token";
 
 interface ChatSendDeps {
   t: ReturnType<typeof useTranslation>["t"];

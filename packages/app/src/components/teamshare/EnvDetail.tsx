@@ -9,6 +9,7 @@ import { useDeviceIdentityStore } from '@/stores/device-identity'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
 import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
+import { isTeamSecretMissingError } from '@/lib/team/team-secret-error'
 
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -34,15 +35,6 @@ const KEY_ID_RE = /^[a-z0-9_]{1,64}$/
 const PERSONAL_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /** Match SharedSecretsState init failures — keep keywords aligned with EnvVarsSection. */
-function isTeamSecretMissingError(message: string): boolean {
-  return (
-    message.includes('not initialized') ||
-    message.includes('Missing team encryption key') ||
-    message.includes('No team configured') ||
-    message.includes('derived_key not set')
-  )
-}
-
 function toastSaveError(
   t: (key: string, fallback: string, options?: Record<string, string>) => string,
   err: unknown,

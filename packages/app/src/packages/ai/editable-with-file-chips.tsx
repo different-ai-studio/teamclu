@@ -14,13 +14,7 @@ import { COMPOSER_CHIP_SELECTOR, isComposerChipElement } from "./chip-classes"
 import { caretAfterReplacement, COMPOSER_UNDO_ECHO_MS, ComposerHistory, composerEditKind, composerHistoryCommand, type ComposerEditKind } from "./composer-history"
 import { getTrailingPathLabel } from "./chip-labels"
 import { setCursorAtPosition } from "./prompt-input-insert-hooks"
-
-function parseSlashToken(body: string): { type: 'role' | 'skill' | 'command'; name: string } {
-  if (body.startsWith('role:')) return { type: 'role', name: body.slice('role:'.length) }
-  if (body.startsWith('skill:')) return { type: 'skill', name: body.slice('skill:'.length) }
-  if (body.startsWith('command:')) return { type: 'command', name: body.slice('command:'.length) }
-  return { type: 'skill', name: body }
-}
+import { parseSlashToken } from "@/lib/messages/slash-token"
 
 const COMPOSER_CHIP_BASE =
   "composer-chip inline-flex items-center gap-1 h-[22px] pl-[9px] pr-[9px] mx-0.5 rounded-md text-xs font-medium leading-none align-middle whitespace-nowrap"

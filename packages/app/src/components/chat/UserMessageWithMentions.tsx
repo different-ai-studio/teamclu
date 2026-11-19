@@ -12,6 +12,7 @@ import type { PageContext } from "@/lib/embed/embed-page-context";
 import { parseChatTarget } from "@/lib/messages/chat-open-target";
 import { linkifyChatTargets } from "@/lib/messages/linkify-http";
 import { openChatAttachment } from "@/lib/messages/open-chat-file";
+import { parseSlashToken } from "@/lib/messages/slash-token";
 
 /** Max pixel height before the message is collapsed */
 const COLLAPSED_HEIGHT = 200;
@@ -214,13 +215,6 @@ function renderUserMessageImage(
       alt={part.content}
     />
   );
-}
-
-function parseSlashToken(body: string): { type: "role" | "skill" | "command"; name: string } {
-  if (body.startsWith("role:")) return { type: "role", name: body.slice("role:".length) };
-  if (body.startsWith("skill:")) return { type: "skill", name: body.slice("skill:".length) };
-  if (body.startsWith("command:")) return { type: "command", name: body.slice("command:".length) };
-  return { type: "skill", name: body };
 }
 
 function stripChipMetadata(content: string): string {

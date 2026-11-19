@@ -48,23 +48,11 @@ import {
 } from '@/components/ui/alert-dialog'
 import { toast } from 'sonner'
 import { SectionHeader, SettingCard } from './shared'
+import { formatRelative } from './format-relative'
 import { DaemonManualResetCard } from './DaemonManualResetCard'
 import { TeamSecretEntry } from './team/TeamSecretEntry'
 
 const permissionLevels: AgentPermissionLevel[] = ['view', 'prompt', 'admin']
-
-function formatRelative(value: string | null): string {
-  if (!value) return '-'
-  const time = new Date(value).getTime()
-  if (!Number.isFinite(time)) return value
-  const diff = Date.now() - time
-  if (diff < 60_000) return 'just now'
-  const minutes = Math.floor(diff / 60_000)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
-}
 
 export function DaemonGeneralSection() {
   const gate = useLocalAgentSectionGate()

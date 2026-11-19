@@ -14,17 +14,11 @@ import {
 } from "@/lib/session/thread-summary";
 import { rememberThreadForkMetadata } from "@/lib/session/thread-fork-metadata";
 import type { Message as ProtoMessage } from "@/lib/proto/teamclu_pb";
+import { anchorPreviewText } from "./anchor-preview-text";
 
 const EMPTY_PROTO_MESSAGES: ProtoMessage[] = [];
 const THREAD_PANEL_WIDTH_PX = 380;
 const THREAD_PANEL_MS = 300;
-
-function anchorPreviewText(content: string): string {
-  const collapsed = content.replace(/\s+/g, " ").trim();
-  if (!collapsed) return "";
-  if (collapsed.length <= 120) return collapsed;
-  return `${collapsed.slice(0, 120)}…`;
-}
 
 export function ThreadListPanel({ parentSessionId }: { parentSessionId: string }) {
   const { t } = useTranslation();
@@ -160,7 +154,7 @@ export function ThreadListPanel({ parentSessionId }: { parentSessionId: string }
               const anchor = messagesById.get(summary.rootMessageId) ?? null;
               const title =
                 threadTitleFromMessage(anchor) || t("thread.defaultTitle");
-              const preview = anchorPreviewText(anchor?.content ?? "");
+              const preview = anchorPreviewText(anchor?.content ?? "", 120);
               const lastReply = summary.lastMessageAt
                 ? formatThreadRelativeTime(summary.lastMessageAt, t)
                 : "";

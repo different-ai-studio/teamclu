@@ -27,6 +27,7 @@ import { AppDeployActions } from './AppDeployActions'
 import { AppLocalPathRow } from './AppLocalPathRow'
 import { AppGitUrlRow, appGitCloneUrl } from './AppGitUrlRow'
 import type { AppGitHead, AppRow } from '@/lib/backend/types'
+import { formatBytes } from '@/lib/ui/format-bytes'
 
 /**
  * A flat group of related settings.
@@ -179,19 +180,6 @@ export function describeCodeVersion(
 }
 
 /** Bytes for humans. Deliberately not a dependency; three lines. */
-function formatBytes(n: number | null | undefined): string | null {
-  if (n == null) return null
-  if (n < 1024) return `${n} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let v = n / 1024
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i += 1
-  }
-  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`
-}
-
 interface Summary {
   members: number | null
   // `first` rides along so opening the browser does not re-ask the server which
