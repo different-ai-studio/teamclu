@@ -53,9 +53,7 @@ function buildMqttConfig() {
   if (!url) return null;
   const mqtt: any = { url };
   // Optional raw-TCP address for clients whose MQTT stack can't do WebSocket
-  // (rumqttc on desktop/daemon, CocoaMQTT on iOS). The all-in-one self-host
-  // image multiplexes raw MQTT onto its single public port via Caddy layer4
-  // and sets MQTT_PUBLIC_TCP_BROKER_URL accordingly.
+  // (rumqttc on desktop/daemon, CocoaMQTT on iOS).
   const tcpUrl = envValue("MQTT_PUBLIC_TCP_BROKER_URL");
   if (tcpUrl) mqtt.tcpUrl = tcpUrl;
   const useTls = parseBool(process.env.MQTT_USE_TLS);

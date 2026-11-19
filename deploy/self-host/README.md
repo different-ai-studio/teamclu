@@ -840,7 +840,3 @@ All variables live in `.env` (copied from `.env.example`).
 | `APPS_FC_ENDPOINT` / `ALIYUN_ACCOUNT_ID` | for apps | Account-scoped FC 3.0 data-plane host (`<accountId>.<region>.fc.aliyuncs.com`). Not the OSS `ENDPOINT`; set one of the two |
 | `OPENAI_API_KEY` | no | 上游 provider key；供 `ai/catalog.yaml` 引用。可用逗号分隔填多个，网关在某个 key 没额度时自动换下一个 |
 | `ANTHROPIC_API_KEY` | no | 同上 |
-
-## Single-image platform mode
-
-If your platform allows only one Docker image and one exposed port, use the experimental all-in-one target in `deploy/self-host/all-in-one/`. It keeps the Compose deployment unchanged and routes Cloud API, auth, storage, realtime, and MQTT-over-WebSocket through one HTTP entrypoint.

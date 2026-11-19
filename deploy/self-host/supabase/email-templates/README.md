@@ -16,8 +16,5 @@ Constraints, all of them learned the hard way:
 - **"10 分钟内有效" is copy, not behaviour.** The real window is
   `GOTRUE_MAILER_OTP_EXP` in `../docker-compose.yml` (600s; GoTrue's own
   default is 86400). Change one and change the other.
-- **The all-in-one image copies this directory too**
-  (`../../all-in-one/Dockerfile`, `COPY … /opt/teamclu/email-templates`), so
-  edits here reach that build as well.
 
 The subject lines live next to the template URLs in `../docker-compose.yml`.
