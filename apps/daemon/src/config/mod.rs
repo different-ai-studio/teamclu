@@ -6,7 +6,6 @@ pub mod global_team_store;
 pub mod knowledge_templates;
 pub mod layout;
 mod managed_skill_writer;
-mod member_store;
 mod model_catalog;
 mod model_resolution;
 pub mod provider_auth;
@@ -34,7 +33,6 @@ pub use managed_skill_writer::{
     create_pack, get_pack, pack_digest, update_pack, ClaimedTeamContext, CreatePackRequest,
     ManageSkillResponse, ManagedSkillError, ManagedSkillErrorCode, UpdatePackRequest,
 };
-pub use member_store::{MemberStore, PendingInvite, StoredMember};
 pub use model_catalog::DeviceModelCatalog;
 pub use model_resolution::first_available;
 pub use roles_skills::{

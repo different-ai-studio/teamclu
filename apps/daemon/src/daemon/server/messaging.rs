@@ -1055,9 +1055,7 @@ impl DaemonServer {
             }
         }
 
-        let sender_display = self
-            .display_name_for_actor(&message.sender_actor_id)
-            .unwrap_or_else(|| message.sender_actor_id.chars().take(8).collect());
+        let sender_display: String = message.sender_actor_id.chars().take(8).collect();
 
         // @-ing the person on the other end of a gateway chat sends them the
         // message. Runs before runtime routing because it is independent of
@@ -1465,18 +1463,6 @@ impl DaemonServer {
             ),
             Err(e) => warn!(session_id, channel, error = %e, "external mention: push failed"),
         }
-    }
-
-    /// Look up a display name for an actor_id from the in-memory peer tracker.
-    /// Returns `None` if the actor is unknown; the caller falls back to the
-    /// first 8 chars of the actor_id.
-    pub(crate) fn display_name_for_actor(&self, actor_id: &str) -> Option<String> {
-        // PeerTracker is keyed by peer_id (session-scoped), not actor_id.
-        // Search linearly for a matching member_id / peer entry.
-        // If no match is found, return None and let the caller use the fallback.
-        self.peers
-            .get_peer(actor_id)
-            .map(|p| p.display_name.clone())
     }
 
     /// Single sink for agent-originated envelopes. Fans out to

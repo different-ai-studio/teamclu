@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::backend::{credential_in_proactive_refresh_window, Backend, WorkspaceUpsert};
 use crate::channels::{AmuxdAgentHandle, AmuxdChannelStore, ChannelManager};
-use crate::collab::{AuthManager, AuthResult, PeerState, PeerTracker, PermissionManager};
+use crate::collab::PermissionManager;
 use crate::config::{DaemonConfig, SessionStore};
 // Test-only: the fixtures below build bindings directly. Ungated it warns in
 // the bin build, which does not compile them.
@@ -157,8 +157,6 @@ pub struct DaemonServer {
     /// `publisher_handle` during connect/reconnect.
     topics: crate::mqtt::Topics,
     agents: Arc<AsyncMutex<RuntimeManager>>,
-    auth: AuthManager,
-    peers: PeerTracker,
     permissions: PermissionManager,
     /// Cloud-backed workspace UUID -> {path, team_id} cache. Consumed by
     /// `apply_start_runtime` to resolve `workspace_id` to a filesystem path.
@@ -615,12 +613,9 @@ impl DaemonServer {
             AgentLaunchConfig::new("pi", Vec::new(), "pi"),
         )]);
 
-        // Team-scoped, all three: a member list, a runtime index and an event
-        // history all describe one team's work and follow it when it changes.
+        // Team-scoped, both: a runtime index and an event history describe one
+        // team's work and follow it when it changes.
         let state_dir = crate::config::layout::active_state_dir();
-        let members_path = state_dir.join("members.toml");
-        let auth = AuthManager::new(members_path)?;
-        let peers = PeerTracker::new();
         let permissions = PermissionManager::new();
 
         let workspace_resolver = Arc::new(crate::config::WorkspaceResolver::new(backend.clone()));
@@ -704,8 +699,6 @@ impl DaemonServer {
             publisher_handle,
             topics,
             agents,
-            auth,
-            peers,
             permissions,
             workspace_resolver,
             sync_dispatcher: crate::sync::dispatch::SyncDispatcher::new(
@@ -3383,8 +3376,6 @@ pub(crate) mod tests {
                 publisher_handle: publisher_handle.clone(),
                 topics,
                 agents: Arc::new(AsyncMutex::new(agents)),
-                auth: AuthManager::new(tmp.path().join("members.toml")).unwrap(),
-                peers: PeerTracker::new(),
                 permissions: PermissionManager::new(),
                 workspace_resolver,
                 sync_dispatcher: crate::sync::dispatch::SyncDispatcher::new(
