@@ -50,8 +50,8 @@ cd teamclu
 ### For Frontend Contributors
 
 **Prerequisites:**
-- Node.js >= 20
-- pnpm >= 10
+- Node.js >= 24 (`engines` in `package.json`)
+- pnpm 11 (pinned by `packageManager` in `package.json`; `corepack enable` picks it up)
 
 ```bash
 # 1. Clone and install
@@ -66,7 +66,7 @@ pnpm dev
 ### For Full Stack Contributors
 
 **Additional Prerequisites:**
-- Rust >= 1.70
+- Rust 1.97.1 (pinned by `rust-toolchain.toml`; rustup installs it on first build)
 
 ```bash
 # Setup development environment

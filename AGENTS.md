@@ -15,7 +15,7 @@ inside each card.
 
 It came from the Claude Design handoff at
 `https://api.anthropic.com/v1/design/h/OLWqffBkDMYRHp_p7cFRNg` (Direction B).
-The local prototype copy lives in `/tmp/design-OLWqff/` when fetched.
+The prototype is not checked in; fetch it from that handoff URL if you need it.
 
 > **Git note:** Work on a task-scoped branch, never on `main`, and never push
 > to `main` directly. See `CLAUDE.md` → Git Workflow for the full rule. If
@@ -64,7 +64,7 @@ Approved locations:
 - Primary send button (chat input)
 - Small "AI" pill border, when used in a row of mixed actors
 - AI-avatar ring + tiny indicator dot (lobster mark on agent rows)
-- Permission popover border / pill (when re-introduced)
+- Permission popover border / pill (prototype shape; the live `PermissionApprovalPanel` is not this popover)
 
 If you find yourself reaching for coral for anything else (success state,
 focus ring, link, hover), use ink/muted/border instead.
@@ -189,9 +189,12 @@ bottom).
 
 ## 3. Message types
 
-There are three kinds of message rows. **Thinking and Permission Request
-are currently disabled** — the user removed them. The components stay in
-the codebase for future revival, but no live thread renders them.
+There are three kinds of message rows below. Two more surfaces also render
+in a live session: the agent's reasoning, as a collapsed `ThinkingBlock`
+inside the agent reply (`chat/ThinkingBlock.tsx`, used by `ChatMessage` and
+`StreamingAgentBubble`), and permission requests, as
+`PermissionApprovalPanel` docked above the composer (`chat/ComposerStack.tsx`).
+Neither follows the prototype's `BThinking` / `BPermissionPopover` shapes.
 
 ### User message
 
@@ -333,12 +336,14 @@ agent default workspace) — one at a time, each argued on its own.
 ### `packages/app/src/lib` layout
 
 `lib/` is one directory per domain. Put a new module in the domain it belongs
-to; only genuinely domain-free primitives live at `lib/` root, and there are
-seven of them (`utils`, `store-utils`, `base64`, `lazy-component`,
-`shared-module-lease`, `i18n`, `locale`). If a new file seems to have no
+to; only genuinely domain-free primitives live at `lib/` root: `utils`,
+`store-utils`, `base64`, `lazy-component`, `shared-module-lease`, `i18n`,
+`locale`, `file-name`, `fs-path`, `fs-scope`, `network-error`, `platform`,
+`platform-labels`, `platform-shortcuts`. If a new file seems to have no
 domain, that is usually a sign it is doing two things.
 
     actor/        who is speaking — identity, colours, presence, mentions
+    admin/        platform-operator / admin console calls
     agent/        agent identity, model choice, runtime reachability and state
     apps/         the Apps feature (deploy, data browser, app sessions)
     attachments/  upload, download, image handling
@@ -359,7 +364,6 @@ domain, that is usually a sign it is doing two things.
     knowledge/    knowledge tree, wiki links, Obsidian compatibility
     messages/     message rows, inbox, outbox display, send-path selection
     mqtt/         broker bridges (Tauri / browser / worker) and diagnostics
-    opencode/     opencode config + templates
     proto/        generated protobuf
     remote-tools/ tools an agent can drive in the user's browser
     roles/        role markdown + role skills
@@ -373,6 +377,8 @@ domain, that is usually a sign it is doing two things.
     teamclu/      agent runtime protocol (ACP permissions, runtime commands)
     telemetry/    Sentry, scoring, usage, startup timing
     ui/           presentation helpers with no domain of their own
+    updater/      cross-window busy signal for the auto-restart update mode
+    voice/        voice input
     workspace/    workspace paths, gitignore, desktop file reads
     workspace-seed/  first-run workspace instructions
 
@@ -402,21 +408,21 @@ everything else lives in its domain's own `__tests__/`.
 
 The API contract is defined in `docs/openapi/teamclu-api.v1.yaml`. All business data operations must go through the TeamClu Cloud API (`/v1`) rather than direct Supabase client calls.
 
-The Cloud API facade (`services/fc/lib/business-api.mjs`) is the canonical entry point for teams, sessions, messages, and invite operations. Clients (Tauri, Expo, iOS, daemon) should use their respective Cloud API providers:
+The Cloud API is a Hono app (`services/fc/src/app.ts`); its `/v1` routes are registered from `services/fc/src/lib/routes/*.ts` (`routes/index.ts` lists them). `services/fc/src/lib/business-api.ts` is only a test bridge that feeds synthetic events into that same app. Clients (Tauri, Expo, iOS, daemon) should use their respective Cloud API providers:
 
-- **Web/Desktop** (`packages/app/`): `CloudApiProvider` in `packages/app/src/lib/backend/provider.ts`
+- **Web/Desktop** (`packages/app/`): `getBackend()` (a `TeamCluBackend`) in `packages/app/src/lib/backend/provider.ts`, implemented under `packages/app/src/lib/backend/cloud-api/`
 - **Expo** (`apps/expo/`): `createCloudSessionsApi` in `apps/expo/src/features/sessions/cloud-api.ts`
 - **iOS** (`apps/ios/`): `CloudAPIClient` / `CloudAPIRepositories` in `apps/ios/Packages/AMUXCore/Sources/AMUXCore/CloudAPI/`
-- **daemon** (`apps/daemon/`): `cloud_api` backend module in `apps/daemon/src/backend/cloud_api.rs`
+- **daemon** (`apps/daemon/`): `cloud_api` backend module in `apps/daemon/src/backend/cloud_api/`
 
-Direct Supabase client usage (e.g. `supabase.from('sessions').select()`) is **reserved for internal FC repository implementation only** (`services/fc/lib/supabase-repo.mjs`). The FC facade forwards caller bearer tokens to Supabase, preserving RLS and auth semantics. The deprecated `supabase` backend kind in client config files is a legacy fallback — do not use it for new deployments.
+Direct Supabase client usage (e.g. `supabase.from('sessions').select()`) is **reserved for internal FC repository implementation only** (`services/fc/src/lib/supabase-repo.ts` and `services/fc/src/lib/supabase-repo/`). The FC facade forwards caller bearer tokens to Supabase, preserving RLS and auth semantics.
 
 **When adding new business endpoints:**
 
 1. Define the endpoint in `docs/openapi/teamclu-api.v1.yaml` first.
-2. Implement the repository contract in `services/fc/lib/repository-contract.mjs`.
-3. Add the route handler in `services/fc/lib/business-api.mjs`.
-4. Implement the Supabase passthrough in `services/fc/lib/supabase-repo.mjs`.
+2. Add the behaviour to the repository contract in `services/fc/src/lib/repository-contract.ts`.
+3. Add the route handler in the matching `services/fc/src/lib/routes/<area>.ts` (register a new file in `routes/index.ts`).
+4. Implement the Supabase passthrough in `services/fc/src/lib/supabase-repo.ts` (or its `supabase-repo/` modules).
 5. Add tests in `services/fc/test/` (route, repository, contract).
 6. Wire the endpoint into client Cloud API providers.
 
@@ -426,17 +432,13 @@ Do not bypass the Cloud API and call Supabase directly from client code. The fac
 
 ## 8. Out-of-scope (yet)
 
-These were prototyped but explicitly removed by the user. Keep the code
-paths in place but do not render them in the main thread:
+The prototype's **Thinking** block (italic, dashed-side-bar reasoning summary)
+and **Permission request** popover anchored to the input bar (Codex-style) —
+`BThinking` / `BPermissionPopover` in the Direction B handoff — were not
+adopted as drawn. Reasoning and permission requests do render today, in the
+shapes described in §3.
 
-- **Thinking** block (italic, dashed-side-bar reasoning summary).
-- **Permission request** popover anchored to the input bar (Codex-style).
-
-When the time comes to re-introduce these, follow the prototype shapes in
-`/tmp/design-OLWqff/teamclu-v2/project/direction-b.jsx` —
-`BThinking` and `BPermissionPopover`.
-
-Also future work, listed here so the team has it:
+Future work, listed here so the team has it:
 
 - **Unread count badge** on the conversation card. The local schema does
   not track read state today (no `last_viewed_at` / `read_marker` column;
