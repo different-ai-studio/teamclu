@@ -1810,6 +1810,10 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async setLlmConfig(teamId, input) {
+      // Every agent in the team sends its prompts to this baseUrl, so only an
+      // owner or admin may change it. The table's write policies say the same
+      // (20261119130000); this check answers 403 instead of an RLS error.
+      await this.requireTeamAdmin(teamId);
       const { error } = await supabase
         .from("team_workspace_config")
         .upsert(
