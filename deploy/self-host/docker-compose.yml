@@ -888,13 +888,9 @@ services:
     logging: *default-logging
   rest:
     logging: *default-logging
-  realtime:
-    logging: *default-logging
   imgproxy:
     logging: *default-logging
   meta:
-    logging: *default-logging
-  functions:
     logging: *default-logging
   analytics:
     logging: *default-logging

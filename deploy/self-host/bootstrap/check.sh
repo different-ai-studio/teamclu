@@ -232,7 +232,6 @@ fi
 
 echo ""
 echo "[Optional — non-blocking for local dev]"
-check_optional realtime-dev.supabase-realtime "realtime"
 check_optional supabase-pooler "pooler (supavisor)"
 check_optional supabase-analytics "analytics (logflare)"
 

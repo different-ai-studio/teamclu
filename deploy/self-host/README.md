@@ -437,7 +437,6 @@ docker volume rm teamclaw-self-host_caddy_config   # 保留 caddy_data 可留证
 | `db` | `supabase/postgres` | Postgres 15 (Supabase fork); data volume `db_data` |
 | `auth` | `supabase/gotrue` | GoTrue JWT auth service |
 | `rest` | `postgrest/postgrest` | PostgREST — REST layer over Postgres |
-| `realtime` | `supabase/realtime` | WebSocket broadcast + presence |
 | `storage` | `supabase/storage-api` | File storage API |
 | `imgproxy` | `darthsim/imgproxy` | On-the-fly image transforms for storage |
 | `meta` | `supabase/postgres-meta` | Postgres metadata REST API |
