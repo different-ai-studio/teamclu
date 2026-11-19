@@ -74,3 +74,12 @@ test("withAutoSyncDisabled replaces any existing [team_share] table", () => {
   assert.match(out, /display_name = "node-a"/);
   assert.match(out, /\[channels\]/);
 });
+
+test("isTransientSyncFailure retries a transient HTTP 500 from the daemon", async () => {
+  const { isTransientSyncFailure } = await import("../harness/daemon-client.mjs");
+  assert.equal(isTransientSyncFailure({ status: 500, body: '{"error":"429 Too Many Requests"}' }), true);
+  assert.equal(isTransientSyncFailure({ status: 500, body: '{"error":"manifest mismatch"}' }), false);
+  assert.equal(isTransientSyncFailure({ status: 400, body: "timeout" }), false);
+  assert.equal(isTransientSyncFailure({ lastError: "error sending request" }), true);
+  assert.equal(isTransientSyncFailure({ lastError: "" }), false);
+});

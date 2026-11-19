@@ -1,0 +1,96 @@
+name: OSS sync E2E
+
+# Multi-node team-sync E2E (apps/daemon/e2e/oss-sync): builds amuxd into a
+# Linux image, joins 2–3 containers to a fresh team on a live Cloud API, and
+# checks convergence and conflict handling. It writes real teams on the
+# target, so it runs nightly and on demand, never on PRs.
+#
+# Secrets (repository or environment):
+#   OSS_E2E_OWNER_EMAIL / OSS_E2E_OWNER_PASSWORD — a password account on the
+#     target that may create teams. Each scenario signs in as it and creates
+#     its own team (teams are not deleted afterwards; see the suite README).
+# Variables (optional):
+#   OSS_E2E_CLOUD_API_URL — default target when no input is given.
+
+on:
+  schedule:
+    - cron: "30 17 * * *" # 01:30 Asia/Shanghai, after the 00:00 self-host deploy
+  workflow_dispatch:
+    inputs:
+      cloud_api_url:
+        description: Cloud API base URL (blank = OSS_E2E_CLOUD_API_URL or the self-host box)
+        required: false
+        default: ""
+      run_heavy:
+        description: Also run the heavy scenarios (10–13)
+        type: boolean
+        default: false
+      run_three_node:
+        description: Also run the three-node scenarios (09, 16)
+        type: boolean
+        default: false
+
+concurrency:
+  group: oss-e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/daemon/e2e/oss-sync
+    env:
+      CLOUD_API_URL: ${{ inputs.cloud_api_url || vars.OSS_E2E_CLOUD_API_URL || 'https://api.teamclu-dev.ucar.cc' }}
+      OSS_E2E_OWNER_EMAIL: ${{ secrets.OSS_E2E_OWNER_EMAIL }}
+      OSS_E2E_OWNER_PASSWORD: ${{ secrets.OSS_E2E_OWNER_PASSWORD }}
+      RUN_HEAVY: ${{ inputs.run_heavy && '1' || '0' }}
+      RUN_THREE_NODE: ${{ inputs.run_three_node && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - name: Require the owner account
+        run: |
+          if [ -z "$OSS_E2E_OWNER_EMAIL" ] || [ -z "$OSS_E2E_OWNER_PASSWORD" ]; then
+            echo "::error::OSS_E2E_OWNER_EMAIL / OSS_E2E_OWNER_PASSWORD are not set"
+            exit 1
+          fi
+
+      - name: Unit tests (no Docker, no network)
+        run: node --test 'tests/unit-*.test.mjs'
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Same tag docker-compose.yml expects, loaded into the local daemon so
+      # `docker compose up` reuses it instead of rebuilding.
+      - name: Build the amuxd image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/daemon/e2e/oss-sync/Dockerfile.amuxd
+          tags: amuxd-oss-e2e:latest
+          load: true
+          cache-from: type=gha,scope=oss-e2e-amuxd
+          cache-to: type=gha,scope=oss-e2e-amuxd,mode=max
+
+      # Serial: every scenario hits the same shared Cloud API.
+      - name: Scenarios
+        run: node --test --test-concurrency=1 'tests/[0-9][0-9]-*.test.mjs'
+
+      - name: Container logs on failure
+        if: failure()
+        run: |
+          docker ps -a
+          for c in $(docker ps -aq --filter "name=amuxd-oss-e2e"); do
+            echo "::group::$(docker inspect -f '{{.Name}}' "$c")"
+            docker exec "$c" sh -c 'tail -n 200 /root/amuxd.log 2>/dev/null' || true
+            echo "::endgroup::"
+          done
