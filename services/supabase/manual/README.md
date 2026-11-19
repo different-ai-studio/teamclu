@@ -23,6 +23,7 @@ of a procedure, not as a record of state.
 | `agent_account_public_email_backfill.sql` | Copies each agent account's login email into its blank `public.users.email` (rows minted before `20261009000000_agent_account_public_email.sql`). |
 | `member_identity_public_email_precheck.sql` | Read-only. Lists the staff-grade (`admin_type >= 2`) member identities whose `public.users.email` is blank and the email the backfill would write (from `email_users_links`, else the account's own real login email). |
 | `member_identity_public_email_backfill.sql` | Fills those rows (identities minted before `20261009010000_member_identity_public_email.sql`). Customers (`admin_type 1`) and phone users are not touched. |
+| `drop_idea_external_refs_precheck.sql` | Read-only. Run on self-host and belayo before `20261119000100_drop_idea_external_refs.sql`: row count, what the rows are, outside dependents, owner. The migration refuses to drop a non-empty table. |
 
 ## Running one
 
