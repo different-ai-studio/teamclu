@@ -6,9 +6,6 @@ const mockShortcuts = vi.hoisted(() => ({
   updateShortcut: vi.fn(),
   deleteShortcut: vi.fn(),
   batchMove: vi.fn(),
-  setVisibleRoles: vi.fn(),
-  listTeamRoles: vi.fn(),
-  listShortcutRoleBindings: vi.fn(),
 }))
 
 vi.mock('@/lib/backend', () => ({
@@ -18,7 +15,6 @@ vi.mock('@/lib/backend', () => ({
 import {
   rpcShortcutCreate,
   rpcShortcutBatchMove,
-  rpcShortcutSetVisibleRoles,
   selectShortcuts,
   ShortcutsRpcError,
 } from '@/lib/daemon/shortcuts-rpc'
@@ -80,17 +76,6 @@ describe('rpcShortcutBatchMove', () => {
         { id: 'a', parent_id: null, order: 0 },
         { id: 'b', parent_id: 'a',  order: 1 },
       ],
-    })
-  })
-})
-
-describe('rpcShortcutSetVisibleRoles', () => {
-  it('forwards shortcut_id and role_ids', async () => {
-    mockShortcuts.setVisibleRoles.mockResolvedValue(undefined)
-    await rpcShortcutSetVisibleRoles('shortcut-uuid', ['role-1', 'role-2'])
-    expect(mockShortcuts.setVisibleRoles).toHaveBeenCalledWith({
-      p_shortcut_id: 'shortcut-uuid',
-      p_role_ids: ['role-1', 'role-2'],
     })
   })
 })

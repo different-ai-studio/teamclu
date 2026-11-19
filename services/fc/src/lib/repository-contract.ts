@@ -595,7 +595,6 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     assert.ok(result.length >= 1, "contract fixture must include at least one shortcut");
     const shortcut = result[0];
     // snake_case row — consumed directly by the desktop client's ShortcutRow.
-    // Role visibility is a separate endpoint (listShortcutRoleBindings).
     assert.deepEqual(Object.keys(shortcut).sort(), [
       "created_at",
       "icon",
@@ -645,20 +644,6 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
         { shortcutId: "shortcut-1", parentId: null, position: 0 },
       ],
     });
-  });
-
-  test("repository contract: setShortcutVisibleRoles succeeds", async () => {
-    const repo = createRepository();
-    await repo.setShortcutVisibleRoles("shortcut-1", { roleIds: ["role-1"] });
-  });
-
-  test("repository contract: listTeamRoles returns items", async () => {
-    const repo = createRepository();
-    const result = await repo.listTeamRoles("team-1");
-    assert.ok(Array.isArray(result), "result must be an array");
-    assert.ok(result.length >= 1, "contract fixture must include at least one role");
-    const role = result[0];
-    assert.deepEqual(Object.keys(role).sort(), ["code", "id", "name", "teamId"].sort());
   });
 
   test("repository contract: listIdeas returns paged ideas with canonical fields", async () => {

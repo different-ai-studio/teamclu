@@ -481,15 +481,6 @@ export function mapShortcut(row) {
   return mapShortcutRow(row);
 }
 
-export function mapTeamRole(row) {
-  return {
-    id: requiredString(row?.id, "roles.mapTeamRole", "id"),
-    teamId: requiredString(row?.team_id, "roles.mapTeamRole", "team_id"),
-    code: requiredString(row?.code, "roles.mapTeamRole", "code"),
-    name: requiredString(row?.name, "roles.mapTeamRole", "name"),
-  };
-}
-
 export function mapIdeaRow(row) {
   return {
     id: requiredString(row?.id, "ideas.mapIdeaRow", "id"),

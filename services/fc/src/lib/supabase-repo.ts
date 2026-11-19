@@ -248,7 +248,7 @@ import {
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, MESSAGE_ATTACHMENT_SCAN_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
   appFunctionTargetFromRow, APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
-  mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole,
+  mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut,
   mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
   mapFeedbackRow, mapLeaderboardRow, chunkedIn,
   appGitAccountFields,
@@ -3049,23 +3049,6 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
     },
 
-    async setShortcutVisibleRoles(shortcutId, { roleIds }) {
-      const { error } = await supabase.rpc("shortcut_set_visible_roles", {
-        p_shortcut_id: shortcutId,
-        p_role_ids: roleIds,
-      });
-      if (error) throw error;
-    },
-
-    async listTeamRoles(teamId) {
-      const { data, error } = await supabase
-        .from("team_roles")
-        .select("id, team_id, code, name")
-        .eq("team_id", teamId);
-      if (error) throw error;
-      return (data ?? []).map((r) => ({ id: r.id, teamId: r.team_id, code: r.code, name: r.name }));
-    },
-
     async createIdeaActivity(ideaId, body) {
       const { data, error } = await supabase.rpc("create_idea_activity", {
         p_idea_id: ideaId,
@@ -3800,16 +3783,6 @@ export function createSupabaseBusinessRepository(options) {
         agentId: row.agent_id ?? null,
         archived: row.archived === true,
       }));
-    },
-
-    async listShortcutRoleBindings(teamId) {
-      const { data, error } = await supabase
-        .from("permissions")
-        .select("resource_id, permission_roles(role_id)")
-        .eq("team_id", teamId)
-        .eq("resource_type", "shortcut");
-      if (error) throw error;
-      return data ?? [];
     },
 
     // --- Sessions CRUD (single-session ops; list uses listSessions above) ---

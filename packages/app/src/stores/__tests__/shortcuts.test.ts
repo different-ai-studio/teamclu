@@ -30,8 +30,6 @@ beforeEach(() => {
     teamNodes: [],
     loading: false,
     loadedAt: null,
-    teamRoles: null,
-    shortcutVisibility: null,
   })
 })
 

@@ -1579,33 +1579,6 @@ test("POST /v1/shortcuts/batch-move calls repo.batchMoveShortcuts", async () => 
   assert.deepEqual(repo.calls[0], { method: "batchMoveShortcuts", input: { moves: [{ shortcutId: "shortcut-1", parentId: null, position: 0 }] } });
 });
 
-test("PUT /v1/shortcuts/:shortcutId/visible-roles calls repo.setShortcutVisibleRoles", async () => {
-  const repo = fakeRepo();
-  const response = await handleBusinessApiRequest({
-    httpMethod: "PUT",
-    path: "/v1/shortcuts/shortcut-1/visible-roles",
-    headers: { Authorization: "Bearer token", "Content-Type": "application/json" },
-    body: JSON.stringify({ roleIds: ["role-1"] }),
-  }, { createRepository: () => repo });
-
-  assert.equal(response.statusCode, 204);
-  assert.deepEqual(repo.calls[0], { method: "setShortcutVisibleRoles", shortcutId: "shortcut-1", input: { roleIds: ["role-1"] } });
-});
-
-test("GET /v1/teams/:teamId/shortcut-roles calls repo.listTeamRoles", async () => {
-  const repo = fakeRepo();
-  const response = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/teams/team-1/shortcut-roles",
-    headers: { Authorization: "Bearer token" },
-  }, { createRepository: () => repo });
-
-  assert.equal(response.statusCode, 200);
-  const body = JSON.parse(response.body);
-  assert.ok(Array.isArray(body.items));
-  assert.deepEqual(repo.calls[0], { method: "listTeamRoles", teamId: "team-1" });
-});
-
 // ── Ideas ─────────────────────────────────────────────────────────────────────
 
 test("GET /v1/ideas returns 400 without teamId", async () => {
@@ -2273,8 +2246,6 @@ function fakeRepo({ sessions = [], error = null, workspaces = [], ideas = null, 
     async updateShortcut(shortcutId, patch) { calls.push({ method: "updateShortcut", shortcutId, patch }); if (error) throw error; return { id: shortcutId, teamId: "team-1", parentId: null, kind: "link", label: patch.label ?? "Home", payload: null, position: 0, visibleRoleIds: [], createdAt: "2026-05-01T00:00:00Z", updatedAt: "2026-05-27T02:00:00Z" }; },
     async deleteShortcut(shortcutId) { calls.push({ method: "deleteShortcut", shortcutId }); if (error) throw error; },
     async batchMoveShortcuts(input) { calls.push({ method: "batchMoveShortcuts", input }); if (error) throw error; },
-    async setShortcutVisibleRoles(shortcutId, input) { calls.push({ method: "setShortcutVisibleRoles", shortcutId, input }); if (error) throw error; },
-    async listTeamRoles(teamId) { calls.push({ method: "listTeamRoles", teamId }); if (error) throw error; return [{ id: "role-1", teamId, code: "admin", name: "Admin" }]; },
     async upsertAgentRuntime(body) { calls.push({ method: "upsertAgentRuntime", body }); if (error) throw error; return { id: body.id ?? "runtime-row-1" }; },
     async getAgentRuntime(args) { calls.push({ method: "getAgentRuntime", args }); if (error) throw error; if (args.sessionId === "session-missing") return null; return { id: "runtime-row-1", agentActorId: "actor-1", sessionId: args.sessionId, runtimeId: args.runtimeId ?? "runtime-abc", backendSessionId: args.backendSessionId ?? "backend-1", lastProcessedMessageId: null, metadata: null, createdAt: null, updatedAt: null }; },
     async getLatestAgentRuntime(args) { calls.push({ method: "getLatestAgentRuntime", args }); if (error) throw error; if (args.agentId === "actor-missing") return null; return { id: "runtime-row-1", agentActorId: args.agentId, sessionId: args.sessionId, runtimeId: "runtime-abc", backendSessionId: "backend-1", lastProcessedMessageId: null, metadata: null, createdAt: null, updatedAt: null }; },

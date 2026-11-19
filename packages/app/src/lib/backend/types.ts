@@ -960,7 +960,6 @@ export interface ShortcutRow {
   created_at?: string | null;
   updated_at?: string | null;
   sort_order?: number | null;
-  visible_roles?: string[] | null;
 }
 
 export interface ShortcutCreateArgs {
@@ -974,27 +973,12 @@ export interface ShortcutCreateArgs {
   p_target?: string;
 }
 
-interface ShortcutTeamRoleRow {
-  id: string;
-  team_id: string;
-  code: string;
-  name: string;
-}
-
-interface ShortcutRoleBindingRow {
-  resource_id: string;
-  permission_roles: Array<{ role_id: string }>;
-}
-
 export interface ShortcutsBackend {
   listShortcuts(scope: string, teamId?: string): Promise<ShortcutRow[]>;
   createShortcut(input: ShortcutCreateArgs): Promise<{ id: string }>;
   updateShortcut(id: string, patch: Record<string, unknown>): Promise<void>;
   deleteShortcut(id: string): Promise<void>;
   batchMove(input: { ids?: string[]; targetScope?: string; moves?: Record<string, unknown>[]; [key: string]: unknown }): Promise<unknown>;
-  setVisibleRoles(input: { shortcutId?: string; roleIds?: string[]; roles?: string[]; [key: string]: unknown }): Promise<void>;
-  listTeamRoles(teamId: string): Promise<ShortcutTeamRoleRow[]>;
-  listShortcutRoleBindings(teamId: string): Promise<ShortcutRoleBindingRow[]>;
 }
 
 export interface NotificationPrefs {

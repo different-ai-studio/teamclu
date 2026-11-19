@@ -3,9 +3,6 @@
  *
  * Design: docs/specs/2026-09-15-org-roles-permissions-design.md §2.1
  * OpenAPI: GET/POST /v1/teams/{teamId}/roles, PATCH/DELETE .../roles/{roleId}
- *
- * Shortcuts RBAC listTeamRoles lives at GET /v1/teams/:teamId/shortcut-roles
- * after the path collision fix (OpenAPI Task 2 claimed /roles for org roles).
  */
 
 import { test, describe } from "node:test";
@@ -117,7 +114,6 @@ function fakeRepo(overrides: Record<string, unknown> = {}) {
       { id: ADMIN_ROLE, code: "admin", name: "管理员" },
       { id: MEMBER_ROLE, code: "member", name: "成员" },
     ]),
-    listTeamRoles: record("listTeamRoles", [{ id: "sr-1", teamId: TEAM, code: "admin", name: "Admin" }]),
     ...overrides,
   };
 }
@@ -215,16 +211,6 @@ describe("org roles routes", () => {
       repo,
     );
     assert.equal(res.statusCode, 403);
-  });
-
-  test("GET /v1/teams/:teamId/shortcut-roles calls listTeamRoles (relocated)", async () => {
-    const repo = fakeRepo();
-    const res = await request(
-      { httpMethod: "GET", path: `/v1/teams/${TEAM}/shortcut-roles` },
-      repo,
-    );
-    assert.equal(res.statusCode, 200);
-    assert.deepEqual(repo.calls[0], { method: "listTeamRoles", args: [TEAM] });
   });
 
   test("GET /v1/teams/:teamId/members/:actorId/roles lists member roles", async () => {

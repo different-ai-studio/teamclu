@@ -24,6 +24,7 @@ of a procedure, not as a record of state.
 | `member_identity_public_email_precheck.sql` | Read-only. Lists the staff-grade (`admin_type >= 2`) member identities whose `public.users.email` is blank and the email the backfill would write (from `email_users_links`, else the account's own real login email). |
 | `member_identity_public_email_backfill.sql` | Fills those rows (identities minted before `20261009010000_member_identity_public_email.sql`). Customers (`admin_type 1`) and phone users are not touched. |
 | `drop_idea_external_refs_precheck.sql` | Read-only. Run on self-host and belayo before `20261119000100_drop_idea_external_refs.sql`: row count, what the rows are, outside dependents, owner. The migration refuses to drop a non-empty table. |
+| `drop_shortcut_role_visibility_precheck.sql` | Read-only. Run on self-host and belayo before `20261119130000_drop_shortcut_role_visibility.sql`: row counts for `team_roles` / `team_member_roles` / `permission_roles`, which shortcuts carry a role restriction, outside dependents, functions still naming them, owner. The migration refuses to drop while any of the three has rows. |
 
 ## Running one
 
