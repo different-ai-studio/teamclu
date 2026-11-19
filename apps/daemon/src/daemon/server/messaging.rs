@@ -783,11 +783,6 @@ impl DaemonServer {
                 }
             }
             self.publish_runtime_state_by_id(agent_id).await;
-            self.remote_tool_turn_contexts
-                .lock()
-                .await
-                .clear_runtime(agent_id);
-            self.flush_pending_remote_tools_mcp_refresh(agent_id).await;
         }
 
         // Ambient state variants (replaced wholesale on each push) should not
@@ -895,10 +890,6 @@ impl DaemonServer {
         }
         for rid in &superseded {
             self.agents.lock().await.stop_runtime(rid).await;
-            self.remote_tool_turn_contexts
-                .lock()
-                .await
-                .clear_runtime(rid);
         }
         vec![keep]
     }
@@ -995,11 +986,7 @@ impl DaemonServer {
         let runtime_ids = self.coalesce_session_runtimes(session_id).await;
         if runtime_ids.is_empty() {
             if self
-                .resume_historical_runtimes_for_session(
-                    session_id,
-                    (!message.sender_actor_id.is_empty())
-                        .then_some(message.sender_actor_id.as_str()),
-                )
+                .resume_historical_runtimes_for_session(session_id)
                 .await
             {
                 return;
@@ -1157,12 +1144,6 @@ impl DaemonServer {
                         }
                     }
                 }
-                self.prepare_remote_tool_context_for_turn(
-                    &runtime_id,
-                    session_id,
-                    &message.sender_actor_id,
-                )
-                .await;
                 let requester =
                     (!message.sender_actor_id.is_empty()).then(|| message.sender_actor_id.clone());
                 let reply_to = (!message.message_id.is_empty()).then(|| message.message_id.clone());

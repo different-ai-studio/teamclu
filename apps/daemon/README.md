@@ -64,7 +64,6 @@ Internal, run by other programs rather than by hand:
 
 | Command | Run by |
 |---|---|
-| `remote-tools-mcp` | pi, as a stdio MCP server proxying client tools over MQTT RPC |
 | `git-ssh --app <id>` | git, as `core.sshCommand` in an app checkout; fetches a just-in-time Gitea deploy key per connection |
 | `git-credential --app <id> <op>` | git, as `credential.helper` in an app checkout reached over http(s) |
 | `test-client watch\|start-agent\|announce\|e2e` | developers, to simulate an iOS client against the broker |

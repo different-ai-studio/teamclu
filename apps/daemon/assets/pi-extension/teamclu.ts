@@ -1,5 +1,5 @@
 /**
- * TeamClu pi extension — permission gate + amuxd remote-tools MCP bridge.
+ * TeamClu pi extension — permission gate + workspace MCP bridge.
  *
  * Shipped inside amuxd (include_str!), materialized to
  * `~/.amuxd/pi/extensions/teamclu.ts` at pi spawn and loaded via `-e <path>`.
@@ -14,12 +14,6 @@
  *   Pattern semantics: for `bash` and `powershell` the match key is the command string, for
  *   every other tool it is the tool name. A pattern ending in " *" is a
  *   prefix match on the first word(s); otherwise exact string equality.
- *
- * - `TEAMCLU_REMOTE_TOOLS_CMD` — JSON array, e.g.
- *       ["/path/to/amuxd", "remote-tools-mcp", "--sock=/path/amuxd.sock"]
- *   A stdio MCP server. When set, the extension connects to it, lists its
- *   tools, and registers each as a pi tool proxying tools/call. Unset ⇒ no
- *   bridge.
  *
  * - `TEAMCLU_MCP_SERVERS` — JSON object of the workspace's other MCP servers,
  *   normalized by `pi_server_spec` (`pi_rpc/mod.rs`) into the two shapes
@@ -1230,7 +1224,7 @@ function disposeRemovedBridges(configured: Set<string>): void {
 /**
  * Read the workspace MCP config the same way amuxd does when it builds
  * `TEAMCLU_MCP_SERVERS` (`pi_server_spec` in `pi_rpc/mod.rs`): skip the
- * daemon's own remote-tools entry and `enabled: false`; a `type: "remote"`
+ * stale `amuxd-remote-tools` entry and `enabled: false`; a `type: "remote"`
  * entry needs a URL, anything else needs a non-empty string `command` array.
  *
  * Kept deliberately in sync with the Rust side — the env payload is a snapshot
@@ -1288,8 +1282,7 @@ async function reconcileBridges(
   servers: Record<string, McpServerSpec>,
 ): Promise<void> {
   const names = Object.keys(servers);
-  // "remote-tools" is bridged from its own env contract, not from this file.
-  disposeRemovedBridges(new Set([...names, "remote-tools"]));
+  disposeRemovedBridges(new Set(names));
   await Promise.all(names.map((name) => bridgeMcpServer(pi, ownTools, name, servers[name])));
 }
 
@@ -2011,7 +2004,7 @@ export default async function (pi: ExtensionAPI) {
   // Team shared LLM — register before startup finishes so its models appear.
   registerTeamProvider(pi);
 
-  // Tools this extension registered itself (remote-tools proxies). They are
+  // Tools this extension registered itself (MCP bridge proxies). They are
   // daemon-provided, already trusted — skip the permission gate for them.
   const ownTools = new Set<string>();
 
@@ -2133,20 +2126,7 @@ export default async function (pi: ExtensionAPI) {
   });
 
   // -- MCP bridges (pi has no native MCP) -----------------------------------
-  // 1) amuxd remote-tools (single stdio command, its own env contract).
-  const cmdRaw = process.env.TEAMCLU_REMOTE_TOOLS_CMD;
-  if (cmdRaw) {
-    try {
-      const cmd = JSON.parse(cmdRaw);
-      if (Array.isArray(cmd) && cmd.length > 0 && cmd.every((c) => typeof c === "string")) {
-        await bridgeMcpServer(pi, ownTools, "remote-tools", { type: "local", command: cmd });
-      }
-    } catch (e) {
-      console.error(`[teamclu] invalid TEAMCLU_REMOTE_TOOLS_CMD: ${e}`);
-    }
-  }
-
-  // 2) The workspace's other MCP servers (from opencode.json `mcp`), bridged so
+  // The workspace's MCP servers (from opencode.json `mcp`), bridged so
   //    pi gets the same tools opencode loads natively — local and remote alike,
   //    normalized by amuxd into:
   //    { "<name>": { "type": "local",  "command": [...], "environment": {…} } }

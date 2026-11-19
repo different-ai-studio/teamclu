@@ -6,7 +6,7 @@
 //! live here rather than inside a specific backend module.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
@@ -28,7 +28,6 @@ pub enum AcpCommand {
     AttachSession {
         worktree: String,
         resume_acp_session_id: Option<String>,
-        mcp_config_path: Option<PathBuf>,
         initial_model_override: Option<String>,
         /// Daemon MRU, newest first. Consulted only when nothing more
         /// specific resolves; every entry is availability-checked.
@@ -132,7 +131,6 @@ pub trait AgentBackend: Send {
         force_env_override: bool,
         worktree: String,
         resume_acp_session_id: Option<String>,
-        mcp_config_path: Option<PathBuf>,
         initial_model_override: Option<String>,
         model_mru: Vec<String>,
         initial_prompt: String,

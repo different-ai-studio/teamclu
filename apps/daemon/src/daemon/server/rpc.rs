@@ -1321,7 +1321,6 @@ impl DaemonServer {
                         &start.session_id,
                         &start.initial_prompt,
                         None,
-                        &sender_actor_id,
                         false,
                         None,
                         "",
@@ -1362,10 +1361,6 @@ impl DaemonServer {
                     .await
                     .is_some();
                 if stopped {
-                    self.remote_tool_turn_contexts
-                        .lock()
-                        .await
-                        .clear_runtime(agent_id);
                     self.publish_runtime_detached(agent_id).await;
                     info!(agent_id, peer_id, "agent stopped");
                 }
@@ -1398,7 +1393,6 @@ impl DaemonServer {
                                 "",
                                 None,
                                 true,
-                                Some(&sender_actor_id),
                                 "",
                                 "legacy_send_prompt",
                             )
@@ -1485,15 +1479,6 @@ impl DaemonServer {
                 }
 
                 // Send prompt to agent (respawns if process exited)
-                let session_id = self
-                    .agents
-                    .lock()
-                    .await
-                    .get_handle(agent_id)
-                    .map(|h| h.session_id.clone())
-                    .unwrap_or_default();
-                self.prepare_remote_tool_context_for_turn(agent_id, &session_id, &sender_actor_id)
-                    .await;
                 let requester = (!sender_actor_id.is_empty()).then(|| sender_actor_id.clone());
                 let send_res = self
                     .agents

@@ -49,7 +49,6 @@ mod cron;
 mod messaging;
 mod offline_restart;
 mod peers_workspaces;
-mod remote_tools;
 mod rpc;
 mod runtime_lifecycle;
 mod skills_manage;
@@ -212,8 +211,6 @@ pub struct DaemonServer {
     /// the server so re-built `SessionManager`s (reconnect/re-onboard) can be
     /// re-attached via `set_local_tee`.
     live_tee: tokio::sync::broadcast::Sender<crate::teamclu::live::LiveTeeEvent>,
-    session_remote_targets: Arc<AsyncMutex<crate::remote_tools::SessionRemoteTargetStore>>,
-    remote_tool_turn_contexts: Arc<AsyncMutex<crate::remote_tools::RemoteToolTurnContextStore>>,
     rpc_client: Arc<AsyncMutex<crate::teamclu::rpc::RpcClient>>,
     team_skill_reconciler: Arc<crate::runtime::team_skills::TeamSkillReconciler>,
     runtime_context: Arc<crate::runtime::RuntimeContextService>,
@@ -367,11 +364,6 @@ pub(crate) enum SockCommand {
         session_id: String,
         payload: Vec<u8>,
         reply_tx: oneshot::Sender<Result<(), String>>,
-    },
-    /// Remote tool invoke from `amuxd remote-tools-mcp` stdio bridge.
-    RemoteToolCall {
-        payload: serde_json::Value,
-        reply_tx: oneshot::Sender<String>,
     },
     /// Agent-managed personal skill create/update/get from teamclu-introspect.
     SkillsManage {
@@ -743,12 +735,6 @@ impl DaemonServer {
                 backend,
             )),
             live_tee,
-            session_remote_targets: Arc::new(AsyncMutex::new(
-                crate::remote_tools::SessionRemoteTargetStore::default(),
-            )),
-            remote_tool_turn_contexts: Arc::new(AsyncMutex::new(
-                crate::remote_tools::RemoteToolTurnContextStore::default(),
-            )),
             rpc_client,
             team_skill_reconciler,
             runtime_context,
@@ -1970,10 +1956,6 @@ impl DaemonServer {
                                 };
                                 let _ = reply_tx.send(resp.to_string());
                             }
-                            Some(SockCommand::RemoteToolCall { payload, reply_tx }) => {
-                                self.spawn_remote_tool_sock_handler(payload, reply_tx)
-                                    .await;
-                            }
                             Some(SockCommand::SkillsManage { payload, reply_tx }) => {
                                 self.handle_skills_manage(payload, reply_tx).await;
                             }
@@ -2404,32 +2386,6 @@ where
                                 }
                                 Err(_) => {
                                     warn!("amuxd.sock: mcp-send reply dropped");
-                                }
-                            }
-                        } else if cmd == "remote-tool-call" {
-                            let (reply_tx, reply_rx) = oneshot::channel();
-                            if tx
-                                .send(SockCommand::RemoteToolCall {
-                                    payload: v,
-                                    reply_tx,
-                                })
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
-                            match reply_rx.await {
-                                Ok(body) => {
-                                    let mut stream = reader.into_inner();
-                                    if let Err(e) = stream.write_all(body.as_bytes()).await {
-                                        warn!("amuxd.sock: remote-tool-call write failed: {e}");
-                                        return;
-                                    }
-                                    let _ = stream.write_all(b"\n").await;
-                                    let _ = stream.shutdown().await;
-                                }
-                                Err(_) => {
-                                    warn!("amuxd.sock: remote-tool-call reply dropped");
                                 }
                             }
                         } else if cmd == "skills-manage" {
@@ -3459,12 +3415,6 @@ pub(crate) mod tests {
                     backend.clone(),
                 )),
                 live_tee: tokio::sync::broadcast::channel(64).0,
-                session_remote_targets: Arc::new(AsyncMutex::new(
-                    crate::remote_tools::SessionRemoteTargetStore::default(),
-                )),
-                remote_tool_turn_contexts: Arc::new(AsyncMutex::new(
-                    crate::remote_tools::RemoteToolTurnContextStore::default(),
-                )),
                 rpc_client: Arc::new(AsyncMutex::new(crate::teamclu::rpc::RpcClient::new(
                     publisher_handle.clone(),
                     "team-1".to_string(),
@@ -3613,7 +3563,6 @@ pub(crate) mod tests {
                 "session-missing",
                 "",
                 None,
-                "",
                 false,
                 None,
                 "",
@@ -3662,7 +3611,6 @@ pub(crate) mod tests {
                 "session-missing",
                 "",
                 None,
-                "",
                 false,
                 None,
                 "",
@@ -3704,7 +3652,6 @@ pub(crate) mod tests {
                 "",
                 "",
                 None,
-                "",
                 false,
                 None,
                 "",
@@ -3770,7 +3717,6 @@ pub(crate) mod tests {
                 "session-offline",
                 "",
                 None,
-                "",
                 false,
                 None,
                 "",
@@ -3851,7 +3797,6 @@ pub(crate) mod tests {
                 "desktop-session",
                 "",
                 None,
-                "",
                 false,
                 None,
                 "",
@@ -3938,7 +3883,6 @@ pub(crate) mod tests {
                 "desktop-cross-entry",
                 "",
                 None,
-                "",
                 false,
                 None,
                 "",
@@ -3972,7 +3916,7 @@ pub(crate) mod tests {
         assert!(
             fixture
                 .server
-                .resume_historical_runtimes_for_session("resume-session-cross-entry", None)
+                .resume_historical_runtimes_for_session("resume-session-cross-entry")
                 .await
         );
 
