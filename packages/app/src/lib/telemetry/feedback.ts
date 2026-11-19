@@ -1,3 +1,4 @@
+/** Record a thumbs / star feedback row through the Cloud API (`POST /v1/feedback`). */
 import { getBackend } from '@/lib/backend'
 
 export type FeedbackKind = 'positive' | 'negative'

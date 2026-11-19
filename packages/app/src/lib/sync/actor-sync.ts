@@ -1,5 +1,5 @@
 /**
- * actor-sync.ts — Sync actor_directory from Supabase into local libsql cache.
+ * actor-sync.ts — Sync actor_directory from the Cloud API into the local libsql cache.
  *
  * Uses the `actor_directory` view (joined view the frontend already queries)
  * because it exposes actor_type, display_name, member_status, agent_status,
@@ -33,7 +33,7 @@ function mapRow(r: ActorDirectorySyncRow): cache.ActorRow {
 }
 
 /**
- * Pull actor_directory rows for a team from Supabase (delta or full),
+ * Pull actor_directory rows for a team from the Cloud API (delta or full),
  * upsert into local cache, bump watermark.
  *
  * @returns number of rows synced

@@ -1,8 +1,7 @@
 /**
- * session-sync.ts — Sync sessions from Supabase into local libsql cache.
+ * session-sync.ts — Sync sessions from the Cloud API into the local libsql cache.
  *
- * updated_at: ✓ present on sessions (confirmed via information_schema)
- * Watermark key: "sessions" namespaced by teamId.
+ * Delta-pulled by `updated_at`. Watermark key: "sessions" namespaced by teamId.
  */
 
 import { getBackend } from "@/lib/backend";
@@ -11,7 +10,7 @@ import * as cache from "@/lib/cache/local-cache";
 import { seedSessionCreatedByFromRows } from "@/lib/session/session-created-by-cache";
 import { isTauri } from "@/lib/utils";
 
-// Supabase `sessions` columns: id, team_id, created_by_actor_id, primary_agent_id,
+// Cloud API session rows (snake_case, mirroring the `sessions` columns): id, team_id, created_by_actor_id, primary_agent_id,
 // mode, title, summary, last_message_preview, last_message_at, created_at,
 // updated_at, idea_id. (No `created_by`, no `metadata_json`.)
 function mapRow(r: SessionSyncRow): cache.SessionRow {
@@ -40,7 +39,7 @@ function mapRow(r: SessionSyncRow): cache.SessionRow {
 }
 
 /**
- * Pull sessions for a team from Supabase (delta or full),
+ * Pull sessions for a team from the Cloud API (delta or full),
  * upsert into local cache, bump watermark.
  *
  * @returns number of rows synced

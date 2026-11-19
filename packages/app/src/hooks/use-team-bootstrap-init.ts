@@ -1,4 +1,7 @@
-/** Auto-sync the workspace's git repos once the workspace is ready.
+/** Per-workspace / per-team bootstrap once a workspace is ready: hydrate
+ * shortcuts (local cache first, then the Cloud API), load this device's actor
+ * id, and refresh the team sync status. (It used to be `useGitReposInit`; it
+ * has had nothing to do with git repos for a long time.)
  *
  * STR-11: split out of `hooks/useAppInit.ts`, which exported ten unrelated
  * hooks and one event-name constant from one 647-line file.
@@ -11,14 +14,14 @@ import { useShortcutsStore } from "@/stores/shortcuts";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useOssSyncStore } from "@/stores/oss-sync";
 
-export function useGitReposInit() {
+export function useTeamBootstrapInit() {
   const workspacePath = useWorkspaceStore((s) => s.workspacePath);
   const workspaceReady = !!workspacePath;
 
   useEffect(() => {
     if (!workspacePath || !workspaceReady || !isTauri()) return;
 
-    // Hydrate shortcuts: first paint from local cache, then refresh from Supabase.
+    // Hydrate shortcuts: first paint from local cache, then refresh from the Cloud API.
     void (async () => {
       try {
         const store = useShortcutsStore.getState();

@@ -120,7 +120,7 @@ vi.mock('@/hooks/use-workspace-init', () => ({
   useWorkspaceInit: () => ({ initialWorkspaceResolved: true }),
 }))
 vi.mock('@/hooks/use-channel-gateway-init', () => ({ useChannelGatewayInit: vi.fn() }))
-vi.mock('@/hooks/use-git-repos-init', () => ({ useGitReposInit: vi.fn() }))
+vi.mock('@/hooks/use-team-bootstrap-init', () => ({ useTeamBootstrapInit: vi.fn() }))
 vi.mock('@/hooks/use-cron-init', () => ({ useCronInit: vi.fn() }))
 vi.mock('@/hooks/use-agent-app-changes', () => ({ useAgentAppChanges: vi.fn() }))
 vi.mock('@/hooks/use-workspace-runtime-refresh-poll', () => ({

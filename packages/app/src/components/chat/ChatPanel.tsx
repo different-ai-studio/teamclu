@@ -843,8 +843,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     return () => clearTimeout(timer);
   }, [sessionError, clearSessionError]);
 
-  // SSE connection is managed by SSEProvider in App.tsx (persists across mode switches)
-
   // v2: pending permissions arrive on the ACP/MQTT stream — no HTTP poll fallback.
 
   // ── Session loading ───────────────────────────────────────────────────
@@ -897,12 +895,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
       cancelled = true;
     };
   }, [workspaceBootstrapped, workspacePath, loadSessions, resetSessions, setError]);
-
-  // NOTE: No polling fallback needed.
-  // SSE /event endpoint streams ALL events (Bus.subscribeAll) including
-  // session.created and session.updated, which are handled as global events
-  // in the SSE client. The SSE connection is established as soon as baseUrl
-  // is available, regardless of whether a session is active.
 
   // ── Input height change → forward to MessageList ───────────────────────
   const handleInputHeightChange = React.useCallback((height: number) => {

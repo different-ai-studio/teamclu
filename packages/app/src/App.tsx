@@ -20,7 +20,7 @@ import { SaveToKnowledgeButton } from "@/components/chat/SaveToKnowledgeButton";
 import { RefreshSkillsHeaderButton } from "@/components/chat/RefreshSkillsHeaderButton";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
-import { useGitReposInit } from "@/hooks/use-git-repos-init";
+import { useTeamBootstrapInit } from "@/hooks/use-team-bootstrap-init";
 import { useCronInit } from "@/hooks/use-cron-init";
 import { useAgentAppChanges } from "@/hooks/use-agent-app-changes";
 import { useWorkspaceRuntimeRefreshPoll } from "@/hooks/use-workspace-runtime-refresh-poll";
@@ -195,9 +195,6 @@ function AppContent() {
   // linger with nothing to clear it.
   const authLoading = useAuthStore((s) => s.loading);
   const loadCurrentTeam = useCurrentTeamStore((s) => s.load);
-  // Team-share state drives the top-right "team shared files" tab visibility.
-  // Refresh it centrally (below) so the tab reflects the true share mode even
-  // before the user ever opens the panel or Settings → Team.
   const mainContentLayout = useUIStore((s) => s.mainContentLayout);
   // Header icon visibility — additive gates on top of the capability/session
   // conditions below. Defaults hidden; users enable per-icon in Settings →
@@ -299,7 +296,7 @@ function AppContent() {
   }, [workspacePath, daemonHttpReady, daemonConnectionError, localAgentInstallStatus, t]);
 
   useChannelGatewayInit();
-  useGitReposInit();
+  useTeamBootstrapInit();
   useCronInit();
   useAgentAppChanges();
   useWorkspaceRuntimeRefreshPoll();

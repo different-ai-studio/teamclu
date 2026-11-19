@@ -293,14 +293,14 @@ describe('useTauriBodyClass', () => {
   })
 })
 
-describe('useGitReposInit', () => {
+describe('useTeamBootstrapInit', () => {
   it('loads current node id at startup', async () => {
     mockIsTauri.mockReturnValue(true)
     workspaceState.workspacePath = '/workspace-team'
     workspaceState.workspaceReady = true
 
-    const { useGitReposInit } = await import('@/hooks/use-git-repos-init')
-    renderHook(() => useGitReposInit())
+    const { useTeamBootstrapInit } = await import('@/hooks/use-team-bootstrap-init')
+    renderHook(() => useTeamBootstrapInit())
 
     await waitFor(() => {
       expect(mockLoadCurrentActorId).toHaveBeenCalled()

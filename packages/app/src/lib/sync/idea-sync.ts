@@ -1,5 +1,5 @@
 /**
- * idea-sync.ts — Sync ideas from Supabase into local libsql cache.
+ * idea-sync.ts — Sync ideas from the Cloud API into the local libsql cache.
  *
  * updated_at: ✓ present on ideas (confirmed via information_schema)
  * Watermark key: "ideas" namespaced by teamId.
@@ -21,7 +21,7 @@ function mapRow(r: IdeaSyncRow): cache.IdeaRow {
     description: r.description ?? null,
     status: r.status ?? null,
     createdBy: r.created_by_actor_id ?? null,
-    // Supabase returns boolean; local cache stores 0/1
+    // The Cloud API returns a boolean; local cache stores 0/1
     archived: r.archived ? 1 : 0,
     sortOrder: r.sort_order ?? 0,
     metadataJson: null,
@@ -33,7 +33,7 @@ function mapRow(r: IdeaSyncRow): cache.IdeaRow {
 }
 
 /**
- * Pull ideas for a team from Supabase (delta or full),
+ * Pull ideas for a team from the Cloud API (delta or full),
  * upsert into local cache, bump watermark.
  *
  * @returns number of rows synced

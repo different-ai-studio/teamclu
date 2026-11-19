@@ -123,7 +123,7 @@ export type MessageRow = {
   metadataJson?: string | null;
   model?: string | null;
   mentionsJson?: string | null;
-  /** 'supabase' | 'mqtt-live' | 'local-only' */
+  /** 'cloud_api' | 'mqtt-live' | 'local-only' (rows cached by older builds may say 'supabase') */
   origin: string;
   createdAt: string;
   updatedAt: string;
@@ -135,7 +135,7 @@ export type MessageRow = {
   partsJson?: string | null;
 };
 
-/** Mirror of Rust `OutboxRow`. One pending/in-flight send through Supabase +
+/** Mirror of Rust `OutboxRow`. One pending/in-flight send through the Cloud API +
  * MQTT with exponential backoff. `messageId` matches the optimistic UI bubble
  * id so live echo can flip status → delivered. */
 export type OutboxRow = {
@@ -367,7 +367,7 @@ export async function softDeleteMessage(
 
 /** Merge parts_json into an existing message row without bumping updated_at.
  * Used when the streaming pipeline finalizes — we attach thinking/tool_call
- * parts to the AGENT_REPLY that already landed via Supabase/MQTT. */
+ * parts to the AGENT_REPLY that already landed via the Cloud API / MQTT. */
 export async function setMessageParts(
   messageId: string,
   partsJson: string,

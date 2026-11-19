@@ -8,7 +8,7 @@ vi.mock('@/lib/backend', () => ({
   getBackend: () => ({ telemetry: telemetryMock }),
 }))
 
-import { insertFeedback } from '@/lib/telemetry/supabase-feedback'
+import { insertFeedback } from '@/lib/telemetry/feedback'
 
 describe('insertFeedback', () => {
   beforeEach(() => {
