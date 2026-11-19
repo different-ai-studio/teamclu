@@ -13,7 +13,7 @@ import {
 } from '@/lib/skills/team-skill-summary'
 import {
   allocateTeamSkillSlug,
-  isPublishableTeamSkillSlug,
+  canonicalTeamSkillSlug,
   teamSkillDisplayName,
   teamSkillSlugIssue,
 } from '@/lib/skills/team-skill-slug'
@@ -79,10 +79,13 @@ export function ShareSheet({
 
   if (!open) return null
 
-  // The registry rejects a duplicate or non-ASCII id, but only after the
+  // The registry rejects a duplicate or unsafe id, but only after the
   // package has been uploaded. Say it while they are still typing.
   const slugIssue = teamSkillSlugIssue(slug, takenSlugs)
-  const showGeneratedHint = !slugIssue && !isPublishableTeamSkillSlug(displayName.trim().toLowerCase())
+  // Only when the id had to change (a space turned into a hyphen). A Chinese
+  // title is the id, so this hint stays hidden for 整车成本智能表格.
+  const showGeneratedHint =
+    !slugIssue && canonicalTeamSkillSlug(displayName) !== slug.trim()
 
   // Guidance fields are not gates. Requiring them mostly bought placeholder
   // text, which reads as guidance without being any — worse than a blank the
@@ -146,7 +149,7 @@ export function ShareSheet({
               <p className="text-[12px] leading-relaxed text-foreground">
                 {t(
                   'teamShare.skillShareSlugInvalid',
-                  'Use 2-64 lowercase letters, numbers, or hyphens, starting with a letter or number',
+                  'Use 2-64 letters or digits — Chinese is fine — with hyphens only in the middle. This id is the install folder and the skill name.',
                 )}
               </p>
             )}
@@ -162,7 +165,7 @@ export function ShareSheet({
               <p className="text-[12px] leading-relaxed text-muted-foreground">
                 {t(
                   'teamShare.skillShareSlugGenerated',
-                  'A team id was generated from the name so it installs on Windows and macOS. The display name stays 「{{name}}」.',
+                  'Spaces were turned into hyphens so this id is one folder on Windows and macOS. The display name stays 「{{name}}」.',
                   { name: displayName },
                 )}
               </p>

@@ -48,7 +48,7 @@ function shareFailureText(e: unknown, t: TFunction): string {
   if (reason === 'invalid') {
     return t(
       'teamShare.skillShareSlugInvalid',
-      'Use 2-64 lowercase letters, numbers, or hyphens, starting with a letter or number',
+      'Use 2-64 letters or digits — Chinese is fine — with hyphens only in the middle. This id is the install folder and the skill name.',
     )
   }
   if (reason === 'reserved') {

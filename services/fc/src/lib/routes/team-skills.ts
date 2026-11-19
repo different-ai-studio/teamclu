@@ -1,4 +1,5 @@
 import { ApiError } from "../http-utils.js";
+import { decodeRouteSlug } from "../team-skill-slug.js";
 
 /**
  * Team skills registry routes.
@@ -39,7 +40,7 @@ export function registerTeamSkills(router) {
     const opts: any = {};
     const actorId = ctx.query.get("actorId");
     if (actorId) opts.actorId = actorId;
-    const skill = await ctx.repository.getTeamSkill(ctx.params.teamId, ctx.params.slug, opts);
+    const skill = await ctx.repository.getTeamSkill(ctx.params.teamId, decodeRouteSlug(ctx.params.slug), opts);
     return { body: skill };
   });
 
@@ -91,7 +92,7 @@ export function registerTeamSkills(router) {
   router.post("/v1/teams/:teamId/skills/:slug/versions", async (ctx) => {
     const version = await ctx.repository.createTeamSkillVersion(
       ctx.params.teamId,
-      ctx.params.slug,
+      decodeRouteSlug(ctx.params.slug),
       ctx.json ?? {},
     );
     return { statusCode: 201, body: version };
@@ -106,7 +107,7 @@ export function registerTeamSkills(router) {
     }
     const created = await ctx.repository.revertTeamSkillVersion(
       ctx.params.teamId,
-      ctx.params.slug,
+      decodeRouteSlug(ctx.params.slug),
       version,
       ctx.json ?? {},
     );
@@ -120,7 +121,7 @@ export function registerTeamSkills(router) {
     }
     const row = await ctx.repository.getTeamSkillVersion(
       ctx.params.teamId,
-      ctx.params.slug,
+      decodeRouteSlug(ctx.params.slug),
       version,
     );
     return { body: row };
@@ -135,7 +136,7 @@ export function registerTeamSkills(router) {
     }
     const blob = await ctx.repository.getTeamSkillDownload(
       ctx.params.teamId,
-      ctx.params.slug,
+      decodeRouteSlug(ctx.params.slug),
       version,
     );
     const { createSkillDownloadUrl } = await import("../skills-storage.js");
@@ -146,21 +147,21 @@ export function registerTeamSkills(router) {
   router.patch("/v1/teams/:teamId/skills/:slug", async (ctx) => {
     const skill = await ctx.repository.updateTeamSkill(
       ctx.params.teamId,
-      ctx.params.slug,
+      decodeRouteSlug(ctx.params.slug),
       ctx.json ?? {},
     );
     return { body: skill };
   });
 
   router.delete("/v1/teams/:teamId/skills/:slug", async (ctx) => {
-    await ctx.repository.deleteTeamSkill(ctx.params.teamId, ctx.params.slug);
+    await ctx.repository.deleteTeamSkill(ctx.params.teamId, decodeRouteSlug(ctx.params.slug));
     return { statusCode: 204, body: null };
   });
 
   router.put("/v1/teams/:teamId/skills/:slug/install", async (ctx) => {
     const install = await ctx.repository.installTeamSkill(
       ctx.params.teamId,
-      ctx.params.slug,
+      decodeRouteSlug(ctx.params.slug),
       ctx.json ?? {},
     );
     return { body: install };
@@ -172,7 +173,7 @@ export function registerTeamSkills(router) {
     const body: any = ctx.json ?? {};
     const actorId = ctx.query.get("actorId");
     if (actorId && body.actorId === undefined) body.actorId = actorId;
-    await ctx.repository.uninstallTeamSkill(ctx.params.teamId, ctx.params.slug, body);
+    await ctx.repository.uninstallTeamSkill(ctx.params.teamId, decodeRouteSlug(ctx.params.slug), body);
     return { statusCode: 204, body: null };
   });
 }

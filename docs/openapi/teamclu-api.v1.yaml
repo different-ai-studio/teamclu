@@ -9528,12 +9528,16 @@ components:
         at: { type: string, format: date-time }
     TeamSkillSlug:
       type: string
-      pattern: "^[a-z0-9][a-z0-9-]{1,63}$"
+      minLength: 2
+      maxLength: 64
       description: >-
-        Skill identifier inside a team registry. Mirrors
-        `TEAM_SKILL_SLUG_RE` in the FC repository layer — lowercase
-        alphanumerics and hyphens, never leading with a hyphen, 2 to 64
-        characters.
+        Skill identifier inside a team registry. This is also the install
+        folder and the SKILL.md name. Unicode letters and digits are allowed,
+        including Chinese (整车成本智能表格 is a legal id). ASCII letters are
+        stored lowercase. The value is NFC, 2 to 64 code points, at most 255
+        UTF-8 bytes, with hyphens only in the middle. Path separators, controls,
+        Windows-forbidden characters, and Windows device names are rejected.
+        Older ASCII ids remain valid.
     TeamSkillCategory:
       type: string
       description: >
@@ -9592,10 +9596,8 @@ components:
           type: string
           maxLength: 120
           description: >
-            Human-readable title. Any language, including Chinese. The slug
-            stays an ASCII id used in URLs and as the install folder, so a
-            Chinese-named skill can be shared without renaming what people
-            see. Older rows omit it; clients fall back to the slug.
+            Optional title. The slug itself may be Chinese and is what gets
+            installed. Older rows omit this and clients fall back to the slug.
         ownerActorId:
           type: string
           format: uuid
@@ -9683,8 +9685,8 @@ components:
           type: string
           maxLength: 120
           description: >
-            Optional title shown in the team. Defaults to the slug. Use this
-            to keep a Chinese name when the slug is generated.
+            Optional title shown in the team. Defaults to the slug. The slug
+            can already be the Chinese name.
         summary: { type: string, maxLength: 200 }
         category: { $ref: "#/components/schemas/TeamSkillCategory" }
         whenToUse: { type: string }

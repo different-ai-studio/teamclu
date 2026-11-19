@@ -1,31 +1,34 @@
-import { pinyin } from 'pinyin-pro'
-
 /**
  * Team-registry skill ids.
  *
- * The slug is the install directory under `~/.agents/skills/<slug>`, the URL
- * segment, and the `name` written into SKILL.md. It stays ASCII on purpose:
+ * The id is the install directory under `~/.agents/skills/<slug>`, the URL
+ * segment, and the `name` written into SKILL.md. A Chinese title such as
+ * 整车成本智能表格 is the id itself. Pinyin is not generated.
  *
- * - Postgres, the OpenAPI contract, and the Cloud API only accept
- *   `^[a-z0-9][a-z0-9-]{1,63}$`.
- * - macOS stores many filenames as NFD and its default volume is
- *   case-insensitive. Windows stores the code points it is given (usually NFC)
- *   and rejects device names such as `CON` and `NUL`. Linux is case-sensitive.
- *   An ASCII lowercase id is the same directory on all three.
- * - A Chinese title is a display name, not a path. Personal folders may keep
- *   it; the shared copy does not use it as the folder name.
+ * The same string has to be one directory on Windows, macOS, and Linux:
  *
- * Generation is a pure function of the NFC title, so Windows and macOS produce
- * the same default when the author leaves the field alone.
+ * - NFC, so macOS (which may surface NFD) and Windows (which keeps the code
+ *   points it was given) still name one folder. Comparison uses this form.
+ * - ASCII letters are lowercased, because macOS and Windows volumes are
+ *   case-insensitive and Linux is not. Chinese has no case and is unchanged.
+ * - No path separators, controls, Windows-forbidden characters
+ *   (`< > : " / \ | ? *`), trailing dots or spaces, or device names
+ *   (`CON`, `NUL`, `COM1`, …).
+ * - 2–64 Unicode code points, and at most 255 UTF-8 bytes (the macOS
+ *   filename-component limit). Postgres `char_length` counts the same code
+ *   points.
+ *
+ * Existing ASCII ids, including ones that were generated as pinyin, stay
+ * valid. This module does not rename them.
  */
 
-export const TEAM_SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/
 export const TEAM_SKILL_SLUG_MAX = 64
+export const TEAM_SKILL_SLUG_MAX_BYTES = 255
 export const TEAM_SKILL_DISPLAY_NAME_MAX = 120
 
 /** Matches the Cloud API validation error so a toast can be localized. */
 export const TEAM_SKILL_SLUG_INVALID_MESSAGE =
-  'slug must be 2-64 chars of [a-z0-9-] and start with a letter or digit'
+  'slug must be 2-64 letters or digits, any language, NFC, with hyphens only in the middle'
 
 /** Matches the Cloud API reserved-name error. */
 export const TEAM_SKILL_SLUG_RESERVED_MESSAGE =
@@ -33,8 +36,8 @@ export const TEAM_SKILL_SLUG_RESERVED_MESSAGE =
 
 /**
  * Device names Windows rejects as a file or directory, with or without an
- * extension. Skill slugs have no extension, so the bare name is enough.
- * Keep this list in sync with `services/fc/src/lib/team-skill-slug.ts`.
+ * extension. Keep this list in sync with `services/fc/src/lib/team-skill-slug.ts`
+ * and `crates/teamclu-skillpack/src/slug.rs`.
  */
 const WINDOWS_RESERVED_SLUGS = new Set([
   'con',
@@ -63,26 +66,27 @@ const WINDOWS_RESERVED_SLUGS = new Set([
 
 export type TeamSkillSlugIssue = 'empty' | 'invalid' | 'reserved' | 'taken'
 
-export function isTeamSkillSlug(slug: string): boolean {
-  return TEAM_SKILL_SLUG_RE.test(slug)
+export function canonicalTeamSkillSlug(raw: string): string {
+  return asciiLower(raw.normalize('NFC').trim())
 }
 
 export function isWindowsReservedSlug(slug: string): boolean {
-  return WINDOWS_RESERVED_SLUGS.has(slug)
+  const stem = slug.split('.')[0] ?? slug
+  return WINDOWS_RESERVED_SLUGS.has(stem)
 }
 
 /** A slug the registry will store and every desktop OS can create as a folder. */
 export function isPublishableTeamSkillSlug(slug: string): boolean {
-  return isTeamSkillSlug(slug) && !isWindowsReservedSlug(slug)
+  return teamSkillSlugIssue(slug) === null
 }
 
 export function normalizeTeamSkillSlug(raw: string): {
   slug: string
   issue: Exclude<TeamSkillSlugIssue, 'taken'> | null
 } {
-  const slug = raw.trim().toLowerCase()
+  const slug = canonicalTeamSkillSlug(raw)
   if (!slug) return { slug: '', issue: 'empty' }
-  if (!isTeamSkillSlug(slug)) return { slug, issue: 'invalid' }
+  if (!slugShapeOk(slug)) return { slug, issue: 'invalid' }
   if (isWindowsReservedSlug(slug)) return { slug, issue: 'reserved' }
   return { slug, issue: null }
 }
@@ -120,14 +124,14 @@ export class SkillSlugInvalidError extends Error {
 /**
  * Whether sharing should move the personal folder aside.
  *
- * A publishable source id that the author deliberately changed is a second
- * skill: keep both. Every other source — a Chinese folder, a reserved device
- * name, a name with spaces — cannot be the team install path, so leaving it
- * in place would keep a private copy that team updates never reach.
+ * The same id is one skill: the personal folder and the team install would
+ * otherwise be two copies. A publishable source id that the author
+ * deliberately changed is a second skill and stays.
  */
 export function shouldRetirePersonalOnShare(filename: string, publishedSlug: string): boolean {
-  const sourceIsPublishable = isPublishableTeamSkillSlug(filename)
-  return !(sourceIsPublishable && filename !== publishedSlug)
+  const source = canonicalTeamSkillSlug(filename)
+  const sourceIsPublishable = isPublishableTeamSkillSlug(source) && source === filename.normalize('NFC')
+  return !(sourceIsPublishable && source !== publishedSlug)
 }
 
 /** Display name stored beside the slug. Chinese is kept; control chars are not. */
@@ -143,53 +147,78 @@ export function teamSkillDisplayName(name: string | null | undefined, fallback: 
 /**
  * Default registry id for a personal skill title.
  *
- * Already-valid ids pass through (`deploy-check`). Latin titles are
- * hyphenated (`My Skill` → `my-skill`). Chinese and other non-ASCII titles
- * become pinyin (`整车成本智能表格` → `zheng-che-cheng-ben-zhi-neng-biao-ge`),
- * and anything pinyin cannot express becomes `skill-` plus a stable hash of
- * the NFC title.
+ * 整车成本智能表格 stays 整车成本智能表格. An ASCII title with spaces is still
+ * hyphenated (`My Skill` → `my-skill`) because that id was already legal.
+ * Nothing is turned into pinyin.
  */
 export function teamSkillSlugFromName(name: string): string {
-  const key = name.normalize('NFC').trim().toLowerCase()
-  if (!key) return ''
-  if (isPublishableTeamSkillSlug(key)) return key
+  const direct = normalizeTeamSkillSlug(name)
+  if (!direct.issue) return direct.slug
 
-  const folded = stripCombiningMarks(key)
-  const ascii = hyphenateAscii(folded)
-  const hasNonAscii = containsNonAscii(folded)
-  if (!hasNonAscii && ascii.length >= 2) {
-    return avoidReserved(ascii)
-  }
+  const lowered = canonicalTeamSkillSlug(name)
+  if (!lowered) return ''
+  if (containsNonAscii(lowered)) return lowered
 
-  const fromReading = fitReading(slugFromPinyin(key), key)
-  if (fromReading) return avoidReserved(fromReading)
-
-  return avoidReserved(fitSlug(`skill-${fnv1a64(key).slice(0, 8)}`) ?? '')
+  const ascii = hyphenateAscii(stripCombiningMarks(lowered))
+  const hyphenated = normalizeTeamSkillSlug(ascii)
+  if (!hyphenated.issue) return hyphenated.slug
+  if (hyphenated.issue === 'reserved') return avoidReserved(hyphenated.slug)
+  return lowered
 }
 
-/** First free slug. `deploy-check` stays put; a collision becomes `deploy-check-2`. */
+/** First free slug. A collision becomes `整车成本智能表格-2`. */
 export function allocateTeamSkillSlug(name: string, taken: ReadonlySet<string> = new Set()): string {
   const base = teamSkillSlugFromName(name)
-  if (!base) return ''
+  if (!base || !isPublishableTeamSkillSlug(base)) return base
   if (!taken.has(base)) return base
   for (let n = 2; n < 1000; n += 1) {
     const suffix = `-${n}`
-    const room = TEAM_SKILL_SLUG_MAX - suffix.length
-    const head = base.slice(0, room).replace(/-+$/g, '')
+    const room = TEAM_SKILL_SLUG_MAX - codePointLength(suffix)
+    const head = codePointSlice(base, room).replace(/-+$/g, '')
     const candidate = `${head}${suffix}`
     if (isPublishableTeamSkillSlug(candidate) && !taken.has(candidate)) return candidate
   }
   return base
 }
 
-function stripControlChars(value: string): string {
-  let out = ''
-  for (const char of value) {
-    const code = char.codePointAt(0) ?? 0
-    if (code <= 0x1f || code === 0x7f) continue
-    out += char
+/** Percent-encode a slug for one URL path segment. ASCII ids stay readable. */
+export function encodeTeamSkillSlugForPath(slug: string): string {
+  return encodeURIComponent(slug)
+}
+
+function slugShapeOk(slug: string): boolean {
+  if (slug !== slug.normalize('NFC')) return false
+  const points = [...slug]
+  if (points.length < 2 || points.length > TEAM_SKILL_SLUG_MAX) return false
+  if (utf8Bytes(slug) > TEAM_SKILL_SLUG_MAX_BYTES) return false
+  return points.every((char, index) => allowedChar(char.codePointAt(0) ?? 0, index, points.length - 1))
+}
+
+function allowedChar(cp: number, index: number, last: number): boolean {
+  if (cp <= 0x1f || cp === 0x7f || (cp >= 0x80 && cp <= 0x9f)) return false
+  if (cp === 0xa0 || cp === 0x3000 || cp === 0xfeff) return false
+  if (cp >= 0x200b && cp <= 0x200d) return false
+  if (cp === 0x2028 || cp === 0x2029) return false
+  if (cp >= 0x202a && cp <= 0x202e) return false
+  if (cp >= 0x2066 && cp <= 0x2069) return false
+  if (cp < 128) {
+    const digit = cp >= 48 && cp <= 57
+    const lower = cp >= 97 && cp <= 122
+    const hyphen = cp === 45
+    if (hyphen && (index === 0 || index === last)) return false
+    return digit || lower || hyphen
   }
-  return out
+  return true
+}
+
+function avoidReserved(slug: string): string {
+  if (!slug || !isWindowsReservedSlug(slug)) return slug
+  const prefixed = `skill-${slug}`
+  return isPublishableTeamSkillSlug(prefixed) ? prefixed : slug
+}
+
+function asciiLower(value: string): string {
+  return value.replace(/[A-Z]/g, (char) => char.toLowerCase())
 }
 
 function containsNonAscii(value: string): boolean {
@@ -207,50 +236,24 @@ function hyphenateAscii(value: string): string {
   return value.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
-function slugFromPinyin(name: string): string {
-  let raw: string | readonly string[]
-  try {
-    raw = pinyin(name, { toneType: 'none', type: 'array', nonZh: 'consecutive' })
-  } catch {
-    return ''
+function stripControlChars(value: string): string {
+  let out = ''
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0
+    if (code <= 0x1f || code === 0x7f) continue
+    out += char
   }
-  const parts = Array.isArray(raw) ? raw : [raw]
-  return parts
-    .map((part) => part.toLowerCase().replace(/[^a-z0-9]+/g, ''))
-    .filter((part) => part.length > 0)
-    .join('-')
+  return out
 }
 
-/** Keep a pinyin id inside 64 characters without collapsing two long titles. */
-function fitReading(reading: string, key: string): string | null {
-  if (reading.length <= TEAM_SKILL_SLUG_MAX) return fitSlug(reading)
-  const suffix = `-${fnv1a64(key).slice(0, 8)}`
-  const head = reading.slice(0, TEAM_SKILL_SLUG_MAX - suffix.length).replace(/-+$/g, '')
-  return fitSlug(`${head}${suffix}`)
+function codePointLength(value: string): number {
+  return [...value].length
 }
 
-function fitSlug(slug: string): string | null {
-  let fitted = slug.replace(/^-+|-+$/g, '')
-  if (fitted.length > TEAM_SKILL_SLUG_MAX) {
-    fitted = fitted.slice(0, TEAM_SKILL_SLUG_MAX).replace(/-+$/g, '')
-  }
-  return isTeamSkillSlug(fitted) ? fitted : null
+function codePointSlice(value: string, count: number): string {
+  return [...value].slice(0, Math.max(0, count)).join('')
 }
 
-function avoidReserved(slug: string): string {
-  if (!slug) return ''
-  if (!isWindowsReservedSlug(slug)) return slug
-  return fitSlug(`skill-${slug}`) ?? `skill-${fnv1a64(slug).slice(0, 8)}`
-}
-
-/** Stable, synchronous, platform-independent digest. Not a security hash. */
-function fnv1a64(text: string): string {
-  let hash = 0xcbf29ce484222325n
-  const prime = 0x100000001b3n
-  const mask = 0xffffffffffffffffn
-  for (const char of text) {
-    hash ^= BigInt(char.codePointAt(0) ?? 0)
-    hash = (hash * prime) & mask
-  }
-  return hash.toString(16).padStart(16, '0')
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).length
 }

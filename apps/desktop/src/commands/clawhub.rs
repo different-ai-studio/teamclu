@@ -244,14 +244,7 @@ fn agents_skills_dir() -> Result<PathBuf, String> {
 }
 
 pub(crate) fn validate_slug(slug: &str) -> Result<(), String> {
-    let trimmed = slug.trim();
-    if trimmed.is_empty() {
-        return Err("Slug is required".to_string());
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
-        return Err(format!("Invalid slug: {}", trimmed));
-    }
-    Ok(())
+    teamclu_skillpack::validate_skill_slug(slug.trim()).map_err(|err| err.to_string())
 }
 
 /// Safely sanitize a relative path from a zip entry.

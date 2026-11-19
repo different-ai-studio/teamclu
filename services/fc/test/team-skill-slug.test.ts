@@ -6,6 +6,7 @@ import {
   TEAM_SKILL_SLUG_INVALID_MESSAGE,
   TEAM_SKILL_SLUG_RESERVED_MESSAGE,
   assertTeamSkillSlug,
+  decodeRouteSlug,
   teamSkillDisplayName,
 } from "../src/lib/team-skill-slug.js";
 
@@ -13,10 +14,19 @@ const TEAM = "team-1";
 const ACTOR = "actor-member-1";
 const HASH = "a".repeat(64);
 
-test("assertTeamSkillSlug accepts ASCII ids and rejects Chinese, empty, short, and reserved names", () => {
+test("decodeRouteSlug decodes a Chinese path segment once", () => {
+  const slug = "整车成本智能表格";
+  assert.equal(decodeRouteSlug(encodeURIComponent(slug)), slug);
+  assert.equal(decodeRouteSlug(slug), slug);
+  assert.equal(decodeRouteSlug("deploy-check"), "deploy-check");
+  assert.equal(decodeRouteSlug("%"), "%");
+});
+
+test("assertTeamSkillSlug accepts Chinese and ASCII ids and rejects empty, short, and reserved names", () => {
   assert.doesNotThrow(() => assertTeamSkillSlug("deploy-check"));
   assert.doesNotThrow(() => assertTeamSkillSlug("a1"));
-  for (const slug of ["", "a", "-ab", "整车成本智能表格", "Has Space", "Deploy-Check"]) {
+  assert.doesNotThrow(() => assertTeamSkillSlug("整车成本智能表格"));
+  for (const slug of ["", "a", "-ab", "Has Space", "整车/成本", "Deploy-Check"]) {
     assert.throws(
       () => assertTeamSkillSlug(slug),
       (err: unknown) =>
@@ -134,16 +144,18 @@ const publishBody = {
   contentHash: HASH,
 };
 
-test("createTeamSkill rejects a Chinese slug before writing a row", async () => {
+test("createTeamSkill stores a Chinese slug as the id and the display name", async () => {
   const { repo, inserts } = repoForCreate();
-  await assert.rejects(
-    () => repo.createTeamSkill(TEAM, { ...publishBody, slug: "整车成本智能表格" }),
-    (err: unknown) =>
-      err instanceof ApiError &&
-      err.statusCode === 400 &&
-      err.message === TEAM_SKILL_SLUG_INVALID_MESSAGE,
-  );
-  assert.equal(inserts.length, 0);
+  const row = await repo.createTeamSkill(TEAM, {
+    ...publishBody,
+    slug: "整车成本智能表格",
+    displayName: "整车成本智能表格",
+  });
+  assert.equal(row.slug, "整车成本智能表格");
+  assert.equal(row.displayName, "整车成本智能表格");
+  const skill = inserts.find((entry) => entry.table === "team_skills");
+  assert.equal(skill?.row.slug, "整车成本智能表格");
+  assert.equal(skill?.row.display_name, "整车成本智能表格");
 });
 
 test("createTeamSkill rejects an empty slug", async () => {
@@ -181,13 +193,13 @@ test("createTeamSkill reports a duplicate slug as a conflict", async () => {
     () =>
       repo.createTeamSkill(TEAM, {
         ...publishBody,
-        slug: "zheng-che-cheng-ben-zhi-neng-biao-ge",
+        slug: "整车成本智能表格",
         displayName: "整车成本智能表格",
       }),
     (err: unknown) =>
       err instanceof ApiError &&
       err.statusCode === 409 &&
-      err.message.includes("zheng-che-cheng-ben-zhi-neng-biao-ge"),
+      err.message.includes("整车成本智能表格"),
   );
   assert.equal(inserts.some((entry) => entry.table === "team_skill_versions"), false);
 });

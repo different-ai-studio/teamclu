@@ -244,7 +244,7 @@ interface TeamKnowledgeItem {
 
 interface TeamSkillShareInput {
   slug: string
-  /** Title to keep when `slug` was generated from a Chinese (or other) name. */
+  /** Title stored beside the id. For a Chinese skill this is the same string. */
   displayName?: string
   summary: string
   category: TeamSkillCategory
@@ -1698,9 +1698,9 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // skill-loader stores parent dir in dirPath and folder name in filename.
     const sourceDir = `${skill.dirPath}/${skill.filename}`
 
-    // The registry id is also the install folder. Reject a Chinese title here,
-    // before the package is uploaded, and publish the lowercased form so
-    // `Deploy-Check` and `deploy-check` land in one directory on macOS.
+    // The registry id is the install folder and the SKILL.md name. 整车成本智能表格
+    // stays that string. ASCII letters are lowercased so Deploy-Check and
+    // deploy-check are one directory on macOS and Windows.
     const normalized = normalizeTeamSkillSlug(input.slug)
     if (normalized.issue) throw new SkillSlugInvalidError(input.slug, normalized.issue)
     const publishedSlug = normalized.slug
@@ -1817,8 +1817,8 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // dirty detection read the one they never touch.
     //
     // A publishable id the author deliberately changed keeps both copies.
-    // A Chinese folder cannot be the install path, so it is set aside too —
-    // otherwise the personal copy stays loaded and never receives team updates.
+    // The same id, including a Chinese folder, is one skill, so the personal
+    // copy is set aside — otherwise it stays loaded and never receives updates.
     // Only after everything above succeeded, so a failed upload never costs
     // them the original.
     let retiredPath: string | null = null
