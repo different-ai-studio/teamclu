@@ -1,4 +1,4 @@
-// services/fc/lib/push-filters.mjs
+// services/fc/src/lib/push-filters.ts
 // Pure helpers used by push-dispatch. No I/O.
 
 export function truncate(s, n) {

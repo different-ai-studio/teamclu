@@ -1,4 +1,4 @@
-// services/fc/lib/push-dispatch.mjs
+// services/fc/src/lib/push-dispatch.ts
 import { inDnd, isForegroundDevice, truncate } from './push-filters.js';
 
 /** Payload version on `<agent>/inbox`. Bump when the shape changes. */
