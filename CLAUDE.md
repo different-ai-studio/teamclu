@@ -126,7 +126,7 @@ nowhere else; this describes what exists, it decides nothing):
   servers waits for a native approval dialog that times out when nobody is at
   this machine (`introspect_api/confirm.rs`).
 
-**Editor system:** Markdown (Tiptap) / HTML (Tiptap + sandbox preview) / Code (CodeMirror 6 + Shiki)
+**Editor system:** Markdown and Code both on CodeMirror 6 (Shiki for highlighting); HTML is CodeMirror plus a sandboxed iframe preview
 
 **Agent runtime:** the amuxd daemon drives **pi** exclusively (ADR-0014) over
 stdio JSONL host processes — one pi child per (isolation domain, env revision,
@@ -319,7 +319,7 @@ Cloud API endpoints: see `docs/openapi/teamclu-api.v1.yaml` (the contract) —
 
 Team share onboarding endpoints (see `docs/openapi/teamclu-api.v1.yaml`):
 
-- `GET  /v1/teams/:id/workspace-config` — merged shape `{ syncMode, llm }`. The legacy `{ defaultWorkspaceId, pinnedWorkspaceIds }` shape now lives at `GET /v1/teams/:id/workspace-defaults` (PUT path is unchanged). A team with no stored `llm_base_url` is served the deployment's own gateway (`<request origin>/ai/v1/teams/:id` + the three tiers) whenever FC has `AI_GATEWAY_INTERNAL_URL`/`AI_GATEWAY_SERVICE_TOKEN`; a stored baseUrl always wins, and `enabled=false` **with** a baseUrl is how a team opts out (`services/fc/src/lib/team-llm-defaults.ts`).
+- `GET  /v1/teams/:id/workspace-config` — merged shape `{ syncMode, llm }`. A team with no stored `llm_base_url` is served the deployment's own gateway (`<request origin>/ai/v1/teams/:id` + the three tiers) whenever FC has `AI_GATEWAY_INTERNAL_URL`/`AI_GATEWAY_SERVICE_TOKEN`; a stored baseUrl always wins, and `enabled=false` **with** a baseUrl is how a team opts out (`services/fc/src/lib/team-llm-defaults.ts`).
 - `PUT  /v1/teams/:id/llm-config` — sets the team's AI gateway (`{ enabled, baseUrl, models }`). FC no longer provisions LiteLLM; the gateway is configured, not minted.
 
 <!-- seahelm:suggest:start -->

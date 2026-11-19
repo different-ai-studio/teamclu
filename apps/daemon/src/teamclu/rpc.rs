@@ -6,63 +6,6 @@ use teamclu_transport::{DeliveryGuarantee, MessagePublisher};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-/// Server-side RPC handler: receives requests and sends responses.
-#[allow(dead_code)]
-pub struct RpcServer {
-    pub client: Arc<dyn MessagePublisher>,
-    pub team_id: String,
-    pub actor_id: String,
-}
-
-impl RpcServer {
-    pub fn new(client: Arc<dyn MessagePublisher>, team_id: String, actor_id: String) -> Self {
-        Self {
-            client,
-            team_id,
-            actor_id,
-        }
-    }
-
-    /// Parses an MQTT topic and payload into a (request_id, RpcRequest) pair.
-    ///
-    /// Expected topic format: `amux/{teamId}/{targetActorId}/rpc/req`
-    #[allow(dead_code)]
-    pub fn parse_request(topic: &str, payload: &[u8]) -> Option<(String, RpcRequest)> {
-        let parts: Vec<&str> = topic.split('/').collect();
-        // amux / {teamId} / {targetActorId} / rpc / req
-        if parts.len() != 5 {
-            return None;
-        }
-        if parts[0] != "amux" || parts[3] != "rpc" || parts[4] != "req" {
-            return None;
-        }
-        let request = RpcRequest::decode(payload).ok()?;
-        if request.request_id.is_empty() {
-            return None;
-        }
-        Some((request.request_id.clone(), request))
-    }
-
-    /// Publishes an RPC response back to the requester's actor namespace.
-    ///
-    /// Response topic: `amux/{teamId}/{requesterActorId}/rpc/res`
-    #[allow(dead_code)]
-    pub async fn respond(&self, request: &RpcRequest, response: RpcResponse) {
-        let topic = format!(
-            "amux/{}/{}/rpc/res",
-            self.team_id, request.requester_actor_id
-        );
-        let payload = response.encode_to_vec();
-        if let Err(e) = self
-            .client
-            .publish(&topic, payload, false, DeliveryGuarantee::AtLeastOnce)
-            .await
-        {
-            tracing::warn!("RpcServer: failed to publish response: {e}");
-        }
-    }
-}
-
 /// Client-side RPC handler: sends requests and waits for responses via oneshot channels.
 #[allow(dead_code)]
 pub struct RpcClient {
@@ -84,10 +27,6 @@ impl RpcClient {
             pending: HashMap::new(),
             remote_tool_pending: HashMap::new(),
         }
-    }
-
-    pub fn set_publisher(&mut self, client: Arc<dyn MessagePublisher>) {
-        self.client = client;
     }
 
     /// Sends an RPC request to `target_actor_id` and returns the request id plus
@@ -174,47 +113,6 @@ fn remote_tool_response_is_skippable(response: &RpcResponse) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prost::Message as ProstMessage;
-
-    #[test]
-    fn test_parse_request_valid() {
-        let req = RpcRequest {
-            request_id: "req123".to_string(),
-            requester_client_id: String::new(),
-            requester_actor_id: "actor-b".to_string(),
-            method: Some(crate::proto::teamclu::rpc_request::Method::FetchSession(
-                crate::proto::teamclu::FetchSessionRequest {
-                    session_id: "s1".to_string(),
-                },
-            )),
-        };
-        let payload = req.encode_to_vec();
-        let topic = "amux/team1/actor-a/rpc/req";
-
-        let result = RpcServer::parse_request(topic, &payload);
-        assert!(result.is_some());
-        let (request_id, parsed) = result.unwrap();
-        assert_eq!(request_id, "req123");
-        assert_eq!(parsed.requester_actor_id, "actor-b");
-    }
-
-    #[test]
-    fn test_parse_request_wrong_suffix() {
-        let topic = "amux/team1/actor-a/rpc/res"; // "res" not "req"
-        assert!(RpcServer::parse_request(topic, &[]).is_none());
-    }
-
-    #[test]
-    fn test_parse_request_wrong_part_count() {
-        let topic = "amux/team1/actor-a/rpc"; // too few parts
-        assert!(RpcServer::parse_request(topic, &[]).is_none());
-    }
-
-    #[test]
-    fn test_parse_request_invalid_payload() {
-        let topic = "amux/team1/actor-a/rpc/req";
-        assert!(RpcServer::parse_request(topic, b"not protobuf").is_none());
-    }
 
     #[test]
     fn test_handle_response_valid() {

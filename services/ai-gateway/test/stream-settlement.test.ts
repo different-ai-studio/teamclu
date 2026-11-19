@@ -28,7 +28,7 @@ const HOLD_ID = "55555555-5555-4555-8555-555555555555";
 
 const cfg = {
   port: 0, databaseUrl: "", catalogPath: "", serviceToken: "svc",
-  backendKind: "supabase", supabaseUrl: "", supabaseAnonKey: "", authBaseUrl: "",
+  supabaseUrl: "", supabaseAnonKey: "",
   tokenCacheTtlMs: 60_000, creditsEnforced: true, imageTimeoutMs: 5_000,
 } as Config;
 const tokens = new TokenCache(60_000, async (t) => t.replace("token-", ""));

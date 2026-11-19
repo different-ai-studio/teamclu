@@ -512,8 +512,11 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         global_team_store::ensure_initialized("team-k2").unwrap();
         let sync_root = global_team_store::sync_content_root("team-k2");
-        std::os::unix::fs::symlink(sync_root.join("knowledge"), ws.path().join(TEAM_KNOWLEDGE_LINK_NAME))
-            .unwrap();
+        std::os::unix::fs::symlink(
+            sync_root.join("knowledge"),
+            ws.path().join(TEAM_KNOWLEDGE_LINK_NAME),
+        )
+        .unwrap();
 
         assert_eq!(
             ensure_team_knowledge_link_from_workspace(ws.path()),
@@ -533,7 +536,10 @@ mod tests {
         // no sync engine owns.
         let (_home, _guard) = temp_home();
         let ws = tempfile::tempdir().unwrap();
-        let odd = crate::config::layout::teams_dir().join("team-x").join("elsewhere").join("knowledge");
+        let odd = crate::config::layout::teams_dir()
+            .join("team-x")
+            .join("elsewhere")
+            .join("knowledge");
         std::fs::create_dir_all(&odd).unwrap();
         std::os::unix::fs::symlink(&odd, ws.path().join(TEAM_KNOWLEDGE_LINK_NAME)).unwrap();
 

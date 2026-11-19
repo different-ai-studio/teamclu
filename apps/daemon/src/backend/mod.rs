@@ -73,7 +73,7 @@ pub mod deferred;
 pub mod records;
 pub use records::{
     ActorDirectoryRow, BackendParticipantRow, BackendSessionAndParticipants, BackendSessionRow,
-    ClaimResult, GatewaySessionRow, SessionAppContext, SessionRoster, SessionRosterEntry,
+    GatewaySessionRow, SessionAppContext, SessionRoster, SessionRosterEntry,
     SessionRosterSelfAgent, StoredMessage, WorkspaceRow, WorkspaceUpsert,
 };
 
@@ -478,11 +478,6 @@ pub trait Backend: Send + Sync {
     }
 
     // ── Business operations ───────────────────────────────────────────────
-    /// Claim a team invite token. Used both by the human onboarding path
-    /// and by the daemon's `claim_daemon_invite` flow.
-    #[allow(dead_code)]
-    async fn claim_team_invite(&self, token: &str) -> BackendResult<ClaimResult>;
-
     /// The workspace `actor_id` works in for `session_id`, from its
     /// participant row. `None` when unset — callers fall back to the agent's
     /// default workspace, the same path a brand-new session takes.

@@ -519,10 +519,6 @@ private struct PasswordCredentials: Encodable, Sendable {
     let password: String
 }
 
-private struct EmailUpdate: Encodable, Sendable {
-    let email: String
-}
-
 private struct OTPRequest: Encodable, Sendable {
     let email: String
     let options: Options
@@ -600,23 +596,6 @@ private struct IdTokenRequest: Encodable, Sendable {
 
 private struct RefreshRequest: Encodable, Sendable {
     let refreshToken: String
-}
-
-private struct RefreshResult: Decodable, Sendable {
-    let accessToken: String
-    let refreshToken: String
-    let expiresAt: Int
-}
-
-// partner-aligned phone identity upgrade (bind to current account, NOT phone_change).
-private struct BindPhoneRequest: Encodable, Sendable {
-    let phone: String
-    let code: String
-}
-
-private struct BindPhoneResponse: Decodable, Sendable {
-    let userId: String?
-    let bound: Bool?
 }
 
 // org→team login picker DTOs.

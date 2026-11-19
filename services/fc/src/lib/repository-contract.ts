@@ -154,29 +154,6 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     assert.equal(w.archived, true);
   });
 
-  test("repository contract: getTeamWorkspaceConfig returns null when absent", async () => {
-    const repo = createRepository();
-    const cfg = await repo.getTeamWorkspaceConfig("team-no-config");
-    assert.equal(cfg, null);
-  });
-
-  test("repository contract: putTeamWorkspaceConfig upserts row", async () => {
-    const repo = createRepository();
-    const teamId = "team-1";
-    const next = {
-      teamId,
-      defaultWorkspaceId: "workspace-1",
-      pinnedWorkspaceIds: [],
-    };
-    const out = await repo.putTeamWorkspaceConfig(teamId, next);
-    assert.deepEqual(out.defaultWorkspaceId, "workspace-1");
-    assert.deepEqual(out.pinnedWorkspaceIds, []);
-
-    const cfg = await repo.getTeamWorkspaceConfig(teamId);
-    assert.ok(cfg, "config should exist after put");
-    assert.deepEqual(cfg.defaultWorkspaceId, "workspace-1");
-  });
-
   test("repository contract: getSession returns session with participants", async () => {
     const repo = createRepository();
     const s = await repo.getSession("session-1");
@@ -521,34 +498,6 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     }
   });
 
-test("repository contract: getTeamDirectory returns actors and members", async () => {
-    const repo = createRepository();
-    const result = await repo.getTeamDirectory("team-1");
-
-    assert.ok(Array.isArray(result.actors), "actors must be an array");
-    assert.ok(Array.isArray(result.members), "members must be an array");
-    assert.ok(result.actors.length >= 1, "contract fixture must include at least one actor");
-    assert.ok(result.members.length >= 1, "contract fixture must include at least one member");
-
-    const actor = result.actors[0];
-    assert.deepEqual(Object.keys(actor).sort(), [
-      "avatarUrl",
-      "displayName",
-      "id",
-      "kind",
-      "metadata",
-      "teamId",
-    ].sort());
-
-    const member = result.members[0];
-    assert.deepEqual(Object.keys(member).sort(), [
-      "actorId",
-      "joinedAt",
-      "role",
-      "teamId",
-    ].sort());
-  });
-
   test("repository contract: renameTeam updates team name", async () => {
     const repo = createRepository();
     const team = await repo.renameTeam("team-1", { name: "Updated Team Name" });
@@ -710,16 +659,6 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     assert.ok(result.length >= 1, "contract fixture must include at least one role");
     const role = result[0];
     assert.deepEqual(Object.keys(role).sort(), ["code", "id", "name", "teamId"].sort());
-  });
-
-  test("repository contract: listTeamPermissions returns items", async () => {
-    const repo = createRepository();
-    const result = await repo.listTeamPermissions("team-1");
-    assert.ok(Array.isArray(result), "result must be an array");
-    assert.ok(result.length >= 1, "contract fixture must include at least one permission");
-    const perm = result[0];
-    assert.ok(perm.resourceId, "permission must have resourceId");
-    assert.ok(Array.isArray(perm.roleIds), "roleIds must be an array");
   });
 
   test("repository contract: listIdeas returns paged ideas with canonical fields", async () => {

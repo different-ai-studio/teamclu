@@ -66,30 +66,6 @@ export function registerWorkspaces(router) {
     if (!w) throw new ApiError(404, "not_found", "workspace not found");
     return { body: w };
   });
-
-  // NOTE: GET /v1/teams/:teamId/workspace-config lives in routes/team-share.ts
-  // and returns the merged shape (syncMode, llm).
-  // The legacy { defaultWorkspaceId, pinnedWorkspaceIds } shape is exposed via
-  // GET /v1/teams/:teamId/workspace-defaults so that merged endpoint can own
-  // the canonical path.
-  router.get("/v1/teams/:teamId/workspace-defaults", async (ctx) => {
-    const teamId = decodeURIComponent(ctx.params.teamId);
-    const cfg = await ctx.repository.getTeamWorkspaceConfig(teamId);
-    if (!cfg) {
-      throw new ApiError(404, "not_found", "config not set");
-    }
-    return { body: cfg };
-  });
-
-  router.put("/v1/teams/:teamId/workspace-config", async (ctx) => {
-    const teamId = decodeURIComponent(ctx.params.teamId);
-    const body = ctx.json ?? {};
-    const cfg = await ctx.repository.putTeamWorkspaceConfig(teamId, {
-      defaultWorkspaceId: body.defaultWorkspaceId ?? null,
-      pinnedWorkspaceIds: body.pinnedWorkspaceIds ?? [],
-    });
-    return { body: cfg };
-  });
 }
 
 function decodeWorkspaceCursor(value) {

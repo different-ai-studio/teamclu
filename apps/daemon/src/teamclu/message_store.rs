@@ -76,16 +76,6 @@ impl MessageStore {
         self.messages.push(message);
     }
 
-    #[allow(dead_code)]
-    pub fn recent(&self, n: usize) -> &[StoredMessage] {
-        let len = self.messages.len();
-        if n >= len {
-            &self.messages
-        } else {
-            &self.messages[len - n..]
-        }
-    }
-
     /// Read a page of messages ordered oldest -> newest.
     ///
     /// When `before_created_at` is 0, returns the most recent `page_size`
@@ -120,14 +110,6 @@ impl MessageStore {
             .unwrap_or(before_created_at);
 
         (slice, has_more, next_before_created_at)
-    }
-
-    #[allow(dead_code)]
-    pub fn latest_preview(&self) -> Option<(String, i64)> {
-        self.messages.last().map(|msg| {
-            let preview = msg.content.chars().take(140).collect::<String>();
-            (preview, msg.created_at.timestamp())
-        })
     }
 
     pub fn to_proto(msg: &StoredMessage) -> teamclu::Message {
@@ -184,26 +166,14 @@ mod tests {
     }
 
     #[test]
-    fn test_append_and_recent() {
+    fn test_append() {
         let mut store = MessageStore::default();
         store.append(make_message("m1", "s1", "hello"));
         store.append(make_message("m2", "s1", "world"));
         store.append(make_message("m3", "s1", "foo"));
 
         assert_eq!(store.messages.len(), 3);
-
-        let recent = store.recent(2);
-        assert_eq!(recent.len(), 2);
-        assert_eq!(recent[0].message_id, "m2");
-        assert_eq!(recent[1].message_id, "m3");
-    }
-
-    #[test]
-    fn test_recent_more_than_available() {
-        let mut store = MessageStore::default();
-        store.append(make_message("m1", "s1", "hello"));
-        let recent = store.recent(10);
-        assert_eq!(recent.len(), 1);
+        assert_eq!(store.messages[2].message_id, "m3");
     }
 
     #[test]

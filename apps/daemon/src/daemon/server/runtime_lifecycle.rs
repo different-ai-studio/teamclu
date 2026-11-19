@@ -239,21 +239,19 @@ impl DaemonServer {
                     );
                     (worktree.to_string(), workspace_id.to_string())
                 }
-                Ok(ws) if !ws.path.trim().is_empty() => {
-                    match path_bearing_worktree(&ws.path) {
-                        Ok(path) => (path, workspace_id.to_string()),
-                        Err(error_code) => {
-                            return Err(StartRuntimeError {
-                                error_code: error_code.to_string(),
-                                error_message: format!(
-                                    "workspace path is not available on this machine: {}",
-                                    ws.path.trim()
-                                ),
-                                failed_stage: "validation".to_string(),
-                            });
-                        }
+                Ok(ws) if !ws.path.trim().is_empty() => match path_bearing_worktree(&ws.path) {
+                    Ok(path) => (path, workspace_id.to_string()),
+                    Err(error_code) => {
+                        return Err(StartRuntimeError {
+                            error_code: error_code.to_string(),
+                            error_message: format!(
+                                "workspace path is not available on this machine: {}",
+                                ws.path.trim()
+                            ),
+                            failed_stage: "validation".to_string(),
+                        });
                     }
-                }
+                },
                 Ok(ws) => (ws.path, workspace_id.to_string()),
                 Err(_) if !worktree.is_empty() => {
                     // Intentional (cloud-source-of-truth design): resolve()
@@ -974,11 +972,6 @@ impl DaemonServer {
     /// Detach: refresh MQTT actor snapshot only — bindings stay in runtimes.toml.
     pub(crate) async fn publish_runtime_detached(&mut self, _runtime_id: &str) {
         let _ = self.publish_actor_state().await;
-    }
-
-    #[allow(dead_code)]
-    pub(crate) async fn publish_runtime_stopped(&mut self, runtime_id: &str) {
-        self.publish_runtime_detached(runtime_id).await;
     }
 
     pub(crate) async fn handle_start_runtime(

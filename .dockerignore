@@ -13,7 +13,10 @@ deploy/
 !deploy/self-host/all-in-one/
 !deploy/self-host/all-in-one/**
 *.md
-src/
-src-tauri/gen/
-src-tauri/icons/
-src-tauri/capabilities/
+# Root-context builds (deploy/self-host/amuxd/Dockerfile) compile the Cargo
+# workspace, so every workspace member's manifest has to stay in context. The
+# non-Rust clients are dead weight there.
+apps/ios/
+apps/expo/
+apps/extension/
+packages/app/

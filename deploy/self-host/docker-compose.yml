@@ -186,12 +186,10 @@ services:
       CATALOG_PATH: /app/catalog.yaml
       AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN}"
       AI_GATEWAY_PLATFORM_TOKEN: "${AI_GATEWAY_PLATFORM_TOKEN:-}"
-      BACKEND_KIND: "${BACKEND_KIND:-supabase}"
-      # supabase path: identity is established by asking GoTrue, exactly as FC
-      # does. The gateway holds no signing key.
+      # Identity is established by asking GoTrue, exactly as FC does. The
+      # gateway holds no signing key.
       SUPABASE_URL: "${SUPABASE_URL:-http://kong:8000}"
       SUPABASE_ANON_KEY: "${ANON_KEY:-}"
-      AUTH_BASE_URL: "${AUTH_BASE_URL:-https://${FC_DOMAIN}}"
       # Reserve before the upstream call and settle after it (design 4.6).
       # OFF means metered-only: usage is still recorded, nothing is deducted,
       # and an exhausted team is never stopped.
@@ -374,14 +372,10 @@ services:
       # MinIO addresses buckets by path; virtual-host style would need per-bucket
       # DNS. Alibaba OSS works either way, so this stays blank there.
       S3_FORCE_PATH_STYLE: "${S3_FORCE_PATH_STYLE:-}"
-      # Apps module. These were historically absent from this allowlist, so the
-      # container saw none of them: creating an app failed at
-      # the managed-git repo step (CODEUP_*), and "deploy" 503'd with an opaque
-      # `deploy_unavailable` because makeDeployDeps() bails without
-      # APPS_DB_ADMIN_URL. Keep both targets in step when adding more.
-      CODEUP_ORG_ID: "${CODEUP_ORG_ID:-}"
-      CODEUP_PAT: "${CODEUP_PAT:-}"
-      CODEUP_BOT_USERNAME: "${CODEUP_BOT_USERNAME:-teamclu}"
+      # Apps module. These were historically absent from this allowlist, so
+      # "deploy" 503'd with an opaque `deploy_unavailable` because
+      # makeDeployDeps() bails without APPS_DB_ADMIN_URL. Keep both targets in
+      # step when adding more.
       # Superuser / CREATEDB URL for per-org databases (tc_org_<orgId>) +
       # per-app schemas. Self-host defaults to the compose Postgres maintenance
       # DB. Blank → data_app finalize fails naming APPS_DB_ADMIN_URL; static
@@ -599,9 +593,6 @@ services:
       # allowed; set this only for a browser-hosted web build
       # (services/fc/src/lib/cors-origin.ts).
       CORS_ORIGINS: "${CORS_ORIGINS:-}"
-      # NOTE: CORS_HANDLED_BY_PROXY is deliberately NOT here. Caddy is a
-      # transparent proxy that adds no CORS headers, so Hono must own CORS
-      # (see services/fc/src/app.ts). Setting it would strip CORS entirely.
 
   # ── The heartbeat that fires apps' scheduled tasks ──
   #

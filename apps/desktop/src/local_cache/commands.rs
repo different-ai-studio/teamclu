@@ -1,7 +1,6 @@
 use super::store::{
-    enrich_parts_json_from_opencode, ActorRow, AgentRuntimeEventRow, ClaimRow, IdeaRow,
-    LocalCacheStore, MessageLoadOptions, MessageRow, OutboxRow, SessionParticipantRow, SessionRow,
-    SessionWorkspaceRow, SubmissionRow,
+    enrich_parts_json_from_opencode, ActorRow, IdeaRow, LocalCacheStore, MessageLoadOptions,
+    MessageRow, OutboxRow, SessionParticipantRow, SessionRow, SessionWorkspaceRow,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -88,17 +87,10 @@ async fn assert_team_opt(state: &LocalCacheState, looked_up: Option<&str>) -> Re
     }
 }
 
-/// Which table a child row's parent id points at.
-#[derive(Debug, Clone, Copy)]
-enum ParentKind {
-    Session,
-    Idea,
-}
-
-/// Gate for rows that carry a parent id (session or idea) instead of a
-/// `team_id`. One owner lookup for all distinct parents, then a comparison in
-/// memory — the previous shape was a `team_for_*` query, and a store-lock
-/// acquisition, per distinct parent in the batch.
+/// Gate for rows that carry a parent session id instead of a `team_id`. One
+/// owner lookup for all distinct parents, then a comparison in memory — the
+/// previous shape was a `team_for_*` query, and a store-lock acquisition, per
+/// distinct parent in the batch.
 ///
 /// Parents the cache has not seen are allowed through, exactly as before: a
 /// participant can arrive ahead of the session sync that would let us judge it.
@@ -106,7 +98,6 @@ async fn gate_parent_rows<'a>(
     db: &LocalCacheStore,
     current: Option<&str>,
     scope: &str,
-    kind: ParentKind,
     parent_ids: impl IntoIterator<Item = &'a str>,
 ) -> Result<(), String> {
     let Some(current) = current else {
@@ -118,10 +109,7 @@ async fn gate_parent_rows<'a>(
         .filter(|id| seen.insert(*id))
         .map(str::to_string)
         .collect::<Vec<_>>();
-    let owners = match kind {
-        ParentKind::Session => db.teams_for_sessions(&ids).await?,
-        ParentKind::Idea => db.teams_for_ideas(&ids).await?,
-    };
+    let owners = db.teams_for_sessions(&ids).await?;
     // Walk in batch order so the reported offender is the first one, not
     // whichever the map happened to yield.
     for id in &ids {
@@ -298,7 +286,6 @@ pub async fn local_cache_session_participant_upsert_batch(
         &db,
         current_team(&state).await.as_deref(),
         "participant",
-        ParentKind::Session,
         rows.iter().map(|r| r.session_id.as_str()),
     )
     .await?;
@@ -550,139 +537,6 @@ pub async fn local_cache_idea_load_team(
         .await
 }
 
-#[tauri::command]
-pub async fn local_cache_idea_soft_delete(
-    state: tauri::State<'_, LocalCacheState>,
-    id: String,
-    deleted_at: String,
-) -> Result<(), String> {
-    let db = get_db(&state).await?;
-    let owner = db.team_for_idea(&id).await?;
-    assert_team_opt(&state, owner.as_deref()).await?;
-    db.idea_soft_delete(&id, &deleted_at).await
-}
-
-// ─── claim commands ───────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn local_cache_claim_upsert_batch(
-    state: tauri::State<'_, LocalCacheState>,
-    rows: Vec<ClaimRow>,
-) -> Result<(), String> {
-    let db = get_db(&state).await?;
-    gate_parent_rows(
-        &db,
-        current_team(&state).await.as_deref(),
-        "claim",
-        ParentKind::Idea,
-        rows.iter().map(|r| r.idea_id.as_str()),
-    )
-    .await?;
-    db.claim_upsert_batch(&rows).await
-}
-
-#[tauri::command]
-pub async fn local_cache_claim_load_idea(
-    state: tauri::State<'_, LocalCacheState>,
-    idea_id: String,
-    include_deleted: Option<bool>,
-) -> Result<Vec<ClaimRow>, String> {
-    let db = get_db(&state).await?;
-    let owner = db.team_for_idea(&idea_id).await?;
-    assert_team_opt(&state, owner.as_deref()).await?;
-    db.claim_load_idea(&idea_id, include_deleted.unwrap_or(false))
-        .await
-}
-
-#[tauri::command]
-pub async fn local_cache_claim_soft_delete(
-    state: tauri::State<'_, LocalCacheState>,
-    id: String,
-    deleted_at: String,
-) -> Result<(), String> {
-    let db = get_db(&state).await?;
-    let owner = db.team_for_claim(&id).await?;
-    assert_team_opt(&state, owner.as_deref()).await?;
-    db.claim_soft_delete(&id, &deleted_at).await
-}
-
-// ─── submission commands ──────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn local_cache_submission_upsert_batch(
-    state: tauri::State<'_, LocalCacheState>,
-    rows: Vec<SubmissionRow>,
-) -> Result<(), String> {
-    let db = get_db(&state).await?;
-    gate_parent_rows(
-        &db,
-        current_team(&state).await.as_deref(),
-        "submission",
-        ParentKind::Idea,
-        rows.iter().map(|r| r.idea_id.as_str()),
-    )
-    .await?;
-    db.submission_upsert_batch(&rows).await
-}
-
-#[tauri::command]
-pub async fn local_cache_submission_load_idea(
-    state: tauri::State<'_, LocalCacheState>,
-    idea_id: String,
-    include_deleted: Option<bool>,
-) -> Result<Vec<SubmissionRow>, String> {
-    let db = get_db(&state).await?;
-    let owner = db.team_for_idea(&idea_id).await?;
-    assert_team_opt(&state, owner.as_deref()).await?;
-    db.submission_load_idea(&idea_id, include_deleted.unwrap_or(false))
-        .await
-}
-
-#[tauri::command]
-pub async fn local_cache_submission_soft_delete(
-    state: tauri::State<'_, LocalCacheState>,
-    id: String,
-    deleted_at: String,
-) -> Result<(), String> {
-    let db = get_db(&state).await?;
-    let owner = db.team_for_submission(&id).await?;
-    assert_team_opt(&state, owner.as_deref()).await?;
-    db.submission_soft_delete(&id, &deleted_at).await
-}
-
-// ─── agent_runtime_event commands ─────────────────────────────────────────
-
-#[tauri::command]
-pub async fn local_cache_agent_runtime_event_insert(
-    state: tauri::State<'_, LocalCacheState>,
-    record: AgentRuntimeEventRow,
-) -> Result<(), String> {
-    let db = get_db(&state).await?;
-    let owner = db.team_for_session(&record.session_id).await?;
-    assert_team_opt(&state, owner.as_deref()).await?;
-    db.agent_runtime_event_upsert(&record).await
-}
-
-#[tauri::command]
-pub async fn local_cache_agent_runtime_event_load(
-    state: tauri::State<'_, LocalCacheState>,
-    session_id: String,
-) -> Result<Vec<AgentRuntimeEventRow>, String> {
-    let db = get_db(&state).await?;
-    let owner = db.team_for_session(&session_id).await?;
-    assert_team_opt(&state, owner.as_deref()).await?;
-    db.agent_runtime_event_load_session(&session_id).await
-}
-
-#[tauri::command]
-pub async fn local_cache_agent_runtime_event_prune(
-    state: tauri::State<'_, LocalCacheState>,
-    max_rows: Option<i64>,
-) -> Result<(), String> {
-    let db = get_db(&state).await?;
-    db.agent_runtime_event_prune(max_rows.unwrap_or(5000)).await
-}
-
 // ─── sync watermark commands ──────────────────────────────────────────────
 
 #[tauri::command]
@@ -758,26 +612,6 @@ mod tests {
         }
     }
 
-    fn idea(id: &str, team: &str) -> IdeaRow {
-        IdeaRow {
-            id: id.to_string(),
-            team_id: team.to_string(),
-            workspace_id: None,
-            parent_id: None,
-            title: "t".to_string(),
-            description: None,
-            status: None,
-            created_by: None,
-            archived: 0,
-            sort_order: None,
-            metadata_json: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            updated_at: "2024-01-01T00:00:00Z".to_string(),
-            deleted_at: None,
-            synced_at: "2024-01-01T00:00:00Z".to_string(),
-        }
-    }
-
     #[tokio::test]
     async fn assert_team_rejects_empty_and_foreign_team_ids() {
         let state = LocalCacheState::default();
@@ -800,7 +634,7 @@ mod tests {
         db.session_upsert_batch(&[session("s-b", "teamB")])
             .await
             .unwrap();
-        gate_parent_rows(&db, None, "participant", ParentKind::Session, ["s-b"])
+        gate_parent_rows(&db, None, "participant", ["s-b"])
             .await
             .unwrap();
     }
@@ -816,7 +650,6 @@ mod tests {
             &db,
             Some("teamA"),
             "participant",
-            ParentKind::Session,
             ["s-a1", "s-a2", "s-a1", "ghost"],
         )
         .await
@@ -829,36 +662,12 @@ mod tests {
         db.session_upsert_batch(&[session("s-a", "teamA"), session("s-b", "teamB")])
             .await
             .unwrap();
-        let err = gate_parent_rows(
-            &db,
-            Some("teamA"),
-            "participant",
-            ParentKind::Session,
-            ["s-a", "s-b"],
-        )
-        .await
-        .unwrap_err();
+        let err = gate_parent_rows(&db, Some("teamA"), "participant", ["s-a", "s-b"])
+            .await
+            .unwrap_err();
         assert!(err.starts_with(ERR_TEAM_GATE_MISMATCH), "{err}");
         assert!(
             err.contains("participant: current=teamA, found=teamB"),
-            "{err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn parent_gate_resolves_ideas_for_claims_and_submissions() {
-        let (db, _dir) = new_store().await;
-        db.idea_upsert_batch(&[idea("i-a", "teamA"), idea("i-b", "teamB")])
-            .await
-            .unwrap();
-        gate_parent_rows(&db, Some("teamA"), "claim", ParentKind::Idea, ["i-a"])
-            .await
-            .unwrap();
-        let err = gate_parent_rows(&db, Some("teamA"), "submission", ParentKind::Idea, ["i-b"])
-            .await
-            .unwrap_err();
-        assert!(
-            err.contains("submission: current=teamA, found=teamB"),
             "{err}"
         );
     }

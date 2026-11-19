@@ -401,15 +401,4 @@ export async function patchPersistedToolResult(args: {
   return true;
 }
 
-/** @internal test helper */
-export function transcriptPartsForTests(
-  parts: MessagePart[],
-  pending: TeamcluMessage[],
-): { parts: MessagePart[]; content: string } {
-  return {
-    parts,
-    content: deriveAgentReplyContent(parts, pending),
-  };
-}
-
 export { joinTextPartsFromParts };

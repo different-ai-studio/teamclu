@@ -201,21 +201,6 @@ pub async fn daemon_team_link(workspace_path: &str) -> Result<serde_json::Value,
     .await
 }
 
-/// `POST /v1/team/unlink` `{ path }` — drop workspace symlink + empty global scaffold.
-pub async fn daemon_team_unlink(workspace_path: &str) -> Result<(), String> {
-    let body = wire::TeamLinkRequest {
-        path: Some(workspace_path.to_owned()),
-    };
-    daemon_request_unit(
-        reqwest::Method::POST,
-        "/v1/team/unlink",
-        "",
-        WRITE,
-        Some(&body),
-    )
-    .await
-}
-
 // ─── conflict / version helpers (used by Task 7) ────────────────────────────
 
 /// `GET /v1/team/conflicts?teamId=<id>`.

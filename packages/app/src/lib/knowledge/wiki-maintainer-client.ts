@@ -249,12 +249,6 @@ async function uploadCheckpointPackage(
   })
 }
 
-export async function loadWikiMaintenanceRecovery(
-  teamId: string,
-): Promise<WikiPrepareSummary | null> {
-  return (await loadWikiMaintenanceBootstrap(teamId)).recoveredSummary
-}
-
 export async function loadWikiMaintenanceBootstrap(teamId: string): Promise<{
   sourceDirectories: string[]
   compilerModel: string

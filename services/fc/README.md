@@ -23,7 +23,7 @@ curl http://127.0.0.1:9000/healthz   # {"ok":true}
 | `PORT` | `9000` | Listen port |
 | `HOST` | `0.0.0.0` | Bind address |
 
-All other vars (Supabase, OSS, APNs, MQTT, Apps/CodeUp) are kept in parity with
+All other vars (Supabase, OSS, APNs, MQTT, Apps) are kept in parity with
 `deploy/belayo/cloud-api.env.keys` by `test/deploy-env-parity.test.ts`.
 
 ## Protected FC app origins

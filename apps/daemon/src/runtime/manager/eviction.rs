@@ -185,9 +185,10 @@ impl RuntimeManager {
         if !agg.turn_had_activity() {
             return false;
         }
-        let handle_active = self.agents.get(agent_id).is_some_and(|h| {
-            matches!(h.status, crate::proto::amux::AgentStatus::Active)
-        });
+        let handle_active = self
+            .agents
+            .get(agent_id)
+            .is_some_and(|h| matches!(h.status, crate::proto::amux::AgentStatus::Active));
         let turn_open = agg.current_turn_id().is_some();
         handle_active || turn_open
     }

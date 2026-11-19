@@ -50,9 +50,8 @@ These pieces are still intentionally out of scope:
   back to generic placeholder text on mobile
 - broader post-onboarding workspace surfaces beyond the sessions list/detail shell
 
-`apps/expo/App.tsx` is still present, but the app entrypoint is
-`expo-router/entry` from `apps/expo/package.json`, so route/layout changes
-should be made in the `app/` directory.
+The app entrypoint is `expo-router/entry` from `apps/expo/package.json`, so
+route/layout changes should be made in the `app/` directory.
 
 ## Requirements
 

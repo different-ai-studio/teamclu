@@ -834,7 +834,6 @@ All variables live in `.env` (copied from `.env.example`).
 | `BUCKET` | no | OSS bucket name (default: `teamclu-team`) |
 | `REGION` | no | OSS region (default: `cn-shenzhen`) |
 | `ENDPOINT` | no | OSS endpoint URL |
-| `CODEUP_ORG_ID` / `CODEUP_PAT` / `CODEUP_BOT_USERNAME` | for apps | Managed-git org + PAT used to create each app's repo. Missing → `POST /v1/apps` fails at the repo step |
 | `APPS_DB_ADMIN_URL` | for apps | Superuser / CREATEDB URL on the compose Postgres (defaults to `postgres://postgres:$POSTGRES_PASSWORD@db:5432/postgres`). Used to create per-org DBs `tc_org_<orgId>` and per-app schemas. Blank with no compose default → data_app finalize fails naming this var |
 | `APPS_DB_APP_URL` | for data_app on FC | Postgres URL whose **host** is injected into each deployed app's `DATABASE_URL`. Required when `APPS_DB_ADMIN_URL` uses compose-internal `db` — deployed functions run on external Alibaba FC and cannot resolve that hostname. Use a VPC-reachable private IP, RDS URL, etc. |
 | `APPS_FC_VPC_ID` / `APPS_FC_VSWITCH_ID` / `APPS_FC_SECURITY_GROUP_ID` | for data_app on FC | VPC attachment for deployed app functions. Required when `APPS_DB_APP_URL` is set — without it the function cannot reach an internal RDS host. Use a dedicated security group (not the RDS-managed one) |

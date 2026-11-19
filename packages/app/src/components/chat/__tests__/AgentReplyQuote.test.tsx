@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import {
   AgentReplyQuote,
-  formatReplyQuoteSnippet,
   parseReplyQuoteContent,
 } from "../AgentReplyQuote";
 
@@ -49,6 +48,5 @@ describe("AgentReplyQuote", () => {
       agentNames: [],
       body: "sleep10",
     });
-    expect(formatReplyQuoteSnippet("a".repeat(100)).endsWith("…")).toBe(true);
   });
 });

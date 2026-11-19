@@ -131,7 +131,6 @@ vi.mock('@/hooks/use-tauri-body-class', () => ({ useTauriBodyClass: vi.fn() }))
 vi.mock('@/hooks/useMCPFileWatcher', () => ({ useMCPFileWatcher: vi.fn() }))
 vi.mock('@/hooks/use-file-editor-state', () => ({
   usePanelAutoOpen: vi.fn(),
-  useLayoutModePanelSync: vi.fn(),
   useFileTabSync: vi.fn(),
   useResizablePanels: () => ({
     rightPanelWidth: 300,
@@ -142,7 +141,6 @@ vi.mock('@/hooks/use-file-editor-state', () => ({
 }))
 vi.mock('@/components/app-sidebar', () => ({
   AppSidebar: () => <div data-testid="sidebar">sidebar</div>,
-  SidebarIconGroup: () => null,
   SidebarCollapseToggle: () => null,
   SidebarSecondarySessionActions: () => null,
 }))

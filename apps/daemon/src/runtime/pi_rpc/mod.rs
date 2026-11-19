@@ -1649,9 +1649,6 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                     let _ = ack.send(());
                 }
             }
-            AcpCommand::Shutdown => {
-                shared.pool.kill_all();
-            }
         }
     }
 }

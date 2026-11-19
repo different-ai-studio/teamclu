@@ -503,8 +503,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     // Reset team mode state — each workspace has its own team config
     try {
-      const { useTeamMembersStore } = await import("./team-members");
-      useTeamMembersStore.getState().reset();
+      const { useDeviceIdentityStore } = await import("./device-identity");
+      useDeviceIdentityStore.getState().reset();
       useTeamModeStore.setState({
         teamModelConfig: null,
         _appliedConfigKey: null,
@@ -574,9 +574,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     // Reset team mode state
     try {
-      const { useTeamMembersStore } = await import("./team-members");
+      const { useDeviceIdentityStore } = await import("./device-identity");
       const { useTeamModeStore } = await import("./team-mode");
-      useTeamMembersStore.getState().reset();
+      useDeviceIdentityStore.getState().reset();
       useTeamModeStore.setState({
         teamModelConfig: null,
         _appliedConfigKey: null,

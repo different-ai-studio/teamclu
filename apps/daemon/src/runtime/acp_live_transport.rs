@@ -508,7 +508,10 @@ mod tests {
         // Measured: parent 1 CJK = 143, 2 CJK thinking=output=146, 6 CJK = 158,
         // child with the pi session path = 318. Logged message.created 263–306
         // is 17–44 CJK chars. The same essay as an AgentReply is 1616.
-        assert_eq!(thinking, output, "same text, thinking and output encode to the same size");
+        assert_eq!(
+            thinking, output,
+            "same text, thinking and output encode to the same size"
+        );
         assert!(
             (141..=185).contains(&short) && (141..=185).contains(&longer),
             "parent tokens must sit in the captured band, got {short} and {longer}, child {child}"

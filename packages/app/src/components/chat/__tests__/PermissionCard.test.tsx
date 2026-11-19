@@ -4,7 +4,7 @@ import { useSessionStore } from '@/stores/session-store';
 import { useSessionSelectionStore } from '@/stores/session-selection-store';
 import { useV2StreamingStore } from '@/stores/v2-streaming-store';
 import { resetSessionPermissionModesForTests } from '@/lib/session/session-permission-mode';
-import { PendingPermissionInline } from '../PendingPermissionInline';
+import { ComposerStack } from '../ComposerStack';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -42,7 +42,7 @@ function resetStores() {
   });
 }
 
-describe('PendingPermissionInline', () => {
+describe('ComposerStack permission approvals', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStores();
@@ -62,7 +62,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.getByTestId('streaming-agents-dock')).toBeTruthy();
     expect(screen.getByTestId('streaming-agent-shell')).toBeTruthy();
@@ -94,7 +94,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.getByText(/ps -axo pid,ppid,stat,command/)).toBeTruthy();
     expect(screen.getByText((text) => text.includes(' ... '))).toBeTruthy();
@@ -117,7 +117,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     const allowButton = screen.getByText('Allow').closest('button');
     expect(allowButton).not.toBeNull();
@@ -158,7 +158,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.getByText('first-command')).toBeTruthy();
     fireEvent.click(screen.getByText('Allow'));
@@ -191,7 +191,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.getByText('Skill Request skill run')).toBeTruthy();
     expect(screen.getByText('Allow')).toBeTruthy();
@@ -233,7 +233,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.getByText('first-command')).toBeTruthy();
     expect(screen.queryByText('second-skill')).toBeNull();
@@ -263,7 +263,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.queryByTestId('streaming-agents-dock')).toBeNull();
     expect(screen.queryByText('belongs-to-session-1')).toBeNull();
@@ -289,7 +289,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.getByText('child-owned-command')).toBeTruthy();
     expect(screen.getByText('A subagent is waiting for your approval')).toBeTruthy();
@@ -339,7 +339,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.getByText('Bash Request external path access')).toBeTruthy();
     expect(screen.getByText('/tmp/outside')).toBeTruthy();
@@ -364,7 +364,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.getByText('Edit Request file edit')).toBeTruthy();
     expect(screen.getByText('/workspace/notes.md')).toBeTruthy();
@@ -397,7 +397,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.getByText('Bash Request command execution')).toBeTruthy();
     expect(screen.getByText('pnpm test')).toBeTruthy();
@@ -434,7 +434,7 @@ describe('PendingPermissionInline', () => {
       ],
     });
 
-    render(<PendingPermissionInline />);
+    render(<ComposerStack agents={[]} />);
 
     expect(screen.getByText('Bash Request external path access')).toBeTruthy();
     expect(screen.getByText('/tmp/outside')).toBeTruthy();

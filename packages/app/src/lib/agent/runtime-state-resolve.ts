@@ -377,21 +377,6 @@ export function agentModelDisplayLabel(
   return shortAgentModelId(trimmed);
 }
 
-/** Runtime id for RPC/commands — prefer live retain, fall back to DB hint. */
-export function resolveRuntimeIdForAgent(
-  agentId: string,
-  byRuntimeId: Record<string, RuntimeStateEntry>,
-  dbRuntimeId?: string | null,
-  sessionRuntimeIds?: ReadonlySet<string>,
-): string | undefined {
-  return resolveCommandRuntimeId({
-    agentId,
-    dbRuntimeId,
-    byRuntimeId,
-    sessionRuntimeIds,
-  });
-}
-
 /**
  * Map any model id (short, prefixed, or pick-store form) onto the exact id
  * the agent's `availableModels` advertises. Returns the input unchanged when

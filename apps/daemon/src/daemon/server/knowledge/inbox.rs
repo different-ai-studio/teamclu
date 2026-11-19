@@ -101,7 +101,8 @@ fn read_candidate(dir: &Path, id: &str) -> Result<KnowledgeCandidate, String> {
     let path = candidate_path(dir, id)?;
     let raw = fs::read_to_string(&path)
         .map_err(|_| err("not_found", format!("candidate '{id}' not found")))?;
-    serde_json::from_str(&raw).map_err(|e| err("corrupt", format!("candidate '{id}' is unreadable: {e}")))
+    serde_json::from_str(&raw)
+        .map_err(|e| err("corrupt", format!("candidate '{id}' is unreadable: {e}")))
 }
 
 fn write_candidate(dir: &Path, candidate: &KnowledgeCandidate) -> Result<(), String> {
@@ -574,7 +575,10 @@ mod tests {
         let reply = parse(&inbox_discard(&inbox, &json!({ "id": id })));
         assert_eq!(reply["ok"], true, "{reply}");
         assert!(inbox_get(&inbox, &json!({ "id": id })).contains("not_found"));
-        assert_eq!(fs::read_to_string(vault.join("existing.md")).unwrap(), "stay");
+        assert_eq!(
+            fs::read_to_string(vault.join("existing.md")).unwrap(),
+            "stay"
+        );
     }
 
     #[test]
@@ -632,12 +636,7 @@ mod tests {
                 reason: "not accessible".into(),
             },
         )]);
-        let v = parse(&publish(
-            &inbox,
-            &vault,
-            &json!({ "id": id }),
-            &blocked,
-        ));
+        let v = parse(&publish(&inbox, &vault, &json!({ "id": id }), &blocked));
         assert_eq!(v["ok"], true, "{v}");
         assert_eq!(v["result"]["teamSync"], "not-syncing");
         assert!(vault.join("hr/note.md").exists());

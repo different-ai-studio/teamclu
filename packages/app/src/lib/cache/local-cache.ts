@@ -176,19 +176,6 @@ export type IdeaRow = {
   syncedAt: string;
 };
 
-type AgentRuntimeEventRow = {
-  id: string;
-  sessionId: string;
-  turnId?: string | null;
-  senderActorId?: string | null;
-  /** 'agent_tool_call' | 'agent_tool_result' | 'agent_thinking' */
-  kind: string;
-  content: string;
-  metadataJson?: string | null;
-  model?: string | null;
-  createdAt: string;
-};
-
 // ── actor ──────────────────────────────────────────────────────────────────
 
 export async function upsertActorsBatch(rows: ActorRow[]): Promise<void> {
@@ -322,14 +309,6 @@ export async function loadSessionIdsForActor(
 ): Promise<string[]> {
   if (!isTauri() || !hasTeamId("session_participant_load_actor", teamId) || !actorId.trim()) return [];
   return invoke("local_cache_session_participant_load_actor", { actorId, teamId });
-}
-
-export async function softDeleteSessionParticipant(
-  id: string,
-  deletedAt: string,
-): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("local_cache_session_participant_soft_delete", { id, deletedAt });
 }
 
 // ── message ────────────────────────────────────────────────────────────────
@@ -489,15 +468,3 @@ export async function clearTeam(teamId: string): Promise<void> {
   if (!isTauri()) return;
   await invoke("local_cache_clear_team", { teamId });
 }
-
-// ── Backwards-compat re-exports for agent runtime event cache callers ───────
-// The narrow API is preserved; long-term these callers will migrate
-// to the generic upsert/load pattern.
-
-export async function insertAgentRuntimeEvent(
-  row: AgentRuntimeEventRow,
-): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("local_cache_agent_runtime_event_insert", { record: row });
-}
-

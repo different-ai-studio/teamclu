@@ -13,7 +13,6 @@ futures-util = "0.3"
 
 # Protobuf
 prost = { workspace = true }
-prost-types = { workspace = true }
 teamclu-gateway = { path = "../../crates/teamclu-gateway" }
 teamclu-apps = { path = "../../crates/teamclu-apps" }
 teamclu-proto = { path = "../../crates/teamclu-proto" }
@@ -24,7 +23,6 @@ teamclu-skillpack = { path = "../../crates/teamclu-skillpack" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["compat"] }
 async-trait = "0.1"
 futures = "0.3"
 
@@ -63,7 +61,7 @@ include_dir = "0.7"
 # Event-driven filesystem watching (FSEvents/inotify/ReadDirectoryChangesW) for
 # runtime refresh — replaces the old 350ms recursive-walk poll loop.
 notify = { version = "8", features = ["macos_fsevent"] }
-# Archive unpack (opencode release assets: zip on macOS/Windows, tar.gz on Linux)
+# Archive unpack for team-skill packs (runtime/team_skills.rs)
 zip = { version = "9", default-features = false, features = ["deflate"] }
 # Runtime, not just tests: the team-skills reconcile unpacks each archive into a
 # staging dir before swapping it over the installed pack.
@@ -74,18 +72,13 @@ parking_lot = "0.12"
 
 # HTTP / SSE (browser-facing daemon API)
 axum = { version = "0.7", features = ["macros"] }
-tower = { version = "0.5", features = ["util", "limit", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "limit", "request-id", "util"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 http = "1"
-http-body = "1"
-http-body-util = "0.1"
 bytes = "1"
-mime = "0.3"
 
 # TLS (match rumqttc 0.25's rustls version)
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 # HTTP / JWT / crypto (Cloud API client + team_shared_env)
 #
@@ -100,7 +93,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # app and honor OS-level corporate proxy roots.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
 base64 = "0.22"
-# Attachment image downscale before base64-inlining into ACP prompts (issue #710)
+# Attachment image downscale before base64-inlining into agent prompts (issue #710)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 url = "2"
 aes-gcm = "0.10"

@@ -4,7 +4,7 @@ import { useSessionStore } from "@/stores/session-store";
 import {
   resetSessionPermissionModesForTests,
 } from "@/lib/session/session-permission-mode";
-import { StreamingAgentsDock } from "../StreamingAgentsDock";
+import { ComposerStack } from "../ComposerStack";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -21,7 +21,7 @@ vi.mock("@/hooks/use-actor-display-name", () => ({
   useActorDisplayName: (actorId: string) => `Agent-${actorId}`,
 }));
 
-describe("StreamingAgentsDock", () => {
+describe("ComposerStack agent dock", () => {
   beforeEach(() => {
     resetSessionPermissionModesForTests();
     useSessionStore.setState({
@@ -44,7 +44,7 @@ describe("StreamingAgentsDock", () => {
     });
 
     render(
-      <StreamingAgentsDock
+      <ComposerStack
         agents={[{ actorId: "agent-1", displayName: "MACMINI" }]}
         onInterrupt={vi.fn()}
       />,
@@ -60,7 +60,7 @@ describe("StreamingAgentsDock", () => {
 
   it("shows interrupt control when streaming without approval", () => {
     render(
-      <StreamingAgentsDock
+      <ComposerStack
         agents={[{ actorId: "agent-1", displayName: "MACMINI" }]}
         onInterrupt={vi.fn()}
       />,
@@ -82,7 +82,7 @@ describe("StreamingAgentsDock", () => {
     });
 
     render(
-      <StreamingAgentsDock
+      <ComposerStack
         agents={[{ actorId: "agent-1", displayName: "MACMINI" }]}
         onInterrupt={vi.fn()}
       />,

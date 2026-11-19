@@ -19,7 +19,6 @@ mod local_cache;
 pub mod mqtt;
 pub mod opencode_paths;
 pub mod process_util;
-pub mod proto;
 #[cfg(target_os = "macos")]
 mod screenshot_drop;
 pub mod sentry_utils;
@@ -403,7 +402,6 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init())
         // File-list clipboard, so the file tree can exchange copies with Finder.
         .plugin(tauri_plugin_clipboard::init())
         // Restore window size + position across launches. Per-window state is
@@ -543,7 +541,6 @@ pub fn run() {
             commands::cron::cron_toggle_enabled,
             commands::cron::cron_run_job,
             commands::cron::cron_get_runs,
-            commands::cron::cron_refresh_delivery,
             commands::cron::cron_any_job_running,
             commands::cron::cron_set_restart_imminent,
             commands::daemon_onboarding::daemon_init,
@@ -554,7 +551,6 @@ pub fn run() {
             commands::amuxd_supervisor::daemon_restart_managed,
             commands::setup::setup_list_requirements,
             commands::setup::setup_install,
-            commands::setup::restart_local_daemon,
             commands::clawhub::clawhub_search,
             commands::clawhub::clawhub_explore,
             commands::clawhub::clawhub_get_skill,
@@ -631,16 +627,6 @@ pub fn run() {
             local_cache::commands::local_cache_outbox_list_all,
             local_cache::commands::local_cache_idea_upsert_batch,
             local_cache::commands::local_cache_idea_load_team,
-            local_cache::commands::local_cache_idea_soft_delete,
-            local_cache::commands::local_cache_claim_upsert_batch,
-            local_cache::commands::local_cache_claim_load_idea,
-            local_cache::commands::local_cache_claim_soft_delete,
-            local_cache::commands::local_cache_submission_upsert_batch,
-            local_cache::commands::local_cache_submission_load_idea,
-            local_cache::commands::local_cache_submission_soft_delete,
-            local_cache::commands::local_cache_agent_runtime_event_insert,
-            local_cache::commands::local_cache_agent_runtime_event_load,
-            local_cache::commands::local_cache_agent_runtime_event_prune,
             local_cache::commands::local_cache_watermark_get,
             local_cache::commands::local_cache_watermark_set,
             local_cache::commands::local_cache_clear_team,

@@ -19,7 +19,6 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../AMUXCore"),
-        .package(url: "https://github.com/apple/swift-markdown.git", from: "0.7.3"),
         // Block-level CommonMark + GFM renderer for SwiftUI. Apple's
         // AttributedString markdown only handles inline syntax, so
         // headings / tables / lists / code blocks landed as raw text
@@ -31,7 +30,6 @@ let package = Package(
             name: "AMUXSharedUI",
             dependencies: [
                 "AMUXCore",
-                .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
             ]
         ),

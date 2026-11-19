@@ -8,9 +8,6 @@
  */
 export type AppTypeId = 'static_web' | 'slides' | 'data_app' | 'imported'
 
-/** Stored on apps created before types existed; means `data_app`. */
-export const LEGACY_DATA_APP_TYPE = 'fullstack_tanstack_postgres'
-
 interface AppTypeMeta {
   id: AppTypeId
   /** i18n key + Chinese fallback, matching how the Apps UI names things. */

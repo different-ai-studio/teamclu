@@ -44,18 +44,6 @@ export async function updateIdeaStatus(ideaId: string, status: IdeaStatus): Prom
   })
 }
 
-export async function renameIdea(ideaId: string, title: string): Promise<void> {
-  const trimmed = title.trim()
-  if (!trimmed) throw new Error('title is required')
-  const cur = await fetchIdeaForUpdate(ideaId)
-  await updateIdea(ideaId, {
-    workspaceId: cur.workspace_id,
-    title: trimmed,
-    description: cur.description,
-    status: cur.status ?? 'open',
-  })
-}
-
 export async function updateIdea(ideaId: string, input: IdeaUpdateInput): Promise<void> {
   const trimmed = input.title.trim()
   if (!trimmed) throw new Error('title is required')

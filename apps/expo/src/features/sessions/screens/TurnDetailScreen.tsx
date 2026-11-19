@@ -42,7 +42,7 @@ export type TurnDetailScreenProps = {
  * `StreamingDetailView`.
  *
  * This replaces a modal that showed *counts*: "Thinking · 4", "Tools · 7", each
- * a summary line built by `buildAgentTurnDetailGroups`. You could see that the
+ * a summary line. You could see that the
  * agent had run seven tools but not which, in what order, or whether any of
  * them failed. iOS renders the events themselves, with the same row components
  * the chat feed uses, so a tool call looks the same in both places.

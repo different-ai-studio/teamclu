@@ -24,8 +24,8 @@ use async_trait::async_trait;
 
 use crate::backend::{
     ActorDirectoryRow, AgentDefaults, AppGitCredential, Backend, BackendError, BackendResult,
-    BackendSessionAndParticipants, BootstrapMqttOverride, ClaimResult, GatewaySessionRow,
-    ManagedLlmConfig, StoredMessage, WorkspaceRow, WorkspaceUpsert,
+    BackendSessionAndParticipants, BootstrapMqttOverride, GatewaySessionRow, ManagedLlmConfig,
+    StoredMessage, WorkspaceRow, WorkspaceUpsert,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,7 +120,6 @@ pub struct MockState {
     pub cron_sessions: Vec<RecordedCronSession>,
 
     // ── Pre-seeded responses for reads ─────────────────────────────────
-    pub claim_result: Option<ClaimResult>,
     pub sessions: HashMap<String, BackendSessionAndParticipants>,
     pub messages_by_session: HashMap<String, Vec<StoredMessage>>,
     pub gateway_session_index: HashMap<String, (String, Option<String>)>,
@@ -340,15 +339,6 @@ impl Backend for MockBackend {
 
     async fn get_effective_default_agent(&self, _team_id: &str) -> BackendResult<Option<String>> {
         Ok(None)
-    }
-
-    async fn claim_team_invite(&self, _token: &str) -> BackendResult<ClaimResult> {
-        self.state
-            .lock()
-            .unwrap()
-            .claim_result
-            .clone()
-            .ok_or_else(|| BackendError::Validation("invite invalid or expired".into()))
     }
 
     async fn fetch_session_cursor(

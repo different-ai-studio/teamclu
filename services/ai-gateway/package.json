@@ -12,7 +12,6 @@
   "dependencies": {
     "@hono/node-server": "^1.19.14",
     "hono": "^4.12.23",
-    "jose": "^5.9.0",
     "postgres": "^3.4.9",
     "yaml": "^2.6.1"
   },

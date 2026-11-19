@@ -36,13 +36,6 @@ export const APP_AUTH_ACCESS_FALLBACKS = {
   orgLegacy: '需要登录 · 组织角色',
 } as const
 
-export function formatAppAuthAccessSummary(summary: AppAuthAccessSummary): string {
-  if (!summary.requiresLogin) return APP_AUTH_ACCESS_FALLBACKS.public
-  if (summary.roleCodes === null) return APP_AUTH_ACCESS_FALLBACKS.orgLegacy
-  if (summary.roleCodes.length === 0) return APP_AUTH_ACCESS_FALLBACKS.any
-  return `需要登录 · ${summary.roleCodes.join(', ')}`
-}
-
 type Policy = Pick<AppRow, 'authScope' | 'authAudience' | 'authRules'>
 const cloneRule = (rule: AppAuthRule): AppAuthRule => ({ ...rule, ...(Array.isArray(rule.roles) ? { roles: [...rule.roles] } : {}) })
 const modeOf = (rule: AppAuthRule): AppAuthRowState['audienceMode'] =>

@@ -3,8 +3,6 @@
 //!
 //! PR3 ships **fail-closed detect** only: violations replace the turn-final
 //! agent success reply and instruct recreation via `manage_skills`.
-//! `TEAMCLU_NATIVE_SKILL_AUTO_ADOPTION` is reserved for a future adoption path
-//! and must not disable detection until that path exists.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -96,16 +94,6 @@ pub fn guard_mode() -> GuardMode {
 
 pub fn guard_enabled() -> bool {
     matches!(guard_mode(), GuardMode::Detect)
-}
-
-pub fn auto_adoption_enabled() -> bool {
-    matches!(
-        std::env::var("TEAMCLU_NATIVE_SKILL_AUTO_ADOPTION")
-            .ok()
-            .map(|v| v.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("1") | Some("true") | Some("on")
-    )
 }
 
 pub fn event_may_open_implicit_turn(event: &Option<amux::acp_event::Event>) -> bool {
@@ -248,12 +236,6 @@ pub fn violations_after_turn(
 ) -> Vec<NativeSkillViolation> {
     if !guard_enabled() {
         return Vec::new();
-    }
-    if auto_adoption_enabled() {
-        tracing::warn!(
-            "TEAMCLU_NATIVE_SKILL_AUTO_ADOPTION is set but auto-adoption is not implemented; \
-             native skill fallback detection remains active"
-        );
     }
     let current = scan_native_skills(workspace);
     current
@@ -514,22 +496,6 @@ mod tests {
         let violations = violations_after_turn(&baseline, ws.path());
         assert!(violations.is_empty());
         std::env::remove_var("TEAMCLU_NATIVE_SKILL_FALLBACK_GUARD");
-    }
-
-    #[test]
-    fn auto_adoption_flag_does_not_disable_detection() {
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
-        std::env::set_var("TEAMCLU_NATIVE_SKILL_AUTO_ADOPTION", "true");
-        let ws = tempfile::tempdir().unwrap();
-        let baseline = snapshot_baseline(ws.path());
-        write_native_pack(
-            &ws.path().join(".opencode/skills"),
-            "still-detected",
-            "---\nname: still-detected\ndescription: Still detected.\n---\n",
-        );
-        let violations = violations_after_turn(&baseline, ws.path());
-        assert_eq!(violations.len(), 1);
-        std::env::remove_var("TEAMCLU_NATIVE_SKILL_AUTO_ADOPTION");
     }
 
     #[test]
