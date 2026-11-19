@@ -4,14 +4,14 @@ TeamClu 桌面端有两条独立发布渠道，不要混用：
 
 | 渠道 | 触发 | Workflow | 产物去向 |
 |------|------|----------|----------|
-| 每日 Beta | nightly / 手动 `workflow_dispatch` | `release-oss.yml`（brand=`teamclu`） | CDN `https://teamclaw.ucar.cc/beta/`，并创建同版本 GitHub Release |
+| 每日 Beta | 手动 dispatch `nightly-release-oss.yml`（无定时） | `release-oss.yml`（brand=`teamclu`） | CDN `https://teamclaw.ucar.cc/beta/`，并创建同版本 GitHub Release |
 | 官方 GitHub Release | 非 nightly bump 提交上的 `v*` tag push | `release.yml` | GitHub Releases（含 `latest.json`） |
 
 每日 Beta 由 `release-oss.yml` 发布：安装包和 `latest.json` 写到 OSS，teamclu 品牌再把同一套安装包挂到 GitHub Release。nightly 的 bump 提交说明是 `chore(release): nightly beta v…`；`release.yml` 见到这个提交上的 tag 会跳过，避免同一版本再打一遍官方包。Copilot361 只写自己的 OSS 前缀。
 
 ## 版本号来源
 
-以下四处必须保持一致（可用脚本校验 / 批量 bump）：
+以下五处必须保持一致（可用脚本校验 / 批量 bump）：
 
 | 文件 | 字段 |
 |------|------|
@@ -19,14 +19,15 @@ TeamClu 桌面端有两条独立发布渠道，不要混用：
 | `apps/desktop/Cargo.toml` | `version` |
 | `apps/desktop/tauri.conf.json` | `version` |
 | `apps/daemon/Cargo.toml` | `version`（随 Desktop 打包的 `amuxd` sidecar） |
+| `Cargo.lock` | `teamclu` 与 `amuxd` 两个 `[[package]]` 的 `version`（CI 用 `--locked`） |
 
 ```bash
-# 查看是否一致
+# 查看五处是否一致（含 Cargo.lock）
 pnpm release:check
 
-# 批量 bump（会先检查当前四处一致）
+# 批量 bump（会先检查四个清单文件一致，并同时改写 Cargo.lock 的 teamclu / amuxd）
 pnpm release:bump 0.2.1
-# bump 后务必同步 lockfile（一键脚本会自动做）：
+# 可选：重新解析工作区成员并验证 --locked（一键脚本会自动做）：
 ./scripts/sync-cargo-lock-version.sh
 
 # 发布前门禁
@@ -72,7 +73,7 @@ pnpm release:desktop -- --patch --no-tag
 
 ```bash
 pnpm release:bump 0.2.1
-git add package.json apps/desktop/Cargo.toml apps/desktop/tauri.conf.json apps/daemon/Cargo.toml
+git add package.json apps/desktop/Cargo.toml apps/desktop/tauri.conf.json apps/daemon/Cargo.toml Cargo.lock
 git commit -m "chore(desktop): bump version to 0.2.1"
 # 通过 PR 合入 main，不要直接推 main
 ```

@@ -66,8 +66,28 @@ function syncCargoLockVersions(lockText, version, packages = WORKSPACE_MEMBERS) 
   return { text, changed, missing };
 }
 
+/**
+ * Read the `version` of each named package from a `Cargo.lock`'s text, using
+ * the same block anchor as {@link syncCargoLockVersions}.
+ *
+ * @param {string} lockText Contents of Cargo.lock.
+ * @param {string[]} [packages] Package names; defaults to the workspace members.
+ * @returns {Record<string, string | null>} `null` for a name with no block.
+ */
+function readCargoLockVersions(lockText, packages = WORKSPACE_MEMBERS) {
+  const versions = {};
+  for (const name of packages) {
+    const block = new RegExp(
+      `\\[\\[package\\]\\]\\r?\\nname = "${escapeRegExp(name)}"\\r?\\nversion = "([^"]+)"`,
+    );
+    const match = lockText.match(block);
+    versions[name] = match ? match[1] : null;
+  }
+  return versions;
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-module.exports = { syncCargoLockVersions, WORKSPACE_MEMBERS };
+module.exports = { syncCargoLockVersions, readCargoLockVersions, WORKSPACE_MEMBERS };
