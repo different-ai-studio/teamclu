@@ -1,10 +1,27 @@
 name: CI
 
+# Docs-only changes skip CI. The ignore list is deliberately narrow: only
+# docs/ and the root-level Markdown files, which no build or test reads.
+# Markdown elsewhere is NOT ignored — the daemon include_str!s SKILL.md and
+# knowledge templates, so those files are inputs. No check is required on main
+# today; if one becomes required, a skipped run would leave it pending.
 on:
   push:
-    branches: [main, master]
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
   pull_request:
-    branches: [main, master]
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+
+# A new push to a PR supersedes the run in flight. Pushes to main are never
+# cancelled, so every main commit keeps its own result.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   frontend:
@@ -408,9 +425,8 @@ jobs:
       # The full unit-test suite is NOT run here: the broader daemon tests
       # carry Unix assumptions (paths, sockets) beyond this port's scope, so
       # behavioral verification on Windows is done manually on a real machine.
-      - name: Check amuxd compiles on Windows
-        run: cargo check -p amuxd --locked
-
+      # (A separate `cargo check -p amuxd` used to run first; the build below
+      # type-checks the same code, so it only compiled amuxd twice.)
       - name: Build amuxd on Windows
         run: cargo build -p amuxd -p teamclu-introspect --locked
 

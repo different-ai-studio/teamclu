@@ -1,10 +1,15 @@
 name: Security Audit
 
-# Dependency advisories for the three lockfiles in this repo:
+# Dependency advisories for four of the lockfiles in this repo:
 #   Cargo.lock                      desktop (teamclu), daemon (amuxd), crates/*
 #   pnpm-lock.yaml                  the pnpm workspace (packages/app, apps/expo, ...)
 #   services/fc/package-lock.json   the Cloud API container; plain npm, outside
 #                                   the pnpm workspace
+#   services/ai-gateway/package-lock.json
+#                                   the team AI gateway container; plain npm too
+#
+# apps/daemon/pi-runtime/package-lock.json is not audited here: it pins the pi
+# release amuxd installs, and moves only with apps/daemon/pi.lock.json.
 #
 # Policy: fail on any HIGH or CRITICAL advisory that is not on the allowlist for
 # that lockfile. The allowlists are the baseline found on 2026-09-02, the day
@@ -25,12 +30,14 @@ on:
       - Cargo.lock
       - pnpm-lock.yaml
       - services/fc/package-lock.json
+      - services/ai-gateway/package-lock.json
       - .github/workflows/security-audit.yml
   pull_request:
     paths:
       - Cargo.lock
       - pnpm-lock.yaml
       - services/fc/package-lock.json
+      - services/ai-gateway/package-lock.json
       - .github/workflows/security-audit.yml
   schedule:
     - cron: "0 3 * * 1" # Mondays 03:00 UTC
@@ -163,6 +170,38 @@ jobs:
             for (const via of v.via) {
               // A string entry means "reached through <other package>"; the
               // advisory itself is an object on that other package's entry.
+              if (typeof via !== 'object') continue;
+              if (via.severity !== 'high' && via.severity !== 'critical') continue;
+              const id = String(via.url || '').split('/').pop();
+              if (!allow.has(id)) failing.push(`${via.severity}  ${name}  ${id}  ${via.title}`);
+            }
+          }
+          console.log('npm audit totals:', JSON.stringify(report.metadata?.vulnerabilities ?? {}));
+          if (failing.length) {
+            console.error('high/critical advisories not on the allowlist:\n' + failing.join('\n'));
+            process.exit(1);
+          }
+          console.log('every high/critical advisory is on the allowlist');
+          JS
+
+      # Same filter for the AI gateway. Baseline 2026-11-19: no high or
+      # critical advisory (2 moderate, in hono / @hono/node-server), so the
+      # allowlist starts empty.
+      - name: npm audit (services/ai-gateway)
+        working-directory: services/ai-gateway
+        run: |
+          npm audit --omit=dev --json > "$RUNNER_TEMP/npm-audit-gw.json" || true
+          AUDIT_JSON="$RUNNER_TEMP/npm-audit-gw.json" node - <<'JS'
+          const fs = require('node:fs');
+          const allow = new Set([]);
+          const report = JSON.parse(fs.readFileSync(process.env.AUDIT_JSON, 'utf8'));
+          if (report.error) {
+            console.error('npm audit did not produce a report:', report.error.summary || report.error);
+            process.exit(1);
+          }
+          const failing = [];
+          for (const [name, v] of Object.entries(report.vulnerabilities || {})) {
+            for (const via of v.via) {
               if (typeof via !== 'object') continue;
               if (via.severity !== 'high' && via.severity !== 'critical') continue;
               const id = String(via.url || '').split('/').pop();
