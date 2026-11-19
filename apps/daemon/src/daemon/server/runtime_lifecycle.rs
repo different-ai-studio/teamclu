@@ -197,6 +197,69 @@ impl DaemonServer {
         gateway_binding_exists(self.backend.as_ref(), session_id).await
     }
 
+    /// Permission for a runtime that is about to be created or resumed.
+    ///
+    /// An explicit client mode wins. Otherwise the last mode this session ran
+    /// with wins, so a restart that nobody is driving still matches the
+    /// dropdown. With neither, gateway sessions stay Full and interactive
+    /// sessions stay Ask.
+    pub(super) fn permission_for_session_start(
+        &self,
+        session_id: &str,
+        is_gateway: bool,
+        client_mode: &str,
+    ) -> crate::runtime::PermissionPolicy {
+        let client = client_mode.trim();
+        if !client.is_empty() {
+            return crate::runtime::PermissionPolicy::resolve_for_session(is_gateway, client);
+        }
+        if let Some(stored) = self.sessions.permission_mode(session_id) {
+            let fallback = if is_gateway {
+                crate::runtime::PermissionPolicy::Full
+            } else {
+                crate::runtime::PermissionPolicy::Ask
+            };
+            return crate::runtime::PermissionPolicy::from_wire(Some(stored), fallback);
+        }
+        crate::runtime::PermissionPolicy::resolve_for_session(is_gateway, "")
+    }
+
+    /// Record a mode a client just chose. Implicit fallbacks are not recorded,
+    /// so a session that was never switched keeps the gateway/ask default.
+    pub(super) fn remember_client_permission(
+        &mut self,
+        session_id: &str,
+        client_mode: &str,
+        permission: crate::runtime::PermissionPolicy,
+    ) {
+        if client_mode.trim().is_empty() {
+            return;
+        }
+        self.remember_permission_mode(session_id, permission);
+    }
+
+    pub(super) fn remember_permission_mode(
+        &mut self,
+        session_id: &str,
+        permission: crate::runtime::PermissionPolicy,
+    ) {
+        if session_id.is_empty() {
+            return;
+        }
+        let wire = permission.as_wire_str();
+        if self.sessions.permission_mode(session_id) == Some(wire) {
+            return;
+        }
+        self.sessions.set_permission_mode(session_id, wire);
+        if let Err(e) = self.sessions.save(&self.sessions_path) {
+            warn!(
+                session_id,
+                error = %e,
+                "failed to persist session permission mode"
+            );
+        }
+    }
+
     pub(crate) async fn apply_start_runtime(
         &mut self,
         agent_type: amux::AgentType,
@@ -239,21 +302,19 @@ impl DaemonServer {
                     );
                     (worktree.to_string(), workspace_id.to_string())
                 }
-                Ok(ws) if !ws.path.trim().is_empty() => {
-                    match path_bearing_worktree(&ws.path) {
-                        Ok(path) => (path, workspace_id.to_string()),
-                        Err(error_code) => {
-                            return Err(StartRuntimeError {
-                                error_code: error_code.to_string(),
-                                error_message: format!(
-                                    "workspace path is not available on this machine: {}",
-                                    ws.path.trim()
-                                ),
-                                failed_stage: "validation".to_string(),
-                            });
-                        }
+                Ok(ws) if !ws.path.trim().is_empty() => match path_bearing_worktree(&ws.path) {
+                    Ok(path) => (path, workspace_id.to_string()),
+                    Err(error_code) => {
+                        return Err(StartRuntimeError {
+                            error_code: error_code.to_string(),
+                            error_message: format!(
+                                "workspace path is not available on this machine: {}",
+                                ws.path.trim()
+                            ),
+                            failed_stage: "validation".to_string(),
+                        });
                     }
-                }
+                },
                 Ok(ws) => (ws.path, workspace_id.to_string()),
                 Err(_) if !worktree.is_empty() => {
                     // Intentional (cloud-source-of-truth design): resolve()
@@ -544,7 +605,8 @@ impl DaemonServer {
             // "switch back to Ask" — the live pi route may already be Full from RPC.
             if !client_permission_mode.trim().is_empty() {
                 let is_gateway = self.session_has_gateway_binding(session_id).await;
-                let permission = crate::runtime::PermissionPolicy::resolve_for_session(
+                let permission = self.permission_for_session_start(
+                    session_id,
                     is_gateway,
                     client_permission_mode,
                 );
@@ -556,6 +618,11 @@ impl DaemonServer {
                 };
                 match cleared_result {
                     Ok(cleared) => {
+                        self.remember_client_permission(
+                            session_id,
+                            client_permission_mode,
+                            permission,
+                        );
                         self.publish_auto_granted_permissions(session_id, &cleared, "")
                             .await;
                     }
@@ -680,12 +747,12 @@ impl DaemonServer {
         // answer hangs the turn. `get_session_binding` returns the live binding
         // or the durable `gateway_key`, so RuntimeStart from the desktop keeps
         // the same full-access policy the gateway spawn path already uses
-        // (`is_gateway` ⇒ `PermissionPolicy::Full`).
+        // (`is_gateway` ⇒ `PermissionPolicy::Full`). A client that already
+        // chose a mode — including 「完全访问」 on an ordinary session — is
+        // remembered, and a restart that arrives with no mode uses that.
         let is_gateway = self.session_has_gateway_binding(session_id).await;
-        let permission = crate::runtime::PermissionPolicy::resolve_for_session(
-            is_gateway,
-            client_permission_mode,
-        );
+        let permission =
+            self.permission_for_session_start(session_id, is_gateway, client_permission_mode);
         let context = self
             .assemble_execution_context(
                 &resolved_worktree,
@@ -871,6 +938,7 @@ impl DaemonServer {
         if !session_id.is_empty() && !acp_sid.is_empty() {
             self.upsert_session_binding(session_id, &ws_id, agent_type, &acp_sid);
         }
+        self.remember_client_permission(session_id, client_permission_mode, permission);
 
         // ACTIVE — refresh the actor snapshot so clients see the attachment.
         let _ = self.publish_actor_state().await;
@@ -1252,6 +1320,10 @@ impl DaemonServer {
 
         match sync_result {
             Ok(cleared) => {
+                // The dropdown lands here while the runtime is already up, and
+                // nothing else writes the choice down. A later offline restart
+                // has no client mode to read.
+                self.remember_permission_mode(session_id, permission);
                 self.publish_auto_granted_permissions(
                     session_id,
                     &cleared,
