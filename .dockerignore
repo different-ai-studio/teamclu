@@ -20,3 +20,7 @@ apps/ios/
 apps/expo/
 apps/extension/
 packages/app/
+# ...except the bundled skill files amuxd compiles in with include_str!
+# (apps/daemon/src/runtime/supervisor.rs). Excluding them broke the daemon
+# image build.
+!packages/app/src/lib/skills/*/SKILL.md
