@@ -9,9 +9,6 @@ target/
 .vscode/
 *.log
 deploy/
-# keep the self-host all-in-one build context (Dockerfile COPYs from here)
-!deploy/self-host/all-in-one/
-!deploy/self-host/all-in-one/**
 *.md
 # Root-context builds (deploy/self-host/amuxd/Dockerfile) compile the Cargo
 # workspace, so every workspace member's manifest has to stay in context. The

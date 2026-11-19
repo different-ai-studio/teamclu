@@ -68,70 +68,6 @@ fn same_runtime_workspace(
 }
 
 impl DaemonServer {
-    /// Bind remote-tool routing metadata to a live runtime.
-    /// Route selection is message-level via `remote_context_id`; this binding is
-    /// retained only for compatibility/diagnostics and must not trigger ACP resume.
-    pub(crate) async fn bind_remote_tool_member(
-        &self,
-        runtime_id: &str,
-        session_id: &str,
-        member_actor_id: &str,
-        _team_id: &str,
-    ) {
-        if session_id.is_empty() || member_actor_id.is_empty() {
-            return;
-        }
-        {
-            let mut agents = self.agents.lock().await;
-            if let Some(h) = agents.get_handle_mut(runtime_id) {
-                h.remote_tool_member_id = member_actor_id.to_string();
-            }
-        }
-        {
-            let mut targets = self.session_remote_targets.lock().await;
-            targets.prune_expired();
-            targets.set(session_id, member_actor_id);
-        }
-        // Host-level `amuxd-remote-tools` injection is paused.
-    }
-
-    /// Legacy no-op. Remote-tools MCP is now a host baseline; reattaching a
-    /// session can perturb OpenCode's shared MCP registry.
-    pub(crate) async fn flush_pending_remote_tools_mcp_refresh(&self, runtime_id: &str) {
-        let mut agents = self.agents.lock().await;
-        if let Some(h) = agents.get_handle_mut(runtime_id) {
-            h.remote_tools_mcp_refresh_pending = false;
-        }
-    }
-
-    /// Legacy no-op. Host-level MCP baseline removes the need to refresh peers
-    /// by ACP resume.
-    async fn sync_peer_remote_tools_on_worktree(
-        &self,
-        _worktree: &str,
-        _workspace_id: &str,
-        _exclude_runtime_id: &str,
-        _team_id: &str,
-    ) {
-    }
-
-    /// Keep remote-tools routing metadata on a live collab runtime while MCP
-    /// auto-injection is paused. This does not claim that the runtime has the MCP.
-    pub(crate) async fn ensure_live_runtime_remote_tools(
-        &self,
-        runtime_id: &str,
-        session_id: &str,
-        requester_actor_id: &str,
-        team_id: &str,
-    ) {
-        if session_id.is_empty() || requester_actor_id.is_empty() {
-            return;
-        }
-
-        self.bind_remote_tool_member(runtime_id, session_id, requester_actor_id, team_id)
-            .await;
-    }
-
     /// Spawns a Claude Code subprocess and publishes lifecycle state
     /// transitions on the retained runtime state topic. Shared by legacy
     /// AcpCommand::StartAgent and RPC RuntimeStart handlers.
@@ -205,7 +141,6 @@ impl DaemonServer {
         session_id: &str,
         initial_prompt: &str,
         initial_model_override: Option<String>,
-        requester_actor_id: &str,
         reset_backend_binding: bool,
         fork_from: Option<(String, String)>,
         client_permission_mode: &str,
@@ -213,7 +148,6 @@ impl DaemonServer {
         info!(workspace_id, worktree, session_id, "apply_start_runtime");
 
         let team_id = self.config.team_id.clone().unwrap_or_default();
-        let wants_remote_mcp = !session_id.is_empty() && !requester_actor_id.is_empty();
 
         // Resolve workspace + worktree via the cloud-backed WorkspaceResolver.
         // The cloud UUID (`workspace_id`) IS the workspace id now — there is
@@ -400,10 +334,6 @@ impl DaemonServer {
         if !superseded.is_empty() {
             for rid in &superseded {
                 self.agents.lock().await.stop_runtime(rid).await;
-                self.remote_tool_turn_contexts
-                    .lock()
-                    .await
-                    .clear_runtime(rid);
             }
             info!(
                 session_id,
@@ -413,17 +343,11 @@ impl DaemonServer {
         }
 
         if let Some(existing) = existing_runtime {
-            let (existing_acp_session_id, existing_worktree, existing_remote_member) = {
+            let (existing_acp_session_id, existing_worktree) = {
                 let agents = self.agents.lock().await;
                 agents
                     .get_handle(&existing)
-                    .map(|h| {
-                        (
-                            h.acp_session_id.clone(),
-                            h.worktree.clone(),
-                            h.remote_tool_member_id.clone(),
-                        )
-                    })
+                    .map(|h| (h.acp_session_id.clone(), h.worktree.clone()))
                     .unwrap_or_default()
             };
             info!(
@@ -432,8 +356,6 @@ impl DaemonServer {
                 runtime_id = %existing,
                 acp_session_id = %existing_acp_session_id,
                 handle_worktree = %existing_worktree,
-                remote_tool_member_id = %existing_remote_member,
-                wants_remote_mcp,
                 "apply_start_runtime: dedup hit; reusing existing runtime"
             );
             // TODO(perf-runtime-start-throttle): See the same id on the client
@@ -482,22 +404,7 @@ impl DaemonServer {
                     }
                 }
             }
-            if wants_remote_mcp {
-                self.ensure_live_runtime_remote_tools(
-                    &existing,
-                    session_id,
-                    requester_actor_id,
-                    &team_id,
-                )
-                .await;
-            }
             if !initial_prompt.trim().is_empty() {
-                self.prepare_remote_tool_context_for_turn(
-                    &existing,
-                    session_id,
-                    requester_actor_id,
-                )
-                .await;
                 if let Err(e) = self
                     .agents
                     .lock()
@@ -653,7 +560,6 @@ impl DaemonServer {
                         &ws_id,
                         initial_prompt,
                         initial_model_override.as_deref(),
-                        requester_actor_id,
                         client_permission_mode,
                     )
                     .await?
@@ -741,11 +647,6 @@ impl DaemonServer {
 
         let forbid_new_session_fallback = resume_acp_session_id.is_some();
 
-        // Do not write / pass `remote-tools-host.json` — auto-inject of
-        // `amuxd-remote-tools` is paused. Re-enable via write_remote_tools_mcp_config.
-        let mcp_config_path = None;
-        let should_bind_remote_target = !session_id.is_empty() && !requester_actor_id.is_empty();
-
         if let Some(supervisor) = self.runtime_supervisor.as_ref() {
             supervisor
                 .require_skills_refresh_for_attach(&ws_id, std::path::Path::new(&resolved_worktree))
@@ -774,7 +675,6 @@ impl DaemonServer {
                 (!ws_id.is_empty()).then_some(ws_id.as_str()),
                 session_id,
                 initial_model_override,
-                mcp_config_path,
                 resume_acp_session_id,
                 forbid_new_session_fallback,
                 context,
@@ -817,14 +717,7 @@ impl DaemonServer {
             );
         }
 
-        if should_bind_remote_target {
-            self.bind_remote_tool_member(&new_id, session_id, requester_actor_id, &team_id)
-                .await;
-        }
-
         if !initial_prompt.trim().is_empty() {
-            self.prepare_remote_tool_context_for_turn(&new_id, session_id, requester_actor_id)
-                .await;
             if let Err(e) = self
                 .agents
                 .lock()
@@ -881,11 +774,6 @@ impl DaemonServer {
         // and state is ACTIVE.
         self.catchup_runtime(&new_id).await;
 
-        if should_bind_remote_target {
-            self.sync_peer_remote_tools_on_worktree(&resolved_worktree, &ws_id, &new_id, &team_id)
-                .await;
-        }
-
         Ok(StartRuntimeOutcome {
             runtime_id: new_id,
             session_id: session_id.to_string(),
@@ -936,11 +824,6 @@ impl DaemonServer {
                 &format!("stop failed for runtime_id: {}", runtime_id),
             );
         }
-
-        self.remote_tool_turn_contexts
-            .lock()
-            .await
-            .clear_runtime(&runtime_id);
 
         if stop.purge_binding {
             let cloud_session_id = runtime_id.clone();
@@ -1008,7 +891,6 @@ impl DaemonServer {
                 &start.session_id,
                 &start.initial_prompt,
                 initial_model_override.clone(),
-                &request.requester_actor_id,
                 start.reset_backend_binding,
                 fork_from.clone(),
                 &start.permission_mode,
@@ -1040,7 +922,6 @@ impl DaemonServer {
                             &start.session_id,
                             &start.initial_prompt,
                             initial_model_override,
-                            &request.requester_actor_id,
                             start.reset_backend_binding,
                             fork_from,
                             &start.permission_mode,

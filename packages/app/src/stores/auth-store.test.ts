@@ -20,7 +20,6 @@ const authMock = {
   verifyPhoneOtpResult: vi.fn(),
   loginWithPhoneUser: vi.fn(),
   signOut: vi.fn(),
-  signInWithPassword: vi.fn(),
   claimInvite: vi.fn(),
   listPendingInvites: vi.fn(),
   acceptPendingInvite: vi.fn(),
@@ -334,16 +333,6 @@ describe("auth-store", () => {
     await useAuthStore.getState().signOut();
 
     expect(logSignOutMock).toHaveBeenCalledWith("unspecified", expect.objectContaining({ user: "u" }));
-  });
-
-  it("signInWithPassword stores the returned session", async () => {
-    authMock.signInWithPassword.mockResolvedValueOnce(storeSessionLike("password-1"));
-
-    const ok = await useAuthStore.getState().signInWithPassword("person@example.com", "password123");
-
-    expect(ok).toBe(true);
-    expect(authMock.signInWithPassword).toHaveBeenCalledWith("person@example.com", "password123");
-    expect(useAuthStore.getState().session?.user.id).toBe("password-1");
   });
 
   it("claimInvite claims the token through backend auth", async () => {

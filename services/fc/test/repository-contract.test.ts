@@ -65,9 +65,6 @@ function contractRepo() {
   const shortcutStore: any[] = [
     { id: "shortcut-1", scope: "team", label: "Home", owner_member_id: null, team_id: "team-1", parent_id: null, icon: null, order: 0, node_type: "link", target: "", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-01T00:00:00Z" },
   ];
-  const roleStore = [
-    { id: "role-1", teamId: "team-1", code: "admin", name: "Admin" },
-  ];
   // (team, device, owner) → agent actor, mirroring agents_team_device_uk.
   const deviceAgentStore = new Map<string, string>();
   let inviteSeq = 0;
@@ -603,10 +600,6 @@ function contractRepo() {
       if (idx >= 0) shortcutStore.splice(idx, 1);
     },
     async batchMoveShortcuts({ moves }) {},
-    async setShortcutVisibleRoles(shortcutId, { roleIds }) {},
-    async listTeamRoles(teamId) {
-      return roleStore.filter(r => r.teamId === teamId);
-    },
     async uploadAttachment({ path, mime, bytes, bucket }) {
       const targetBucket = bucket || "attachments";
       attachmentStore[`${targetBucket}/${path}`] = { mime, bytes };

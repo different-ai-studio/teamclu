@@ -207,6 +207,7 @@ impl SessionManager {
     }
 
     /// Subscribe to all relevant teamclu topics (team + tracked live).
+    #[cfg(test)]
     pub async fn subscribe_all(&mut self) -> crate::error::Result<()> {
         self.subscribe_team_topics().await?;
         self.resubscribe_tracked_live_sessions().await

@@ -861,7 +861,6 @@ impl RuntimeManagerAdapter {
                 &session_id.to_string(),
                 model,
                 None,
-                None,
                 false,
                 context,
             )

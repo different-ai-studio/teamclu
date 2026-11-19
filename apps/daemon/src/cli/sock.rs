@@ -1,8 +1,7 @@
 //! One-line request / one-line reply over the amuxd control socket.
 //!
-//! Shared by the CLI-side stdio bridges (`remote-tools-mcp`, the cursor
-//! permission hook). It used to live in `cli::mcp_server`, which was the
-//! `amuxd-send` server — that server is retired (its `send` tool is now
+//! Shared by the CLI-side stdio bridges (the cursor permission hook). It used
+//! to live in `cli::mcp_server`, which was the `amuxd-send` server — that server is retired (its `send` tool is now
 //! `send_channel_message`'s `reply_token` branch in `teamclu-introspect`), but
 //! the transport it carried is still used.
 

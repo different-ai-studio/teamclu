@@ -33,9 +33,7 @@ transforms:
       kong: '.appname == "supabase-kong"'
       auth: '.appname == "supabase-auth"'
       rest: '.appname == "supabase-rest"'
-      realtime: '.appname == "supabase-realtime"'
       storage: '.appname == "supabase-storage"'
-      functions: '.appname == "supabase-functions"'
       db: '.appname == "supabase-db"'
   # Ignores non nginx errors since they are related with kong booting up
   kong_logs:
@@ -102,19 +100,6 @@ transforms:
           .event_message = parsed.msg
           .metadata.host = .project
       }
-  # Realtime logs are structured so we parse the severity level using regex (ignore time because it has no date)
-  realtime_logs:
-    type: remap
-    inputs:
-      - router.realtime
-    source: |-
-      .metadata.project = del(.project)
-      .metadata.external_id = .metadata.project
-      parsed, err = parse_regex(.event_message, r'^(?P<time>\d+:\d+:\d+\.\d+) \[(?P<level>\w+)\] (?P<msg>.*)$')
-      if err == null {
-          .event_message = parsed.msg
-          .metadata.level = parsed.level
-      }
   # Storage logs may contain json objects so we parse them for completeness
   storage_logs:
     type: remap
@@ -164,16 +149,6 @@ sinks:
     request:
       retry_max_duration_secs: 10
     uri: 'http://analytics:4000/api/logs?source_name=gotrue.logs.prod&api_key=${LOGFLARE_API_KEY?LOGFLARE_API_KEY is required}'
-  logflare_realtime:
-    type: 'http'
-    inputs:
-      - realtime_logs
-    encoding:
-      codec: 'json'
-    method: 'post'
-    request:
-      retry_max_duration_secs: 10
-    uri: 'http://analytics:4000/api/logs?source_name=realtime.logs.prod&api_key=${LOGFLARE_API_KEY?LOGFLARE_API_KEY is required}'
   logflare_rest:
     type: 'http'
     inputs:
@@ -197,16 +172,6 @@ sinks:
     # lead to broken queries from studio. This works by the assumption that containers are started in the
     # following order: vector > db > logflare > kong
     uri: 'http://kong:8000/analytics/v1/api/logs?source_name=postgres.logs&api_key=${LOGFLARE_API_KEY?LOGFLARE_API_KEY is required}'
-  logflare_functions:
-    type: 'http'
-    inputs:
-      - router.functions
-    encoding:
-      codec: 'json'
-    method: 'post'
-    request:
-      retry_max_duration_secs: 10
-    uri: 'http://analytics:4000/api/logs?source_name=deno-relay-logs&api_key=${LOGFLARE_API_KEY?LOGFLARE_API_KEY is required}'
   logflare_storage:
     type: 'http'
     inputs:

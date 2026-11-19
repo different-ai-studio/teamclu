@@ -147,8 +147,7 @@ fn mutate_inherent_mcp(
 
     let mut changed = false;
 
-    // Auto-inject of `amuxd-remote-tools` is paused — keep the stdio server
-    // (`amuxd remote-tools-mcp`) but do not surface it in workspace MCP.
+    // `amuxd-remote-tools` and its `remote-tools-mcp` subcommand are gone.
     // Strip leftovers from earlier builds so GET /mcp and Team Share go quiet.
     if mcp_obj.remove(REMOTE_TOOLS_MCP_SERVER_NAME).is_some() {
         changed = true;
@@ -2148,7 +2147,7 @@ mod inherent_mcp_tests {
         });
         let mcp = inherent_mcp_map(&mut config);
         assert!(mcp.contains_key("ctx7"), "user server survived");
-        // Auto-injecting remote-tools is paused — it is stripped instead.
+        // The retired remote-tools entry is stripped, never injected.
         assert!(!mcp.contains_key(REMOTE_TOOLS_MCP_SERVER_NAME));
     }
 }

@@ -23,7 +23,7 @@
 //! channel as a marked `select` dialog (see `translate::QUESTION_MARKER`).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -291,28 +291,6 @@ fn split_model_id(model_id: &str) -> Option<(String, String)> {
     Some((provider.to_string(), model.to_string()))
 }
 
-/// Extract the `amuxd-remote-tools` server launch command from an amuxd MCP
-/// config value (`{"mcpServers": {"amuxd-remote-tools": {"command", "args"}}}`,
-/// the shape `remote_tools::mcp_config` writes). Returned as a JSON array
-/// string, the `TEAMCLU_REMOTE_TOOLS_CMD` contract of the pi extension.
-fn remote_tools_cmd_from_value(root: &serde_json::Value) -> Option<String> {
-    // Literal name (= remote_tools::REMOTE_TOOLS_MCP_SERVER_NAME); kept local
-    // so the integration-test harness need not pull in the remote_tools tree.
-    let server = root.get("mcpServers")?.get("amuxd-remote-tools")?;
-    let command = server.get("command").and_then(|v| v.as_str())?;
-    let mut cmd = vec![serde_json::json!(command)];
-    if let Some(args) = server.get("args").and_then(|v| v.as_array()) {
-        cmd.extend(args.iter().filter(|a| a.is_string()).cloned());
-    }
-    Some(serde_json::Value::Array(cmd).to_string())
-}
-
-fn remote_tools_cmd_from_mcp_config(path: &Path) -> Option<String> {
-    let body = std::fs::read_to_string(path).ok()?;
-    let root: serde_json::Value = serde_json::from_str(&body).ok()?;
-    remote_tools_cmd_from_value(&root)
-}
-
 /// Build the `TEAMCLU_MCP_SERVERS` payload for the pi extension from a
 /// workspace `opencode.json` (the MCP SSOT: team + inherent + user servers all
 /// merge into its `mcp` map). pi has no native MCP, so the extension connects
@@ -327,8 +305,8 @@ fn remote_tools_cmd_from_mcp_config(path: &Path) -> Option<String> {
 ///
 /// None when there is nothing to bridge. Excluded: disabled servers, local
 /// servers whose command path does not exist on this machine, remote servers
-/// with no URL, and `amuxd-remote-tools` (already bridged via
-/// `TEAMCLU_REMOTE_TOOLS_CMD`).
+/// with no URL, and a stale `amuxd-remote-tools` entry (that bridge was
+/// removed; its `remote-tools-mcp` subcommand no longer exists).
 /// The `command[0]` of an MCP server entry when it names a path that does not
 /// exist on this machine.
 ///
@@ -507,7 +485,6 @@ fn model_from_state(state: &serde_json::Value) -> Option<String> {
 struct AttachArgs {
     worktree: String,
     resume_acp_session_id: Option<String>,
-    mcp_config_path: Option<PathBuf>,
     initial_model_override: Option<String>,
     /// Daemon MRU, newest first. See `config::model_mru`.
     model_mru: Vec<String>,
@@ -606,10 +583,6 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
     let env = SpawnEnv {
         extra_env: args.extra_env,
         force_env_override: args.force_env_override,
-        remote_tools_cmd: args
-            .mcp_config_path
-            .as_deref()
-            .and_then(remote_tools_cmd_from_mcp_config),
         mcp_servers: mcp_servers_from_opencode_json(&worktree),
     };
     let proc = shared
@@ -856,7 +829,6 @@ pub(crate) async fn fork_branched_session(
     let env = SpawnEnv {
         extra_env,
         force_env_override,
-        remote_tools_cmd: None,
         mcp_servers: mcp_servers_from_opencode_json(&worktree),
     };
     let proc = shared
@@ -1708,7 +1680,6 @@ impl AgentBackend for PiRpcBackend {
         force_env_override: bool,
         worktree: String,
         resume_acp_session_id: Option<String>,
-        mcp_config_path: Option<PathBuf>,
         initial_model_override: Option<String>,
         model_mru: Vec<String>,
         _initial_prompt: String,
@@ -1730,7 +1701,6 @@ impl AgentBackend for PiRpcBackend {
             AttachArgs {
                 worktree,
                 resume_acp_session_id,
-                mcp_config_path,
                 initial_model_override,
                 model_mru,
                 event_tx,
@@ -1789,10 +1759,6 @@ impl AgentBackend for PiRpcBackend {
         let env = SpawnEnv {
             extra_env,
             force_env_override,
-            // The remote-tools command arrives with the session's mcp config
-            // at attach; a prewarm that predates it respawns then (fingerprint
-            // change), same as before.
-            remote_tools_cmd: None,
             mcp_servers: mcp_servers_from_opencode_json(&worktree),
         };
         if let Err(e) = self.shared.pool.ensure_with_env(&self.shared, &key, env) {
@@ -1984,7 +1950,6 @@ impl AgentBackend for PiRpcBackend {
         let env = SpawnEnv {
             extra_env,
             force_env_override: false,
-            remote_tools_cmd: None,
             mcp_servers: mcp_servers_from_opencode_json(&worktree),
         };
         // `ensure_for_catalog`, never `ensure_with_env`: this env is missing
@@ -2217,48 +2182,6 @@ mod tests {
             "pi:/s/a.jsonl",
         );
         assert!(legacy.get("sessionId").is_none());
-    }
-
-    #[test]
-    fn remote_tools_cmd_extracted_from_mcp_config_shape() {
-        let root = serde_json::json!({
-            "mcpServers": {
-                "amuxd-remote-tools": {
-                    "command": "/usr/local/bin/amuxd",
-                    "args": ["remote-tools-mcp", "--sock=/tmp/amuxd.sock"]
-                }
-            }
-        });
-        assert_eq!(
-            remote_tools_cmd_from_value(&root).as_deref(),
-            Some(r#"["/usr/local/bin/amuxd","remote-tools-mcp","--sock=/tmp/amuxd.sock"]"#)
-        );
-        // Other servers present but no amuxd-remote-tools → None.
-        let other = serde_json::json!({"mcpServers": {"something-else": {"command": "x"}}});
-        assert_eq!(remote_tools_cmd_from_value(&other), None);
-        assert_eq!(remote_tools_cmd_from_value(&serde_json::json!({})), None);
-        // Missing command → None.
-        let no_cmd = serde_json::json!({"mcpServers": {"amuxd-remote-tools": {"args": ["a"]}}});
-        assert_eq!(remote_tools_cmd_from_value(&no_cmd), None);
-    }
-
-    #[test]
-    fn remote_tools_cmd_from_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("remote-tools-host.json");
-        std::fs::write(
-            &path,
-            r#"{"mcpServers":{"amuxd-remote-tools":{"command":"amuxd","args":["remote-tools-mcp"]}}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            remote_tools_cmd_from_mcp_config(&path).as_deref(),
-            Some(r#"["amuxd","remote-tools-mcp"]"#)
-        );
-        assert_eq!(
-            remote_tools_cmd_from_mcp_config(&dir.path().join("missing.json")),
-            None
-        );
     }
 
     #[tokio::test]

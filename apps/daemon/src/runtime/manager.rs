@@ -635,7 +635,6 @@ impl RuntimeManager {
             session_id,
             None,
             None,
-            None,
             false,
             context,
         )
@@ -646,8 +645,6 @@ impl RuntimeManager {
     /// `create_gateway_session_with_model` to honour a per-session
     /// `set_model` override the gateway recorded before the first prompt.
     /// `initial_model_override` is a full pi model id (e.g. `anthropic/claude-sonnet-4-6`).
-    /// `mcp_config_path`, when `Some`, is forwarded as `--mcp-config <path>`
-    /// to the spawned claude-code so it can call amuxd's `send` tool.
     #[allow(clippy::too_many_arguments)]
     pub async fn start_runtime_with_model(
         &mut self,
@@ -657,7 +654,6 @@ impl RuntimeManager {
         remote_workspace_id: Option<&str>,
         session_id: &str,
         initial_model_override: Option<String>,
-        mcp_config_path: Option<PathBuf>,
         resume_acp_session_id: Option<String>,
         forbid_new_session_fallback: bool,
         context: ExecutionContext,
@@ -737,7 +733,6 @@ impl RuntimeManager {
                 force_env_override,
                 worktree.clone(),
                 resume_acp_session_id,
-                mcp_config_path,
                 initial_model_override.clone(),
                 // No device MRU: every entry point pins a model when it is
                 // created, so attach has nothing left to infer from (ADR-0007).
@@ -850,7 +845,6 @@ impl RuntimeManager {
         workspace_id: &str,
         remote_workspace_id: Option<&str>,
         prompt: &str,
-        mcp_config_path: Option<std::path::PathBuf>,
         forbid_new_session_fallback: bool,
         context: ExecutionContext,
     ) -> crate::error::Result<String> {
@@ -908,7 +902,6 @@ impl RuntimeManager {
                 force_env_override,
                 worktree.clone(),
                 Some(acp_session_id.to_string()),
-                mcp_config_path,
                 None,
                 // No device MRU: every entry point pins a model when it is
                 // created, so attach has nothing left to infer from (ADR-0007).
@@ -1154,7 +1147,7 @@ impl RuntimeManager {
     ///
     /// Every `RuntimeInfo` leaving this daemon goes through here. Without it,
     /// an idle binding — or a historical `SessionStore` row replayed by
-    /// `publish_all_agent_states` — advertises an empty catalog, and clients
+    /// `publish_actor_state` — advertises an empty catalog, and clients
     /// read that as "no models", which pins the session's pill at 连接中.
     pub fn fill_catalog(&self, info: &mut amux::RuntimeInfo) {
         if !info.available_models.is_empty() {
@@ -1848,7 +1841,6 @@ impl RuntimeManager {
                 session_id,
                 initial_model,
                 None,
-                None,
                 false,
                 ExecutionContext {
                     isolation_domain,
@@ -2219,7 +2211,6 @@ mod tests {
             _force_env_override: bool,
             _worktree: String,
             _resume_acp_session_id: Option<String>,
-            _mcp_config_path: Option<PathBuf>,
             _initial_model_override: Option<String>,
             _model_mru: Vec<String>,
             _initial_prompt: String,
@@ -3076,7 +3067,6 @@ mod tests {
                 "workspace-1",
                 None,
                 "session-1",
-                None,
                 None,
                 None,
                 false,

@@ -212,23 +212,10 @@ impl DaemonServer {
         }
     }
 
-    /// Build merged agent list: active agents + historical (non-active) sessions.
-    /// Now only used by `publish_all_agent_states` to iterate startup/reconnect state.
-    /// Per-agent updates should go through `publish_runtime_state_by_id`.
-    pub(crate) async fn merged_agent_list(&self) -> amux::AgentList {
-        let agents = self.agents.lock().await;
-        agents.to_proto_agent_list()
-    }
-
     /// Publish the actor snapshot after attachment changes. Per-spawn
     /// `runtime/{id}/state` retains are no longer published — clients read
     /// `{actor}/state` only (ADR-0004 phase 7, iOS out of scope).
     pub(crate) async fn publish_runtime_state_by_id(&self, _agent_id: &str) {
-        let _ = self.publish_actor_state().await;
-    }
-
-    /// Re-publish the actor snapshot on startup / MQTT reconnect.
-    pub(crate) async fn publish_all_agent_states(&self) {
         let _ = self.publish_actor_state().await;
     }
 
@@ -796,11 +783,6 @@ impl DaemonServer {
                 }
             }
             self.publish_runtime_state_by_id(agent_id).await;
-            self.remote_tool_turn_contexts
-                .lock()
-                .await
-                .clear_runtime(agent_id);
-            self.flush_pending_remote_tools_mcp_refresh(agent_id).await;
         }
 
         // Ambient state variants (replaced wholesale on each push) should not
@@ -908,10 +890,6 @@ impl DaemonServer {
         }
         for rid in &superseded {
             self.agents.lock().await.stop_runtime(rid).await;
-            self.remote_tool_turn_contexts
-                .lock()
-                .await
-                .clear_runtime(rid);
         }
         vec![keep]
     }
@@ -1008,11 +986,7 @@ impl DaemonServer {
         let runtime_ids = self.coalesce_session_runtimes(session_id).await;
         if runtime_ids.is_empty() {
             if self
-                .resume_historical_runtimes_for_session(
-                    session_id,
-                    (!message.sender_actor_id.is_empty())
-                        .then_some(message.sender_actor_id.as_str()),
-                )
+                .resume_historical_runtimes_for_session(session_id)
                 .await
             {
                 return;
@@ -1081,9 +1055,7 @@ impl DaemonServer {
             }
         }
 
-        let sender_display = self
-            .display_name_for_actor(&message.sender_actor_id)
-            .unwrap_or_else(|| message.sender_actor_id.chars().take(8).collect());
+        let sender_display: String = message.sender_actor_id.chars().take(8).collect();
 
         // @-ing the person on the other end of a gateway chat sends them the
         // message. Runs before runtime routing because it is independent of
@@ -1170,12 +1142,6 @@ impl DaemonServer {
                         }
                     }
                 }
-                self.prepare_remote_tool_context_for_turn(
-                    &runtime_id,
-                    session_id,
-                    &message.sender_actor_id,
-                )
-                .await;
                 let requester =
                     (!message.sender_actor_id.is_empty()).then(|| message.sender_actor_id.clone());
                 let reply_to = (!message.message_id.is_empty()).then(|| message.message_id.clone());
@@ -1497,18 +1463,6 @@ impl DaemonServer {
             ),
             Err(e) => warn!(session_id, channel, error = %e, "external mention: push failed"),
         }
-    }
-
-    /// Look up a display name for an actor_id from the in-memory peer tracker.
-    /// Returns `None` if the actor is unknown; the caller falls back to the
-    /// first 8 chars of the actor_id.
-    pub(crate) fn display_name_for_actor(&self, actor_id: &str) -> Option<String> {
-        // PeerTracker is keyed by peer_id (session-scoped), not actor_id.
-        // Search linearly for a matching member_id / peer entry.
-        // If no match is found, return None and let the caller use the fallback.
-        self.peers
-            .get_peer(actor_id)
-            .map(|p| p.display_name.clone())
     }
 
     /// Single sink for agent-originated envelopes. Fans out to

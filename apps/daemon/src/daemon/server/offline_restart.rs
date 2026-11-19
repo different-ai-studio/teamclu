@@ -382,7 +382,6 @@ impl DaemonServer {
                 &entry.session_id,
                 "",
                 None,
-                "",
                 false,
                 entry.fork_from,
                 "",

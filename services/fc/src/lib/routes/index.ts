@@ -75,9 +75,7 @@ export function registerAllRoutes(router) {
   // Owns /v1/teams/:teamId/wiki-maintainer* and must precede workspaces'
   // broader team route.
   registerWikiMaintainer(router);
-  // Org roles own /v1/teams/:teamId/roles* (OpenAPI listOrgRoles). Must register
-  // before shortcuts so the old shortcuts listTeamRoles path cannot collide —
-  // shortcuts now serve listTeamRoles at /shortcut-roles.
+  // Org roles own /v1/teams/:teamId/roles* (OpenAPI listOrgRoles).
   registerOrgRoles(router);
   registerWorkspaces(router);
   registerSystem(router);

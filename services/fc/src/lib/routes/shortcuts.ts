@@ -64,27 +64,4 @@ export function registerShortcuts(router) {
     await ctx.repository.batchMoveShortcuts({ moves: body.moves });
     return { statusCode: 204, body: null };
   });
-
-  router.put("/v1/shortcuts/:shortcutId/visible-roles", async (ctx) => {
-    const body = ctx.json ?? {};
-    if (!Array.isArray(body.roleIds)) {
-      throw new ApiError(400, "validation_failed", "roleIds is required and must be an array");
-    }
-    await ctx.repository.setShortcutVisibleRoles(ctx.params.shortcutId, { roleIds: body.roleIds });
-    return { statusCode: 204, body: null };
-  });
-
-  // Relocated from /v1/teams/:teamId/roles — that path is now org roles
-  // (docs/specs/2026-09-15-org-roles-permissions-design.md). Shortcuts RBAC
-  // still reads amux.team_roles via listTeamRoles.
-  router.get("/v1/teams/:teamId/shortcut-roles", async (ctx) => {
-    const items = await ctx.repository.listTeamRoles(ctx.params.teamId);
-    return { body: { items } };
-  });
-
-  router.get("/v1/teams/:teamId/shortcut-role-bindings", async (ctx) => {
-    const teamId = decodeURIComponent(ctx.params.teamId);
-    const items = await ctx.repository.listShortcutRoleBindings(teamId);
-    return { body: { items } };
-  });
 }

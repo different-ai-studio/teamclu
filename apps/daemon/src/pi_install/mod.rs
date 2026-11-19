@@ -173,8 +173,8 @@ pub struct PiStatus {
     pub required_version: String,
     /// `@modelcontextprotocol/sdk` in the managed runtime. Reported separately
     /// because it is a separate package, but folded into `satisfied` — without
-    /// it the extension bridges no MCP servers at all, which costs remote-tools
-    /// and every team tool with it.
+    /// it the extension bridges no MCP servers at all, which costs every team
+    /// tool with it.
     pub mcp_sdk_present: bool,
     pub mcp_sdk_version: Option<String>,
     pub required_mcp_sdk_version: String,

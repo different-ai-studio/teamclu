@@ -34,8 +34,8 @@ REST_IP=$(docker inspect supabase-rest \
   --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || echo "")
 
 if [ -z "$REST_IP" ]; then
-  # The all-in-one image runs PostgREST as a plain process, not its own
-  # container. Nothing to probe — let the suite report whatever it finds.
+  # No supabase-rest container on this host. Nothing to probe — let the
+  # suite report whatever it finds.
   echo "note: supabase-rest container not found; skipping schema-cache wait"
 else
   echo "=== wait for postgrest schema cache ==="

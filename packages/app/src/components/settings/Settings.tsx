@@ -5,8 +5,6 @@ import {
   Settings2,
   MessageSquareText,
   MessageSquare,
-  Sparkles,
-  UserRound,
   Lock,
   Package,
   Clock,
@@ -90,23 +88,8 @@ const localAgentSections: Section[] = [
   { id: 'llm', label: 'LLM Model', labelKey: 'settings.nav.llm', icon: Brain },
   { id: 'knowledgeAcl', label: 'Knowledge Access', labelKey: 'settings.nav.knowledgeAcl', icon: Lock },
   { id: 'prompt', label: 'Prompt', labelKey: 'settings.nav.prompt', icon: MessageSquareText },
-  { id: 'roles', label: 'Roles', labelKey: 'settings.nav.roles', icon: UserRound },
-  { id: 'rolesSkills', label: 'Role Skills', labelKey: 'settings.nav.rolesSkills', icon: Sparkles },
   { id: 'deps', label: 'Dependencies', labelKey: 'settings.nav.deps', icon: Package },
 ]
-
-/**
- * Temporarily hidden from the nav.
- *
- * Both read the skills inventory through the daemon scan, whose source labels
- * and de-duplication are being reworked alongside the team skills registry —
- * until that settles they show a view of "which copy of a skill is real" that
- * disagrees with the team-share panel.
- *
- * The sections, their routes, and their registry entries are all left intact:
- * deleting this set is the whole of putting them back.
- */
-const HIDDEN_LOCAL_AGENT_SECTIONS = new Set<SettingsSection>(['roles', 'rolesSkills'])
 
 function UpdateButton() {
   const { t } = useTranslation()
@@ -176,10 +159,7 @@ export function Settings(_props?: SettingsProps) {
     daemonSections.filter(s => s.id !== 'channels' || hasAnyChannel(features.channels)),
     [features]
   )
-  const filteredLocalAgentSections = React.useMemo(
-    () => localAgentSections.filter(s => !HIDDEN_LOCAL_AGENT_SECTIONS.has(s.id)),
-    [],
-  )
+  const filteredLocalAgentSections = localAgentSections
 
   const { operator } = usePlatformOperator()
   const localAgentAbsent = useLocalAgentAbsent()

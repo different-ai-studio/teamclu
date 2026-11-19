@@ -74,7 +74,7 @@ Session ↔ Attachment 是 **1:0..1**（每 actor 而言）。
 
 ### Bus
 client ↔ daemon 的**双向消息总线**。
-有两种实现：MQTT、NATS。上层不感知具体后端。
+实现是 MQTT。
 区别于：
 - [Gateway](#gateway)（对外部 IM 平台）
 - pi host stdio（daemon ↔ [Runtime](#runtime) 的 JSONL 子进程管道）

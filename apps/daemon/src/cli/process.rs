@@ -268,10 +268,9 @@ pub fn run_stop() -> anyhow::Result<()> {
                 std::thread::sleep(Duration::from_millis(50));
             }
 
-            // Last resort: managed child trees first (their process groups),
-            // then the daemon itself (its own process group when it is leader).
-            println!("amuxd: still running after 3s; force-stopping managed trees then daemon…");
-            reap_managed_agent_trees();
+            // Last resort: the daemon itself (its own process group when it is
+            // leader, which takes its pi host children with it).
+            println!("amuxd: still running after 3s; force-stopping daemon…");
             force_stop_daemon(pid);
             let force_deadline = Instant::now() + Duration::from_secs(1);
             while Instant::now() < force_deadline && is_alive(pid) {
@@ -301,92 +300,9 @@ pub fn cleanup_runtime_artifacts() {
     let _ = fs::remove_file(DaemonConfig::http_port_path());
 }
 
-/// Kill leftover helper processes (best-effort MCP children that escaped a
-/// prior daemon's process tree) so a crashed/hard-killed daemon cannot block
-/// start. pi hosts are stdio children and die with the daemon.
-pub fn reap_managed_agent_trees() {
-    #[cfg(unix)]
-    reap_remote_tools_mcp_best_effort();
-}
-
-/// Reap processes left by a previously hard-killed daemon.
-///
-/// The caller must hold the daemon singleton lock so this cannot signal
-/// processes owned by another live daemon.
-pub fn prepare_daemon_start() -> anyhow::Result<()> {
-    reap_managed_agent_trees();
-    Ok(())
-}
-
 fn finalize_stop() -> anyhow::Result<()> {
-    reap_managed_agent_trees();
     cleanup_runtime_artifacts();
     Ok(())
-}
-
-#[cfg(unix)]
-fn cmdline_of(pid: i32) -> Option<String> {
-    fs::read_to_string(format!("/proc/{pid}/cmdline"))
-        .ok()
-        .map(|s| s.replace('\0', " "))
-        .or_else(|| read_macos_cmdline(pid))
-}
-
-/// MCP children that escaped a prior daemon's tree still hold our sock path in argv.
-#[cfg(unix)]
-fn reap_remote_tools_mcp_best_effort() {
-    let sock = DaemonConfig::sock_path();
-    let sock_s = sock.to_string_lossy();
-    let Ok(output) = std::process::Command::new("pgrep")
-        .args(["-f", "remote-tools-mcp"])
-        .output()
-    else {
-        return;
-    };
-    if !output.status.success() {
-        return;
-    }
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Ok(pid) = line.trim().parse::<i32>() else {
-            continue;
-        };
-        if pid <= 1 || !is_alive(pid) {
-            continue;
-        }
-        let Some(cmdline) = cmdline_of(pid) else {
-            continue;
-        };
-        let lower = cmdline.to_ascii_lowercase();
-        // Require both the MCP subcommand and our sock — avoid killing unrelated MCP.
-        if !lower.contains("remote-tools-mcp") || !cmdline.contains(sock_s.as_ref()) {
-            continue;
-        }
-        if !(lower.contains("amuxd") || lower.contains("teamclu")) {
-            continue;
-        }
-        println!("amuxd: reaping leftover remote-tools-mcp pid {pid}…");
-        unsafe {
-            let _ = libc::kill(pid, libc::SIGTERM);
-        }
-        std::thread::sleep(Duration::from_millis(100));
-        if is_alive(pid) {
-            unsafe {
-                let _ = libc::kill(pid, libc::SIGKILL);
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-fn read_macos_cmdline(pid: i32) -> Option<String> {
-    let output = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(unix)]

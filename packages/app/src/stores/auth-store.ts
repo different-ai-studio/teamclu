@@ -76,7 +76,6 @@ interface AuthState {
   sendPhoneOtp: (phone: string) => Promise<boolean>;
   verifyPhoneOtp: (code: string) => Promise<void>;
   resetOtp: () => void;
-  signInWithPassword: (email: string, password: string) => Promise<boolean>;
   signInWithOAuth: (provider: OAuthProvider) => Promise<boolean>;
   cancelOAuth: () => void;
   claimInvite: (token: string) => Promise<AuthClaimResult | null>;
@@ -109,8 +108,7 @@ function configuredServerUrl(): string | undefined {
 
 /**
  * Codes the Cloud API returns for a rejected sign-in that the user can act on.
- * Shown instead of the raw upstream message ("auth.signInWithPassword: Invalid
- * login credentials"), which read like a server fault.
+ * Shown instead of the raw upstream message, which reads like a server fault.
  */
 const FRIENDLY_AUTH_ERRORS: Record<string, { key: string; fallback: string }> = {
   invalid_credentials: { key: "auth.errors.invalidCredentials", fallback: "Incorrect email or password." },
@@ -402,22 +400,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
   resetOtp: () => set({ otpEmail: null, otpPhone: null, phoneMultiUsers: [], pendingPhoneOTPToken: "", errorMessage: null }),
-  signInWithPassword: async (email, password) => {
-    if (!hasBackendConfig()) {
-      set({ loading: false, errorMessage: BACKEND_CONFIG_MISSING_MESSAGE });
-      return false;
-    }
-    set({ loading: true, authFlow: "idle", errorMessage: null });
-    try {
-      const signedIn = await getBackend().auth.signInWithPassword(email, password);
-      const { session, choices } = await resolveIdentityChoice(signedIn);
-      set({ session: storeSession(session), identityChoices: choices, loading: false, otpEmail: null, otpPhone: null });
-      return true;
-    } catch (error) {
-      set({ loading: false, errorMessage: errorMessageFor(error) });
-      return false;
-    }
-  },
   signInWithOAuth: async (provider) => {
     if (!hasBackendConfig()) {
       set({ loading: false, errorMessage: BACKEND_CONFIG_MISSING_MESSAGE });

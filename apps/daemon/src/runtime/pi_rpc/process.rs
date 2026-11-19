@@ -59,9 +59,6 @@ pub(crate) struct PoolKey {
 pub(crate) struct SpawnEnv {
     pub(crate) extra_env: HashMap<String, String>,
     pub(crate) force_env_override: bool,
-    /// `TEAMCLU_REMOTE_TOOLS_CMD` (JSON array string) from the session's mcp
-    /// config.
-    pub(crate) remote_tools_cmd: Option<String>,
     /// `TEAMCLU_MCP_SERVERS` (JSON object string) — the workspace's other
     /// enabled local MCP servers, bridged into pi by the extension.
     pub(crate) mcp_servers: Option<String>,
@@ -216,7 +213,6 @@ impl PiProcessPool {
             LaunchMode::Host => "host",
             LaunchMode::LegacyRpc => "rpc",
         };
-        let remote = env.remote_tools_cmd.clone().unwrap_or_default();
         let servers = env.mcp_servers.clone().unwrap_or_default();
         // Sort extra env for a stable fingerprint regardless of map order.
         let mut extra: Vec<String> = env
@@ -226,7 +222,7 @@ impl PiProcessPool {
             .collect();
         extra.sort();
         format!(
-            "node={}\x1fpkg={}\x1fmode={mode}\x1fforce={}\x1fremote={remote}\x1fservers={servers}\x1fextra={}",
+            "node={}\x1fpkg={}\x1fmode={mode}\x1fforce={}\x1fservers={servers}\x1fextra={}",
             launch.node.display(),
             launch.package_root.display(),
             env.force_env_override,
@@ -492,7 +488,7 @@ impl PiProcessPool {
     /// Ensure a live child for a *catalog probe*, without ever replacing one.
     ///
     /// `model_catalog_for_context` builds its [`SpawnEnv`] from a trait method
-    /// that carries neither `force_env_override` nor the remote-tools command,
+    /// that does not carry `force_env_override`,
     /// so a probe's env is a strictly poorer copy of the attach env for the
     /// same key and the two fingerprints can never match. Routed through
     /// [`Self::ensure`], every catalog publish therefore killed the child the
@@ -631,9 +627,6 @@ impl PiProcessPool {
             "TEAMCLU_SKILL_CREATION_POLICY",
             crate::config::SKILL_CREATION_POLICY,
         );
-        if let Some(remote_cmd) = &env.remote_tools_cmd {
-            cmd.env("TEAMCLU_REMOTE_TOOLS_CMD", remote_cmd);
-        }
         if let Some(servers) = &env.mcp_servers {
             cmd.env("TEAMCLU_MCP_SERVERS", servers);
         }
@@ -1240,8 +1233,8 @@ mod tests {
 
     /// A catalog probe and an attach land on the same [`PoolKey`] with
     /// fingerprints that can never match: `model_catalog_for_context`
-    /// implements a trait method carrying neither `force_env_override` nor the
-    /// remote-tools command, while an attach passes the assembled spawn env
+    /// implements a trait method that does not carry `force_env_override`,
+    /// while an attach passes the assembled spawn env
     /// through, whose `force_env_override` is unconditionally true
     /// (`runtime/env_assembly.rs`). This asserts the divergence rather than
     /// wishing it away — it is why the probe must not go through `ensure`.
@@ -1257,13 +1250,11 @@ mod tests {
         let attach = SpawnEnv {
             extra_env: extra_env.clone(),
             force_env_override: true,
-            remote_tools_cmd: Some(r#"["amuxd","remote-tools-mcp"]"#.to_string()),
             mcp_servers: None,
         };
         let probe = SpawnEnv {
             extra_env,
             force_env_override: false,
-            remote_tools_cmd: None,
             mcp_servers: None,
         };
         assert_ne!(

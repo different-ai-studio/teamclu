@@ -36,22 +36,6 @@ afterEach(() => {
 });
 
 describe("auth-client", () => {
-
-  it("signInWithPassword POSTs credentials and stores the session", async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse(200, makeSession({ access_token: "password" })));
-    const client = createAuthClient({ baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
-
-    await client.signInWithPassword("person@example.com", "password123");
-
-    const [url, init] = fetchImpl.mock.calls[0];
-    expect(url).toBe(`${BASE}/v1/auth/signin-password`);
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      email: "person@example.com",
-      password: "password123",
-    });
-    expect(getSession()?.access_token).toBe("password");
-  });
-
   it("sendOtp POSTs email + options without storing a session", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(200, {}));
     const client = createAuthClient({ baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch });

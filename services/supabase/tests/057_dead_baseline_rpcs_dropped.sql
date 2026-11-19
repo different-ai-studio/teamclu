@@ -15,9 +15,10 @@ select hasnt_function('amux', 'add_gateway_session_participant', 'add_gateway_se
 select hasnt_function('amux', 'ensure_org_default_team',         'ensure_org_default_team dropped');
 select hasnt_function('amux', 'bind_phone_to_account',           'bind_phone_to_account dropped');
 
--- Kept: the only writer of team_member_roles, which the shortcuts RLS reads.
-select has_function('amux', 'team_member_set_roles', array['uuid', 'uuid', 'uuid[]'],
-                    'team_member_set_roles kept (feeds shortcuts RLS)');
+-- team_member_set_roles was kept here, then dropped with the table it wrote
+-- in 20261119130000_drop_shortcut_role_visibility.sql (see 015_rbac_shortcuts).
+select hasnt_function('amux', 'team_member_set_roles', array['uuid', 'uuid', 'uuid[]'],
+                      'team_member_set_roles dropped');
 -- Kept: the SQL statement of the prompt + visibility rule.
 select has_function('amux', 'can_prompt_agent', array['uuid'],
                     'can_prompt_agent kept');
