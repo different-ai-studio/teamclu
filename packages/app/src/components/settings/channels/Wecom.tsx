@@ -158,7 +158,10 @@ export function WeComSetupWizard({
     savingKeyRef.current = key
     saveStateRef.current = 'saving'
     setSaveState('saving')
-    const flight = (async () => {
+    // The promise refers to itself in `finally`. A const in its own
+    // initializer is still in the temporal dead zone, which `tsc` rejects.
+    const flight: { current: Promise<boolean> | null } = { current: null }
+    flight.current = (async () => {
       try {
         await onCredentialsSave(id, sec)
         savedKeyRef.current = key
@@ -174,11 +177,11 @@ export function WeComSetupWizard({
         if (gen === viewGen.current) setSaveState('error')
         return false
       } finally {
-        if (persistFlight.current === flight) persistFlight.current = null
+        if (persistFlight.current === flight.current) persistFlight.current = null
       }
     })()
-    persistFlight.current = flight
-    return flight
+    persistFlight.current = flight.current
+    return flight.current
   }, [onCredentialsSave])
 
   const fetchQrCode = async () => {
