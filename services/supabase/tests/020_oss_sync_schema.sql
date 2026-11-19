@@ -83,12 +83,11 @@ select pg_temp.as_user((select alice from ctx));
 -- ---------------------------------------------------------------------------
 select has_column('amux', 'team_workspace_config', 'sync_mode',
                   'team_workspace_config.sync_mode exists');
--- No default on purpose: share mode is a one-shot lock. A team that has never
--- called enable_team_share reads back sync_mode = null, which is what
--- GET /v1/teams/:id/share-mode reports as "team share not enabled". A default
--- of 'oss' would make every fresh team look like it had already chosen.
+-- No default on purpose: a fresh team reads back sync_mode = null. The RPC
+-- that used to set it (enable_team_share) is gone (20261119000000); a default
+-- of 'oss' would still make every fresh team look like it had chosen a mode.
 select col_hasnt_default('amux', 'team_workspace_config', 'sync_mode',
-                  'sync_mode has no default: null until enable_team_share locks it');
+                  'sync_mode has no default: null for a fresh team');
 select has_column('amux', 'team_workspace_config', 'oss_change_seq',
                   'team_workspace_config.oss_change_seq exists');
 select has_column('amux', 'team_workspace_config', 'litellm_team_id',

@@ -1,24 +1,21 @@
 -- team_share_mode.test.sql
 --
--- pgTAP tests for migration 20260528000002_team_share_mode.sql:
---   1. Fresh team has share_mode NULL and team_workspace_config.sync_mode NULL
---      (i.e. PR #212's create_team no longer seeds sync_mode='git').
---   2. amux.enable_team_share(t, 'oss') sets teams.share_mode='oss' and
---      team_workspace_config.sync_mode='oss'.
---   3. Calling amux.enable_team_share again raises (locked).
---   4. Direct UPDATE that changes share_mode raises (trigger).
---   5. amux.enable_team_share(t, 'custom_git', url, kind, ref) writes the git
---      remote/auth/cred fields onto teams.
+-- What is left of team share mode. The switch RPCs (enable_team_share /
+-- disable_team_share) were dropped in 20261119000000 — nothing called them —
+-- but the teams.share_mode column and its enum stay (an in-use enum value
+-- cannot be dropped; dropping the column is a one-way door). This pins that:
+--   1. teams.share_mode still exists with its enum type.
+--   2. A fresh team has share_mode NULL and team_workspace_config.sync_mode
+--      NULL (create_team seeds neither).
+--   3. The switch RPCs are gone.
+--   4. Direct UPDATEs of the column are not blocked by a guard trigger.
 --
 -- Run via:
---   supabase db reset
---   supabase test db
--- or:
---   pg_prove -d "$DATABASE_URL" services/supabase/tests/team_share_mode.test.sql
+--   ./run.sh team_share_mode.test.sql
 
 begin;
 
-select plan(13);
+select plan(9);
 
 -- Helpers (mirror 007_team_workspace_config.sql)
 create or replace function pg_temp.as_user(p_user uuid)
@@ -71,89 +68,29 @@ select is(
   'fresh team_workspace_config has null sync_mode'
 );
 
--- Stash team ids in a temp table the test can read under any role context.
--- (We grant read on it so service_role can still read it; postgres-owned
--- temp tables are not visible to other roles by default.)
-create temp table _ids (key text primary key, id uuid);
-insert into _ids values
-  ('team1', (select id from amux.teams where slug = 'share-team'));
-grant select on _ids to service_role, authenticated;
+-- 5. The switch RPCs are gone.
+select hasnt_function('amux', 'enable_team_share',  'enable_team_share dropped');
+select hasnt_function('amux', 'disable_team_share', 'disable_team_share dropped');
 
--- Second team — create_team enforces first-team-only per user, so we switch
--- to a different authenticated user before calling it.
-select pg_temp.as_user('bb222222-2222-2222-2222-222222222222');
-select * from amux.create_team('Git Team', p_oid => null);
-insert into _ids values
-  ('team2', (select id from amux.teams where slug = 'git-team'));
-
--- 4. enable_team_share('oss') succeeds (service_role context)
+-- 6. Direct UPDATE of share_mode is allowed (no guard trigger).
 select pg_temp.as_service_role();
 select lives_ok(
-  $q$ select amux.enable_team_share((select id from _ids where key='team1'), 'oss'::amux.team_share_mode) $q$,
-  'enable_team_share oss succeeds'
-);
-
--- 5. teams.share_mode is now 'oss'
-select is(
-  (select share_mode::text from amux.teams
-    where id = (select id from _ids where key='team1')),
-  'oss',
-  'teams.share_mode is oss after enable'
-);
-
--- 6. team_workspace_config.sync_mode mirrors to 'oss'
-select is(
-  (select sync_mode from amux.team_workspace_config
-    where team_id = (select id from _ids where key='team1')),
-  'oss',
-  'team_workspace_config.sync_mode mirrored to oss'
-);
-
--- 7. Second enable_team_share switches mode (no longer locked).
-select lives_ok(
-  $q$ select amux.enable_team_share((select id from _ids where key='team1'), 'managed_git'::amux.team_share_mode) $q$,
-  'second enable_team_share switches mode'
-);
-
-select is(
-  (select share_mode::text from amux.teams
-    where id = (select id from _ids where key='team1')),
-  'managed_git',
-  'teams.share_mode updated to managed_git'
-);
-
--- 8. Direct UPDATE of share_mode is allowed after guard trigger removal.
-select lives_ok(
   $q$ update amux.teams set share_mode = 'oss'::amux.team_share_mode
-       where id = (select id from _ids where key='team1') $q$,
+       where slug = 'share-team' $q$,
   'direct UPDATE of share_mode is allowed'
 );
 
--- 9. UPDATE that keeps share_mode unchanged still works (regression guard).
+select is(
+  (select share_mode::text from amux.teams where slug = 'share-team'),
+  'oss',
+  'teams.share_mode updated by a direct UPDATE'
+);
+
+-- 7. UPDATE that leaves share_mode unchanged still works (regression guard).
 select lives_ok(
   $q$ update amux.teams set name = 'Share Team Renamed'
-       where id = (select id from _ids where key='team1') $q$,
+       where slug = 'share-team' $q$,
   'UPDATE that leaves share_mode unchanged is allowed'
-);
-
--- 10. custom_git path: enable the second team with git fields.
-select lives_ok(
-  $q$ select amux.enable_team_share((select id from _ids where key='team2'),
-                                   'custom_git'::amux.team_share_mode,
-                                   'https://example.com/repo.git',
-                                   'ssh_key',
-                                   'cred-ref-1') $q$,
-  'enable_team_share custom_git with git fields succeeds'
-);
-
-select results_eq(
-  $q$ select share_mode::text, git_remote_url, git_auth_kind, git_credential_ref
-        from amux.teams where id = (select id from _ids where key='team2') $q$,
-  $$ values ('custom_git'::text,
-             'https://example.com/repo.git'::text,
-             'ssh_key'::text,
-             'cred-ref-1'::text) $$,
-  'custom_git fields written to teams row'
 );
 
 select * from finish();
