@@ -381,12 +381,8 @@ struct IdeaStatsSheet: View {
     }
 
     private func agentGlyphColor(for stat: ContributorStat) -> Color {
-        switch stat.agentType {
-        case "claude", "claude_code": return Color.amux.cinnabar
-        case "opencode":              return Color.amux.sage
-        case "codex":                 return Color.amux.basalt
-        default:                      return Color.amux.basalt
-        }
+        // pi is the only runtime (ADR-0014): one glyph color for every agent.
+        Color.amux.basalt
     }
 }
 

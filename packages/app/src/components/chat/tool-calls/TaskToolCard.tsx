@@ -27,7 +27,7 @@ export function ManageSkillsToolCard({ toolCall }: { toolCall: ToolCall }) {
     footnotes.push(
       t(
         "chat.toolCall.manageSkills.nextStartStorage",
-        "Saved to ~/.agents/skills. New OpenCode and Pi runtimes will pick it up on their next start.",
+        "Saved to ~/.agents/skills. New Pi runtimes will pick it up on their next start.",
       ),
     );
     const claudeBlocked =

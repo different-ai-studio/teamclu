@@ -119,7 +119,6 @@ vi.mock('@/components/FileEditor', () => ({ FileContentViewer: () => <div data-t
 vi.mock('@/hooks/use-workspace-init', () => ({
   useWorkspaceInit: () => ({ initialWorkspaceResolved: true }),
 }))
-vi.mock('@/hooks/use-opencode-preload', () => ({ useOpenCodePreload: vi.fn() }))
 vi.mock('@/hooks/use-channel-gateway-init', () => ({ useChannelGatewayInit: vi.fn() }))
 vi.mock('@/hooks/use-git-repos-init', () => ({ useGitReposInit: vi.fn() }))
 vi.mock('@/hooks/use-cron-init', () => ({ useCronInit: vi.fn() }))

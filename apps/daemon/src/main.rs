@@ -124,8 +124,7 @@ fn main() -> anyhow::Result<()> {
                             // of why a runtime child died: a pi host that fails to
                             // boot writes its stack to stderr and nothing at all to
                             // stdout.
-                            .add_directive("pi_rpc=info".parse().unwrap())
-                            .add_directive("opencode_serve=info".parse().unwrap()),
+                            .add_directive("pi_rpc=info".parse().unwrap()),
                     )
                     .with(
                         tracing_subscriber::fmt::layer()

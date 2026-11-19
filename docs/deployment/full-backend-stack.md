@@ -286,7 +286,7 @@ Daemon 需要：
 
 1. 有效的 team invite token（`./amuxd/mint-invite.sh`）
 2. Cloud API URL（bootstrap 拉 MQTT）
-3. LLM 端点（`OPENCODE_*`）才能跑 agent session
+3. 团队 AI 网关（daemon 从 Cloud API 的 `workspace-config` 读取 `llm`）才能跑 agent session；运行时 pi 由 entrypoint 的 `amuxd install-pi` 装进 state 卷
 
 ---
 

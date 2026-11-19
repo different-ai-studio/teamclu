@@ -53,11 +53,9 @@ async function probeDaemonHttpWithRetry(): Promise<Awaited<ReturnType<typeof pro
 export function useWorkspaceInit() {
   const workspacePath = useWorkspaceStore((s) => s.workspacePath);
   const setWorkspace = useWorkspaceStore((s) => s.setWorkspace);
-  const setOpenCodeBootstrapped = useWorkspaceStore((s) => s.setOpenCodeBootstrapped);
-  const setOpenCodeReady = useWorkspaceStore((s) => s.setOpenCodeReady);
   const setDaemonHttpReady = useWorkspaceStore((s) => s.setDaemonHttpReady);
   const daemonOnboardingStatus = useDaemonOnboardingStore((s) => s.status);
-  const [openCodeError, setOpenCodeError] = useState<string | null>(null);
+  const [daemonConnectionError, setDaemonConnectionError] = useState<string | null>(null);
   const [initialWorkspaceResolved, setInitialWorkspaceResolved] = useState(false);
 
   // Auto-restore last workspace on launch (runs once on mount).
@@ -133,18 +131,16 @@ export function useWorkspaceInit() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Probe daemon HTTP — required on desktop; no OpenCode sidecar fallback.
+  // Probe daemon HTTP — required on desktop.
   useEffect(() => {
     if (!workspacePath) {
       setDaemonHttpReady(false);
       return;
     }
 
-    setOpenCodeError(null);
+    setDaemonConnectionError(null);
 
     if (!isTauri()) {
-      setOpenCodeBootstrapped(true);
-      setOpenCodeReady(true);
       setDaemonHttpReady(true);
       return;
     }
@@ -156,13 +152,9 @@ export function useWorkspaceInit() {
       const ready = probe.ok;
       setDaemonHttpReady(ready);
       if (ready) {
-        setOpenCodeBootstrapped(true);
-        setOpenCodeReady(true);
-        setOpenCodeError(null);
+        setDaemonConnectionError(null);
         markStartup("daemon-ready");
       } else {
-        setOpenCodeBootstrapped(false);
-        setOpenCodeReady(false);
         const message =
           probe.reason === "port_file_missing"
             ? i18n.t("daemon.connection.portFileMissing", {
@@ -173,14 +165,14 @@ export function useWorkspaceInit() {
               : probe.reason === "not_running"
                 ? i18n.t("daemon.connection.healthCheckFailed")
                 : i18n.t("daemon.connection.notConnected");
-        setOpenCodeError(message);
+        setDaemonConnectionError(message);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [workspacePath, setOpenCodeBootstrapped, setOpenCodeReady, setDaemonHttpReady]);
+  }, [workspacePath, setDaemonHttpReady]);
 
   // daemon-onboarding may finish recovering after the first workspace probe;
   // re-probe once it reports ready so the shell clears the stale error toast.
@@ -192,21 +184,13 @@ export function useWorkspaceInit() {
       const probe = await probeDaemonHttp();
       if (cancelled || !probe.ok) return;
       setDaemonHttpReady(true);
-      setOpenCodeBootstrapped(true);
-      setOpenCodeReady(true);
-      setOpenCodeError(null);
+      setDaemonConnectionError(null);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [
-    workspacePath,
-    daemonOnboardingStatus,
-    setDaemonHttpReady,
-    setOpenCodeBootstrapped,
-    setOpenCodeReady,
-  ]);
+  }, [workspacePath, daemonOnboardingStatus, setDaemonHttpReady]);
 
   useEffect(() => {
     if (!workspacePath || !isTauri()) return;
@@ -340,5 +324,5 @@ export function useWorkspaceInit() {
     };
   }, [workspacePath]);
 
-  return { initialWorkspaceResolved, openCodeError, setOpenCodeError };
+  return { initialWorkspaceResolved, daemonConnectionError, setDaemonConnectionError };
 }

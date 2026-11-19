@@ -396,17 +396,16 @@ broker_url = "mqtts://old.example"
         )
         .unwrap();
 
-        super::set_config_value(&path, "agents.codex.binary", "codex").unwrap();
-        super::set_config_value(&path, "agents.codex.default_flags", r#"["--foo", "bar"]"#)
-            .unwrap();
+        super::set_config_value(&path, "agents.pi.node", "/opt/node").unwrap();
+        super::set_config_value(&path, "http.allowed_origins", r#"["--foo", "bar"]"#).unwrap();
         super::set_config_value(&path, "idle_runtime_timeout_secs", "1800").unwrap();
 
         assert_eq!(
-            super::get_config_value(&path, "agents.codex.binary").unwrap(),
-            "\"codex\""
+            super::get_config_value(&path, "agents.pi.node").unwrap(),
+            "\"/opt/node\""
         );
         assert_eq!(
-            super::get_config_value(&path, "agents.codex.default_flags").unwrap(),
+            super::get_config_value(&path, "http.allowed_origins").unwrap(),
             "[\"--foo\", \"bar\"]"
         );
         assert_eq!(
@@ -415,9 +414,12 @@ broker_url = "mqtts://old.example"
         );
 
         let cfg = crate::config::DaemonConfig::load(&path).unwrap();
-        assert_eq!(cfg.agents.codex.as_ref().unwrap().binary, "codex");
         assert_eq!(
-            cfg.agents.codex.as_ref().unwrap().default_flags,
+            cfg.agents.pi.as_ref().unwrap().node.as_deref(),
+            Some("/opt/node")
+        );
+        assert_eq!(
+            cfg.http.as_ref().unwrap().allowed_origins,
             vec!["--foo".to_string(), "bar".to_string()]
         );
         assert_eq!(cfg.idle_runtime_timeout_secs, Some(1800));
@@ -495,7 +497,7 @@ broker_url = "mqtts://broker.example"
 
         // Nested/repeated sections are covered without enumerating indices.
         assert!(super::is_secret_key("channels.wecom.bots.0.secret"));
-        assert!(super::is_secret_key("agents.cursor.api_key"));
+        assert!(super::is_secret_key("agents.pi.api_key"));
 
         assert!(!super::is_secret_key("mqtt.username"));
         assert!(!super::is_secret_key("mqtt.broker_url"));

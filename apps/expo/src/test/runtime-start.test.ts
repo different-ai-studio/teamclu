@@ -33,7 +33,7 @@ describe("runtime start planning", () => {
         targetActorId: "agent-1",
         workspaceId: "workspace-default",
         worktree: "/tmp/default",
-        agentType: AgentType.OPENCODE,
+        agentType: AgentType.PI,
       },
     ]);
   });
@@ -102,7 +102,7 @@ describe("runtime start planning", () => {
     expect(plans[0]).toMatchObject({
       workspaceId: "workspace-picked",
       worktree: "/tmp/picked",
-      agentType: AgentType.CODEX,
+      agentType: AgentType.PI,
     });
   });
 
@@ -125,12 +125,11 @@ describe("runtime start planning", () => {
   });
 
   it("maps Expo agent type names to AMUX enum values", () => {
-    expect(resolveExpoAgentType("claude")).toBe(AgentType.CLAUDE_CODE);
-    expect(resolveExpoAgentType("opencode")).toBe(AgentType.OPENCODE);
-    expect(resolveExpoAgentType("codex")).toBe(AgentType.CODEX);
+    // pi is the only runtime (ADR-0014); legacy names start pi too.
+    expect(resolveExpoAgentType("claude")).toBe(AgentType.PI);
+    expect(resolveExpoAgentType("opencode")).toBe(AgentType.PI);
+    expect(resolveExpoAgentType("codex")).toBe(AgentType.PI);
     expect(resolveExpoAgentType("pi")).toBe(AgentType.PI);
-    // Unknown means "whatever the daemon runs", which is pi (ADR-0014) —
-    // defaulting to Claude Code sent a runtime_start every daemon refuses.
     expect(resolveExpoAgentType("unknown")).toBe(AgentType.PI);
   });
 
@@ -171,7 +170,7 @@ describe("runtime start planning", () => {
       runtimeIdToStop: "rt-old",
       workspaceId: "workspace-current",
       worktree: "/tmp/current",
-      agentType: AgentType.CODEX,
+      agentType: AgentType.PI,
     });
   });
 });
@@ -212,9 +211,9 @@ describe("per-agent selection", () => {
     });
 
     expect(plans[0]).toMatchObject({ agentActorId: "agent-1", workspaceId: "ws-picked" });
-    // agent-2 keeps its own default, and its own type.
+    // agent-2 keeps its own default workspace. Both run pi (ADR-0014).
     expect(plans[1]).toMatchObject({ agentActorId: "agent-2", workspaceId: "ws-2" });
-    expect(plans[1]?.agentType).not.toBe(plans[0]?.agentType);
+    expect(plans.map((plan) => plan.agentType)).toEqual([AgentType.PI, AgentType.PI]);
   });
 
   it("falls every agent back to its own default when nothing is selected", async () => {

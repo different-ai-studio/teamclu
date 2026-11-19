@@ -1311,6 +1311,8 @@ impl RuntimeSupervisor {
                 active_snapshot,
             )
         };
+        // Wire fields kept for older desktop builds; no runtime serves a
+        // shared env cache since opencode was removed (ADR-0014).
         let opencode_serve_running = false;
         let cached_env_count = 0;
         let served_env_keys: Vec<String> = Vec::new();
@@ -1462,15 +1464,6 @@ impl RuntimeSupervisor {
                 detail: None,
             });
         }
-        if opencode_serve_running
-            && cached_env_count == 0
-            && (personal_env_var_count > 0 || !team_env.values.is_empty())
-        {
-            blockers.push(EnvActivationBlocker {
-                code: "opencode_serve_no_cached_env".to_string(),
-                detail: None,
-            });
-        }
         if !host_env_shadowed_keys.is_empty() {
             blockers.push(EnvActivationBlocker {
                 code: "host_env_shadowed".to_string(),
@@ -1540,7 +1533,6 @@ impl RuntimeSupervisor {
                 active_runtime_count,
                 active_snapshot: active_snapshot_ref,
                 served_env_keys: &served_env_keys,
-                opencode_serve_running,
             });
         analysis.mcp_unresolved_placeholders =
             teamclu_runtime_env::find_unresolved_config_placeholders(
@@ -1639,7 +1631,7 @@ impl RuntimeSupervisor {
             self.agents
                 .lock()
                 .await
-                .evict_acp_hosts_after_provider_auth_change()
+                .evict_agent_hosts_after_provider_auth_change()
                 .await;
         }
 

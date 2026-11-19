@@ -16,17 +16,11 @@ import { isChromeExtension } from '@/lib/config/platform'
 import { readExtensionDiagnosticsOptIn } from '@/lib/extension/page-access'
 
 import { ensureBundledAmuxdCurrent } from '@/lib/daemon/daemon-version-upgrade'
-import { initJwtBridge } from '@/lib/daemon/jwt-bridge'
 import { installConsoleCapture, redactSentryBreadcrumb } from '@/lib/diagnostics/console-capture'
 import { markStartup } from '@/lib/telemetry/startup-perf'
 import { removeStartupSkeleton } from './lib/utils'
 
 markStartup('main:start')
-
-// Sync the Supabase JWT into teamclu.json so FC-backed commands (team share,
-// LiteLLM, OSS sync) can authenticate. Must run at startup, before any of those
-// features open. No-op outside Tauri.
-initJwtBridge()
 
 // Pull the public (unauthenticated) config: the Web SSO target and the
 // login-method feature flags.

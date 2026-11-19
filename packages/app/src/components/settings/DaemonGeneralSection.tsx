@@ -796,7 +796,7 @@ function DaemonGeneralSectionBody() {
             <AlertDialogDescription>
               {t(
                 'settings.daemonGeneral.forceReloadConfirmDesc',
-                '将停止本工作区活跃的 Agent runtime，并重启全局 OpenCode serve。进行中的回复可能中断；之后需再发消息或新建会话才会使用最新环境变量。一般情况下可等待空闲后自动生效。',
+                '将停止本工作区活跃的 Agent runtime。进行中的回复可能中断；之后需再发消息或新建会话才会使用最新环境变量。一般情况下可等待空闲后自动生效。',
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>

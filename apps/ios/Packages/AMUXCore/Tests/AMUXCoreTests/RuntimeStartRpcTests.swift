@@ -89,7 +89,7 @@ final class RuntimeStartRpcTests: XCTestCase {
 
         async let outcome = service.runtimeStartRpc(
             targetActorID: "agent-a",
-            agentType: .claudeCode,
+            agentType: .pi,
             workspaceId: "ws-1",
             worktree: "/tmp/work",
             sessionId: "",
@@ -140,7 +140,7 @@ final class RuntimeStartRpcTests: XCTestCase {
 
         async let outcome = service.runtimeStartRpc(
             targetActorID: "agent-a",
-            agentType: .claudeCode,
+            agentType: .pi,
             workspaceId: "ws-1",
             worktree: "/tmp/work",
             sessionId: "",
@@ -187,7 +187,7 @@ final class RuntimeStartRpcTests: XCTestCase {
 
         async let outcome = service.runtimeStartRpc(
             targetActorID: "agent-a",
-            agentType: .claudeCode,
+            agentType: .pi,
             workspaceId: "ws-1",
             worktree: "/tmp/work",
             sessionId: "",
@@ -227,7 +227,7 @@ final class RuntimeStartRpcTests: XCTestCase {
         // Intentionally no configureRuntimeForTesting — mqtt stays nil.
         let outcome = await service.runtimeStartRpc(
             targetActorID: "agent-a",
-            agentType: .claudeCode,
+            agentType: .pi,
             workspaceId: "ws-1",
             worktree: "/tmp/work",
             sessionId: "",

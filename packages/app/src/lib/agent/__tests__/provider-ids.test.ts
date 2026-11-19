@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { customProviderIdFromName, slugifyProviderId } from '@/lib/opencode/config'
+import { customProviderIdFromName, slugifyProviderId } from '@/lib/agent/provider-ids'
 
 describe('opencode provider ids', () => {
   it('slugifies latin provider names', () => {

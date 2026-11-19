@@ -40,9 +40,9 @@ struct Args {
     #[arg(long, default_value = ".")]
     workspace: String,
 
-    /// Port of the local TeamClu API server, used only when the desktop has
+    /// Port of the desktop introspect API, used only when the desktop has
     /// not published one in `<amuxd home>/run/introspect.http.port`.
-    #[arg(long, default_value_t = 1420)]
+    #[arg(long, default_value_t = 13144)]
     api_port: u16,
 
     /// amuxd control socket. Used for token-addressed sends, which only the
@@ -181,7 +181,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "sync_team_dir",
-            "description": "Sync the shared team directory. Pulls remote Git changes, pushes local changes, and returns a summary.",
+            "description": "Sync the shared team directory (team knowledge and documents) through the TeamClu daemon: uploads local changes, downloads remote ones, and returns a summary.",
             "inputSchema": {
                 "type": "object",
                 "properties": {}
@@ -434,7 +434,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_skills",
-            "description": "Create, update, or read a personal reusable skill stored under ~/.agents/skills/<slug>/. Use this for normal skills shared across OpenCode, Pi, and Claude Code. For installed team Skills use manage_team_skills get_draft/update_draft instead. Do not write skills directly to .opencode/skills, .pi/skills, or .claude/skills.",
+            "description": "Create, update, or read a personal reusable skill stored under ~/.agents/skills/<slug>/. Use this for normal personal skills. For installed team Skills use manage_team_skills get_draft/update_draft instead. Do not write skills directly to .opencode/skills, .pi/skills, or .claude/skills.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

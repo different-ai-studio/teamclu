@@ -66,7 +66,7 @@ interface CronModelOption {
 
 /** Models for one agent backend. Cron UI renders a flat list like chat. */
 export interface CronModelGroup {
-  /** "opencode" | "claude" | "pi" | "cursor" — stored as `payload.backend`. */
+  /** Backend id ("pi") — stored as `payload.backend`. */
   backend: string
   label: string
   models: CronModelOption[]

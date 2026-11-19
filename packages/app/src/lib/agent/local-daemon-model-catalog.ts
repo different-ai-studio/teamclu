@@ -27,9 +27,8 @@ import { sessionFlowLog } from '@/lib/session/session-flow-log'
  *
  * `GET /v1/workspaces/:id/model-catalog` answers the same question directly, and
  * its handler brings the backend up on demand, so it works with zero sessions
- * created. All four implemented backends (opencode / pi / cursor / claude-code)
- * resolve through it, each falling back to this device's persisted catalog when
- * a live probe comes back empty.
+ * created. The pi backend resolves through it, falling back to this device's
+ * persisted catalog when a live probe comes back empty.
  *
  * This is a *supplement*, not a replacement: the MQTT retain remains the source
  * of truth and overwrites whatever we seed here as soon as it lands. Remote

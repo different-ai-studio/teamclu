@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
-use crate::runtime::acp_translate::status_change;
+use self::translate::status_change;
 use crate::runtime::backend::{AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 use crate::runtime::manager::AgentLaunchConfig;

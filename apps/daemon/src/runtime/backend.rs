@@ -69,7 +69,7 @@ pub enum AcpCommand {
         /// "always" upgrades the grant; anything else (or None) means "once".
         option_id: Option<String>,
     },
-    /// Answer (or reject) an opencode `question` tool request (any session).
+    /// Answer (or reject) an agent `question` tool request (any session).
     AnswerQuestion {
         request_id: String,
         /// JSON `[[selected labels], ...]` — one array per question, in order.

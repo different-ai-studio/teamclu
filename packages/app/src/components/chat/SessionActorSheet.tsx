@@ -91,9 +91,7 @@ function pickAgentBackend(
   agentTypes: string[],
   priorBackendType: string | null | undefined,
 ): string | null {
-  const normalizedDefault = defaultAgentType === 'claude_code' || defaultAgentType === 'claude-code'
-    ? 'claude'
-    : defaultAgentType ?? null
+  const normalizedDefault = defaultAgentType ?? null
   if (normalizedDefault && (agentTypes.length === 0 || agentTypes.includes(normalizedDefault))) {
     return normalizedDefault
   }
@@ -262,8 +260,8 @@ function ActorRowView({
     ? presenceOnlineFlag(resolveAgentDevicePresenceSync(actor.id))
     : undefined
   const { color: dotColor, breathing } = computeDotStateAndAnimation(actor, runtimeInfo, agentDeviceOnline)
-  // For agents, show "<backend type> · <model>" — e.g. "claude · claude-opus-4-7".
-  // backend type = default_agent_type (claude | opencode | codex).
+  // For agents, show "<backend type> · <model>" — e.g. "pi · claude-opus-4-7".
+  // backend type = default_agent_type (pi).
   // model = runtimeInfo.currentModel when a runtime is live; otherwise omitted.
   const modelName = isAgent ? (runtimeInfo?.currentModel || null) : null
   let subline: string

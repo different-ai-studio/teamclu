@@ -809,8 +809,8 @@ services:
   # Auto-joins a team on first start via AMUXD_JOIN_TOKEN (mint one with
   # ./amuxd/mint-invite.sh after a team exists), persists identity to the
   # amuxd_state volume, connects to EMQX, and registers as an agent actor.
-  # The image bundles opencode; set OPENCODE_* to run agent sessions. With no
-  # OPENCODE_API_KEY the entrypoint disables agent discovery (presence-only).
+  # Agent sessions run on pi, which amuxd installs into the amuxd_state volume
+  # on first use; the LLM is the team AI gateway, read from the Cloud API.
   amuxd:
     logging: *default-logging
     build:
@@ -830,14 +830,6 @@ services:
       TEAMCLU_CLOUD_API_URL: "http://fc:9000"
       AMUXD_JOIN_TOKEN: "${AMUXD_JOIN_TOKEN:-}"
       HOME: "/state"
-      # opencode LLM provider (OpenAI-compatible). Set these to let the daemon
-      # run agent sessions; leave OPENCODE_API_KEY blank for presence-only (the
-      # entrypoint then disables agent discovery). baseURL/model are yours to set.
-      OPENCODE_BASE_URL: "${OPENCODE_BASE_URL:-}"
-      OPENCODE_API_KEY: "${OPENCODE_API_KEY:-}"
-      OPENCODE_MODEL: "${OPENCODE_MODEL:-}"
-      OPENCODE_PROVIDER_ID: "${OPENCODE_PROVIDER_ID:-selfhost}"
-      OPENCODE_PROVIDER_NAME: "${OPENCODE_PROVIDER_NAME:-Self-host LLM}"
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     volumes:
       - amuxd_state:/state

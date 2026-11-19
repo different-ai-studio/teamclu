@@ -142,7 +142,7 @@ export interface CronSchedule {
 export interface CronPayload {
   message: string
   model?: string // "provider/model"
-  /** Backend the job runs on: "opencode" | "claude" | "codex". Absent/empty
+  /** Backend the job runs on: "pi" (the only runtime). Absent/empty
    *  means "auto" — the daemon uses its default_agent_type. Pairs with `model`,
    *  whose `provider/model` ref is selected from this backend's catalog group. */
   backend?: string

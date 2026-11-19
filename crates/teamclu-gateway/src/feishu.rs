@@ -43,14 +43,6 @@ impl PbFrame {
             .find(|h| h.key == key)
             .map(|h| h.value.as_str())
     }
-
-    /// Get header as int
-    #[allow(dead_code)]
-    fn get_header_int(&self, key: &str) -> i32 {
-        self.get_header(key)
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
-    }
 }
 
 // ---------- Protobuf encoding helpers ----------

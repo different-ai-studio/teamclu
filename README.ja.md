@@ -50,11 +50,11 @@ TeamClu はクライアント層、エージェントホスト、クラウドバ
                              │
                     ┌────────┴────────┐
                     │   amux daemon   │  agent host + channel gateways
-                    │    (amuxd)      │  + team sync (git / OSS)
+                    │    (amuxd)      │  + team sync (OSS)
                     └────────┬────────┘
                              │ HTTP / RPC
                     ┌────────┴────────┐
-                    │ local agents    │  opencode (default), …
+                    │ local agents    │  pi
                     └─────────────────┘
 ```
 
@@ -174,7 +174,7 @@ Cloud API の実装は `services/fc/`（Node.js 20）にあり、Supabase をバ
 ## 技術スタック
 
 - **デスクトップ**: Tauri 2.0 (Rust)
-- **デーモン**: Rust (`amuxd`)、ローカルエージェントバックエンド（opencode HTTP など）
+- **デーモン**: Rust (`amuxd`)、ローカルエージェントランタイム（pi、stdio JSONL）
 - **フロントエンド**: React 19 + TypeScript、Tailwind CSS 4、Zustand
 - **iOS**: SwiftUI + SwiftPM (`AMUXCore`)
 - **エディター**: Tiptap（Markdown / HTML）、CodeMirror 6（コード）、Shiki（ハイライト）

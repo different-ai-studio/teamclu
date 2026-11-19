@@ -1,5 +1,5 @@
-//! Pi managed skill discovery through real adapter boundaries:
-//! OpenCode session inventory (`scan_roles_skills_state`) and Pi `get_commands`
+//! Pi managed skill discovery through real adapter boundaries: the daemon's
+//! session skill inventory (`scan_roles_skills_state`) and Pi `get_commands`
 //! (`commands_from_get_commands_response`).
 
 #![cfg(unix)]

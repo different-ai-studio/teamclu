@@ -271,9 +271,8 @@ export const useOssSyncStore = create<OssSyncState>((set, get) => ({
   },
 }))
 
-// JWT bridge note: pushing the FC token into teamclu.json used to live here,
-// then moved to `@/lib/daemon/jwt-bridge`. The daemon now self-supplies its FC JWT, so
-// that bridge is a no-op (see jwt-bridge.ts).
+// The daemon self-supplies its FC JWT; the desktop no longer pushes a token
+// into teamclu.json.
 
 // ---------------------------------------------------------------------------
 // Tauri event listener — auto-update store on each daemon tick.

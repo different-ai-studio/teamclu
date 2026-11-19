@@ -50,11 +50,11 @@ TeamClu dibagi menjadi layer client, host agent, dan backend cloud:
                              │
                     ┌────────┴────────┐
                     │   amux daemon   │  agent host + channel gateways
-                    │    (amuxd)      │  + team sync (git / OSS)
+                    │    (amuxd)      │  + team sync (OSS)
                     └────────┬────────┘
                              │ HTTP / RPC
                     ┌────────┴────────┐
-                    │ local agents    │  opencode (default), …
+                    │ local agents    │  pi
                     └─────────────────┘
 ```
 
@@ -174,7 +174,7 @@ Kami menyambut kontribusi! Lihat [Panduan Kontribusi](CONTRIBUTING.md) untuk det
 ## Tech stack
 
 - **Desktop**: Tauri 2.0 (Rust)
-- **Daemon**: Rust (`amuxd`), backend agent lokal (opencode HTTP, …)
+- **Daemon**: Rust (`amuxd`), runtime agent lokal (pi melalui stdio JSONL)
 - **Frontend**: React 19 + TypeScript, Tailwind CSS 4, Zustand
 - **iOS**: SwiftUI + SwiftPM (`AMUXCore`)
 - **Editor**: Tiptap (Markdown / HTML), CodeMirror 6 (code), Shiki (highlighting)

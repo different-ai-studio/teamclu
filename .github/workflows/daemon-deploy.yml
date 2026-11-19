@@ -11,10 +11,10 @@ name: Daemon Deploy
 #   4. Trigger this workflow. Identity persists in the amuxd_state volume; later
 #      deploys skip the join token even if the secret is removed.
 #
-# Agent capability is optional:
-#   - presence-only (default): leave OPENCODE_API_KEY unset.
-#   - full agent sessions: set OPENCODE_BASE_URL + OPENCODE_API_KEY + OPENCODE_MODEL
-#     (the team AI gateway on the same box, via its /ai/v1/teams/<id> URL).
+# Agent sessions run on pi (ADR-0014). The LLM comes from the team's AI gateway,
+# which the daemon reads from the Cloud API (`GET /v1/teams/:id/workspace-config`
+# → `llm`); a team with no stored base URL is served this box's own gateway. No
+# per-daemon LLM secrets are needed.
 
 on:
   workflow_dispatch: {}
@@ -131,17 +131,12 @@ jobs:
           AMUXD_IMAGE: ${{ env.AMUXD_IMAGE }}
           DEPLOY_REF: ${{ env.DEPLOY_REF }}
           AMUXD_JOIN_TOKEN: ${{ secrets.AMUXD_JOIN_TOKEN }}
-          OPENCODE_BASE_URL: ${{ secrets.OPENCODE_BASE_URL }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          OPENCODE_MODEL: ${{ secrets.OPENCODE_MODEL }}
-          OPENCODE_PROVIDER_ID: ${{ secrets.OPENCODE_PROVIDER_ID }}
-          OPENCODE_PROVIDER_NAME: ${{ secrets.OPENCODE_PROVIDER_NAME }}
         with:
           host: ${{ secrets.ECS_HOST }}
           username: ${{ secrets.ECS_USER }}
           key: ${{ secrets.ECS_SSH_PRIVATE_KEY }}
           command_timeout: 15m
-          envs: AMUXD_IMAGE,DEPLOY_REF,AMUXD_JOIN_TOKEN,OPENCODE_BASE_URL,OPENCODE_API_KEY,OPENCODE_MODEL,OPENCODE_PROVIDER_ID,OPENCODE_PROVIDER_NAME
+          envs: AMUXD_IMAGE,DEPLOY_REF,AMUXD_JOIN_TOKEN
           script: |
             set -e
             cd /opt/teamclaw
@@ -169,31 +164,17 @@ jobs:
               fi
               echo "  set $1"
             }
-            # Empty value deletes the key (same as self-host-deploy sync_env).
-            # OPENCODE_* must clear so removing the GitHub secret actually
-            # returns the box to presence-only; AMUXD_JOIN_TOKEN stays on
-            # upsert_env because identity already lives in the volume.
-            sync_env() {
-              if [ -z "$2" ]; then
-                if grep -q "^$1=" .env; then
-                  grep -v "^$1=" .env > .env.tmp && mv .env.tmp .env
-                  echo "  cleared $1 (secret empty)"
-                else
-                  echo "  skip $1 (empty, absent)"
-                fi
-                return 0
-              fi
-              upsert_env "$1" "$2"
-            }
-
-            echo "=== sync daemon env (OPENCODE_* cleared when secrets empty → presence-only) ==="
+            echo "=== sync daemon env ==="
             upsert_env AMUXD_IMAGE "$AMUXD_IMAGE"
             upsert_env AMUXD_JOIN_TOKEN "$AMUXD_JOIN_TOKEN"
-            sync_env OPENCODE_BASE_URL "$OPENCODE_BASE_URL"
-            sync_env OPENCODE_API_KEY "$OPENCODE_API_KEY"
-            sync_env OPENCODE_MODEL "$OPENCODE_MODEL"
-            sync_env OPENCODE_PROVIDER_ID "$OPENCODE_PROVIDER_ID"
-            sync_env OPENCODE_PROVIDER_NAME "$OPENCODE_PROVIDER_NAME"
+            # The opencode runtime is gone (ADR-0014); drop its leftover keys
+            # (one held a live LLM key) from the box's .env.
+            for key in OPENCODE_BASE_URL OPENCODE_API_KEY OPENCODE_MODEL OPENCODE_PROVIDER_ID OPENCODE_PROVIDER_NAME; do
+              if grep -q "^${key}=" .env; then
+                grep -v "^${key}=" .env > .env.tmp && mv .env.tmp .env
+                echo "  cleared legacy $key"
+              fi
+            done
 
             # --no-deps on both `up` calls below: fc depends on the one-shot
             # `migrate` service, so without it every daemon push re-ran
