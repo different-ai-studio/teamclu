@@ -20,8 +20,8 @@ import { createWorkspacesCache } from "../../src/lib/db/team-cache";
 import { showToast } from "../../src/ui/Toast";
 import { Hairline } from "../../src/ui/atoms/Hairline";
 import { SectionEyebrow } from "../../src/ui/atoms/SectionEyebrow";
-import { supabase } from "../../src/lib/supabase/client";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
 import { colors, hai, radii, spacing, typography } from "../../src/ui/theme";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
 
@@ -52,7 +52,7 @@ export default function WorkspacesRoute() {
   const [createError, setCreateError] = useState<string | null>(null);
 
   const workspacesApi = useMemo(
-    () => createWorkspacesApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createWorkspacesApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
 
@@ -135,7 +135,7 @@ export default function WorkspacesRoute() {
   useEffect(() => {
     if (!teamId) return;
     let cancelled = false;
-    void createActorsApi({ getAccessToken: supabaseAccessToken(supabase) })
+    void createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) })
       .listActors(teamId)
       .then((rows) => {
         if (cancelled) return;

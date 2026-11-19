@@ -2,7 +2,7 @@ import {
   cloudApiBaseUrl,
   CloudApiError,
   createCloudApiClient,
-  supabaseAccessToken,
+  cloudAccessToken,
   type CloudApiClient,
 } from "../../lib/cloud-api/client";
 import { t } from "../../lib/i18n";
@@ -253,7 +253,7 @@ export function createTeamJoinLinkApi(args: {
 
 /** Production wiring: bearer from the app's auth facade. */
 export function createConfiguredTeamJoinLinkApi(
-  client: Parameters<typeof supabaseAccessToken>[0],
+  client: Parameters<typeof cloudAccessToken>[0],
 ): TeamJoinLinkApi {
-  return createTeamJoinLinkApi({ getAccessToken: supabaseAccessToken(client) });
+  return createTeamJoinLinkApi({ getAccessToken: cloudAccessToken(client) });
 }

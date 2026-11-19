@@ -23,7 +23,7 @@ import {
   type Shortcut,
   type ShortcutScope,
 } from "./shortcut-types";
-import { supabase } from "../../lib/supabase/client";
+import { cloudAuth } from "../../lib/auth/cloud-auth";
 import { Hairline } from "../../ui/atoms/Hairline";
 import { colors, hai, radii, spacing, typography } from "../../ui/theme";
 
@@ -123,7 +123,7 @@ export function ShortcutsDrawer({
     setError(null);
     void (async () => {
       try {
-        const rows = await createConfiguredShortcutsApi(supabase).listShortcuts(teamId);
+        const rows = await createConfiguredShortcutsApi(cloudAuth).listShortcuts(teamId);
         if (!cancelled) setShortcuts(rows);
       } catch (err) {
         if (!cancelled) {
@@ -150,7 +150,7 @@ export function ShortcutsDrawer({
     let cancelled = false;
     void (async () => {
       try {
-        const apps = await createConfiguredTeamAppsApi(supabase).listApps(teamId);
+        const apps = await createConfiguredTeamAppsApi(cloudAuth).listApps(teamId);
         if (!cancelled) setAppsCount(apps.length);
       } catch {
         // Keep whatever count we had; the row still opens the list.

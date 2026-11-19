@@ -1,10 +1,10 @@
-import type { CloudAuthClient } from "../auth/cloud-auth";
+import type { CloudAuthClient } from "./cloud-auth";
 import type {
   BootstrapResult,
   MyIdentity,
   TeamSummary,
 } from "../../features/onboarding/onboarding-types";
-import { createCloudApiClient, supabaseAccessToken } from "../cloud-api/client";
+import { createCloudApiClient, cloudAccessToken } from "../cloud-api/client";
 import {
   redeemJoinLink,
   type JoinByLinkResult,
@@ -25,7 +25,7 @@ import type { PhoneLoginResult } from "../../features/onboarding/phone-login";
  * `GET /v1/teams` and team activation. Mirrors iOS
  * `CloudAPIAppOnboardingStore`.
  *
- * The `client` parameter is the same `supabase` facade the rest of the app
+ * The `client` parameter is the same `cloudAuth` facade the rest of the app
  * imports — kept as an injected dependency so tests can substitute fakes.
  */
 
@@ -317,7 +317,7 @@ export function createOnboardingApi(
       const target = cloudApiUrl
         ? createCloudApiClient({
             baseUrl: cloudApiUrl,
-            getAccessToken: supabaseAccessToken(client),
+            getAccessToken: cloudAccessToken(client),
             fetchImpl: deps.fetchImpl,
           })
         : client.api;

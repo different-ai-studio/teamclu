@@ -2,7 +2,7 @@ import {
   CloudApiError,
   cloudApiBaseUrl,
   createCloudApiClient,
-  supabaseAccessToken,
+  cloudAccessToken,
 } from "../../lib/cloud-api/client";
 import {
   parseTeamAppFcStatus,
@@ -179,7 +179,7 @@ export function createTeamAppsApi(args: {
 // Cloud API is the only client backend. The auth client is used purely as the
 // bearer-token source.
 export function createConfiguredTeamAppsApi(
-  client: Parameters<typeof supabaseAccessToken>[0],
+  client: Parameters<typeof cloudAccessToken>[0],
 ): TeamAppsApi {
-  return createTeamAppsApi({ getAccessToken: supabaseAccessToken(client) });
+  return createTeamAppsApi({ getAccessToken: cloudAccessToken(client) });
 }

@@ -14,8 +14,8 @@ import {
   leaderboardPeriodFor,
   type TeamStatsPeriod,
 } from "../../src/features/actors/team-stats";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 
 export default function TeamStatsRoute() {
   const router = useRouter();
@@ -30,7 +30,7 @@ export default function TeamStatsRoute() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const leaderboardApi = useMemo(
-    () => createLeaderboardApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createLeaderboardApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
 
@@ -38,7 +38,7 @@ export default function TeamStatsRoute() {
   useEffect(() => {
     if (!teamId) return;
     let cancelled = false;
-    void createActorsApi({ getAccessToken: supabaseAccessToken(supabase) })
+    void createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) })
       .listActors(teamId)
       .then((rows) => {
         if (!cancelled) setActors(rows);

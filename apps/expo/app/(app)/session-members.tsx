@@ -26,8 +26,8 @@ import {
   type MemberSheetAgent,
   type MemberSheetHuman,
 } from "../../src/features/sessions/screens/SessionMemberSheet";
-import { supabase } from "../../src/lib/supabase/client";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
 import { createRuntimeRpcClient } from "../../src/lib/teamclu/runtime-rpc";
 import { showToast } from "../../src/ui/Toast";
 import { ModelPickerSheet } from "../../src/features/sessions/screens/ModelPickerSheet";
@@ -81,10 +81,10 @@ export default function SessionMembersRoute() {
       setIsLoading(false);
       return;
     }
-    const sessionsApi = createConfiguredSessionsApi(supabase);
-    const actorsApi = createActorsApi({ getAccessToken: supabaseAccessToken(supabase) });
+    const sessionsApi = createConfiguredSessionsApi(cloudAuth);
+    const actorsApi = createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) });
     const workspacesApi = createWorkspacesApi({
-      getAccessToken: supabaseAccessToken(supabase),
+      getAccessToken: cloudAccessToken(cloudAuth),
     });
     // Settled, not all: a failing workspace list must not blank the roster.
     // The previous `Promise.all` cleared every piece of state when any one leg
@@ -207,7 +207,7 @@ export default function SessionMembersRoute() {
       await removeSessionParticipant(
         {
           removeFromCloud: (sid, aid) =>
-            createConfiguredSessionsApi(supabase).removeParticipant(sid, aid),
+            createConfiguredSessionsApi(cloudAuth).removeParticipant(sid, aid),
           runtimeRpc:
             teamMqtt && teamId && currentMemberActorId
               ? createRuntimeRpcClient({
@@ -286,7 +286,7 @@ export default function SessionMembersRoute() {
               })),
             })
           : [];
-      await createConfiguredSessionsApi(supabase).addParticipants(sessionId, fresh);
+      await createConfiguredSessionsApi(cloudAuth).addParticipants(sessionId, fresh);
       await loadParticipants();
       if (runtimePlans.length > 0 && teamMqtt && state.currentMemberActorId) {
         const runtimeRpc = createRuntimeRpcClient({

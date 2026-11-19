@@ -55,7 +55,7 @@ import { emptyTimelineState } from "../../../../src/features/sessions/timeline-r
 import { createSessionDetailCache } from "../../../../src/features/sessions/session-detail-cache";
 import { createStreamingSnapshotStore } from "../../../../src/features/sessions/streaming-snapshot";
 import { createSessionMutesApi } from "../../../../src/features/sessions/session-mutes";
-import { supabaseAccessToken } from "../../../../src/lib/cloud-api/client";
+import { cloudAccessToken } from "../../../../src/lib/cloud-api/client";
 import { SessionDetailScreen } from "../../../../src/features/sessions/screens/SessionDetailScreen";
 import { ModelPickerSheet } from "../../../../src/features/sessions/screens/ModelPickerSheet";
 import { uploadPastedImage } from "../../../../src/features/sessions/attachment-upload";
@@ -68,7 +68,7 @@ import {
 } from "../../../../src/features/sessions/agent-runtime-state";
 import { impactLight, selectionTick, successTone, warningTone } from "../../../../src/lib/haptics";
 import { showToast } from "../../../../src/ui/Toast";
-import { supabase } from "../../../../src/lib/supabase/client";
+import { cloudAuth } from "../../../../src/lib/auth/cloud-auth";
 import { getDb } from "../../../../src/lib/db/sqlite";
 import { getKnownMqttUrl } from "../../../../src/lib/mqtt/config";
 import {
@@ -189,7 +189,7 @@ export default function SessionDetailRoute() {
     // next time the list reloads. Failures are silent — the list re-derives
     // unread state from the (unchanged) read marker anyway.
     if (state.currentMemberActorId) {
-      void createConfiguredSessionsApi(supabase).markSessionRead(
+      void createConfiguredSessionsApi(cloudAuth).markSessionRead(
         sessionId,
         state.currentMemberActorId,
         null,
@@ -235,11 +235,11 @@ export default function SessionDetailRoute() {
       };
 
       const nextController = createSessionDetailController({
-        api: createConfiguredSessionsApi(supabase),
+        api: createConfiguredSessionsApi(cloudAuth),
         cache: createSessionDetailCache(),
         currentMemberActorId: state.currentMemberActorId,
         getAuth: async () => {
-          const { data } = await supabase.auth.getSession();
+          const { data } = await cloudAuth.auth.getSession();
           return {
             accessToken: data.session?.access_token ?? null,
             userId: data.session?.user.id ?? null,
@@ -395,11 +395,11 @@ export default function SessionDetailRoute() {
     if (!sessionId) return;
     let cancelled = false;
     void (async () => {
-      const { data } = await supabase.auth.getSession();
+      const { data } = await cloudAuth.auth.getSession();
       const uid = data.session?.user.id ?? null;
       if (cancelled) return;
       userIdRef.current = uid;
-      const mutes = createSessionMutesApi({ getAccessToken: supabaseAccessToken(supabase) });
+      const mutes = createSessionMutesApi({ getAccessToken: cloudAccessToken(cloudAuth) });
       try {
         const muted = await mutes.isMuted(sessionId);
         if (!cancelled) setIsMuted(muted);
@@ -443,7 +443,7 @@ export default function SessionDetailRoute() {
   useEffect(() => {
     if (!currentTeam?.id) return;
     let cancelled = false;
-    void createActorsApi({ getAccessToken: supabaseAccessToken(supabase) })
+    void createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) })
       .listActors(currentTeam.id)
       .then((rows) => {
         if (!cancelled) setTeamActors(rows);
@@ -546,7 +546,7 @@ export default function SessionDetailRoute() {
     let cancelled = false;
     setForwardTargets(null);
     void loadTeamSessionsPreferCache(currentTeam.id, (id) =>
-      createConfiguredSessionsApi(supabase).listSessions(id),
+      createConfiguredSessionsApi(cloudAuth).listSessions(id),
     )
       .then((sessions) => {
         if (cancelled) return;
@@ -698,7 +698,7 @@ export default function SessionDetailRoute() {
     const me = state.currentMemberActorId;
     if (!sessionId || !me) return;
     let cancelled = false;
-    void createConfiguredSessionsApi(supabase)
+    void createConfiguredSessionsApi(cloudAuth)
       .listFeedback(sessionId)
       .then((rows) => {
         if (!cancelled) setFeedbackByMessageId(myFeedbackByMessageId(rows, me));
@@ -726,7 +726,7 @@ export default function SessionDetailRoute() {
     apply(target);
     selectionTick();
     try {
-      const api = createConfiguredSessionsApi(supabase);
+      const api = createConfiguredSessionsApi(cloudAuth);
       if (target) {
         await api.submitFeedback({
           messageId,
@@ -781,7 +781,7 @@ export default function SessionDetailRoute() {
                 await removeSessionParticipant(
                   {
                     removeFromCloud: (sid, aid) =>
-                      createConfiguredSessionsApi(supabase).removeParticipant(sid, aid),
+                      createConfiguredSessionsApi(cloudAuth).removeParticipant(sid, aid),
                     runtimeRpc:
                       teamMqtt && currentTeam?.id && requesterActorId
                         ? createRuntimeRpcClient({
@@ -875,7 +875,7 @@ export default function SessionDetailRoute() {
       try {
         const trace = await loadTurnTrace({
           locate: () =>
-            createConfiguredSessionsApi(supabase).turnTraceLocation(teamId, sessionId, turnId),
+            createConfiguredSessionsApi(cloudAuth).turnTraceLocation(teamId, sessionId, turnId),
           ctx: { turnId, agentId, sessionId, teamId },
         });
         if (trace && trace.events.length > 0) {
@@ -1025,7 +1025,7 @@ export default function SessionDetailRoute() {
             const teamId = currentTeam.id;
             impactLight();
             void uploadPastedImage({
-              getAccessToken: supabaseAccessToken(supabase),
+              getAccessToken: cloudAccessToken(cloudAuth),
               teamId,
               sessionId,
               data,
@@ -1040,7 +1040,7 @@ export default function SessionDetailRoute() {
           }}
           onDeleteMessages={(messageIds) => {
             const run = async () => {
-              const api = createConfiguredSessionsApi(supabase);
+              const api = createConfiguredSessionsApi(cloudAuth);
               let failed = 0;
               for (const id of messageIds) {
                 try {
@@ -1120,7 +1120,7 @@ export default function SessionDetailRoute() {
           onClearReply={() => controller?.setReplyTarget(null)}
           onDeleteMessage={async (messageId) => {
             try {
-              await createConfiguredSessionsApi(supabase).deleteMessage(messageId);
+              await createConfiguredSessionsApi(cloudAuth).deleteMessage(messageId);
               successTone();
               showToast("success", t("Message deleted"));
               void controller?.load();
@@ -1221,7 +1221,7 @@ export default function SessionDetailRoute() {
                   selectionTick();
                   try {
                     await createSessionMutesApi({
-                      getAccessToken: supabaseAccessToken(supabase),
+                      getAccessToken: cloudAccessToken(cloudAuth),
                     }).setMuted(sessionId, next);
                     showToast("success", next ? t("Muted") : t("Unmuted"));
                   } catch (err) {
@@ -1330,7 +1330,7 @@ export default function SessionDetailRoute() {
           setEditingMessage(null);
           if (!target || !trimmed || trimmed === target.content.trim()) return;
           try {
-            await createConfiguredSessionsApi(supabase).updateMessageContent(
+            await createConfiguredSessionsApi(cloudAuth).updateMessageContent(
               target.messageId,
               trimmed,
             );

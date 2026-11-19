@@ -18,7 +18,7 @@ vi.mock("expo-linking", () => ({ canOpenURL: vi.fn(), openURL: vi.fn() }));
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
-vi.mock("../lib/supabase/client", () => ({ supabase: {} }));
+vi.mock("../lib/auth/cloud-auth", () => ({ cloudAuth: {} }));
 vi.mock("../ui/atoms/Hairline", () => ({ Hairline: {} }));
 vi.mock("../ui/theme", () => ({
   colors: { slate: "#888", text: "#000", bg: "#fff" },

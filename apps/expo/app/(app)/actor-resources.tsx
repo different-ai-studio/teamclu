@@ -11,8 +11,8 @@ import {
   type TeamResourceKind,
   type TeamSkill,
 } from "../../src/features/actors/team-resources-api";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 
 function parseKind(value: unknown): TeamResourceKind {
   return value === "mcp" || value === "env" ? value : "skills";
@@ -48,7 +48,7 @@ export default function ActorResourcesRoute() {
     setIsLoading(true);
     setErrorMessage(null);
     void (async () => {
-      const api = createTeamResourcesApi({ getAccessToken: supabaseAccessToken(supabase) });
+      const api = createTeamResourcesApi({ getAccessToken: cloudAccessToken(cloudAuth) });
       try {
         if (kind === "skills") {
           const rows = await api.listSkills(teamId, actorId);

@@ -15,8 +15,8 @@ import {
 import { useOnboarding } from "../_layout";
 import { groupMembershipsByOrg } from "../../src/features/teams/membership-groups";
 import { createTeamsApi, type TeamMembership } from "../../src/features/teams/teams-api";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { Hairline } from "../../src/ui/atoms/Hairline";
 import { SectionEyebrow } from "../../src/ui/atoms/SectionEyebrow";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
@@ -48,7 +48,7 @@ export default function SwitchTeamRoute() {
   const [busyTeamId, setBusyTeamId] = useState<string | null>(null);
 
   const teamsApi = useMemo(
-    () => createTeamsApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createTeamsApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
 

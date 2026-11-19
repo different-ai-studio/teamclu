@@ -10,8 +10,8 @@ import { SearchScreen } from "../../../src/features/search/screens/SearchScreen"
 import { createConfiguredSessionsApi } from "../../../src/features/sessions/api-provider";
 import { loadTeamSessionsPreferCache } from "../../../src/features/sessions/session-cache";
 import type { SessionSummary } from "../../../src/features/sessions/session-types";
-import { supabase } from "../../../src/lib/supabase/client";
-import { supabaseAccessToken } from "../../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../../src/lib/auth/cloud-auth";
+import { cloudAccessToken } from "../../../src/lib/cloud-api/client";
 
 export default function SearchIndexRoute() {
   const router = useRouter();
@@ -29,9 +29,9 @@ export default function SearchIndexRoute() {
     let cancelled = false;
     setIsLoading(true);
     (async () => {
-      const sessionsApi = createConfiguredSessionsApi(supabase);
-      const ideasApi = createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) });
-      const actorsApi = createActorsApi({ getAccessToken: supabaseAccessToken(supabase) });
+      const sessionsApi = createConfiguredSessionsApi(cloudAuth);
+      const ideasApi = createIdeasApi({ getAccessToken: cloudAccessToken(cloudAuth) });
+      const actorsApi = createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) });
       try {
         const [nextSessions, nextIdeas, nextActors] = await Promise.all([
           loadTeamSessionsPreferCache(teamId, (id) => sessionsApi.listSessions(id)),

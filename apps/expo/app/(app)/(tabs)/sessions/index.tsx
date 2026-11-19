@@ -5,7 +5,7 @@ import { prefetchSessionMessages } from "../../../../src/features/sessions/sessi
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { routeToHref, useConnectedAgentsStore, useOnboarding, useTeamMqtt } from "../../../_layout";
 import { createActorsApi } from "../../../../src/features/actors/actor-api";
-import { supabaseAccessToken } from "../../../../src/lib/cloud-api/client";
+import { cloudAccessToken } from "../../../../src/lib/cloud-api/client";
 import {
   loadPinnedSessions,
   subscribePinnedSessions,
@@ -51,7 +51,7 @@ import {
   sessionContext,
   type SessionContext,
 } from "../../../../src/features/sessions/session-context-names";
-import { supabase } from "../../../../src/lib/supabase/client";
+import { cloudAuth } from "../../../../src/lib/auth/cloud-auth";
 import { SheetModal } from "../../../../src/ui/SheetModal";
 
 /** Stable no-op store so `useSyncExternalStore` can run before MQTT connects. */
@@ -88,7 +88,7 @@ export default function SessionsIndexRoute() {
 
   if (controllerRef.current === null || teamIdRef.current !== activeTeamId) {
     controllerRef.current = createSessionsController(
-      createConfiguredSessionsApi(supabase),
+      createConfiguredSessionsApi(cloudAuth),
       activeTeamId,
       state.currentMemberActorId,
       createSessionsCache(),
@@ -132,7 +132,7 @@ export default function SessionsIndexRoute() {
     useCallback(() => {
       if (!activeTeamId) return;
       let cancelled = false;
-      void createSessionMutesApi({ getAccessToken: supabaseAccessToken(supabase) })
+      void createSessionMutesApi({ getAccessToken: cloudAccessToken(cloudAuth) })
         .listMuted()
         .then((ids) => {
           if (!cancelled) setMutedSessionIds(ids);
@@ -149,7 +149,7 @@ export default function SessionsIndexRoute() {
   useEffect(() => {
     if (!activeTeamId) return;
     let cancelled = false;
-    void createActorsApi({ getAccessToken: supabaseAccessToken(supabase) })
+    void createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) })
       .listActors(activeTeamId)
       .then((rows) => {
         if (cancelled) return;
@@ -272,7 +272,7 @@ export default function SessionsIndexRoute() {
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
     let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-    void supabase.auth.getSession().then(({ data }) => {
+    void cloudAuth.auth.getSession().then(({ data }) => {
       if (cancelled) return;
       const topic = inboxTopic(data.session?.user?.id ?? "");
       if (!topic) return;
@@ -307,7 +307,7 @@ export default function SessionsIndexRoute() {
   useEffect(() => {
     if (!activeTeamId || listState.sessions.length === 0) return;
     let cancelled = false;
-    const getAccessToken = supabaseAccessToken(supabase);
+    const getAccessToken = cloudAccessToken(cloudAuth);
     const update = (patch: (prev: ContextNames) => ContextNames) => {
       if (cancelled) return;
       const prev = contextNamesByTeam.get(activeTeamId) ?? EMPTY_NAMES;
@@ -370,7 +370,7 @@ export default function SessionsIndexRoute() {
   useEffect(() => {
     if (!activeTeamId) return;
     let cancelled = false;
-    void createActorsApi({ getAccessToken: supabaseAccessToken(supabase) })
+    void createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) })
       .getEffectiveDefaultAgent(activeTeamId)
       .then((id) => {
         if (!cancelled) setDefaultAgentId(id);
@@ -416,7 +416,7 @@ export default function SessionsIndexRoute() {
       onInviteAgent={() => router.push("/(app)/invite")}
       onArchiveBatch={async (sessionIds) => {
         const now = new Date().toISOString();
-        const api = createConfiguredSessionsApi(supabase);
+        const api = createConfiguredSessionsApi(cloudAuth);
         for (const id of sessionIds) {
           try {
             await api.setSessionArchived(id, now);
@@ -433,7 +433,7 @@ export default function SessionsIndexRoute() {
       onMarkBatchRead={async (sessionIds) => {
         const actorId = state.currentMemberActorId;
         if (!actorId) return;
-        const api = createConfiguredSessionsApi(supabase);
+        const api = createConfiguredSessionsApi(cloudAuth);
         for (const id of sessionIds) {
           try {
             await api.markSessionRead(id, actorId, null);
@@ -446,7 +446,7 @@ export default function SessionsIndexRoute() {
       onMarkBatchUnread={async (sessionIds) => {
         const actorId = state.currentMemberActorId;
         if (!actorId) return;
-        const api = createConfiguredSessionsApi(supabase);
+        const api = createConfiguredSessionsApi(cloudAuth);
         for (const id of sessionIds) {
           try {
             await api.markSessionUnread(id, actorId);
@@ -468,7 +468,7 @@ export default function SessionsIndexRoute() {
       activityBySessionId={activityBySessionId}
       onRenameSession={async (sessionId, title) => {
         try {
-          await createConfiguredSessionsApi(supabase).renameSession(sessionId, title);
+          await createConfiguredSessionsApi(cloudAuth).renameSession(sessionId, title);
           await controller.refresh();
         } catch (err) {
           showToast("error", err instanceof Error ? err.message : t("Couldn't rename session."));
@@ -484,7 +484,7 @@ export default function SessionsIndexRoute() {
         });
         try {
           await createSessionMutesApi({
-            getAccessToken: supabaseAccessToken(supabase),
+            getAccessToken: cloudAccessToken(cloudAuth),
           }).setMuted(sessionId, muted);
         } catch (err) {
           setMutedSessionIds((prev) => {

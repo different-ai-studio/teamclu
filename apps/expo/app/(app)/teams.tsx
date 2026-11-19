@@ -18,8 +18,8 @@ import { useOnboarding } from "../_layout";
 import { Hairline } from "../../src/ui/atoms/Hairline";
 import { SectionEyebrow } from "../../src/ui/atoms/SectionEyebrow";
 import { groupMembershipsByOrg } from "../../src/features/teams/membership-groups";
-import { supabase } from "../../src/lib/supabase/client";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
 import { createTeamsApi } from "../../src/features/teams/teams-api";
 import { colors, hai, radii, spacing, typography } from "../../src/ui/theme";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
@@ -45,7 +45,7 @@ export default function TeamsRoute() {
   const [renameDraft, setRenameDraft] = useState("");
 
   const teamsApi = useMemo(
-    () => createTeamsApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createTeamsApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
 

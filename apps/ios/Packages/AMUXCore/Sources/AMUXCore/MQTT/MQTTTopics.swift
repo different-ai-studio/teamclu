@@ -45,11 +45,9 @@ public enum MQTTTopics {
         "\(teamcluBase(teamID: teamID))/session/\(sessionID)/live"
     }
 
-    // ─── Phase 2 — new-architecture paths (dual-published by daemon since Phase 1a) ───
-
-    /// New actor-scoped retained state topic. LWT migrates here in Phase 3;
-    /// until then Phase 1a daemon mirror-publishes normal transitions here and
-    /// keeps LWT firing on /status. ConnectionMonitor dual-subscribes.
+    /// Actor-scoped retained presence topic. The daemon publishes its state
+    /// transitions here and its LWT fires here too (the legacy `/status`
+    /// topic is retired), so an offline payload on this topic is authoritative.
     public static func actorState(teamID: String, actorID: String) -> String {
         "\(actorBase(teamID: teamID, actorID: actorID))/state"
     }
