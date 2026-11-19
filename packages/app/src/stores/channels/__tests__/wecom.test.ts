@@ -139,6 +139,83 @@ describe('createWecomActions', () => {
     })
   })
 
+  it('commitScannedWecomBot appends the bot without rewriting other bots or enabling the channel', async () => {
+    vi.mocked(saveChannelConfig).mockResolvedValue(undefined)
+    vi.mocked(reloadChannels).mockResolvedValue(undefined)
+    const stored = {
+      enabled: false,
+      bots: [
+        { enabled: false, botId: 'b1', secret: '', systemPrompt: 'keep-me', botName: 'One' },
+      ],
+    }
+    let state = { wecom: stored, wecomHasChanges: false, error: null as string | null, wecomIsLoading: false }
+    const set = vi.fn((update: unknown) => {
+      const patch = typeof update === 'function' ? (update as (s: typeof state) => Partial<typeof state>)(state) : update as Partial<typeof state>
+      state = { ...state, ...patch }
+    })
+
+    const { createWecomActions } = await import('../wecom')
+    const actions = createWecomActions(set as never)
+    const result = await actions.commitScannedWecomBot(' b2 ', ' new-secret ')
+
+    expect(result).toEqual({ appliedToStore: true })
+    expect(saveChannelConfig).toHaveBeenCalledWith('wecom', {
+      enabled: false,
+      bots: [
+        { enabled: false, botId: 'b1', secret: '', systemPrompt: 'keep-me', botName: 'One' },
+        { enabled: true, botId: 'b2', secret: 'new-secret' },
+      ],
+    })
+    expect(reloadChannels).toHaveBeenCalledTimes(1)
+    expect(state.wecom?.bots.map((bot) => bot.botId)).toEqual(['b1', 'b2'])
+    expect(state.wecomHasChanges).toBe(false)
+  })
+
+  it('commitScannedWecomBot leaves a dirty form in place and still writes only the stored document', async () => {
+    vi.mocked(saveChannelConfig).mockResolvedValue(undefined)
+    vi.mocked(reloadChannels).mockResolvedValue(undefined)
+    const stored = {
+      enabled: true,
+      bots: [{ enabled: true, botId: 'b1', secret: '', systemPrompt: 'stored' }],
+    }
+    let state = { wecom: stored, wecomHasChanges: true, error: null as string | null, wecomIsLoading: false }
+    const set = vi.fn((update: unknown) => {
+      const patch = typeof update === 'function' ? (update as (s: typeof state) => Partial<typeof state>)(state) : update as Partial<typeof state>
+      state = { ...state, ...patch }
+    })
+
+    const { createWecomActions } = await import('../wecom')
+    const actions = createWecomActions(set as never)
+    const result = await actions.commitScannedWecomBot('b1', 'rotated')
+
+    expect(result).toEqual({ appliedToStore: false })
+    expect(saveChannelConfig).toHaveBeenCalledWith('wecom', {
+      enabled: true,
+      bots: [{ enabled: true, botId: 'b1', secret: 'rotated', systemPrompt: 'stored' }],
+    })
+    expect(state.wecom).toBe(stored)
+    expect(state.wecomHasChanges).toBe(true)
+  })
+
+  it('commitScannedWecomBot does not save an empty secret', async () => {
+    const { createWecomActions } = await import('../wecom')
+    const actions = createWecomActions(vi.fn() as never)
+    await expect(actions.commitScannedWecomBot('b1', '  ')).rejects.toThrow(/required/)
+    expect(saveChannelConfig).not.toHaveBeenCalled()
+  })
+
+  it('mergeScannedWecomBot keeps every other field on the existing bots', async () => {
+    const { mergeScannedWecomBot } = await import('../wecom')
+    expect(mergeScannedWecomBot(
+      [{ enabled: false, botId: 'b1', secret: '', systemPrompt: 'keep' }],
+      'b2',
+      'sec',
+    )).toEqual([
+      { enabled: false, botId: 'b1', secret: '', systemPrompt: 'keep' },
+      { enabled: true, botId: 'b2', secret: 'sec' },
+    ])
+  })
+
   it('toggleWecomEnabled saves disabled config and clears status', async () => {
     vi.mocked(saveChannelConfig).mockResolvedValue(undefined)
     vi.mocked(reloadChannels).mockResolvedValue(undefined)

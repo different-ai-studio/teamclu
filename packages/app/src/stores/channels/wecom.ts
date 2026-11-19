@@ -1,5 +1,6 @@
 import type {
   WeComConfig,
+  WeComBot,
   WeComGatewayStatusResponse,
   WeComBotStatus,
   WeComQrAuthStart,
@@ -30,6 +31,21 @@ function statusFor(platform: 'wecom', list: Awaited<ReturnType<typeof listChanne
 function describe(e: unknown): string {
   if (e instanceof AmuxdUnreachableError) return 'amuxd not running. Start amuxd and try again.'
   return e instanceof Error ? e.message : String(e)
+}
+
+/**
+ * Insert or refresh one scanned bot without touching the other bots' fields.
+ * An empty id or secret is refused so a partial poll cannot be stored.
+ */
+export function mergeScannedWecomBot(bots: WeComBot[], botId: string, secret: string): WeComBot[] {
+  const id = botId.trim()
+  const sec = secret.trim()
+  if (!id || !sec) return bots
+  const index = bots.findIndex((bot) => bot.botId.trim() === id)
+  if (index === -1) {
+    return [...bots, { enabled: true, botId: id, secret: sec }]
+  }
+  return bots.map((bot, i) => (i === index ? { ...bot, botId: id, secret: sec } : bot))
 }
 
 export function createWecomActions(set: ChannelsSet) {
@@ -149,6 +165,54 @@ export function createWecomActions(set: ChannelsSet) {
     },
 
     clearWecomTestResult: () => set({ wecomTestResult: null }),
+
+    /**
+     * Persist one scanned bot onto the last saved WeCom config.
+     *
+     * The payload is the stored document plus that bot, not the form's dirty
+     * copy, so an unsaved edit to another bot or another field is not written.
+     * Empty secrets on the other bots stay empty, which the daemon treats as
+     * "keep the stored secret". When the form is clean, the store adopts the
+     * saved document. When it is dirty, the store is left alone and the caller
+     * merges the bot into local state itself.
+     */
+    commitScannedWecomBot: async (
+      botId: string,
+      secret: string,
+    ): Promise<{ appliedToStore: boolean }> => {
+      const id = botId.trim()
+      const sec = secret.trim()
+      if (!id || !sec) throw new Error('WeCom bot id and secret are required')
+
+      let stored: WeComConfig = defaultWeComConfig
+      set((state) => {
+        stored = state.wecom ?? defaultWeComConfig
+        return {}
+      })
+      const next: WeComConfig = {
+        ...stored,
+        bots: mergeScannedWecomBot(stored.bots ?? [], id, sec),
+      }
+      try {
+        await saveChannelConfig('wecom', next)
+        await reloadChannels()
+      } catch (e) {
+        const message = describe(e)
+        set({ error: message, wecomIsLoading: false })
+        throw new Error(message, { cause: e })
+      }
+
+      let dirty = false
+      set((state) => {
+        dirty = state.wecomHasChanges
+        return {}
+      })
+      if (!dirty) {
+        set({ wecom: next, wecomHasChanges: false, error: null })
+        return { appliedToStore: true }
+      }
+      return { appliedToStore: false }
+    },
 
     startWecomQrAuth: async (): Promise<WeComQrAuthStart> => {
       return await invoke<WeComQrAuthStart>('start_wecom_qr_auth')

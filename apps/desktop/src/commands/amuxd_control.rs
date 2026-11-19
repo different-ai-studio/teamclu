@@ -215,6 +215,61 @@ pub async fn connect() -> Result<AsyncStream, String> {
     connect_at(&endpoint()).await
 }
 
+/// One newline-terminated round trip, with a deadline that cancels the read.
+///
+/// QR login uses this instead of [`request`]. The blocking helper reads to
+/// EOF on a worker thread; on Windows that read has no timeout, so abandoning
+/// the future would leave the worker blocked on the named pipe. This path
+/// uses the async client (the same connect, including the Windows pipe-busy
+/// retry) and drops the pipe when `timeout` elapses, which unblocks the read
+/// on both the Unix socket and the named pipe.
+///
+/// The reply is one line. The body is not copied into the error string.
+pub async fn request_line_timeout(request: &str, timeout: Duration) -> Result<String, String> {
+    request_line_timeout_at(&endpoint(), request, timeout).await
+}
+
+async fn request_line_timeout_at(
+    endpoint: &Path,
+    request: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    let request = request.to_string();
+    let endpoint = endpoint.to_path_buf();
+    match tokio::time::timeout(timeout, read_control_line(endpoint, request)).await {
+        Ok(result) => result,
+        Err(_) => Err("amuxd control timed out".to_string()),
+    }
+}
+
+async fn read_control_line(endpoint: PathBuf, request: String) -> Result<String, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let mut stream = connect_at(&endpoint).await?;
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|e| format!("amuxd sock write: {e}"))?;
+    stream
+        .flush()
+        .await
+        .map_err(|e| format!("amuxd sock flush: {e}"))?;
+    // Unix half-close lets a peer blocked on EOF proceed. A Windows named
+    // pipe has no half-close; shutdown there flushes, and the reply newline
+    // is what completes the read below.
+    let _ = stream.shutdown().await;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .await
+        .map_err(|e| format!("amuxd sock read: {e}"))?;
+    if line.trim().is_empty() {
+        return Err("amuxd sock read: empty".to_string());
+    }
+    Ok(line)
+}
+
 // Unix-only: the mock server is a `UnixListener`. The Windows arm of this
 // module is exercised by the compile gate in CI (`desktop-windows`) and on a
 // real machine; there is no in-process way to stand up a named pipe server that
@@ -222,8 +277,9 @@ pub async fn connect() -> Result<AsyncStream, String> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader as StdBufReader};
+    use std::io::{BufRead, BufReader as StdBufReader, Write};
     use std::os::unix::net::UnixListener;
+    use std::time::Duration;
 
     /// One-shot server: accepts a connection, reads one line, optionally writes
     /// `reply`, then closes. Returns the endpoint and a handle carrying the
@@ -275,5 +331,48 @@ mod tests {
         let missing = std::env::temp_dir().join("amxc-nothing-here.sock");
         let err = request_blocking_at(&missing, "channel-status\n").unwrap_err();
         assert!(err.contains("not reachable"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn a_line_round_trip_returns_the_reply_line() {
+        let (path, server) = mock_server(Some("{\"ok\":true}\n"));
+        let body = request_line_timeout_at(&path, "wecom-qr-start\n", Duration::from_secs(2))
+            .await
+            .expect("line");
+        assert_eq!(server.join().unwrap(), "wecom-qr-start\n");
+        assert_eq!(body.trim(), "{\"ok\":true}");
+    }
+
+    /// The deadline has to win even if the peer later writes a credential
+    /// line. The error must not carry that line.
+    #[tokio::test]
+    async fn a_line_round_trip_times_out_without_the_late_body() {
+        let secret = "qr-test-secret-value";
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("amxc-hang-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("c.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let secret_line = format!("{{\"secret\":\"{secret}\"}}\n");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = StdBufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            // Stay quiet until the client gives up, then write the bait.
+            std::thread::sleep(Duration::from_millis(400));
+            stream = reader.into_inner();
+            let _ = stream.write_all(secret_line.as_bytes());
+            line
+        });
+
+        let err = request_line_timeout_at(&path, "wecom-qr-poll\nabc\n", Duration::from_millis(80))
+            .await
+            .expect_err("timed out");
+        assert!(err.contains("timed out"), "{err}");
+        assert!(!err.contains(secret), "{err}");
+        let _ = server.join();
     }
 }

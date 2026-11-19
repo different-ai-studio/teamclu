@@ -441,39 +441,46 @@ fn get_plat_code() -> u8 {
 const WECOM_QR_GENERATE_URL: &str = "https://work.weixin.qq.com/ai/qc/generate";
 const WECOM_QR_POLL_URL: &str = "https://work.weixin.qq.com/ai/qc/query_result";
 
+/// Category only. `reqwest`'s `Display` includes the request URL, and the poll
+/// URL carries the scode.
+fn qr_transport_class(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        "timeout"
+    } else if err.is_connect() {
+        "connect"
+    } else if err.is_decode() {
+        "decode"
+    } else {
+        "transport"
+    }
+}
+
 /// Fetch a QR code for WeCom bot authorization
 pub async fn fetch_wecom_qr_code() -> Result<super::wecom_config::WeComQrAuthStart, String> {
-    use crate::wecom_config::{WeComQrAuthStart, WeComQrGenerateResponse};
+    use crate::wecom_config::interpret_wecom_qr_generate;
 
-    let url = format!(
-        "{}?source=teamclu&plat={}",
-        WECOM_QR_GENERATE_URL,
-        get_plat_code()
-    );
+    let plat = get_plat_code();
+    let url = format!("{WECOM_QR_GENERATE_URL}?source=teamclu&plat={plat}");
     let client = crate::http_client_secs(30);
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("QR generate request failed: {}", e))?;
+    let resp = client.get(&url).send().await.map_err(|err| {
+        let class = qr_transport_class(&err);
+        tracing::warn!(class, plat, "wecom qr generate request failed");
+        format!("QR generate request failed: {class}")
+    })?;
 
-    if !resp.status().is_success() {
-        return Err(format!("QR generate failed: HTTP {}", resp.status()));
+    let http_status = resp.status();
+    if !http_status.is_success() {
+        tracing::warn!(http_status = %http_status, plat, "wecom qr generate http error");
+        return Err(format!("QR generate failed: HTTP {http_status}"));
     }
 
-    let body: WeComQrGenerateResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("QR generate parse failed: {}", e))?;
-
-    let data = body.data.ok_or("QR generate response missing data")?;
-    if data.scode.is_empty() || data.auth_url.is_empty() {
-        return Err("QR generate response missing scode or auth_url".into());
-    }
-
-    Ok(WeComQrAuthStart {
-        scode: data.scode,
-        auth_url: data.auth_url,
+    let bytes = resp.bytes().await.map_err(|_| {
+        tracing::warn!(class = "read", plat, "wecom qr generate read failed");
+        "QR generate read failed".to_string()
+    })?;
+    interpret_wecom_qr_generate(&bytes).map_err(|class| {
+        tracing::warn!(class, plat, "wecom qr generate parse failed");
+        format!("QR generate parse failed: {class}")
     })
 }
 
@@ -481,53 +488,45 @@ pub async fn fetch_wecom_qr_code() -> Result<super::wecom_config::WeComQrAuthSta
 pub async fn poll_wecom_qr_result(
     scode: &str,
 ) -> Result<super::wecom_config::WeComQrAuthPollResult, String> {
-    use crate::wecom_config::{WeComQrAuthPollResult, WeComQrPollResponse};
+    use crate::wecom_config::interpret_wecom_qr_poll;
 
-    let url = format!("{}?scode={}", WECOM_QR_POLL_URL, urlencoding::encode(scode));
-    let client = crate::try_http_client_secs(10).map_err(|e| e.to_string())?;
+    if scode.is_empty() {
+        return Err("QR poll rejected: empty scode".to_string());
+    }
+    let url = format!("{WECOM_QR_POLL_URL}?scode={}", urlencoding::encode(scode));
+    let client = crate::try_http_client_secs(10).map_err(|_| {
+        tracing::warn!(class = "client", "wecom qr poll client unavailable");
+        "QR poll client unavailable".to_string()
+    })?;
 
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("QR poll request failed: {}", e))?;
+    let resp = client.get(&url).send().await.map_err(|err| {
+        let class = qr_transport_class(&err);
+        tracing::warn!(class, "wecom qr poll request failed");
+        format!("QR poll request failed: {class}")
+    })?;
 
-    if !resp.status().is_success() {
-        return Err(format!("QR poll failed: HTTP {}", resp.status()));
+    let http_status = resp.status();
+    if !http_status.is_success() {
+        tracing::warn!(http_status = %http_status, "wecom qr poll http error");
+        return Err(format!("QR poll failed: HTTP {http_status}"));
     }
 
-    let body: WeComQrPollResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("QR poll parse failed: {}", e))?;
-
-    let data = match body.data {
-        Some(d) => d,
-        None => {
-            return Ok(WeComQrAuthPollResult {
-                status: "waiting".into(),
-                bot_id: None,
-                secret: None,
-            });
-        }
-    };
-
-    if data.status == "success" {
-        let bot_info = data
-            .bot_info
-            .ok_or("QR poll success but missing bot_info")?;
-        Ok(WeComQrAuthPollResult {
-            status: "success".into(),
-            bot_id: Some(bot_info.botid),
-            secret: Some(bot_info.secret),
-        })
-    } else {
-        Ok(WeComQrAuthPollResult {
-            status: data.status,
-            bot_id: None,
-            secret: None,
-        })
-    }
+    let bytes = resp.bytes().await.map_err(|_| {
+        tracing::warn!(class = "read", "wecom qr poll read failed");
+        "QR poll read failed".to_string()
+    })?;
+    let (result, trace) = interpret_wecom_qr_poll(&bytes).map_err(|class| {
+        tracing::warn!(class, "wecom qr poll parse failed");
+        format!("QR poll parse failed: {class}")
+    })?;
+    tracing::info!(
+        phase = trace.phase,
+        has_bot_info = trace.has_bot_info,
+        has_bot_id = trace.has_bot_id,
+        has_secret = trace.has_secret,
+        "wecom qr poll"
+    );
+    Ok(result)
 }
 
 type WsSink = Arc<
