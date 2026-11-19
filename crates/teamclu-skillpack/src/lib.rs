@@ -34,6 +34,7 @@ pub mod frontmatter;
 pub mod manifest;
 pub mod origin;
 pub mod package_index;
+pub mod slug;
 pub mod swap;
 pub mod zip_path;
 
@@ -48,6 +49,9 @@ pub use package_index::{
     build_package_index, check_publish_limits, PackIgnore, PackLimitError, PackageIndex,
     PackagePathError, PackagePathErrorKind, IGNORE_FILE, MAX_PACK_FILES, MAX_PACK_TOTAL_BYTES,
     MAX_SINGLE_FILE_BYTES, SKILL_MD,
+};
+pub use slug::{
+    skill_slug_is_installable, skill_slug_is_publishable, skill_slug_nfc, validate_skill_slug,
 };
 pub use swap::{remove_managed_files, swap_managed_files};
 pub use zip_path::{apply_zip_mode, sanitize_zip_path};

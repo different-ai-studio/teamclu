@@ -14,8 +14,9 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use teamclu_skillpack::{
     apply_zip_mode, build_manifest_for, commit_staged_pack, inspect, list_managed_paths,
-    read_origin, sanitize_zip_path, sha256_hex, write_origin, write_registry_frontmatter,
-    RegistryFields, SkillOrigin, ORIGIN_VERSION, SOURCE_TEAM,
+    read_origin, sanitize_zip_path, sha256_hex, skill_slug_is_installable, skill_slug_nfc,
+    write_origin, write_registry_frontmatter, RegistryFields, SkillOrigin, ORIGIN_VERSION,
+    SOURCE_TEAM,
 };
 
 use crate::backend::{Backend, TeamSkillRow};
@@ -199,6 +200,9 @@ impl TeamSkillReconciler {
             if wanted.contains(slug.as_str()) {
                 continue;
             }
+            if !skill_dir_is_safe(root, slug) {
+                continue;
+            }
             let dir = root.join(slug);
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => outcome.removed += 1,
@@ -219,6 +223,9 @@ impl TeamSkillReconciler {
         row: &TeamSkillRow,
         version: i64,
     ) -> Result<(), String> {
+        if !skill_slug_is_installable(&row.slug) {
+            return Err(format!("refusing unsafe skill id {}", row.slug));
+        }
         let download = self
             .backend
             .team_skill_download(team_id, &row.slug, version)
@@ -578,9 +585,12 @@ fn installed_versions(root: &Path) -> HashMap<String, i64> {
         let Some(slug) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
+        // Registry ids are NFC. APFS may hand the directory back as NFD; fold
+        // here so the Chinese folder is the same key the server stored.
+        let slug = skill_slug_nfc(slug);
         if let Some(origin) = read_origin(&path) {
             if let Ok(version) = origin.installed_version.parse::<i64>() {
-                out.insert(slug.to_string(), version);
+                out.insert(slug, version);
             }
         }
     }
@@ -590,6 +600,14 @@ fn installed_versions(root: &Path) -> HashMap<String, i64> {
 /// `requires` is jsonb, so it can be anything. Only a list of strings means
 /// something to the frontmatter; everything else is dropped rather than
 /// stringified into noise the agent would have to read.
+fn skill_dir_is_safe(root: &Path, slug: &str) -> bool {
+    if !skill_slug_is_installable(slug) {
+        return false;
+    }
+    let dir = root.join(slug);
+    dir.starts_with(root) && dir.parent() == Some(root)
+}
+
 fn requires_list(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
     let items = value?.as_array()?;
     let out: Vec<String> = items

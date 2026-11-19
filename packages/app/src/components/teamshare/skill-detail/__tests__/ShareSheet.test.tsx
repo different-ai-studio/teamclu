@@ -71,17 +71,16 @@ function renderSheet(
 }
 
 describe('ShareSheet slug', () => {
-  it('fills a shareable id for a Chinese skill and keeps the display name', async () => {
+  it('keeps the Chinese title as the id, the share field, and the submitted slug', async () => {
     const onSubmit = renderSheet()
-    const expected = teamSkillSlugFromName(CHINESE)
-    const slug = screen.getByDisplayValue(expected) as HTMLInputElement
-    expect(slug.value).not.toBe(CHINESE)
-    expect(screen.getByText(/The display name stays 「整车成本智能表格」/)).toBeTruthy()
+    const slug = screen.getByDisplayValue(CHINESE) as HTMLInputElement
+    expect(slug.value).toBe(CHINESE)
+    expect(screen.queryByText(/display name stays/i)).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Share & install' }))
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        slug: expected,
+        slug: CHINESE,
         displayName: CHINESE,
       }),
     )
@@ -118,11 +117,15 @@ describe('ShareSheet slug', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
-  it('blocks a Chinese slug and a Windows reserved name', () => {
+  it('accepts a shorter Chinese id and blocks a slash or a Windows reserved name', () => {
     const onSubmit = renderSheet()
-    const input = screen.getByDisplayValue(teamSkillSlugFromName(CHINESE))
+    const input = screen.getByDisplayValue(CHINESE)
     fireEvent.change(input, { target: { value: '整车' } })
-    expect(screen.getByText(/lowercase letters, numbers, or hyphens/)).toBeTruthy()
+    expect(screen.queryByText(/install folder and the skill name/)).toBeNull()
+    expect((screen.getByRole('button', { name: 'Share & install' }) as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.change(input, { target: { value: '整车/成本' } })
+    expect(screen.getByText(/install folder and the skill name/)).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Share & install' }) as HTMLButtonElement).disabled).toBe(true)
 
     fireEvent.change(input, { target: { value: 'CON' } })

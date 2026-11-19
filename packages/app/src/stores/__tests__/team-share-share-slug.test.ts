@@ -95,8 +95,9 @@ describe('sharing a skill whose name is not an ASCII slug', () => {
     })
   })
 
-  test('publishes the generated id, keeps the Chinese title, and retires the personal folder', async () => {
+  test('publishes the Chinese id as the folder name and retires the personal folder', async () => {
     const slug = teamSkillSlugFromName(CHINESE)
+    expect(slug).toBe(CHINESE)
     useTeamShareBrowserStore.setState({
       skills: { items: [personal(CHINESE)] as never, loading: false, loaded: true, error: null },
     })
@@ -122,13 +123,13 @@ describe('sharing a skill whose name is not an ASCII slug', () => {
     )
   })
 
-  test('refuses a Chinese slug before uploading', async () => {
+  test('refuses a path separator before uploading', async () => {
     useTeamShareBrowserStore.setState({
       skills: { items: [personal(CHINESE)] as never, loading: false, loaded: true, error: null },
     })
 
     await expect(
-      store().sharePersonalSkill(CHINESE, { ...input, slug: CHINESE }),
+      store().sharePersonalSkill(CHINESE, { ...input, slug: '整车/成本' }),
     ).rejects.toBeInstanceOf(SkillSlugInvalidError)
     expect(uploads()).toHaveLength(0)
     expect(publishTeamSkill).not.toHaveBeenCalled()

@@ -681,7 +681,7 @@ fn install_and_sync_team_skill(
 ) -> anyhow::Result<crate::runtime::team_skills::TeamSkillReconcileOutcome> {
     tokio::runtime::Runtime::new()?.block_on(async {
         let daemon = LocalDaemonClient::connect("manage-cli").await?;
-        let path = format!("/v1/team/skills/{slug}/install");
+        let path = format!("/v1/team/skills/{}/install", urlencoding::encode(slug));
         let response: HttpTeamSkillReconcileResponse = daemon
             .json(
                 reqwest::Method::PUT,

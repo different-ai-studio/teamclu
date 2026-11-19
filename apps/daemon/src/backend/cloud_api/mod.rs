@@ -841,7 +841,10 @@ impl Backend for CloudApiBackend {
         slug: &str,
         version: i64,
     ) -> BackendResult<TeamSkillDownload> {
-        let path = format!("/v1/teams/{team_id}/skills/{slug}/versions/{version}/download");
+        let path = format!(
+            "/v1/teams/{team_id}/skills/{}/versions/{version}/download",
+            urlencoding::encode(slug)
+        );
         self.get::<TeamSkillDownload>(&path).await
     }
 
@@ -857,13 +860,19 @@ impl Backend for CloudApiBackend {
         }
         // No `actorId`: the endpoint records against the caller, and the
         // daemon's caller is the hosted agent actor itself.
-        let path = format!("/v1/teams/{team_id}/skills/{slug}/install");
+        let path = format!(
+            "/v1/teams/{team_id}/skills/{}/install",
+            urlencoding::encode(slug)
+        );
         self.put_no_content(&path, &Body { version }).await
     }
 
     async fn remove_team_skill_install(&self, team_id: &str, slug: &str) -> BackendResult<()> {
-        self.delete_no_content(&format!("/v1/teams/{team_id}/skills/{slug}/install"))
-            .await
+        self.delete_no_content(&format!(
+            "/v1/teams/{team_id}/skills/{}/install",
+            urlencoding::encode(slug)
+        ))
+        .await
     }
 
     async fn get_effective_default_agent(&self, team_id: &str) -> BackendResult<Option<String>> {

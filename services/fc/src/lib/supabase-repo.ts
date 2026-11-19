@@ -13,7 +13,7 @@ import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
-import { assertTeamSkillSlug, teamSkillDisplayName } from "./team-skill-slug.js";
+import { assertTeamSkillSlug, canonicalTeamSkillSlug, teamSkillDisplayName } from "./team-skill-slug.js";
 import {
   appLevelAtLeast,
   parseAppPermissionLevel,
@@ -7569,7 +7569,8 @@ export function createSupabaseBusinessRepository(options) {
       const fields = requireTeamSkillFields(body);
       // Lowercase here so `Deploy-Check` and `deploy-check` are one folder.
       // macOS volumes are case-insensitive; Linux is not.
-      const slug = String(body.slug ?? "").trim().toLowerCase();
+      // NFC + ASCII lowercase. 整车成本智能表格 is stored unchanged.
+      const slug = canonicalTeamSkillSlug(body.slug);
       assertTeamSkillSlug(slug);
       const displayName = teamSkillDisplayName(body.displayName, slug);
       const changelog = String(body.changelog ?? "").trim();

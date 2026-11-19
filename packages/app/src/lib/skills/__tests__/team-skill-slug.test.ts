@@ -4,8 +4,9 @@ import en from '../../../locales/en.json'
 import {
   TEAM_SKILL_SLUG_INVALID_MESSAGE,
   TEAM_SKILL_SLUG_MAX,
-  TEAM_SKILL_SLUG_RE,
   allocateTeamSkillSlug,
+  canonicalTeamSkillSlug,
+  encodeTeamSkillSlugForPath,
   isPublishableTeamSkillSlug,
   shouldRetirePersonalOnShare,
   skillSlugIssueFromServerMessage,
@@ -15,83 +16,78 @@ import {
 } from '../team-skill-slug'
 
 const CHINESE = '整车成本智能表格'
-const PINYIN = 'zheng-che-cheng-ben-zhi-neng-biao-ge'
 
 describe('teamSkillSlugFromName', () => {
-  it('keeps an ASCII slug that is already valid', () => {
+  it('keeps a Chinese title as the id', () => {
+    expect(teamSkillSlugFromName(CHINESE)).toBe(CHINESE)
+    expect(isPublishableTeamSkillSlug(CHINESE)).toBe(true)
+    expect(teamSkillSlugFromName(CHINESE.normalize('NFD'))).toBe(CHINESE.normalize('NFC'))
+    expect(teamSkillSlugFromName(CHINESE)).not.toMatch(/[a-z]/)
+  })
+
+  it('keeps an ASCII slug and still hyphenates spaces', () => {
     expect(teamSkillSlugFromName('deploy-check')).toBe('deploy-check')
     expect(teamSkillSlugFromName('Deploy-Check')).toBe('deploy-check')
     expect(teamSkillSlugFromName('  my skill  ')).toBe('my-skill')
   })
 
-  it('turns a Chinese title into pinyin so the default id can be shared unchanged', () => {
-    const slug = teamSkillSlugFromName(CHINESE)
-    expect(slug).toBe(PINYIN)
-    expect(slug).toMatch(TEAM_SKILL_SLUG_RE)
-    expect(isPublishableTeamSkillSlug(slug)).toBe(true)
-    expect([...slug].every((char) => char.charCodeAt(0) <= 0x7f)).toBe(true)
-    expect(teamSkillSlugFromName(CHINESE.normalize('NFD'))).toBe(slug)
-    expect(teamSkillSlugFromName(CHINESE.normalize('NFC'))).toBe(slug)
+  it('does not transcribe two different Chinese titles into one id', () => {
+    expect(teamSkillSlugFromName('知识')).toBe('知识')
+    expect(teamSkillSlugFromName('指示')).toBe('指示')
+    expect(teamSkillSlugFromName('知识')).not.toBe(teamSkillSlugFromName('指示'))
   })
 
-  it('gives two different Chinese titles two different ids', () => {
-    expect(teamSkillSlugFromName(CHINESE)).not.toBe(teamSkillSlugFromName('整车成本智能表'))
-  })
-
-  it('disambiguates titles that share a pinyin reading once one id is taken', () => {
-    const first = teamSkillSlugFromName('知识')
-    const second = allocateTeamSkillSlug('指示', new Set([first, teamSkillSlugFromName('指示')]))
-    expect(second).not.toBe(first)
-    expect(isPublishableTeamSkillSlug(second)).toBe(true)
-  })
-
-  it('folds accents the same way on NFC and NFD, which is how macOS and Windows disagree', () => {
-    expect(teamSkillSlugFromName('Café')).toBe('cafe')
-    expect(teamSkillSlugFromName('Cafe\u0301')).toBe('cafe')
+  it('folds accents to the same NFC id', () => {
+    expect(canonicalTeamSkillSlug('Caf\u00e9')).toBe('caf\u00e9')
+    expect(canonicalTeamSkillSlug('Cafe\u0301')).toBe('caf\u00e9')
+    expect(isPublishableTeamSkillSlug('caf\u00e9')).toBe(true)
   })
 
   it('does not use a Windows device name as a folder', () => {
     expect(teamSkillSlugFromName('con')).toBe('skill-con')
     expect(teamSkillSlugFromName('NUL')).toBe('skill-nul')
-    expect(isPublishableTeamSkillSlug(teamSkillSlugFromName('COM1'))).toBe(true)
+    expect(isPublishableTeamSkillSlug('COM1')).toBe(false)
+    expect(isPublishableTeamSkillSlug('console')).toBe(true)
   })
 
-  it('falls back to a stable hash when the title has no letters', () => {
-    const slug = teamSkillSlugFromName('!!!')
-    expect(slug).toMatch(/^skill-[0-9a-f]{8}$/)
-    expect(teamSkillSlugFromName('!!!')).toBe(slug)
-    expect(teamSkillSlugFromName('')).toBe('')
-    expect(teamSkillSlugFromName('   ')).toBe('')
+  it('rejects path separators, controls, and trailing dots', () => {
+    for (const slug of ['整车/成本', '整车\\成本', 'a/b', '..', 'a?', '整车.', 'a\nb', 'con', 'a:b']) {
+      expect(teamSkillSlugIssue(slug), slug).not.toBeNull()
+    }
   })
 
-  it('stays inside 2-64 characters for a long title', () => {
-    const slug = teamSkillSlugFromName('整'.repeat(40))
-    expect(slug.length).toBeGreaterThanOrEqual(2)
-    expect(slug.length).toBeLessThanOrEqual(TEAM_SKILL_SLUG_MAX)
-    expect(slug).toMatch(TEAM_SKILL_SLUG_RE)
-    expect(slug).not.toBe(teamSkillSlugFromName('车'.repeat(40)))
+  it('trims surrounding spaces so the folder does not end in a space', () => {
+    expect(teamSkillSlugIssue('整车 ')).toBeNull()
+    expect(canonicalTeamSkillSlug('整车 ')).toBe('整车')
+    expect(canonicalTeamSkillSlug(' 整车')).toBe('整车')
+  })
+
+  it('percent-encodes a Chinese id as one path segment', () => {
+    const encoded = encodeTeamSkillSlugForPath(CHINESE)
+    expect(encoded).not.toContain('/')
+    expect(decodeURIComponent(encoded)).toBe(CHINESE)
+    expect(encodeTeamSkillSlugForPath('deploy-check')).toBe('deploy-check')
+  })
+
+  it('stays inside 64 code points', () => {
+    const slug = teamSkillSlugFromName('整'.repeat(80))
+    expect([...slug].length).toBeGreaterThan(TEAM_SKILL_SLUG_MAX)
+    expect(teamSkillSlugIssue(slug)).toBe('invalid')
+    expect(isPublishableTeamSkillSlug('整'.repeat(64))).toBe(true)
+    expect(isPublishableTeamSkillSlug('整'.repeat(65))).toBe(false)
   })
 })
 
 describe('allocateTeamSkillSlug', () => {
-  it('keeps the generated id when the team does not have it', () => {
-    expect(allocateTeamSkillSlug(CHINESE, new Set())).toBe(PINYIN)
+  it('keeps the Chinese id when the team does not have it', () => {
+    expect(allocateTeamSkillSlug(CHINESE, new Set())).toBe(CHINESE)
     expect(allocateTeamSkillSlug('deploy-check', new Set(['other']))).toBe('deploy-check')
   })
 
-  it('suffixes a colliding id, including a generated Chinese one', () => {
-    expect(allocateTeamSkillSlug('deploy-check', new Set(['deploy-check']))).toBe('deploy-check-2')
-    expect(allocateTeamSkillSlug(CHINESE, new Set([PINYIN, `${PINYIN}-2`]))).toBe(`${PINYIN}-3`)
-  })
-
-  it('fits a suffix into the 64 character limit', () => {
-    const base = `a${'b'.repeat(63)}`
-    expect(base).toHaveLength(64)
-    const allocated = allocateTeamSkillSlug(base, new Set([base]))
-    expect(allocated).toMatch(TEAM_SKILL_SLUG_RE)
-    expect(allocated).not.toBe(base)
-    expect(allocated.endsWith('-2')).toBe(true)
-    expect(allocated.length).toBeLessThanOrEqual(64)
+  it('suffixes a colliding Chinese id', () => {
+    expect(allocateTeamSkillSlug(CHINESE, new Set([CHINESE]))).toBe(`${CHINESE}-2`)
+    expect(allocateTeamSkillSlug(CHINESE, new Set([CHINESE, `${CHINESE}-2`]))).toBe(`${CHINESE}-3`)
+    expect(isPublishableTeamSkillSlug(`${CHINESE}-2`)).toBe(true)
   })
 })
 
@@ -99,7 +95,7 @@ describe('teamSkillSlugIssue', () => {
   it('reports empty, invalid, reserved, and taken ids', () => {
     expect(teamSkillSlugIssue('')).toBe('empty')
     expect(teamSkillSlugIssue('   ')).toBe('empty')
-    expect(teamSkillSlugIssue(CHINESE)).toBe('invalid')
+    expect(teamSkillSlugIssue(CHINESE)).toBeNull()
     expect(teamSkillSlugIssue('a')).toBe('invalid')
     expect(teamSkillSlugIssue('-ab')).toBe('invalid')
     expect(teamSkillSlugIssue('Has Space')).toBe('invalid')
@@ -107,17 +103,11 @@ describe('teamSkillSlugIssue', () => {
     expect(teamSkillSlugIssue('lpt1')).toBe('reserved')
     expect(teamSkillSlugIssue('deploy-check')).toBeNull()
     expect(teamSkillSlugIssue('Deploy-Check')).toBeNull()
-    expect(teamSkillSlugIssue('deploy-check', new Set(['deploy-check']))).toBe('taken')
-    expect(teamSkillSlugIssue('console')).toBeNull()
+    expect(teamSkillSlugIssue(CHINESE, new Set([CHINESE]))).toBe('taken')
   })
 
   it('recognises the API error from the share toast', () => {
     expect(skillSlugIssueFromServerMessage(TEAM_SKILL_SLUG_INVALID_MESSAGE)).toBe('invalid')
-    expect(
-      skillSlugIssueFromServerMessage(
-        'slug must be 2-64 chars of [a-z0-9-] and start with a letter or digit',
-      ),
-    ).toBe('invalid')
     expect(
       skillSlugIssueFromServerMessage('slug is reserved on Windows and cannot be a skill folder name'),
     ).toBe('reserved')
@@ -126,33 +116,28 @@ describe('teamSkillSlugIssue', () => {
 })
 
 describe('shouldRetirePersonalOnShare', () => {
-  it('sets a Chinese personal folder aside and keeps a deliberate ASCII rename', () => {
-    expect(shouldRetirePersonalOnShare(CHINESE, PINYIN)).toBe(true)
+  it('sets the Chinese personal folder aside when it is the same skill', () => {
+    expect(shouldRetirePersonalOnShare(CHINESE, CHINESE)).toBe(true)
     expect(shouldRetirePersonalOnShare('deploy-check', 'deploy-check')).toBe(true)
     expect(shouldRetirePersonalOnShare('deploy-check', 'deploy-check-2')).toBe(false)
-    expect(shouldRetirePersonalOnShare('con', 'skill-con')).toBe(true)
   })
 })
 
 describe('teamSkillDisplayName', () => {
   it('keeps the Chinese title and drops control characters', () => {
-    expect(teamSkillDisplayName(CHINESE, PINYIN)).toBe(CHINESE)
-    expect(teamSkillDisplayName('  ', PINYIN)).toBe(PINYIN)
-    expect(teamSkillDisplayName(`整车\n成本`, PINYIN)).toBe('整车成本')
+    expect(teamSkillDisplayName(CHINESE, CHINESE)).toBe(CHINESE)
+    expect(teamSkillDisplayName('  ', CHINESE)).toBe(CHINESE)
+    expect(teamSkillDisplayName('整车\n成本', CHINESE)).toBe('整车成本')
     expect(teamSkillDisplayName('名'.repeat(200), 'fallback')).toHaveLength(120)
   })
 })
 
 describe('share slug copy', () => {
-  it('localizes the validation the dialog used to show in English', () => {
+  it('tells a Chinese user the id can be Chinese', () => {
     const zh = zhCN.teamShare
-    const english = en.teamShare
     expect(zh.skillShareSlug).toBe('标识')
-    expect(zh.skillShareSlugInvalid).not.toBe(english.skillShareSlugInvalid)
-    expect(zh.skillShareSlugInvalid).toContain('小写字母')
-    expect(zh.skillShareSlugEmpty).toContain('标识')
-    expect(zh.skillShareSlugGenerated).toContain('Windows')
-    expect(zh.skillShareSlugGenerated).toContain('macOS')
+    expect(zh.skillShareSlugInvalid).toContain('中文')
+    expect(zh.skillShareSlugInvalid).not.toBe(en.teamShare.skillShareSlugInvalid)
     expect(zh.skillShareSlugReserved).toContain('Windows')
   })
 })

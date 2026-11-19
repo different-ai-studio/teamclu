@@ -174,6 +174,12 @@ fn io_managed(e: std::io::Error) -> ManagedSkillError {
 }
 
 fn is_valid_slug(slug: &str) -> bool {
+    // Chinese and other non-ASCII ids use the shared folder rules. Pure ASCII
+    // keeps the historical shape (no double hyphen, no trailing hyphen) so
+    // agent-authored packs do not loosen that check.
+    if !slug.is_ascii() {
+        return teamclu_skillpack::skill_slug_is_publishable(slug);
+    }
     if slug.is_empty() {
         return false;
     }
@@ -815,6 +821,8 @@ mod tests {
         assert!(!is_valid_slug("-bad"));
         assert!(!is_valid_slug("bad-"));
         assert!(!is_valid_slug("a--b"));
+        assert!(is_valid_slug("整车成本智能表格"));
+        assert!(!is_valid_slug("整车/成本"));
     }
 
     #[test]

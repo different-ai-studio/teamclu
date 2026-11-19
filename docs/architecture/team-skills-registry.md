@@ -72,8 +72,8 @@
 |---|---|---|
 | `id` | uuid pk | |
 | `team_id` | uuid fk teams.id cascade | |
-| `slug` | text | 团队内唯一，`^[a-z0-9][a-z0-9-]{1,63}$`。也是安装目录名，所以保持 ASCII：Windows 设备名、大小写和 macOS NFD 都不能进这条 id |
-| `display_name` | text null | 给人看的标题，可以是中文。空则界面回退到 slug。中文个人技能分享时 slug 由名称生成（拼音），标题留在这一列 |
+| `slug` | text | 团队内唯一。可以是中文：`整车成本智能表格` 本身就是 id、安装目录和 SKILL.md `name`。NFC，ASCII 小写，2–64 个字符且 UTF-8 不超过 255 字节。拒绝路径分隔符、控制字符、Windows 禁用字符和设备名。已有的 ASCII / 拼音 id 不改名 |
+| `display_name` | text null | 可选的展示标题。空则界面用 slug。中文技能通常 slug 与标题相同，这一列仍留给想分开写的情况 |
 | `owner_actor_id` | uuid fk actors.id restrict | **负责人**，默认发布者，可转交 |
 | `summary` | text | 一句话，≤80 字 |
 | `category` | text | **枚举**，不是自由文本 |
