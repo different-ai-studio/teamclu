@@ -33,7 +33,7 @@ import {
   createConfiguredTeamAppsApi,
 } from "../../src/features/apps/team-apps-api";
 import { recallTeamApp, rememberTeamApps } from "../../src/features/apps/team-apps-memory";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { Hairline } from "../../src/ui/atoms/Hairline";
 import { SectionEyebrow } from "../../src/ui/atoms/SectionEyebrow";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
@@ -65,7 +65,7 @@ export default function TeamAppDetailRoute() {
 
   const load = useCallback(async () => {
     if (!appId) return;
-    const api = createConfiguredTeamAppsApi(supabase);
+    const api = createConfiguredTeamAppsApi(cloudAuth);
     // Deploy state is exactly the thing that has moved on since the list was
     // fetched, so re-read the app even when one was handed over.
     try {

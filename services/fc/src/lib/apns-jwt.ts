@@ -1,4 +1,4 @@
-// services/fc/lib/apns-jwt.mjs
+// services/fc/src/lib/apns-jwt.ts
 // ES256 JWT signer for APNs, with 50-min cache (APNs requires <60min).
 import { importPKCS8, SignJWT } from 'jose';
 

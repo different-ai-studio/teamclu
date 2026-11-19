@@ -7,8 +7,8 @@ import { createIdeasApi } from "../../../src/features/ideas/idea-api";
 import { createIdeasController } from "../../../src/features/ideas/idea-controller";
 import { reorderIdeaIds } from "../../../src/features/ideas/idea-types";
 import { IdeasListScreen } from "../../../src/features/ideas/screens/IdeasListScreen";
-import { supabase } from "../../../src/lib/supabase/client";
-import { supabaseAccessToken } from "../../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../../src/lib/auth/cloud-auth";
+import { cloudAccessToken } from "../../../src/lib/cloud-api/client";
 import { createIdeasCache } from "../../../src/lib/db/team-cache";
 import { showToast } from "../../../src/ui/Toast";
 
@@ -25,7 +25,7 @@ export default function IdeasIndexRoute() {
 
   if (controllerRef.current === null || teamIdRef.current !== teamId) {
     controllerRef.current = createIdeasController(
-      createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) }),
+      createIdeasApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
       teamId,
       ideasCache,
     );
@@ -55,7 +55,7 @@ export default function IdeasIndexRoute() {
   useEffect(() => {
     if (!teamId) return;
     let cancelled = false;
-    void createActorsApi({ getAccessToken: supabaseAccessToken(supabase) })
+    void createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) })
       .listActors(teamId)
       .then((rows) => {
         if (cancelled) return;
@@ -90,7 +90,7 @@ export default function IdeasIndexRoute() {
     const newIndex = orderedIds.indexOf(ideaId);
     if (newIndex < 0) return;
     controller.applyReorder(orderedIds);
-    const api = createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) });
+    const api = createIdeasApi({ getAccessToken: cloudAccessToken(cloudAuth) });
     try {
       await api.reorderIdeas(teamId, orderedIds);
     } catch (err) {
@@ -121,7 +121,7 @@ export default function IdeasIndexRoute() {
       onOpenArchived={() => router.push("/(app)/archived-ideas")}
       onOpenStats={() => router.push("/(app)/idea-stats")}
       onArchiveBatch={async (ideaIds) => {
-        const api = createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) });
+        const api = createIdeasApi({ getAccessToken: cloudAccessToken(cloudAuth) });
         for (const id of ideaIds) {
           try {
             await api.archive(id);

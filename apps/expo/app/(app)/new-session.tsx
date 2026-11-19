@@ -30,8 +30,8 @@ import {
   type AgentWorkspaceChoice,
 } from "../../src/features/sessions/screens/NewSessionScreen";
 import { createRuntimeRpcClient } from "../../src/lib/teamclu/runtime-rpc";
-import { supabase } from "../../src/lib/supabase/client";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
 import { uuidV4 } from "../../src/lib/uuid";
 import { showToast } from "../../src/ui/Toast";
 import { t } from "../../src/lib/i18n";
@@ -54,7 +54,7 @@ export default function NewSessionRoute() {
   const [defaultAgentId, setDefaultAgentId] = useState<string | null>(null);
   const [lastContact, setLastContact] = useState<LastContactByActor>(new Map());
   const workspacesApi = useMemo(
-    () => createWorkspacesApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createWorkspacesApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
 
@@ -63,7 +63,7 @@ export default function NewSessionRoute() {
     if (!teamId) return;
     let cancelled = false;
     void Promise.all([
-      createActorsApi({ getAccessToken: supabaseAccessToken(supabase) }).listActors(teamId),
+      createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) }).listActors(teamId),
       workspacesApi.list(teamId),
     ])
       .then(([actorRows, workspaceRows]) => {
@@ -87,7 +87,7 @@ export default function NewSessionRoute() {
       });
     // Picker order (iOS #1602): the viewer's default agent first, then by when
     // we last talked. Both are hints — a failure just orders by name.
-    void createActorsApi({ getAccessToken: supabaseAccessToken(supabase) })
+    void createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) })
       .getEffectiveDefaultAgent(teamId)
       .then((id) => {
         if (!cancelled) setDefaultAgentId(id);
@@ -113,7 +113,7 @@ export default function NewSessionRoute() {
       return;
     }
     let cancelled = false;
-    void createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) })
+    void createIdeasApi({ getAccessToken: cloudAccessToken(cloudAuth) })
       .listIdeas(teamId)
       .then((rows) => {
         if (!cancelled) setIdea(rows.find((row) => row.ideaId === ideaId) ?? null);
@@ -131,7 +131,7 @@ export default function NewSessionRoute() {
       return;
     }
     let cancelled = false;
-    void createConfiguredTeamAppsApi(supabase)
+    void createConfiguredTeamAppsApi(cloudAuth)
       .listApps(teamId)
       .then((rows) => {
         if (!cancelled) setApps(rows);
@@ -195,7 +195,7 @@ export default function NewSessionRoute() {
         setIsBusy(true);
         setErrorMessage(null);
         try {
-          const sessionsApi = createConfiguredSessionsApi(supabase);
+          const sessionsApi = createConfiguredSessionsApi(cloudAuth);
           const actorById = new Map(actors.map((actor) => [actor.actorId, actor]));
           const selectedAgents = collaboratorActorIds
             .map((id) => actorById.get(id))

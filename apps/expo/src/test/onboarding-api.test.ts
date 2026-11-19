@@ -24,7 +24,7 @@ function makeClient(overrides: {
 
 describe("createOnboardingApi (cloud-only)", () => {
   it("loadBootstrap returns null team when the session is anonymous with no teams", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const get = vi.fn().mockResolvedValue({ items: [] });
     const client = makeClient({
       session: { user: { id: "user-1", is_anonymous: true } },
@@ -42,7 +42,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("loadBootstrap activates the only team and resolves its actor", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const get = vi.fn().mockResolvedValue({
       items: [{ id: "team-1", name: "Team Claw", slug: "team-claw", role: "owner" }],
     });
@@ -64,7 +64,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   it("loadBootstrap stops to ask when the user is on more than one team", async () => {
     // It used to take the first listed team and activate it, so a user on
     // several landed in one with nothing saying a choice had been made.
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const get = vi.fn().mockResolvedValue({
       items: [
         { id: "team-1", name: "Alpha", slug: "alpha", role: "owner", orgName: "Acme" },
@@ -86,7 +86,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("loadBootstrap honours a remembered team without asking", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const get = vi.fn().mockResolvedValue({
       items: [
         { id: "team-1", name: "Alpha", slug: "alpha", role: "owner" },
@@ -105,7 +105,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("loadBootstrap asks again when the remembered team is gone", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const get = vi.fn().mockResolvedValue({
       items: [
         { id: "team-1", name: "Alpha", slug: "alpha", role: "owner" },
@@ -124,7 +124,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("loadBootstrap returns empty when there is no session", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const client = makeClient({ session: null });
     const api = createOnboardingApi(client);
     await expect(api.loadBootstrap()).resolves.toEqual({
@@ -136,7 +136,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("sendEmailOTP requests an OTP and returns the pending email", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const signInWithOtp = vi.fn().mockResolvedValue(undefined);
     const client = makeClient({ auth: { signInWithOtp } });
     const api = createOnboardingApi(client);
@@ -151,7 +151,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("verifyOTP delegates to the auth client with email type", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const verifyOtp = vi.fn().mockResolvedValue({});
     const client = makeClient({ auth: { verifyOtp } });
     const api = createOnboardingApi(client);
@@ -165,7 +165,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("createOAuthSignInUrl builds the PKCE authorize URL", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const oauthAuthorize = vi
       .fn()
       .mockResolvedValue("https://fc.example.com/v1/auth/oauth/google/authorize?...");
@@ -179,7 +179,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("completeOAuthCallback exchanges a PKCE code", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const exchangeOAuthCode = vi.fn().mockResolvedValue({});
     const client = makeClient({ auth: { exchangeOAuthCode } });
     const api = createOnboardingApi(client);
@@ -189,7 +189,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("completeOAuthCallback stores implicit token callbacks", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const setSession = vi.fn().mockResolvedValue({ data: {}, error: null });
     const client = makeClient({ auth: { setSession } });
     const api = createOnboardingApi(client);
@@ -204,7 +204,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("createTeam posts to /v1/teams then resolves its role from the team list", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const post = vi.fn().mockResolvedValue({ id: "team-1", name: "Team Claw", slug: "team-claw" });
     const get = vi.fn().mockResolvedValue({
       items: [{ id: "team-1", name: "Team Claw", slug: "team-claw", role: "owner" }],
@@ -223,7 +223,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("loadBootstrap narrows to the signed-in identity's home org (#1585)", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const get = vi.fn().mockResolvedValue({
       homeOrgId: "org-gym",
       items: [
@@ -240,7 +240,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("phone verify and account login go through the auth client", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const phoneLogin = vi
       .fn()
       .mockResolvedValueOnce({ type: "multiUser", accounts: [] })
@@ -261,14 +261,14 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("loginWithPhoneAccount fails when the server asks again instead of signing in", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const phoneLogin = vi.fn().mockResolvedValue({ type: "multiUser", accounts: [] });
     const api = createOnboardingApi(makeClient({ auth: { phoneLogin } }));
     await expect(api.loginWithPhoneAccount("+86138", "1", "u")).rejects.toThrow();
   });
 
   it("claimInvite posts the token and adopts the minted session", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const post = vi.fn().mockResolvedValue({ actorId: "a", teamId: "t-1", refreshToken: "rt" });
     const setRefreshSession = vi.fn().mockResolvedValue({ data: {}, error: null });
     const api = createOnboardingApi(makeClient({ post, auth: { setRefreshSession } }));
@@ -279,7 +279,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("acceptPendingInvite posts to the invite's accept route", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const post = vi.fn().mockResolvedValue({ actorId: "a", teamId: "t-2", refreshToken: null });
     const setRefreshSession = vi.fn();
     const api = createOnboardingApi(makeClient({ post, auth: { setRefreshSession } }));
@@ -290,7 +290,7 @@ describe("createOnboardingApi (cloud-only)", () => {
   });
 
   it("listPendingInvites and hasAnyTeam read without side effects", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const get = vi.fn(async (path: string) =>
       path === "/v1/invites/pending"
         ? { items: [{ inviteId: "i", teamId: "t" }] }

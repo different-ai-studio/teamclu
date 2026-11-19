@@ -14,11 +14,11 @@ export function humanizeFcError(err: unknown): string {
   if (isNotLoggedInError(raw)) {
     return i18n.t('errors.loginRequired')
   }
-  if (/disable_team_share RPC is missing|PGRST202/i.test(raw)) {
-    return i18n.t('settings.team.disconnectMigrationRequired')
-  }
-  if (/schema_drift/i.test(raw)) {
-    return i18n.t('settings.team.disconnectSchemaDrift')
+  // FC answers a PostgREST schema-cache miss (PGRST2xx, e.g. PGRST202 for a
+  // missing function) with code `schema_drift`: the Cloud API and the database
+  // migrations were deployed out of step.
+  if (/schema_drift|PGRST202/i.test(raw)) {
+    return i18n.t('settings.team.schemaDrift')
   }
   return raw
 }

@@ -87,7 +87,7 @@ This step isn't needed for builds signed and notarized with an Apple Developer c
 
 ## Quick start (development)
 
-**Prerequisites:** Node.js >= 20, pnpm >= 10, Rust >= 1.70
+**Prerequisites:** Node.js >= 24 (`engines` in `package.json`), pnpm 11 (pinned by `packageManager`; `corepack enable` picks it up), Rust 1.97.1 (pinned by `rust-toolchain.toml`; rustup installs it on first build)
 
 ```bash
 pnpm install

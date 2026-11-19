@@ -46,11 +46,12 @@ pnpm tauri:dev              # Full Tauri desktop app
 pnpm tauri:dev -- --skip-setup --skip-daemon-onboarding  # Dev: skip first-run wizards
 pnpm rust:check             # Fast Rust compile check with shared .cargo-target
 pnpm rust:build             # Rust build with shared .cargo-target
-# Always go through these wrappers rather than bare cargo. `binaries/` is fully
-# gitignored, but tauri.conf.json globs binaries/{cursor,claude}-bridge/**/* as
-# bundle resources — on a fresh checkout that glob matches nothing and
-# tauri-build fails before any crate compiles. The wrappers stage the bridge
-# trees for real builds and drop the globs for analysis-only runs.
+# Always go through these wrappers (scripts/rust-cli.js) rather than bare cargo.
+# `binaries/` is gitignored, but tauri.conf.json lists the teamclu-introspect and
+# amuxd sidecars under bundle.externalBin (plus the scripts/kb-maintainer
+# resource), and tauri-build fails on a fresh checkout where those files do not
+# exist yet. The wrappers build/stage the sidecars for real builds and blank
+# externalBin/resources for analysis-only runs (check, clippy).
 pnpm daemon:run             # Run amuxd from apps/daemon
 pnpm ios:run                # Build, install, and launch iOS app on booted Simulator
 
@@ -91,8 +92,11 @@ pnpm ios:test               # iOS UI tests
 - `services/supabase/` — Supabase migrations, seed, and database tests
 - `services/fc/` — Cloud API service (Node.js 20). Deploys as a container to
   the self-host Compose stack and Belayo Dokploy
-- `crates/` — shared Rust crates (`teamclu-proto`, `teamclu-types`, `teamclu-transport`)
-- `tests/` — E2E tests (tauri-mcp): smoke, regression, performance, functional
+- `crates/` — shared Rust crates (`teamclu-proto`, `teamclu-types`, `teamclu-transport`,
+  `teamclu-gateway`, `teamclu-apps`, `teamclu-binpath`, `teamclu-runtime-env`,
+  `teamclu-skillpack`)
+- `tests/` — E2E tests (tauri-mcp): `e2e`, `functional`, `regression`, `performance`,
+  `stress`, `v2-e2e` (`pnpm test:smoke` runs the v2 PR subset, not a folder)
 
 **Frontend key paths:**
 - `packages/app/src/stores/` — Zustand stores (50+ files, global state)
@@ -139,21 +143,21 @@ have been removed. See `docs/architecture/pi-agent-backend.md`.
 
 The API contract is defined in `docs/openapi/teamclu-api.v1.yaml`. All business data operations must go through the TeamClu Cloud API (`/v1`) rather than direct Supabase client calls.
 
-The Cloud API facade (`services/fc/lib/business-api.mjs`) is the canonical entry point for teams, sessions, messages, and invite operations. Clients (Tauri, Expo, iOS, daemon) should use their respective Cloud API providers:
+The Cloud API is a Hono app (`services/fc/src/app.ts`); its `/v1` routes are registered from `services/fc/src/lib/routes/*.ts` (`routes/index.ts` lists them). `services/fc/src/lib/business-api.ts` is only a test bridge that feeds synthetic events into that same app. Clients (Tauri, Expo, iOS, daemon) should use their respective Cloud API providers:
 
-- **Web/Desktop** (`packages/app/`): `CloudApiProvider` in `packages/app/src/lib/backend/provider.ts`
+- **Web/Desktop** (`packages/app/`): `getBackend()` (a `TeamCluBackend`) in `packages/app/src/lib/backend/provider.ts`, implemented under `packages/app/src/lib/backend/cloud-api/`
 - **Expo** (`apps/expo/`): `createCloudSessionsApi` in `apps/expo/src/features/sessions/cloud-api.ts`
 - **iOS** (`apps/ios/`): `CloudAPIClient` / `CloudAPIRepositories` in `apps/ios/Packages/AMUXCore/Sources/AMUXCore/CloudAPI/`
-- **daemon** (`apps/daemon/`): `cloud_api` backend module in `apps/daemon/src/backend/cloud_api.rs`
+- **daemon** (`apps/daemon/`): `cloud_api` backend module in `apps/daemon/src/backend/cloud_api/`
 
-Direct Supabase client usage (e.g. `supabase.from('sessions').select()`) is **reserved for internal FC repository implementation only** (`services/fc/lib/supabase-repo.mjs`). The FC facade forwards caller bearer tokens to Supabase, preserving RLS and auth semantics.
+Direct Supabase client usage (e.g. `supabase.from('sessions').select()`) is **reserved for internal FC repository implementation only** (`services/fc/src/lib/supabase-repo.ts` and `services/fc/src/lib/supabase-repo/`). The FC facade forwards caller bearer tokens to Supabase, preserving RLS and auth semantics.
 
 **When adding new business endpoints:**
 
 1. Define the endpoint in `docs/openapi/teamclu-api.v1.yaml` first.
-2. Implement the repository contract in `services/fc/lib/repository-contract.mjs`.
-3. Add the route handler in `services/fc/lib/business-api.mjs`.
-4. Implement the Supabase passthrough in `services/fc/lib/supabase-repo.mjs`.
+2. Add the behaviour to the repository contract in `services/fc/src/lib/repository-contract.ts`.
+3. Add the route handler in the matching `services/fc/src/lib/routes/<area>.ts` (register a new file in `routes/index.ts`).
+4. Implement the Supabase passthrough in `services/fc/src/lib/supabase-repo.ts` (or its `supabase-repo/` modules).
 5. Add tests in `services/fc/test/` (route, repository, contract).
 6. Wire the endpoint into client Cloud API providers.
 
@@ -183,8 +187,11 @@ fails the build on a second importer.
 
 Team sync is owned by the amuxd daemon (OSS engine). The legacy iroh-based P2P
 mode has been removed, and so has git share — team sync never invokes `git`.
-(The only `git` left in the product is the per-app Gitea checkout in
-`apps/daemon/src/sync/app_git.rs`, which has nothing to do with team share.)
+(`git` is still spawned elsewhere, none of it for team share: the per-app Gitea
+checkout and clone in `apps/daemon/src/sync/app_git.rs` / `app_clone.rs`, the
+desktop's git-credential helper setup in `apps/desktop/src/commands/git_credential.rs`,
+and the knowledge-base maintainer's wiki rollback in
+`apps/desktop/src/commands/kb_maintainer.rs`.)
 
 **There is no share-mode switch any more.** It was a one-shot cloud flag with no
 producer left in the product — nothing shipped a call that set it — so every team
@@ -219,11 +226,22 @@ exists but is daemon-owned and sits *outside* the synced tree.
 (`cargo test/check/build -p amuxd --locked`), which fails outright when the lockfile
 disagrees with the manifests. Verify with `cargo metadata --locked` before tagging.
 
-**Release process:**
-1. Bump desktop version in all 5 places above
-2. Commit, push to main
-3. `git tag v<desktop-version> && git push origin v<desktop-version>`
-4. Tag push triggers `release.yml` (macOS desktop)
+`pnpm release:bump <version>` rewrites all five; `pnpm release:check` verifies all
+five.
+
+**Release process (official GitHub release):**
+1. On a branch, `pnpm release:bump <version>` (all 5 places above)
+2. Open a PR and merge it — the bump goes through review like any other change
+   (`pnpm release:desktop` scripts the bump → PR → merge → tag sequence)
+3. `git tag v<desktop-version> && git push origin v<desktop-version>` on the merged commit
+4. Tag push triggers `release.yml` (macOS + Windows desktop)
+
+**Beta releases** do not follow these steps. `nightly-release-oss.yml` is
+dispatched by hand (it has no schedule); the workflow itself computes the next
+`-beta.N`, runs the bump script, commits `chore(release): nightly beta v…` to
+`main` as `github-actions[bot]`, and dispatches `release-oss.yml` for each OSS
+brand. That push to `main` is made by the workflow's token, not by a person, so
+it does not contradict the Git Workflow rule above. See `docs/release/desktop.md`.
 
 ## iOS TestFlight Release
 
@@ -239,7 +257,7 @@ so the upload went out as 53. Setting it by hand cannot fix a rejected upload.
 **Release process:**
 1. Bump `MARKETING_VERSION` if the user-facing version changes; `CURRENT_PROJECT_VERSION`
    is cosmetic (see above) but keep it moving so the checked-in value stays honest
-2. Commit and push to main
+2. Open a PR with the change and merge it
 3. `git tag ios-v<version>-<build> && git push origin ios-v<version>-<build>`
    - Example: `git tag ios-v1.2-25 && git push origin ios-v1.2-25`
 4. Tag push triggers `.github/workflows/testflight.yml` (runs `fastlane beta` on CI)
@@ -302,12 +320,18 @@ topology and migration state are tracked in
 `docker compose build fc ai-gateway`, `docker compose up -d`, waits for both to
 report healthy, then runs `run-e2e.sh`.
 
+The one per-merge exception is the daemon: `.github/workflows/daemon-deploy.yml`
+runs on pushes to `main` under `apps/daemon/**`, `crates/**`, the amuxd deploy
+files or `Cargo.*`. It builds the amuxd image in CI, resets the box's checkout,
+and recreates only `amuxd` (`up --no-deps`, so it does not rerun `migrate` or
+rebuild FC).
+
 **belayo does not ride that workflow.** Self-host builds the gateway from
 source in compose; belayo's Dokploy app is `sourceType: docker`, so it pulls a
 pre-built image from Alibaba ACR and a source change reaches it only when
 someone builds and pushes that image. `.github/workflows/belayo-ai-gateway.yml`
-still triggers on push to `main` under `services/ai-gateway/**` (and on
-`workflow_dispatch`). Database migrations are applied by the `migrate`
+triggers on push to `main` under `services/ai-gateway/**`, on a nightly schedule
+(16:00 UTC), and on `workflow_dispatch`. Database migrations are applied by the `migrate`
 compose service (`deploy/self-host/init/apply-migrations.sh`, tracked in
 `_selfhost.schema_migrations`, idempotent, lexical order).
 

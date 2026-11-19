@@ -6,8 +6,8 @@ import { createActorsApi } from "../../../src/features/actors/actor-api";
 import { createActorsController } from "../../../src/features/actors/actor-controller";
 import type { ConnectedAgentsStoreState } from "../../../src/features/actors/connected-agents-store";
 import { ActorsListScreen } from "../../../src/features/actors/screens/ActorsListScreen";
-import { supabase } from "../../../src/lib/supabase/client";
-import { supabaseAccessToken } from "../../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../../src/lib/auth/cloud-auth";
+import { cloudAccessToken } from "../../../src/lib/cloud-api/client";
 import { createActorsCache } from "../../../src/lib/db/team-cache";
 
 /** Stable no-op store so `useSyncExternalStore` can run before MQTT connects. */
@@ -33,7 +33,7 @@ export default function ActorsIndexRoute() {
 
   if (controllerRef.current === null || teamIdRef.current !== teamId) {
     controllerRef.current = createActorsController(
-      createActorsApi({ getAccessToken: supabaseAccessToken(supabase) }),
+      createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
       teamId,
       actorsCache,
     );

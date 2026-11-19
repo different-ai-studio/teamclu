@@ -26,8 +26,8 @@ import {
   type TeamJoinLink,
   type TeamJoinLinkTtl,
 } from "../../src/features/onboarding/join-link";
-import { CloudApiError, supabaseAccessToken } from "../../src/lib/cloud-api/client";
-import { supabase } from "../../src/lib/supabase/client";
+import { CloudApiError, cloudAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { showToast } from "../../src/ui/Toast";
 import { colors, hai, radii, spacing, typography } from "../../src/ui/theme";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
@@ -75,7 +75,7 @@ export default function InviteRoute() {
   const [isJoinLoading, setIsJoinLoading] = useState(canManage);
   const [joinError, setJoinError] = useState<string | null>(null);
 
-  const joinApi = useMemo(() => createConfiguredTeamJoinLinkApi(supabase), []);
+  const joinApi = useMemo(() => createConfiguredTeamJoinLinkApi(cloudAuth), []);
 
   useEffect(() => {
     if (!canManage || !teamId) {
@@ -200,7 +200,7 @@ export default function InviteRoute() {
     try {
       // Agents only: people come in through the join link (#1674).
       const result = await createActorsApi({
-        getAccessToken: supabaseAccessToken(supabase),
+        getAccessToken: cloudAccessToken(cloudAuth),
       }).createInvite({
         teamId,
         kind: "agent",
@@ -232,7 +232,7 @@ export default function InviteRoute() {
     setError(null);
     try {
       await createActorsApi({
-        getAccessToken: supabaseAccessToken(supabase),
+        getAccessToken: cloudAccessToken(cloudAuth),
       }).upgradeAccount({ teamId, orgName: trimmedOrg, contact });
       // The team has its own org now, so what the user came here to do will
       // go through. Clear the prompt and let them retry.

@@ -1,8 +1,16 @@
 ---
 status: accepted
+implementation: not started
 ---
 
 # 定时任务归 daemon，桌面端只剩 UI
+
+> **实施状态（2026-11-19 核对）：已接受，尚未实施。** 调度器、任务存储、执行和投递
+> 仍在桌面进程里：`apps/desktop/src/commands/cron/`（8 个文件，约 4,600 行，含
+> `scheduler.rs` / `storage.rs` / `delivery.rs` / `amuxd_client.rs`），全局任务仍存在
+> `dirs::config_dir()/<brand storage dir>/cron-global`。daemon 侧只有执行回合的
+> `apps/daemon/src/daemon/server/cron.rs`，无头 daemon 依旧没有定时能力。下文描述的
+> 是决定要去的形态，不是现状。
 
 `apps/desktop/src/commands/cron/`（7 个文件，3,531 行）整体搬到 amuxd。调度器、
 任务存储、执行、投递都在 daemon 进程内；桌面端保留设置页 UI，通过 daemon 的

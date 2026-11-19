@@ -1,4 +1,4 @@
-// services/fc/lib/sync-path.mjs
+// services/fc/src/lib/sync-path.ts
 //
 // Path validation for /sync/* endpoints (spec §3.1.1).
 // All endpoints that accept a `path` field call validateSyncPath() and return

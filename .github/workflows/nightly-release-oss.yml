@@ -6,9 +6,9 @@ name: Nightly TeamClu Beta / Copilot361 Release
 #      to `main`. This workflow does not push a `v*` tag itself; the bump
 #      commit is what advances the beta number.
 #   2. Dispatches release-oss.yml for TeamClu Beta and independent Copilot361 with the
-#      new `v<version>` tag input. That workflow re-syncs the four version
-#      sources on its runner, verifies the bump, and publishes each brand to its
-#      own OSS prefix — clients force-upgrade because the bundled amuxd version
+#      new `v<version>` tag input. That workflow re-syncs the five version
+#      places (four manifests + Cargo.lock) on its runner, verifies the bump,
+#      and publishes each brand to its own OSS prefix — clients force-upgrade because the bundled amuxd version
 #      strictly increased.
 #      The teamclu run also creates the GitHub Release `v<version>` (installers
 #      + latest.json), so the releases page matches the beta. Copilot361 stays
@@ -78,7 +78,7 @@ jobs:
           echo "next=$NEXT" >> "$GITHUB_OUTPUT"
           echo "Next beta version: $NEXT"
 
-      - name: Bump the four version sources
+      - name: Bump the version sources (four manifests + Cargo.lock)
         run: node scripts/bump-desktop-version.mjs "${{ steps.ver.outputs.next }}"
 
       - name: Commit + push bump to main

@@ -16,9 +16,11 @@ import { isTauri } from '@/lib/utils'
 // work, the sync-status poll never ran, and the daemon's link sweep actively
 // removed the team links it exists to create.
 //
-// Whether a team can sync is decided where the sync runs, by the thing that
-// actually decides it: the team secret (`sync::dispatch::run_once`). That is
-// what these two calls manage.
+// The only gate left on a sync is the auto-sync toggle, checked where the sync
+// runs (`sync::dispatch::run_once`). The team secret is fetched, not required:
+// knowledge content is uploaded as plaintext (ADR-0008), and the secret only
+// decrypts blobs written before that switch and seals the daemon's local
+// secrets. These two calls manage that secret.
 // ---------------------------------------------------------------------------
 
 interface TeamShareState {

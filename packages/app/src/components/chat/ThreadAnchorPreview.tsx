@@ -2,18 +2,12 @@ import { useTranslation } from "react-i18next";
 import { useActorDisplayName } from "@/hooks/use-actor-display-name";
 import { actorAvatarColor } from "@/lib/actor/actor-color";
 import type { Message as StoreMessage } from "@/stores/session-types";
-
-function anchorPreviewText(content: string): string {
-  const collapsed = content.replace(/\s+/g, " ").trim();
-  if (!collapsed) return "";
-  if (collapsed.length <= 160) return collapsed;
-  return `${collapsed.slice(0, 160)}…`;
-}
+import { anchorPreviewText } from "./anchor-preview-text";
 
 export function ThreadAnchorPreview({ message }: { message: StoreMessage }) {
   const { t } = useTranslation();
   const displayName = useActorDisplayName(message.senderActorId);
-  const preview = anchorPreviewText(message.content);
+  const preview = anchorPreviewText(message.content, 160);
   const colors = actorAvatarColor(message.senderActorId);
   const initial = (displayName || "A").slice(0, 1).toUpperCase();
 

@@ -1,4 +1,4 @@
-// services/fc/lib/mqtt-client.mjs
+// services/fc/src/lib/mqtt-client.ts
 //
 // Singleton MQTT publisher for FC. The connection is established lazily on the
 // first publish and reused across invocations within the same warm FC instance.

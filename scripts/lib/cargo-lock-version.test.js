@@ -2,7 +2,11 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { syncCargoLockVersions, WORKSPACE_MEMBERS } = require("./cargo-lock-version");
+const {
+  syncCargoLockVersions,
+  readCargoLockVersions,
+  WORKSPACE_MEMBERS,
+} = require("./cargo-lock-version");
 
 /** A Cargo.lock shaped like the real one: several blocks, cargo's key order. */
 function lock(teamcluVersion, amuxdVersion) {
@@ -89,4 +93,20 @@ test("a CRLF lockfile is rewritten and keeps its line endings", () => {
 
 test("the member list is the two crates the bump script rewrites", () => {
   assert.deepEqual([...WORKSPACE_MEMBERS].sort(), ["amuxd", "teamclu"]);
+});
+
+test("reads both workspace members' versions", () => {
+  assert.deepEqual(readCargoLockVersions(lock("0.3.1-beta.7", "0.3.1-beta.6")), {
+    teamclu: "0.3.1-beta.7",
+    amuxd: "0.3.1-beta.6",
+  });
+});
+
+test("reads CRLF lockfiles and reports a missing member as null", () => {
+  const crlf = lock("1.0.0", "1.0.0").replace(/\n/g, "\r\n");
+  assert.deepEqual(readCargoLockVersions(crlf), { teamclu: "1.0.0", amuxd: "1.0.0" });
+  assert.deepEqual(readCargoLockVersions(crlf, ["teamclu", "nope"]), {
+    teamclu: "1.0.0",
+    nope: null,
+  });
 });

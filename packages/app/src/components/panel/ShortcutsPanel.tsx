@@ -4,12 +4,9 @@ import {
   ChevronRight,
   ChevronDown,
   Plus,
-  FileText,
-  ExternalLink,
   Folder,
   RefreshCw,
   Settings,
-  type LucideIcon,
 } from "lucide-react"
 import { LucideIconByName } from "@/components/icons/LucideIconByName"
 import { cn } from "@/lib/utils"
@@ -26,6 +23,7 @@ import { useUIStore } from "@/stores/ui"
 import { useWorkspaceStore } from "@/stores/workspace"
 import { useCurrentTeamStore } from "@/stores/current-team"
 import { useSidebar } from "@/components/ui/sidebar"
+import { resolveFallbackIcon } from "@/components/shortcuts/shortcut-fallback-icon"
 
 // ── Icon resolver ────────────────────────────────────────────────────
 // `node.icon` is a PascalCase Lucide icon name (e.g. "ShoppingCart", "Users",
@@ -33,12 +31,6 @@ import { useSidebar } from "@/components/ui/sidebar"
 // Full list: https://lucide.dev/icons
 //
 // Icon shown when the node names no Lucide icon (and while the icon set loads).
-function resolveFallbackIcon(node: ShortcutNode): LucideIcon {
-  if (node.type === "folder") return Folder
-  if (node.type === "native") return FileText
-  return ExternalLink
-}
-
 // ── Tree node (shadcn sidebar style) ─────────────────────────────────
 
 interface TreeNodeProps {

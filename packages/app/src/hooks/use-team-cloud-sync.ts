@@ -9,8 +9,8 @@ import { isTauri } from '@/lib/utils'
 /**
  * Manual "sync with the cloud" action for toolbar buttons.
  *
- * `available` is false while the team has no locked share mode, so callers can
- * hide the button entirely.
+ * `available` is false outside the desktop app (no daemon to sync with), so
+ * callers can hide the button entirely.
  *
  * On success a TEAM_SYNCED_EVENT is dispatched; consumers that need to reload
  * after a sync should listen for that event rather than wrap `syncNow`, so they
@@ -23,8 +23,9 @@ export function useTeamCloudSync() {
   const ossSyncNow = useOssSyncStore((s) => s.syncNow)
 
   // Neither a workspace nor a share-mode flag. The daemon syncs the team's own
-  // tree under its amuxd home, and whether that tree can sync is decided by the
-  // team secret, where the sync runs — not by a cloud switch nothing sets.
+  // tree under its amuxd home; the only gate is the auto-sync toggle checked
+  // where the sync runs (a manual sync forces past it). The team secret is
+  // fetched, not required — not a cloud switch nothing sets either.
   //
   // Gating on `shareMode === 'oss'` is what made this button do nothing at all:
   // `syncNow` returned before doing any work, with no toast and no error, on

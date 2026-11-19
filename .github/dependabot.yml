@@ -26,6 +26,10 @@ updates:
     ignore:
       - dependency-name: "expo*"
         update-types: ["version-update:semver-major"]
+      # Part of the same SDK matrix, but its name does not match "expo*", so
+      # its majors kept reopening (#1780, #1900).
+      - dependency-name: "babel-preset-expo"
+        update-types: ["version-update:semver-major"]
       # The matrix pins react-native and its third-party native modules to a
       # minor (react-native 0.86.x, gesture-handler ~2.32, screens ~4.26, ...),
       # so a minor bump already leaves it: #1874 tried react-native 0.86 → 0.88.
@@ -55,9 +59,47 @@ updates:
       - dependency-name: "@tauri-apps/*"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
-  # Rust dependencies
+  # The two npm projects outside the pnpm workspace, each with its own
+  # package-lock.json. apps/daemon/pi-runtime is left out on purpose: its
+  # versions are pinned exactly and must move together with
+  # apps/daemon/pi.lock.json, which dependabot cannot update.
+  - package-ecosystem: "npm"
+    directory: "/services/fc"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      fc-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/services/ai-gateway"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      ai-gateway-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # Rust dependencies. Cargo.lock and the [workspace] manifest live at the repo
+  # root (apps/desktop, apps/daemon and crates/* are members); the entry used
+  # to point at /apps/desktop and never opened a cargo PR.
   - package-ecosystem: "cargo"
-    directory: "/apps/desktop"
+    directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"

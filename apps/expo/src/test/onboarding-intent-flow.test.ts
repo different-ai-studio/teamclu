@@ -16,7 +16,7 @@ vi.mock("@react-native-async-storage/async-storage", () => {
 });
 
 type OnboardingApi = ReturnType<
-  (typeof import("../lib/supabase/onboarding-api"))["createOnboardingApi"]
+  (typeof import("../lib/auth/onboarding-api"))["createOnboardingApi"]
 >;
 
 const NO_TEAM: BootstrapResult = {

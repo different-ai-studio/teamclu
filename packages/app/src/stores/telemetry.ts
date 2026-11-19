@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { FeedbackRating, StarRating } from '@/lib/telemetry/types'
-import { insertFeedback } from '@/lib/telemetry/supabase-feedback'
+import { insertFeedback } from '@/lib/telemetry/feedback'
 import { getBackend } from '@/lib/backend'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useAuthStore } from '@/stores/auth-store'

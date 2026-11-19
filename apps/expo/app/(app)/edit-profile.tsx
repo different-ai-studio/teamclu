@@ -19,8 +19,8 @@ import { Hairline } from "../../src/ui/atoms/Hairline";
 import { SectionEyebrow } from "../../src/ui/atoms/SectionEyebrow";
 import { createActorsApi } from "../../src/features/actors/actor-api";
 import { uploadAvatar } from "../../src/features/sessions/attachment-upload";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { showToast } from "../../src/ui/Toast";
 import { colors, hai, radii, spacing, typography } from "../../src/ui/theme";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
@@ -50,7 +50,7 @@ export default function EditProfileRoute() {
     void (async () => {
       try {
         const actors = await createActorsApi({
-          getAccessToken: supabaseAccessToken(supabase),
+          getAccessToken: cloudAccessToken(cloudAuth),
         }).listActors(teamId);
         if (cancelled) return;
         const me = actors.find((actor) => actor.actorId === memberActorId);
@@ -98,7 +98,7 @@ export default function EditProfileRoute() {
       setIsUploading(true);
 
       const publicUrl = await uploadAvatar({
-        getAccessToken: supabaseAccessToken(supabase),
+        getAccessToken: cloudAccessToken(cloudAuth),
         actorId: memberActorId,
         localUri: asset.uri,
         fallbackMime: asset.mimeType ?? "image/jpeg",
@@ -117,7 +117,7 @@ export default function EditProfileRoute() {
     setError(null);
     try {
       await createActorsApi({
-        getAccessToken: supabaseAccessToken(supabase),
+        getAccessToken: cloudAccessToken(cloudAuth),
       }).updateCurrentActorProfile(memberActorId, {
         displayName: displayName.trim(),
         avatarUrl,

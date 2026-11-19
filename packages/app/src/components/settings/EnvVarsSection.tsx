@@ -26,6 +26,7 @@ import { listen } from '@tauri-apps/api/event'
 import { useShallow } from 'zustand/react/shallow'
 import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
 import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
+import { isTeamSecretMissingError } from '@/lib/team/team-secret-error'
 
 // ─── Unified type for the combined list ─────────────────────────────────
 
@@ -41,15 +42,6 @@ type UnifiedEntry =
 /** True when a save failed because the local team secret is missing/wrong, so
  *  a shared write cannot be encrypted or synced. Matched on the stable backend
  *  error text from `try_lazy_init_from_workspace`. */
-function isTeamSecretMissingError(message: string): boolean {
-  return (
-    message.includes('not initialized') ||
-    message.includes('Missing team encryption key') ||
-    message.includes('No team configured') ||
-    message.includes('derived_key not set')
-  )
-}
-
 interface EnvVarDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void

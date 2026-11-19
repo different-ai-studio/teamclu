@@ -14,8 +14,8 @@ import type { Idea, IdeaActivity, IdeaStatus } from "../../src/features/ideas/id
 import type { IdeaActivityAuthor } from "../../src/features/ideas/components/IdeaActivityTimeline";
 import { IdeaDetailScreen } from "../../src/features/ideas/screens/IdeaDetailScreen";
 import { createConfiguredSessionsApi } from "../../src/features/sessions/api-provider";
-import { supabase } from "../../src/lib/supabase/client";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
 import { t } from "../../src/lib/i18n";
 import { showToast } from "../../src/ui/Toast";
 
@@ -44,7 +44,7 @@ export default function IdeaDetailRoute() {
   const [isSubmittingProgress, setIsSubmittingProgress] = useState(false);
 
   const ideasApi = useMemo(
-    () => createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createIdeasApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
 
@@ -89,7 +89,7 @@ export default function IdeaDetailRoute() {
     setIsLoading(true);
     void (async () => {
       try {
-        const actorsApi = createActorsApi({ getAccessToken: supabaseAccessToken(supabase) });
+        const actorsApi = createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) });
         const [ideas, actors] = await Promise.all([
           ideasApi.listIdeas(teamId),
           actorsApi.listActors(teamId),
@@ -119,7 +119,7 @@ export default function IdeaDetailRoute() {
           ),
         );
 
-        const related = await createConfiguredSessionsApi(supabase).listSessionsForIdea(
+        const related = await createConfiguredSessionsApi(cloudAuth).listSessionsForIdea(
           teamId,
           ideaId,
           5,

@@ -26,8 +26,8 @@ import {
   type IdeaImageSource,
 } from "../../src/features/ideas/idea-image-attachments";
 import { showToast } from "../../src/ui/Toast";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { uuidV4 } from "../../src/lib/uuid";
 import { colors, hai, radii, spacing, typography } from "../../src/ui/theme";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
@@ -60,7 +60,7 @@ export default function NewIdeaRoute() {
     void (async () => {
       try {
         const rows = await createWorkspacesApi({
-          getAccessToken: supabaseAccessToken(supabase),
+          getAccessToken: cloudAccessToken(cloudAuth),
         }).list(teamId);
         if (cancelled) return;
         setWorkspaces(
@@ -144,7 +144,7 @@ export default function NewIdeaRoute() {
     setIsBusy(true);
     setError(null);
     try {
-      const ideasApi = createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) });
+      const ideasApi = createIdeasApi({ getAccessToken: cloudAccessToken(cloudAuth) });
       // The pictures go with the post itself (iOS `CreateIdeaSheet.save`).
       // They used to follow as a "progress" activity with an invented
       // "Attached N images." body — a comment nobody wrote, on every

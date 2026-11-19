@@ -24,7 +24,7 @@ vi.mock('@/stores/auth-store', () => ({
   },
 }))
 
-vi.mock('@/lib/telemetry/supabase-feedback', () => ({
+vi.mock('@/lib/telemetry/feedback', () => ({
   insertFeedback: (...args: unknown[]) => insertFeedbackMock(...args),
 }))
 

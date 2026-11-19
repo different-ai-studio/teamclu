@@ -6,8 +6,8 @@
 # (see apps/daemon/src/opencode_install/mod.rs — `satisfied = installed >= bundled`).
 # If a release ships with the version unchanged, the new amuxd is bundled but
 # never installed. This script fails the release when:
-#   1. The four canonical version sources disagree (delegates to
-#      check-desktop-version.sh), or
+#   1. The five version places (four manifests + Cargo.lock) disagree
+#      (delegates to check-desktop-version.sh), or
 #   2. The release version is not strictly greater than the previous release's.
 #
 # Usage:
@@ -38,8 +38,8 @@ fi
 VERSION="${VERSION#v}"
 CURRENT_TAG="${CURRENT_TAG#v}"
 
-# 1) All four sources (package.json / desktop Cargo / tauri.conf / daemon Cargo)
-#    must already agree. This also asserts apps/daemon/Cargo.toml is in lockstep.
+# 1) All five places (package.json / desktop Cargo / tauri.conf / daemon Cargo /
+#    Cargo.lock teamclu+amuxd) must already agree. This also asserts apps/daemon/Cargo.toml is in lockstep.
 "$REPO_ROOT/scripts/check-desktop-version.sh"
 
 FILE_VERSION="$(node -e "console.log(require('./package.json').version)")"
