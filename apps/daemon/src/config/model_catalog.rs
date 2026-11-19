@@ -11,7 +11,7 @@
 //! filled from `startup.available_models` at attach time and published in that
 //! handle's retained `runtime/{id}/state`. Every other binding for the same
 //! device — an idle one from yesterday, a historical row replayed out of
-//! `SessionStore` by `publish_all_agent_states` — advertised an **empty**
+//! `SessionStore` by `publish_actor_state` — advertised an **empty**
 //! catalog, because it never had an attach of its own to fill it.
 //!
 //! Clients read that as "this runtime offers no models". The desktop's session
@@ -26,7 +26,7 @@
 //!
 //! # Why it is persisted
 //!
-//! `publish_all_agent_states` runs at startup and after every MQTT reconnect —
+//! `publish_actor_state` runs at startup and after every MQTT reconnect —
 //! before any runtime has attached, so an in-memory-only cache would still be
 //! empty at exactly the moment it is most needed. Persisting means a cold
 //! daemon publishes its last-known catalog instead of nothing.

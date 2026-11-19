@@ -7,8 +7,6 @@ edition = "2021"
 # MQTT
 rumqttc = { version = "0.25.1", default-features = false, features = ["use-rustls-no-provider", "websocket"] }
 
-# NATS (alternative transport)
-async-nats = "0.49"
 futures-util = "0.3"
 
 # Protobuf
@@ -135,4 +133,3 @@ static_vcruntime = "3.0"
 [dev-dependencies]
 tokio-tungstenite = "0.29"
 wiremock = "0.6"
-async-nats = "0.49"

@@ -11,9 +11,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
-use crate::backend::{
-    credential_in_proactive_refresh_window, proactive_reconnect_delay, Backend, WorkspaceUpsert,
-};
+use crate::backend::{credential_in_proactive_refresh_window, Backend, WorkspaceUpsert};
 use crate::channels::{AmuxdAgentHandle, AmuxdChannelStore, ChannelManager};
 use crate::collab::{AuthManager, AuthResult, PeerState, PeerTracker, PermissionManager};
 use crate::config::{DaemonConfig, SessionStore};
@@ -152,13 +150,9 @@ pub struct DaemonServer {
     /// proxy itself is shared with every business module and survives all
     /// connection generations.
     mqtt_command_rx: Option<mpsc::Receiver<crate::mqtt::MqttCommand>>,
-    /// Set when running on the NATS transport (`config.transport.kind = "nats"`).
-    /// Mutually exclusive with the MQTT supervisor.
-    nats: Option<crate::nats::NatsBackend>,
-    /// Unified publisher handle. On MQTT it is the generation-independent
-    /// supervisor proxy; on NATS it is the active NATS client. All publishing
-    /// downstream (Publisher::new_from_handle, teamclu, channels) reads
-    /// this so the same handler code works for both backends.
+    /// Unified publisher handle: the generation-independent MQTT supervisor
+    /// proxy. All publishing downstream (Publisher::new_from_handle, teamclu,
+    /// channels) reads this.
     publisher_handle: Arc<dyn MessagePublisher>,
     /// Mirror of the active backend's `Topics`. Updated alongside
     /// `publisher_handle` during connect/reconnect.
@@ -240,7 +234,7 @@ pub struct DaemonServer {
     /// (notably the next run's `cron-prepare-session`, delaying its session_id
     /// stamp and the desktop "Run Now" jump).
     cron_turn_done_tx: mpsc::Sender<cron::CronTurnDone>,
-    /// Receiver half, `take()`n by whichever run loop (MQTT or NATS) is active.
+    /// Receiver half, `take()`n by the MQTT run loop.
     cron_turn_done_rx: Option<mpsc::Receiver<cron::CronTurnDone>>,
     /// Sender for ACP events of a checked-out turn (cron and gateway). The
     /// turn task owns the agent's event channel, so nothing else can publish
@@ -715,7 +709,6 @@ impl DaemonServer {
             mqtt_recovery_rx: Some(mqtt_recovery_rx),
             mqtt_recovery_handle,
             mqtt_snapshot,
-            nats: None,
             publisher_handle,
             topics,
             agents,
@@ -1613,15 +1606,6 @@ impl DaemonServer {
             });
         }
 
-        // Dispatch to the NATS transport when the operator opted in via
-        // `[transport] kind = "nats"`. The MQTT path below is unchanged.
-        if matches!(
-            self.config.transport.as_ref().map(|t| t.kind),
-            Some(crate::config::TransportKind::Nats)
-        ) {
-            return self.run_nats(shutdown, sock_rx, sock_path).await;
-        }
-
         tokio::pin!(shutdown);
         let mut first_connect = true;
 
@@ -2228,413 +2212,6 @@ impl DaemonServer {
                 }
             }
             // loop exited → outer: get fresh token and reconnect
-        }
-    }
-
-    /// NATS transport main loop. Parallel to the MQTT path in `run()` above —
-    /// same token-refresh outer cadence, but the inner loop polls the NATS
-    /// inbound channel (mpsc Receiver fed by per-subscription tasks inside
-    /// `teamclu_transport::nats::NatsClient`).
-    ///
-    /// Differences vs MQTT:
-    /// - No CONNACK wait: async_nats returns from `connect` only after the
-    ///   server has accepted the connection.
-    /// - No LWT: graceful offline state is written to JetStream KV during
-    ///   shutdown / reconnect; ungraceful disconnects are detected by the
-    ///   server-side auth callout.
-    /// - No `eventloop.poll()` to cancel — async_nats reconnects internally
-    ///   on transport-level errors, so the proactive-reconnect path just
-    ///   builds a fresh `NatsBackend` rather than draining a half-closed
-    ///   socket.
-    pub(crate) async fn run_nats<F>(
-        mut self,
-        shutdown: F,
-        mut sock_rx: mpsc::Receiver<SockCommand>,
-        sock_path: PathBuf,
-    ) -> crate::error::Result<()>
-    where
-        F: Future<Output = ()>,
-    {
-        use teamclu_transport::DeliveryGuarantee;
-        tokio::pin!(shutdown);
-
-        let url = self
-            .config
-            .transport
-            .as_ref()
-            .map(|t| t.url.clone())
-            .ok_or_else(|| {
-                crate::error::AmuxError::Config(
-                    "[transport] section requires `url` when kind = nats".into(),
-                )
-            })?;
-
-        let mut first_connect = true;
-
-        // See the MQTT path: taken once before the reconnect loop so the
-        // `finalize_cron_turn` select arm can drain completed cron turns.
-        let mut cron_done_rx = self
-            .cron_turn_done_rx
-            .take()
-            .expect("cron_turn_done_rx already taken (NATS run loop entered twice)");
-        let mut cron_event_rx = self
-            .cron_turn_event_rx
-            .take()
-            .expect("cron_turn_event_rx already taken (NATS run loop entered twice)");
-        let mut chat_decision_rx = self
-            .chat_decision_rx
-            .take()
-            .expect("chat_decision_rx already taken (NATS run loop entered twice)");
-        let mut cold_attach_rx = self
-            .cold_attach_rx
-            .take()
-            .expect("cold_attach_rx already taken (NATS run loop entered twice)");
-        // See the matching channel in the MQTT loop.
-        let (offline_restart_tx, mut offline_restart_rx) = mpsc::channel(16);
-
-        'outer: loop {
-            // 1. Fresh backend access_token; same retry cadence as MQTT path.
-            let token = loop {
-                match self.backend.auth_token().await {
-                    Ok(t) => break t,
-                    Err(e) => {
-                        warn!("token fetch failed: {e}, retrying in 30s");
-                        // Race the sleep against shutdown so SIGTERM is honored
-                        // during a cloud outage instead of forcing SIGKILL.
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_secs(30)) => {}
-                            _ = &mut shutdown => {
-                                info!("shutdown signal received while retrying token fetch");
-                                let _ = std::fs::remove_file(&sock_path);
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-            };
-            if credential_in_proactive_refresh_window(self.backend.cached_credential_expiry_epoch())
-            {
-                info!(
-                    "cached JWT within proactive refresh window, forcing token refresh before NATS connect"
-                );
-                self.backend.invalidate_cached_credential();
-                continue 'outer;
-            }
-
-            // 2. Connect.
-            info!(
-                actor_id = %self.actor_id,
-                %url,
-                "NATS connecting with access_token"
-            );
-            let backend = match crate::nats::NatsBackend::connect(&self.config, &url, &token).await
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    warn!("NATS connect failed: {e}, retrying in 5s");
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    continue 'outer;
-                }
-            };
-
-            // 3. Re-wire publisher_handle + topics so all downstream
-            //    Publisher::new_from_handle / SessionManager publishes route
-            //    through the NATS backend instead of the MQTT one.
-            self.publisher_handle = Arc::new(backend.client.clone());
-            self.topics = backend.topics.clone();
-            self.refresh_rpc_client_publisher();
-            if let Some(team_id) = self.config.team_id.clone() {
-                self.teamclu = match crate::teamclu::SessionManager::new(
-                    self.publisher_handle.clone(),
-                    &team_id,
-                    &self.config.actor.id,
-                    Some(self.actor_id.clone()),
-                    crate::config::DaemonConfig::config_dir(),
-                ) {
-                    Ok(mut tc) => {
-                        tc.set_local_tee(self.live_tee.clone());
-                        Some(tc)
-                    }
-                    Err(e) => {
-                        warn!("teamclu rebuild on NATS failed: {e}");
-                        None
-                    }
-                };
-            }
-            self.nats = Some(backend);
-
-            // 4. Subscribe + announce online.
-            if let Err(e) = self.nats.as_ref().unwrap().subscribe_all().await {
-                warn!("nats subscribe_all failed: {e}, reconnecting");
-                continue 'outer;
-            }
-            if let Some(tc) = &mut self.teamclu {
-                if let Err(e) = tc.subscribe_all().await {
-                    warn!("teamclu subscribe failed on NATS: {e}, reconnecting");
-                    continue 'outer;
-                }
-            }
-            if let Err(e) = self
-                .nats
-                .as_ref()
-                .unwrap()
-                .announce_online(&self.config.actor.name)
-                .await
-            {
-                warn!("nats announce_online failed: {e}, reconnecting");
-                continue 'outer;
-            }
-            self.publish_all_agent_states().await;
-            info!(actor_id = %self.config.actor.id, "NATS connected, listening for runtime commands");
-
-            if first_connect {
-                self.spawn_offline_restart_planning(offline_restart_tx.clone());
-                first_connect = false;
-            } else {
-                // A reconnect, not a restart. The broker dropped anything
-                // published while we were away (clean_session=true), and the
-                // in-memory subscription set says nothing about sessions this
-                // process never subscribed to — so ask the backend what moved.
-                self.spawn_offline_restart_reconcile(offline_restart_tx.clone());
-            }
-
-            // 5. Proactive reconnect timer (mirrors MQTT path: refresh ~5min
-            //    before cached JWT expiry). On NATS this means tearing down
-            //    the current client and reconnecting with the new token —
-            //    async_nats keeps the auth token only at connect time, so an
-            //    in-place refresh isn't possible without a fresh connection.
-            let proactive_reconnect_in =
-                proactive_reconnect_delay(self.backend.cached_credential_expiry_epoch());
-            info!(
-                reconnect_in_secs = proactive_reconnect_in.as_secs(),
-                "scheduled proactive NATS reconnect before token expiry"
-            );
-            let proactive_sleep = tokio::time::sleep(proactive_reconnect_in);
-            tokio::pin!(proactive_sleep);
-
-            // 6. Inner select loop — three arms: shutdown, sock command,
-            //    inbound NATS frame. The inbound receiver is moved out of
-            //    `self.nats` once for the duration of this select cycle and
-            //    re-attached on reconnect.
-            //
-            //    We can't borrow `&mut self.nats.inbound` *and* call
-            //    `&mut self` methods inside the same select arm, so the
-            //    receiver is owned locally and the backend reference goes
-            //    along with it. SessionManager and Publisher reads happen
-            //    via the cloned `publisher_handle`, which doesn't touch
-            //    `self.nats`.
-            let mut inbound = self.nats.as_mut().unwrap().inbound_take();
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = &mut shutdown => {
-                        info!("shutdown signal received, draining channels");
-                        if let Some(nats) = &self.nats {
-                            let _ = nats.announce_offline(&self.config.actor.name).await;
-                        }
-                        self.shutdown_for_exit().await;
-                        let _ = std::fs::remove_file(&sock_path);
-                        return Ok(());
-                    }
-                    sock_cmd = sock_rx.recv() => {
-                        match sock_cmd {
-                            Some(SockCommand::Shutdown) => {
-                                info!("shutdown control command received, draining channels");
-                                if let Some(nats) = &self.nats {
-                                    let _ = nats.announce_offline(&self.config.actor.name).await;
-                                }
-                                self.shutdown_for_exit().await;
-                                let _ = std::fs::remove_file(&sock_path);
-                                return Ok(());
-                            }
-                            Some(SockCommand::ChannelReload) => self.reload_channels().await,
-                            Some(SockCommand::ChannelStatus { reply_tx }) => {
-                                let body = self.channel_status_payload().await;
-                                let _ = reply_tx.send(body);
-                            }
-                            Some(SockCommand::WecomBotsStatus { reply_tx }) => {
-                                let body = self.wecom_bots_status_payload().await;
-                                let _ = reply_tx.send(body);
-                            }
-                            Some(SockCommand::SeatalkBotsStatus { reply_tx }) => {
-                                let body = self.seatalk_bots_status_payload().await;
-                                let _ = reply_tx.send(body);
-                            }
-                            Some(SockCommand::WecomChatList { reply_tx }) => {
-                                let body = self.wecom_chat_list_payload().await;
-                                let _ = reply_tx.send(body);
-                            }
-                            Some(SockCommand::ChannelSecretKeys { reply_tx }) => {
-                                let _ = reply_tx.send(self.channel_secret_keys_payload());
-                            }
-                            Some(SockCommand::ChannelSave { platform, config_json }) => {
-                                self.save_channel_config(&platform, &config_json).await;
-                            }
-                            Some(SockCommand::GatewayModelSave { model }) => {
-                                self.save_gateway_model(&model).await;
-                            }
-                            Some(SockCommand::GatewayLocaleSave { locale }) => {
-                                self.save_gateway_locale(&locale);
-                            }
-                            Some(SockCommand::McpSend { payload, reply_tx }) => {
-                                let resp = match self.handle_mcp_send(&payload).await {
-                                    Ok(v) => serde_json::json!({ "ok": true, "result": v }),
-                                    Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
-                                };
-                                let _ = reply_tx.send(resp.to_string());
-                            }
-                            Some(SockCommand::ChannelSend { payload, reply_tx }) => {
-                                let resp = match self.handle_channel_send(&payload).await {
-                                    Ok(v) => serde_json::json!({ "ok": true, "result": v }),
-                                    Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
-                                };
-                                let _ = reply_tx.send(resp.to_string());
-                            }
-                            Some(SockCommand::RemoteToolCall { payload, reply_tx }) => {
-                                self.spawn_remote_tool_sock_handler(payload, reply_tx)
-                                    .await;
-                            }
-                            Some(SockCommand::SkillsManage { payload, reply_tx }) => {
-                                self.handle_skills_manage(payload, reply_tx).await;
-                            }
-                            Some(SockCommand::AppGitCredential { payload, reply_tx }) => {
-                                self.handle_app_git_credential(payload, reply_tx).await;
-                            }
-                            Some(SockCommand::Knowledge { payload, reply_tx }) => {
-                                crate::knowledge::spawn_knowledge(payload, reply_tx);
-                            }
-                            Some(SockCommand::LocalRpc { payload, reply_tx }) => {
-                                let reply = self.dispatch_local_rpc(&payload).await;
-                                let _ = reply_tx.send(reply);
-                            }
-                            Some(SockCommand::LocalLiveIngest {
-                                session_id,
-                                payload,
-                                reply_tx,
-                            }) => {
-                                let reply = self.ingest_session_live(&session_id, &payload).await;
-                                let _ = reply_tx.send(reply);
-                            }
-                            Some(SockCommand::PromptAwait { payload, reply_tx }) => {
-                                // Fast setup inline; the turn runs on a task and
-                                // its result comes back via `cron_turn_done_rx`
-                                // (see the `finalize_cron_turn` select arm below).
-                                self.handle_prompt_await(&payload, reply_tx).await;
-                            }
-                            Some(SockCommand::CronPrepareSession { payload, reply_tx }) => {
-                                let resp = match self.handle_cron_prepare_session(&payload).await {
-                                    Ok(v) => serde_json::json!({ "ok": true, "result": v }),
-                                    Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
-                                };
-                                let _ = reply_tx.send(resp.to_string());
-                            }
-                            Some(SockCommand::PrewarmWorkspace { workspace_id, path }) => {
-                                // Env assembly runs inline (fast); the host
-                                // spawn itself is detached inside.
-                                self.kick_prewarm_for_workspace(&path, &workspace_id).await;
-                            }
-                            Some(SockCommand::WechatQrStart { reply_tx }) => {
-                                let base_url = teamclu_gateway::wechat_config::default_ilink_base_url();
-                                let resp = match teamclu_gateway::wechat::fetch_qr_code(&base_url).await {
-                                    Ok(v) => serde_json::json!({ "ok": true, "result": v }),
-                                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
-                                };
-                                let _ = reply_tx.send(resp.to_string());
-                            }
-                            Some(SockCommand::WechatQrPoll { qrcode, reply_tx }) => {
-                                let base_url = teamclu_gateway::wechat_config::default_ilink_base_url();
-                                let resp = match teamclu_gateway::wechat::poll_qr_status(&base_url, &qrcode).await {
-                                    Ok(v) => serde_json::json!({ "ok": true, "result": v }),
-                                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
-                                };
-                                let _ = reply_tx.send(resp.to_string());
-                            }
-                            Some(SockCommand::WecomQrStart { reply_tx }) => {
-                                let resp = match teamclu_gateway::wecom::fetch_wecom_qr_code().await {
-                                    Ok(v) => serde_json::json!({ "ok": true, "result": v }),
-                                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
-                                };
-                                let _ = reply_tx.send(resp.to_string());
-                            }
-                            Some(SockCommand::WecomQrPoll { scode, reply_tx }) => {
-                                let resp = match teamclu_gateway::wecom::poll_wecom_qr_result(&scode).await {
-                                    Ok(v) => serde_json::json!({ "ok": true, "result": v }),
-                                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
-                                };
-                                let _ = reply_tx.send(resp.to_string());
-                            }
-                            Some(SockCommand::AddWorkspace { path, reply_tx }) => {
-                                let body = self.handle_add_workspace_sock(&path).await;
-                                let _ = reply_tx.send(body);
-                            }
-                            Some(SockCommand::Unknown(line)) => warn!("amuxd.sock: unknown control command: {line:?}"),
-                            None => warn!("amuxd.sock: listener channel closed; control commands unavailable until restart"),
-                        }
-                    }
-                    done = cron_done_rx.recv() => {
-                        // Background cron turn finished — persist + reply. See the
-                        // matching arm in the MQTT loop.
-                        if let Some(done) = done {
-                            self.finalize_cron_turn(done).await;
-                        }
-                    }
-                    ev = cron_event_rx.recv() => {
-                        // Streaming events of an in-flight cron turn. See the
-                        // matching arm in the MQTT loop.
-                        if let Some(ev) = ev {
-                            self.publish_cron_turn_event(ev).await;
-                        }
-                    }
-                    decision = chat_decision_rx.recv() => {
-                        // A tool approval answered in a chat. See the matching
-                        // arm in the MQTT loop.
-                        if let Some(decision) = decision {
-                            self.settle_chat_decision(decision).await;
-                        }
-                    }
-                    request = cold_attach_rx.recv() => {
-                        // A chat turn with no live runtime. See the matching
-                        // arm in the MQTT loop.
-                        if let Some(request) = request {
-                            self.serve_cold_attach(request).await;
-                        }
-                    }
-                    Some(entry) = offline_restart_rx.recv() => {
-                        self.apply_offline_restart(entry).await;
-                    }
-                    frame = inbound.recv() => {
-                        match frame {
-                            Some(f) => {
-                                if let Some(msg) = crate::mqtt::subscriber::parse_frame(&f) {
-                                    self.handle_incoming(msg).await;
-                                }
-                            }
-                            None => {
-                                warn!("NATS inbound channel closed, reconnecting");
-                                break;
-                            }
-                        }
-                    }
-                    _ = &mut proactive_sleep => {
-                        info!(
-                            expiry = ?self.backend.cached_credential_expiry_epoch(),
-                            "JWT nearing expiry, proactively reconnecting NATS"
-                        );
-                        self.backend.invalidate_cached_credential();
-                        // Mark offline before tearing down so subscribers see
-                        // the presence change immediately rather than waiting
-                        // for the next online publish.
-                        if let Some(nats) = &self.nats {
-                            let _ = nats.announce_offline(&self.config.actor.name).await;
-                        }
-                        break;
-                    }
-                }
-            }
-            // Put the inbound receiver back so the next reconnect can take it.
-            self.nats.as_mut().unwrap().inbound_put_back(inbound);
-            // loop exited → outer: get fresh token and reconnect
-            let _ = DeliveryGuarantee::AtLeastOnce; // touch import so it stays
         }
     }
 }
@@ -3636,7 +3213,6 @@ pub(crate) mod tests {
                 password: None,
             },
             agents: crate::config::AgentsConfig::default(),
-            transport: None,
             team_id: Some("team-test".to_string()),
             channels: crate::config::ChannelsConfig::default(),
             idle_runtime_timeout_secs: None,
@@ -3848,7 +3424,6 @@ pub(crate) mod tests {
                 config,
                 config_path: tmp.path().join("daemon.toml"),
                 mqtt_command_rx: None,
-                nats: None,
                 publisher_handle: publisher_handle.clone(),
                 topics,
                 agents: Arc::new(AsyncMutex::new(agents)),

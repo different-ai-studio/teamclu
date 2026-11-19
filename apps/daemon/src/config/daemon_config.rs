@@ -10,11 +10,6 @@ pub struct DaemonConfig {
     #[serde(rename = "actor", alias = "device")]
     pub actor: ActorConfig,
     pub mqtt: MqttConfig,
-    /// Transport selector. Defaults to MQTT when omitted so existing
-    /// `daemon.toml` files keep working unchanged. Set
-    /// `[transport] kind = "nats"` + `url = "nats://..."` to use NATS.
-    #[serde(default)]
-    pub transport: Option<TransportConfig>,
     #[serde(default)]
     pub agents: AgentsConfig,
     /// Which `teams/<id>/` directory this daemon currently works out of.
@@ -355,28 +350,6 @@ pub struct MqttConfig {
     pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
-}
-
-/// Top-level transport switch. When present and `kind = "nats"`, the
-/// daemon connects to `url` instead of `mqtt.broker_url`. URL scheme
-/// (`nats://`, `tls://`, `ws://`, `wss://`) is forwarded verbatim to
-/// async-nats.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransportConfig {
-    #[serde(default = "default_transport_kind")]
-    pub kind: TransportKind,
-    pub url: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TransportKind {
-    Mqtt,
-    Nats,
-}
-
-fn default_transport_kind() -> TransportKind {
-    TransportKind::Mqtt
 }
 
 /// `[agents.*]` — machine-level runtime settings.
@@ -906,7 +879,6 @@ impl DaemonConfig {
                 username: None,
                 password: None,
             },
-            transport: None,
             agents: AgentsConfig::default(),
             team_id: None,
             channels: Default::default(),

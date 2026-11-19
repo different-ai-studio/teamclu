@@ -17,7 +17,6 @@ mod knowledge;
 mod logging;
 mod mcp_probe;
 mod mqtt;
-mod nats;
 mod node_install;
 mod onboarding;
 mod pi_install;

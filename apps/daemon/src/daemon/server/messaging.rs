@@ -212,23 +212,10 @@ impl DaemonServer {
         }
     }
 
-    /// Build merged agent list: active agents + historical (non-active) sessions.
-    /// Now only used by `publish_all_agent_states` to iterate startup/reconnect state.
-    /// Per-agent updates should go through `publish_runtime_state_by_id`.
-    pub(crate) async fn merged_agent_list(&self) -> amux::AgentList {
-        let agents = self.agents.lock().await;
-        agents.to_proto_agent_list()
-    }
-
     /// Publish the actor snapshot after attachment changes. Per-spawn
     /// `runtime/{id}/state` retains are no longer published — clients read
     /// `{actor}/state` only (ADR-0004 phase 7, iOS out of scope).
     pub(crate) async fn publish_runtime_state_by_id(&self, _agent_id: &str) {
-        let _ = self.publish_actor_state().await;
-    }
-
-    /// Re-publish the actor snapshot on startup / MQTT reconnect.
-    pub(crate) async fn publish_all_agent_states(&self) {
         let _ = self.publish_actor_state().await;
     }
 

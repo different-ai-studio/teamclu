@@ -1154,7 +1154,7 @@ impl RuntimeManager {
     ///
     /// Every `RuntimeInfo` leaving this daemon goes through here. Without it,
     /// an idle binding — or a historical `SessionStore` row replayed by
-    /// `publish_all_agent_states` — advertises an empty catalog, and clients
+    /// `publish_actor_state` — advertises an empty catalog, and clients
     /// read that as "no models", which pins the session's pill at 连接中.
     pub fn fill_catalog(&self, info: &mut amux::RuntimeInfo) {
         if !info.available_models.is_empty() {
