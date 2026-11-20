@@ -17,7 +17,7 @@
     "@alicloud/sls20201230": "^5.12.0",
     "@aws-sdk/client-s3": "^3.1170.0",
     "@aws-sdk/s3-request-presigner": "^3.1170.0",
-    "@hono/node-server": "^1.19.14",
+    "@hono/node-server": "^2.1.9",
     "@supabase/supabase-js": "^2.119.0",
     "hono": "^4.13.19",
     "jose": "^6.2.17",
