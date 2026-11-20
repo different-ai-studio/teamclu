@@ -590,6 +590,47 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(useDaemonOnboardingStore.getState().status).toBe('ready')
   })
 
+  it('a forced rebind that arrives after the switch already bound this user does not bind again', async () => {
+    // switchToTeam refreshes with forceIdentityRebind when the account changes
+    // (teams in different orgs sign in as different accounts). AuthGate refreshes
+    // on the same session change without it. When AuthGate's pass finishes first,
+    // the forced pass used to bind a second time — another daemon_init and a
+    // second amuxd restart for one switch.
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't2'
+    h.currentUserId = 'linked-user'
+    h.deviceAgents.set('t1:device-1', 'agent-existing')
+    h.probeQueue = [
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+      { ok: true, baseUrl: 'http://127.0.0.1:1' },
+    ]
+
+    await useDaemonOnboardingStore.getState().refresh()
+    expect(h.ensureCalls).toHaveLength(1)
+
+    await useDaemonOnboardingStore.getState().refresh({ forceIdentityRebind: true })
+
+    expect(h.ensureCalls).toHaveLength(1)
+    expect(h.invokeCalls.filter((cmd) => cmd === 'daemon_init')).toHaveLength(1)
+    expect(h.invokeCalls.filter((cmd) => cmd === 'daemon_restart_managed')).toHaveLength(1)
+    expect(useDaemonOnboardingStore.getState().status).toBe('ready')
+  })
+
+  it('a forced rebind still rebinds when the daemon was last bound by another account', async () => {
+    const { writeDaemonOnboardingIdentity } = await import('@/lib/daemon/daemon-onboarding-identity')
+    writeDaemonOnboardingIdentity({ teamId: 't1', userId: 'previous-user' })
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.currentUserId = 'linked-user'
+    h.deviceAgents.set('t1:device-1', 'agent-existing')
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+
+    await useDaemonOnboardingStore.getState().refresh({ forceIdentityRebind: true })
+
+    expect(h.ensureCalls).toHaveLength(1)
+    expect(h.invokeCalls).toContain('daemon_restart_managed')
+  })
+
   it('switching back to a team re-binds that team’s existing agent, not a new one', async () => {
     // Name it in t1, go to t2, come back: the return trip must find the same
     // agent, or every round trip leaves a duplicate and another naming prompt.
