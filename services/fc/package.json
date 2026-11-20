@@ -20,7 +20,7 @@
     "@hono/node-server": "^1.19.14",
     "@supabase/supabase-js": "^2.119.0",
     "hono": "^4.13.19",
-    "jose": "^5.9.0",
+    "jose": "^6.2.17",
     "mqtt": "^5.16.1",
     "postgres": "^3.4.9",
     "stripe": "^22.6.0",
