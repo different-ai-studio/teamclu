@@ -273,11 +273,14 @@ services:
       GITEA__service__DISABLE_REGISTRATION: "true"
       # Per-account git over HTTPS: Caddy's forward_auth asks FC who a git
       # request is and passes the answer as X-WEBAUTH-USER (see the Caddyfile).
-      # Safe only because of `networks: [gitea-net]` above. The API never takes
-      # the header — FC calls it with the bot token — and an unknown user is
-      # created on first sight only as a fallback (FC creates them up front).
+      # Safe only because of `networks: [gitea-net]` above. The API takes the
+      # header too, so a person or agent can open, read and merge pull requests
+      # as themselves: Caddy sets it only on the pull-request API allowlist in
+      # the Caddyfile, and strips it everywhere else — including the internal
+      # :8081 door FC calls with the bot token. An unknown user is created on
+      # first sight only as a fallback (FC creates them up front).
       GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION: "true"
-      GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION_API: "false"
+      GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION_API: "true"
       GITEA__service__ENABLE_REVERSE_PROXY_AUTO_REGISTRATION: "true"
       GITEA__security__REVERSE_PROXY_AUTHENTICATION_USER: "X-WEBAUTH-USER"
     volumes:
