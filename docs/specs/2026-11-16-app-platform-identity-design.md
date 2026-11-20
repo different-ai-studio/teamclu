@@ -238,12 +238,19 @@ http://:8081 {
 }
 ```
 
-- **只放行 git 协议路径**，`.git` 后缀可有可无。网页和 `/api/*` 对用户一律 404：Gitea 的 admin 协作者能通过 API
-  改协作者、加 deploy key、加 webhook，放开就能绕过 TeamClu 的权限管理。
+- **只放行 git 协议路径和 PR 接口**，`.git` 后缀可有可无。网页和其余 `/api/*` 对用户一律 404：Gitea 的 admin
+  协作者能通过 API 改协作者、加 deploy key、加 webhook、删仓库，放开就能绕过 TeamClu 的权限管理。
+- **PR 接口（2026-11-20 补）**：`/api/v1/repos/<owner>/<repo>/pulls…`（任意方法），加上客户端围绕它会发的几个只读
+  GET（仓库信息、`branches`、`commits`、`compare`、`/api/v1/user`、`/api/v1/version`），和 git 路径走同一个
+  forward_auth。这样 Codex 之类的客户端按默认做法调 Gitea API 建 PR、看 PR、合并 PR，都是本人身份。
+  起因：只放行 git 路径时，belayo 上 Codex 推分支成功，但调 `POST …/pulls` 返回 401——客户端带的是 TeamClu 的
+  git token，Gitea 不认，而 `/api/*` 只给 FC 的机器人 token 用。带 `Authorization: token …` 的请求（机器人）不进
+  这两条，落到原来的 token 通道。需要 Gitea 打开 `ENABLE_REVERSE_PROXY_AUTHENTICATION_API`，见下。
 - Git LFS 第一期不支持（它的路径不在放行范围内）。
 - 仓库级权限仍由 Gitea 判定（依据是同步过去的协作者和 team，§7），网关只负责「你是谁」。
 
-**Gitea 配置**：`ENABLE_REVERSE_PROXY_AUTHENTICATION=true`；`…_API` 不开；
+**Gitea 配置**：`ENABLE_REVERSE_PROXY_AUTHENTICATION=true`；`…_API=true`（2026-11-20 起，给上面的 PR 接口用。
+安全性不变：身份头只由 forward_auth 在放行的路径上写入，其余入口——包括 FC 用的内部入口——一律剥掉）；
 `…_AUTO_REGISTRATION=true` 只作兜底（FC 授权时会先建好用户）；关闭本地注册和密码登录。
 
 **网络隔离是唯一的防线。** `REVERSE_PROXY_TRUSTED_PROXIES` 不限制谁能发代理头（§9.1 第 10 行）。所以：
@@ -257,7 +264,8 @@ http://:8081 {
   就能冒充任何人。经过内部入口后，这条路上的身份头会被剥掉。
 - 加两道保险：`proxyToApp` 转发前删掉 `x-webauth-*`；`fc_endpoint` 能被客户端改写是现存问题，单独开 issue 修。
 
-**PR**：第一期顺带能用 AGit：`git push origin HEAD:refs/for/main -o topic=<x> -o title=<…>`（只需要 read）。
+**PR**：两条路都能用，作者都是本人。① AGit：`git push origin HEAD:refs/for/main -o topic=<x> -o title=<…>`
+（只需要 read）。② Gitea 的 PR API（经上面的 PR 接口放行），客户端用自己的 git 凭证调用；合并要 write。
 `amuxd app pr`、TeamClu 里的 PR 列表留到以后。
 
 ## 7. 同步到 Gitea 与权限对齐
