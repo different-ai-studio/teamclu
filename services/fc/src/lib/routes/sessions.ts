@@ -21,8 +21,12 @@ export function registerSessions(router) {
     const teamId = requireString(ctx.query.get("teamId"), "teamId");
     const ideaId = ctx.query.get("ideaId") || null;
     const kind = ctx.query.get("kind") || "all";
-    if (!["all", "regular", "cron"].includes(kind)) {
-      throw new ApiError(400, "validation_failed", "kind must be all, regular, or cron");
+    if (!["all", "regular", "user", "gateway", "app", "cron"].includes(kind)) {
+      throw new ApiError(
+        400,
+        "validation_failed",
+        "kind must be all, regular, user, gateway, app, or cron",
+      );
     }
     // Fetch one sentinel row so an exactly-full terminal page does not expose
     // a dead "Load more" cursor. The sentinel is never returned to clients.
