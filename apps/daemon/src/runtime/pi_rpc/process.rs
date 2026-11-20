@@ -106,6 +106,12 @@ pub(crate) struct PiProcess {
     /// Fingerprint of what this child was spawned with (binary + mode + env).
     /// `ensure` respawns when it no longer matches the wanted spawn.
     env_fingerprint: String,
+    /// The env this child was spawned with, kept so a later `ensure` can say
+    /// *what* changed when the fingerprint no longer matches, and can put it
+    /// back when the replacement would be a degraded copy (see `ensure`).
+    spawn_env: SpawnEnv,
+    /// `node | package root | mode` this child was launched with.
+    launch_desc: String,
     /// Set by every deliberate `kill()` (eviction, env-change respawn,
     /// shutdown). The stdout-EOF handler reads it to tell a crash — worth a
     /// respawn + `get_entries` backfill — from a child that was told to die
@@ -448,6 +454,7 @@ impl PiProcessPool {
     }
 
     /// Ensure a live child for `key`, recording `env` as the key's spawn env.
+    #[track_caller]
     pub(crate) fn ensure_with_env(
         &self,
         shared: &Arc<Shared>,
@@ -460,11 +467,13 @@ impl PiProcessPool {
 
     /// Ensure a live child for `key` using its recorded spawn env (empty when
     /// the key has never attached — e.g. a catalog probe).
+    #[track_caller]
     pub(crate) fn ensure(
         &self,
         shared: &Arc<Shared>,
         key: &PoolKey,
     ) -> crate::error::Result<Arc<PiProcess>> {
+        let caller = std::panic::Location::caller();
         let env = self.envs.lock().get(key).cloned().unwrap_or_default();
         let launch = self.resolve_launch();
         let want = self.spawn_fingerprint(&env, &launch);
@@ -472,9 +481,35 @@ impl PiProcessPool {
             if p.env_fingerprint == want {
                 return Ok(p);
             }
+            let diff = SpawnDiff::between(&p.spawn_env, &p.launch_desc, &env, &launch);
+            // A respawn under the SAME key that would lose the team provider
+            // can only be a degraded env (a probe's, or none at all): the key
+            // carries a hash of the whole `extra_env`, so a real change to the
+            // team provider (a team turning its gateway off) lands on a
+            // different key and never comes through here. Swapping a working
+            // host for one without team models is what made every following
+            // `set_model team/…` fail with "Model not found" and every prompt
+            // fall back to pi's `unknown/unknown` ("No API key found for the
+            // selected model"). Keep the live host and its env instead.
+            if let Some(lost) = diff.lost_team_binding() {
+                warn!(
+                    worktree = %key.worktree,
+                    caller = %caller,
+                    lost,
+                    diff = %diff,
+                    "pi env change would drop the team provider; keeping the live host"
+                );
+                self.envs.lock().insert(key.clone(), p.spawn_env.clone());
+                return Ok(p);
+            }
             // Env or mode changed since this child spawned (e.g. a prewarmed
             // child that predates the session's MCP servers/secrets) — replace.
-            info!(worktree = %key.worktree, "pi env changed; respawning");
+            info!(
+                worktree = %key.worktree,
+                caller = %caller,
+                diff = %diff,
+                "pi env changed; respawning"
+            );
             self.retire_process(&p);
             self.procs.lock().remove(key);
         }
@@ -498,8 +533,13 @@ impl PiProcessPool {
     ///
     /// A probe only needs *a* live child to ask for the model list, and the
     /// catalog is host-level in both modes, so reusing whatever is already
-    /// running costs nothing. Only a cold key spawns, and the probe's env is
-    /// deliberately not recorded for the key: the next attach owns that.
+    /// running costs nothing. Only a cold key spawns, and the probe's env never
+    /// replaces one an attach recorded for the key: the attach owns that, and a
+    /// later crash respawn must rebuild the attach's child, not the probe's.
+    /// (This used to go through `ensure_with_env`, which overwrote the record
+    /// despite what this comment promised.) A key nothing has recorded yet
+    /// keeps the probe's env, so the child it spawns can be respawned at all.
+    #[track_caller]
     pub(crate) fn ensure_for_catalog(
         &self,
         shared: &Arc<Shared>,
@@ -509,7 +549,8 @@ impl PiProcessPool {
         if let Some(p) = self.get(key) {
             return Ok(p);
         }
-        self.ensure_with_env(shared, key, env)
+        self.envs.lock().entry(key.clone()).or_insert(env);
+        self.ensure(shared, key)
     }
 
     /// Resolve what to spawn: binary + host/legacy mode. Read fresh per spawn
@@ -685,6 +726,10 @@ impl PiProcessPool {
             worktree,
             session_dir = %session_dir.display(),
             sandboxed = sandbox_profile.is_some(),
+            force_env_override = env.force_env_override,
+            extra_env_keys = env.extra_env.len(),
+            team_provider = env.extra_env.contains_key(TEAM_PROVIDER_ENV),
+            gateway_token = env.extra_env.contains_key(GATEWAY_TOKEN_ENV),
             "spawning pi child"
         );
         let mut child = cmd
@@ -756,6 +801,8 @@ impl PiProcessPool {
             pgid: child.id(),
             child: parking_lot::Mutex::new(child),
             env_fingerprint: fingerprint,
+            spawn_env: env.clone(),
+            launch_desc: launch.describe(),
             retired: std::sync::atomic::AtomicBool::new(false),
             stderr_tail,
         });
@@ -779,10 +826,116 @@ struct ResolvedLaunch {
     mode: LaunchMode,
 }
 
+impl ResolvedLaunch {
+    /// `node | package root | mode`, for telling a launch change apart from
+    /// an env change when a child is respawned.
+    fn describe(&self) -> String {
+        format!(
+            "{} | {} | {:?}",
+            self.node.display(),
+            self.package_root.display(),
+            self.mode
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum LaunchMode {
     Host,
     LegacyRpc,
+}
+
+/// The env var the pi extension registers the team gateway from
+/// (`assets/pi-extension/teamclu.ts`, `registerTeamProvider`).
+const TEAM_PROVIDER_ENV: &str = "TEAMCLU_TEAM_PROVIDER";
+/// The binding `TEAMCLU_TEAM_PROVIDER`'s `apiKeyEnv` names. Without it pi
+/// registers the team provider but treats every model on it as unavailable.
+const GATEWAY_TOKEN_ENV: &str = "tc_gateway_token";
+
+/// What differs between the env a live child was spawned with and the env an
+/// `ensure` now wants — names only, never values, so it can go in a log line.
+///
+/// Exists because "pi env changed; respawning" used to be the whole story: on
+/// Windows hosts were being replaced right after an attach by children with no
+/// team models, and the log could not say whether the env, the MCP servers, the
+/// override flag or the launch had changed, nor who asked.
+#[derive(Debug, Default)]
+struct SpawnDiff {
+    launch_changed: bool,
+    force_changed: Option<(bool, bool)>,
+    mcp_servers_changed: bool,
+    added: Vec<String>,
+    removed: Vec<String>,
+    changed: Vec<String>,
+}
+
+impl SpawnDiff {
+    fn between(
+        old: &SpawnEnv,
+        old_launch: &str,
+        new: &SpawnEnv,
+        new_launch: &ResolvedLaunch,
+    ) -> Self {
+        let mut diff = SpawnDiff {
+            launch_changed: old_launch != new_launch.describe(),
+            force_changed: (old.force_env_override != new.force_env_override)
+                .then_some((old.force_env_override, new.force_env_override)),
+            mcp_servers_changed: old.mcp_servers != new.mcp_servers,
+            ..Default::default()
+        };
+        for (k, v) in &new.extra_env {
+            match old.extra_env.get(k) {
+                None => diff.added.push(k.clone()),
+                Some(old_v) if old_v != v => diff.changed.push(k.clone()),
+                Some(_) => {}
+            }
+        }
+        for k in old.extra_env.keys() {
+            if !new.extra_env.contains_key(k) {
+                diff.removed.push(k.clone());
+            }
+        }
+        diff.added.sort();
+        diff.removed.sort();
+        diff.changed.sort();
+        diff
+    }
+
+    /// The team binding the new env would lose, if any.
+    fn lost_team_binding(&self) -> Option<&'static str> {
+        [TEAM_PROVIDER_ENV, GATEWAY_TOKEN_ENV]
+            .into_iter()
+            .find(|k| self.removed.iter().any(|r| r == k))
+    }
+}
+
+impl std::fmt::Display for SpawnDiff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut parts: Vec<String> = Vec::new();
+        if self.launch_changed {
+            parts.push("launch".into());
+        }
+        if let Some((old, new)) = self.force_changed {
+            parts.push(format!("force_env_override {old}->{new}"));
+        }
+        if self.mcp_servers_changed {
+            parts.push("mcp_servers".into());
+        }
+        for (label, keys) in [
+            ("added", &self.added),
+            ("removed", &self.removed),
+            ("changed", &self.changed),
+        ] {
+            if !keys.is_empty() {
+                parts.push(format!("{label}=[{}]", keys.join(",")));
+            }
+        }
+        if parts.is_empty() {
+            f.write_str("nothing")
+        } else {
+            f.write_str(&parts.join("; "))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1378,6 +1531,136 @@ mod tests {
         );
 
         in_flight.abort();
+        shared.pool.kill_all();
+    }
+
+    #[test]
+    fn spawn_diff_names_what_changed_without_values() {
+        let launch = ResolvedLaunch {
+            node: PathBuf::from("/n/node"),
+            package_root: PathBuf::from("/p"),
+            mode: LaunchMode::Host,
+        };
+        let old = SpawnEnv {
+            extra_env: HashMap::from([
+                (TEAM_PROVIDER_ENV.to_string(), "{\"models\":[]}".to_string()),
+                (GATEWAY_TOKEN_ENV.to_string(), "secret-token".to_string()),
+                ("KEEP".to_string(), "same".to_string()),
+                ("ROTATED".to_string(), "v1".to_string()),
+            ]),
+            force_env_override: true,
+            mcp_servers: Some("{}".into()),
+        };
+        let new = SpawnEnv {
+            extra_env: HashMap::from([
+                ("KEEP".to_string(), "same".to_string()),
+                ("ROTATED".to_string(), "v2".to_string()),
+                ("FRESH".to_string(), "x".to_string()),
+            ]),
+            force_env_override: false,
+            mcp_servers: Some("{}".into()),
+        };
+        let diff = SpawnDiff::between(&old, &launch.describe(), &new, &launch);
+        let text = diff.to_string();
+        assert_eq!(
+            text,
+            "force_env_override true->false; added=[FRESH]; \
+             removed=[TEAMCLU_TEAM_PROVIDER,tc_gateway_token]; changed=[ROTATED]"
+        );
+        assert!(!text.contains("secret-token"), "values never reach the log");
+        assert_eq!(diff.lost_team_binding(), Some(TEAM_PROVIDER_ENV));
+
+        let same = SpawnDiff::between(&old, &launch.describe(), &old, &launch);
+        assert_eq!(same.to_string(), "nothing");
+        assert_eq!(same.lost_team_binding(), None);
+    }
+
+    /// The Windows field report (2026-11-20): a session attached to a host
+    /// with the team models, and tens of milliseconds later the same pool key
+    /// was respawned from an env without them. Every `set_model team/…` after
+    /// that failed with "Model not found", and every prompt fell back to pi's
+    /// `unknown/unknown` ("No API key found for the selected model") until the
+    /// host was reaped. A same-key env that drops the team provider is a
+    /// degraded copy, never a real change (that changes the key), so the live
+    /// host and its env stay.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn same_key_env_without_the_team_provider_keeps_the_live_host() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+
+        let bin_dir = tempfile::tempdir().unwrap();
+        let fake_pi = bin_dir.path().join("fake-pi");
+        std::fs::write(&fake_pi, "#!/bin/sh\ncat > /dev/null\n").unwrap();
+        std::fs::set_permissions(&fake_pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pkg = bin_dir.path().join("pkg");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::write(pkg.join("dist/cli.js"), "").unwrap();
+        let config_path = crate::config::DaemonConfig::default_path();
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                "[actor]\nid = \"d\"\nname = \"m\"\n[mqtt]\nbroker_url = \"tcp://x:1883\"\n\
+                 [agents.pi]\nnode = {:?}\npackage_root = {:?}\nsession_host = \"rpc\"\n",
+                fake_pi.to_string_lossy(),
+                pkg.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let worktree = tempfile::tempdir().unwrap();
+        let shared = super::Shared::new();
+        let key = PoolKey {
+            domain: IsolationDomainKey::Workspace("ws-1".into()),
+            env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),
+            worktree: worktree.path().to_string_lossy().into_owned(),
+        };
+        let team_env = SpawnEnv {
+            extra_env: HashMap::from([
+                (TEAM_PROVIDER_ENV.to_string(), "{}".to_string()),
+                (GATEWAY_TOKEN_ENV.to_string(), "tok".to_string()),
+            ]),
+            force_env_override: true,
+            mcp_servers: None,
+        };
+
+        let attached = shared
+            .pool
+            .ensure_with_env(&shared, &key, team_env.clone())
+            .expect("attach spawn");
+
+        // A later caller records an env for the same key that has lost the
+        // team binding (the shape of a probe's, or of nothing recorded).
+        let again = shared
+            .pool
+            .ensure_with_env(&shared, &key, SpawnEnv::default())
+            .expect("ensure");
+        assert!(
+            Arc::ptr_eq(&attached, &again),
+            "the host with the team provider is kept"
+        );
+        assert!(attached.is_alive());
+        assert_eq!(
+            shared.pool.envs.lock().get(&key),
+            Some(&team_env),
+            "the key's record is put back, so a crash respawn rebuilds the team host"
+        );
+
+        // A same-key change that keeps the team binding still respawns.
+        let mut with_mcp = team_env.clone();
+        with_mcp.mcp_servers = Some("{\"x\":{}}".into());
+        let replaced = shared
+            .pool
+            .ensure_with_env(&shared, &key, with_mcp)
+            .expect("respawn");
+        assert!(
+            !Arc::ptr_eq(&attached, &replaced),
+            "a real change still respawns"
+        );
+
         shared.pool.kill_all();
     }
 

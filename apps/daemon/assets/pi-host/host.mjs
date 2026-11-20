@@ -799,6 +799,40 @@ function requireSession(command) {
   return entry.session;
 }
 
+/** Why a model lookup came up empty, for the log and the error: which
+ * providers have models available, whether `provider` has any models at all,
+ * and its auth status. Ids and statuses only — no credentials. */
+function modelLookupDiagnostics(runtime, provider) {
+  const parts = [];
+  try {
+    const available = runtime.getAvailableSnapshot();
+    const providers = [...new Set(available.map((m) => m.provider))].sort();
+    parts.push(`available providers=[${providers.join(",")}]`);
+  } catch (e) {
+    parts.push(`available=? (${e})`);
+  }
+  try {
+    if (typeof runtime.getModels === "function") {
+      parts.push(`${provider} registered models=${[...runtime.getModels(provider)].length}`);
+    }
+  } catch {
+    // Diagnostics only.
+  }
+  try {
+    const status = runtime.getProviderAuthStatus?.(provider);
+    if (status !== undefined) parts.push(`${provider} auth=${JSON.stringify(status)}`);
+  } catch {
+    // Diagnostics only.
+  }
+  try {
+    const error = runtime.getError?.();
+    if (error) parts.push(`runtime error=${String(error).split("\n")[0]}`);
+  } catch {
+    // Diagnostics only.
+  }
+  return parts.join("; ");
+}
+
 async function handleCommand(command) {
   const id = command.id;
   switch (command.type) {
@@ -905,12 +939,33 @@ async function handleCommand(command) {
 
     case "set_model": {
       const session = requireSession(command);
-      const models = session.modelRuntime.getAvailableSnapshot();
-      const model = models.find(
-        (m) => m.provider === command.provider && m.id === command.modelId,
-      );
+      const find = () =>
+        session.modelRuntime
+          .getAvailableSnapshot()
+          .find((m) => m.provider === command.provider && m.id === command.modelId);
+      let model = find();
       if (!model) {
-        return fail(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
+        // The snapshot is what pi last computed, not what it would compute now:
+        // an extension's `registerProvider` only marks its models available
+        // provisionally and settles them in an asynchronous availability pass.
+        // Recompute once before refusing, rather than leaving the session on
+        // pi's `unknown/unknown` placeholder for the rest of its life.
+        try {
+          await session.modelRuntime.refresh({ allowNetwork: false });
+        } catch (e) {
+          log(`set_model: model refresh failed: ${e}`);
+        }
+        model = find();
+        if (model) log(`set_model: ${command.provider}/${command.modelId} found after a refresh`);
+      }
+      if (!model) {
+        const detail = modelLookupDiagnostics(session.modelRuntime, command.provider);
+        log(`set_model: ${command.provider}/${command.modelId} not found; ${detail}`);
+        return fail(
+          id,
+          "set_model",
+          `Model not found: ${command.provider}/${command.modelId} (${detail})`,
+        );
       }
       await session.setModel(model);
       return ok(id, "set_model", model);
