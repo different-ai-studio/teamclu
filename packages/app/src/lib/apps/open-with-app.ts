@@ -9,6 +9,7 @@ export const OPEN_WITH_TARGETS = [
   { id: 'vscode', label: 'VS Code' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'claude', label: 'Claude Code' },
+  { id: 'codex', label: 'ChatGPT (Codex)' },
   { id: 'qoder', label: 'Qoder' },
   { id: 'workbuddy', label: 'WorkBuddy' },
 ] as const

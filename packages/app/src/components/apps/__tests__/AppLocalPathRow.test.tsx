@@ -63,7 +63,7 @@ describe('AppLocalPathRow', () => {
     const user = userEvent.setup()
     render(<AppLocalPathRow app={app} />)
     await user.click(await screen.findByTestId('app-local-path-open-with'))
-    for (const id of ['vscode', 'cursor', 'claude', 'qoder', 'workbuddy']) {
+    for (const id of ['vscode', 'cursor', 'claude', 'codex', 'qoder', 'workbuddy']) {
       expect(await screen.findByTestId(`app-local-path-open-${id}`)).toBeInTheDocument()
     }
   })
