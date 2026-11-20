@@ -227,9 +227,13 @@ fn decode_message(raw: AddMsg) -> Option<PadMessage> {
                     PadKind::Quote {
                         quoted_msg_id: app.refer_svrid,
                         quoted_sender: app.refer_from.unwrap_or_default(),
-                        quoted_text: (app.refer_type == Some(1))
-                            .then_some(app.refer_content)
-                            .flatten(),
+                        // A quoted card is its readable text, so "summarise
+                        // this" in a reply to an article has the article.
+                        quoted_text: match app.refer_type {
+                            Some(1) => app.refer_content,
+                            Some(49) => app.refer_content.as_deref().and_then(card_text),
+                            _ => None,
+                        },
                     },
                     app.title.unwrap_or_default(),
                 ),
@@ -247,13 +251,18 @@ fn decode_message(raw: AddMsg) -> Option<PadMessage> {
                 ),
                 // Upload-in-progress placeholder that precedes every file.
                 Some(74) => return None,
-                other => (
-                    PadKind::Other {
-                        msg_type: 49,
-                        app_type: other,
-                    },
-                    String::new(),
-                ),
+                // Articles, links, forwarded chat records, mini programs:
+                // what they say reaches the agent as text.
+                other => match card_text(&content) {
+                    Some(text) => (PadKind::Text, text),
+                    None => (
+                        PadKind::Other {
+                            msg_type: 49,
+                            app_type: other,
+                        },
+                        String::new(),
+                    ),
+                },
             }
         }
         other => (
@@ -321,6 +330,108 @@ impl AppMsg {
         }
         app
     }
+}
+
+/// Forwarded record items read at most; a long record is cut, not dropped.
+const MAX_RECORD_ITEMS: usize = 60;
+
+/// A shared card (`<appmsg>` of a type that is neither a quote nor a file)
+/// as plain text for the agent: what kind of card, its title and summary,
+/// and the link when there is one. The agent fetches an article itself from
+/// the URL; WeChat gives the gateway no body. `None` when the card carries
+/// nothing readable.
+fn card_text(xml: &str) -> Option<String> {
+    let field = |name: &str| {
+        xml_element(xml, name)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let app_type = field("type").and_then(|t| t.parse::<i64>().ok());
+    let title = field("title");
+    let mut lines = Vec::new();
+    match app_type {
+        Some(19) | Some(40) => {
+            lines.push(format!("[聊天记录] {}", title.unwrap_or_default()));
+            let items = xml_element(xml, "recorditem")
+                .map(|r| record_lines(&r))
+                .unwrap_or_default();
+            if items.is_empty() {
+                lines.extend(field("des"));
+            } else {
+                lines.extend(items);
+            }
+        }
+        Some(51) => {
+            // 视频号: the title is boilerplate, the feed says what it is.
+            let author = field("nickname").unwrap_or_default();
+            let desc = field("desc").or(title).unwrap_or_default();
+            lines.push(format!("[视频号] {author}：{desc}"));
+        }
+        _ => {
+            let label = match app_type {
+                Some(5) => "链接",
+                Some(33) | Some(36) => "小程序",
+                Some(3) => "音乐",
+                Some(4) => "视频链接",
+                _ => "卡片",
+            };
+            lines.push(format!("[{label}] {}", title.unwrap_or_default()));
+            lines.extend(field("des"));
+            // 公众号 articles name their account here.
+            if let Some(source) = field("sourcedisplayname") {
+                lines.push(format!("来源：{source}"));
+            }
+            lines.extend(field("url"));
+        }
+    }
+    // The first line is the label; a card is worth passing on only if
+    // something follows it, on that line or below.
+    let readable = lines.len() > 1
+        || lines
+            .first()
+            .and_then(|l| l.split_once(']'))
+            .is_some_and(|(_, rest)| !rest.trim().trim_start_matches('：').is_empty());
+    readable.then(|| lines.join("\n"))
+}
+
+/// `<dataitem>`s of a forwarded chat record as `who: what`, one per line.
+fn record_lines(record: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = record;
+    while let Some(at) = rest.find("<dataitem") {
+        let item = &rest[at..];
+        let end = item
+            .find("</dataitem>")
+            .map_or(item.len(), |e| e + "</dataitem>".len());
+        let body = &item[..end];
+        rest = &item[end..];
+        if out.len() == MAX_RECORD_ITEMS {
+            out.push("……".to_string());
+            break;
+        }
+        let get = |name: &str| {
+            xml_element(body, name)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        let what = match xml_attr(body, "dataitem", "datatype").as_deref() {
+            Some("2") => "[图片]".to_string(),
+            Some("4") => "[视频]".to_string(),
+            Some("8") => format!("[文件] {}", get("datatitle").unwrap_or_default()),
+            Some("17") => format!("[聊天记录] {}", get("datatitle").unwrap_or_default()),
+            _ => match (get("datadesc"), get("datatitle"), get("link")) {
+                (Some(desc), _, None) => desc,
+                (desc, title, link) => [title, desc, link]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            },
+        };
+        let who = get("sourcename").unwrap_or_default();
+        out.push(format!("{who}: {what}"));
+    }
+    out
 }
 
 /// Text of the first `<name>…</name>`, unescaped. Enough XML for these
