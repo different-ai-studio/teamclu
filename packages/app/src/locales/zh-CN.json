@@ -2201,7 +2201,7 @@
       "language": "语言",
       "languageDesc": "选择应用界面语言",
       "defaultPermission": "默认权限",
-      "defaultPermissionDesc": "新会话默认使用的权限模式。修改后会同步应用到未单独设置的进行中会话；已单独设置的会话不受影响。",
+      "defaultPermissionDesc": "之后新开的会话用这个权限。已经启动过的会话保持自己的权限，改这里不会动它们。",
       "defaultPermissionAsk": "询问",
       "defaultPermissionFullAccess": "完全访问",
       "closeWindow": "关闭窗口时",

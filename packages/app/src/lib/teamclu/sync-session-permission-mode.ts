@@ -1,8 +1,12 @@
 import { runtimeTargetsForSession } from "@/lib/agent/runtime-state-resolve";
+import { getKnownLocalDaemonActorId } from "@/lib/daemon/local-daemon-identity";
 import { sessionPermissionMode } from "@/lib/daemon/teamclu-rpc";
 import {
+  getSessionDefaultPermissionMode,
   getSessionPermissionMode,
   hasExplicitSessionPermissionMode,
+  isKnownInteractiveSession,
+  setSessionPermissionMode,
   type SessionPermissionMode,
 } from "@/lib/session/session-permission-mode";
 import { sessionPermissionModeToWire } from "@/lib/session/session-permission-mode-wire";
@@ -36,9 +40,65 @@ export function resolveSessionPermissionModeTargetActorIds(sessionId: string): s
   return [...new Set(fromParticipants)];
 }
 
+function sessionHasLiveRuntime(sessionId: string): boolean {
+  const needle = `::${sessionId}`;
+  return Object.keys(useRuntimeStateStore.getState().byRuntimeId).some((key) =>
+    key.endsWith(needle),
+  );
+}
+
+/**
+ * The first start of an interactive session keeps the mode it is starting
+ * with. Later changes to the device default do not move it.
+ */
+function pinPermissionModeOnFirstStart(sessionId: string): void {
+  const id = sessionId.trim();
+  if (!id || sessionHasLiveRuntime(id) || hasExplicitSessionPermissionMode(id)) return;
+  if (!isKnownInteractiveSession(id)) return;
+  setSessionPermissionMode(id, getSessionPermissionMode(id));
+}
+
+/** Fields for a runtimeStart. A session that already has its own mode keeps it. */
+export function runtimePermissionStartFields(sessionId: string, targetActorId: string): {
+  permissionMode: string
+  rememberPermission: boolean
+  defaultPermissionMode?: string
+} {
+  pinPermissionModeOnFirstStart(sessionId);
+  const localId = getKnownLocalDaemonActorId();
+  const explicit = hasExplicitSessionPermissionMode(sessionId);
+  return {
+    permissionMode: explicit
+      ? sessionPermissionModeToWire(getSessionPermissionMode(sessionId))
+      : "",
+    rememberPermission: explicit,
+    ...(localId && targetActorId === localId
+      ? { defaultPermissionMode: sessionPermissionModeToWire(getSessionDefaultPermissionMode()) }
+      : {}),
+  };
+}
+
+/** Tell this machine's daemon the device-wide default, even when no session is running. */
+export async function reportDevicePermissionDefault(mode: SessionPermissionMode): Promise<void> {
+  const targetActorId = getKnownLocalDaemonActorId()
+  if (!targetActorId) return
+  try {
+    await sessionPermissionMode({
+      targetActorId,
+      sessionId: "",
+      permissionMode: sessionPermissionModeToWire(mode),
+      remember: false,
+      setDeviceDefault: true,
+    })
+  } catch (err) {
+    console.warn("[permission] device default did not reach the local daemon", { err })
+  }
+}
+
 export async function syncSessionPermissionModeToDaemon(
   sessionId: string,
   mode: SessionPermissionMode,
+  remember = false,
 ): Promise<{ accepted: boolean; effectiveMode?: string }> {
   const id = sessionId.trim();
   if (!id) return { accepted: false };
@@ -55,6 +115,7 @@ export async function syncSessionPermissionModeToDaemon(
           targetActorId,
           sessionId: id,
           permissionMode,
+          remember,
         }),
       ),
     );
@@ -72,33 +133,3 @@ export async function syncSessionPermissionModeToDaemon(
   }
 }
 
-/**
- * Push the (just-changed) global default to every session with a live runtime
- * that has no explicit per-session mode. Without this the composer pill would
- * show the new default while the daemon still runs the old policy until the
- * next runtimeStart. Sessions the user picked a mode for keep their pick.
- */
-export async function syncDefaultPermissionModeToLiveSessions(): Promise<void> {
-  const byRuntimeId = useRuntimeStateStore.getState().byRuntimeId;
-  const sessionIds = new Set<string>();
-  for (const key of Object.keys(byRuntimeId)) {
-    // Keys are `{actorId}::{sessionId}`; split from the right so an actor id
-    // containing `::` cannot eat the session id.
-    const sep = key.lastIndexOf("::");
-    if (sep < 0) continue;
-    const sessionId = key.slice(sep + 2).trim();
-    if (sessionId) sessionIds.add(sessionId);
-  }
-
-  for (const sessionId of sessionIds) {
-    if (hasExplicitSessionPermissionMode(sessionId)) continue;
-    const mode = getSessionPermissionMode(sessionId);
-    const { accepted } = await syncSessionPermissionModeToDaemon(sessionId, mode);
-    if (!accepted) {
-      console.warn("[permission] global default did not reach a live session", {
-        sessionId,
-        mode,
-      });
-    }
-  }
-}
