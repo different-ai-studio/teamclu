@@ -4409,7 +4409,7 @@ pub(crate) mod tests {
         assert!(
             fixture
                 .server
-                .resume_historical_runtimes_for_session("resume-session-cross-entry", None)
+                .resume_historical_runtimes_for_session("resume-session-cross-entry")
                 .await
         );
 

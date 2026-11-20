@@ -1400,7 +1400,6 @@ impl DaemonServer {
                                 "",
                                 None,
                                 true,
-                                Some(&sender_actor_id),
                                 "",
                                 false,
                                 "legacy_send_prompt",

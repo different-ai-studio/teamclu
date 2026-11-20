@@ -18,7 +18,6 @@ import {
   hasExplicitSessionPermissionMode,
   resetSessionPermissionModesForTests,
   setSessionDefaultPermissionMode,
-  setSessionPermissionMode,
 } from "@/lib/session/session-permission-mode";
 import {
   resolveSessionPermissionModeTargetActorIds,

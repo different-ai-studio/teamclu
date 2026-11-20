@@ -1014,11 +1014,7 @@ impl DaemonServer {
         let runtime_ids = self.coalesce_session_runtimes(session_id).await;
         if runtime_ids.is_empty() {
             if self
-                .resume_historical_runtimes_for_session(
-                    session_id,
-                    (!message.sender_actor_id.is_empty())
-                        .then_some(message.sender_actor_id.as_str()),
-                )
+                .resume_historical_runtimes_for_session(session_id)
                 .await
             {
                 return;

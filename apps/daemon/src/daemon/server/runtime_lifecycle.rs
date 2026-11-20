@@ -755,7 +755,6 @@ impl DaemonServer {
                         &ws_id,
                         initial_prompt,
                         initial_model_override.as_deref(),
-                        requester_actor_id,
                         client_permission_mode,
                         remember_permission,
                     )

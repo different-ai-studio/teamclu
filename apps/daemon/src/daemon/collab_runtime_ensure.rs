@@ -74,7 +74,6 @@ impl DaemonServer {
         initial_prompt: &str,
         initial_model_override: Option<&str>,
         forbid_new_session_fallback: bool,
-        bind_member_actor_id: Option<&str>,
         client_permission_mode: &str,
         remember_permission: bool,
         log_label: &'static str,
@@ -211,17 +210,6 @@ impl DaemonServer {
         )
         .await;
 
-        if let Some(member) = bind_member_actor_id.filter(|s| !s.is_empty()) {
-            let team_id = self.config.team_id.clone().unwrap_or_default();
-            self.ensure_live_runtime_remote_tools(
-                cloud_session_id,
-                cloud_session_id,
-                member,
-                &team_id,
-            )
-            .await;
-        }
-
         Ok(Some(cloud_session_id.to_string()))
     }
 
@@ -233,7 +221,6 @@ impl DaemonServer {
         workspace_id: &str,
         initial_prompt: &str,
         initial_model_override: Option<&str>,
-        requester_actor_id: &str,
         client_permission_mode: &str,
         remember_permission: bool,
     ) -> Result<Option<StartRuntimeOutcome>, StartRuntimeError> {
@@ -249,7 +236,6 @@ impl DaemonServer {
                 initial_prompt,
                 initial_model_override,
                 true,
-                (!requester_actor_id.is_empty()).then_some(requester_actor_id),
                 client_permission_mode,
                 remember_permission,
                 "runtime_start",
@@ -266,7 +252,6 @@ impl DaemonServer {
     pub(super) async fn resume_historical_runtimes_for_session(
         &mut self,
         session_id: &str,
-        requester_actor_id: Option<&str>,
     ) -> bool {
         let bindings: Vec<SessionBinding> = self
             .sessions
@@ -308,7 +293,6 @@ impl DaemonServer {
                     "",
                     None,
                     false,
-                    requester_actor_id,
                     "",
                     false,
                     "session_live",
@@ -405,7 +389,6 @@ impl DaemonServer {
                         "",
                         None,
                         false,
-                        None,
                         "",
                         false,
                         "gateway_cold_attach",
@@ -507,7 +490,7 @@ mod tests {
         assert!(
             fixture
                 .server
-                .resume_historical_runtimes_for_session("session-a", None)
+                .resume_historical_runtimes_for_session("session-a")
                 .await
         );
 
@@ -544,7 +527,7 @@ mod tests {
         assert!(
             !fixture
                 .server
-                .resume_historical_runtimes_for_session("session-gateway", None)
+                .resume_historical_runtimes_for_session("session-gateway")
                 .await,
             "workspace-scoped stored gateway must fail closed when identity lookup fails"
         );
@@ -686,7 +669,7 @@ mod tests {
         assert!(
             fixture
                 .server
-                .resume_historical_runtimes_for_session("chat-session", None)
+                .resume_historical_runtimes_for_session("chat-session")
                 .await
         );
         assert_eq!(only_permission(&captures), PermissionPolicy::Full);
@@ -795,7 +778,7 @@ mod tests {
         assert!(
             fixture
                 .server
-                .resume_historical_runtimes_for_session("chat-session", None)
+                .resume_historical_runtimes_for_session("chat-session")
                 .await
         );
         assert_eq!(only_permission(&captures), PermissionPolicy::Ask);
@@ -835,7 +818,7 @@ mod tests {
         assert!(
             fixture
                 .server
-                .resume_historical_runtimes_for_session("chat-session", None)
+                .resume_historical_runtimes_for_session("chat-session")
                 .await
         );
 
