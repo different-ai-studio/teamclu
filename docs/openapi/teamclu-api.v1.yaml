@@ -8071,6 +8071,12 @@ paths:
                 required: [ok]
                 properties:
                   ok: { type: boolean, enum: [true] }
+        "403":
+          $ref: "#/components/responses/Error"
+          description: >-
+            `inherited_access_not_allowed`: the caller is an agent that reaches
+            the app only through its owner, and an inherited level never changes
+            who has access or deletes the app.
         "409":
           $ref: "#/components/responses/Error"
         "404":
@@ -9443,6 +9449,12 @@ paths:
                       $ref: "#/components/schemas/AppMemberAccessRow"
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+          description: >-
+            `inherited_access_not_allowed`: the caller is an agent that reaches
+            the app only through its owner, and an inherited level never changes
+            who has access or deletes the app.
         "404":
           $ref: "#/components/responses/Error"
   /v1/apps/{appId}/access/{memberId}:
@@ -9482,6 +9494,12 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+          description: >-
+            `inherited_access_not_allowed`: the caller is an agent that reaches
+            the app only through its owner, and an inherited level never changes
+            who has access or deletes the app.
         "404":
           $ref: "#/components/responses/Error"
         "422":
@@ -9511,6 +9529,12 @@ paths:
                     enum: [true]
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+          description: >-
+            `inherited_access_not_allowed`: the caller is an agent that reaches
+            the app only through its owner, and an inherited level never changes
+            who has access or deletes the app.
         "404":
           $ref: "#/components/responses/Error"
   /v1/apps/{appId}/data/tables:
@@ -11624,8 +11648,11 @@ components:
           format: uuid
           description: Actor (member or agent) who last wrote this grant.
         createdAt:
-          type: string
+          type: [string, "null"]
           format: date-time
+          description: >-
+            When the grant was made. Null on an inherited row, which has no
+            grant of its own.
         actorType:
           type: [string, "null"]
           enum: [member, agent, null]
@@ -11638,6 +11665,29 @@ components:
             False for an agent whose daemon has not claimed an account yet —
             it holds the grant but cannot act on it. Always true for a member.
             Present on `listAppAccess`.
+        displayName:
+          type: [string, "null"]
+          description: >-
+            The grantee's name, read by the server. Present on
+            `listAppAccess`: the caller's own actor directory hides agents it
+            may not talk to, so a client cannot always name a grantee itself.
+        inherited:
+          type: boolean
+          description: >-
+            Present on `listAppAccess`. True for an active agent that reaches
+            the app through its owner (a member who created the app or holds a
+            grant) rather than a grant of its own; `permissionLevel` is the
+            owner's level. Read-only — it follows the owner's access. An
+            inherited caller may deploy and manage settings at its owner's
+            level, but cannot change who has access or delete the app (403
+            `inherited_access_not_allowed`).
+        inheritedFrom:
+          type: [object, "null"]
+          description: The owner an inherited row follows; null otherwise.
+          required: [actorId, displayName]
+          properties:
+            actorId: { type: string, format: uuid }
+            displayName: { type: [string, "null"] }
     AppDataColumn:
       type: object
       required: [name, dataType, nullable]

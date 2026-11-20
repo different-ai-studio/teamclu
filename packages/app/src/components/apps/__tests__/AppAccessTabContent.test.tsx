@@ -21,7 +21,10 @@ vi.mock('react-i18next', () => ({
 describe('AppAccessTabContent member picker', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    backend.listAppAccess.mockResolvedValue([])
+    // Stateful like the server: a grant shows up on the next list (the tab
+    // reloads after every change, since a person's level moves their agents).
+    const granted: any[] = []
+    backend.listAppAccess.mockImplementation(async () => [...granted])
     actors.listTeamActorsForAppAccess.mockResolvedValue([
       { id: 'agent-1', displayName: '小助手', actorType: 'agent', connected: true },
       { id: 'agent-2', displayName: '离线助手', actorType: 'agent', connected: false },
@@ -30,10 +33,13 @@ describe('AppAccessTabContent member picker', () => {
       { id: 'b', displayName: '钱小磊', actorType: 'member', connected: true },
       { id: 'c', displayName: '朱晓明', actorType: 'member', connected: true },
     ])
-    backend.setAppAccess.mockImplementation(async (_appId: string, memberId: string, level: string) => ({
-      memberId,
-      permissionLevel: level,
-    }))
+    backend.setAppAccess.mockImplementation(async (_appId: string, memberId: string, level: string) => {
+      const row = { memberId, permissionLevel: level }
+      const idx = granted.findIndex((r) => r.memberId === memberId)
+      if (idx < 0) granted.push(row)
+      else granted[idx] = row
+      return row
+    })
   })
 
   it('filters available members by name and grants the selected match', async () => {
@@ -90,5 +96,35 @@ describe('AppAccessTabContent member picker', () => {
     const tab = await screen.findByTestId('app-access-tab')
     const row = within(tab).getByText('小助手').closest('li')!
     expect(within(row).getByText('agent')).toBeInTheDocument()
+  })
+
+  it('names a grantee from the server when the directory hides it', async () => {
+    backend.listAppAccess.mockResolvedValue([
+      { memberId: 'hidden-agent', permissionLevel: 'write', grantedByMemberId: 'owner', createdAt: '2026-11-20T00:00:00Z', actorType: 'agent', connected: true, displayName: '邓伟Bot' },
+    ])
+    render(<AppAccessTabContent appId="app-1" />)
+    const tab = await screen.findByTestId('app-access-tab')
+    expect(within(tab).getByText('邓伟Bot')).toBeInTheDocument()
+    expect(within(tab).queryByText('hidden-agent')).not.toBeInTheDocument()
+  })
+
+  it('lists inherited agents read-only, with their owner, and keeps them out of the quick grants', async () => {
+    backend.listAppAccess.mockResolvedValue([
+      {
+        memberId: 'agent-1', permissionLevel: 'admin', grantedByMemberId: null, createdAt: null,
+        actorType: 'agent', connected: true, displayName: '小助手',
+        inherited: true, inheritedFrom: { actorId: 'owner', displayName: '创建者' },
+      },
+    ])
+    render(<AppAccessTabContent appId="app-1" />)
+    const section = await screen.findByTestId('app-access-inherited')
+    const row = within(section).getByTestId('app-access-inherited-agent-1')
+    expect(within(row).getByText('小助手')).toBeInTheDocument()
+    // Read-only: no level picker and no revoke button on an inherited row.
+    expect(within(row).queryByRole('combobox')).not.toBeInTheDocument()
+    expect(within(row).queryByRole('button')).not.toBeInTheDocument()
+    // Not offered again as a one-click grant, and not listed among the grants.
+    expect(screen.queryByTestId('app-access-quick-grant-agent-1')).not.toBeInTheDocument()
+    expect(screen.getByTestId('app-access-empty')).toBeInTheDocument()
   })
 })

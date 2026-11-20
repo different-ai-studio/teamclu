@@ -41,3 +41,41 @@ export function storedAppPermissionLevel(raw: unknown): AppPermissionLevel | nul
 export function appLevelAtLeast(level: AppPermissionLevel, min: AppPermissionLevel): boolean {
   return RANK[level] >= RANK[min];
 }
+
+/** The higher of two levels; either may be absent. */
+export function higherAppLevel(
+  a: AppPermissionLevel | null | undefined,
+  b: AppPermissionLevel | null | undefined,
+): AppPermissionLevel | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return RANK[a] >= RANK[b] ? a : b;
+}
+
+/**
+ * The level an inherited agent gets in Gitea. Gitea's `admin` collaborator
+ * adds nothing an agent needs — merging a PR is `write` — and is the level
+ * that could change the repo's settings, so an agent that inherits `admin`
+ * from the app's creator is mirrored as `write`. The Cloud API still treats it
+ * as admin for deploys (see agent inheritance in supabase-repo).
+ */
+export function inheritedGiteaLevel(level: AppPermissionLevel): AppPermissionLevel {
+  return level === "admin" ? "write" : level;
+}
+
+/**
+ * Call one of the agent-inheritance functions of 20261120120000
+ * (`app_inherited_agents`, `agent_inherited_app_level`).
+ *
+ * A database that has not had that migration yet answers PGRST202 (not in
+ * PostgREST's schema cache) or 42883 (no such function). That reads as "no
+ * agent inherits anything" — exactly the behaviour before the migration —
+ * rather than failing every agent's permission check, the Gitea sync and the
+ * access tab. Belayo applies migrations by hand, so the image can land first.
+ */
+export async function callAgentInheritance(client: any, fn: string, args: Record<string, unknown>): Promise<any> {
+  const { data, error } = await client.rpc(fn, args);
+  if (!error) return data;
+  if (error.code === "PGRST202" || error.code === "42883") return null;
+  throw error;
+}

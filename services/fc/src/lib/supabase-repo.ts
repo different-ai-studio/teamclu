@@ -16,6 +16,8 @@ import { ApiError } from "./http-utils.js";
 import { assertTeamSkillSlug, canonicalTeamSkillSlug, teamSkillDisplayName } from "./team-skill-slug.js";
 import {
   appLevelAtLeast,
+  callAgentInheritance,
+  higherAppLevel,
   parseAppPermissionLevel,
   storedAppPermissionLevel,
   type AppPermissionLevel,
@@ -6325,12 +6327,25 @@ export function createSupabaseBusinessRepository(options) {
      * an env var, who made a cron job) reference `amux.members`;
      * `callerActorId` is the caller either way, and is what a grant records as
      * its grantor.
+     *
+     * Since 20261120120000 an active agent also inherits its owner's level
+     * (`amux.agent_inherited_app_level`; the rule lives in the database). The
+     * higher of the agent's own grant and the inherited level wins.
+     * `inherited` is true when the level came from the owner — the callers
+     * that change who has access, or delete the app, refuse such a caller
+     * (`assertNotInheritedFor`): those are the two things a bot never does on
+     * its owner's behalf.
      */
     async resolveAppCallerPermissionForApp(app: {
       id: string;
       team_id: string;
       created_by_actor_id: string | null;
-    }): Promise<{ level: AppPermissionLevel; callerActorId: string; callerMemberId: string | null } | null> {
+    }): Promise<{
+      level: AppPermissionLevel;
+      callerActorId: string;
+      callerMemberId: string | null;
+      inherited: boolean;
+    } | null> {
       const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
@@ -6339,10 +6354,11 @@ export function createSupabaseBusinessRepository(options) {
       const resolved = await this.resolveCurrentActor(app.team_id, userId);
       if (!resolved?.id) return null;
       const callerActorId = resolved.id;
-      const callerMemberId = resolved.actorType === "agent" ? null : resolved.id;
+      const isAgent = resolved.actorType === "agent";
+      const callerMemberId = isAgent ? null : resolved.id;
 
       if (app.created_by_actor_id === callerActorId) {
-        return { level: "admin", callerActorId, callerMemberId };
+        return { level: "admin", callerActorId, callerMemberId, inherited: false };
       }
 
       const { data: access, error: accErr } = await supabase
@@ -6352,8 +6368,39 @@ export function createSupabaseBusinessRepository(options) {
         .eq("member_id", callerActorId)
         .maybeSingle();
       if (accErr) throw accErr;
-      const level = storedAppPermissionLevel(access?.permission_level);
-      return level ? { level, callerActorId, callerMemberId } : null;
+      const granted = storedAppPermissionLevel(access?.permission_level);
+
+      let inheritedLevel: AppPermissionLevel | null = null;
+      if (isAgent && granted !== "admin") {
+        const viaOwner = await callAgentInheritance(supabase, "agent_inherited_app_level", {
+          p_app_id: app.id,
+          p_actor_id: callerActorId,
+        });
+        inheritedLevel = storedAppPermissionLevel(viaOwner);
+      }
+
+      const level = higherAppLevel(granted, inheritedLevel);
+      if (!level) return null;
+      const inherited = level !== granted;
+      return { level, callerActorId, callerMemberId, inherited };
+    },
+
+    /**
+     * Refuse a caller whose level on the app came from its owner. Changing
+     * who has access and deleting the app stay with people and explicitly
+     * granted actors.
+     */
+    assertNotInheritedFor(
+      permission: { inherited?: boolean } | null,
+      action: "manage_access" | "delete_app",
+    ): void {
+      if (!permission?.inherited) return;
+      const what = action === "manage_access" ? "change who can access" : "delete";
+      throw new ApiError(
+        403,
+        "inherited_access_not_allowed",
+        `an agent cannot ${what} an app it reaches through its owner; ask a person with admin on the app`,
+      );
     },
 
     /**
@@ -6640,6 +6687,7 @@ export function createSupabaseBusinessRepository(options) {
 
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission || permission.level !== "admin") return null;
+      this.assertNotInheritedFor(permission, "manage_access");
       return {
         callerActorId: permission.callerActorId,
         callerMemberId: permission.callerMemberId,
@@ -6660,29 +6708,65 @@ export function createSupabaseBusinessRepository(options) {
         .order("created_at", { ascending: true });
       if (error) throw error;
       const rows = data ?? [];
+
+      // The agents that reach the app through their owner (20261120120000).
+      // Listed after the grants, read-only: the way to take one away is to
+      // take its owner's access away.
+      const inheritedRows = await callAgentInheritance(admin, "app_inherited_agents", { p_app_id: appId });
+      const granted = new Set(rows.map((r: any) => r.member_id));
+      const inherited = ((inheritedRows ?? []) as any[]).filter(
+        (r) => r.agent_id && !granted.has(r.agent_id) && storedAppPermissionLevel(r.permission_level),
+      );
+
       // Who each grantee is: the access tab shows agents apart from people,
-      // and greys out an agent whose daemon never claimed an account.
-      const ids = [...new Set(rows.map((r: any) => r.member_id).filter(Boolean))];
+      // greys out an agent whose daemon never claimed an account, and shows
+      // the NAME from here — the caller's own directory hides agents it may
+      // not talk to, which left those rows as bare ids.
+      const ids = [
+        ...new Set(
+          [
+            ...rows.map((r: any) => r.member_id),
+            ...inherited.flatMap((r) => [r.agent_id, r.owner_actor_id]),
+          ].filter(Boolean),
+        ),
+      ];
       const actors = new Map<string, any>();
       if (ids.length > 0) {
         const found = await chunkedIn(ids, async (chunk) => {
           const { data: actorRows, error: actorErr } = await admin
             .from("actors")
-            .select("id, actor_type, user_id")
+            .select("id, actor_type, user_id, display_name")
             .in("id", chunk);
           if (actorErr) throw actorErr;
           return actorRows ?? [];
         });
         for (const a of found) actors.set(a.id, a);
       }
-      return rows.map((r: any) => {
-        const actor = actors.get(r.member_id);
+      const describe = (actorId: string) => {
+        const actor = actors.get(actorId);
         return {
-          ...mapAppAccessRow(r),
           actorType: actor?.actor_type ?? null,
           connected: actor ? actor.actor_type !== "agent" || !!actor.user_id : null,
+          displayName: actor?.display_name ?? null,
         };
-      });
+      };
+      return [
+        ...rows.map((r: any) => ({
+          ...mapAppAccessRow(r),
+          ...describe(r.member_id),
+          inherited: false,
+          inheritedFrom: null,
+        })),
+        ...inherited.map((r) => ({
+          memberId: r.agent_id,
+          permissionLevel: storedAppPermissionLevel(r.permission_level)!,
+          grantedByMemberId: null,
+          createdAt: null,
+          ...describe(r.agent_id),
+          inherited: true,
+          inheritedFrom: { actorId: r.owner_actor_id, displayName: actors.get(r.owner_actor_id)?.display_name ?? null },
+        })),
+      ];
     },
 
     async setAppAccess(appId: string, memberId: string, permissionLevel: string) {
@@ -7379,6 +7463,7 @@ export function createSupabaseBusinessRepository(options) {
 
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return false;
+      this.assertNotInheritedFor(permission, "delete_app");
 
       const assertUninstalled = (app: any) => {
         const neverDeployed = (app.fc_status == null || app.fc_status === "not_deployed")

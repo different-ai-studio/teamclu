@@ -1,4 +1,11 @@
-import { appLevelAtLeast, storedAppPermissionLevel, type AppPermissionLevel } from "../app-permission.js";
+import {
+  appLevelAtLeast,
+  callAgentInheritance,
+  higherAppLevel,
+  inheritedGiteaLevel,
+  storedAppPermissionLevel,
+  type AppPermissionLevel,
+} from "../app-permission.js";
 
 /**
  * What an account holds on an app, for `GET /v1/git/access` — the credential
@@ -21,16 +28,23 @@ export interface AppGitAccess {
 
 /**
  * The level Gitea ends up enforcing for an actor of the app's team: the
- * creator is admin, a grant counts at its level, and a team-visible app is
- * readable by the whole team (the Gitea team the sync maintains).
+ * creator is admin, a grant counts at its level, an agent's inherited level
+ * counts as the sync mirrors it (admin → write, `inheritedGiteaLevel`), and a
+ * team-visible app is readable by the whole team (the Gitea team the sync
+ * maintains).
  */
 export function appGitLevel(input: {
   isCreator: boolean;
   grant: unknown;
+  inherited?: unknown;
   visibility: string | null | undefined;
 }): AppPermissionLevel | null {
   if (input.isCreator) return "admin";
-  const granted = storedAppPermissionLevel(input.grant);
+  const inheritedLevel = storedAppPermissionLevel(input.inherited);
+  const granted = higherAppLevel(
+    storedAppPermissionLevel(input.grant),
+    inheritedLevel ? inheritedGiteaLevel(inheritedLevel) : null,
+  );
   if (input.visibility === "team" && (!granted || !appLevelAtLeast(granted, "read"))) return "read";
   return granted;
 }
@@ -65,10 +79,14 @@ export async function readAppGitAccess(admin: any, appId: string, userId: string
     if (error) throw error;
     grant = data?.permission_level;
   }
+  let inherited: unknown = null;
+  if (!isCreator && actor.actor_type === "agent") {
+    inherited = await callAgentInheritance(admin, "agent_inherited_app_level", { p_app_id: app.id, p_actor_id: actor.id });
+  }
   return {
     appId: app.id,
     appName: app.name,
-    permission: appGitLevel({ isCreator, grant, visibility: app.visibility }),
+    permission: appGitLevel({ isCreator, grant, inherited, visibility: app.visibility }),
     actorName: actor.display_name ?? null,
     actorType: actor.actor_type,
   };
