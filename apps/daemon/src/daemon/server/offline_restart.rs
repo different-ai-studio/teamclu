@@ -385,8 +385,10 @@ impl DaemonServer {
                 "",
                 false,
                 entry.fork_from,
-                // Nobody is at the desktop. An empty mode keeps the last mode
-                // the session ran with instead of falling back to Ask.
+                // Nobody is at the desktop. An empty mode reads the session's
+                // own record, then the one device-wide default.
+                "",
+                false,
                 "",
             )
             .await

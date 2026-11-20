@@ -25,6 +25,11 @@ pub struct SessionStore {
     /// rather than per workspace binding.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub permission_modes: HashMap<String, String>,
+    /// Device-wide default (`default` / `full_access`) last reported by a desktop.
+    /// Sessions with no record of their own follow this. Absent means the
+    /// desktop has not reported one, so those sessions stay Ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_permission_mode: Option<String>,
 }
 
 /// Legacy on-disk row (pre-binding refactor). Used only for migration.
@@ -109,6 +114,7 @@ impl SessionStore {
         let SessionStore {
             bindings,
             permission_modes,
+            default_permission_mode,
         } = self;
         let mut by_key: HashMap<(String, String, i32), SessionBinding> = HashMap::new();
         for binding in bindings {
@@ -117,6 +123,7 @@ impl SessionStore {
         Self {
             bindings: by_key.into_values().collect(),
             permission_modes,
+            default_permission_mode,
         }
     }
 
@@ -159,7 +166,25 @@ impl SessionStore {
         Self {
             bindings,
             permission_modes: HashMap::new(),
+            default_permission_mode: None,
         }
+    }
+
+    /// Device-wide default last reported by a desktop, if one was recorded.
+    pub fn default_permission_mode(&self) -> Option<&str> {
+        self.default_permission_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|mode| !mode.is_empty())
+    }
+
+    /// Record the device-wide default. An empty mode leaves the stored value alone.
+    pub fn set_default_permission_mode(&mut self, mode: &str) {
+        let mode = mode.trim();
+        if mode.is_empty() {
+            return;
+        }
+        self.default_permission_mode = Some(mode.to_string());
     }
 
     /// The mode a client last chose for this session, if one was recorded.
@@ -366,6 +391,8 @@ created_at = 5
         store.upsert(SessionBinding::new("s1", "ws-a", 1, "acp-2"));
         store.set_permission_mode("s1", "full_access");
         store.set_permission_mode("s2", "  ");
+        store.set_default_permission_mode("full_access");
+        store.set_default_permission_mode("  ");
         store.save(&path).unwrap();
 
         let loaded = SessionStore::load(&path).unwrap();
@@ -373,6 +400,7 @@ created_at = 5
         assert_eq!(loaded.permission_mode("s1"), Some("full_access"));
         assert_eq!(loaded.permission_mode("s2"), None);
         assert_eq!(loaded.permission_mode("missing"), None);
+        assert_eq!(loaded.default_permission_mode(), Some("full_access"));
     }
 
     #[test]

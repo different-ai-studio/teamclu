@@ -13,18 +13,22 @@ vi.mock("@/lib/agent/runtime-state-resolve", () => ({
   runtimeTargetsForSession: mocks.runtimeTargetsForSession,
 }));
 
+import { noteLocalDaemonActorId } from "@/lib/daemon/local-daemon-identity";
 import {
+  hasExplicitSessionPermissionMode,
   resetSessionPermissionModesForTests,
   setSessionDefaultPermissionMode,
   setSessionPermissionMode,
 } from "@/lib/session/session-permission-mode";
 import {
   resolveSessionPermissionModeTargetActorIds,
-  syncDefaultPermissionModeToLiveSessions,
+  runtimePermissionStartFields,
   syncSessionPermissionModeToDaemon,
 } from "@/lib/teamclu/sync-session-permission-mode";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
+import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
+import type { SessionListEntry } from "@/stores/session-list-store";
 
 describe("resolveSessionPermissionModeTargetActorIds", () => {
   beforeEach(() => {
@@ -82,6 +86,7 @@ describe("syncSessionPermissionModeToDaemon", () => {
       targetActorId: "69306260-cfbd-4c5b-90a3-76e3f4278f91",
       sessionId: "sess-1",
       permissionMode: "full_access",
+      remember: false,
     });
   });
 
@@ -100,62 +105,78 @@ describe("syncSessionPermissionModeToDaemon", () => {
   });
 });
 
-describe("syncDefaultPermissionModeToLiveSessions", () => {
+function sessionRow(id: string, source: string | null): SessionListEntry {
+  return {
+    id,
+    title: id,
+    team_id: "team-1",
+    last_message_at: null,
+    last_message_preview: null,
+    mode: "solo",
+    idea_id: null,
+    has_unread: false,
+    has_mention: false,
+    source,
+    created_at: null,
+    updated_at: null,
+  };
+}
+
+describe("runtimePermissionStartFields", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
     resetSessionPermissionModesForTests();
-    useSessionParticipantStore.setState({ participantsBySession: {} });
-    mocks.sessionPermissionMode.mockResolvedValue({
-      accepted: true,
-      effectiveMode: "full_access",
-      rejectedReason: "",
+    noteLocalDaemonActorId("local-daemon");
+    useRuntimeStateStore.setState({ byRuntimeId: {} });
+    useSessionListStore.setState({ rows: [sessionRow("sess-new", "user")] });
+  });
+
+  it("records the current default on the first start and keeps it", () => {
+    setSessionDefaultPermissionMode("default");
+
+    expect(runtimePermissionStartFields("sess-new", "local-daemon")).toEqual({
+      permissionMode: "default",
+      rememberPermission: true,
+      defaultPermissionMode: "default",
     });
-    mocks.runtimeTargetsForSession.mockImplementation(
-      (sessionId: string) =>
-        [
-          {
-            agent_id: `agent-${sessionId}`,
-            runtime_id: sessionId,
-          },
-        ] as Array<{ agent_id: string | null; runtime_id: string | null }>,
-    );
+    expect(hasExplicitSessionPermissionMode("sess-new")).toBe(true);
+
+    setSessionDefaultPermissionMode("fullAccess");
+    expect(runtimePermissionStartFields("sess-new", "local-daemon")).toEqual({
+      permissionMode: "default",
+      rememberPermission: true,
+      defaultPermissionMode: "full_access",
+    });
+  });
+
+  it("does not record a session that is already running", () => {
+    setSessionDefaultPermissionMode("fullAccess");
     useRuntimeStateStore.setState({
       byRuntimeId: {
-        "agent-sess-plain::sess-plain": {
+        "local-daemon::sess-new": {
           info: {} as never,
-          daemonActorId: "agent-sess-plain",
-          lastUpdated: 0,
-        },
-        "agent-sess-picked::sess-picked": {
-          info: {} as never,
-          daemonActorId: "agent-sess-picked",
+          daemonActorId: "local-daemon",
           lastUpdated: 0,
         },
       } as never,
     });
-  });
 
-  it("syncs the resolved mode to live sessions without an explicit pick", async () => {
-    setSessionPermissionMode("sess-picked", "fullAccess");
-    setSessionDefaultPermissionMode("fullAccess");
-
-    await syncDefaultPermissionModeToLiveSessions();
-
-    // sess-picked keeps its explicit pick — no RPC for it.
-    expect(mocks.sessionPermissionMode).toHaveBeenCalledTimes(1);
-    expect(mocks.sessionPermissionMode).toHaveBeenCalledWith({
-      targetActorId: "agent-sess-plain",
-      sessionId: "sess-plain",
-      permissionMode: "full_access",
+    expect(runtimePermissionStartFields("sess-new", "local-daemon")).toEqual({
+      permissionMode: "",
+      rememberPermission: false,
+      defaultPermissionMode: "full_access",
     });
+    expect(hasExplicitSessionPermissionMode("sess-new")).toBe(false);
   });
 
-  it("skips everything when every live session has an explicit pick", async () => {
-    setSessionPermissionMode("sess-plain", "default");
-    setSessionPermissionMode("sess-picked", "fullAccess");
+  it("leaves a channel session unrecorded", () => {
+    useSessionListStore.setState({ rows: [sessionRow("gw-1", "gateway")] });
+    setSessionDefaultPermissionMode("default");
 
-    await syncDefaultPermissionModeToLiveSessions();
-
-    expect(mocks.sessionPermissionMode).not.toHaveBeenCalled();
+    expect(runtimePermissionStartFields("gw-1", "local-daemon")).toEqual({
+      permissionMode: "",
+      rememberPermission: false,
+      defaultPermissionMode: "default",
+    });
+    expect(hasExplicitSessionPermissionMode("gw-1")).toBe(false);
   });
 });

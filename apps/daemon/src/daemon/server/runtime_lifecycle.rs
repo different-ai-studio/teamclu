@@ -199,10 +199,9 @@ impl DaemonServer {
 
     /// Permission for a runtime that is about to be created or resumed.
     ///
-    /// An explicit client mode wins. Otherwise the last mode this session ran
-    /// with wins, so a restart that nobody is driving still matches the
-    /// dropdown. With neither, gateway sessions stay Full and interactive
-    /// sessions stay Ask.
+    /// A mode the caller sent for this start wins. Otherwise the session's own
+    /// record wins, then a channel binding (full access), then the device-wide
+    /// default. With none of those, an interactive session stays Ask.
     pub(super) fn permission_for_session_start(
         &self,
         session_id: &str,
@@ -221,21 +220,51 @@ impl DaemonServer {
             };
             return crate::runtime::PermissionPolicy::from_wire(Some(stored), fallback);
         }
-        crate::runtime::PermissionPolicy::resolve_for_session(is_gateway, "")
+        if is_gateway {
+            return crate::runtime::PermissionPolicy::Full;
+        }
+        if let Some(device_default) = self.sessions.default_permission_mode() {
+            return crate::runtime::PermissionPolicy::from_wire(
+                Some(device_default),
+                crate::runtime::PermissionPolicy::Ask,
+            );
+        }
+        crate::runtime::PermissionPolicy::Ask
     }
 
-    /// Record a mode a client just chose. Implicit fallbacks are not recorded,
-    /// so a session that was never switched keeps the gateway/ask default.
+    /// Record a mode the caller marked as this session's own choice.
+    /// A resolved device default is applied for the start and is not recorded here.
     pub(super) fn remember_client_permission(
         &mut self,
         session_id: &str,
         client_mode: &str,
         permission: crate::runtime::PermissionPolicy,
+        remember: bool,
     ) {
-        if client_mode.trim().is_empty() {
+        if !remember || client_mode.trim().is_empty() {
             return;
         }
         self.remember_permission_mode(session_id, permission);
+    }
+
+    /// Keep the one device-wide default a desktop reported. Empty does not clear it.
+    pub(super) fn note_device_permission_default(&mut self, mode: &str) {
+        let mode = mode.trim();
+        if mode.is_empty() {
+            return;
+        }
+        let normalized = crate::runtime::PermissionPolicy::from_wire(
+            Some(mode),
+            crate::runtime::PermissionPolicy::Ask,
+        )
+        .as_wire_str();
+        if self.sessions.default_permission_mode() == Some(normalized) {
+            return;
+        }
+        self.sessions.set_default_permission_mode(normalized);
+        if let Err(e) = self.sessions.save(&self.sessions_path) {
+            warn!(error = %e, "failed to persist device permission default");
+        }
     }
 
     pub(super) fn remember_permission_mode(
@@ -272,8 +301,11 @@ impl DaemonServer {
         reset_backend_binding: bool,
         fork_from: Option<(String, String)>,
         client_permission_mode: &str,
+        remember_permission: bool,
+        device_default_mode: &str,
     ) -> Result<StartRuntimeOutcome, StartRuntimeError> {
         info!(workspace_id, worktree, session_id, "apply_start_runtime");
+        self.note_device_permission_default(device_default_mode);
 
         let team_id = self.config.team_id.clone().unwrap_or_default();
         let wants_remote_mcp = !session_id.is_empty() && !requester_actor_id.is_empty();
@@ -622,6 +654,7 @@ impl DaemonServer {
                             session_id,
                             client_permission_mode,
                             permission,
+                            remember_permission,
                         );
                         self.publish_auto_granted_permissions(session_id, &cleared, "")
                             .await;
@@ -724,6 +757,7 @@ impl DaemonServer {
                         initial_model_override.as_deref(),
                         requester_actor_id,
                         client_permission_mode,
+                        remember_permission,
                     )
                     .await?
                 {
@@ -747,9 +781,9 @@ impl DaemonServer {
         // answer hangs the turn. `get_session_binding` returns the live binding
         // or the durable `gateway_key`, so RuntimeStart from the desktop keeps
         // the same full-access policy the gateway spawn path already uses
-        // (`is_gateway` ⇒ `PermissionPolicy::Full`). A client that already
-        // chose a mode — including 「完全访问」 on an ordinary session — is
-        // remembered, and a restart that arrives with no mode uses that.
+        // (`is_gateway` ⇒ `PermissionPolicy::Full`). A session's own choice is
+        // remembered. A device default is not copied onto the session; a
+        // restart with no client mode reads that one default.
         let is_gateway = self.session_has_gateway_binding(session_id).await;
         let permission =
             self.permission_for_session_start(session_id, is_gateway, client_permission_mode);
@@ -938,7 +972,12 @@ impl DaemonServer {
         if !session_id.is_empty() && !acp_sid.is_empty() {
             self.upsert_session_binding(session_id, &ws_id, agent_type, &acp_sid);
         }
-        self.remember_client_permission(session_id, client_permission_mode, permission);
+        self.remember_client_permission(
+            session_id,
+            client_permission_mode,
+            permission,
+            remember_permission,
+        );
 
         // ACTIVE — refresh the actor snapshot so clients see the attachment.
         let _ = self.publish_actor_state().await;
@@ -1087,6 +1126,8 @@ impl DaemonServer {
                 start.reset_backend_binding,
                 fork_from.clone(),
                 &start.permission_mode,
+                start.remember_permission,
+                &start.default_permission_mode,
             )
             .await;
 
@@ -1119,6 +1160,8 @@ impl DaemonServer {
                             start.reset_backend_binding,
                             fork_from,
                             &start.permission_mode,
+                            start.remember_permission,
+                            &start.default_permission_mode,
                         )
                         .await
                     }
@@ -1286,8 +1329,33 @@ impl DaemonServer {
     ) -> crate::proto::teamclu::RpcResponse {
         use crate::proto::teamclu::{rpc_response, RpcResponse, SessionPermissionModeResult};
 
+        if body.set_device_default {
+            self.note_device_permission_default(&body.permission_mode);
+        }
+
         let session_id = body.session_id.trim();
         if session_id.is_empty() {
+            if body.set_device_default {
+                let effective = self
+                    .sessions
+                    .default_permission_mode()
+                    .unwrap_or(crate::runtime::PermissionPolicy::Ask.as_wire_str())
+                    .to_string();
+                return RpcResponse {
+                    request_id: request.request_id.clone(),
+                    success: true,
+                    error: String::new(),
+                    requester_client_id: request.requester_client_id.clone(),
+                    requester_actor_id: request.requester_actor_id.clone(),
+                    result: Some(rpc_response::Result::SessionPermissionModeResult(
+                        SessionPermissionModeResult {
+                            accepted: true,
+                            effective_mode: effective,
+                            rejected_reason: String::new(),
+                        },
+                    )),
+                };
+            }
             return RpcResponse {
                 request_id: request.request_id.clone(),
                 success: false,
@@ -1320,10 +1388,11 @@ impl DaemonServer {
 
         match sync_result {
             Ok(cleared) => {
-                // The dropdown lands here while the runtime is already up, and
-                // nothing else writes the choice down. A later offline restart
-                // has no client mode to read.
-                self.remember_permission_mode(session_id, permission);
+                // The dropdown sets `remember`. A global-default push applies
+                // to the live runtime and leaves the session record alone.
+                if body.remember {
+                    self.remember_permission_mode(session_id, permission);
+                }
                 self.publish_auto_granted_permissions(
                     session_id,
                     &cleared,
