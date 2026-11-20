@@ -1434,11 +1434,23 @@ export interface AppMemberAccessRow {
   memberId: string;
   permissionLevel: AppPermissionLevel;
   grantedByMemberId: string | null;
-  createdAt: string;
+  /** Null for an inherited row, which has no grant of its own. */
+  createdAt: string | null;
   /** Present on the list: what the grantee is. */
   actorType?: "member" | "agent" | null;
   /** Present on the list: false for an agent whose daemon has not claimed an account. */
   connected?: boolean | null;
+  /**
+   * Present on the list: the grantee's name, read by the server — the
+   * caller's own directory hides agents it may not talk to.
+   */
+  displayName?: string | null;
+  /**
+   * Present on the list: an agent that reaches the app through its owner
+   * rather than a grant of its own. Read-only; follows the owner's access.
+   */
+  inherited?: boolean;
+  inheritedFrom?: { actorId: string; displayName: string | null } | null;
 }
 
 /** `POST /v1/git/token`. */

@@ -55,6 +55,11 @@ function fakeAdmin(opts: { users?: Record<string, any>; sessions?: Record<string
   return {
     users,
     from,
+    // amux.agent_inherited_app_level: seed `inherited` as { "<appId>:<actorId>": level }.
+    rpc: async (name: string, args: any) => ({
+      data: name === "agent_inherited_app_level" ? (seed.inherited?.[`${args.p_app_id}:${args.p_actor_id}`] ?? null) : null,
+      error: null,
+    }),
     auth: {
       getUser: async (jwt: string) => {
         const id = sessions[jwt];
@@ -215,6 +220,13 @@ test("access reports the creator as admin and a granted agent at its level", asy
   const { call } = setup({ seed: granted });
   assert.equal((await call("GET /v1/git/access", { authorization: basic("alice-session") }, `repo=o1/tc-app-${APP_ID}`)).body.permission, "admin");
   assert.equal((await call("GET /v1/git/access", { authorization: basic("agent-session") }, `repo=o1/tc-app-${APP_ID}`)).body.permission, "write");
+});
+
+test("access counts an agent's inherited level as Gitea enforces it (admin → write)", async () => {
+  const inherited = { ...accessSeed, inherited: { [`${APP_ID}:actor-agent`]: "admin" } };
+  const { call } = setup({ seed: inherited });
+  const res = await call("GET /v1/git/access", { authorization: basic("agent-session") }, `repo=o1/tc-app-${APP_ID}`);
+  assert.equal(res.body.permission, "write");
 });
 
 test("access says read for a teammate on a team-visible app", async () => {

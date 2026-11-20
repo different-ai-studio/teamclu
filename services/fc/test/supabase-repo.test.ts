@@ -2710,6 +2710,9 @@ test("apps: listAppAccess returns rows for creator", async () => {
     createdAt: "2026-08-27T00:00:00.000Z",
     actorType: "member",
     connected: true,
+    displayName: null,
+    inherited: false,
+    inheritedFrom: null,
   }, {
     memberId: "agent-3",
     permissionLevel: "read",
@@ -2717,6 +2720,9 @@ test("apps: listAppAccess returns rows for creator", async () => {
     createdAt: "2026-08-28T00:00:00.000Z",
     actorType: "agent",
     connected: false,
+    displayName: null,
+    inherited: false,
+    inheritedFrom: null,
   }]);
 });
 
@@ -3015,6 +3021,7 @@ test("apps: an agent administers the apps it created, and no others", async () =
     callerActorId: "agent-actor-1",
     // Written to `*_member_id` columns, which reference `amux.members`.
     callerMemberId: null,
+    inherited: false,
   });
   assert.equal(await repo.isAppCreator("team-1", "agent-actor-1"), true);
 
@@ -3033,6 +3040,7 @@ test("apps: an agent administers the apps it created, and no others", async () =
     level: "write",
     callerActorId: "agent-actor-1",
     callerMemberId: null,
+    inherited: false,
   });
   // ... and with no grant, nothing.
   const ungranted = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] }, actorRow: agent }));

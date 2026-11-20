@@ -8,7 +8,13 @@ import {
   type GiteaClient,
   type GiteaCollaboratorPermission,
 } from "./gitea.js";
-import { appLevelAtLeast, storedAppPermissionLevel, type AppPermissionLevel } from "../app-permission.js";
+import {
+  appLevelAtLeast,
+  callAgentInheritance,
+  inheritedGiteaLevel,
+  storedAppPermissionLevel,
+  type AppPermissionLevel,
+} from "../app-permission.js";
 
 /**
  * Projects an app's TeamClu access onto its Gitea repo
@@ -133,8 +139,22 @@ export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promis
     .select("member_id, permission_level")
     .eq("app_id", appId);
   if (grantErr) throw grantErr;
+  // ── …and the agents that inherit from them (20261120120000). The rule is
+  // the database's (amux.app_inherited_agents), so this, the Cloud API's own
+  // permission check and the access tab can never disagree about who is in.
+  const inheritedRows = await callAgentInheritance(admin, "app_inherited_agents", { p_app_id: appId });
+  const inherited = ((inheritedRows ?? []) as any[])
+    .map((r) => ({ agentId: r.agent_id as string, level: storedAppPermissionLevel(r.permission_level) }))
+    .filter((r): r is { agentId: string; level: AppPermissionLevel } => !!r.agentId && !!r.level);
+
   const actorIds = [
-    ...new Set([app.created_by_actor_id, ...((grants ?? []) as any[]).map((g) => g.member_id)].filter(Boolean)),
+    ...new Set(
+      [
+        app.created_by_actor_id,
+        ...((grants ?? []) as any[]).map((g) => g.member_id),
+        ...inherited.map((r) => r.agentId),
+      ].filter(Boolean),
+    ),
   ] as string[];
   const actors = await readActors(admin, actorIds);
 
@@ -152,6 +172,7 @@ export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promis
     const level = storedAppPermissionLevel(g.permission_level);
     if (level) want(g.member_id, level);
   }
+  for (const r of inherited) want(r.agentId, inheritedGiteaLevel(r.level));
 
   for (const [username, { actor }] of desired) await ensureUser(username, actor);
   const current = new Map<string, GiteaCollaboratorPermission>(
