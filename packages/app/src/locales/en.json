@@ -2201,7 +2201,7 @@
       "language": "Language",
       "languageDesc": "Choose the app display language",
       "defaultPermission": "Default permission",
-      "defaultPermissionDesc": "Permission mode used by new sessions. Changing it also applies to running sessions without an explicit per-session choice; sessions you set individually are unaffected.",
+      "defaultPermissionDesc": "Used by sessions that start after this change. Sessions that have already started keep their own mode.",
       "defaultPermissionAsk": "Ask",
       "defaultPermissionFullAccess": "Full access",
       "closeWindow": "When closing the window",

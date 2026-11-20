@@ -3557,6 +3557,8 @@ pub(crate) mod tests {
                 false,
                 None,
                 "",
+                false,
+                "",
             )
             .await;
         let err = match result {
@@ -3605,6 +3607,8 @@ pub(crate) mod tests {
                 false,
                 None,
                 "",
+                false,
+                "",
             )
             .await;
 
@@ -3645,6 +3649,8 @@ pub(crate) mod tests {
                 None,
                 false,
                 None,
+                "",
+                false,
                 "",
             )
             .await;
@@ -3710,6 +3716,8 @@ pub(crate) mod tests {
                 None,
                 false,
                 None,
+                "",
+                false,
                 "",
             )
             .await;
@@ -3790,6 +3798,8 @@ pub(crate) mod tests {
                 None,
                 false,
                 None,
+                "",
+                false,
                 "",
             )
             .await
@@ -3876,6 +3886,8 @@ pub(crate) mod tests {
                 None,
                 false,
                 None,
+                "",
+                false,
                 "",
             )
             .await

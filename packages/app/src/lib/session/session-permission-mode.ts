@@ -154,6 +154,15 @@ export function hasExplicitSessionPermissionMode(sessionId: string): boolean {
   return Boolean(fullAccess[id] || forceDefault[id]);
 }
 
+/** A session row we know is not a channel or cron session. Unknown rows are excluded. */
+export function isKnownInteractiveSession(sessionId: string): boolean {
+  const id = sessionId.trim();
+  if (!id) return false;
+  const row = useSessionListStore.getState().rows?.find((item) => item.id === id);
+  if (!row) return false;
+  return !isUnattendedSessionSource(row.source);
+}
+
 export function setSessionPermissionMode(
   sessionId: string,
   mode: SessionPermissionMode,

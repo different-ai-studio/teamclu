@@ -1601,6 +1601,8 @@ mod tests {
                 false,
                 None,
                 "",
+                false,
+                "",
             )
             .await
             .unwrap_or_else(|e| panic!("start failed: {}", e.error_message));

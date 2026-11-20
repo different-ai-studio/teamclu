@@ -72,6 +72,7 @@ describe("PermissionApprovalModeSelect", () => {
     expect(mocks.syncSessionPermissionModeToDaemon).toHaveBeenCalledWith(
       "sess-a",
       "fullAccess",
+      true,
     );
   });
 
@@ -99,6 +100,6 @@ describe("PermissionApprovalModeSelect", () => {
     await user.click(screen.getByTestId("permission-mode-default"));
 
     expect(mocks.setSessionPermissionMode).toHaveBeenCalledWith("sess-a", "default");
-    expect(mocks.syncSessionPermissionModeToDaemon).toHaveBeenCalledWith("sess-a", "default");
+    expect(mocks.syncSessionPermissionModeToDaemon).toHaveBeenCalledWith("sess-a", "default", true);
   });
 });

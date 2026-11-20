@@ -1326,6 +1326,8 @@ impl DaemonServer {
                         false,
                         None,
                         "",
+                        false,
+                        "",
                     )
                     .await;
 
@@ -1396,6 +1398,7 @@ impl DaemonServer {
                                 None,
                                 true,
                                 "",
+                                false,
                                 "legacy_send_prompt",
                             )
                             .await

@@ -441,16 +441,28 @@ message RuntimeStartRequest {
   RuntimeForkFrom fork_from = 9;
   // Optional. Wire values match cron payloads: "default" | "full_access"
   // (also accepts "fullAccess" / "full"). Empty = daemon derives from
-  // gateway/cron binding (full access) or interactive default (ask).
+  // the session's own record, then a channel binding, then the device default.
   string permission_mode = 10;
+  // True when permission_mode is this session's own choice and should be
+  // stored on the session. False applies the mode for this start only.
+  bool remember_permission = 11;
+  // Device-wide default ("default" | "full_access"). Empty means this caller
+  // did not report one. The daemon keeps the last reported value and uses it
+  // for sessions that have no choice of their own.
+  string default_permission_mode = 12;
 }
 
 // Live update for a session already attached on this daemon. Does not respawn
 // the pi host or interrupt an in-flight turn — only changes how future tool
 // permission confirms are handled, and optionally resolves pending ones.
 message SessionPermissionModeRequest {
-  string session_id = 1;       // TeamClu cloud session id
+  string session_id = 1;       // TeamClu cloud session id. Empty + set_device_default updates only the device default.
   string permission_mode = 2;  // "default" | "full_access" (+ aliases)
+  // True: store this mode on the session (the composer dropdown).
+  // False: apply it to a live runtime without writing a session record.
+  bool remember = 3;
+  // True: permission_mode is also the device-wide default.
+  bool set_device_default = 4;
 }
 
 message SessionPermissionModeResult {
