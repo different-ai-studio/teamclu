@@ -612,8 +612,15 @@ function summarize(toolName: string, input: Record<string, unknown>): string {
  * `${...}`, the same key opencode uses. Absent/invalid env ⇒ no-op.
  */
 function registerTeamProvider(pi: ExtensionAPI): void {
+  // Every outcome is logged (stderr lands in amuxd's log as `WARN pi_rpc`).
+  // A host without team models used to look identical whether the payload
+  // was missing, unparsable, empty, or registered without its credential —
+  // and on Windows that was exactly the question nobody could answer.
   const raw = process.env.TEAMCLU_TEAM_PROVIDER;
-  if (!raw) return;
+  if (!raw) {
+    console.error("[teamclu] team provider: TEAMCLU_TEAM_PROVIDER not set; no team models");
+    return;
+  }
   let cfg: {
     name?: string;
     baseUrl?: string;
@@ -623,10 +630,16 @@ function registerTeamProvider(pi: ExtensionAPI): void {
   try {
     cfg = JSON.parse(raw);
   } catch (e) {
-    console.error(`[teamclu] invalid TEAMCLU_TEAM_PROVIDER: ${e}`);
+    console.error(`[teamclu] team provider: invalid TEAMCLU_TEAM_PROVIDER: ${e}`);
     return;
   }
-  if (!cfg.baseUrl || !Array.isArray(cfg.models) || cfg.models.length === 0) return;
+  if (!cfg.baseUrl || !Array.isArray(cfg.models) || cfg.models.length === 0) {
+    console.error(
+      `[teamclu] team provider: skipped (baseUrl=${cfg.baseUrl ? "set" : "missing"}, ` +
+        `models=${Array.isArray(cfg.models) ? cfg.models.length : "missing"})`,
+    );
+    return;
+  }
   const apiKeyEnv = cfg.apiKeyEnv || "tc_api_key";
   const models = cfg.models
     .filter((m) => m && m.id)
@@ -639,7 +652,13 @@ function registerTeamProvider(pi: ExtensionAPI): void {
       contextWindow: 256000,
       maxTokens: 16000,
     }));
-  if (models.length === 0) return;
+  if (models.length === 0) {
+    console.error("[teamclu] team provider: skipped (no model has an id)");
+    return;
+  }
+  // Presence only, never the value. Without it pi registers the provider and
+  // then lists none of its models as available.
+  const keyBound = Boolean(process.env[apiKeyEnv]);
   try {
     pi.registerProvider("team", {
       name: cfg.name || "Team",
@@ -648,6 +667,10 @@ function registerTeamProvider(pi: ExtensionAPI): void {
       api: "openai-completions",
       models,
     });
+    console.error(
+      `[teamclu] team provider: registered ${models.length} model(s) ` +
+        `[${models.map((m) => m.id).join(",")}], ${apiKeyEnv} ${keyBound ? "bound" : "NOT bound"}`,
+    );
   } catch (e) {
     console.error(`[teamclu] registerProvider(team) failed: ${e}`);
   }
