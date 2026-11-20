@@ -331,11 +331,10 @@ services:
       # inside the single shared BUCKET.
       TEAM_BLOBS_STORAGE_BUCKET: "${TEAM_BLOBS_STORAGE_BUCKET:-team-blobs}"
       SKILLS_STORAGE_BUCKET: "${SKILLS_STORAGE_BUCKET:-team-skills}"
-      # The ONE broker address: FC's own inbox publisher dials it AND
-      # /v1/config/bootstrap hands it to clients. The separate
-      # MQTT_PUBLIC_BROKER_URL override is gone (it defaulted to "", `""` is not
-      # nullish, so the fallback never fired and bootstrap shipped no `mqtt`
-      # block at all — #634), which means this value can no longer be the
+      # Client-facing broker address. /v1/config/bootstrap hands it to clients.
+      # The separate MQTT_PUBLIC_BROKER_URL override is gone (it defaulted to "",
+      # `""` is not nullish, so the fallback never fired and bootstrap shipped no
+      # `mqtt` block at all — #634), which means this value can no longer be the
       # internal `mqtt://emqx:1883`: that address does not resolve for clients.
       #
       # Defaults to the published EMQX TCP listener on MQTT_DOMAIN — the address
@@ -347,6 +346,12 @@ services:
       # A broken value is caught by the deploy's own e2e (`run-e2e.sh` asserts
       # /v1/config/bootstrap returns an `mqtt` block), not by compose.
       MQTT_BROKER_URL: "${MQTT_BROKER_URL:-mqtt://${MQTT_DOMAIN}:1883}"
+      # Publisher-only. The FC container dials EMQX on the compose network, on
+      # the same 1883 listener and the same fc-service account as above. Clients
+      # never receive this value. `:-` still applies the default when .env sets
+      # it blank. Belayo leaves the var unset: its Cloud API is not on this
+      # network, and push-deps then dials MQTT_BROKER_URL.
+      MQTT_INTERNAL_URL: "${MQTT_INTERNAL_URL:-mqtt://emqx:1883}"
       # Raw-TCP address for clients whose MQTT stack can't do WebSocket (iOS
       # CocoaMQTT, Expo). Must be declared in BOTH this allowlist and
       # deploy/belayo/cloud-api.env.keys — a var missing from one target silently drops

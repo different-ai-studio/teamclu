@@ -119,6 +119,23 @@ test("MQTT_BROKER_URL is the only broker source — the public override is gone"
   );
 });
 
+test("MQTT_INTERNAL_URL is publisher-only and never reaches bootstrap", () => {
+  withEnv(
+    {
+      MQTT_BROKER_URL: "mqtt://127.0.0.1:1883",
+      MQTT_INTERNAL_URL: "mqtt://emqx:1883",
+      MQTT_PUBLIC_TCP_BROKER_URL: undefined,
+      MQTT_USE_TLS: undefined,
+      WEBSSO_LOGIN_URL: undefined,
+    },
+    () => {
+      assert.deepEqual(buildBootstrapConfig(), {
+        mqtt: { url: "mqtt://127.0.0.1:1883" },
+      });
+    },
+  );
+});
+
 test("an empty MQTT_BROKER_URL omits mqtt — it never resurrects the old name", () => {
   withEnv(
     {

@@ -95,6 +95,10 @@ MQTT_PUBLIC_TCP_BROKER_URL=mqtt://transport.service.ucar.cc:1883
 MQTT_USE_TLS=true
 ```
 
+`MQTT_INTERNAL_URL` is on the allowlist and stays empty here. Belayo's Cloud API
+is not on the EMQX compose network, so an internal hostname would fail every
+publish. Empty falls back to `MQTT_BROKER_URL`. Do not set it to `mqtt://emqx:1883`.
+
 The Dokploy `emqx` Compose service owns an HTTPS domain with these settings:
 
 - host: `mqtt.service.ucar.cc`
