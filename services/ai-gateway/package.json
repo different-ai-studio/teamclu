@@ -10,7 +10,7 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^1.19.14",
+    "@hono/node-server": "^2.1.9",
     "hono": "^4.13.19",
     "postgres": "^3.4.9",
     "yaml": "^2.9.1"
