@@ -2,6 +2,7 @@
 // Returns / consumes the raw GoTrue session shape.
 
 import { AuthError, type AuthUser, type OtpType, type Session } from "@/lib/auth/types";
+import { base64UrlToText } from "@/lib/base64";
 import {
   configureSessionStore,
   getSession,
@@ -89,9 +90,9 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
   try {
     const part = token.split(".")[1];
     if (!part) return null;
-    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
-    const pad = b64.length % 4 ? "=".repeat(4 - (b64.length % 4)) : "";
-    const parsed = JSON.parse(atob(b64 + pad));
+    // UTF-8, not atob(): the claims carry user_metadata.name, which is a
+    // Chinese name more often than not (see base64UrlToText).
+    const parsed = JSON.parse(base64UrlToText(part));
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;

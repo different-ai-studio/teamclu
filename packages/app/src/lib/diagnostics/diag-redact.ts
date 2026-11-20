@@ -1,3 +1,5 @@
+import { base64UrlToText } from '@/lib/base64'
+
 type DiagData = Record<string, unknown>
 
 const SENSITIVE_KEY = /(token|password|secret|authorization|jwt)/i
@@ -7,9 +9,7 @@ const JWT_INLINE_RE = /\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g
 const SK_RE = /\bsk-[A-Za-z0-9_-]{8,}\b/g
 
 function decodeBase64UrlJson(segment: string): unknown {
-  const normalized = segment.replace(/-/g, '+').replace(/_/g, '/')
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
-  return JSON.parse(atob(padded))
+  return JSON.parse(base64UrlToText(segment))
 }
 
 export function describeJwt(token: string | null | undefined): DiagData | null {
