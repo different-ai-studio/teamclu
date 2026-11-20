@@ -49,6 +49,10 @@ function buildMqttConfig() {
   // MQTT_BROKER_URL to an address that is reachable BY CLIENTS, not just by FC.
   // A container-internal value (`mqtt://emqx:1883`, `mqtt://127.0.0.1:1883`)
   // is now a misconfiguration, because it is handed straight out.
+  //
+  // MQTT_INTERNAL_URL is intentionally not read here. It is the publisher-only
+  // dial address in push-deps.ts. Putting it in this payload would hand clients
+  // an address only the FC container can resolve.
   const url = envValue("MQTT_BROKER_URL");
   if (!url) return null;
   const mqtt: any = { url };
