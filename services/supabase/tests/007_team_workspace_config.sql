@@ -23,6 +23,33 @@ end;
 $$;
 
 -- Fixture: owner (alice), same-team member (bob), stranger (cara)
+-- create_team leaves the creator at the `member` floor: FC grants the owner
+-- role in a separate service-role step (assignSystemOrgRole). Since
+-- 20261119130000 only an owner/admin may write team_workspace_config, so the
+-- fixture grants that role the same way 025_agent_delete_authz.sql does.
+create or replace function pg_temp.grant_org_role(p_team uuid, p_user uuid, p_code text)
+returns void language plpgsql as $$
+declare
+  v_org  uuid;
+  v_role uuid;
+begin
+  select oid into v_org from amux.teams where id = p_team;
+  if v_org is null then
+    insert into public.orgs (name) values ('fixture ' || left(p_team::text, 8))
+    returning id into v_org;
+    update amux.teams set oid = v_org where id = p_team;
+  end if;
+  select id into v_role from public.roles
+   where org_id = v_org and code = p_code and is_system limit 1;
+  if v_role is null then
+    raise exception 'fixture: no system role % for org %', p_code, v_org;
+  end if;
+  insert into amux.org_roles_users (user_id, role_id, org_id, status, store_id, is_primary)
+  values (p_user, v_role, v_org, 'active', null, false)
+  on conflict do nothing;
+end;
+$$;
+
 insert into auth.users (id, email, aud, role, instance_id) values
   ('a1111111-1111-1111-1111-111111111111', 'alice-wc@amux.test', 'authenticated', 'authenticated', '00000000-0000-0000-0000-000000000000'),
   ('b2222222-2222-2222-2222-222222222222', 'bob-wc@amux.test',   'authenticated', 'authenticated', '00000000-0000-0000-0000-000000000000'),
@@ -31,6 +58,10 @@ on conflict do nothing;
 
 select pg_temp.as_user('a1111111-1111-1111-1111-111111111111');
 select * from amux.create_team('WC Team', p_oid => null);
+reset role;
+select pg_temp.grant_org_role((select id from amux.teams where slug = 'wc-team'),
+                              'a1111111-1111-1111-1111-111111111111', 'owner');
+select pg_temp.as_user('a1111111-1111-1111-1111-111111111111');
 
 create temp table ctx as
   select (select id from amux.teams where slug = 'wc-team') as team_id;
