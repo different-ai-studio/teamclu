@@ -913,6 +913,7 @@ fn run_install_locked(force: bool) -> anyhow::Result<()> {
     if bundle::try_install(force)? {
         verify_installed(&want, &want_sdk)?;
         cleanup_legacy_layout();
+        prewarm_default_mcp_packages();
         progress(
             "ok",
             &format!("pi {want} installed from the prebuilt bundle"),
@@ -934,11 +935,89 @@ fn run_install_locked(force: bool) -> anyhow::Result<()> {
     }
     verify_installed(&want, &want_sdk)?;
     cleanup_legacy_layout();
+    prewarm_default_mcp_packages();
     progress(
         "ok",
         &format!("pi {want} installed ({})", package_root().display()),
     );
     Ok(())
+}
+
+/// Upper bound on warming one package. A cold install measured 4–16s on a
+/// Windows runner; this only stops a hung npm from holding the install open.
+const MCP_PREWARM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Put the default npx MCP servers into npx's cache while the user is already
+/// watching an install, instead of during their first session.
+///
+/// Without this the first session after a fresh install downloads them inside
+/// pi's MCP handshake: 4–16s each on a fresh Windows runner, which pushed
+/// StartRuntime past amuxd's 20s RPC deadline (beta.123). `npm exec --package
+/// <spec> -- node -e 0` installs into the same `_npx/<hash>` directory the
+/// runtime's `npx -y <spec>` uses (npm keys it on the spec list) and then runs
+/// a no-op instead of the server. Same Node, same npm, same environment as the
+/// runtime spawn, so the same npm cache and registry.
+///
+/// Best effort: a failure here costs the warm cache, never the install. Both
+/// packages run in parallel.
+fn prewarm_default_mcp_packages() {
+    let specs = crate::config::device_mcp::DEFAULT_NPX_MCP_PACKAGES;
+    progress(
+        "prewarm",
+        &format!("pre-installing MCP servers: {}", specs.join(", ")),
+    );
+    let started = std::time::Instant::now();
+    let mut children = Vec::new();
+    for spec in specs {
+        let mut command = npm_command();
+        command
+            .args([
+                "exec",
+                "--yes",
+                &format!("--package={spec}"),
+                "--",
+                "node",
+                "-e",
+                "0",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        match command.spawn() {
+            Ok(child) => children.push((*spec, child)),
+            Err(e) => progress(
+                "prewarm",
+                &format!("{spec}: could not start npm ({e}); skipped"),
+            ),
+        }
+    }
+    for (spec, mut child) in children {
+        let outcome = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    break if status.success() {
+                        "ready".to_string()
+                    } else {
+                        format!("npm exited with {status}")
+                    }
+                }
+                Ok(None) if started.elapsed() > MCP_PREWARM_TIMEOUT => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break format!("gave up after {}s", MCP_PREWARM_TIMEOUT.as_secs());
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
+                Err(e) => break format!("wait failed ({e})"),
+            }
+        };
+        progress(
+            "prewarm",
+            &format!(
+                "{spec}: {outcome} ({:.1}s)",
+                started.elapsed().as_secs_f64()
+            ),
+        );
+    }
 }
 
 #[cfg(test)]
