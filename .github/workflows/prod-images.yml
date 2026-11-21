@@ -2,14 +2,35 @@ name: Publish production images
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [release/hangzhou-cloud-api]
 
 permissions:
   contents: read
 
 jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/fc
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/fc/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: node --import tsx --test test/config-route.test.ts test/push-deps-mqtt-url.test.ts
+
   publish:
     name: Publish ${{ matrix.image }}
-    if: github.repository == 'different-ai-studio/teamclu' && github.ref == 'refs/heads/main'
+    if: github.repository == 'different-ai-studio/teamclu' && github.ref == 'refs/heads/release/hangzhou-cloud-api' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -22,12 +43,6 @@ jobs:
           - image: teamclu-prod-cloud-api
             context: services/fc
             dockerfile: services/fc/Dockerfile
-          - image: teamclu-prod-ai-gateway
-            context: services/ai-gateway
-            dockerfile: services/ai-gateway/Dockerfile
-          - image: teamclu-prod-amuxd
-            context: .
-            dockerfile: deploy/self-host/amuxd/Dockerfile
     env:
       IMAGE: ghcr.io/different-ai-studio/${{ matrix.image }}
     steps:
