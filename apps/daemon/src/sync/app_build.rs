@@ -801,6 +801,11 @@ pub struct AppStartSpec {
     pub layers: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_path: Option<String>,
+    /// 保持在线: keep one instance running so nobody waits for a cold start.
+    /// The control plane applies it as the function's minimum instance count
+    /// on every deploy; omitted means off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_on: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1941,6 +1946,36 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn always_on_is_read_from_start_and_forwarded_only_when_set() {
+        let tmp = node_checkout();
+        let base = serde_json::json!({
+            "build": {"kind": "node", "output": ".output"},
+            "start": {"fcRuntime": "custom.debian12", "command": ["run"], "args": [], "layers": [], "port": 9000}
+        });
+        std::fs::write(tmp.path().join(MANIFEST_FILE), base.to_string()).unwrap();
+        let off = read_app_declaration(tmp.path()).unwrap();
+        assert_eq!(off.start.always_on, None);
+        assert!(serde_json::to_value(&off).unwrap()["start"]
+            .get("alwaysOn")
+            .is_none());
+
+        let mut on = base.clone();
+        on["start"]["alwaysOn"] = serde_json::json!(true);
+        std::fs::write(tmp.path().join(MANIFEST_FILE), on.to_string()).unwrap();
+        let on = read_app_declaration(tmp.path()).unwrap();
+        assert_eq!(on.start.always_on, Some(true));
+        assert_eq!(
+            serde_json::to_value(&on).unwrap()["start"]["alwaysOn"],
+            true
+        );
+
+        let mut bad = base;
+        bad["start"]["alwaysOn"] = serde_json::json!("yes");
+        std::fs::write(tmp.path().join(MANIFEST_FILE), bad.to_string()).unwrap();
+        assert!(read_app_declaration(tmp.path()).is_err());
     }
 
     fn write_code_declaration(workdir: &Path, kind: &str, output: &str) {

@@ -44,6 +44,13 @@ export interface AppStartSpec {
   /** [] attaches no layers; non-empty lists exactly the requested layer refs. */
   layers?: string[];
   healthCheckPath?: string;
+  /**
+   * Keep one instance running so nobody waits for a cold start ("保持在线").
+   * Applied at finalize as the function's minimum instance count (1 or 0), on
+   * every deploy, so the declaration — not a hand edit in the console — is what
+   * the provider ends up with. Omitted means off.
+   */
+  alwaysOn?: boolean;
 }
 
 export interface AppDeployDeclaration {
@@ -216,6 +223,10 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
   if (healthCheckPath && !healthCheckPath.startsWith("/")) {
     throw new ApiError(400, "validation_failed", "start.healthCheckPath must start with /");
   }
+  if (s.alwaysOn !== undefined && s.alwaysOn !== null && typeof s.alwaysOn !== "boolean") {
+    throw new ApiError(400, "validation_failed", "start.alwaysOn must be true or false");
+  }
+  const alwaysOn = s.alwaysOn === true;
 
   let layers: string[] | undefined;
   if (s.layers !== undefined) {
@@ -245,6 +256,7 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
       port,
       ...(layers !== undefined ? { layers } : {}),
       ...(healthCheckPath ? { healthCheckPath } : {}),
+      ...(alwaysOn ? { alwaysOn } : {}),
     };
   }
 
@@ -273,6 +285,7 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
     port,
     layers,
     ...(healthCheckPath ? { healthCheckPath } : {}),
+    ...(alwaysOn ? { alwaysOn } : {}),
   };
 }
 

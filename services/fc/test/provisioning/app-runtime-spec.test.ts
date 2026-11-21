@@ -348,3 +348,19 @@ test("parse: accepts the daemon's serialized explicit declaration", () => {
   assert.equal(declaration.start.port, 9000);
   assert.deepEqual(declaration.start.layers, []);
 });
+
+test("parse: start.alwaysOn is kept only when true, and must be a boolean", () => {
+  const code = { fcRuntime: "custom.debian10", command: ["/var/fc/lang/nodejs20/bin/node"], args: ["s.mjs"], port: 9000, layers: [] };
+  assert.equal(parseAppDeployDeclaration({ build: { kind: "node" }, start: { ...code, alwaysOn: true } }).start.alwaysOn, true);
+  assert.equal(parseAppDeployDeclaration({ build: { kind: "container" }, start: { port: 5000, alwaysOn: true } }).start.alwaysOn, true);
+  for (const off of [false, undefined, null]) {
+    const d = parseAppDeployDeclaration({ build: { kind: "node" }, start: { ...code, alwaysOn: off } });
+    assert.equal("alwaysOn" in d.start, false, `alwaysOn ${off} is the default and is not stored`);
+  }
+  for (const bad of ["true", 1, "yes"]) {
+    assert.throws(
+      () => parseAppDeployDeclaration({ build: { kind: "node" }, start: { ...code, alwaysOn: bad } }),
+      /start\.alwaysOn must be true or false/,
+    );
+  }
+});

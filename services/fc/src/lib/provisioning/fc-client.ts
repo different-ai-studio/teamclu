@@ -500,6 +500,26 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         }),
       }));
     },
+    /**
+     * Converge the function's minimum instance count. Reads first so an
+     * unchanged app makes no write; the scaling config belongs to the LATEST
+     * qualifier, which is what the HTTP trigger serves.
+     */
+    async setMinInstances(functionName: string, minInstances: number): Promise<{ changed: boolean }> {
+      let current: number | undefined;
+      try {
+        const body = (await client.getScalingConfig(functionName, new $fc.GetScalingConfigRequest({ qualifier: "LATEST" }))).body;
+        current = typeof body?.minInstances === "number" ? body.minInstances : undefined;
+      } catch (e) {
+        if (!isNotFound(e)) throw e;
+      }
+      if ((current ?? 0) === minInstances) return { changed: false };
+      await client.putScalingConfig(functionName, new $fc.PutScalingConfigRequest({
+        qualifier: "LATEST",
+        body: new $fc.PutScalingConfigInput({ minInstances }),
+      }));
+      return { changed: true };
+    },
     async deleteFunction(functionName: string): Promise<void> {
       try {
         await client.deleteFunction(functionName);

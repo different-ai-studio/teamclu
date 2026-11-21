@@ -1091,6 +1091,8 @@ export interface AppStartSpec {
   port?: number;
   layers?: string[];
   healthCheckPath?: string;
+  /** 保持在线: one instance kept running (FC minimum instances 1). Omitted = off. */
+  alwaysOn?: boolean;
 }
 
 /** The daemon's check of a build artifact, as the last successful deploy left it. */

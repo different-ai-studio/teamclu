@@ -321,6 +321,19 @@ describe('AppSettingsPanel', () => {
       expect(start).toContain('/healthz')
     })
 
+    it('says whether the app is kept running, and where that is set', () => {
+      const { rerender } = render(<AppSettingsPanel app={baseApp} />)
+      let start = screen.getByTestId('app-settings-start').textContent
+      expect(start).toContain('保持在线')
+      expect(start).toContain('第一个打开的人要多等 10 秒左右')
+      expect(start).toContain('"alwaysOn": true')
+
+      rerender(<AppSettingsPanel app={{ ...baseApp, startSpec: { ...baseApp.startSpec!, alwaysOn: true } }} />)
+      start = screen.getByTestId('app-settings-start').textContent
+      expect(start).toContain('始终保留一份在线')
+      expect(start).not.toContain('多等 10 秒')
+    })
+
     it('opens the live address', async () => {
       render(<AppSettingsPanel app={baseApp} />)
       await userEvent.setup().click(screen.getByTestId('app-settings-address-open'))
