@@ -19,6 +19,13 @@ pub enum OpenWithTarget {
     Codex,
 }
 
+/// Launch Services resolves bundle identity even when the installed app is renamed.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+enum MacApp {
+    Name(&'static str),
+    BundleId(&'static str),
+}
+
 impl OpenWithTarget {
     pub fn parse(id: &str) -> Option<Self> {
         match id {
@@ -44,17 +51,18 @@ impl OpenWithTarget {
         }
     }
 
-    /// The `.app` bundle name `open -a` looks up. None for Claude Code, which
+    /// The Launch Services identity to open. None for Claude Code, which
     /// is a CLI and runs inside a terminal instead. Codex has both: the desktop
     /// app first, the `codex` CLI in Terminal when the app is not installed.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn mac_app_name(self) -> Option<&'static str> {
+    fn mac_app(self) -> Option<MacApp> {
         match self {
-            Self::VsCode => Some("Visual Studio Code"),
-            Self::Cursor => Some("Cursor"),
-            Self::WorkBuddy => Some("WorkBuddy"),
-            Self::Qoder => Some("Qoder"),
-            Self::Codex => Some("Codex"),
+            Self::VsCode => Some(MacApp::Name("Visual Studio Code")),
+            Self::Cursor => Some(MacApp::Name("Cursor")),
+            Self::WorkBuddy => Some(MacApp::Name("WorkBuddy")),
+            Self::Qoder => Some(MacApp::Name("Qoder")),
+            // Codex can ship as ChatGPT.app; names are not stable identifiers.
+            Self::Codex => Some(MacApp::BundleId("com.openai.codex")),
             Self::Claude => None,
         }
     }
@@ -116,7 +124,7 @@ fn open_blocking(path: &str, target: OpenWithTarget) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        match target.mac_app_name() {
+        match target.mac_app() {
             Some(app) => match mac::open_app(app, dir) {
                 // Codex without the desktop app: the CLI still works.
                 Err(MacOpenError::NotInstalled) if target.runs_in_terminal() => {
@@ -176,7 +184,7 @@ impl MacOpenError {
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use super::{MacOpenError, OpenWithTarget};
+    use super::{MacApp, MacOpenError, OpenWithTarget};
     use std::path::Path;
     use std::process::{Command, Output};
 
@@ -192,8 +200,18 @@ mod mac {
         Err(MacOpenError::Failed(stderr.trim().to_string()))
     }
 
-    pub(super) fn open_app(app: &str, dir: &Path) -> Result<(), MacOpenError> {
-        check(Command::new("open").arg("-a").arg(app).arg(dir).output())
+    pub(super) fn app_command(app: MacApp, dir: &Path) -> Command {
+        let mut command = Command::new("open");
+        match app {
+            MacApp::Name(name) => command.arg("-a").arg(name),
+            MacApp::BundleId(id) => command.arg("-b").arg(id),
+        };
+        command.arg(dir);
+        command
+    }
+
+    pub(super) fn open_app(app: MacApp, dir: &Path) -> Result<(), MacOpenError> {
+        check(app_command(app, dir).output())
     }
 
     /// Terminal.app running the tool's CLI in `dir`. `quoted form of` does the
@@ -364,6 +382,25 @@ mod tests {
         for id in ["", "code", "bash", "/bin/sh", "VSCODE"] {
             assert!(OpenWithTarget::parse(id).is_none(), "{id}");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn codex_uses_bundle_identity_and_preserves_workspace_argument() {
+        let dir = Path::new("/tmp/财务 app's $(echo test)");
+        let command = mac::app_command(OpenWithTarget::Codex.mac_app().unwrap(), dir);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(command.get_program(), "open");
+        assert_eq!(args, ["-b", "com.openai.codex", dir.to_str().unwrap()]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn other_editors_keep_opening_by_name() {
+        let command =
+            mac::app_command(OpenWithTarget::VsCode.mac_app().unwrap(), Path::new("/tmp"));
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["-a", "Visual Studio Code", "/tmp"]);
     }
 
     #[test]
