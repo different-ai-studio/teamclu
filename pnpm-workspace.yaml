@@ -24,6 +24,10 @@ overrides:
   '@codemirror/state': '6.7.0'
   # react-pdf@11 vendors pdfjs-dist; PDFViewer loads the worker from our direct dep.
   pdfjs-dist: '6.3.289'
+  # react and react-dom must be the exact same version (React throws on a
+  # mismatch). apps/expo pins react exactly, and Expo's optional react-dom peer
+  # otherwise floats to the newest 19.x. Move this together with react.
+  react-dom: '19.2.9'
 
 publicHoistPattern:
   # Was .npmrc's public-hoist-pattern[]. Per that file's own note: packages/app
