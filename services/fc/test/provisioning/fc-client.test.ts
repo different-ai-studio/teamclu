@@ -276,6 +276,19 @@ test("fcEndpoint resolves explicit host, then account id, then ROLE_ARN", () => 
   }
 });
 
+test("fcEndpoint accepts the Hangzhou private service endpoint only for Hangzhou", () => {
+  const value = process.env.APPS_FC_ENDPOINT;
+  const endpoint = "1234567890123456.cn-hangzhou-internal.fc.aliyuncs.com";
+  process.env.APPS_FC_ENDPOINT = endpoint;
+  try {
+    assert.equal(fcEndpoint("cn-hangzhou"), endpoint);
+    assert.throws(() => fcEndpoint("cn-shanghai"), /does not match/);
+  } finally {
+    if (value === undefined) delete process.env.APPS_FC_ENDPOINT;
+    else process.env.APPS_FC_ENDPOINT = value;
+  }
+});
+
 test("fcEndpoint composes the host from the APPS region, not the default one", () => {
   // On self-host REGION labels the MinIO client; the function lives wherever
   // its code bucket is. Composing the host from REGION would aim every FC call
