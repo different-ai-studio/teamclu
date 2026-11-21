@@ -1148,6 +1148,13 @@ function mcpTiming(label: string, what: string): void {
   console.error(`[teamclu] MCP ${label}: ${what} (host pid=${process.pid})`);
 }
 
+/**
+ * How long a session start waits for a server it has never listed before.
+ * Long enough for a local binary (teamclu-introspect: ~100ms), far short of an
+ * npx install (4–16s cold). See the no-cache branch of `ensureBridge`.
+ */
+const MCP_COLD_START_GRACE_MS = 3_000;
+
 /** Connect and list, or throw. */
 async function handshake(
   label: string,
@@ -1173,7 +1180,9 @@ async function handshake(
  *
  * Returns as soon as a tool list is known: from the live registry, from the
  * on-disk cache (connecting in the background), or — only on the very first run
- * for a given spec — from a full handshake.
+ * for a given spec — from a full handshake, if it finishes within
+ * `MCP_COLD_START_GRACE_MS`. A slower first handshake returns an empty,
+ * provisional entry and registers the tools when it lands.
  */
 async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promise<BridgeEntry> {
   const signature = bridgeSignature(spec);
@@ -1232,16 +1241,69 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
     return entry;
   }
 
-  const { bridge, tools } = await handshake(label, spec, sdk);
-  writeToolCache(label, signature, tools);
+  // No cache: the first run for this spec. Wait a little — a local server
+  // (teamclu-introspect) answers in ~100ms and should be in the first prompt —
+  // but never for an npx install. Those took 4–16s on a fresh Windows runner,
+  // all of it inside `new_session`, which pushed StartRuntime past amuxd's 20s
+  // RPC deadline (beta.123). Past the grace period the session starts without
+  // this server and its tools are registered on the live session once the
+  // handshake lands, the same way a `tools/list_changed` refresh is applied.
+  const pending = handshake(label, spec, sdk);
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  const grace = new Promise<null>((resolve) => {
+    graceTimer = setTimeout(() => resolve(null), MCP_COLD_START_GRACE_MS);
+  });
+  // A handshake that fails within the grace period still throws to the caller.
+  const settled = await Promise.race([pending, grace]).finally(() => clearTimeout(graceTimer));
+
+  if (settled) {
+    const { bridge, tools } = settled;
+    writeToolCache(label, signature, tools);
+    const entry: BridgeEntry = {
+      ready: Promise.resolve(bridge),
+      signature,
+      tools,
+      provisional: false,
+    };
+    BRIDGE_REGISTRY.set(label, entry);
+    watchToolList(entry, bridge);
+    return entry;
+  }
+
   const entry: BridgeEntry = {
-    ready: Promise.resolve(bridge),
+    ready: pending.then((r) => r.bridge),
     signature,
-    tools,
-    provisional: false,
+    tools: [],
+    provisional: true,
   };
+  // Tool calls await `entry.ready` and see its rejection; nothing else does,
+  // so keep a failed background handshake from surfacing as unhandled.
+  entry.ready.catch(() => {});
   BRIDGE_REGISTRY.set(label, entry);
-  watchToolList(entry, bridge);
+  mcpTiming(
+    label,
+    `handshake still running after ${MCP_COLD_START_GRACE_MS}ms; starting the session without its tools`,
+  );
+  void pending.then(
+    ({ bridge, tools }) => {
+      // Replaced or removed while connecting: `disposeEntry` closes it.
+      if (BRIDGE_REGISTRY.get(label) !== entry) return;
+      entry.tools = tools;
+      entry.provisional = false;
+      writeToolCache(label, signature, tools);
+      watchToolList(entry, bridge);
+      // Register on the instance that is live now, as the list_changed path
+      // does: the one that started this bridge may belong to an ended session.
+      const target = WATCH_STATE.target;
+      if (target) registerBridgeTools(target.pi, target.ownTools, label, entry);
+      mcpTiming(label, `connected after the session started; registered ${tools.length} tool(s)`);
+    },
+    (e) => {
+      // Drop the entry so the next session retries.
+      if (BRIDGE_REGISTRY.get(label) === entry) BRIDGE_REGISTRY.delete(label);
+      console.error(`[teamclu] MCP bridge failed in the background (${label}): ${e}`);
+    },
+  );
   return entry;
 }
 
