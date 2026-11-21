@@ -1,6 +1,6 @@
 import SlsClient, * as $sls from "@alicloud/sls20201230";
 import { Config } from "@alicloud/openapi-client";
-import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
+import { appsOpenApiCredentials, appsRegion, type AppsOssProfile } from "./apps-oss.js";
 import { accountIdFromRoleArn } from "./fc-client.js";
 
 type SlsClientInstance = InstanceType<typeof SlsClient.default>;
@@ -134,8 +134,7 @@ export function resolveAppsSls(env: Env = process.env): AppsSlsResolution {
 export function getSlsClient(profile?: AppsOssProfile): SlsClientInstance {
   return new SlsClient.default(
     new Config({
-      accessKeyId: profile?.accessKeyId ?? process.env.ACCESS_KEY_ID,
-      accessKeySecret: profile?.accessKeySecret ?? process.env.ACCESS_KEY_SECRET,
+      ...appsOpenApiCredentials(profile),
       // The SDK maps the region to `<region>.log.aliyuncs.com` itself and adds
       // the project as a host prefix per call, so no endpoint is set here.
       regionId: profile?.region ?? appsRegion(),
