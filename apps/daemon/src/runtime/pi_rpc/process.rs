@@ -208,6 +208,16 @@ impl PiProcessPool {
     fn retire_process(&self, proc: &PiProcess) {
         self.clear_generation_for_process(proc);
         if proc.is_alive() {
+            // The pid ties this retirement to the `host pid=` the extension
+            // stamps on its MCP startup lines. On Windows `kill` ends only the
+            // Node process, so that host's MCP servers may outlive it; the
+            // Windows install smoke dumps the process table to show whether
+            // they do.
+            info!(
+                pid = ?proc.child.lock().id(),
+                generation = %proc.generation_id,
+                "retiring pi host"
+            );
             proc.kill();
         }
     }
