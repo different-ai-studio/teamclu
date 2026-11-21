@@ -54,6 +54,29 @@ test("without a read-only login the function carries the push credential", () =>
   assert.equal(split.config?.push.username, "teamclu-push");
 });
 
+test("private FC pull requires the complete registry network and separate pull login", () => {
+  const base = { APPS_REGISTRY_HOST: "push.example.com", ...creds };
+  const network = {
+    APPS_REGISTRY_PULL_VPC_ID: "vpc-pull",
+    APPS_REGISTRY_PULL_VSWITCH_ID: "vsw-pull",
+    APPS_REGISTRY_PULL_SECURITY_GROUP_ID: "sg-pull",
+  };
+  assert.match(resolveAppsRegistry({ ...base, APPS_REGISTRY_PULL_VPC_ID: network.APPS_REGISTRY_PULL_VPC_ID }).error!, /VSWITCH_ID/);
+  assert.match(resolveAppsRegistry({ ...base, ...network }).error!, /PULL_USERNAME/);
+  const { config } = resolveAppsRegistry({
+    ...base,
+    ...network,
+    APPS_REGISTRY_PULL_HOST: "registry.internal.example.com",
+    APPS_REGISTRY_PULL_USERNAME: "pull-only",
+    APPS_REGISTRY_PULL_PASSWORD: "pull-secret",
+  });
+  assert.deepEqual(config?.pullNetwork, {
+    vpcId: "vpc-pull", vSwitchId: "vsw-pull", securityGroupId: "sg-pull",
+  });
+  assert.equal(config?.pullHost, "registry.internal.example.com");
+  assert.equal(config?.pull.username, "pull-only");
+});
+
 test("an app's repository is named for its function", () => {
   assert.equal(appImageRepository("3f1c9a2e-abc"), "tc-app-3f1c9a2e-abc");
   const { config } = resolveAppsRegistry({

@@ -185,7 +185,12 @@ function makeDeployDeps() {
     // rather than per-deploy: it is a property of where images live, and the
     // function keeps it after the deploy that set it is long over.
     registryAuth: registry.config
-      ? { ...registry.config.pull, host: registry.config.pullHost }
+      ? {
+          ...registry.config.pull,
+          host: registry.config.pullHost,
+          network: registry.config.pullNetwork,
+          rootCaCertBase64: registry.config.pullCaCertBase64,
+        }
       : undefined,
     // Region of the function, which is also where its Node layer must come
     // from — a layer ARN is region-scoped.

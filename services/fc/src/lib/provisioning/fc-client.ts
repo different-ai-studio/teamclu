@@ -3,7 +3,7 @@ import { originJwks, ORIGIN_VERSION_HEADER, ORIGIN_VERSION_CLAIM_MAPPING, type O
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
-import { imageForPull } from "./apps-registry.js";
+import { imageForPull, type RegistryPullNetwork } from "./apps-registry.js";
 import { ApiError } from "../http-utils.js";
 import {
   isContainerKind,
@@ -126,7 +126,13 @@ export interface FcOpsConfig {
    * host it reaches it on. Absent on a deployment with no registry — which is
    * every deployment that has no container apps.
    */
-  registryAuth?: { username: string; password: string; host?: string };
+  registryAuth?: {
+    username: string;
+    password: string;
+    host?: string;
+    network?: RegistryPullNetwork;
+    rootCaCertBase64?: string;
+  };
   /** When set, every app function create/update joins this VPC. */
   vpc?: AppsFcVpcConfig;
   /**
@@ -226,6 +232,10 @@ function containerConfig(
               userName: auth.username,
               password: auth.password,
             }),
+            ...(auth.network ? { networkConfig: new $fc.RegistryNetworkConfig(auth.network) } : {}),
+            ...(auth.rootCaCertBase64
+              ? { certConfig: new $fc.RegistryCertConfig({ insecure: false, rootCaCertBase64: auth.rootCaCertBase64 }) }
+              : {}),
           }),
         }
       : {}),
