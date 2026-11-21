@@ -32,6 +32,7 @@ import {
 } from "../components/agent-config-helpers";
 import { MemberPickerSheet } from "./MemberPickerSheet";
 import { SheetModal } from "../../../ui/SheetModal";
+import type { TranslateWithOptions } from "../../../lib/i18n";
 import { showActionSheet, type SheetAction } from "../../../ui/action-sheet";
 
 export type AgentWorkspaceChoice = {
@@ -79,7 +80,7 @@ export type NewSessionScreenProps = {
 /** The blocker as a sentence, or null. */
 function appBlockerText(
   blocker: AppSessionBlocker | null,
-  t: (key: string, options?: Record<string, unknown>) => string,
+  t: TranslateWithOptions,
 ): string | null {
   if (!blocker) return null;
   switch (blocker.kind) {
