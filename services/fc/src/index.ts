@@ -239,6 +239,7 @@ function makeDeployDeps() {
             ensureFunction: (name, args) => secureFcOps().ensureFunction(name, args),
             ensureHttpTrigger: name => secureFcOps().ensureHttpTrigger(name),
             ensureCustomDomain: (name, domain, target) => secureFcOps().ensureCustomDomain(name, domain, target),
+            setMinInstances: (name, min) => secureFcOps().setMinInstances(name, min),
           },
           ensureLogStore: () => appLogsProvisioner().ensure(),
           // Bound to this deployment's registry, so finalize can tell an image

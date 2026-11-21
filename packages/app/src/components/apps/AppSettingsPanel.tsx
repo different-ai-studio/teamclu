@@ -266,6 +266,10 @@ interface KeyValueItem {
   label: string
   value: string | null
   copy?: boolean
+  /** Prose rather than a literal value: set in the UI font, not monospace. */
+  prose?: boolean
+  /** One quiet line under the value: where the setting comes from. */
+  hint?: string
 }
 
 /** Several small facts under one row label — ids, a start command, a region. */
@@ -283,11 +287,20 @@ function KeyValues({ items, testId }: { items: KeyValueItem[]; testId?: string }
               <span className="text-[12px] leading-[24px] text-faint">—</span>
             ) : item.copy ? (
               <CopyableValue value={item.value} />
+            ) : item.prose ? (
+              <span className="block py-[3px] text-[12px] leading-[18px] text-foreground">
+                {item.value}
+              </span>
             ) : (
               <span className="block break-all py-[3px] font-mono text-[12px] leading-[18px] text-foreground">
                 {item.value}
               </span>
             )}
+            {item.hint ? (
+              <span className="block pb-[3px] text-[12px] leading-[18px] text-muted-foreground">
+                {item.hint}
+              </span>
+            ) : null}
           </dd>
         </React.Fragment>
       ))}
@@ -558,6 +571,23 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
           key: 'layers',
           label: t('apps.settingsPage.startLayers', '层'),
           value: app.startSpec.layers?.length ? app.startSpec.layers.join(', ') : null,
+        },
+        // Always shown, on or off: "off" is the answer to "why did the first
+        // visitor wait ten seconds", and it should be readable from here.
+        {
+          key: 'alwaysOn',
+          label: t('apps.settingsPage.alwaysOn', '保持在线'),
+          prose: true,
+          value: app.startSpec.alwaysOn
+            ? t('apps.settingsPage.alwaysOnOn', '开启：始终保留一份在线，打开就能用（有固定的常驻费用）')
+            : t(
+                'apps.settingsPage.alwaysOnOff',
+                '关闭：一段时间没人用会休眠，之后第一个打开的人要多等 10 秒左右',
+              ),
+          hint: t(
+            'apps.settingsPage.alwaysOnHint',
+            '在 teamclu.app.json 的 start 里写 "alwaysOn": true，重新部署后生效。',
+          ),
         },
         // A field the declaration left out is not worth a row of dashes.
       ].filter((item) => item.value !== null)

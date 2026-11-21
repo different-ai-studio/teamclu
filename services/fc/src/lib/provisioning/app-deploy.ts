@@ -376,6 +376,11 @@ export interface FinalizeDeps {
     ensureHttpTrigger: (name: string) => Promise<{ internetUrlDisabled: true }>;
     /** Absent on a deployment that has no route domain configured. */
     ensureCustomDomain?: (functionName: string, domainName: string, target: OriginTarget) => Promise<string>;
+    /**
+     * Apply `start.alwaysOn` as the function's minimum instance count. Absent
+     * on a target without scaling control (self-host never scales to zero).
+     */
+    setMinInstances?: (functionName: string, minInstances: number) => Promise<{ changed: boolean }>;
   };
   genPassword?: () => string;
   extraEnv?: (input: FinalizeInput) => Record<string, string>;
@@ -560,6 +565,7 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     if (endpoint !== `http://${routeHost}`) {
       throw new ApiError(409, "origin_security_drift", "origin security drift: originEndpoint");
     }
+    await applyAlwaysOn(deps, input);
     return { fcEndpoint: endpoint };
   } catch (error) {
     if (error instanceof ApiError) throw error;
@@ -607,4 +613,24 @@ export function buildAppStorageEnv(input: {
     TEAMCLU_STORAGE_REGION: input.region,
     TEAMCLU_STORAGE_ENDPOINT: input.endpoint,
   };
+}
+
+/**
+ * "保持在线": converge the minimum instance count to what the declaration says.
+ *
+ * Every deploy writes it (1 when `start.alwaysOn`, else 0), so the repository is
+ * the source of truth: a value set by hand in the console is reset on the next
+ * deploy rather than lingering as an invisible standing cost. A failure here is
+ * logged and does not fail the deploy — the app is live and correct, it only
+ * keeps scaling to zero, and the next deploy tries again.
+ */
+async function applyAlwaysOn(deps: FinalizeDeps, input: FinalizeInput): Promise<void> {
+  if (!deps.fcOps.setMinInstances) return;
+  const minInstances = input.declaration?.start.alwaysOn === true ? 1 : 0;
+  try {
+    const { changed } = await deps.fcOps.setMinInstances(input.fcFunctionName, minInstances);
+    if (changed) console.info(`[apps] ${input.fcFunctionName}: minimum instances set to ${minInstances}`);
+  } catch (e) {
+    console.warn(`[apps] ${input.fcFunctionName}: could not set minimum instances to ${minInstances}: ${e}`);
+  }
 }

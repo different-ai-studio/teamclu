@@ -732,3 +732,52 @@ test("legacy external endpoint teardown never deletes a guessed managed domain",
   assert.deepEqual(calls,["tc-app-3f1c9a2e-0000-4000-8000-000000000abc"]);
  }finally{if(prev===undefined)delete process.env.APPS_FC_ROUTE_DOMAIN;else process.env.APPS_FC_ROUTE_DOMAIN=prev;}
 });
+
+test("finalize converges the minimum instance count to start.alwaysOn on every deploy", async () => {
+  const declaration = (alwaysOn?: boolean) => ({
+    build: { kind: "node" as const, output: ".output" },
+    start: { fcRuntime: "custom.debian10", command: ["node"], args: ["s.mjs"], port: 9000, layers: [], ...(alwaysOn === undefined ? {} : { alwaysOn }) },
+  });
+  for (const [alwaysOn, expected] of [[true, 1], [false, 0], [undefined, 0]] as const) {
+    const calls: Array<[string, number]> = [];
+    await finalizeDeploy(
+      {
+        fcOps: {
+          ensureFunction: async () => {},
+          ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+          ensureCustomDomain: async (_fn, domain) => `http://${domain}`,
+          setMinInstances: async (fn: string, n: number) => { calls.push([fn, n]); return { changed: true }; },
+        },
+      } as any,
+      {
+        appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "demo", appType: "static_web",
+        fcFunctionName: "tc-app-1", ossObjectName: "apps/app-1/code.zip", declaration: declaration(alwaysOn),
+      },
+    );
+    assert.deepEqual(calls, [["tc-app-1", expected]], `alwaysOn=${alwaysOn}`);
+  }
+});
+
+test("a failure to set the minimum instance count does not fail a deploy that is otherwise live", async () => {
+  const warn = console.warn; const warned: string[] = [];
+  console.warn = (m: string) => { warned.push(String(m)); };
+  try {
+    const out = await finalizeDeploy(
+      {
+        fcOps: {
+          ensureFunction: async () => {},
+          ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+          ensureCustomDomain: async (_fn, domain) => `http://${domain}`,
+          setMinInstances: async () => { throw new Error("AccessDenied"); },
+        },
+      } as any,
+      {
+        appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "demo", appType: "static_web",
+        fcFunctionName: "tc-app-1", ossObjectName: "apps/app-1/code.zip",
+        declaration: { build: { kind: "node", output: ".output" }, start: { fcRuntime: "custom.debian10", command: ["node"], args: ["s.mjs"], port: 9000, layers: [], alwaysOn: true } },
+      },
+    );
+    assert.equal(out.fcEndpoint, "http://demo-76af539e.origins.test");
+    assert.ok(warned.some((m) => /minimum instances to 1.*AccessDenied/.test(m)), warned.join("\n"));
+  } finally { console.warn = warn; }
+});

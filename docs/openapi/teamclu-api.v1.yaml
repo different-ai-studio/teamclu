@@ -10955,6 +10955,16 @@ components:
         healthCheckPath:
           type: string
           pattern: "^/"
+        alwaysOn:
+          type: boolean
+          default: false
+          description: |
+            保持在线. When true, finalize sets the function's minimum instance
+            count to 1 so a visitor never waits for a cold start; otherwise to
+            0. Written on every deploy, so the declaration wins over a value
+            changed in the provider console. Undeploy deletes the function and
+            with it the standing instance. Ignored where the deploy target has
+            no scaling control. Stored back in `startSpec` only when true.
     AppAuthMode:
       type: string
       description: |
