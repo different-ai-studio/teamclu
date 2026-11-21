@@ -559,6 +559,30 @@ test("a container app runs its own image, with no layer and no code object", asy
   assert.equal(create.customRuntimeConfig, undefined);
 });
 
+test("private registry pull options reach FC separately from runtime networking", async () => {
+  const { client, calls } = fakeClient();
+  const network = { vpcId: "vpc-pull", vSwitchId: "vsw-pull", securityGroupId: "sg-pull" };
+  const ops = makeFcOps(client as any, {
+    bucket: "b", role: "acs:ram::1:role/fc", region: "cn-hangzhou",
+    registryAuth: {
+      username: "pull-only", password: "test-pull-password", host: "registry.internal.example.com",
+      network, rootCaCertBase64: "dGVzdC1jYQ==",
+    },
+  });
+  await ops.ensureFunction("tc-app-1", {
+    declaration: CONTAINER, ossObjectName: "apps/1/code.zip", env: {},
+    image: "registry.example.com/apps/tc-app-1:sha",
+  });
+  const body = calls.find((c) => c[0] === "updateFunction")[2].body;
+  assert.equal(body.customContainerConfig.image, "registry.internal.example.com/apps/tc-app-1:sha");
+  assert.equal(body.vpcConfig, undefined);
+  assert.deepEqual(body.customContainerConfig.registryConfig.toMap(), {
+    authConfig: { userName: "pull-only", password: "test-pull-password" },
+    networkConfig: network,
+    certConfig: { insecure: false, rootCaCertBase64: "dGVzdC1jYQ==" },
+  });
+});
+
 test("a redeploy re-sends the image, not just the environment", async () => {
   // Same reason the layer and the start command are re-sent: a function that
   // only got its image at create would keep running the first one forever, and

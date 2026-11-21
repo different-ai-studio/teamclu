@@ -31,6 +31,16 @@ export interface AppsRegistryConfig {
    * worth avoiding — see `resolveAppsRegistry`.
    */
   pull: RegistryCredentials;
+  /** Image pulls use their own VPC attachment, separate from function runtime traffic. */
+  pullNetwork?: RegistryPullNetwork;
+  /** Base64-encoded trusted CA certificate for an internal HTTPS endpoint. */
+  pullCaCertBase64?: string;
+}
+
+export interface RegistryPullNetwork {
+  vpcId: string;
+  vSwitchId: string;
+  securityGroupId: string;
 }
 
 export interface RegistryCredentials {
@@ -72,6 +82,17 @@ export function resolveAppsRegistry(env: Env = process.env): AppsRegistryResolut
   // replace what every instance of that app executes.
   const pullUsername = trimmed(env.APPS_REGISTRY_PULL_USERNAME);
   const pullPassword = trimmed(env.APPS_REGISTRY_PULL_PASSWORD);
+  const vpcId = trimmed(env.APPS_REGISTRY_PULL_VPC_ID);
+  const vSwitchId = trimmed(env.APPS_REGISTRY_PULL_VSWITCH_ID);
+  const securityGroupId = trimmed(env.APPS_REGISTRY_PULL_SECURITY_GROUP_ID);
+  const privatePull = Boolean(vpcId || vSwitchId || securityGroupId);
+  if (privatePull && (!vpcId || !vSwitchId || !securityGroupId)) {
+    return { error: "APPS_REGISTRY_PULL_VPC_ID, APPS_REGISTRY_PULL_VSWITCH_ID and APPS_REGISTRY_PULL_SECURITY_GROUP_ID must all be set for private registry pulls" };
+  }
+  if (privatePull && (!pullUsername || !pullPassword || pullUsername === username)) {
+    return { error: "Private registry pulls require APPS_REGISTRY_PULL_USERNAME and APPS_REGISTRY_PULL_PASSWORD for a separate read-only account" };
+  }
+  const pullCaCertBase64 = trimmed(env.APPS_REGISTRY_PULL_CA_CERT_BASE64);
   const pull =
     pullUsername && pullPassword ? { username: pullUsername, password: pullPassword } : push;
   return {
@@ -81,6 +102,8 @@ export function resolveAppsRegistry(env: Env = process.env): AppsRegistryResolut
       namespace: trimmed(env.APPS_REGISTRY_NAMESPACE) || "apps",
       push,
       pull,
+      ...(privatePull ? { pullNetwork: { vpcId, vSwitchId, securityGroupId } } : {}),
+      ...(pullCaCertBase64 ? { pullCaCertBase64 } : {}),
     },
   };
 }
