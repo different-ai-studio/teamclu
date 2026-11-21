@@ -45,8 +45,8 @@ interface UseChannelConfigOptions<TConfig> {
 interface UseChannelConfigResult<TConfig> {
   /** Local config state (editable copy) */
   localConfig: TConfig
-  /** Update fields on the local config */
-  updateLocalConfig: (updates: Partial<TConfig>) => void
+  /** Update fields on the local config. A function reads the latest copy. */
+  updateLocalConfig: (updates: Partial<TConfig> | ((prev: TConfig) => Partial<TConfig>)) => void
   /** Whether the gateway is currently connecting */
   isConnecting: boolean
   /** Whether the gateway is running (connected or connecting) */
@@ -97,8 +97,11 @@ export function useChannelConfig<TConfig extends object>(
   const isConnecting = gatewayStatus.status === 'connecting'
   const isRunning = gatewayStatus.status === 'connected' || isConnecting
 
-  const updateLocalConfig = React.useCallback((updates: Partial<TConfig>) => {
-    setLocalConfig(prev => ({ ...prev, ...updates }))
+  const updateLocalConfig = React.useCallback((updates: Partial<TConfig> | ((prev: TConfig) => Partial<TConfig>)) => {
+    setLocalConfig(prev => {
+      const patch = typeof updates === 'function' ? updates(prev) : updates
+      return { ...prev, ...patch }
+    })
   }, [])
 
   const preparedConfig = React.useCallback(
