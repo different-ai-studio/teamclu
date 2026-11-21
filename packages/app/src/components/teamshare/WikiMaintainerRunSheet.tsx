@@ -5,6 +5,7 @@ import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ModalShell } from '@/components/teamshare/skill-detail/ModalShell'
 import { groupModelsByProvider } from '@/lib/agent/selectable-models'
+import type { TranslateWithFallback } from '@/lib/translate-fn'
 
 export interface WikiSourceDirectory {
   path: string
@@ -713,7 +714,7 @@ export function WikiMaintainerRunSheet({
   )
 }
 
-type Translate = (key: string, fallback: string, vars?: Record<string, unknown>) => string
+type Translate = TranslateWithFallback
 
 const PART_FAILED_RE =
   /^([\s\S]*?)Part (\d+) of (\d+) failed: ([\s\S]*) The (\d+) parts before it were kept, and the whole source compiles again next time\.$/

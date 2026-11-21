@@ -1,7 +1,8 @@
 import { toast } from 'sonner'
 import type { SkillMutationAction, SkillMutationRefreshError } from '@/stores/team-share-browser'
+import type { TranslateWithFallback } from '@/lib/translate-fn'
 
-type Translate = (key: string, fallback: string, opts?: Record<string, unknown>) => string
+type Translate = TranslateWithFallback
 
 const COPY: Record<SkillMutationAction, { key: string; fallback: string }> = {
   install: {

@@ -512,7 +512,9 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
             >
               {(() => {
                 const line = describeCodeVersion(app, summary.gitHead)
-                return t(line.key, line.fallback, line.vars)
+                return line.vars
+                  ? t(line.key, line.fallback, line.vars)
+                  : t(line.key, line.fallback)
               })()}
             </p>
           )}

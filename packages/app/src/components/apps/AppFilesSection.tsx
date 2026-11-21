@@ -26,6 +26,7 @@ import { cn } from '@/lib/utils'
 import { getBackend } from '@/lib/backend'
 import type { AppFile, AppRow, AppStorageUsage } from '@/lib/backend/types'
 import { formatBytes } from '@/lib/ui/format-bytes'
+import type { TranslateWithFallback } from '@/lib/translate-fn'
 
 interface AppFilesSectionProps {
   app: AppRow
@@ -73,7 +74,7 @@ const IMAGE_RE = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i
  * WITHOUT claiming to know which it was: a rejection here really can be the
  * network.
  */
-function describeUploadFailure(e: unknown, t: (k: string, d: string, o?: Record<string, string>) => string): string {
+function describeUploadFailure(e: unknown, t: TranslateWithFallback): string {
   if (e instanceof TypeError) {
     return t(
       'apps.files.uploadBlocked',

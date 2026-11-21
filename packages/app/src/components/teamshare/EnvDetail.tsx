@@ -10,6 +10,7 @@ import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
 import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 import { isTeamSecretMissingError } from '@/lib/team/team-secret-error'
+import type { TranslateWithFallback } from '@/lib/translate-fn'
 
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -36,7 +37,7 @@ const PERSONAL_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /** Match SharedSecretsState init failures — keep keywords aligned with EnvVarsSection. */
 function toastSaveError(
-  t: (key: string, fallback: string, options?: Record<string, string>) => string,
+  t: TranslateWithFallback,
   err: unknown,
 ) {
   const msg = err instanceof Error ? err.message : String(err)
