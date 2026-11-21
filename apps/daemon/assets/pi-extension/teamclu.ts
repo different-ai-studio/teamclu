@@ -836,15 +836,21 @@ class McpBridge {
     }
     const [command, ...args] = spec.command;
     const client = make();
-    await client.connect(
-      new sdk.StdioClientTransport({
-        command,
-        args,
-        env: childEnv(label, spec.environment),
-        // The server's own stderr belongs in pi's, which amuxd captures.
-        stderr: "inherit",
-      }),
-    );
+    const transport = new sdk.StdioClientTransport({
+      command,
+      args,
+      env: childEnv(label, spec.environment),
+      // The server's own stderr belongs in pi's, which amuxd captures.
+      stderr: "inherit",
+    });
+    const started = Date.now();
+    // `connect` spawns the server and then runs the initialize handshake; log
+    // the pid as soon as the spawn has happened so a server that never answers
+    // still leaves its pid in the log.
+    const connecting = client.connect(transport);
+    queueMicrotask(() => mcpTiming(label, `spawned pid=${transport.pid ?? "?"} cmd=${command}`));
+    await connecting;
+    mcpTiming(label, `initialized pid=${transport.pid ?? "?"} in ${Date.now() - started}ms`);
     return new McpBridge(client, label);
   }
 
@@ -1131,15 +1137,29 @@ function writeToolCache(label: string, signature: string, tools: McpTool[]): voi
   }
 }
 
+/**
+ * One line per MCP startup milestone, tagged with this host's pid so lines from
+ * the host amuxd just retired and the one replacing it can be told apart.
+ * Diagnostic: the Windows install smoke showed a session attach waiting ~11s
+ * longer on beta.123 than beta.122, and nothing in the log said which server
+ * held it up or whose child it was.
+ */
+function mcpTiming(label: string, what: string): void {
+  console.error(`[teamclu] MCP ${label}: ${what} (host pid=${process.pid})`);
+}
+
 /** Connect and list, or throw. */
 async function handshake(
   label: string,
   spec: McpServerSpec,
   sdk: Sdk,
 ): Promise<{ bridge: McpBridge; tools: McpTool[] }> {
+  const started = Date.now();
   const bridge = await McpBridge.connect(label, spec, sdk);
   try {
-    return { bridge, tools: await bridge.listTools() };
+    const tools = await bridge.listTools();
+    mcpTiming(label, `listed ${tools.length} tool(s); handshake ${Date.now() - started}ms`);
+    return { bridge, tools };
   } catch (e) {
     void bridge.close(); // never leak a connection whose listing failed
     throw e;
@@ -1183,6 +1203,7 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
   };
 
   const cached = readToolCache(label, signature);
+  mcpTiming(label, cached ? "tool cache hit; connecting in the background" : "no tool cache; waiting for the handshake");
   if (cached) {
     const pending = handshake(label, spec, sdk);
     const entry: BridgeEntry = {
@@ -1306,7 +1327,11 @@ async function reconcileBridges(
 ): Promise<void> {
   const names = Object.keys(servers);
   disposeRemovedBridges(new Set(names));
+  const started = Date.now();
   await Promise.all(names.map((name) => bridgeMcpServer(pi, ownTools, name, servers[name])));
+  console.error(
+    `[teamclu] MCP bridges ready in ${Date.now() - started}ms [${names.join(",")}] (host pid=${process.pid})`,
+  );
 }
 
 /**
