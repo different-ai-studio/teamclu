@@ -51,7 +51,7 @@ export interface SyncHandlerDeps {
   sumLiveBytes?: (teamId: string) => Promise<number | null>;
   /**
    * MQTT publisher for knowledge sync hints. `undefined` → resolve from
-   * push-deps (null when MQTT_BROKER_URL is unset). Explicit `null` skips.
+   * push-deps (null when both publisher URLs are unset). Explicit `null` skips.
    */
   mqtt?: SyncMqttPublisher | null;
   /** Clock override for hint `at` (tests). */
