@@ -10,9 +10,10 @@ import {
 } from '@/lib/platform-labels'
 import { cn } from '@/lib/utils'
 import { useAgentsSkillsAccessStore } from '@/stores/agents-skills-access-store'
+import type { TranslateWithFallback } from '@/lib/translate-fn'
 
 function kindMessage(
-  t: (key: string, fallback: string, opts?: Record<string, string>) => string,
+  t: TranslateWithFallback,
   kind: string | undefined,
   path: string,
   detail: string,

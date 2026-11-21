@@ -1,4 +1,5 @@
 import type { Message as StoreMessage } from "@/stores/session-types";
+import type { TranslateWithOptions } from '@/lib/translate-fn'
 
 export type ThreadSummary = {
   threadSessionId: string;
@@ -10,7 +11,7 @@ export type ThreadSummary = {
 
 export function formatThreadRelativeTime(
   iso: string | null | undefined,
-  t: (key: string, options?: Record<string, unknown>) => string,
+  t: TranslateWithOptions,
 ): string {
   if (!iso) return "";
   const ms = Date.now() - new Date(iso).getTime();

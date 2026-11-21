@@ -3,6 +3,7 @@ import { AlertCircle } from 'lucide-react'
 import type { AttachedAgent } from '@/packages/ai/prompt-input-insert-hooks'
 import type { EngagedAgentUiEntry } from '@/hooks/use-engaged-agent-ui-states'
 import type { SessionAgentUiState, SessionAgentSyncHint } from '@/lib/session/session-agent-ui-state'
+import type { TranslateWithOptions } from '@/lib/translate-fn'
 
 type Props = {
   entries: EngagedAgentUiEntry[]
@@ -20,7 +21,7 @@ function filterActionable(entries: EngagedAgentUiEntry[]): EngagedAgentUiEntry[]
 
 function bannerMessage(
   actionable: EngagedAgentUiEntry[],
-  t: (key: string, options?: Record<string, unknown>) => string,
+  t: TranslateWithOptions,
 ): string {
   const stale = actionable.filter((e) => e.uiState === 'stale')
   const offline = actionable.filter((e) => e.uiState === 'offline')
