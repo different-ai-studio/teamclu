@@ -1,4 +1,4 @@
-import { readAppsOriginAuthConfig } from "./lib/apps-origin-auth.js";
+import { usesPrivateFcOrigin, readAppsOriginAuthConfig } from "./lib/apps-origin-auth.js";
 import { readAppOriginSecurity } from "./lib/provisioning/app-runtime-info.js";
 import {
   createSupabaseAuthRepository,
@@ -237,6 +237,7 @@ function makeDeployDeps() {
           appsAppUrl,
           fcOps: {
             ensureFunction: (name, args) => secureFcOps().ensureFunction(name, args),
+            ...(usesPrivateFcOrigin() ? { ensurePrivateOrigin: (name, target) => secureFcOps().ensurePrivateOrigin(name, target) } : {}),
             ensureHttpTrigger: name => secureFcOps().ensureHttpTrigger(name),
             ensureCustomDomain: (name, domain, target) => secureFcOps().ensureCustomDomain(name, domain, target),
             setMinInstances: (name, min) => secureFcOps().setMinInstances(name, min),

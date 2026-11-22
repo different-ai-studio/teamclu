@@ -115,6 +115,18 @@ export async function signOriginToken(config: OriginAuthConfig, target: OriginTa
     .sign(deriveKey(config.activeKey, appId));
 }
 
+/** Native trigger URLs are opaque provider IDs, so callers must also verify
+ * ownership through GetTrigger for the resolved function before signing. */
+export function privateFcTriggerUrl(endpoint: unknown, region: string): string | null {
+  if (typeof endpoint !== "string" || !/^[a-z0-9-]+$/.test(region)) return null;
+  const match = /^https:\/\/([a-z0-9-]+)\.([a-z0-9-]+)-vpc\.fcapp\.run\/?$/.exec(endpoint);
+  return match?.[2] === region ? endpoint.replace(/\/$/, "") : null;
+}
+
+export function usesPrivateFcOrigin(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.APPS_FC_ORIGIN_MODE === "private-trigger-jwt";
+}
+
 /**
  * Only the exact managed HTTP/HTTPS origin can receive a platform credential.
  * Other existing legacy-mode endpoints retain unsigned forwarding. A canonical legacy
@@ -150,6 +162,8 @@ export function classifyOriginEndpoint(endpoint: string, target: OriginTarget, r
 
 /** Capture only a validated managed resource; historical external endpoints have no managed domain. */
 export function appDeploymentOriginHost(target: AppFunctionTarget, endpoint?: string | null, env: NodeJS.ProcessEnv = process.env): string | null {
+  const region = (env.APPS_REGION ?? env.REGION ?? "cn-shenzhen").trim();
+  if (endpoint && usesPrivateFcOrigin(env) && privateFcTriggerUrl(endpoint, region)) return null;
   const host = appManagedOriginHost(target, env);
   if (!endpoint) return host;
   // Config-absent legacy installations never had a managed domain to clean up.

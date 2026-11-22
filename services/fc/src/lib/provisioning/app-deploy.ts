@@ -373,6 +373,7 @@ export interface FinalizeDeps {
         image?: string;
       },
     ) => Promise<void>;
+    ensurePrivateOrigin?: (name: string, target: OriginTarget) => Promise<string>;
     ensureHttpTrigger: (name: string) => Promise<{ internetUrlDisabled: true }>;
     /** Absent on a deployment that has no route domain configured. */
     ensureCustomDomain?: (functionName: string, domainName: string, target: OriginTarget) => Promise<string>;
@@ -478,7 +479,7 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
   };
   resolveAppFunctionName({ ...target, fcFunctionName: input.fcFunctionName });
   const { host: routeHost } = validateAppOrigin(target, deps.readOriginAuth);
-  if (!deps.fcOps.ensureCustomDomain) throw new ApiError(503, "origin_security_unavailable", "origin security unavailable: routeConfig");
+  if (!deps.fcOps.ensurePrivateOrigin && !deps.fcOps.ensureCustomDomain) throw new ApiError(503, "origin_security_unavailable", "origin security unavailable: routeConfig");
 
   const env: Record<string, string> = { NODE_ENV: "production" };
   if (input.declaration) {
@@ -555,13 +556,18 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     image: input.image,
   });
   try {
+    if (deps.fcOps.ensurePrivateOrigin) {
+      const endpoint = await deps.fcOps.ensurePrivateOrigin(input.fcFunctionName, target);
+      await applyAlwaysOn(deps, input);
+      return { fcEndpoint: endpoint };
+    }
     const trigger = await deps.fcOps.ensureHttpTrigger(input.fcFunctionName);
     if (trigger?.internetUrlDisabled !== true) {
       throw new ApiError(409, "origin_security_drift", "origin security drift: disableURLInternet");
     }
     // Provider verifies trigger, HTTP domain, JWT and extra entrypoints
     // before this URL can reach the Live-state commit in the repository.
-    const endpoint = await deps.fcOps.ensureCustomDomain(input.fcFunctionName, routeHost, target);
+    const endpoint = await deps.fcOps.ensureCustomDomain!(input.fcFunctionName, routeHost, target);
     if (endpoint !== `http://${routeHost}`) {
       throw new ApiError(409, "origin_security_drift", "origin security drift: originEndpoint");
     }

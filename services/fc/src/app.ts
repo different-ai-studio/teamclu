@@ -9,7 +9,9 @@ import * as admin from "./lib/admin-handlers.js";
 import { httpsRedirect, isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
 import { appsFcRouteDomain, parseAppPublicHost } from "./lib/apps-public-host.js";
 import { handleLoginRequest, isLoginHost, type LookupLoginApp, type LoginServiceDeps } from "./lib/apps-login-service.js";
-import { classifyOriginEndpoint, readAppsOriginAuthConfig, type OriginAuthConfig } from "./lib/apps-origin-auth.js";
+import { privateFcTriggerUrl, usesPrivateFcOrigin, classifyOriginEndpoint, readAppsOriginAuthConfig, type OriginAuthConfig } from "./lib/apps-origin-auth.js";
+import { verifyAppPrivateOrigin } from "./lib/provisioning/app-runtime-info.js";
+import { appsRegion } from "./lib/provisioning/apps-oss.js";
 import { applyAuthGate, type GateDeps } from "./lib/apps-auth-gate.js";
 import { makeTraefikDynamicEndpoint, type ListTraefikCustomDomains } from "./lib/apps-traefik-provider.js";
 import { renderJoinLinkPage } from "./lib/join-link-page.js";
@@ -213,9 +215,15 @@ export function createApp(deps: AppDeps): Hono {
       if (gate.response) return gate.response;
 
       const originTarget = { appId: target.id, slug: target.slug, appCode: target.appCode, functionNamingMode: target.functionNamingMode };
-      let origin: { target: typeof originTarget; config: OriginAuthConfig } | undefined;
+      let origin: { target: typeof originTarget; config: OriginAuthConfig; verifiedPrivateRegion?: string } | undefined;
       try {
-        if (classifyOriginEndpoint(target.fcEndpoint, originTarget, appsFcRouteDomain()) === "protected") {
+        const region = appsRegion();
+        const privateEndpoint = usesPrivateFcOrigin() && privateFcTriggerUrl(target.fcEndpoint, region);
+        if (privateEndpoint) {
+          const config = readAppsOriginAuthConfig(process.env);
+          await verifyAppPrivateOrigin(privateEndpoint, { ...originTarget, fcFunctionName: target.fcFunctionName }, config, region);
+          origin = { target: originTarget, config, verifiedPrivateRegion: region };
+        } else if (classifyOriginEndpoint(target.fcEndpoint, originTarget, appsFcRouteDomain()) === "protected") {
           // Loaded only after authorization and only for managed HTTP/HTTPS origins.
           // Missing keys fail closed for these origins without blocking API startup.
           origin = { target: originTarget, config: readAppsOriginAuthConfig(process.env) };
