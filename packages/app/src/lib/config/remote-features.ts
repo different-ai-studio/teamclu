@@ -37,6 +37,7 @@ interface AuthFeatures {
   google: boolean;
   wechat: boolean;
   phone: boolean;
+  emailSelfRegistration: boolean;
   webSSO: boolean;
 }
 
@@ -65,7 +66,7 @@ interface ResolvedFeatures {
 // `updater` is on neither list, deliberately. It gates the startup auto-check
 // as well as the UI, so a remote `false` would strand the fleet with no way to
 // update out of it. It stays build-time.
-const AUTH_KEYS = ["google", "wechat", "phone", "webSSO"] as const;
+const AUTH_KEYS = ["google", "wechat", "phone", "webSSO", "emailSelfRegistration"] as const;
 const CHANNEL_KEYS = ["discord", "feishu", "email", "kook", "wecom", "wechat", "wechatpad", "seatalk"] as const;
 const BOOL_KEYS = ["apps", "lockLlmConfig", "autoRestartPaused"] as const;
 
@@ -194,6 +195,7 @@ function resolveFrom(patches: RemoteFeaturePatch[]): ResolvedFeatures {
       google: merged.auth?.google ?? false,
       wechat: merged.auth?.wechat ?? false,
       phone: merged.auth?.phone ?? false,
+      emailSelfRegistration: merged.auth?.emailSelfRegistration ?? false,
       // Server-controlled like every other flag. Where the flow may point is
       // server-controlled too (WEBSSO_LOGIN_URL) — there is no build-time host
       // list any more.

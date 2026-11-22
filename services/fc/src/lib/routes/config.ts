@@ -111,7 +111,7 @@ function resolveDesktopDownloadUrl(): string {
 // from whatever the profile/env happens to contain. Config decides the values;
 // code decides the surface. An operator who writes `updater: false` into
 // APP_FEATURES_JSON gets it dropped here — see the note on `updater` below.
-const AUTH_KEYS = ["google", "wechat", "phone", "password", "webSSO"] as const;
+const AUTH_KEYS = ["google", "wechat", "phone", "password", "webSSO", "emailSelfRegistration"] as const;
 const CHANNEL_KEYS = ["discord", "feishu", "email", "kook", "wecom", "wechat", "wechatpad", "seatalk"] as const;
 const BOOTSTRAP_BOOL_KEYS = ["apps", "lockLlmConfig", "allowNewOrg", "autoRestartPaused"] as const;
 

@@ -31,7 +31,7 @@ describe("resolution without any remote data", () => {
     expect(features.apps).toBe(false);
     expect(features.lockLlmConfig).toBe(false);
     expect(features.auth).toEqual({
-      google: false, wechat: false, phone: false, webSSO: false,
+      google: false, wechat: false, phone: false, webSSO: false, emailSelfRegistration: false,
     });
     expect(Object.values(features.channels).every((v) => v === false)).toBe(true);
   });
@@ -84,6 +84,14 @@ describe("merging", () => {
     applyRemoteFeatures("session", { apps: true, lockLlmConfig: true });
     expect(getFeatures().apps).toBe(true);
     expect(getFeatures().lockLlmConfig).toBe(true);
+  });
+
+  it("accepts email self-registration only from the public config", async () => {
+    const { applyRemoteFeatures, getFeatures } = await loadModule();
+    applyRemoteFeatures("session", { auth: { emailSelfRegistration: true } });
+    expect(getFeatures().auth.emailSelfRegistration).toBe(false);
+    applyRemoteFeatures("public", { auth: { emailSelfRegistration: true } });
+    expect(getFeatures().auth.emailSelfRegistration).toBe(true);
   });
 
   it("lets the server decide webSSO in both directions", async () => {

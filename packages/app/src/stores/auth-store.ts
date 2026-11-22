@@ -113,6 +113,9 @@ function configuredServerUrl(): string | undefined {
 const FRIENDLY_AUTH_ERRORS: Record<string, { key: string; fallback: string }> = {
   invalid_credentials: { key: "auth.errors.invalidCredentials", fallback: "Incorrect email or password." },
   email_not_confirmed: { key: "auth.errors.emailNotConfirmed", fallback: "This email address has not been verified yet." },
+  signup_disabled: { key: "auth.errors.signupDisabled", fallback: "This server only allows existing accounts to sign in. Ask your administrator to set up your account." },
+  otp_expired: { key: "auth.errors.otpExpired", fallback: "This code is invalid or expired. Check the code or request a new one." },
+  over_email_send_rate_limit: { key: "auth.errors.rateLimited", fallback: "Too many attempts. Please wait a minute and try again." },
   rate_limited: { key: "auth.errors.rateLimited", fallback: "Too many attempts. Please wait a minute and try again." },
   upstream_unavailable: { key: "auth.errors.serverUnavailable", fallback: "The sign-in service is temporarily unavailable. Please try again." },
 };

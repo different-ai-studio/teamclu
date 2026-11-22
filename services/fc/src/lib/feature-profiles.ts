@@ -17,6 +17,8 @@ export interface AuthFeatureFlags {
   wechat?: boolean;
   phone?: boolean;
   password?: boolean;
+  /** Advertise the email OTP registration flow when GoTrue signup and personal org creation are enabled. */
+  emailSelfRegistration?: boolean;
   /**
    * ANDed with the client's build flag, never simply overriding it: the allowed
    * admin-console hosts are compiled into the desktop binary, so turning this on

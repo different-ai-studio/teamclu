@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAuthStore } from "@/stores/auth-store";
 import { appDisplayName } from "@/lib/config/build-config";
@@ -124,6 +124,8 @@ export function OAuthButtons() {
   );
 }
 
+const EMAIL_RESEND_DELAY_SECONDS = 60;
+
 interface LoginScreenProps {
   embedded?: boolean;
   onBack?: () => void;
@@ -133,6 +135,19 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
   const { t } = useTranslation();
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
+  const [resendDeadline, setResendDeadline] = useState(0);
+  const [resendSeconds, setResendSeconds] = useState(0);
+  useEffect(() => {
+    if (!resendDeadline) return;
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((resendDeadline - Date.now()) / 1000));
+      setResendSeconds(remaining);
+      if (remaining === 0) setResendDeadline(0);
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendDeadline]);
   const {
     sendOtp,
     verifyOtp,
@@ -152,11 +167,19 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
   const [method, setMethod] = useState<"email" | "phone">("email");
   const auth = useFeatures().auth;
   const phoneEnabled = isTauri() && auth.phone;
+  const showEmailRegistration = method === "email" && auth.emailSelfRegistration && !isChromeExtension();
   const appVersion = useAppVersion();
   const cloudApiUrl = getEffectiveServerConfigSync().cloudApiUrl;
   const onSendEmail = async (e: React.FormEvent) => {
     e.preventDefault();
-    await sendOtp(email);
+    await requestEmailCode(email.trim());
+  };
+
+  const requestEmailCode = async (address: string) => {
+    if (!(await sendOtp(address))) return;
+    setCode("");
+    setResendSeconds(EMAIL_RESEND_DELAY_SECONDS);
+    setResendDeadline(Date.now() + EMAIL_RESEND_DELAY_SECONDS * 1000);
   };
 
   const onVerify = async (e: React.FormEvent) => {
@@ -252,7 +275,7 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
               ))}
             </div>
             {errorMessage && (
-              <p className="text-[12px] text-destructive">{errorMessage}</p>
+              <p role="alert" className="text-[12px] text-destructive">{errorMessage}</p>
             )}
             <button
               type="button"
@@ -284,7 +307,10 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
             <Input
               type="text"
               inputMode="numeric"
-              pattern="[0-9]*"
+              name="verification-code"
+              autoComplete="one-time-code"
+              enterKeyHint="done"
+              pattern="[0-9]{6}"
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
               required
@@ -294,7 +320,7 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
             />
           </label>
           {(serverConfigRequired || errorMessage) && (
-            <p className="text-[12px] text-destructive">
+            <p role="alert" className="text-[12px] text-destructive">
               {serverConfigRequired ? serverConfigMessage : errorMessage}
             </p>
           )}
@@ -305,8 +331,21 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
           >
             {loading ? t("auth.verifying", "Verifying…") : t("auth.verify", "Verify")}
           </Button>
+          {otpEmail && (
+            <button
+              type="button"
+              disabled={serverConfigRequired || loading || resendSeconds > 0}
+              onClick={() => void requestEmailCode(otpEmail)}
+              className="block w-full text-center text-[12px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+            >
+              {resendSeconds > 0
+                ? t("auth.resendCodeIn", "Resend in {{seconds}}s", { seconds: resendSeconds })
+                : t("auth.resendCode", "Resend code")}
+            </button>
+          )}
           <button
             type="button"
+            disabled={loading}
             onClick={onUseDifferentContact}
             className="block w-full text-center text-[12px] text-muted-foreground hover:text-foreground transition-colors"
           >
@@ -340,7 +379,9 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
           )}
           <div className="space-y-1.5">
             <h2 className="text-[17px] font-semibold text-foreground">
-              {t("auth.signIn", "Sign in")}
+              {showEmailRegistration
+                ? t("auth.signInOrSignUp", "Sign in or create an account")
+                : t("auth.signIn", "Sign in")}
             </h2>
             <p className="text-[13px] text-muted-foreground">
               {method === "phone"
@@ -370,6 +411,10 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
               </span>
               <Input
                 type="email"
+                name="email"
+                autoComplete="username"
+                spellCheck={false}
+                enterKeyHint="go"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -380,7 +425,7 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
             </label>
           )}
           {(serverConfigRequired || errorMessage) && (
-            <p className="text-[12px] text-destructive">
+            <p role="alert" className="text-[12px] text-destructive">
               {serverConfigRequired ? serverConfigMessage : errorMessage}
             </p>
           )}

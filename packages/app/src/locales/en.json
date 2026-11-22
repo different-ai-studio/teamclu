@@ -522,6 +522,8 @@
   },
   "auth": {
     "errors": {
+      "signupDisabled": "This server only allows existing accounts to sign in. Ask your administrator to set up your account.",
+      "otpExpired": "This code is invalid or expired. Check the code or request a new one.",
       "invalidCredentials": "Incorrect email or password.",
       "emailNotConfirmed": "This email address has not been verified yet.",
       "rateLimited": "Too many attempts. Please wait a minute and try again.",
@@ -561,6 +563,9 @@
     "willEmailCode": "We'll email you a 6-digit code.",
     "email": "Email",
     "emailPlaceholder": "you@example.com",
+    "signInOrSignUp": "Sign in or create an account",
+    "resendCode": "Resend code",
+    "resendCodeIn": "Resend in {{seconds}}s",
     "sendCode": "Send code",
     "sending": "Sending…",
     "enterCode": "Enter the code",

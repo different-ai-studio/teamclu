@@ -11883,6 +11883,9 @@ components:
         phone: { type: boolean }
         password: { type: boolean }
         webSSO: { type: boolean }
+        emailSelfRegistration:
+          type: boolean
+          description: Advertises account creation through email OTP when the deployment allows Auth signup and personal organization creation.
       additionalProperties: false
     BootstrapFeatures:
       type: object

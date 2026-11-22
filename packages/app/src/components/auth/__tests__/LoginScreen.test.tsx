@@ -1,8 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { authState, backendConfig, serverConfig, extensionPolicy } = vi.hoisted(() => ({
+const { authState, backendConfig, serverConfig, extensionPolicy, authFeatures } = vi.hoisted(() => ({
+  authFeatures: { emailSelfRegistration: false },
   authState: {
+    otpPhone: null,
+    phoneMultiUsers: [],
     loading: false,
     errorMessage: null as string | null,
     otpEmail: null as string | null,
@@ -31,6 +34,10 @@ vi.mock("react-i18next", () => ({
 
 vi.mock("@/stores/auth-store", () => ({
   useAuthStore: () => authState,
+}));
+
+vi.mock("@/lib/config/remote-features", () => ({
+  useFeatures: () => ({ auth: authFeatures }),
 }));
 
 vi.mock("@/lib/backend", () => ({
@@ -62,6 +69,7 @@ vi.mock("@/lib/config/platform", () => ({
 import { LoginScreen } from "../LoginScreen";
 
 beforeEach(() => {
+  authFeatures.emailSelfRegistration = false;
   authState.loading = false;
   authState.errorMessage = null;
   authState.otpEmail = null;
@@ -80,6 +88,41 @@ describe("LoginScreen", () => {
     render(<LoginScreen />);
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /send code/i })).toBeInTheDocument();
+  });
+
+  it("advertises account creation only when the deployment offers it", () => {
+    const { rerender } = render(<LoginScreen />);
+    expect(screen.queryByRole("heading", { name: "Sign in or create an account" })).toBeNull();
+    authFeatures.emailSelfRegistration = true;
+    rerender(<LoginScreen />);
+    expect(screen.getByRole("heading", { name: "Sign in or create an account" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toHaveAttribute("autocomplete", "username");
+  });
+
+  it("uses the same OTP flow to register and sign in", async () => {
+    authFeatures.emailSelfRegistration = true;
+    authState.sendOtp.mockImplementation(async (email: string) => {
+      authState.otpEmail = email;
+      return true;
+    });
+    const { rerender } = render(<LoginScreen />);
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "new@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+    await waitFor(() => expect(authState.sendOtp).toHaveBeenCalledExactlyOnceWith("new@example.com"));
+    rerender(<LoginScreen />);
+    fireEvent.change(screen.getByLabelText("Code"), { target: { value: "012345" } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+    expect(authState.verifyOtp).toHaveBeenCalledExactlyOnceWith("012345");
+  });
+
+  it("resends to the pending email and prevents immediate repeated resends", async () => {
+    authState.otpEmail = "pending@example.com";
+    authState.sendOtp.mockResolvedValue(true);
+    render(<LoginScreen />);
+    expect(screen.getByLabelText("Code")).toHaveAttribute("autocomplete", "one-time-code");
+    fireEvent.click(screen.getByRole("button", { name: "Resend code" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /resend in/i })).toBeDisabled());
+    expect(authState.sendOtp).toHaveBeenCalledExactlyOnceWith("pending@example.com");
   });
 
   // Rendering nothing when the URL is unset is how a build with no backend

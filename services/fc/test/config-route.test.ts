@@ -478,7 +478,7 @@ test("GET /v1/config/public serves auth flags without a bearer, and still no mqt
       MQTT_BROKER_URL: "mqtts://secret.example.com:8883",
       WEBSSO_LOGIN_URL: undefined,
       APP_FEATURES_PROFILE: undefined,
-      APP_FEATURES_JSON: JSON.stringify({ auth: { webSSO: true }, channels: { wecom: false } }),
+      APP_FEATURES_JSON: JSON.stringify({ auth: { webSSO: true, emailSelfRegistration: true }, channels: { wecom: false } }),
     },
     async () => {
       const response = await handleBusinessApiRequest(
@@ -487,7 +487,7 @@ test("GET /v1/config/public serves auth flags without a bearer, and still no mqt
       );
       assert.equal(response.statusCode, 200);
       const body = JSON.parse(response.body);
-      assert.deepEqual(body, { desktopDownloadUrl: DEFAULT_DESKTOP_DOWNLOAD_URL, features: { auth: { webSSO: true } } });
+      assert.deepEqual(body, { desktopDownloadUrl: DEFAULT_DESKTOP_DOWNLOAD_URL, features: { auth: { webSSO: true, emailSelfRegistration: true } } });
     },
   );
 });
