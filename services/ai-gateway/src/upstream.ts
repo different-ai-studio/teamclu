@@ -13,6 +13,13 @@ export type UpstreamCall = {
   prepare: (route: PickedRoute, apiKey: string) => PreparedRequest;
   fetch: typeof fetch;
   signal: AbortSignal;
+  /**
+   * When set, a 2xx is handed to the caller only if this returns a Response.
+   * `null` means the body completed with no usable assistant content, which
+   * fails the route over the same way a 5xx does. The body of `res` may be
+   * consumed; the returned Response is what the caller reads.
+   */
+  accept?: (res: Response) => Promise<Response | null>;
 };
 
 export type UpstreamResult =
@@ -29,7 +36,8 @@ const MAX_KEYS_PER_ROUTE = 3;
 type Failure =
   | { kind: "transport"; backendId: string; error: Error }
   | { kind: "response"; backendId: string; status: number; text: string; contentType: string | null }
-  | { kind: "no_keys"; backendId: string; retryAfterMs: number; onlyInvalid: boolean };
+  | { kind: "no_keys"; backendId: string; retryAfterMs: number; onlyInvalid: boolean }
+  | { kind: "empty"; backendId: string };
 
 /**
  * Get one successful upstream response, switching keys and routes as needed.
@@ -37,11 +45,15 @@ type Failure =
  * Two levels, deliberately in this order. A KEY failure (402, 429, 401) moves to
  * the next key of the same provider — same model, invisible to the caller. Only
  * when a route has no key left that can serve does a `failover` tier move to
- * its next route, which is a different model. A 5xx or an unreachable host
- * skips straight to the next route: every key reaches the same broken service.
+ * its next route, which is a different model. A 5xx, an unreachable host, or a
+ * completed 2xx with no usable assistant content skips straight to the next
+ * route: every key reaches the same model.
  *
- * Switching only ever happens before a byte reaches the caller: a response that
- * started streaming belongs to the caller, errors and all.
+ * A 2xx is not committed when `accept` is set until that check returns a body.
+ * Bytes are released to the caller at the first usable delta, not after the
+ * whole stream, so a normal completion still streams. Once those bytes are
+ * released, the attempt is committed and a later upstream failure stays with
+ * the caller.
  */
 export async function callUpstream(call: UpstreamCall): Promise<UpstreamResult> {
   let last: Failure | null = null;
@@ -78,8 +90,26 @@ export async function callUpstream(call: UpstreamCall): Promise<UpstreamResult> 
       }
 
       if (res.ok) {
-        call.pools.succeeded(key, model);
-        return { ok: true, res, route, prepared, key };
+        const accepted = await acceptOk(call, res);
+        if (accepted.kind === "aborted") {
+          return { ok: false, response: new Response(null, { status: 499 }) };
+        }
+        if (accepted.kind === "commit") {
+          call.pools.succeeded(key, model);
+          return { ok: true, res: accepted.res, route, prepared, key };
+        }
+        if (accepted.kind === "unreadable") {
+          last = { kind: "transport", backendId: route.backendId, error: accepted.error };
+          console.warn(`[upstream] ${route.backendId} body unreadable: ${accepted.error.message}`);
+          next = true;
+          break;
+        }
+        // HTTP 200 with usage is not a usable completion. Same model on another
+        // key will not grow text that this response did not have.
+        console.warn(`[upstream] ${route.backendId} completed without usable assistant content`);
+        last = { kind: "empty", backendId: route.backendId };
+        next = true;
+        break;
       }
 
       const text = await res.text();
@@ -152,6 +182,37 @@ const UPSTREAM_BILLING_MESSAGE =
   "The AI provider account serving this model is out of balance (upstream billing error). " +
   "This is not your team's credits: the operator has to fund the provider account.";
 
+// Terminal on purpose. pi-ai retries any provider error whose text contains
+// 502/503 (`isRetryableAssistantError`), and a retried empty completion would
+// spend another full primary attempt before failing the same way. 422 is not
+// in that set, and the wording avoids the retryable phrases ("ended without",
+// "upstream request failed", "unavailable").
+const EMPTY_COMPLETION_MESSAGE =
+  "The model finished without text, reasoning, or tool calls.";
+
+type Accepted =
+  | { kind: "commit"; res: Response }
+  | { kind: "empty" }
+  | { kind: "unreadable"; error: Error }
+  | { kind: "aborted" };
+
+function isAbort(error: unknown, signal: AbortSignal): boolean {
+  return signal.aborted || (error instanceof Error && error.name === "AbortError");
+}
+
+async function acceptOk(call: UpstreamCall, res: Response): Promise<Accepted> {
+  if (!call.accept) return { kind: "commit", res };
+  try {
+    const accepted = await call.accept(res);
+    if (call.signal.aborted) return { kind: "aborted" };
+    if (!accepted) return { kind: "empty" };
+    return { kind: "commit", res: accepted };
+  } catch (error) {
+    if (isAbort(error, call.signal)) return { kind: "aborted" };
+    return { kind: "unreadable", error: error as Error };
+  }
+}
+
 function finalFailure(last: Failure | null, exhaustedFailover: boolean): Response {
   if (!last) return errorJson(502, "upstream_error", "upstream unavailable");
   if (last.kind === "transport") {
@@ -164,6 +225,9 @@ function finalFailure(last: Failure | null, exhaustedFailover: boolean): Respons
       last.onlyInvalid ? KEYS_REJECTED_MESSAGE : KEYS_EXHAUSTED_MESSAGE,
       { "Retry-After": String(Math.max(1, Math.ceil(last.retryAfterMs / 1000))) },
     );
+  }
+  if (last.kind === "empty") {
+    return errorJson(422, "upstream_empty_completion", EMPTY_COMPLETION_MESSAGE);
   }
   // A failover tier that ran out of routes reports the last one's error in the
   // gateway's own shape; a single route passes its upstream's through.

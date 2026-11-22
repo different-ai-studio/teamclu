@@ -5,8 +5,8 @@ import { pickRoute } from "./catalog.js";
 import { TokenCache, bearer } from "./auth.js";
 import { resolveActor, recordUsage, getBalance, type Sql } from "./db.js";
 import {
-  computeCredits, countImages, estimateTokens, generatedBytes, prepareImageUpstream,
-  pricePerImage, prepareUpstream, readImageUsage, readUsage, teeSseUsage,
+  acceptChatCompletion, computeCredits, countImages, estimateTokens, generatedBytes,
+  prepareImageUpstream, pricePerImage, prepareUpstream, readImageUsage, readUsage, teeSseUsage,
   type UpstreamUsage,
 } from "./proxy.js";
 import { pickImageRoute } from "./catalog.js";
@@ -204,6 +204,9 @@ export function createApp(deps: Deps) {
         prepareUpstream(catalog, route.provider, route.backendId, route.backend, body, apiKey, c.req.raw.signal),
       fetch: doFetch,
       signal: c.req.raw.signal,
+      // Held until the first usable delta. An empty 200 is a failed attempt,
+      // so a failover tier can still move to its next route.
+      accept: (res) => acceptChatCompletion(res, wantsStream, c.req.raw.signal),
     });
     if (!up.ok) {
       // Nothing is settled for a call that produced no tokens, but the hold has
