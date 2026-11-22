@@ -1,0 +1,36 @@
+name: Mirror production EMQX
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    if: github.repository == 'different-ai-studio/teamclu' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    env:
+      SOURCE: docker.io/emqx/emqx@sha256:226650c1b1e0a486ccc652a7c6764bd9e976a4c4b83414c25cbd2df1ff794dd3
+      DESTINATION: ghcr.io/different-ai-studio/teamclu-prod-emqx:5.10.3-amd64
+    steps:
+      - name: Install Skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+      - name: Copy the official amd64 manifest and layers
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          authfile="$RUNNER_TEMP/ghcr-auth.json"
+          trap 'rm -f "$authfile"' EXIT
+          printf '%s' "$GHCR_TOKEN" | skopeo login --authfile "$authfile" --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          skopeo copy --retry-times 3 --preserve-digests --dest-authfile "$authfile" "docker://$SOURCE" "docker://$DESTINATION"
+          digest=$(skopeo inspect --authfile "$authfile" --format '{{.Digest}}' "docker://$DESTINATION")
+          test "$digest" = "${SOURCE#*@}"
+          printf '%s\n%s@%s\n' "$SOURCE" "${DESTINATION%:*}" "$digest" | tee -a "$GITHUB_STEP_SUMMARY"
