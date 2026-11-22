@@ -125,8 +125,8 @@ importers:
         specifier: 19.2.9
         version: 19.2.9
       react-i18next:
-        specifier: ^17.0.13
-        version: 17.0.13(i18next@27.1.5(typescript@6.0.3))(react-dom@19.2.9(react@19.2.9))(react-native@0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1))(react@19.2.9)(typescript@6.0.3)
+        specifier: ^18.0.2
+        version: 18.0.2(@types/react@19.2.18)(i18next@27.1.5(typescript@6.0.3))(react@19.2.9)(typescript@6.0.3)
       react-native:
         specifier: 0.86.3
         version: 0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1)
@@ -355,8 +355,8 @@ importers:
         specifier: 19.2.9
         version: 19.2.9(react@19.2.9)
       react-i18next:
-        specifier: ^17.0.13
-        version: 17.0.13(i18next@27.1.5(typescript@6.0.3))(react-dom@19.2.9(react@19.2.9))(react-native@0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1))(react@19.2.9)(typescript@6.0.3)
+        specifier: ^18.0.2
+        version: 18.0.2(@types/react@19.2.18)(i18next@27.1.5(typescript@6.0.3))(react@19.2.9)(typescript@6.0.3)
       react-markdown:
         specifier: ^10.1.0
         version: 10.1.0(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1)
@@ -6227,18 +6227,16 @@ packages:
     peerDependencies:
       react: '>=17.0.0'
 
-  react-i18next@17.0.13:
-    resolution: {integrity: sha512-Cc1PscmblIHA1kljTqDwrcVMI21ydgmUzw0UAeQBe7pAOgfuRLfzXze4EUBQoeDiICzFIXXhHFoZxuetNg5D0Q==}
+  react-i18next@18.0.2:
+    resolution: {integrity: sha512-g7YfBxTDC9dYdEsb3F7o0pRr6jg14f08U5G6N3DTUqSgGt/nq7AYf279ESRjE3Dy+Q/YG7OGVd7vtiylxTfV4w==}
+    engines: {node: '>=22'}
     peerDependencies:
-      i18next: '>= 26.2.0'
-      react: '>= 16.8.0'
-      react-dom: '*'
-      react-native: '*'
+      '@types/react': '*'
+      i18next: '>= 27.0.1'
+      react: '>= 18.0.0'
       typescript: ^5 || ^6 || ^7
     peerDependenciesMeta:
-      react-dom:
-        optional: true
-      react-native:
+      '@types/react':
         optional: true
       typescript:
         optional: true
@@ -9847,16 +9845,6 @@ snapshots:
       react-native: 0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1)
     optionalDependencies:
       '@types/react': 19.2.18
-
-  '@react-native/virtualized-lists@0.86.3(@types/react@19.2.18)(react-native@0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1))(react@19.2.9)':
-    dependencies:
-      invariant: 2.2.4
-      nullthrows: 1.1.1
-      react: 19.2.9
-      react-native: 0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1)
-    optionalDependencies:
-      '@types/react': 19.2.18
-    optional: true
 
   '@rolldown/binding-android-arm-eabi@1.2.19':
     optional: true
@@ -13934,28 +13922,13 @@ snapshots:
     dependencies:
       react: 19.2.9
 
-  react-i18next@17.0.13(i18next@27.1.5(typescript@6.0.3))(react-dom@19.2.9(react@19.2.9))(react-native@0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1))(react@19.2.9)(typescript@6.0.3):
+  react-i18next@18.0.2(@types/react@19.2.18)(i18next@27.1.5(typescript@6.0.3))(react@19.2.9)(typescript@6.0.3):
     dependencies:
-      '@babel/runtime': 7.29.7
       html-parse-stringify: 4.0.1
       i18next: 27.1.5(typescript@6.0.3)
       react: 19.2.9
-      use-sync-external-store: 1.6.0(react@19.2.9)
     optionalDependencies:
-      react-dom: 19.2.9(react@19.2.9)
-      react-native: 0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1)
-      typescript: 6.0.3
-
-  react-i18next@17.0.13(i18next@27.1.5(typescript@6.0.3))(react-dom@19.2.9(react@19.2.9))(react-native@0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1))(react@19.2.9)(typescript@6.0.3):
-    dependencies:
-      '@babel/runtime': 7.29.7
-      html-parse-stringify: 4.0.1
-      i18next: 27.1.5(typescript@6.0.3)
-      react: 19.2.9
-      use-sync-external-store: 1.6.0(react@19.2.9)
-    optionalDependencies:
-      react-dom: 19.2.9(react@19.2.9)
-      react-native: 0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1)
+      '@types/react': 19.2.18
       typescript: 6.0.3
 
   react-is@16.13.1: {}
@@ -14117,52 +14090,6 @@ snapshots:
       - bufferutil
       - supports-color
       - utf-8-validate
-
-  react-native@0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1):
-    dependencies:
-      '@react-native/assets-registry': 0.86.3
-      '@react-native/codegen': 0.86.3(@babel/core@7.29.7(supports-color@8.1.1))
-      '@react-native/community-cli-plugin': 0.86.3(@react-native/metro-config@0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(supports-color@8.1.1)
-      '@react-native/gradle-plugin': 0.86.3
-      '@react-native/js-polyfills': 0.86.3
-      '@react-native/normalize-colors': 0.86.3
-      '@react-native/virtualized-lists': 0.86.3(@types/react@19.2.18)(react-native@0.86.3(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.9)(supports-color@8.1.1))(react@19.2.9)
-      abort-controller: 3.0.0
-      anser: 1.4.10
-      ansi-regex: 5.0.1
-      babel-plugin-syntax-hermes-parser: 0.36.0
-      base64-js: 1.5.1
-      commander: 12.1.0
-      flow-enums-runtime: 0.0.6
-      hermes-compiler: 250829098.0.17
-      invariant: 2.2.4
-      memoize-one: 5.2.1
-      metro-runtime: 0.84.5
-      metro-source-map: 0.84.5(supports-color@8.1.1)
-      nullthrows: 1.1.1
-      pretty-format: 29.7.0
-      promise: 8.3.0
-      react: 19.2.9
-      react-devtools-core: 6.1.5
-      react-refresh: 0.14.2
-      regenerator-runtime: 0.13.11
-      scheduler: 0.27.0
-      semver: 7.8.5
-      stacktrace-parser: 0.1.11
-      tinyglobby: 0.2.17
-      whatwg-fetch: 3.6.20
-      ws: 7.5.13
-      yargs: 17.7.3
-    optionalDependencies:
-      '@types/react': 19.2.18
-    transitivePeerDependencies:
-      - '@babel/core'
-      - '@react-native-community/cli'
-      - '@react-native/metro-config'
-      - bufferutil
-      - supports-color
-      - utf-8-validate
-    optional: true
 
   react-pdf@11.1.0(@types/react@19.2.18)(react-dom@19.2.9(react@19.2.9))(react@19.2.9):
     dependencies:
@@ -14926,6 +14853,7 @@ snapshots:
   use-sync-external-store@1.6.0(react@19.2.9):
     dependencies:
       react: 19.2.9
+    optional: true
 
   util-deprecate@1.0.2: {}
 

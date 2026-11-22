@@ -44,7 +44,7 @@
     "i18next": "^27.1.5",
     "mqtt": "5.16.1",
     "react": "19.2.9",
-    "react-i18next": "^17.0.13",
+    "react-i18next": "^18.0.2",
     "react-native": "0.86.3",
     "react-native-gesture-handler": "~2.32.0",
     "react-native-markdown-display": "^7.0.2",
