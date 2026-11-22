@@ -977,6 +977,10 @@ test("native private origin uses a JWT trigger and returns only its verified HTT
   const endpoint = "https://app-hash.cn-shenzhen-vpc.fcapp.run";
   let triggerConfig: string;
   const { client, calls } = fakeClient({
+    listTriggers: async () => {
+      if (!triggerConfig) throw Object.assign(new Error("FC list timed out on a function without a trigger"), { code: "RequestTimeoutError" });
+      return { body: { triggers: [protectedTrigger()] } };
+    },
     listCustomDomains: async () => ({ body: { customDomains: [] } }),
     createTrigger: async (_name: string, request: any) => { triggerConfig = request.body.triggerConfig; },
     getTrigger: async () => ({ body: { triggerConfig, httpTrigger: { urlIntranet: endpoint } } }),
