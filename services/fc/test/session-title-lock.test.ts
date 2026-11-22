@@ -62,7 +62,7 @@ test("apply_generated_session_title is one conditional update", async () => {
     [id, "Agent (09:30)"],
   );
 
-  const unlocked = await db.query(
+  const unlocked = await db.query<{ applied: boolean; title: string; title_locked: boolean }>(
     "select applied, title, title_locked from amux.apply_generated_session_title($1, $2)",
     [id, "深圳美食推荐"],
   );
@@ -74,7 +74,7 @@ test("apply_generated_session_title is one conditional update", async () => {
     "update amux.sessions set title = $2, title_locked = true where id = $1",
     [id, "Standup (09:30)"],
   );
-  const locked = await db.query(
+  const locked = await db.query<{ applied: boolean; title: string; title_locked: boolean }>(
     "select applied, title, title_locked from amux.apply_generated_session_title($1, $2)",
     [id, "另一条生成标题"],
   );
@@ -82,7 +82,10 @@ test("apply_generated_session_title is one conditional update", async () => {
   assert.equal(locked.rows[0].title, "Standup (09:30)");
   assert.equal(locked.rows[0].title_locked, true);
 
-  const stored = await db.query("select title, title_locked from amux.sessions where id = $1", [id]);
+  const stored = await db.query<{ title: string; title_locked: boolean }>(
+    "select title, title_locked from amux.sessions where id = $1",
+    [id],
+  );
   assert.equal(stored.rows[0].title, "Standup (09:30)");
   assert.equal(stored.rows[0].title_locked, true);
 

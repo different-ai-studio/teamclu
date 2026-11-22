@@ -1149,7 +1149,7 @@ export const useSessionListStore = create<State>((set, get) => ({
       const { clearSessionAutoTitlePending } = await import("@/lib/session/session-auto-title");
       clearSessionAutoTitlePending(sessionId);
     }
-    let applied = true;
+    let applied: boolean;
     try {
       applied = lock
         ? await getBackend().sessions.updateSessionTitle(sessionId, trimmed, { lock: true })
