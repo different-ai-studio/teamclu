@@ -948,3 +948,39 @@ for (const value of ["private_key_material", "aB3dE5gH7jK9mN2pQ4sT6vX8zC1fG3hJ5k
     } finally { log.mock.restore(); }
   });
 }
+
+test("native private origin uses a JWT trigger and returns only its verified HTTPS URL", async () => {
+  const endpoint = "https://app-hash.cn-shenzhen-vpc.fcapp.run";
+  let triggerConfig: string;
+  const { client, calls } = fakeClient({
+    listCustomDomains: async () => ({ body: { customDomains: [] } }),
+    createTrigger: async (_name: string, request: any) => { triggerConfig = request.body.triggerConfig; },
+    getTrigger: async () => ({ body: { triggerConfig, httpTrigger: { urlIntranet: endpoint } } }),
+  });
+  const ops = makeFcOps(client, OPS_CONFIG);
+  assert.equal(await ops.ensurePrivateOrigin("tc-app-1", TARGET), endpoint);
+  const config = JSON.parse(triggerConfig!);
+  assert.equal(config.authType, "jwt");
+  assert.equal(config.disableURLInternet, true);
+  assert.equal(config.authConfig.TokenLookup, "header:X-Teamclu-Origin-Authorization:Bearer ");
+  assert.deepEqual(config.authConfig.JWKS, originJwks(ORIGIN, TARGET.appId));
+  assert.ok(!calls.some(([operation]) => operation === "createCustomDomain" || operation === "getCustomDomain"));
+});
+
+test("native private origin refuses the public trigger endpoint or authentication drift", async () => {
+  let triggerConfig: string;
+  let endpoint = "https://app-hash.cn-shenzhen.fcapp.run";
+  const { client } = fakeClient({
+    listCustomDomains: async () => ({ body: { customDomains: [] } }),
+    createTrigger: async (_name: string, request: any) => { triggerConfig = request.body.triggerConfig; },
+    getTrigger: async () => ({ body: { triggerConfig, httpTrigger: { urlIntranet: endpoint } } }),
+  });
+  const ops = makeFcOps(client, OPS_CONFIG);
+  await assert.rejects(ops.ensurePrivateOrigin("tc-app-1", TARGET), /originEndpoint/);
+  endpoint = "https://app-hash.cn-shenzhen-vpc.fcapp.run";
+  await ops.ensurePrivateOrigin("tc-app-1", TARGET);
+  const config = JSON.parse(triggerConfig!);
+  config.authType = "anonymous";
+  triggerConfig = JSON.stringify(config);
+  await assert.rejects(ops.readPrivateOrigin("tc-app-1", TARGET), /authConfig.authType/);
+});

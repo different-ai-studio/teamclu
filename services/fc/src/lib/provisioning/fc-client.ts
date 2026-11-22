@@ -1,5 +1,5 @@
 import { appManagedOriginHost, resolveAppFunctionName } from "../apps-function-identity.js";
-import { originJwks, ORIGIN_VERSION_HEADER, ORIGIN_VERSION_CLAIM_MAPPING, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
+import { privateFcTriggerUrl, originJwks, ORIGIN_VERSION_HEADER, ORIGIN_VERSION_CLAIM_MAPPING, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 import { appsOpenApiCredentials, appsRegion, type AppsOssProfile } from "./apps-oss.js";
@@ -438,6 +438,78 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
   function codeLocation(ossObjectName: string) {
     return new $fc.InputCodeLocation({ ossBucketName: cfg.bucket, ossObjectName });
   }
+  async function writeHttpTrigger<T>(stage: string, functionName: string, triggerConfig: string, verify: () => Promise<T>): Promise<T> {
+    let operation = "createTrigger";
+    return originCall(stage, () => retryOriginPropagation(async () => {
+      operation = "createTrigger";
+      try {
+        await client.createTrigger(functionName, new $fc.CreateTriggerRequest({
+          body: new $fc.CreateTriggerInput({ triggerName: "http", triggerType: "http", triggerConfig }),
+        }));
+      } catch (e) {
+        if (!isAlreadyExists(e)) throw e;
+        operation = "updateTrigger";
+        await client.updateTrigger(functionName, "http", new $fc.UpdateTriggerRequest({ body: new $fc.UpdateTriggerInput({ triggerConfig }) }));
+      }
+      operation = "getTrigger";
+      return verify();
+    }), () => operation);
+  }
+
+  async function readPrivateTrigger(functionName: string, target: OriginTarget): Promise<string> {
+    const config = requireOriginConfig(cfg);
+    resolveAppFunctionName({ ...target, fcFunctionName: functionName });
+    const trigger = await client.getTrigger(functionName, "http");
+    const actual = jsonObject(trigger?.body?.triggerConfig);
+    const auth = jsonObject(actual?.authConfig);
+    const fields = jwtDrift(actual?.authType, auth && {
+      jwks: auth.JWKS, tokenLookup: auth.TokenLookup, claimPassBy: auth.ClaimPassBy,
+    }, config, target);
+    if (actual?.disableURLInternet !== true) fields.push("disableURLInternet");
+    const endpoint = privateFcTriggerUrl(trigger?.body?.httpTrigger?.urlIntranet, cfg.region);
+    if (!endpoint) fields.push("originEndpoint");
+    if (fields.length || !endpoint) throw driftError(fields);
+    return endpoint;
+  }
+
+  async function verifyExtraEntrypoints(
+    functionName: string,
+    allowCustomDomain: (domain: string) => Promise<boolean>,
+    drift?: string[],
+  ): Promise<void> {
+    const fields = drift ?? [];
+    // Lists are account scoped: scan every page, match routes, and never mutate aliases.
+    async function pages(operation: string, field: string, request: (token?: string) => Promise<any>, visit: (item: any) => Promise<void>) {
+      let token: string | undefined;
+      const seen = new Set<string>();
+      do {
+        const response = await originCall(operation, () => request(token));
+        const items = response?.body?.[field], next = response?.body?.nextToken;
+        if (!Array.isArray(items) || (next !== undefined && next !== null && typeof next !== "string")) throw new OriginProviderError(operation);
+        for (const item of items) await visit(item);
+        token = next || undefined;
+        if (token && seen.has(token)) throw new OriginProviderError(operation);
+        if (token) seen.add(token);
+      } while (token);
+    }
+    // Temporary workaround for cn-shenzhen signed list timeouts with limit > 1.
+    // Keep full nextToken traversal; see docs/testing/2026-10-05-fc-list-timeout.md.
+    await pages("listTriggers", "triggers", token => client.listTriggers(functionName, new $fc.ListTriggersRequest({ limit: 1, nextToken: token })), async item => {
+      if (!item || typeof item.triggerType !== "string" || typeof item.triggerName !== "string") throw new OriginProviderError("listTriggers");
+      if (item.triggerType !== "http" || item.triggerName === "http") return;
+      // The normal deploy owns only the standard HTTP trigger; every extra
+      // HTTP entrypoint is drift, even when it appears independently protected.
+      fields.push("extraHttpTriggers");
+    });
+    await pages("listCustomDomains", "customDomains", token => client.listCustomDomains(new $fc.ListCustomDomainsRequest({ limit: 1, nextToken: token })), async item => {
+      const routes = item?.routeConfig?.routes;
+      if (typeof item?.domainName !== "string" || !Array.isArray(routes) || routes.some((route: any) => typeof route?.functionName !== "string")) throw new OriginProviderError("listCustomDomains");
+      if (!routes.some((route: any) => route.functionName === functionName)) return;
+      if (!await allowCustomDomain(item.domainName)) fields.push("customDomainAliases");
+    });
+    if (!drift && fields.length) throw driftError(fields);
+  }
+
   return {
     async ensureFunction(functionName: string, args: EnsureFunctionArgs): Promise<void> {
       let exists = true;
@@ -505,25 +577,49 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
     },
     async ensureHttpTrigger(functionName: string): Promise<{ internetUrlDisabled: true }> {
       requireOriginConfig(cfg);
-      const triggerConfig = JSON.stringify({ authType: "anonymous", disableURLInternet: true, methods: HTTP_METHODS });
-      // Keep the HTTP trigger for domain routing, but never publish its default URL.
-      let operation = "createTrigger";
-      await originCall("ensureHttpTrigger", () => retryOriginPropagation(async () => {
-        operation = "createTrigger";
-        try {
-          await client.createTrigger(functionName, new $fc.CreateTriggerRequest({
-            body: new $fc.CreateTriggerInput({ triggerName: "http", triggerType: "http", triggerConfig }),
-          }));
-        } catch (e) {
-          if (!isAlreadyExists(e)) throw e;
-          operation = "updateTrigger";
-          await client.updateTrigger(functionName, "http", new $fc.UpdateTriggerRequest({ body: new $fc.UpdateTriggerInput({ triggerConfig }) }));
-        }
-        operation = "getTrigger";
+      return writeHttpTrigger("ensureHttpTrigger", functionName, JSON.stringify({ authType: "anonymous", disableURLInternet: true, methods: HTTP_METHODS }), async () => {
         const trigger = await client.getTrigger(functionName, "http");
         if (jsonObject(trigger?.body?.triggerConfig)?.disableURLInternet !== true) throw driftError(["disableURLInternet"]);
-      }), () => operation);
-      return { internetUrlDisabled: true };
+        return { internetUrlDisabled: true };
+      });
+    },
+
+    async ensurePrivateOrigin(functionName: string, target: OriginTarget): Promise<string> {
+      const config = requireOriginConfig(cfg);
+      resolveAppFunctionName({ ...target, fcFunctionName: functionName });
+      await verifyExtraEntrypoints(functionName, async () => false);
+      const jwt = jwtInfo(config, target);
+      const endpoint = await writeHttpTrigger("ensurePrivateOrigin", functionName, JSON.stringify({
+        authType: "jwt",
+        disableURLInternet: true,
+        methods: HTTP_METHODS,
+        authConfig: { JWKS: jwt.jwks, TokenLookup: jwt.tokenLookup, ClaimPassBy: jwt.claimPassBy },
+      }), () => readPrivateTrigger(functionName, target));
+      return endpoint;
+    },
+
+    readPrivateOrigin(functionName: string, target: OriginTarget) {
+      return originCall("getTrigger", () => readPrivateTrigger(functionName, target));
+    },
+
+    async readPrivateOriginSecurity(functionName: string, target: OriginTarget, storedEndpoint: string): Promise<OriginSecuritySummary> {
+      const summary: OriginSecuritySummary = { status: "unavailable", internetUrlDisabled: null, customDomainAuth: "none", httpsOnly: null, driftFields: [] };
+      try {
+        const endpoint = await this.readPrivateOrigin(functionName, target);
+        summary.internetUrlDisabled = true;
+        summary.httpsOnly = true;
+        if (endpoint !== privateFcTriggerUrl(storedEndpoint, cfg.region)) summary.driftFields.push("originEndpoint");
+        await verifyExtraEntrypoints(functionName, async () => false, summary.driftFields);
+        summary.status = summary.driftFields.length ? "drift" : "protected";
+      } catch (error) {
+        const message = (error as Error)?.message ?? "";
+        const prefix = "FC origin security drift: ";
+        summary.status = message.startsWith(prefix) ? "drift" : "unavailable";
+        summary.driftFields.push(...(message.startsWith(prefix)
+          ? message.slice(prefix.length).split(", ")
+          : [error instanceof OriginProviderError ? error.operation : "originAuth"]));
+      }
+      return summary;
     },
 
     /** Configure only the current app's controlled domain, then verify all target mappings. */
@@ -569,36 +665,11 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         summary.httpsOnly = domain?.body?.protocol ? domain.body.protocol === "HTTPS" : null;
         summary.driftFields.push(...domainDrift(domain?.body, functionName, config, target));
 
-        // Lists are account scoped: scan every page, match routes, and never mutate aliases.
-        async function pages(operation: string, field: string, request: (token?: string) => Promise<any>, visit: (item: any) => Promise<void>) {
-          let token: string | undefined;
-          const seen = new Set<string>();
-          do {
-            const response = await originCall(operation, () => request(token));
-            const items = response?.body?.[field], next = response?.body?.nextToken;
-            if (!Array.isArray(items) || (next !== undefined && next !== null && typeof next !== "string")) throw new OriginProviderError(operation);
-            for (const item of items) await visit(item);
-            token = next || undefined;
-            if (token && seen.has(token)) throw new OriginProviderError(operation);
-            if (token) seen.add(token);
-          } while (token);
-        }
-        // Temporary workaround for cn-shenzhen signed list timeouts with limit > 1.
-        // Keep full nextToken traversal; see docs/testing/2026-10-05-fc-list-timeout.md.
-        await pages("listTriggers", "triggers", token => client.listTriggers(functionName, new $fc.ListTriggersRequest({ limit: 1, nextToken: token })), async item => {
-          if (!item || typeof item.triggerType !== "string" || typeof item.triggerName !== "string") throw new OriginProviderError("listTriggers");
-          if (item.triggerType !== "http" || item.triggerName === "http") return;
-          // The normal deploy owns only the standard HTTP trigger; every extra
-          // HTTP entrypoint is drift, even when it appears independently protected.
-          summary.driftFields.push("extraHttpTriggers");
-        });
-        await pages("listCustomDomains", "customDomains", token => client.listCustomDomains(new $fc.ListCustomDomainsRequest({ limit: 1, nextToken: token })), async item => {
-          const routes = item?.routeConfig?.routes;
-          if (typeof item?.domainName !== "string" || !Array.isArray(routes) || routes.some((route: any) => typeof route?.functionName !== "string")) throw new OriginProviderError("listCustomDomains");
-          if (item.domainName === domainName || !routes.some((route: any) => route.functionName === functionName)) return;
-          const alias: any = await originCall("getCustomDomain", () => client.getCustomDomain(item.domainName));
-          if (domainDrift(alias?.body, functionName, config, target, true).length) summary.driftFields.push("customDomainAliases");
-        });
+        await verifyExtraEntrypoints(functionName, async domain => {
+          if (domain === domainName) return true;
+          const alias: any = await originCall("getCustomDomain", () => client.getCustomDomain(domain));
+          return domainDrift(alias?.body, functionName, config, target, true).length === 0;
+        }, summary.driftFields);
         summary.driftFields = [...new Set(summary.driftFields)];
         summary.status = summary.driftFields.length ? "drift" : "protected";
       } catch (error) {
