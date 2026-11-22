@@ -2,7 +2,7 @@ import { appManagedOriginHost, resolveAppFunctionName } from "../apps-function-i
 import { originJwks, ORIGIN_VERSION_HEADER, ORIGIN_VERSION_CLAIM_MAPPING, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
-import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
+import { appsOpenApiCredentials, appsRegion, type AppsOssProfile } from "./apps-oss.js";
 import { imageForPull } from "./apps-registry.js";
 import { ApiError } from "../http-utils.js";
 import {
@@ -45,7 +45,7 @@ export function resolveFcEndpoint(region = REGION()): string | null {
     // Alibaba endpoints carry their region. A private proxy has no discoverable
     // region, so it belongs only to the configured apps region, never any region
     // a catalog caller happens to request.
-    const endpointRegion = /(?:^|\.)([a-z0-9-]+)\.fc(?:-internal)?\.aliyuncs\.com$/.exec(hostname)?.[1] ?? REGION();
+    const endpointRegion = /(?:^|\.)([a-z0-9-]+?)(?:-internal)?\.fc(?:-internal)?\.aliyuncs\.com$/.exec(hostname)?.[1] ?? REGION();
     if (endpointRegion !== region) {
       throw Object.assign(new Error("FC endpoint does not match the requested region"), {
         code: "FcEndpointRegionMismatch",
@@ -80,8 +80,7 @@ export function fcEndpoint(region = REGION()): string {
 export function getFcClient(profile?: AppsOssProfile): FcClientInstance {
   const endpoint = fcEndpoint(profile?.region);
   return new FcClient.default(new Config({
-    accessKeyId: profile?.accessKeyId ?? process.env.ACCESS_KEY_ID,
-    accessKeySecret: profile?.accessKeySecret ?? process.env.ACCESS_KEY_SECRET,
+    ...appsOpenApiCredentials(profile),
     regionId: profile?.region ?? REGION(),
     endpoint,
   }) as any);

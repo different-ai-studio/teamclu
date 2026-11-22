@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { ListObjectsV2Command, type S3Client } from "@aws-sdk/client-s3";
 import {
   appFilesPrefix,
+  appsRequestCredentials,
   appStorageBucket,
   defaultStorageQuotaBytes,
   type AppsOssProfile,
@@ -141,12 +142,13 @@ export async function assumeAppStorageRole(
   deps: AssumeRoleDeps = {},
 ): Promise<AppStorageCredentials> {
   const doFetch = deps.fetchImpl ?? fetch;
+  const credentials = await appsRequestCredentials(profile);
   const now = (deps.now ?? (() => new Date()))();
   const params: Record<string, string> = {
     Action: "AssumeRole",
     Version: "2015-04-01",
     Format: "JSON",
-    AccessKeyId: profile.accessKeyId,
+    AccessKeyId: credentials.accessKeyId,
     SignatureMethod: "HMAC-SHA1",
     SignatureVersion: "1.0",
     SignatureNonce: (deps.nonce ?? randomUUID)(),
@@ -156,8 +158,10 @@ export async function assumeAppStorageRole(
     Policy: buildAppStoragePolicy(input.bucket, input.appId),
     DurationSeconds: String(input.durationSeconds ?? 3600),
   };
-  const body = signRpcV1(params, profile.accessKeySecret);
-  const res = await doFetch("https://sts.aliyuncs.com/", {
+  if (credentials.securityToken) params.SecurityToken = credentials.securityToken;
+  const body = signRpcV1(params, credentials.accessKeySecret);
+  const stsEndpoint = profile.rrsa?.stsEndpoint ?? "sts.aliyuncs.com";
+  const res = await doFetch(`https://${stsEndpoint}/`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,

@@ -11,6 +11,7 @@
     "openapi:types": "openapi-typescript ../../docs/openapi/teamclu-api.v1.yaml --output /tmp/teamclu-api.v1.d.ts"
   },
   "dependencies": {
+    "@alicloud/credentials": "^2.4.4",
     "@alicloud/dysmsapi20170525": "^4.5.1",
     "@alicloud/fc20230330": "^4.7.6",
     "@alicloud/openapi-client": "^0.4.12",
