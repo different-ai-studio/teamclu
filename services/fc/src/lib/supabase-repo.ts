@@ -3913,17 +3913,57 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async patchSession(sessionId, patch) {
-      const update: any = {};
-      if (patch.title !== undefined) update.title = patch.title;
-      if (patch.summary !== undefined) update.summary = patch.summary;
-      if (patch.archivedAt !== undefined) update.archived_at = patch.archivedAt;
-      if (patch.mode !== undefined) update.mode = patch.mode;
-      if (Object.keys(update).length === 0) {
+      const rest: any = {};
+      if (patch.summary !== undefined) rest.summary = patch.summary;
+      if (patch.archivedAt !== undefined) rest.archived_at = patch.archivedAt;
+      if (patch.mode !== undefined) rest.mode = patch.mode;
+      const lockTitle = patch.titleLocked === true && typeof patch.title === "string";
+      const generatedTitle = typeof patch.title === "string" && !lockTitle;
+
+      if (lockTitle) {
+        const { data, error } = await supabase
+          .from("sessions")
+          .update({ ...rest, title: patch.title, title_locked: true })
+          .eq("id", sessionId)
+          .select(SESSION_FULL_COLUMNS)
+          .maybeSingle();
+        if (error) throw error;
+        return data ? { ...mapSessionFull(data), titleLocked: true, titleApplied: true } : null;
+      }
+
+      if (generatedTitle) {
+        // One UPDATE ... WHERE id AND title_locked = false. A rename that
+        // commits first matches zero rows; the lock stays set.
+        const { data, error } = await supabase.rpc("apply_generated_session_title", {
+          p_session_id: sessionId,
+          p_title: patch.title,
+        });
+        if (error) throw error;
+        const written = Array.isArray(data) ? data[0] : data;
+        if (!written) return null;
+        if (Object.keys(rest).length > 0) {
+          const { error: restError } = await supabase
+            .from("sessions")
+            .update(rest)
+            .eq("id", sessionId);
+          if (restError) throw restError;
+        }
+        const current = await this.getSession(sessionId);
+        if (!current) return null;
+        return {
+          ...current,
+          title: written.title ?? current.title,
+          titleLocked: written.title_locked === true,
+          titleApplied: written.applied === true && (written.title ?? current.title) === patch.title,
+        };
+      }
+
+      if (Object.keys(rest).length === 0) {
         return this.getSession(sessionId);
       }
       const { data, error } = await supabase
         .from("sessions")
-        .update(update)
+        .update(rest)
         .eq("id", sessionId)
         .select(SESSION_FULL_COLUMNS)
         .maybeSingle();

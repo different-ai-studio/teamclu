@@ -372,16 +372,29 @@ impl DaemonServer {
         if !should_adopt_generated_session_title(&current, title) {
             return;
         }
+        let applied = match self.backend.update_session_title(session_id, title).await {
+            Ok(applied) => applied,
+            Err(e) => {
+                tracing::warn!(session_id, error = %e, "session title update failed");
+                return;
+            }
+        };
+        if !applied {
+            // The row was locked by a manual rename while this title was in
+            // flight. Leave the cloud title alone and do not announce it.
+            tracing::info!(
+                session_id,
+                title,
+                "generated session title skipped; title_locked"
+            );
+            return;
+        }
         tracing::info!(
             session_id,
             old_title = %current,
             new_title = %title,
             "adopting agent-generated session title"
         );
-        if let Err(e) = self.backend.update_session_title(session_id, title).await {
-            tracing::warn!(session_id, error = %e, "session title update failed");
-            return;
-        }
         let actor_id = self.backend.actor_id().to_string();
         if let Some(tc) = self.teamclu.as_mut() {
             if let Some(session) = tc.sessions.find_by_id_mut(session_id) {
@@ -1518,6 +1531,10 @@ impl DaemonServer {
 /// Daemon LLM titles overwrite placeholders *and* the frontend first-message
 /// auto-title. Refuse Cron-minted titles and an empty/unknown current title
 /// (cache miss — cron sessions often never land in the local store).
+///
+/// A title a person typed is not detectable from the string: the first-message
+/// summary looks the same. The cloud row's `title_locked` flag is what stops
+/// the write. This function only decides whether to attempt it.
 pub(crate) fn should_adopt_generated_session_title(current: &str, new_title: &str) -> bool {
     let current = current.trim();
     let new_title = new_title.trim();
@@ -1601,6 +1618,12 @@ mod default_title_tests {
             "帮我查一下深圳美食",
             "深圳美食推荐"
         ));
+        // A person's title is not special here. The cloud `title_locked`
+        // column refuses the write and the caller must not publish.
+        assert!(should_adopt_generated_session_title(
+            "项目讨论",
+            "深圳美食推荐"
+        ));
         assert!(should_adopt_generated_session_title("New chat", "Standup"));
         assert!(!should_adopt_generated_session_title("", "Standup"));
         assert!(!should_adopt_generated_session_title(
@@ -1620,6 +1643,104 @@ mod default_title_tests {
             "帮我查一下深圳美食",
             "[TeamClu Instructions — follow for all replies in this session. Do not acknowled"
         ));
+        assert!(should_adopt_generated_session_title(
+            "Agent (09:30)",
+            "Launch Plan"
+        ));
+        assert!(!should_adopt_generated_session_title("Agent (09:30)", ""));
+        assert!(!should_adopt_generated_session_title("", "Launch Plan"));
+    }
+}
+
+#[cfg(test)]
+mod adopt_publish_tests {
+    use std::sync::Arc;
+
+    use chrono::Utc;
+
+    use crate::backend::mock::MockBackend;
+    use crate::daemon::server::tests::test_server_with_cloud_api;
+    use crate::teamclu::StoredSession;
+
+    fn session(id: &str, title: &str) -> StoredSession {
+        StoredSession {
+            session_id: id.to_string(),
+            team_id: "team-test".to_string(),
+            title: title.to_string(),
+            created_by: "user".to_string(),
+            created_at: Utc::now(),
+            summary: String::new(),
+            idea_id: String::new(),
+            participants: Vec::new(),
+            primary_agent_id: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_generated_title_does_not_replace_or_publish() {
+        let mock = MockBackend::with_identity("team-test", "agent-actor");
+        mock.state().refuse_generated_title = true;
+        let mut fixture = test_server_with_cloud_api(Arc::new(mock.clone()));
+        fixture
+            .server
+            .teamclu
+            .as_mut()
+            .unwrap()
+            .sessions
+            .upsert(session("sess-lock", "Standup (09:30)"));
+        fixture
+            .server
+            .teamclu
+            .as_mut()
+            .unwrap()
+            .sessions
+            .upsert(session("sess-cron", "Cron: nightly"));
+        fixture
+            .server
+            .teamclu
+            .as_mut()
+            .unwrap()
+            .sessions
+            .upsert(session("sess-empty", ""));
+
+        fixture
+            .server
+            .maybe_adopt_generated_session_title("sess-lock", "深圳美食推荐")
+            .await;
+        fixture
+            .server
+            .maybe_adopt_generated_session_title("sess-cron", "Launch Plan")
+            .await;
+        fixture
+            .server
+            .maybe_adopt_generated_session_title("sess-empty", "Launch Plan")
+            .await;
+        fixture
+            .server
+            .maybe_adopt_generated_session_title("sess-lock", "")
+            .await;
+
+        let title = |id: &str| {
+            fixture
+                .server
+                .teamclu
+                .as_ref()
+                .unwrap()
+                .sessions
+                .find_by_id(id)
+                .unwrap()
+                .title
+                .clone()
+        };
+        assert_eq!(title("sess-lock"), "Standup (09:30)");
+        assert_eq!(title("sess-cron"), "Cron: nightly");
+        assert_eq!(title("sess-empty"), "");
+        let writes = mock.state().generated_title_writes.clone();
+        assert_eq!(
+            writes,
+            vec![("sess-lock".to_string(), "深圳美食推荐".to_string())],
+            "only the unlocked-looking row is written, and a refusal must not publish"
+        );
     }
 }
 

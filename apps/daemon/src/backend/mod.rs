@@ -825,10 +825,14 @@ pub trait Backend: Send + Sync {
         request_id: &str,
     ) -> BackendResult<()>;
 
-    /// Update a session's title. Default is a no-op so test doubles and
-    /// backends without session storage don't have to care.
-    async fn update_session_title(&self, _session_id: &str, _title: &str) -> BackendResult<()> {
-        Ok(())
+    /// Update a session's title from a generated title.
+    ///
+    /// `Ok(true)` means the cloud row changed. `Ok(false)` means the row is
+    /// title-locked (a person renamed it) and the title was left alone.
+    /// The default reports success so test doubles that ignore titles still
+    /// look like an unlocked write.
+    async fn update_session_title(&self, _session_id: &str, _title: &str) -> BackendResult<bool> {
+        Ok(true)
     }
 
     /// Add (or ignore-if-present) a participant on `session_participants`.

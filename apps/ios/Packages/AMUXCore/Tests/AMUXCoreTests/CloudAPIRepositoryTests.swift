@@ -396,6 +396,31 @@ struct CloudAPIRepositoryTests {
         #expect(request.httpBody == nil)
     }
 
+    @Test
+    func renameSessionLocksTheTitle() async throws {
+        let recorder = RequestRecorder()
+        let client = CloudAPIClient(
+            configuration: configuration(),
+            accessToken: { "access-token" },
+            send: { request in
+                await recorder.append(request)
+                let url = URL(string: "https://fc.example.com")!
+                let http = try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
+                return (Data("{}".utf8), http)
+            }
+        )
+        let repo = CloudAPISessionsRepository(client: client)
+        try await repo.renameSession(sessionId: "session-1", title: "Standup (09:30)")
+
+        let request = try #require(await recorder.requests.first)
+        #expect(request.httpMethod == "PATCH")
+        #expect(request.url?.path == "/v1/sessions/session-1")
+        let body = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["title"] as? String == "Standup (09:30)")
+        #expect(json["titleLocked"] as? Bool == true)
+    }
+
     private func configuration() -> CloudAPIConfiguration {
         CloudAPIConfiguration(
             baseURL: URL(string: "https://fc.example.com")!

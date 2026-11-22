@@ -364,7 +364,10 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
     },
 
     async renameSession(sessionId: string, title: string): Promise<void> {
-      await client.patch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { title });
+      await client.patch(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
+        title,
+        titleLocked: true,
+      });
     },
 
     async setSessionArchived(sessionId: string, archivedAt: string | null): Promise<void> {

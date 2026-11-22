@@ -172,6 +172,11 @@ pub struct MockState {
     /// What `cloud_base_url` answers. `None` (the default) is the mock's
     /// "no HTTP surface"; a test standing up a fake Cloud API sets its address.
     pub cloud_base_url: Option<String>,
+    /// When true, `update_session_title` reports the cloud row as title-locked
+    /// (`Ok(false)`) instead of applying the generated title.
+    pub refuse_generated_title: bool,
+    /// `(session_id, title)` pairs passed to `update_session_title`.
+    pub generated_title_writes: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -817,6 +822,14 @@ impl Backend for MockBackend {
             .get(agent_actor_id)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn update_session_title(&self, session_id: &str, title: &str) -> BackendResult<bool> {
+        let mut state = self.state.lock().unwrap();
+        state
+            .generated_title_writes
+            .push((session_id.to_string(), title.to_string()));
+        Ok(!state.refuse_generated_title)
     }
 
     async fn upsert_session_participant(

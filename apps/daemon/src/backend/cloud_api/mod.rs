@@ -576,6 +576,37 @@ impl CloudApiBackend {
         unreachable!("cloud_api patch retry loop exhausted")
     }
 
+    pub(super) async fn patch_json<Req, Resp>(&self, path: &str, body: &Req) -> BackendResult<Resp>
+    where
+        Req: Serialize + ?Sized,
+        Resp: for<'de> Deserialize<'de>,
+    {
+        for is_retry in [false, true] {
+            let token = self.access_token().await?;
+            let url = self.cloud_url(path);
+            let resp = self
+                .send_with_doh_fallback(&url, |http| {
+                    http.patch(&url)
+                        .bearer_auth(&token)
+                        .header("x-request-id", request_id())
+                        .json(body)
+                })
+                .await
+                .map_err(network_error)?;
+            match decode_response(resp).await {
+                Err(BackendError::Auth(_)) if !is_retry => {
+                    tracing::debug!(
+                        path,
+                        "cloud_api: 401 unauthorized, invalidating cached access token and retrying once"
+                    );
+                    self.invalidate_access_token_cache();
+                }
+                result => return result,
+            }
+        }
+        unreachable!("cloud_api patch_json retry loop exhausted")
+    }
+
     /// PUT with the response body discarded. Used for idempotent upserts whose
     /// only interesting outcome is whether the write landed.
     pub(super) async fn put_no_content<Req>(&self, path: &str, body: &Req) -> BackendResult<()>
@@ -1775,23 +1806,38 @@ impl Backend for CloudApiBackend {
         })
     }
 
-    async fn update_session_title(&self, session_id: &str, title: &str) -> BackendResult<()> {
+    async fn update_session_title(&self, session_id: &str, title: &str) -> BackendResult<bool> {
         #[derive(serde::Serialize)]
         struct Body<'a> {
             title: &'a str,
         }
+        #[derive(serde::Deserialize)]
+        struct Patched {
+            title: String,
+            #[serde(default, rename = "titleApplied")]
+            title_applied: Option<bool>,
+        }
         let url = self.cloud_url(&format!("/v1/sessions/{session_id}"));
+        // Title only: FC runs `UPDATE ... WHERE id AND title_locked = false`
+        // and does not clear the lock. `titleApplied: false` is a locked row.
         let result = self
-            .patch_no_content(&format!("/v1/sessions/{session_id}"), &Body { title })
+            .patch_json::<_, Patched>(&format!("/v1/sessions/{session_id}"), &Body { title })
             .await;
+        let applied = match &result {
+            Ok(patched) => patched
+                .title_applied
+                .unwrap_or_else(|| patched.title.trim() == title.trim()),
+            Err(_) => false,
+        };
         tracing::info!(
             session_id,
             title,
             url = %url,
             ok = result.is_ok(),
+            applied,
             "update_session_title PATCH result"
         );
-        result
+        result.map(|_| applied)
     }
 
     async fn upsert_session_participant(
@@ -3339,5 +3385,51 @@ mod tests {
         let backend = CloudApiBackend::new(config(&server));
         let result = backend.get_effective_default_agent("team-1").await.unwrap();
         assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn update_session_title_reports_when_the_row_is_locked() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("PATCH"))
+            .and(path("/v1/sessions/session-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "session-1",
+                "title": "Standup (09:30)",
+                "titleLocked": true,
+                "titleApplied": false
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = CloudApiBackend::new(config(&server));
+        let applied = backend
+            .update_session_title("session-1", "深圳美食推荐")
+            .await
+            .unwrap();
+        assert!(!applied, "a locked row must not count as applied");
+    }
+
+    #[tokio::test]
+    async fn update_session_title_reports_an_unlocked_write() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("PATCH"))
+            .and(path("/v1/sessions/session-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "session-1",
+                "title": "深圳美食推荐",
+                "titleLocked": false,
+                "titleApplied": true
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = CloudApiBackend::new(config(&server));
+        let applied = backend
+            .update_session_title("session-1", "深圳美食推荐")
+            .await
+            .unwrap();
+        assert!(applied);
     }
 }
