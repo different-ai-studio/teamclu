@@ -1,4 +1,5 @@
 import { exceedsNonImageLimitBySize } from "@/lib/attachments/attachment-constants";
+import type { LocalPathAttachment } from "@/lib/attachments/composer-attachment";
 
 function mimeFromExt(ext: string): string {
   switch (ext.toLowerCase()) {
@@ -23,8 +24,8 @@ function mimeFromExt(ext: string): string {
 
 interface ReadDesktopFilesResult {
   files: File[];
-  /** Filenames rejected because they exceed the non-image size limit. */
-  oversize: string[];
+  /** Non-image files over 20MB. Bytes stay on disk; only the path is kept. */
+  local: LocalPathAttachment[];
   /** Filenames that could not be read. */
   failed: string[];
 }
@@ -35,7 +36,7 @@ export async function readDesktopPathsAsFiles(
 ): Promise<ReadDesktopFilesResult> {
   const { readFile, stat } = await import("@tauri-apps/plugin-fs");
   const files: File[] = [];
-  const oversize: string[] = [];
+  const local: LocalPathAttachment[] = [];
   const failed: string[] = [];
 
   for (const path of paths) {
@@ -43,7 +44,7 @@ export async function readDesktopPathsAsFiles(
     try {
       const info = await stat(path);
       if (exceedsNonImageLimitBySize(name, info.size)) {
-        oversize.push(name);
+        local.push({ name, size: info.size, path });
         continue;
       }
       const bytes = await readFile(path);
@@ -56,5 +57,5 @@ export async function readDesktopPathsAsFiles(
     }
   }
 
-  return { files, oversize, failed };
+  return { files, local, failed };
 }

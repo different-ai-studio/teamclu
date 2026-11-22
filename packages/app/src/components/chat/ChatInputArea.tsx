@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useTranslation } from 'react-i18next';
-import { FileText, X } from "lucide-react";
+import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   PromptInput,
@@ -44,9 +44,13 @@ import { useSessionStore } from "@/stores/session-store";
 import { useComposerInsertStore } from "@/stores/composer-insert";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
-import { isImageFile } from "@/lib/attachments/attachment-constants";
+import { exceedsNonImageLimit, isImageFile } from "@/lib/attachments/attachment-constants";
+import type { ComposerAttachment, LocalPathAttachment } from "@/lib/attachments/composer-attachment";
+import {
+  ComposerCloudFileChip,
+  ComposerLocalFileChip,
+} from "@/components/chat/message-attachment-chip";
 import { textHasSessionAttachmentTokens } from "@/lib/attachments/session-attachment-token";
-import { exceedsNonImageLimit } from "@/lib/attachments/attachment-constants";
 import {
   VoiceInputControl,
   VoiceRecordingStatus,
@@ -186,8 +190,8 @@ interface ChatInputAreaProps {
   mentionSessionId?: string | null;
   compact: boolean;
   /** Draft text is owned by the session store so typing does not re-render ChatPanel. */
-  pendingFiles: File[];
-  onAppendPendingFiles: (files: File[]) => void;
+  pendingFiles: ComposerAttachment[];
+  onAppendPendingFiles: (files: ComposerAttachment[]) => void;
   onRemovePendingFile: (index: number) => void;
   onSubmit: (message: PromptInputMessage) => void;
   onVoiceSegment: (
@@ -238,7 +242,7 @@ function ComposerSubmitButton({
   pendingFiles,
 }: {
   inputValue: string;
-  pendingFiles: File[];
+  pendingFiles: ComposerAttachment[];
 }) {
   const { mentions } = usePromptInputContext();
   const normalizedInput = String(inputValue ?? "");
@@ -451,12 +455,19 @@ export function ChatInputArea({
       });
     }
     if (accepted.length > 0) {
-      onAppendPendingFiles(accepted);
+      onAppendPendingFiles(accepted.map((file) => ({ kind: "cloud", file })));
     }
   }, [onAppendPendingFiles, t]);
 
+  const handleLocalPaths = React.useCallback((items: LocalPathAttachment[]) => {
+    if (items.length === 0) return;
+    onAppendPendingFiles(items.map((item) => ({ kind: "local", ...item })));
+  }, [onAppendPendingFiles]);
+
   const imagePreviewUrls = React.useMemo(() => {
-    return pendingFiles.filter(isImageFile).map((file) => URL.createObjectURL(file));
+    return pendingFiles
+      .filter((item) => item.kind === "cloud" && isImageFile(item.file))
+      .map((item) => URL.createObjectURL(item.kind === "cloud" ? item.file : new File([], "")));
   }, [pendingFiles]);
 
   // Revoke preview URLs on cleanup
@@ -596,6 +607,7 @@ export function ChatInputArea({
             undoScope={activeSessionId ?? (draftPreselectedActor ? `actor:${draftPreselectedActor.id}` : "draft")}
             onSubmit={handleSubmit}
             onFilesChange={handleIncomingFiles}
+            onLocalPathsChange={handleLocalPaths}
             onFilePathsDrop={handleFilePathsDrop}
             onHashTrigger={REDESIGN_ON ? (query) => {
               setHashSearchQuery(query);
@@ -627,15 +639,28 @@ export function ChatInputArea({
           <PageLinkInsertBridge />
           {/* Agent chips: removed — agent is shown in AgentSelectorDock (bottom-left) instead */}
 
-          {(pendingFiles.length > 0) && (
-            <div className="flex flex-wrap gap-2 px-4 pt-3 pb-2">
-              {pendingFiles.map((file, index) => {
+          {pendingFiles.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-4 pt-3 pb-2">
+              {pendingFiles.map((item, index) => {
+                if (item.kind === "local") {
+                  return (
+                    <ComposerLocalFileChip
+                      key={`pending-local-${item.path}-${index}`}
+                      name={item.name}
+                      size={item.size}
+                      path={item.path}
+                      onRemove={() => onRemovePendingFile(index)}
+                    />
+                  );
+                }
+
+                const file = item.file;
                 if (isImageFile(file)) {
                   const previewIndex = pendingFiles
                     .slice(0, index + 1)
-                    .filter(isImageFile).length - 1;
+                    .filter((entry) => entry.kind === "cloud" && isImageFile(entry.file)).length - 1;
                   return (
-                    <div key={`pending-img-${file.name}-${index}`} className="relative group">
+                    <div key={`pending-img-${file.name}-${index}`} title={file.name} className="relative group shrink-0">
                       <div className="relative size-12 rounded border bg-muted/50 overflow-hidden">
                         <img
                           src={imagePreviewUrls[previewIndex]}
@@ -650,29 +675,16 @@ export function ChatInputArea({
                           <X className="h-2.5 w-2.5" />
                         </button>
                       </div>
-                      <span className="block text-[9px] text-muted-foreground truncate max-w-12 mt-0.5 text-center">
-                        {file.name}
-                      </span>
                     </div>
                   );
                 }
 
                 return (
-                  <div
+                  <ComposerCloudFileChip
                     key={`pending-file-${file.name}-${index}`}
-                    title={file.name}
-                    className="relative group flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border bg-muted/50 min-w-0 max-w-[280px]"
-                  >
-                    <FileText className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                    <span className="text-xs font-medium truncate leading-tight">{file.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => onRemovePendingFile(index)}
-                      className="ml-0.5 p-0.5 flex-shrink-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
+                    name={file.name}
+                    onRemove={() => onRemovePendingFile(index)}
+                  />
                 );
               })}
             </div>
@@ -734,7 +746,7 @@ export function ChatInputArea({
 
           <PromptInputFooter>
             <PromptInputTools>
-              <FileInputButton onFilesSelected={handleIncomingFiles} />
+              <FileInputButton onFilesSelected={handleIncomingFiles} onLocalPaths={handleLocalPaths} />
               <VoiceInputControl
                 sessionId={activeSessionId}
                 engagedAgents={engagedAgents}

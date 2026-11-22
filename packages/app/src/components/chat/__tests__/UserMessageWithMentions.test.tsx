@@ -113,9 +113,49 @@ describe('UserMessageWithMentions', () => {
     )
 
     const button = screen.getByRole('button')
-    expect(button).toHaveAttribute('title', '打开')
+    expect(button.getAttribute('title')).toContain('report.pdf')
+    expect(button.getAttribute('title')).toContain('打开')
     expect(screen.getByText('report.pdf')).toBeTruthy()
+    expect(screen.queryByText('云端')).toBeNull()
     expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByTestId('user-message-attachment-row')).toBeTruthy()
+  })
+
+  it('renders own local path attachments with a 本地 badge and opens on click', () => {
+    render(
+      <UserMessageWithMentions
+        userBubble="self"
+        content='[Attachment: big.zip] (path: C:\\Users\\me\\big.zip)'
+      />,
+    )
+
+    expect(screen.getByText('本地')).toBeTruthy()
+    expect(screen.getByText('big.zip').closest('button')).toBeTruthy()
+  })
+
+  it('parses attachment paths with parentheses without leaking suffix text', () => {
+    render(
+      <UserMessageWithMentions
+        userBubble="self"
+        content='[Attachment: CursorUserSetup (1).exe] (path: D:\\Downloads\\CursorUserSetup (1).exe)'
+      />,
+    )
+
+    expect(screen.getByText('CursorUserSetup (1).exe')).toBeTruthy()
+    expect(screen.queryByText('.exe)')).toBeNull()
+    expect(screen.queryByText('(1).exe)')).toBeNull()
+  })
+
+  it('renders peer local path attachments as non-interactive 对方本地 chips', () => {
+    render(
+      <UserMessageWithMentions
+        userBubble="other"
+        content='[Attachment: big.zip] (path: C:\\Users\\peer\\big.zip)'
+      />,
+    )
+
+    expect(screen.getByText('对方本地')).toBeTruthy()
+    expect(screen.getByText('big.zip').closest('button')).toBeNull()
   })
 
   it('renders agent mentions as a header instead of inline chips', () => {
