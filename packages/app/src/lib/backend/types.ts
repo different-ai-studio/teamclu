@@ -264,7 +264,11 @@ export interface SessionsBackend {
     participantWorkspaces?: Record<string, { workspaceId: string; workspacePath: string | null }>;
   }>;
   addParticipants(sessionId: string, actorIds: string[]): Promise<void>;
-  updateSessionTitle(sessionId: string, title: string): Promise<void>;
+  updateSessionTitle(
+    sessionId: string,
+    title: string,
+    options?: { lock?: boolean },
+  ): Promise<boolean>;
   archiveSession(sessionId: string, archivedAt: string): Promise<void>;
   getSessionParticipants(sessionId: string): Promise<SessionParticipant[]>;
   getSession(sessionId: string, teamId?: string | null): Promise<SessionDetailRow | null>;

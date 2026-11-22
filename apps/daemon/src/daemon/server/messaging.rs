@@ -372,16 +372,29 @@ impl DaemonServer {
         if !should_adopt_generated_session_title(&current, title) {
             return;
         }
+        let applied = match self.backend.update_session_title(session_id, title).await {
+            Ok(applied) => applied,
+            Err(e) => {
+                tracing::warn!(session_id, error = %e, "session title update failed");
+                return;
+            }
+        };
+        if !applied {
+            // The row was locked by a manual rename while this title was in
+            // flight. Leave the cloud title alone and do not announce it.
+            tracing::info!(
+                session_id,
+                title,
+                "generated session title skipped; title_locked"
+            );
+            return;
+        }
         tracing::info!(
             session_id,
             old_title = %current,
             new_title = %title,
             "adopting agent-generated session title"
         );
-        if let Err(e) = self.backend.update_session_title(session_id, title).await {
-            tracing::warn!(session_id, error = %e, "session title update failed");
-            return;
-        }
         let actor_id = self.backend.actor_id().to_string();
         if let Some(tc) = self.teamclu.as_mut() {
             if let Some(session) = tc.sessions.find_by_id_mut(session_id) {
@@ -1518,6 +1531,10 @@ impl DaemonServer {
 /// Daemon LLM titles overwrite placeholders *and* the frontend first-message
 /// auto-title. Refuse Cron-minted titles and an empty/unknown current title
 /// (cache miss — cron sessions often never land in the local store).
+///
+/// A title a person typed is not detectable from the string: the first-message
+/// summary looks the same. The cloud row's `title_locked` flag is what stops
+/// the write. This function only decides whether to attempt it.
 pub(crate) fn should_adopt_generated_session_title(current: &str, new_title: &str) -> bool {
     let current = current.trim();
     let new_title = new_title.trim();
@@ -1599,6 +1616,12 @@ mod default_title_tests {
         ));
         assert!(should_adopt_generated_session_title(
             "帮我查一下深圳美食",
+            "深圳美食推荐"
+        ));
+        // A person's title is not special here. The cloud `title_locked`
+        // column refuses the write and the caller must not publish.
+        assert!(should_adopt_generated_session_title(
+            "项目讨论",
             "深圳美食推荐"
         ));
         assert!(should_adopt_generated_session_title("New chat", "Standup"));

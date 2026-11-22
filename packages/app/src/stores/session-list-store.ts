@@ -347,7 +347,11 @@ interface State {
   initPinnedSessionIds: (teamId?: string | null) => void;
   toggleSessionPinned: (sessionId: string, teamId?: string | null) => void;
   addHighlightedSession: (sessionId: string, ttlMs?: number) => void;
-  updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
+  updateSessionTitle: (
+    sessionId: string,
+    title: string,
+    options?: { lock?: boolean },
+  ) => Promise<void>;
   archiveSession: (sessionId: string) => Promise<boolean>;
   /** Like archiveSession but does not surface failures on the store error field. */
   archiveSessionQuiet: (sessionId: string) => Promise<boolean>;
@@ -1137,15 +1141,24 @@ export const useSessionListStore = create<State>((set, get) => ({
       });
     }, ttlMs);
   },
-  updateSessionTitle: async (sessionId, title) => {
+  updateSessionTitle: async (sessionId, title, options) => {
     const trimmed = title.trim();
     if (!trimmed) return;
+    const lock = options?.lock === true;
+    if (lock) {
+      const { clearSessionAutoTitlePending } = await import("@/lib/session/session-auto-title");
+      clearSessionAutoTitlePending(sessionId);
+    }
+    let applied = true;
     try {
-      await getBackend().sessions.updateSessionTitle(sessionId, trimmed);
+      applied = lock
+        ? await getBackend().sessions.updateSessionTitle(sessionId, trimmed, { lock: true })
+        : await getBackend().sessions.updateSessionTitle(sessionId, trimmed);
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error) });
       return;
     }
+    if (applied === false) return;
     get().patchRow(sessionId, { title: trimmed });
   },
   archiveSession: async (sessionId) => {

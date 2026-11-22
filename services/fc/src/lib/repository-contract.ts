@@ -167,6 +167,31 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     const s = await repo.patchSession("session-1", { title: "Updated title" });
     assert.ok(s, "session should exist");
     assert.equal(s.title, "Updated title");
+    assert.equal(s.titleApplied, true);
+    assert.equal(s.titleLocked, false);
+  });
+
+  test("repository contract: a locked rename keeps the person's title", async () => {
+    const repo = createRepository();
+    const locked = await repo.patchSession("session-1", {
+      title: "Standup (09:30)",
+      titleLocked: true,
+    });
+    assert.equal(locked.title, "Standup (09:30)");
+    assert.equal(locked.titleLocked, true);
+    assert.equal(locked.titleApplied, true);
+
+    const generated = await repo.patchSession("session-1", { title: "深圳美食推荐" });
+    assert.equal(generated.title, "Standup (09:30)");
+    assert.equal(generated.titleLocked, true);
+    assert.equal(generated.titleApplied, false);
+
+    const renamedAgain = await repo.patchSession("session-1", {
+      title: "发布计划",
+      titleLocked: true,
+    });
+    assert.equal(renamedAgain.title, "发布计划");
+    assert.equal(renamedAgain.titleLocked, true);
   });
 
   test("repository contract: createSession returns session with participants", async () => {

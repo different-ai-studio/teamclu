@@ -663,6 +663,22 @@ describe("session-list-store", () => {
     expect(useSessionListStore.getState().rows[0].title).toBe("Renamed");
   });
 
+  it("locks a manual rename and does not keep a refused title locally", async () => {
+    mocks.updateSessionTitle.mockResolvedValueOnce(false);
+
+    const { useSessionListStore } = await import("./session-list-store");
+    useSessionListStore.setState({ rows: [sessionRow()] });
+
+    await useSessionListStore.getState().updateSessionTitle("session-1", "Standup (09:30)", {
+      lock: true,
+    });
+
+    expect(mocks.updateSessionTitle).toHaveBeenCalledWith("session-1", "Standup (09:30)", {
+      lock: true,
+    });
+    expect(useSessionListStore.getState().rows[0].title).not.toBe("Standup (09:30)");
+  });
+
   // This used to assert the opposite — that a locally remembered archived id is
   // dropped from hydrated rows no matter where the row came from. The list RPC
   // only returns rows with `archived_at is null`, so a row arriving from the

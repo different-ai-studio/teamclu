@@ -559,7 +559,7 @@ impl Backend for DeferredBackend {
             .await
     }
 
-    async fn update_session_title(&self, session_id: &str, title: &str) -> BackendResult<()> {
+    async fn update_session_title(&self, session_id: &str, title: &str) -> BackendResult<bool> {
         self.inner()?.update_session_title(session_id, title).await
     }
 

@@ -1,4 +1,5 @@
 import { buildAppAuthInfo } from "../src/lib/apps-auth-info.js";
+import { applySessionTitlePatch } from "../src/lib/session-title-lock.js";
 import { ApiError } from "../src/lib/http-utils.js";
 /** Contract gate — supabase-repo behaviour against a stub client. */
 import { test } from "node:test";
@@ -194,8 +195,11 @@ function contractRepo() {
     async patchSession(sessionId, patch) {
       const s = sessionStore.find(s => s.id === sessionId);
       if (!s) return null;
-      if (patch.title !== undefined) s.title = patch.title;
-      return s;
+      if (patch.title === undefined) return s;
+      const next = applySessionTitlePatch(s, patch);
+      s.title = next.title;
+      s.titleLocked = next.titleLocked;
+      return { ...s, titleLocked: next.titleLocked, titleApplied: next.titleApplied };
     },
     async createSession(input) {
       const id = input.id ?? "session-new";

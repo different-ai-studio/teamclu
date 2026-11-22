@@ -64,7 +64,7 @@ public actor CloudAPISessionsRepository: SessionsRepository {
         let encoded = sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId
         try await client.patchVoid(
             "/v1/sessions/\(encoded)",
-            body: CloudSessionRenameRequest(title: title)
+            body: CloudSessionRenameRequest(title: title, titleLocked: true)
         )
     }
 
@@ -79,6 +79,7 @@ public actor CloudAPISessionsRepository: SessionsRepository {
 
 private struct CloudSessionRenameRequest: Encodable, Sendable {
     let title: String
+    let titleLocked: Bool
 }
 
 /// `archivedAt` always encodes — an explicit JSON null clears the flag, which

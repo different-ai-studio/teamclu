@@ -1067,6 +1067,14 @@ paths:
               properties:
                 title:
                   type: string
+                titleLocked:
+                  type: boolean
+                  description: |
+                    Set true when a person renames the session. The server
+                    stores the title and sets `sessions.title_locked`. A
+                    generated title omits this field and is applied only
+                    while the row is unlocked (`UPDATE ... WHERE id = $1 AND
+                    title_locked = false`). The lock is not cleared.
                 mode:
                   type: string
                   enum: [solo, collab, control]
@@ -12025,6 +12033,17 @@ components:
           type: string
         title:
           type: string
+        titleLocked:
+          type: boolean
+          description: |
+            True after a person has renamed the session. Present on the
+            PATCH response when the request carried a title.
+        titleApplied:
+          type: boolean
+          description: |
+            Present on PATCH when `title` was sent. False when a generated
+            title was refused because `title_locked` is already true. The
+            response `title` is the title still stored.
         mode:
           type: string
           enum: [solo, collab, control]

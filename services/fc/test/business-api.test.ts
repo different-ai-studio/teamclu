@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { applySessionTitlePatch } from "../src/lib/session-title-lock.js";
 import {
   decodeCursor,
   encodeCursor,
@@ -927,7 +928,33 @@ test("PATCH /v1/sessions/:sessionId updates session", async () => {
   assert.equal(response.statusCode, 200);
   const body = JSON.parse(response.body);
   assert.equal(body.title, "New title");
+  assert.equal(body.titleApplied, true);
   assert.deepEqual(repo.calls[0], { method: "patchSession", sessionId: "session-1", patch: { title: "New title" } });
+});
+
+test("PATCH generated title does not replace a title locked by a person", async () => {
+  const repo = fakeRepo();
+  const locked = await handleBusinessApiRequest({
+    httpMethod: "PATCH",
+    path: "/v1/sessions/session-1",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ title: "Standup (09:30)", titleLocked: true }),
+  }, { createRepository: () => repo });
+  assert.equal(locked.statusCode, 200);
+  assert.equal(JSON.parse(locked.body).title, "Standup (09:30)");
+  assert.equal(JSON.parse(locked.body).titleApplied, true);
+
+  const generated = await handleBusinessApiRequest({
+    httpMethod: "PATCH",
+    path: "/v1/sessions/session-1",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ title: "深圳美食推荐" }),
+  }, { createRepository: () => repo });
+  assert.equal(generated.statusCode, 200);
+  const body = JSON.parse(generated.body);
+  assert.equal(body.title, "Standup (09:30)");
+  assert.equal(body.titleLocked, true);
+  assert.equal(body.titleApplied, false);
 });
 
 test("POST /v1/sessions creates session", async () => {
@@ -2178,7 +2205,7 @@ function fakeRepo({ sessions = [], error = null, workspaces = [], ideas = null, 
     async listSessions(args) { calls.push({ method: "listSessions", args }); if (error) throw error; return sessions.length > 0 ? sessions : sessionStore; },
     async listSessionsV2(args) { calls.push({ method: "listSessionsV2", args }); if (error) throw error; return sessions.length > 0 ? sessions : sessionStore; },
     async getSession(sessionId, opts: { teamId?: string | null } = {}) { calls.push({ method: "getSession", sessionId, teamId: opts?.teamId ?? null }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; return store.find(s => s.id === sessionId) ?? null; },
-    async patchSession(sessionId, patch) { calls.push({ method: "patchSession", sessionId, patch }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); if (!s) return null; if (patch.title !== undefined) s.title = patch.title; return s; },
+    async patchSession(sessionId, patch) { calls.push({ method: "patchSession", sessionId, patch }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); if (!s) return null; if (patch.title === undefined) return s; const next = applySessionTitlePatch(s, patch); s.title = next.title; s.titleLocked = next.titleLocked; return { ...s, titleLocked: next.titleLocked, titleApplied: next.titleApplied }; },
     async createSession(input) { calls.push({ method: "createSession", input }); if (error) throw error; const id = input.id ?? "session-new"; const newS = { id, teamId: input.teamId, title: input.title, mode: input.mode, ideaId: null, lastMessageAt: null, lastMessagePreview: null, hasUnread: false, createdAt: "2026-05-27T03:00:00Z", updatedAt: "2026-05-27T03:00:00Z", participants: (input.participantActorIds ?? []).map(a => ({ sessionId: id, actorId: a, role: "member", joinedAt: null })) }; sessionStore.push(newS); return newS; },
     async markSessionViewed(sessionId, lastReadMessageId) { calls.push({ method: "markSessionViewed", sessionId, lastReadMessageId }); if (error) throw error; },
     async markSessionUnread(sessionId) { calls.push({ method: "markSessionUnread", sessionId }); if (error) throw error; },
