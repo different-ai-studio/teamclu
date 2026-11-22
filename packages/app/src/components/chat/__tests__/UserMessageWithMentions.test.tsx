@@ -113,7 +113,8 @@ describe('UserMessageWithMentions', () => {
     )
 
     const button = screen.getByRole('button')
-    expect(button).toHaveAttribute('title', 'report.pdf')
+    expect(button.getAttribute('title')).toContain('report.pdf')
+    expect(button.getAttribute('title')).toContain('打开')
     expect(screen.getByText('report.pdf')).toBeTruthy()
     expect(screen.queryByText('云端')).toBeNull()
     expect(screen.queryByRole('link')).toBeNull()
