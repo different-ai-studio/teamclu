@@ -1,10 +1,11 @@
+import { createHash } from "node:crypto";
 import { appManagedOriginHost, resolveAppFunctionName } from "../apps-function-identity.js";
 import { appFunctionTargetFromRow } from "../supabase-repo/shared.js";
-import { classifyOriginEndpoint, originJwks, readAppsOriginAuthConfig, type OriginAuthConfig, type OriginSecuritySummary, type OriginTarget } from "../apps-origin-auth.js";
+import { privateFcTriggerUrl, usesPrivateFcOrigin, classifyOriginEndpoint, originJwks, readAppsOriginAuthConfig, type OriginAuthConfig, type OriginSecuritySummary, type OriginTarget } from "../apps-origin-auth.js";
 import { ApiError } from "../http-utils.js";
 import * as $fc from "@alicloud/fc20230330";
 import { getFcClient, makeFcOps } from "./fc-client.js";
-import { resolveAppsOss } from "./apps-oss.js";
+import { appsRegion, resolveAppsOss } from "./apps-oss.js";
 
 /** Only the fields required to compare a deployment may cross the API boundary. */
 export function projectFunction(raw: any) {
@@ -88,6 +89,39 @@ export function validateAppOrigin(target: OriginTarget, readConfig = () => readA
   }
 }
 
+// A native hostname is opaque. Verify it against the app's specific trigger,
+// and share a short positive readback across concurrent asset requests.
+const verifiedPrivateOrigins = new Map<string, { expiresAt: number; readback: Promise<string> }>();
+
+export async function verifyAppPrivateOrigin(
+  endpoint: string,
+  target: OriginTarget & { fcFunctionName?: string | null },
+  config: OriginAuthConfig,
+  region: string,
+): Promise<void> {
+  const functionName = resolveAppFunctionName(target);
+  const keyDigest = createHash("sha256").update(JSON.stringify(originJwks(config, target.appId))).digest("hex");
+  const key = JSON.stringify([region, functionName, endpoint, target.appId, keyDigest]);
+  const now = Date.now();
+  let entry = verifiedPrivateOrigins.get(key);
+  if (!entry || entry.expiresAt <= now) {
+    const resolved = resolveAppsOss();
+    if (!resolved.profile || resolved.profile.region !== region) throw new Error("FC credentials unavailable");
+    const profile = resolved.profile;
+    const ops = makeFcOps(getFcClient(profile), { bucket: profile.bucket, role: process.env.ROLE_ARN, region, originAuth: config });
+    const readback = ops.readPrivateOrigin(functionName, target);
+    entry = { expiresAt: now + 30_000, readback };
+    if (verifiedPrivateOrigins.size >= 256) verifiedPrivateOrigins.delete(verifiedPrivateOrigins.keys().next().value!);
+    verifiedPrivateOrigins.set(key, entry);
+  }
+  try {
+    if (await entry.readback !== endpoint) throw new Error("FC trigger endpoint does not match the stored origin");
+  } catch (error) {
+    if (verifiedPrivateOrigins.get(key) === entry) verifiedPrivateOrigins.delete(key);
+    throw error;
+  }
+}
+
 type OriginRow = { app_code?: string | null; function_naming_mode?: unknown; id: string; slug: string; fc_endpoint?: string | null; fc_function_name?: string | null; fc_region?: string | null };
 type OriginReader = (functionName: string, host: string, target: OriginTarget, config: OriginAuthConfig, region?: string | null) => Promise<OriginSecuritySummary>;
 const readProviderOrigin: OriginReader = async (functionName, host, target, config, region) => {
@@ -105,7 +139,15 @@ export async function readAppOriginSecurity(row: OriginRow, reader: OriginReader
   try {
     if (!row.fc_endpoint) return summary;
     const target = appFunctionTargetFromRow(row);
-    resolveAppFunctionName({ ...target, fcFunctionName: row.fc_function_name });
+    const name = resolveAppFunctionName({ ...target, fcFunctionName: row.fc_function_name });
+    const region = row.fc_region || appsRegion();
+    if (usesPrivateFcOrigin() && privateFcTriggerUrl(row.fc_endpoint, region)) {
+      const { config } = validateAppOrigin(target);
+      const profile = resolveAppsOss().profile;
+      if (!profile || profile.region !== region) return { ...summary, driftFields: ["originAuth"] };
+      const ops = makeFcOps(getFcClient(profile), { bucket: profile.bucket, role: process.env.ROLE_ARN, region, originAuth: config });
+      return projectOriginSecurity(await ops.readPrivateOriginSecurity(name, target, row.fc_endpoint));
+    }
     legacy = classifyOriginEndpoint(row.fc_endpoint, target, process.env.APPS_FC_ROUTE_DOMAIN ?? "") === "legacy";
     const { config, host } = validateAppOrigin(target);
     if (!row.fc_function_name) return { ...summary, status: legacy ? "legacy_unverified" : "unavailable", driftFields: ["providerFunction"] };
