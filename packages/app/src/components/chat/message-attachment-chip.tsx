@@ -81,7 +81,7 @@ export function MessageCloudAttachmentChip({
       data-chat-url={remoteUrl}
       onClick={() => void handleClick()}
       disabled={busy}
-      title={filename}
+      title={`${filename} — ${t("chat.fileOpen.open", "打开")}`}
       className={cn(
         chipSurfaceClass(surface, false),
         "cursor-pointer hover:bg-selected/30 disabled:opacity-60",
@@ -162,6 +162,7 @@ export function ComposerCloudFileChip({
   name: string;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className={cn(chipSurfaceClass("composer", false), "pr-1")} title={name}>
       <FileText className="h-3 w-3 flex-shrink-0 opacity-60 text-muted-foreground" />
@@ -170,7 +171,7 @@ export function ComposerCloudFileChip({
         type="button"
         onClick={onRemove}
         className="p-0.5 flex-shrink-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-        aria-label="remove"
+        aria-label={t("common.remove", "Remove")}
       >
         <X className="h-3 w-3" />
       </button>
@@ -205,7 +206,7 @@ export function ComposerLocalFileChip({
         type="button"
         onClick={onRemove}
         className="p-0.5 flex-shrink-0 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-        aria-label="remove"
+        aria-label={t("common.remove", "Remove")}
       >
         <X className="h-3 w-3" />
       </button>

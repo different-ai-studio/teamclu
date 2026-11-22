@@ -38,7 +38,7 @@ export function FileInputButton({ onFilesSelected, onLocalPaths }: FileInputButt
       const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({
         multiple: true,
-        title: "Select Files",
+        title: t("chat.selectFiles", "Select files"),
       });
       if (!selected) return;
       const paths = Array.isArray(selected) ? selected : [selected];
@@ -50,8 +50,10 @@ export function FileInputButton({ onFilesSelected, onLocalPaths }: FileInputButt
         const { toast } = await import("sonner");
         toast.error(
           failed.length === 1
-            ? `Could not read "${failed[0]}"`
-            : `Could not read ${failed.length} files`,
+            ? t("chat.attachmentReadFailed", 'Could not read "{{name}}"', { name: failed[0] })
+            : t("chat.attachmentsReadFailed", "Could not read {{count}} files", {
+                count: failed.length,
+              }),
         );
       }
       if (files.length > 0) onFilesSelected(files);

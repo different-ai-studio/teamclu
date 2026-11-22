@@ -645,6 +645,9 @@
   },
   "chat": {
     "attachFiles": "Attach files",
+    "selectFiles": "Select files",
+    "attachmentReadFailed": "Could not read \"{{name}}\"",
+    "attachmentsReadFailed": "Could not read {{count}} files",
     "attachmentTooLarge": "\"{{name}}\" exceeds the 20MB limit",
     "attachmentsTooLarge": "{{count}} files exceed the 20MB limit",
     "attachmentLocal": "local",

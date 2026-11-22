@@ -645,6 +645,9 @@
   },
   "chat": {
     "attachFiles": "添加附件",
+    "selectFiles": "选择文件",
+    "attachmentReadFailed": "「{{name}}」读不到",
+    "attachmentsReadFailed": "{{count}} 个文件读不到",
     "attachmentTooLarge": "「{{name}}」超过 20MB 上限",
     "attachmentsTooLarge": "{{count}} 个文件超过 20MB 上限",
     "attachmentLocal": "本地",

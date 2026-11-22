@@ -76,3 +76,25 @@ export function parseAttachmentTokenAt(
     info: parseAttachmentParenInfo(infoRaw),
   };
 }
+
+/** Remove `[Attachment: …] (…)` spans (balanced parens) from pasted text. */
+export function stripAttachmentTokensFromText(text: string): string {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const idx = text.indexOf("[Attachment:", i);
+    if (idx === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, idx);
+    const parsed = parseAttachmentTokenAt(text, idx);
+    if (!parsed) {
+      out += text[idx];
+      i = idx + 1;
+      continue;
+    }
+    i = parsed.end;
+  }
+  return out;
+}
