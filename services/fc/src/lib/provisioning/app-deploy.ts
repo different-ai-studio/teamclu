@@ -1,7 +1,7 @@
 import { resolveAppFunctionName, type FunctionNamingMode } from "../apps-function-identity.js";
 import { appCurrentPublicUrl } from "../apps-public-host.js";
 import { validateAppOrigin, projectOriginSecurity } from "./app-runtime-info.js";
-import type { OriginAuthConfig, OriginTarget } from "../apps-origin-auth.js";
+import { usesPrivateFcOrigin, type OriginAuthConfig, type OriginTarget } from "../apps-origin-auth.js";
 import { randomBytes } from "node:crypto";
 import {
   provisionAppPostgres,
@@ -479,7 +479,8 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
   };
   resolveAppFunctionName({ ...target, fcFunctionName: input.fcFunctionName });
   const { host: routeHost } = validateAppOrigin(target, deps.readOriginAuth);
-  if (!deps.fcOps.ensurePrivateOrigin && !deps.fcOps.ensureCustomDomain) throw new ApiError(503, "origin_security_unavailable", "origin security unavailable: routeConfig");
+  const privateOrigin = usesPrivateFcOrigin();
+  if (privateOrigin ? !deps.fcOps.ensurePrivateOrigin : !deps.fcOps.ensureCustomDomain) throw new ApiError(503, "origin_security_unavailable", "origin security unavailable: routeConfig");
 
   const env: Record<string, string> = { NODE_ENV: "production" };
   if (input.declaration) {
@@ -556,8 +557,8 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     image: input.image,
   });
   try {
-    if (deps.fcOps.ensurePrivateOrigin) {
-      const endpoint = await deps.fcOps.ensurePrivateOrigin(input.fcFunctionName, target);
+    if (privateOrigin) {
+      const endpoint = await deps.fcOps.ensurePrivateOrigin!(input.fcFunctionName, target);
       await applyAlwaysOn(deps, input);
       return { fcEndpoint: endpoint };
     }

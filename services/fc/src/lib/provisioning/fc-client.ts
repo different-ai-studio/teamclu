@@ -448,9 +448,9 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
   function codeLocation(ossObjectName: string) {
     return new $fc.InputCodeLocation({ ossBucketName: cfg.bucket, ossObjectName });
   }
-  async function writeHttpTrigger<T>(functionName: string, triggerConfig: string, verify: () => Promise<T>): Promise<T> {
+  async function writeHttpTrigger<T>(stage: string, functionName: string, triggerConfig: string, verify: () => Promise<T>): Promise<T> {
     let operation = "createTrigger";
-    return originCall("writeHttpTrigger", () => retryOriginPropagation(async () => {
+    return originCall(stage, () => retryOriginPropagation(async () => {
       operation = "createTrigger";
       try {
         await client.createTrigger(functionName, new $fc.CreateTriggerRequest({
@@ -607,7 +607,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
     },
     async ensureHttpTrigger(functionName: string): Promise<{ internetUrlDisabled: true }> {
       requireOriginConfig(cfg);
-      return writeHttpTrigger(functionName, JSON.stringify({ authType: "anonymous", disableURLInternet: true, methods: HTTP_METHODS }), async () => {
+      return writeHttpTrigger("ensureHttpTrigger", functionName, JSON.stringify({ authType: "anonymous", disableURLInternet: true, methods: HTTP_METHODS }), async () => {
         const trigger = await client.getTrigger(functionName, "http");
         if (jsonObject(trigger?.body?.triggerConfig)?.disableURLInternet !== true) throw driftError(["disableURLInternet"]);
         return { internetUrlDisabled: true };
@@ -619,7 +619,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       resolveAppFunctionName({ ...target, fcFunctionName: functionName });
       await verifyExtraEntrypoints(functionName, async () => false);
       const jwt = jwtInfo(config, target);
-      const endpoint = await writeHttpTrigger(functionName, JSON.stringify({
+      const endpoint = await writeHttpTrigger("ensurePrivateOrigin", functionName, JSON.stringify({
         authType: "jwt",
         disableURLInternet: true,
         methods: HTTP_METHODS,
