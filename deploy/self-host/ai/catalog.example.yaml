@@ -175,8 +175,9 @@ public_models:
   # weaker availability story than a first-party API, so the tier keeps serving
   # from DeepSeek if it goes down — at the same price either way.
   #
-  # ⚠️ Failover advances on 5xx, 429, 402 or a transport error (`failsOver` in
-  # app.ts) — 429 being how a spent subscription pool behind the relay answers.
+  # ⚠️ Failover advances on 5xx, 429, 402, a transport error, or a completed
+  # 200 with no text, reasoning text, or tool call (`acceptChatCompletion`).
+  # 429 is how a spent subscription pool behind the relay answers.
   # A 401 from a bad OPENAI_API_KEY still passes straight through to the caller
   # instead of quietly serving DeepSeek — which is what you want: a wrong key
   # should be loud.

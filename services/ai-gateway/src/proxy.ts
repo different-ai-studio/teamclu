@@ -244,6 +244,214 @@ function handleEvent(
 }
 
 
+// ── usable assistant content ────────────────────────────────────────────────
+// A 200 whose usage frame reports completion tokens can still carry no text,
+// no reasoning text, and no tool call. Pi then persists `content: []` and the
+// daemon writes `no_final_reply`. Usage is not evidence of a reply.
+//
+// Fields match what `@earendil-works/pi-ai` 1.5.0 `openai-completions` stores:
+// a non-empty string `content` / `reasoning_content` / `reasoning` /
+// `reasoning_text`, a recognized reasoning-detail string, or a `tool_calls`
+// entry. An object-shaped reasoning field is not one of those, so it does not
+// count. Whitespace does not count either: the daemon trims it away.
+
+const ASSISTANT_TEXT_FIELDS = ["content", "reasoning_content", "reasoning", "reasoning_text"] as const;
+
+function usableText(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function partsUsable(parts: unknown): boolean {
+  if (!Array.isArray(parts)) return false;
+  for (const part of parts) {
+    if (usableText(part)) return true;
+    if (!part || typeof part !== "object") continue;
+    const block = part as Record<string, unknown>;
+    if (block.type === "tool_use" || block.type === "tool_call") return true;
+    for (const field of ASSISTANT_TEXT_FIELDS) {
+      if (usableText(block[field])) return true;
+    }
+    if (usableText(block.text)) return true;
+  }
+  return false;
+}
+
+function reasoningDetailsUsable(details: unknown): boolean {
+  if (!Array.isArray(details)) return false;
+  for (const detail of details) {
+    if (!detail || typeof detail !== "object") continue;
+    const row = detail as Record<string, unknown>;
+    if (row.type === "reasoning.text" && usableText(row.text)) return true;
+    if (row.type === "reasoning.summary" && usableText(row.summary)) return true;
+  }
+  return false;
+}
+
+/** One chat-completions `delta` or `message`. */
+export function assistantPayloadUsable(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const message = payload as Record<string, unknown>;
+  if (usableText(message.content)) return true;
+  if (partsUsable(message.content)) return true;
+  for (const field of ASSISTANT_TEXT_FIELDS) {
+    if (field === "content") continue;
+    if (usableText(message[field])) return true;
+  }
+  if (reasoningDetailsUsable(message.reasoning_details)) return true;
+  return Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+}
+
+/** A whole completion body or one streamed chunk. */
+export function completionChunkUsable(chunk: unknown): boolean {
+  if (!chunk || typeof chunk !== "object") return false;
+  const choices = (chunk as { choices?: unknown }).choices;
+  if (!Array.isArray(choices)) return false;
+  for (const choice of choices) {
+    if (!choice || typeof choice !== "object") continue;
+    const row = choice as { delta?: unknown; message?: unknown };
+    if (assistantPayloadUsable(row.delta) || assistantPayloadUsable(row.message)) return true;
+  }
+  return false;
+}
+
+function splitSse(text: string): { complete: string[]; rest: string } {
+  const complete: string[] = [];
+  const boundary = /\r?\n\r?\n/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = boundary.exec(text))) {
+    complete.push(text.slice(last, match.index));
+    last = match.index + match[0].length;
+  }
+  return { complete, rest: text.slice(last) };
+}
+
+function eventUsable(rawEvent: string): boolean {
+  for (const line of rawEvent.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      if (completionChunkUsable(JSON.parse(payload))) return true;
+    } catch {
+      // A partial JSON line cannot be a complete event; the caller only
+      // passes events split on a blank line.
+    }
+  }
+  return false;
+}
+
+function bufferedSseUsable(text: string, done: boolean): boolean {
+  const { complete, rest } = splitSse(text);
+  if (complete.some(eventUsable)) return true;
+  return done && rest.trim().length > 0 && eventUsable(rest);
+}
+
+function completionHeaders(res: Response): Headers {
+  const headers = new Headers();
+  const type = res.headers.get("content-type");
+  if (type) headers.set("content-type", type);
+  return headers;
+}
+
+function spliceStream(
+  chunks: Uint8Array[],
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  let index = 0;
+  let readerDone = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (index < chunks.length) {
+        controller.enqueue(chunks[index++]);
+        return;
+      }
+      if (readerDone) {
+        controller.close();
+        return;
+      }
+      const { done, value } = await reader.read();
+      if (done) {
+        readerDone = true;
+        controller.close();
+        reader.releaseLock();
+        return;
+      }
+      if (value) controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+}
+
+/**
+ * Commit a chat completion, or refuse it.
+ *
+ * A streaming 200 is held only until the first SSE event that carries usable
+ * assistant content, then that prefix and the unread tail are returned as one
+ * body. The hold is what makes failover possible: once a byte is sent to the
+ * caller, the route cannot change. A normal first token is one event, so the
+ * rest of the stream is not buffered. A body that ends with nothing usable
+ * returns null and the caller fails the route over.
+ */
+export async function acceptChatCompletion(
+  res: Response,
+  stream: boolean,
+  signal?: AbortSignal,
+): Promise<Response | null> {
+  if (signal?.aborted) {
+    const aborted = new Error("client aborted");
+    aborted.name = "AbortError";
+    throw aborted;
+  }
+  if (!stream) {
+    const text = await res.text();
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    if (!completionChunkUsable(body)) return null;
+    return new Response(text, { status: res.status, headers: completionHeaders(res) });
+  }
+
+  if (!res.body) return null;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: Uint8Array[] = [];
+  let text = "";
+  try {
+    for (;;) {
+      if (signal?.aborted) {
+        const aborted = new Error("client aborted");
+        aborted.name = "AbortError";
+        throw aborted;
+      }
+      const { done, value } = await reader.read();
+      if (value) {
+        chunks.push(value);
+        text += decoder.decode(value, { stream: !done });
+      }
+      if (bufferedSseUsable(text, done)) {
+        return new Response(spliceStream(chunks, reader), {
+          status: res.status,
+          headers: completionHeaders(res),
+        });
+      }
+      if (done) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  }
+}
+
+
 // ── images ──────────────────────────────────────────────────────────────────
 
 /**
