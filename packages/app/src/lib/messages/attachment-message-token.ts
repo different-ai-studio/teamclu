@@ -13,8 +13,6 @@ export function parseAttachmentParenInfo(info: string): AttachmentParenInfo {
   if (!trimmed) return {};
 
   const pathPrefix = "path:";
-  const urlPrefix = "url:";
-  const sizePrefix = "size:";
 
   if (trimmed.toLowerCase().startsWith(pathPrefix)) {
     return { fullPath: trimmed.slice(pathPrefix.length).trim() };
