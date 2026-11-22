@@ -1643,6 +1643,104 @@ mod default_title_tests {
             "帮我查一下深圳美食",
             "[TeamClu Instructions — follow for all replies in this session. Do not acknowled"
         ));
+        assert!(should_adopt_generated_session_title(
+            "Agent (09:30)",
+            "Launch Plan"
+        ));
+        assert!(!should_adopt_generated_session_title("Agent (09:30)", ""));
+        assert!(!should_adopt_generated_session_title("", "Launch Plan"));
+    }
+}
+
+#[cfg(test)]
+mod adopt_publish_tests {
+    use std::sync::Arc;
+
+    use chrono::Utc;
+
+    use crate::backend::mock::MockBackend;
+    use crate::daemon::server::tests::test_server_with_cloud_api;
+    use crate::teamclu::StoredSession;
+
+    fn session(id: &str, title: &str) -> StoredSession {
+        StoredSession {
+            session_id: id.to_string(),
+            team_id: "team-test".to_string(),
+            title: title.to_string(),
+            created_by: "user".to_string(),
+            created_at: Utc::now(),
+            summary: String::new(),
+            idea_id: String::new(),
+            participants: Vec::new(),
+            primary_agent_id: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_generated_title_does_not_replace_or_publish() {
+        let mock = MockBackend::with_identity("team-test", "agent-actor");
+        mock.state().refuse_generated_title = true;
+        let mut fixture = test_server_with_cloud_api(Arc::new(mock.clone()));
+        fixture
+            .server
+            .teamclu
+            .as_mut()
+            .unwrap()
+            .sessions
+            .upsert(session("sess-lock", "Standup (09:30)"));
+        fixture
+            .server
+            .teamclu
+            .as_mut()
+            .unwrap()
+            .sessions
+            .upsert(session("sess-cron", "Cron: nightly"));
+        fixture
+            .server
+            .teamclu
+            .as_mut()
+            .unwrap()
+            .sessions
+            .upsert(session("sess-empty", ""));
+
+        fixture
+            .server
+            .maybe_adopt_generated_session_title("sess-lock", "深圳美食推荐")
+            .await;
+        fixture
+            .server
+            .maybe_adopt_generated_session_title("sess-cron", "Launch Plan")
+            .await;
+        fixture
+            .server
+            .maybe_adopt_generated_session_title("sess-empty", "Launch Plan")
+            .await;
+        fixture
+            .server
+            .maybe_adopt_generated_session_title("sess-lock", "")
+            .await;
+
+        let title = |id: &str| {
+            fixture
+                .server
+                .teamclu
+                .as_ref()
+                .unwrap()
+                .sessions
+                .find_by_id(id)
+                .unwrap()
+                .title
+                .clone()
+        };
+        assert_eq!(title("sess-lock"), "Standup (09:30)");
+        assert_eq!(title("sess-cron"), "Cron: nightly");
+        assert_eq!(title("sess-empty"), "");
+        let writes = mock.state().generated_title_writes.clone();
+        assert_eq!(
+            writes,
+            vec![("sess-lock".to_string(), "深圳美食推荐".to_string())],
+            "only the unlocked-looking row is written, and a refusal must not publish"
+        );
     }
 }
 

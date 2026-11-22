@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  clearSessionAutoTitlePending,
+  markSessionNeedsAutoTitle,
+  maybeAutoTitleSessionFromFirstMessage,
+  resetSessionAutoTitlePendingForTests,
+} from "@/lib/session/session-auto-title";
 import { useAuthStore } from "./auth-store";
 import { useCurrentTeamStore } from "./current-team";
 
@@ -677,6 +683,34 @@ describe("session-list-store", () => {
       lock: true,
     });
     expect(useSessionListStore.getState().rows[0].title).not.toBe("Standup (09:30)");
+  });
+
+  it("a manual rename clears the first-message auto-title mark", async () => {
+    resetSessionAutoTitlePendingForTests();
+    mocks.updateSessionTitle.mockResolvedValueOnce(true);
+    const { useSessionListStore } = await import("./session-list-store");
+    useSessionListStore.setState({
+      rows: [sessionRow({ id: "sess-1", title: "Agent (09:30)" })],
+    });
+    markSessionNeedsAutoTitle("sess-1");
+
+    await useSessionListStore.getState().updateSessionTitle("sess-1", "Standup (09:30)", {
+      lock: true,
+    });
+    const renamed = await maybeAutoTitleSessionFromFirstMessage("sess-1", "今日议程");
+
+    expect(renamed).toBe(false);
+    expect(mocks.updateSessionTitle).toHaveBeenCalledTimes(1);
+    clearSessionAutoTitlePending("sess-1");
+  });
+
+  it("does not send an empty rename", async () => {
+    const { useSessionListStore } = await import("./session-list-store");
+    useSessionListStore.setState({ rows: [sessionRow()] });
+
+    await useSessionListStore.getState().updateSessionTitle("session-1", "   ");
+
+    expect(mocks.updateSessionTitle).not.toHaveBeenCalled();
   });
 
   // This used to assert the opposite — that a locally remembered archived id is

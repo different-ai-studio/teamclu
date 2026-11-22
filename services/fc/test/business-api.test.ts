@@ -932,6 +932,17 @@ test("PATCH /v1/sessions/:sessionId updates session", async () => {
   assert.deepEqual(repo.calls[0], { method: "patchSession", sessionId: "session-1", patch: { title: "New title" } });
 });
 
+test("PATCH /v1/sessions/:sessionId is 404 when the session is missing", async () => {
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PATCH",
+    path: "/v1/sessions/session-missing",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ title: "Standup (09:30)", titleLocked: true }),
+  }, { createRepository: () => fakeRepo({ sessions: [{ id: "session-other", title: "Other", titleLocked: false }] }) });
+
+  assert.equal(response.statusCode, 404);
+});
+
 test("PATCH generated title does not replace a title locked by a person", async () => {
   const repo = fakeRepo();
   const locked = await handleBusinessApiRequest({
