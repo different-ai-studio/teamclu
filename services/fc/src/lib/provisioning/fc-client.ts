@@ -587,7 +587,6 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
     async ensurePrivateOrigin(functionName: string, target: OriginTarget): Promise<string> {
       const config = requireOriginConfig(cfg);
       resolveAppFunctionName({ ...target, fcFunctionName: functionName });
-      await verifyExtraEntrypoints(functionName, async () => false);
       const jwt = jwtInfo(config, target);
       const endpoint = await writeHttpTrigger("ensurePrivateOrigin", functionName, JSON.stringify({
         authType: "jwt",
@@ -595,6 +594,10 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         methods: HTTP_METHODS,
         authConfig: { JWKS: jwt.jwks, TokenLookup: jwt.tokenLookup, ClaimPassBy: jwt.claimPassBy },
       }), () => readPrivateTrigger(functionName, target));
+      // Hangzhou's private list call can time out while the function has no
+      // trigger. Write the JWT-only private trigger first, then audit every
+      // entrypoint before publishing the URL.
+      await verifyExtraEntrypoints(functionName, async () => false);
       return endpoint;
     },
 
