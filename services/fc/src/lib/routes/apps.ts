@@ -7,6 +7,7 @@ import { createServiceRoleClient } from "../supabase.js";
 import { parseGitHttpsCredentialInput } from "../app-git-credential.js";
 import { makeGiteaClient, readGiteaConfig } from "../provisioning/gitea.js";
 import { reconcileGiteaApps } from "../provisioning/gitea-sync.js";
+import { makeDeployKeyExpirySweep } from "../provisioning/deploy-key-expiry.js";
 import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
 
 /**
@@ -19,6 +20,11 @@ function defaultGiteaReconcile(): ((client: any, deadline: number) => Promise<un
   if (resolved.error) return null;
   const gitea = makeGiteaClient(resolved.config);
   return (admin, deadline) => reconcileGiteaApps({ gitea, admin, log: (m) => console.warn(m) }, { deadline });
+}
+
+function defaultDeployKeySweep() {
+  const resolved = readGiteaConfig();
+  return resolved.error ? null : makeDeployKeyExpirySweep({ gitea: makeGiteaClient(resolved.config) });
 }
 
 /** Every tenth minute: often enough that a failed request-path sync heals quickly, rarely enough to stay cheap. */
@@ -116,8 +122,9 @@ function normalizeGitRemoteUrl(raw: unknown): string | null {
 
 export function registerApps(
   router,
-  tickDeps: any = { createServiceRoleClient, makeAppUndeployDeps, giteaReconcile: defaultGiteaReconcile, now: () => new Date() },
+  tickDeps: any = { createServiceRoleClient, makeAppUndeployDeps, giteaReconcile: defaultGiteaReconcile, deployKeySweep: defaultDeployKeySweep, now: () => new Date() },
 ) {
+  const deployKeySweep = tickDeps.deployKeySweep?.();
   router.get("/v1/apps", async (ctx) => {
     const teamId = ctx.query.get("teamId");
     requireString(teamId, "teamId");
@@ -613,8 +620,19 @@ export function registerApps(
   router.post("/v1/internal/app-cron/tick", { auth: "cron-tick" }, async () => {
     // Same heartbeat in both deploy targets; raw service client by design.
     const client = tickDeps.createServiceRoleClient();
-    // Both jobs share the existing 55-second heartbeat request window.
+    // Background jobs share the existing 55-second heartbeat request window.
     const started = Date.now();
+    let deployKeys: unknown;
+    if (deployKeySweep) {
+      try {
+        const result = await deployKeySweep(client, started + 8_000);
+        deployKeys = result;
+        if (result.failed) console.warn("[gitea] deploy key sweep failures:", result.failed);
+      } catch {
+        deployKeys = { error: "deploy key sweep failed" };
+        console.warn("[gitea] deploy key sweep failed");
+      }
+    }
     const cleanup = await runAppUndeployTick({ store: makeUndeployStore(client), deps: tickDeps.makeAppUndeployDeps(), maxTickMs: 25_000 });
     const out = await runDueAppCronJobs({ client, maxTickMs: Math.max(0, 45_000 - (Date.now() - started)) });
     // Gitea repair rides the same heartbeat, in whatever is left of the window.
@@ -627,7 +645,7 @@ export function registerApps(
         gitea = { error: String((e as Error)?.message ?? e) };
       }
     }
-    return { body: { ...out, cleanup, ...(gitea ? { gitea } : {}) } };
+    return { body: { ...out, cleanup, ...(deployKeys ? { deployKeys } : {}), ...(gitea ? { gitea } : {}) } };
   });
 
   // The deployed app asking for its own credentials. `auth: "app-token"` gets a

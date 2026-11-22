@@ -184,8 +184,9 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
   const enc = encodeURIComponent;
 
   /** GET that answers null on 404 instead of throwing. */
-  async function giteaGetOrNull(path: string): Promise<Response | null> {
+  async function giteaGetOrNull(path: string, signal?: AbortSignal): Promise<Response | null> {
     const res = await fetchFn(`${base}${path}`, {
+      signal,
       headers: { Authorization: `token ${opts.token}`, "Content-Type": "application/json" },
     });
     if (res.status === 404) return null;
@@ -224,10 +225,10 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
    * (`MAX_RESPONSE_ITEMS`), and a 51st team member read as "not a member" would
    * never be removed again. Bounded so a server that ignores `page` cannot loop.
    */
-  async function giteaListAll<T>(path: string): Promise<T[] | null> {
+  async function giteaListAll<T>(path: string, signal?: AbortSignal): Promise<T[] | null> {
     const out: T[] = [];
     for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
-      const res = await giteaGetOrNull(`${path}${path.includes("?") ? "&" : "?"}limit=${LIST_PAGE_SIZE}&page=${page}`);
+      const res = await giteaGetOrNull(`${path}${path.includes("?") ? "&" : "?"}limit=${LIST_PAGE_SIZE}&page=${page}`, signal);
       if (!res) {
         if (page === 1) return null;
         break;
@@ -518,11 +519,22 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
         .map((k) => ({ id: k.id!, title: String(k.title ?? "") }));
     },
 
-    async deleteDeployKey(appId: string, keyId: number): Promise<void> {
+    /** Complete repository key inventory for background expiration. */
+    async listAllDeployKeys(appId: string, signal: AbortSignal): Promise<{ id: number; title: string }[]> {
+      const repo = appRepoName(appId);
+      const keys = await giteaListAll<{ id?: number; title?: string }>(
+        `/api/v1/repos/${enc(opts.owner)}/${enc(repo)}/keys`, signal,
+      );
+      return (keys ?? [])
+        .filter((key) => Number.isInteger(key.id))
+        .map((key) => ({ id: key.id!, title: String(key.title ?? "") }));
+    },
+
+    async deleteDeployKey(appId: string, keyId: number, signal?: AbortSignal): Promise<void> {
       const repo = appRepoName(appId);
       await giteaFetch(
         `/api/v1/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(repo)}/keys/${keyId}`,
-        { method: "DELETE" },
+        { method: "DELETE", signal },
       );
     },
 
