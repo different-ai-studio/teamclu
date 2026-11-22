@@ -85,6 +85,7 @@ export function PromptInput({
   children,
   onSubmit,
   onFilesChange,
+  onLocalPathsChange,
   onFilePathsDrop,
   onMentionTrigger,
   onMentionClose,
@@ -100,6 +101,7 @@ export function PromptInput({
 }: React.ComponentProps<"form"> & {
   onSubmit?: (message: PromptInputMessage) => void
   onFilesChange?: (files: File[]) => void
+  onLocalPathsChange?: (items: { name: string; size: number; path: string }[]) => void
   onFilePathsDrop?: (paths: string[]) => void
   onMentionTrigger?: (query: string) => void
   onMentionClose?: () => void
@@ -183,8 +185,10 @@ export function PromptInput({
 
   const formRef = React.useRef<HTMLFormElement>(null)
   const onFilesChangeRef = React.useRef(onFilesChange)
+  const onLocalPathsChangeRef = React.useRef(onLocalPathsChange)
   const multipleRef = React.useRef(multiple)
   React.useEffect(() => { onFilesChangeRef.current = onFilesChange }, [onFilesChange])
+  React.useEffect(() => { onLocalPathsChangeRef.current = onLocalPathsChange }, [onLocalPathsChange])
   React.useEffect(() => { multipleRef.current = multiple }, [multiple])
 
   const dropHitTarget = React.useCallback(() => {
@@ -298,23 +302,15 @@ export function PromptInput({
             if (!isPointOverElement(position, dropHitTarget())) return
 
             const { readDesktopPathsAsFiles } = await import('@/lib/workspace/read-desktop-files')
-            const { files, oversize, failed } = await readDesktopPathsAsFiles(paths)
-            if (oversize.length > 0 || failed.length > 0) {
+            const { files, local, failed } = await readDesktopPathsAsFiles(paths)
+            if (local.length > 0) onLocalPathsChangeRef.current?.(local)
+            if (failed.length > 0) {
               const { toast } = await import('sonner')
-              if (oversize.length > 0) {
-                toast.error(
-                  oversize.length === 1
-                    ? `"${oversize[0]}" exceeds the 20MB limit`
-                    : `${oversize.length} files exceed the 20MB limit`,
-                )
-              }
-              if (failed.length > 0) {
-                toast.error(
-                  failed.length === 1
-                    ? `Could not read "${failed[0]}"`
-                    : `Could not read ${failed.length} files`,
-                )
-              }
+              toast.error(
+                failed.length === 1
+                  ? `Could not read "${failed[0]}"`
+                  : `Could not read ${failed.length} files`,
+              )
             }
             if (files.length === 0) return
 
