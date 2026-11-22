@@ -630,10 +630,59 @@ fn describe_server(spec: &Value) -> String {
     }
 }
 
+/// An agent wants to change the active team's channel config. The summary is
+/// the planner's change lines; secret values never appear in it.
+pub(crate) fn channel_config_update(zh: bool, channel: &str, lines: &[String]) -> Confirmation {
+    let mut listing = lines
+        .iter()
+        .take(12)
+        .map(|line| format!("• {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if lines.len() > 12 {
+        let extra = lines.len() - 12;
+        listing.push_str(&format!("\n• +{extra}"));
+    }
+    let hint = declined_hint(zh);
+    if zh {
+        Confirmation {
+            title: format!("修改 {channel} 通道配置？"),
+            message: format!(
+                "一个 agent 请求修改团队的 {channel} 通道。保存后会重载正在运行的网关。\n\n{listing}\n\n{hint}"
+            ),
+            accept: "保存并重载".to_string(),
+        }
+    } else {
+        Confirmation {
+            title: format!("Update the {channel} channel?"),
+            message: format!(
+                "An agent wants to change the team's {channel} channel. Saving reloads the running gateway.\n\n{listing}\n\n{hint}"
+            ),
+            accept: "Save and reload".to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn channel_confirmation_lists_the_change_and_hides_nothing_it_was_not_given() {
+        let zh = channel_config_update(
+            true,
+            "wecom",
+            &["secret: 更新密钥".to_string(), "bot name: Ann".to_string()],
+        );
+        assert!(zh.message.contains("secret: 更新密钥"));
+        assert!(zh.message.contains("bot name: Ann"));
+        assert!(zh.message.contains("重载"));
+        assert_eq!(zh.accept, "保存并重载");
+        let en = channel_config_update(false, "discord", &["enabled: off → on".to_string()]);
+        assert!(en.message.contains("enabled: off → on"));
+        assert!(en.message.contains("reloads the running gateway"));
+    }
 
     #[test]
     fn deploy_says_where_it_goes_and_who_can_open_it() {

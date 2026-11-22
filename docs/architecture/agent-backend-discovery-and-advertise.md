@@ -420,10 +420,10 @@ load daemon.toml
 
 | 触发 | 机制 | 写入段 |
 |------|------|--------|
-| Settings → Channels 保存 | Unix sock `channel-save` → `save_channel_config` | `[channels.<platform>]` |
+| Settings → Channels 保存 / agent `manage_channels` set | Unix sock `channel-save` → `save_channel_config`，回复 `{ok:true}` 或 `{ok:false,error}`，再 reload | 团队 `team.toml` 的 `[channels.<platform>]`（密钥进 secret store） |
 | `channel-reload` | 重读磁盘，不写入 | — |
 
-Desktop `load_channel_config` **直接读磁盘**；`save_channel_config` 经 daemon 写回。
+Desktop `load_channel_config` **直接读团队 `team.toml`**；`save_channel_config` 经 daemon 写回并等待那一行回复。agent 的 `manage_channels` 走同一条保存，不写 workspace 里的 `teamclu.json`。
 
 ### 12.5 `mqtt.broker_url`：云端权威 + 本地 last-known
 
@@ -467,7 +467,7 @@ Desktop `load_channel_config` **直接读磁盘**；`save_channel_config` 经 da
 |------|----|----|
 | `amuxd init` | ✅ 创建/合并 | — |
 | `amuxd start` | ✅ discover 可能补 agents | ✅ |
-| `channel-save` | ✅ channels | — |
+| `channel-save` | ✅ 团队 `team.toml` 的 channels，并回复一行 JSON | — |
 | `amuxd clear` | ✅ 删除 | — |
 | bootstrap MQTT | ❌（内存） | ✅ load |
 | `get_daemon_team_id` | — | ✅ team_id |

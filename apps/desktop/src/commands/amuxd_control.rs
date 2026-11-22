@@ -150,8 +150,10 @@ pub fn request_blocking_at(endpoint: &Path, request: &str) -> Result<String, Str
 }
 
 /// Send `request` to `endpoint` without waiting for a reply — for the commands
-/// the daemon acts on but does not answer (`channel-save`, `gateway-model`,
-/// `channel-reload`).
+/// the daemon acts on but does not answer (`gateway-model`, `channel-reload`).
+/// `channel-save` is not one of them: it replies `{ok:true}` or
+/// `{ok:false,error}` and [`crate::commands::gateway::save_channel_config`]
+/// waits for that line.
 pub fn send_blocking_at(endpoint: &Path, request: &str) -> Result<(), String> {
     let mut stream = connect_blocking(endpoint)?;
     stream

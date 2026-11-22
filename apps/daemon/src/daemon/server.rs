@@ -306,11 +306,13 @@ pub(crate) enum SockCommand {
         reply_tx: oneshot::Sender<String>,
     },
     /// Replace `daemon_config.channels.<platform>` with the JSON in `config_json`,
-    /// persist to `daemon.toml`, and reload the channel manager so the change
-    /// takes effect. One-way (no reply).
+    /// persist to team.toml, and reload the channel manager so the change
+    /// takes effect. `reply_tx` carries `{ok:true}` or `{ok:false,error}` so a
+    /// parse or persist failure is not only a log line.
     ChannelSave {
         platform: String,
         config_json: String,
+        reply_tx: oneshot::Sender<String>,
     },
     /// Replace `daemon_config.channels.model` — the model every gateway session
     /// starts on when the chat has not set its own with `/model` — persist to
@@ -1926,8 +1928,22 @@ impl DaemonServer {
                             Some(SockCommand::ChannelSecretKeys { reply_tx }) => {
                                 let _ = reply_tx.send(self.channel_secret_keys_payload());
                             }
-                            Some(SockCommand::ChannelSave { platform, config_json }) => {
-                                self.save_channel_config(&platform, &config_json).await;
+                            Some(SockCommand::ChannelSave { platform, config_json, reply_tx }) => {
+                                let saved = self.save_channel_config(&platform, &config_json);
+                                let body = match &saved {
+                                    Ok(()) => "{\"ok\":true}".to_string(),
+                                    Err(error) => {
+                                        error!("channel-save: {error}");
+                                        serde_json::json!({"ok": false, "error": error}).to_string()
+                                    }
+                                };
+                                let _ = reply_tx.send(body);
+                                if saved.is_ok() {
+                                    // After the reply: reconnecting WeCom can
+                                    // outlive the client's read deadline, and
+                                    // the save itself has already landed.
+                                    self.reload_channels().await;
+                                }
                             }
                             Some(SockCommand::GatewayModelSave { model }) => {
                                 self.save_gateway_model(&model).await;
@@ -2737,6 +2753,7 @@ where
                     // line 2 = platform, line 3+ = JSON
                     // (single line — JSON has no embedded \n
                     // after `to_string()` serialization).
+                    // Reply: one JSON line, `{ok:true}` or `{ok:false,error}`.
                     let mut platform = String::new();
                     if reader.read_line(&mut platform).await.is_err() {
                         warn!("amuxd.sock: channel-save missing platform");
@@ -2747,12 +2764,32 @@ where
                         warn!("amuxd.sock: channel-save missing config json");
                         return;
                     }
-                    let _ = tx
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    if tx
                         .send(SockCommand::ChannelSave {
                             platform: platform.trim().to_string(),
                             config_json: config_json.trim().to_string(),
+                            reply_tx,
                         })
-                        .await;
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    match reply_rx.await {
+                        Ok(body) => {
+                            let mut stream = reader.into_inner();
+                            if let Err(e) = stream.write_all(body.as_bytes()).await {
+                                warn!("amuxd.sock: channel-save write failed: {e}");
+                                return;
+                            }
+                            let _ = stream.write_all(b"\n").await;
+                            let _ = stream.shutdown().await;
+                        }
+                        Err(_) => {
+                            warn!("amuxd.sock: channel-save reply dropped");
+                        }
+                    }
                 }
                 "gateway-model" => {
                     // Wire format: line 1 = "gateway-model", line 2 = the

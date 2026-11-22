@@ -1038,73 +1038,26 @@ impl DaemonServer {
     // `handle_prompt_await` (cron-style ACP turn) lives in `server/cron.rs`.
 
     /// Persist a new per-platform channel config (parsed from the second line
-    /// of a `channel-save` sock message) into `daemon.toml`, update the
-    /// in-memory `self.config`, and reload the channel manager so the change
-    /// takes effect immediately. Errors are logged but never crash the daemon.
-    pub(crate) async fn save_channel_config(&mut self, platform: &str, config_json: &str) {
-        let parsed: Result<(), String> = (|| -> Result<(), String> {
-            match platform {
-                "discord" => {
-                    let v: crate::config::DiscordChannel = serde_json::from_str(config_json)
-                        .map_err(|e| format!("parse discord: {e}"))?;
-                    self.config.channels.discord = Some(v);
-                }
-                "wecom" => {
-                    let v: crate::config::WeComChannel = serde_json::from_str(config_json)
-                        .map_err(|e| format!("parse wecom: {e}"))?;
-                    self.config.channels.wecom = Some(v);
-                }
-                "feishu" => {
-                    let v: crate::config::FeishuChannel = serde_json::from_str(config_json)
-                        .map_err(|e| format!("parse feishu: {e}"))?;
-                    self.config.channels.feishu = Some(v);
-                }
-                "kook" => {
-                    let v: crate::config::KookChannel = serde_json::from_str(config_json)
-                        .map_err(|e| format!("parse kook: {e}"))?;
-                    self.config.channels.kook = Some(v);
-                }
-                "wechat" => {
-                    let v: crate::config::WeChatChannel = serde_json::from_str(config_json)
-                        .map_err(|e| format!("parse wechat: {e}"))?;
-                    self.config.channels.wechat = Some(v);
-                }
-                "wechatpad" => {
-                    let v: crate::config::WeChatPadChannel = serde_json::from_str(config_json)
-                        .map_err(|e| format!("parse wechatpad: {e}"))?;
-                    self.config.channels.wechatpad = Some(v);
-                }
-                "email" => {
-                    let v: crate::config::EmailChannel = serde_json::from_str(config_json)
-                        .map_err(|e| format!("parse email: {e}"))?;
-                    self.config.channels.email = Some(v);
-                }
-                "seatalk" => {
-                    let v: crate::config::SeaTalkChannel = serde_json::from_str(config_json)
-                        .map_err(|e| format!("parse seatalk: {e}"))?;
-                    self.config.channels.seatalk = Some(v);
-                }
-                other => {
-                    return Err(format!("unknown platform '{other}'"));
-                }
-            }
-            Ok(())
-        })();
-
-        if let Err(e) = parsed {
-            error!("channel-save: {e}");
-            return;
-        }
-
+    /// of a `channel-save` sock message) into team.toml and update the
+    /// in-memory `self.config`. The caller reloads the channel manager after
+    /// it has replied, so a slow gateway reconnect does not eat the client's
+    /// read deadline, and a document that does not parse is not saved.
+    pub(crate) fn save_channel_config(
+        &mut self,
+        platform: &str,
+        config_json: &str,
+    ) -> Result<(), String> {
+        let mut next = self.config.clone();
+        apply_channel_json(&mut next.channels, platform, config_json)?;
         // Channels are team-scoped: the structure lands in team.toml and the
         // credentials in the team's secret store, never in daemon.toml.
-        if let Err(e) = crate::config::team_config::persist_from(&self.config) {
-            error!("channel-save: failed to persist team.toml: {e:?}");
-            return;
-        }
-
-        info!("channel-save: persisted {platform}, reloading channel manager");
-        self.reload_channels().await;
+        // Persist the clone first so a rejected write leaves the running
+        // config untouched.
+        crate::config::team_config::persist_from(&next)
+            .map_err(|e| format!("persist team.toml: {e}"))?;
+        self.config = next;
+        info!("channel-save: persisted {platform}");
+        Ok(())
     }
 
     /// Persist the gateway-wide model (`channels.model`) and reload channels so
@@ -1315,6 +1268,61 @@ fn split_gateway_model(raw: Option<&str>) -> Option<(String, String)> {
         // thing as a bare model id rather than spawning on an empty name.
         _ => (String::new(), raw.trim_end_matches('/').to_string()),
     })
+}
+
+/// Parse one channel section into `channels`. On error `channels` is unchanged.
+fn apply_channel_json(
+    channels: &mut crate::config::ChannelsConfig,
+    platform: &str,
+    config_json: &str,
+) -> Result<(), String> {
+    match platform {
+        "discord" => channels.discord = Some(parse_section(platform, config_json)?),
+        "wecom" => channels.wecom = Some(parse_section(platform, config_json)?),
+        "feishu" => channels.feishu = Some(parse_section(platform, config_json)?),
+        "kook" => channels.kook = Some(parse_section(platform, config_json)?),
+        "wechat" => channels.wechat = Some(parse_section(platform, config_json)?),
+        "wechatpad" => channels.wechatpad = Some(parse_section(platform, config_json)?),
+        "email" => channels.email = Some(parse_section(platform, config_json)?),
+        "seatalk" => channels.seatalk = Some(parse_section(platform, config_json)?),
+        other => return Err(format!("unknown platform '{other}'")),
+    }
+    Ok(())
+}
+
+fn parse_section<T: serde::de::DeserializeOwned>(platform: &str, json: &str) -> Result<T, String> {
+    serde_json::from_str(json).map_err(|e| {
+        format!(
+            "invalid {platform} config: {}",
+            redact_parse_error(&e.to_string())
+        )
+    })
+}
+
+/// serde quotes the offending value (`invalid type: string "…"`. A channel
+/// document is full of credentials, so that quote never leaves this process.
+fn redact_parse_error(message: &str) -> String {
+    let mut out = String::new();
+    let mut rest = message;
+    const MARKER: &str = "string \"";
+    while let Some(start) = rest.find(MARKER) {
+        out.push_str(&rest[..start]);
+        out.push_str("string \"[redacted]\"");
+        let after = &rest[start + MARKER.len()..];
+        match after.find('"') {
+            Some(end) => rest = &after[end + 1..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    if out.chars().count() > 240 {
+        out.chars().take(240).collect::<String>() + "…"
+    } else {
+        out
+    }
 }
 
 #[cfg(test)]
@@ -1627,5 +1635,112 @@ mod chat_decision_tests {
             !fixture.server.permissions.try_resolve_permission("r1"),
             "a desktop answer after the chat's must be a no-op"
         );
+    }
+}
+
+#[cfg(test)]
+mod channel_save_parse_tests {
+    use super::apply_channel_json;
+    use crate::config::ChannelsConfig;
+
+    #[test]
+    fn a_camel_case_agent_patch_is_not_a_wecom_section() {
+        let mut channels = ChannelsConfig::default();
+        let err = apply_channel_json(&mut channels, "wecom", r#"{"botId":"bot","secret":"sec"}"#)
+            .unwrap_err();
+        assert!(err.contains("invalid wecom"), "{err}");
+        assert!(channels.wecom.is_none());
+    }
+
+    #[test]
+    fn the_settings_shaped_wecom_document_parses() {
+        let mut channels = ChannelsConfig::default();
+        apply_channel_json(
+            &mut channels,
+            "wecom",
+            r#"{"enabled":true,"bots":[{"enabled":true,"bot_id":"bot","secret":"sec","encoding_aes_key":"aes","bot_name":"Ann"}]}"#,
+        )
+        .unwrap();
+        let wecom = channels.wecom.expect("parsed");
+        assert!(wecom.enabled);
+        assert_eq!(wecom.bots[0].bot_id, "bot");
+        assert_eq!(wecom.bots[0].secret, "sec");
+        assert_eq!(wecom.bots[0].bot_name.as_deref(), Some("Ann"));
+        assert_eq!(wecom.stream_max_secs, 240);
+    }
+
+    #[test]
+    fn discord_token_is_bot_token() {
+        let mut channels = ChannelsConfig::default();
+        apply_channel_json(
+            &mut channels,
+            "discord",
+            r#"{"enabled":true,"bot_token":"tok"}"#,
+        )
+        .unwrap();
+        assert_eq!(channels.discord.unwrap().bot_token, "tok");
+    }
+
+    #[test]
+    fn a_camel_case_discord_token_is_not_the_credential() {
+        let mut channels = ChannelsConfig::default();
+        // serde ignores the unknown `token` key, so this would save an empty
+        // credential if the desktop forwarded an agent patch unchanged.
+        apply_channel_json(
+            &mut channels,
+            "discord",
+            r#"{"enabled":true,"token":"super-secret"}"#,
+        )
+        .unwrap();
+        assert!(channels.discord.unwrap().bot_token.is_empty());
+    }
+
+    #[test]
+    fn a_parse_error_does_not_quote_the_submitted_secret() {
+        let mut channels = ChannelsConfig::default();
+        let err = apply_channel_json(
+            &mut channels,
+            "discord",
+            r#"{"enabled":"super-secret-token"}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid discord"), "{err}");
+        assert!(!err.contains("super-secret-token"), "{err}");
+        assert!(channels.discord.is_none());
+    }
+
+    #[test]
+    fn settings_shaped_documents_parse() {
+        let samples = [
+            (
+                "feishu",
+                r#"{"enabled":true,"app_id":"cli","app_secret":"sec","workspace_id":null,"model":null}"#,
+            ),
+            (
+                "kook",
+                r#"{"enabled":false,"bot_token":"","workspace_id":null,"model":null}"#,
+            ),
+            (
+                "wechat",
+                r#"{"enabled":true,"ilink_account":"acct","ilink_token":"tok","workspace_id":null,"model":null}"#,
+            ),
+            (
+                "email",
+                r#"{"enabled":true,"imap_host":"imap.example","imap_port":993,"imap_user":"a@b.c","imap_pass":"pw","smtp_host":"smtp.example","smtp_port":587,"smtp_user":"a@b.c","smtp_pass":"pw","allowed_senders":[],"workspace_id":null,"model":null}"#,
+            ),
+            (
+                "seatalk",
+                r#"{"enabled":true,"mode":"websocket","dm_policy":"open","allow_from":[],"group_policy":"open","group_allow_from":[],"bots":[{"enabled":true,"app_id":"app","app_secret":"sec","system_prompt":"hi","workspace_id":null,"model":null}]}"#,
+            ),
+            (
+                "wechatpad",
+                r#"{"enabled":false,"server_url":"","callback_port":0,"account_wxid":"","dm_policy":"allowlist","allow_from":[],"group_policy":"allowlist","group_allow_from":[]}"#,
+            ),
+        ];
+        for (platform, json) in samples {
+            let mut channels = ChannelsConfig::default();
+            apply_channel_json(&mut channels, platform, json)
+                .unwrap_or_else(|e| panic!("{platform}: {e}"));
+        }
     }
 }
