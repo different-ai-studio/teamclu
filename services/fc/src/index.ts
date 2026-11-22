@@ -237,6 +237,7 @@ function makeDeployDeps() {
           appsAppUrl,
           fcOps: {
             ensureFunction: (name, args) => secureFcOps().ensureFunction(name, args),
+            ensurePrivateOrigin: (name, target) => secureFcOps().ensurePrivateOrigin(name, target),
             ensureHttpTrigger: name => secureFcOps().ensureHttpTrigger(name),
             ensureCustomDomain: (name, domain, target) => secureFcOps().ensureCustomDomain(name, domain, target),
             setMinInstances: (name, min) => secureFcOps().setMinInstances(name, min),

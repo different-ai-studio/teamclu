@@ -1204,3 +1204,25 @@ test("gateway carries code identity for public, legacy alias and custom hosts", 
     assert.equal(calls, 3);
   } finally { globalThis.fetch = oldFetch; }
 }));
+
+test("verified native FC HTTPS proxy signs only the private endpoint and preserves app authorization", async () => {
+  const host = "opaque-id.cn-hangzhou-vpc.fcapp.run";
+  const origin = { ...originOptions(), verifiedPrivateRegion: "cn-hangzhou" };
+  const request = new Request("https://public.example/path?q=1", {
+    headers: { Authorization: "Bearer app-token", "X-Teamclu-Origin-Authorization": "spoof" },
+  });
+  let calls = 0;
+  const fetcher = (async (url: URL, init: RequestInit) => {
+    calls++;
+    assert.equal(String(url), `https://${host}/path?q=1`);
+    const headers = new Headers(init.headers);
+    await verifyOriginHeader(headers, host);
+    assert.equal(headers.get("authorization"), "Bearer app-token");
+    return new Response("ok");
+  }) as typeof fetch;
+  assert.equal((await proxyToApp(request, `https://${host}`, fetcher, null, origin)).status, 200);
+  for (const invalid of [`http://${host}`, `https://${host}/unexpected`, "https://opaque-id.cn-hangzhou.fcapp.run", "https://opaque-id.cn-shenzhen-vpc.fcapp.run"]) {
+    assert.equal((await proxyToApp(request, invalid, fetcher, null, origin)).status, 503);
+  }
+  assert.equal(calls, 1);
+});
