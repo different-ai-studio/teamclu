@@ -217,7 +217,7 @@ vi.mock('@/stores/tabs', () => ({
   selectActiveTab: () => tabsStoreState.activeTab,
   selectHasHiddenTabs: (_s: any) =>
     tabsStoreState.tabs.length > 0 && tabsStoreState.activeTabId === null,
-  NO_SESSION_TAB_SCOPE: '__no-session__',
+  CHAT_TAB_SCOPE: '__chat__',
 }))
 vi.mock('@/stores/team-share-browser', () => ({
   useTeamShareBrowserStore: vi.fn((sel: (s: any) => any) => sel(teamShareBrowserState)),

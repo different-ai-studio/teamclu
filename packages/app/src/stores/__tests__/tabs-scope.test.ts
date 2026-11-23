@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { NO_SESSION_TAB_SCOPE, useTabsStore } from '@/stores/tabs'
+import { CHAT_TAB_SCOPE, useTabsStore } from '@/stores/tabs'
 
 function reset() {
   useTabsStore.setState({
     tabs: [],
     activeTabId: null,
     _lastActiveTabId: null,
-    scopeKey: NO_SESSION_TAB_SCOPE,
+    scopeKey: CHAT_TAB_SCOPE,
     _parked: {},
   })
 }

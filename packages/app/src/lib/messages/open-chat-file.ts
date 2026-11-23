@@ -59,7 +59,7 @@ async function pathExists(path: string): Promise<boolean> {
   return attachmentPathExists(path);
 }
 
-/** Show the file in the content column, as a tab of the open session. */
+/** Show the file in the content column, as a tab beside the conversation. */
 function rememberPreview(id: string, name: string, path?: string, text?: string) {
   const kind = sidebarPreviewKind(name);
   if (!kind) return;

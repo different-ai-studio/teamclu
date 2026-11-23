@@ -29,8 +29,8 @@ interface ParkedScope {
   lastActiveTabId: string | null;
 }
 
-/** Scope used while no session is open (new-chat draft, empty state). */
-export const NO_SESSION_TAB_SCOPE = "__no-session__";
+/** Scope of the conversation's tabs, shared by every session and the draft. */
+export const CHAT_TAB_SCOPE = "__chat__";
 
 interface TabsState {
   tabs: Tab[];
@@ -84,7 +84,7 @@ export const useTabsStore = create<TabsState>((set, get) => ({
   tabs: [],
   activeTabId: null,
   _lastActiveTabId: null,
-  scopeKey: NO_SESSION_TAB_SCOPE,
+  scopeKey: CHAT_TAB_SCOPE,
   _parked: {},
 
   switchScope: (key) => {

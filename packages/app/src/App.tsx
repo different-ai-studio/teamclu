@@ -33,7 +33,7 @@ import {
   useContentColumnVisible,
   useEffectiveContentColumnMode,
 } from "@/components/content-column/ContentColumn";
-import { useSessionScopedTabs } from "@/hooks/use-session-scoped-tabs";
+import { useSectionScopedTabs } from "@/hooks/use-section-scoped-tabs";
 import { SectionDetailColumn } from "@/components/content-column/SectionDetailColumn";
 import { useSectionMode } from "@/lib/layout/section-mode";
 import { SessionDrawer } from "@/components/session-drawer/SessionDrawer";
@@ -316,7 +316,7 @@ function AppContent() {
   useAgentsSkillsAccessInit();
   useExternalLinkHandler();
   useFileTabSync();
-  useSessionScopedTabs();
+  useSectionScopedTabs();
   useEffect(() => {
     const stopPageContext = startEmbedPageContextListener()
     const stopLinkOpen = startEmbedLinkOpenListener()
