@@ -15,20 +15,30 @@ import {
   type AgentAppChangedPayload,
 } from "@/hooks/use-agent-app-changes";
 
-const batcher = createTrailingBatcher<AgentAppChangedPayload>(
-  AGENT_APP_CHANGE_DEBOUNCE_MS,
-  (batch) => {
-    void refreshAfterAgentAppChanges(batch).catch((err: unknown) => {
-      console.warn("[apps] Refresh after access change failed (non-critical):", err);
-    });
-  },
-);
+type Batcher = ReturnType<typeof createTrailingBatcher<AgentAppChangedPayload>>;
+
+// Created on first use, not at import: this module is pulled in by
+// MqttLiveWiring, and a test that mocks the hooks module without
+// `createTrailingBatcher` must still be able to import it.
+let batcher: Batcher | null = null;
+
+function getBatcher(): Batcher {
+  batcher ??= createTrailingBatcher<AgentAppChangedPayload>(
+    AGENT_APP_CHANGE_DEBOUNCE_MS,
+    (batch) => {
+      void refreshAfterAgentAppChanges(batch).catch((err: unknown) => {
+        console.warn("[apps] Refresh after access change failed (non-critical):", err);
+      });
+    },
+  );
+  return batcher;
+}
 
 export function noteAppAccessChanged(teamId: string, appId: string | null): void {
-  batcher.push({ teamId, appId });
+  getBatcher().push({ teamId, appId });
 }
 
 /** Test hook — drops a pending re-read. */
 export function resetAppAccessInboxForTests(): void {
-  batcher.cancel();
+  batcher?.cancel();
 }
