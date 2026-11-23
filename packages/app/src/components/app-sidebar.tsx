@@ -34,6 +34,7 @@ import { SessionSearchDialog } from "@/components/sidebar/session-search-dialog"
 import { SessionDetailDialog, type SessionDetailListHints } from "@/components/sidebar/SessionDetailDialog"
 import { NavRail } from "@/components/sidebar/NavRail"
 import { LocalDaemonCard } from "@/components/sidebar/LocalDaemonCard"
+import { RailLocalDaemonEntry } from "@/components/sidebar/RailLocalDaemonEntry"
 import { SIDEBAR_INTERACTIVE_CURSOR } from "@/components/sidebar/sidebar-interactive-cursor"
 import { useMqttConnected } from "@/hooks/use-mqtt-connected"
 import { recoverMqttConnection } from "@/stores/mqtt-reconnect"
@@ -523,6 +524,9 @@ export function AppSidebar({
                 <PanelLeftIcon className="h-4 w-4" />
               </button>
             ) : null}
+            {/* The team card has no room on the rail; its agent sits here and
+                opens the card on click. */}
+            <RailLocalDaemonEntry />
             <button
               type="button"
               onClick={() => openSettings()}

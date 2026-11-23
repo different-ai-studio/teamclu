@@ -204,6 +204,14 @@ vi.mock('@/components/sidebar/NavRail', () => ({
 
 vi.mock('@/components/sidebar/LocalDaemonCard', () => ({
   LocalDaemonCard: () => null,
+  useLocalDaemonAgent: () => ({
+    absent: false,
+    actor: null,
+    runtimeStatus: 'checking',
+    teamId: null,
+    refetch: () => {},
+    defaultAgentId: null,
+  }),
 }))
 
 vi.mock('@/components/sidebar/SessionListColumn', () => ({

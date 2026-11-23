@@ -94,7 +94,7 @@ function AgentTypeIcon({ agentType }: { agentType?: string | null }) {
 /**
  * Status copy for the local daemon online / offline / MQTT indicators.
  */
-function localDaemonStatusLabel(
+export function localDaemonStatusLabel(
   status: LocalDaemonRuntimeStatus,
   t: (key: string, fallback: string) => string,
 ): string {
@@ -250,6 +250,35 @@ function SheetHeader({
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * The agent's mark on its own, coloured by status like the card's avatar:
+ * coral online, amber when its real-time channel is down, grey offline. For
+ * the collapsed rail, where the card itself does not fit.
+ */
+export function LocalDaemonMark({
+  runtimeStatus,
+  className,
+}: {
+  runtimeStatus: LocalDaemonRuntimeStatus
+  className?: string
+}) {
+  return (
+    <span
+      className={cn(
+        'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
+        runtimeStatus === 'offline'
+          ? 'bg-foreground/10 text-muted-foreground'
+          : runtimeStatus === 'daemonMqttDisconnected'
+            ? 'bg-amber-400/15 text-amber-800'
+            : 'bg-coral text-white',
+        className,
+      )}
+    >
+      <AgentTypeIcon agentType="pi" />
+    </span>
   )
 }
 

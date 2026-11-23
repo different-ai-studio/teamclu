@@ -2,6 +2,7 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { Inbox, Lightbulb, Keyboard, ChevronDown, MoreHorizontal } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { useRailPopover } from '@/components/sidebar/use-rail-popover'
 import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
 import {
@@ -76,60 +77,23 @@ function TopEntry({ label, icon: Icon, active, signal, onClick }: TopEntryProps)
   )
 }
 
-/** How long the pointer rests on 更多 before its menu opens, and how long it
- * may be off both tile and menu before it closes. The close delay lets the
- * pointer cross the gap between them. */
-const MORE_OPEN_DELAY_MS = 120
-const MORE_CLOSE_DELAY_MS = 200
-
 /**
- * The 更多 tile on the rail. Hovering (or clicking) opens the folded
- * destinations to its right as list rows; picking one closes it. The tile is
+ * The 更多 tile on the rail. Clicking it opens the folded destinations to its
+ * right as list rows; picking one closes it. The tile is
  * marked active while one of them is the open section, since its row is not
  * on the rail to show that.
  */
 function RailMoreEntry({ active, children }: { active: boolean; children: React.ReactNode }) {
   const { t } = useTranslation()
-  const [open, setOpen] = React.useState(false)
-  const timer = React.useRef<number | null>(null)
-  const filter = useUIStore((s) => s.sidebarFilter)
-
-  const clear = React.useCallback(() => {
-    if (timer.current !== null) window.clearTimeout(timer.current)
-    timer.current = null
-  }, [])
-  const later = React.useCallback(
-    (next: boolean, ms: number) => {
-      clear()
-      timer.current = window.setTimeout(() => {
-        timer.current = null
-        setOpen(next)
-      }, ms)
-    },
-    [clear],
-  )
-  React.useEffect(() => clear, [clear])
-  // Picking a destination is the end of the errand.
-  React.useEffect(() => {
-    clear()
-    setOpen(false)
-  }, [filter, clear])
+  const { open, onOpenChange, contentProps } = useRailPopover()
 
   const label = t('sidebar.more', 'More')
   const mode = useNavRailMode()
   return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        clear()
-        setOpen(next)
-      }}
-    >
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          onMouseEnter={() => (open ? clear() : later(true, MORE_OPEN_DELAY_MS))}
-          onMouseLeave={() => (open ? later(false, MORE_CLOSE_DELAY_MS) : clear())}
           className={cn(
             'flex w-full shrink-0 items-center rounded-lg text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]',
             navRowBox(mode),
@@ -150,9 +114,7 @@ function RailMoreEntry({ active, children }: { active: boolean; children: React.
         side="right"
         align="start"
         sideOffset={12}
-        onMouseEnter={clear}
-        onMouseLeave={() => later(false, MORE_CLOSE_DELAY_MS)}
-        onOpenAutoFocus={(e) => e.preventDefault()}
+        {...contentProps}
         className="w-[200px] rounded-xl border-black/[0.06] bg-sidebar p-1.5 shadow-[0_8px_24px_-8px_rgba(28,27,25,0.22)]"
       >
         <NavRailModeContext.Provider value="list">
