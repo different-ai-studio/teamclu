@@ -325,12 +325,14 @@ function SidebarUserAccountMenu() {
           {rail ? null : <ChevronUp className="h-3.5 w-3.5 shrink-0" />}
         </Button>
       </DropdownMenuTrigger>
-      {/* On the rail the trigger is a lone icon at the window's foot: the menu
-          opens beside the rail, bottom-aligned with it, rather than over it. */}
+      {/* Opens beside the sidebar, bottom-aligned with the trigger, rather
+          than over the sidebar — on the rail and in the full list alike. The
+          offset clears the footer's inset (6px on the rail, 10px in the list)
+          so the menu starts the same 6px past the sidebar's edge in both. */}
       <DropdownMenuContent
         align="end"
-        side={rail ? "right" : "top"}
-        sideOffset={rail ? 8 : 4}
+        side="right"
+        sideOffset={rail ? 12 : 16}
         className="w-72 p-2"
       >
         <DropdownMenuLabel className="px-2 py-1">
