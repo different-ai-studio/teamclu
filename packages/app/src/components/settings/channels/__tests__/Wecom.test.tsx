@@ -38,6 +38,7 @@ const { storeState } = vi.hoisted(() => ({
     toggleWecomEnabled: vi.fn(),
     startWecomQrAuth: vi.fn(),
     pollWecomQrAuth: vi.fn(),
+    commitScannedWecomBot: vi.fn(),
   },
 }))
 
@@ -125,5 +126,19 @@ describe('WeComChannel', () => {
     render(<WeComChannel />)
     expandCard()
     expect(screen.getByText('Add bot')).toBeTruthy()
+  })
+
+  it('opens the same QR wizard for another bot and cancel leaves the saved bots', () => {
+    render(<WeComChannel />)
+    expandCard()
+    fireEvent.click(screen.getByText('Add bot'))
+
+    expect(screen.getAllByText('Add another WeCom bot').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/leaves the bots already saved unchanged/).length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByText('Cancel'))
+    const botInputs = screen.getAllByPlaceholderText('Enter your WeCom bot ID')
+    expect(botInputs.map((el) => (el as HTMLInputElement).value)).toEqual(['b1', 'b2'])
+    expect(storeState.commitScannedWecomBot).not.toHaveBeenCalled()
   })
 })
