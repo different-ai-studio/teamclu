@@ -119,6 +119,152 @@ describe("composer draft store", () => {
     expect(await cloud.file.text()).toBe("from-disk");
   });
 
+  it("keeps a cloud path when the draft changes before the file is read back", async () => {
+    const store = useComposerDraftStore.getState();
+    const picked = {
+      kind: "cloud" as const,
+      file: new File(["hello-bytes"], "pic.png", { type: "image/png" }),
+      path: "/tmp/pic.png",
+    };
+    store.setText("a", "hello");
+    store.setFiles("a", [file, picked]);
+    useComposerDraftStore.setState({ textByKey: {}, filesByKey: {} });
+    useComposerDraftStore.getState().loadPersisted();
+
+    let finish: (file: File | null) => void = () => {};
+    setComposerDraftCloudReader(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const hydrating = hydrateComposerDraftFiles();
+    useComposerDraftStore.getState().setText("a", "hello!");
+    useComposerDraftStore.getState().updateFiles("a", (prev) =>
+      prev.filter((item) => item.kind !== "local"),
+    );
+
+    const duringRead = JSON.parse(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "{}");
+    expect(duringRead.textByKey.a).toBe("hello!");
+    expect(duringRead.filesByKey.a).toEqual([
+      {
+        kind: "cloud",
+        name: "pic.png",
+        size: picked.file.size,
+        path: "/tmp/pic.png",
+        type: "image/png",
+      },
+    ]);
+
+    finish(new File(["from-disk"], "pic.png", { type: "image/png" }));
+    await hydrating;
+
+    const restored = useComposerDraftStore.getState().files("a");
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.kind).toBe("cloud");
+    if (restored[0]?.kind !== "cloud") return;
+    expect(await restored[0].file.text()).toBe("from-disk");
+    const saved = JSON.parse(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "{}");
+    expect(saved.textByKey.a).toBe("hello!");
+    expect(saved.filesByKey.a[0].path).toBe("/tmp/pic.png");
+  });
+
+  it("keeps a cloud path added beside a new file, and drops it once the user removes it", async () => {
+    const store = useComposerDraftStore.getState();
+    const picked = {
+      kind: "cloud" as const,
+      file: new File(["hello-bytes"], "pic.png", { type: "image/png" }),
+      path: "/tmp/pic.png",
+    };
+    const extra: ComposerAttachment = { kind: "local", name: "b.txt", size: 1, path: "/tmp/b.txt" };
+    store.setFiles("a", [picked]);
+    useComposerDraftStore.setState({ textByKey: {}, filesByKey: {} });
+    useComposerDraftStore.getState().loadPersisted();
+    useComposerDraftStore.getState().updateFiles("a", (prev) => [...prev, extra]);
+
+    const duringRead = JSON.parse(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "{}");
+    expect(duringRead.filesByKey.a).toEqual([
+      extra,
+      {
+        kind: "cloud",
+        name: "pic.png",
+        size: picked.file.size,
+        path: "/tmp/pic.png",
+        type: "image/png",
+      },
+    ]);
+
+    setComposerDraftCloudReader(async () => new File(["from-disk"], "pic.png", { type: "image/png" }));
+    await hydrateComposerDraftFiles();
+    expect(useComposerDraftStore.getState().files("a").map((item) => item.path)).toEqual([
+      "/tmp/b.txt",
+      "/tmp/pic.png",
+    ]);
+
+    useComposerDraftStore.getState().setFiles("a", [extra]);
+    useComposerDraftStore.getState().setText("a", "left");
+    const saved = JSON.parse(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "{}");
+    expect(saved.textByKey.a).toBe("left");
+    expect(saved.filesByKey.a).toEqual([extra]);
+  });
+
+  it("keeps the cloud path when the disk read fails", async () => {
+    const store = useComposerDraftStore.getState();
+    const picked = {
+      kind: "cloud" as const,
+      file: new File(["hello-bytes"], "pic.png", { type: "image/png" }),
+      path: "/tmp/pic.png",
+    };
+    store.setFiles("a", [picked]);
+    useComposerDraftStore.setState({ textByKey: {}, filesByKey: {} });
+    useComposerDraftStore.getState().loadPersisted();
+    setComposerDraftCloudReader(async () => null);
+    await hydrateComposerDraftFiles();
+    useComposerDraftStore.getState().setText("a", "still");
+
+    const saved = JSON.parse(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "{}");
+    expect(saved.textByKey.a).toBe("still");
+    expect(saved.filesByKey.a).toEqual([
+      {
+        kind: "cloud",
+        name: "pic.png",
+        size: picked.file.size,
+        path: "/tmp/pic.png",
+        type: "image/png",
+      },
+    ]);
+    expect(useComposerDraftStore.getState().files("a")).toEqual([]);
+  });
+
+  it("does not put a cloud file back after the draft is cleared while reading", async () => {
+    const store = useComposerDraftStore.getState();
+    const picked = {
+      kind: "cloud" as const,
+      file: new File(["hello-bytes"], "pic.png", { type: "image/png" }),
+      path: "/tmp/pic.png",
+    };
+    store.setText("a", "hello");
+    store.setFiles("a", [picked]);
+    useComposerDraftStore.setState({ textByKey: {}, filesByKey: {} });
+    useComposerDraftStore.getState().loadPersisted();
+
+    let finish: (file: File | null) => void = () => {};
+    setComposerDraftCloudReader(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const hydrating = hydrateComposerDraftFiles();
+    useComposerDraftStore.getState().clear("a");
+    finish(new File(["from-disk"], "pic.png", { type: "image/png" }));
+    await hydrating;
+
+    expect(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY)).toBeNull();
+    expect(useComposerDraftStore.getState().files("a")).toEqual([]);
+    expect(useComposerDraftStore.getState().text("a")).toBe("");
+  });
+
   it("maps a missing session onto the unbound key", () => {
     expect(composerDraftKey(null)).toBe(UNBOUND_COMPOSER_KEY);
     expect(composerDraftKey(undefined)).toBe(UNBOUND_COMPOSER_KEY);

@@ -65,10 +65,15 @@ interface PersistedComposerDraft {
 
 type CloudFileReader = (entry: PersistedCloudPath) => Promise<File | null>;
 
-const dirtyFileKeys = new Set<string>();
 let hydrateToken = 0;
 let hydratedToken = -1;
 let hydrateInflight: Promise<void> | null = null;
+/**
+ * Cloud paths restored from disk stay here until a File is in memory.
+ * Writes before that read finishes must keep these entries, because memory
+ * does not have them yet.
+ */
+let pendingCloudByKey: Record<string, PersistedCloudPath[]> = {};
 
 async function readCloudFileFromDisk(entry: PersistedCloudPath): Promise<File | null> {
   try {
@@ -201,6 +206,15 @@ function memoryFromPersisted(saved: PersistedComposerDraft): {
   return { textByKey: saved.textByKey, filesByKey };
 }
 
+function cloudPathsFrom(saved: PersistedComposerDraft): Record<string, PersistedCloudPath[]> {
+  const pending: Record<string, PersistedCloudPath[]> = {};
+  for (const [key, entries] of Object.entries(saved.filesByKey)) {
+    const clouds = entries.filter((entry): entry is PersistedCloudPath => entry.kind === "cloud");
+    if (clouds.length > 0) pending[key] = clouds;
+  }
+  return pending;
+}
+
 function readPersisted(): PersistedComposerDraft {
   try {
     const raw = localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
@@ -217,6 +231,24 @@ function writePersisted(state: {
 }): void {
   try {
     const snapshot = persistedComposerDraft(state);
+    for (const key of Object.keys(pendingCloudByKey)) {
+      const stored = new Set(
+        (snapshot.filesByKey[key] ?? [])
+          .filter((entry) => entry.kind === "cloud")
+          .map((entry) => entry.path),
+      );
+      const left = pendingCloudByKey[key].filter((entry) => !stored.has(entry.path));
+      if (left.length > 0) pendingCloudByKey[key] = left;
+      else delete pendingCloudByKey[key];
+    }
+    for (const [key, pending] of Object.entries(pendingCloudByKey)) {
+      const existing = snapshot.filesByKey[key] ?? [];
+      const have = new Set(
+        existing.filter((entry) => entry.kind === "cloud").map((entry) => entry.path),
+      );
+      const extra = pending.filter((entry) => !have.has(entry.path));
+      if (extra.length > 0) snapshot.filesByKey[key] = [...existing, ...extra];
+    }
     if (
       Object.keys(snapshot.textByKey).length === 0 &&
       Object.keys(snapshot.filesByKey).length === 0
@@ -232,23 +264,23 @@ function writePersisted(state: {
 
 const persistedAtLaunch = readPersisted();
 const launchedMemory = memoryFromPersisted(persistedAtLaunch);
+pendingCloudByKey = cloudPathsFrom(persistedAtLaunch);
 
-function markFilesDirty(key: string): void {
-  dirtyFileKeys.add(key);
+function dropPending(key: string): void {
+  delete pendingCloudByKey[key];
 }
 
 async function restoreCloudPaths(token: number): Promise<void> {
-  const saved = readPersisted();
+  const snapshot = Object.fromEntries(
+    Object.entries(pendingCloudByKey).map(([key, entries]) => [
+      key,
+      entries.map((entry) => ({ ...entry })),
+    ]),
+  );
   const restored: Record<string, ComposerAttachment[]> = {};
-  for (const [key, entries] of Object.entries(saved.filesByKey)) {
-    if (dirtyFileKeys.has(key)) continue;
-    if (!entries.some((entry) => entry.kind === "cloud")) continue;
+  for (const [key, entries] of Object.entries(snapshot)) {
     const files: ComposerAttachment[] = [];
     for (const entry of entries) {
-      if (entry.kind === "local") {
-        files.push(entry);
-        continue;
-      }
       const file = await cloudFileReader(entry);
       if (!file) continue;
       files.push({ kind: "cloud", file, path: entry.path });
@@ -256,14 +288,36 @@ async function restoreCloudPaths(token: number): Promise<void> {
     if (files.length > 0) restored[key] = files;
   }
   if (token !== hydrateToken) return;
-  useComposerDraftStore.setState((state) => {
-    const filesByKey = { ...state.filesByKey };
-    for (const [key, files] of Object.entries(restored)) {
-      if (dirtyFileKeys.has(key)) continue;
-      filesByKey[key] = files;
-    }
-    return { filesByKey };
-  });
+  const state = useComposerDraftStore.getState();
+  const filesByKey = { ...state.filesByKey };
+  let changed = false;
+  for (const [key, files] of Object.entries(restored)) {
+    const stillPending = new Set((pendingCloudByKey[key] ?? []).map((entry) => entry.path));
+    const current = filesByKey[key] ?? [];
+    const known = new Set(
+      current.flatMap((item) => (item.kind === "cloud" && item.path ? [item.path] : [])),
+    );
+    const adding = files.filter(
+      (item) =>
+        item.kind === "cloud" &&
+        item.path !== undefined &&
+        stillPending.has(item.path) &&
+        !known.has(item.path),
+    );
+    if (adding.length === 0) continue;
+    filesByKey[key] = [...current, ...adding];
+    changed = true;
+    const loaded = new Set(
+      adding.map((item) => (item.kind === "cloud" ? item.path : undefined)),
+    );
+    const left = (pendingCloudByKey[key] ?? []).filter((entry) => !loaded.has(entry.path));
+    if (left.length > 0) pendingCloudByKey[key] = left;
+    else dropPending(key);
+  }
+  if (changed) {
+    useComposerDraftStore.setState({ filesByKey });
+    writePersisted(useComposerDraftStore.getState());
+  }
   hydratedToken = token;
 }
 
@@ -318,10 +372,7 @@ export const useComposerDraftStore = create<ComposerDraftState>((set, get) => ({
       changed = true;
       return { filesByKey: { ...s.filesByKey, [key]: files } };
     });
-    if (changed) {
-      markFilesDirty(key);
-      writePersisted(get());
-    }
+    if (changed) writePersisted(get());
   },
   updateFiles: (key, updater) => {
     const prev = get().files(key);
@@ -331,15 +382,17 @@ export const useComposerDraftStore = create<ComposerDraftState>((set, get) => ({
   },
   copyOnto: (fromKey, toKey) => {
     if (fromKey === toKey) return;
+    const pending = pendingCloudByKey[fromKey];
     set((s) => {
       const text = s.textByKey[fromKey];
       const files = s.filesByKey[fromKey];
-      if (!text && !files?.length) return s;
+      if (!text && !files?.length && !pending?.length) return s;
       return {
         textByKey: text ? { ...s.textByKey, [toKey]: text } : s.textByKey,
         filesByKey: files?.length ? { ...s.filesByKey, [toKey]: files } : s.filesByKey,
       };
     });
+    if (pending?.length) pendingCloudByKey[toKey] = pending.map((entry) => ({ ...entry }));
     writePersisted(get());
   },
   takeForSend: (sessionId, alsoClearKey) => {
@@ -367,7 +420,7 @@ export const useComposerDraftStore = create<ComposerDraftState>((set, get) => ({
       }
       return changed ? { textByKey, filesByKey } : s;
     });
-    for (const key of keys) markFilesDirty(key);
+    for (const key of keys) dropPending(key);
     writePersisted(get());
     return { text, files };
   },
@@ -376,6 +429,8 @@ export const useComposerDraftStore = create<ComposerDraftState>((set, get) => ({
     get().setFiles(sessionId, files);
   },
   clear: (key) => {
+    const hadPending = key in pendingCloudByKey;
+    if (hadPending) dropPending(key);
     let changed = false;
     set((s) => {
       if (!(key in s.textByKey) && !(key in s.filesByKey)) return s;
@@ -385,22 +440,18 @@ export const useComposerDraftStore = create<ComposerDraftState>((set, get) => ({
         filesByKey: withoutKey(s.filesByKey, key),
       };
     });
-    if (changed) {
-      markFilesDirty(key);
-      writePersisted(get());
-    }
+    if (changed || hadPending) writePersisted(get());
   },
   clearAll: () => {
     hydrateToken += 1;
-    dirtyFileKeys.clear();
+    pendingCloudByKey = {};
     set({ textByKey: {}, filesByKey: {} });
     writePersisted(get());
   },
   loadPersisted: () => {
     hydrateToken += 1;
-    dirtyFileKeys.clear();
     const saved = readPersisted();
-    const memory = memoryFromPersisted(saved);
-    set(memory);
+    pendingCloudByKey = cloudPathsFrom(saved);
+    set(memoryFromPersisted(saved));
   },
 }));
