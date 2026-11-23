@@ -670,6 +670,8 @@ pub fn run() {
             commands::window_chrome::quit_app,
             commands::window_chrome::get_window_close_preference,
             commands::window_chrome::set_window_close_preference,
+            commands::ui_layout_prefs::get_ui_layout_prefs,
+            commands::ui_layout_prefs::set_ui_layout_pref,
             commands::tray_menu::update_tray_menu_labels,
             commands::app_menu::update_app_menu_labels,
             commands::team_share::enable::team_share_set_team_secret,

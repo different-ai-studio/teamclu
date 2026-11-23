@@ -7,9 +7,25 @@ import { scheduleReleaseStuckModalLayers } from '@/lib/ui/modal-layer-cleanup'
 import type { PageContext } from '@/lib/embed/embed-page-context'
 import { loadFromStorage, saveToStorage } from '@/lib/config/storage'
 import { appStoragePrefix } from '@/lib/config/build-config'
+import {
+  loadUiLayoutPrefs,
+  persistUiLayoutPref,
+  reconcileUiLayoutPrefs,
+  type UiLayoutPrefKey,
+  type UiLayoutPrefs,
+} from '@/lib/config/ui-layout-prefs'
 
 const NAV_PINNED_STORAGE_KEY = `${appStoragePrefix}-nav-pinned`
 const SESSION_DRAWER_PINNED_STORAGE_KEY = `${appStoragePrefix}-session-drawer-pinned`
+
+const LAYOUT_PREF_STORAGE_KEYS: Record<UiLayoutPrefKey, string> = {
+  navPinned: NAV_PINNED_STORAGE_KEY,
+  sessionDrawerPinned: SESSION_DRAWER_PINNED_STORAGE_KEY,
+}
+
+/** Layout keys the user changed since launch: the startup restore leaves them
+ * alone, so a toggle made while the file is still being read is not undone. */
+const layoutPrefsTouched = new Set<UiLayoutPrefKey>()
 
 type View = 'chat' | 'settings'
 
@@ -452,11 +468,15 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleMoreNav: () => set((s) => ({ moreNavExpanded: !s.moreNavExpanded })),
   setMoreNavExpanded: (expanded) => set({ moreNavExpanded: expanded }),
   setNavPinned: (pinned) => {
+    layoutPrefsTouched.add('navPinned')
     saveToStorage(NAV_PINNED_STORAGE_KEY, pinned)
+    persistUiLayoutPref('navPinned', pinned)
     set({ navPinned: pinned })
   },
   setSessionDrawerPinned: (pinned) => {
+    layoutPrefsTouched.add('sessionDrawerPinned')
     saveToStorage(SESSION_DRAWER_PINNED_STORAGE_KEY, pinned)
+    persistUiLayoutPref('sessionDrawerPinned', pinned)
     set({ sessionDrawerPinned: pinned })
   },
   toggleLocalDaemon: () => set((s) => ({ localDaemonExpanded: !s.localDaemonExpanded })),
@@ -493,3 +513,26 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   setFileModeRightTab: (tab) => set({ fileModeRightTab: tab }),
 }))
+
+/**
+ * Restores the layout switches from the desktop shell's file, which outlives
+ * localStorage across updates and reinstalls. Runs once at startup.
+ */
+export async function restoreUiLayoutPrefs(): Promise<void> {
+  const file = await loadUiLayoutPrefs()
+  if (!file) return
+  const { navPinned, sessionDrawerPinned } = useUIStore.getState()
+  const { apply, backfill } = reconcileUiLayoutPrefs(file, { navPinned, sessionDrawerPinned })
+  const patch: UiLayoutPrefs = {}
+  for (const [key, value] of Object.entries(apply) as [UiLayoutPrefKey, boolean][]) {
+    if (layoutPrefsTouched.has(key)) continue
+    saveToStorage(LAYOUT_PREF_STORAGE_KEYS[key], value)
+    patch[key] = value
+  }
+  if (Object.keys(patch).length > 0) useUIStore.setState(patch)
+  for (const [key, value] of Object.entries(backfill) as [UiLayoutPrefKey, boolean][]) {
+    if (!layoutPrefsTouched.has(key)) persistUiLayoutPref(key, value)
+  }
+}
+
+void restoreUiLayoutPrefs()
