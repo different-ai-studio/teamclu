@@ -40,6 +40,9 @@ import { recoverMqttConnection } from "@/stores/mqtt-reconnect"
 import {
   NavRailModeContext,
   isRailMode,
+  navRowBox,
+  navRowIcon,
+  navRowLabel,
   useNavRailMode,
   type NavRailMode,
 } from "@/components/sidebar/nav-rail-mode"
@@ -298,13 +301,13 @@ function SidebarUserAccountMenu() {
           className={cn(
             "min-w-0 rounded-lg text-ink-2 hover:bg-black/[0.04] hover:text-foreground",
             rail
-              ? "h-8 w-full justify-center px-0"
+              ? "h-14 w-full flex-col justify-center gap-1 px-0.5 font-normal"
               : "h-8 shrink max-w-full gap-1.5 px-2 text-[12px]",
           )}
           title={rail ? userName : undefined}
           data-testid="sidebar-user-menu-trigger"
         >
-          <span className="relative flex h-4 w-4 shrink-0">
+          <span className={cn("relative flex shrink-0", rail ? "h-5 w-5" : "h-4 w-4")}>
             {avatarUrl ? (
               <img
                 src={avatarUrl}
@@ -326,7 +329,7 @@ function SidebarUserAccountMenu() {
               />
             ) : null}
           </span>
-          <span className={rail ? "sr-only" : "min-w-0 truncate"}>{userName}</span>
+          <span className={rail ? navRowLabel("rail") : "min-w-0 truncate"}>{userName}</span>
           {rail ? null : <ChevronUp className="h-3.5 w-3.5 shrink-0" />}
         </Button>
       </DropdownMenuTrigger>
@@ -568,7 +571,7 @@ export function AppSidebar({
       className={cn(
         SIDEBAR_INTERACTIVE_CURSOR,
         // Widened over column two rather than pushing it: the rail's own gap
-        // stays 80px, only the fixed container grows.
+        // stays 92px, only the fixed container grows.
         railExpanded &&
           "z-40 w-(--sidebar-width)! shadow-[8px_0_24px_-12px_rgba(28,27,25,0.18)]",
         className,
@@ -612,17 +615,19 @@ export function AppSidebar({
         </SidebarContent>
 
         {railCollapsed ? (
-          <SidebarFooter className="items-center gap-1 px-1.5 pb-2 pt-1">
-            <Button
-              variant="ghost"
-              size="sm"
+          <SidebarFooter className="gap-0.5 px-1.5 pb-3 pt-1">
+            <button
+              type="button"
               onClick={() => openSettings()}
               title={settingsLabel}
-              aria-label={settingsLabel}
-              className="h-8 w-full justify-center rounded-lg px-0 text-ink-2 hover:bg-black/[0.04] hover:text-foreground"
+              className={cn(
+                "flex w-full items-center rounded-lg text-[13px] text-ink-2 transition-colors duration-150 hover:bg-black/[0.04] hover:text-foreground",
+                navRowBox("rail"),
+              )}
             >
-              <Settings className="h-3.5 w-3.5 shrink-0" />
-            </Button>
+              <Settings className={cn(navRowIcon("rail"), "text-muted-foreground")} />
+              <span className={navRowLabel("rail")}>{settingsLabel}</span>
+            </button>
             <SidebarUserAccountMenu />
           </SidebarFooter>
         ) : (

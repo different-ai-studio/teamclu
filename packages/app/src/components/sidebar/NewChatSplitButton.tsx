@@ -45,9 +45,9 @@ export function NewChatSplitButton({
   const mode = useNavRailMode()
 
   if (mode === 'rail') {
-    // The split cannot fit on the rail: it is the primary action as an icon,
-    // as tall as the list's button so the rows under it stay put when the
-    // rail widens. The advanced half comes back with the widened rail.
+    // The split cannot fit on the rail: it is the primary action as a tile,
+    // icon over label like every other rail row. The advanced half comes back
+    // with the widened rail.
     const label = `${t('chat.newChat', 'New Chat')} (${formatShortcut('mod+N')})`
     return (
       <button
@@ -57,17 +57,18 @@ export function NewChatSplitButton({
         title={primaryTitle ?? label}
         aria-label={label}
         className={cn(
-          'flex w-full items-center justify-center rounded-[10px] bg-coral py-2.5 text-[13px] text-coral-foreground shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)] transition-[filter] duration-150',
+          'flex h-14 w-full flex-col items-center justify-center gap-1 rounded-[10px] bg-coral px-1 text-coral-foreground shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)] transition-[filter] duration-150',
           'hover:brightness-[1.04] disabled:cursor-not-allowed disabled:opacity-40',
         )}
       >
         {creating ? (
-          <Loader2 className="h-[15px] w-[15px] animate-spin" />
+          <Loader2 className="h-5 w-5 animate-spin" />
         ) : (
-          <SquarePen className="h-[15px] w-[15px]" />
+          <SquarePen className="h-5 w-5" />
         )}
-        {/* Zero-width text keeps the list button's line height. */}
-        <span aria-hidden className="w-0 overflow-hidden">{'\u200b'}</span>
+        <span className="w-full truncate whitespace-nowrap text-[12px] font-semibold leading-[15px]">
+          {t('chat.newChat', 'New Chat')}
+        </span>
       </button>
     )
   }

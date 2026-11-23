@@ -860,7 +860,9 @@ function App() {
         style={
           {
             "--sidebar-width": "220px",
-            "--sidebar-width-icon": "80px",
+            // Wide enough that the macOS 26 traffic lights (≈18–78px in) keep a
+            // margin on their right, as they do on their left.
+            "--sidebar-width-icon": "92px",
             "--session-list-width": "280px",
           } as React.CSSProperties
         }

@@ -35,7 +35,7 @@ export function ContactsNavEntry() {
           title={mode === 'rail' ? label : undefined}
           className={cn(
             'flex min-w-0 flex-1 items-center gap-2.5 text-left text-[13px] transition-colors duration-150',
-            mode === 'rail' && 'justify-center gap-0',
+            mode === 'rail' && 'w-full flex-col justify-center gap-1 text-center',
             active ? 'font-semibold text-foreground' : 'font-normal text-ink-2',
           )}
         >
