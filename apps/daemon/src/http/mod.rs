@@ -32,6 +32,7 @@ pub mod apps;
 pub mod auth;
 pub mod config;
 pub mod cors;
+pub mod cron;
 pub mod errors;
 pub mod events;
 pub mod knowledge_inbox;

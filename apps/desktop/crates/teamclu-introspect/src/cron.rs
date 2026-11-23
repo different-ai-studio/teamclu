@@ -1,6 +1,16 @@
+//! `manage_cron_job` — straight to amuxd, which owns cron (ADR-0010).
+//!
+//! This used to go through the desktop app's introspect API, so an agent could
+//! not manage jobs when no desktop was running: a headless daemon, or a run at
+//! 3am with the app closed — which is exactly when cron matters. The daemon
+//! that spawned this sidecar is always there, so the tool talks to it.
+
 use serde_json::{json, Value};
 
-pub async fn handle(workspace: &str, api_port: u16, arguments: &Value) -> Result<Value, String> {
+const MANAGE_PATH: &str = "/v1/cron/manage";
+const WRITE: &[&str] = &["workspace:write"];
+
+pub async fn handle(workspace: &str, arguments: &Value) -> Result<Value, String> {
     let action = arguments
         .get("action")
         .and_then(|v| v.as_str())
@@ -14,8 +24,33 @@ pub async fn handle(workspace: &str, api_port: u16, arguments: &Value) -> Result
         other => return Err(format!("Unknown action: {other}")),
     };
 
-    let resp = crate::desktop_api::post(api_port, "/cron-manage", &body).await?;
+    let resp =
+        crate::daemon_http::request(reqwest::Method::POST, MANAGE_PATH, WRITE, Some(&body)).await?;
     Ok(sanitize_manage_response(resp))
+}
+
+/// Jobs the agent can see: the global list plus, when `workspace` is set, that
+/// workspace's (cwd mapped back to the workspace root, as the settings page
+/// lists it). For `get_my_capabilities`.
+pub async fn list_visible_jobs(workspace: &str) -> Result<Vec<Value>, String> {
+    let mut jobs = list_scope(None).await?;
+    if !workspace.trim().is_empty() {
+        jobs.extend(list_scope(Some(&resolve_workspace_root(workspace))).await?);
+    }
+    Ok(jobs)
+}
+
+async fn list_scope(workspace_path: Option<&str>) -> Result<Vec<Value>, String> {
+    let path = match workspace_path {
+        Some(ws) => format!(
+            "/v1/cron/jobs?workspacePath={}",
+            crate::daemon_http::urlencode(ws)
+        ),
+        None => "/v1/cron/jobs".to_string(),
+    };
+    let resp =
+        crate::daemon_http::request(reqwest::Method::GET, &path, &["workspace:read"], None).await?;
+    Ok(resp.as_array().cloned().unwrap_or_default())
 }
 
 // ─── Create ───────────────────────────────────────────────────────────────────
@@ -452,17 +487,16 @@ mod tests {
     }
 
     /// Regression: MCP used to write `{cwd}/.teamclu/cron-jobs.json` and report
-    /// success. The settings list reads the desktop cron store (global by
-    /// default), so those jobs never appeared. Create must go through the
-    /// desktop API instead of a sidecar-local file.
-    #[tokio::test]
-    async fn create_does_not_write_a_workspace_file_the_ui_never_reads() {
+    /// success, and the settings list never showed those jobs. Create only
+    /// builds a request for the daemon's `/v1/cron/manage` (not exercised
+    /// here: on a dev machine that would reach a real daemon).
+    #[test]
+    fn create_does_not_write_a_workspace_file_the_ui_never_reads() {
         let workspace = temp_workspace();
         std::fs::create_dir_all(&workspace).unwrap();
 
-        let result = handle(
+        let body = create_request_body(
             workspace.to_str().unwrap(),
-            9, // nothing listens here; the point is we must not succeed locally
             &json!({
                 "action": "create",
                 "name": "Morning summary",
@@ -470,12 +504,9 @@ mod tests {
                 "message": "Summarize yesterday's work"
             }),
         )
-        .await;
+        .unwrap();
 
-        assert!(
-            result.is_err(),
-            "create must go through the desktop API, got {result:?}"
-        );
+        assert_eq!(body["action"], "create");
         assert!(
             !workspace.join(".teamclu/cron-jobs.json").exists(),
             "MCP must not stash jobs in the agent cwd"

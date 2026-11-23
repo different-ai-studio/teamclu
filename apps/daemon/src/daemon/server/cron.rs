@@ -1017,6 +1017,155 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
     }
 }
 
+/// [`crate::cron::CronExecutor`] over the daemon's own command channel.
+///
+/// The scheduler sends exactly the JSON payloads the desktop used to write to
+/// `amuxd.sock`, through the same `SockCommand` variants, so a cron turn takes
+/// the same path through the main loop it always did — only the sender moved.
+pub(crate) struct SockCronExecutor {
+    pub(crate) tx: tokio::sync::mpsc::Sender<super::SockCommand>,
+    /// Set once the control loop drains `tx`. It starts only after the daemon
+    /// has a team, a broker and a token; before that a command would wait
+    /// forever, and the run with it.
+    pub(crate) control_loop_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Why a cron run fails before the control loop is up.
+pub(crate) const CRON_NOT_CONNECTED_ERROR: &str =
+    "amuxd is not connected yet (no team claimed, or offline since it started); cron runs need its cloud connection";
+
+impl SockCronExecutor {
+    async fn call(
+        &self,
+        make: impl FnOnce(oneshot::Sender<String>) -> super::SockCommand,
+    ) -> Result<serde_json::Value, String> {
+        if !self
+            .control_loop_ready
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(CRON_NOT_CONNECTED_ERROR.to_string());
+        }
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(make(reply_tx))
+            .await
+            .map_err(|_| "amuxd main loop is gone".to_string())?;
+        let body = reply_rx
+            .await
+            .map_err(|_| "amuxd dropped the reply".to_string())?;
+        let v: serde_json::Value =
+            serde_json::from_str(body.trim()).map_err(|e| format!("bad reply: {e} ({body:?})"))?;
+        if v.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+            return Err(v
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown amuxd error")
+                .to_string());
+        }
+        Ok(v)
+    }
+}
+
+fn result_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get("result")
+        .and_then(|r| r.get(key))
+        .and_then(|s| s.as_str())
+        .map(str::to_string)
+}
+
+#[async_trait::async_trait]
+impl crate::cron::CronExecutor for SockCronExecutor {
+    async fn prepare_session(
+        &self,
+        session_key: &str,
+        job_name: Option<&str>,
+    ) -> Result<String, String> {
+        let mut payload = serde_json::json!({
+            "cmd": "cron-prepare-session",
+            "session_key": session_key,
+        });
+        if let Some(name) = job_name.filter(|s| !s.is_empty()) {
+            payload["job_name"] = serde_json::Value::String(name.to_string());
+        }
+        let v = self
+            .call(|reply_tx| super::SockCommand::CronPrepareSession { payload, reply_tx })
+            .await?;
+        result_str(&v, "session_id").ok_or_else(|| "prepare: missing session_id".to_string())
+    }
+
+    async fn prompt_await(
+        &self,
+        req: crate::cron::PromptAwaitRequest,
+    ) -> Result<crate::cron::PromptAwaitResponse, String> {
+        let mut payload = serde_json::to_value(&req).map_err(|e| e.to_string())?;
+        payload["cmd"] = serde_json::Value::String("prompt-await".into());
+        let v = self
+            .call(|reply_tx| super::SockCommand::PromptAwait { payload, reply_tx })
+            .await?;
+        let session_id = result_str(&v, "session_id")
+            .ok_or_else(|| "prompt-await: missing session_id".to_string())?;
+        if let Some(agent_error) = result_str(&v, "agent_error") {
+            return Ok(crate::cron::PromptAwaitResponse {
+                text: String::new(),
+                session_id,
+                agent_error: Some(agent_error),
+                timed_out: false,
+            });
+        }
+        // Tool-only turns finish with no prose; that is success, not an error.
+        Ok(crate::cron::PromptAwaitResponse {
+            text: result_str(&v, "text").unwrap_or_default(),
+            session_id,
+            agent_error: None,
+            timed_out: v
+                .get("result")
+                .and_then(|r| r.get("timed_out"))
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false),
+        })
+    }
+
+    async fn channel_send(&self, channel: &str, target: &str, message: &str) -> Result<(), String> {
+        let payload = serde_json::json!({
+            "cmd": "channel-send",
+            "channel": channel,
+            "target": target,
+            "message": message,
+        });
+        self.call(|reply_tx| super::SockCommand::ChannelSend { payload, reply_tx })
+            .await
+            .map(|_| ())
+    }
+
+    async fn resolve_reply_token(
+        &self,
+        token: &str,
+    ) -> Result<crate::cron::ResolvedCronTarget, String> {
+        // A pure registry lookup — no main-loop state involved.
+        let v: serde_json::Value =
+            serde_json::from_str(&super::resolve_reply_token_cron_json(token))
+                .map_err(|e| e.to_string())?;
+        if v.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+            return Err(v
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown reply_token error")
+                .to_string());
+        }
+        let field = |k: &str| {
+            v.get(k)
+                .and_then(|s| s.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| format!("resolve-reply-token missing {k}"))
+        };
+        Ok(crate::cron::ResolvedCronTarget {
+            channel: field("channel")?,
+            to: field("to")?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::CronSessionCache;
@@ -1028,6 +1177,49 @@ mod tests {
     use crate::runtime::PermissionPolicy;
     use std::sync::Arc;
     use teamclu_runtime_env::team_crypto::{self, SecretEntry};
+
+    #[tokio::test]
+    async fn cron_executor_fails_fast_before_the_control_loop_runs() {
+        // Unclaimed, or offline since boot: nothing drains the command
+        // channel yet, so a sent command would wait forever.
+        use crate::cron::CronExecutor;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let executor = super::SockCronExecutor {
+            tx,
+            control_loop_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            executor.prepare_session("cron/j/r", Some("j")),
+        )
+        .await
+        .expect("must not wait for the control loop")
+        .unwrap_err();
+        assert!(err.contains("not connected"), "{err}");
+        assert!(rx.try_recv().is_err(), "nothing should be queued");
+    }
+
+    #[tokio::test]
+    async fn cron_executor_forwards_once_the_control_loop_runs() {
+        use crate::cron::CronExecutor;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let executor = super::SockCronExecutor {
+            tx,
+            control_loop_ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        tokio::spawn(async move {
+            if let Some(crate::daemon::server::SockCommand::CronPrepareSession {
+                reply_tx, ..
+            }) = rx.recv().await
+            {
+                let _ = reply_tx.send(r#"{"ok":true,"result":{"session_id":"s-1"}}"#.into());
+            }
+        });
+        assert_eq!(
+            executor.prepare_session("cron/j/r", None).await.unwrap(),
+            "s-1"
+        );
+    }
 
     #[test]
     fn cron_job_id_parsed_from_session_key() {

@@ -211,6 +211,9 @@ pub struct HttpState {
     pub session_prompt: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
     /// Pi `session_attach_file` uploads merged into turn-final agent replies.
     pub session_attach: Option<Arc<crate::runtime::session_attach::SessionAttachService>>,
+    /// Daemon-owned cron (`/v1/cron/*`). `None` in focused tests — the
+    /// routes then return 503.
+    pub cron: Option<crate::cron::CronService>,
 }
 
 impl HttpState {
@@ -262,7 +265,13 @@ impl HttpState {
             runtime_context: None,
             session_prompt: None,
             session_attach: None,
+            cron: None,
         }
+    }
+
+    pub fn with_cron(mut self, cron: Option<crate::cron::CronService>) -> Self {
+        self.cron = cron;
+        self
     }
 
     pub fn with_runtime_context(

@@ -54,7 +54,6 @@ pub(crate) fn route_access(path: &str) -> RouteAccess {
         "/app-env" => ReadActions(&["list"]),
         "/app-cron" => ReadActions(&["list", "runs"]),
         "/app-domain" => ReadActions(&["get"]),
-        "/cron-manage" => ReadActions(&["list", "get_runs"]),
         "/session-participants" => ReadActions(&["list", "list_candidates"]),
         // `/mcp-get` only reads, but what it returns is MCP config — API keys in
         // `environment`, bearer headers — so it stays agent-only.

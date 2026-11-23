@@ -5,6 +5,9 @@
 mod backend;
 #[path = "../../src/config/mod.rs"]
 mod config;
+// `http::cron` serves the daemon-owned scheduler (ADR-0010).
+#[path = "../../src/cron/mod.rs"]
+mod cron;
 // `http::server` reports this machine's id on /v1/info; an integration test's
 // crate root only has the modules it declares here.
 #[path = "../../src/device_id.rs"]

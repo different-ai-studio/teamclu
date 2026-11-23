@@ -215,6 +215,7 @@ pub async fn spawn(
         session_prompt,
         session_attach,
         None,
+        None,
     )
     .await
 }
@@ -247,6 +248,9 @@ pub async fn spawn_with_refresh_watch_registry(
     // Shared with the daemon spawn path. `None` in focused HTTP tests, which
     // then fall back to a resolver built from `backend` if one is present.
     managed_llm: Option<Arc<crate::runtime::managed_llm::ManagedLlmResolver>>,
+    // Daemon-owned cron (ADR-0010) behind `/v1/cron/*`. `None` in focused
+    // tests; the routes then return 503.
+    cron: Option<crate::cron::CronService>,
 ) -> anyhow::Result<HttpHandle> {
     // Resolve token + port files (defaults live in DaemonConfig::config_dir).
     let token_path = http
@@ -338,6 +342,12 @@ pub async fn spawn_with_refresh_watch_registry(
     };
     let state = state.with_session_prompt(session_prompt);
     let state = state.with_session_attach(session_attach);
+    let state = state.with_cron(cron);
+    if let Some(cron) = state.cron.as_ref() {
+        // A job's model pin is checked against the same catalog the
+        // model-catalog route serves, so give cron that route's state.
+        cron.attach_models(Arc::new(super::cron::HttpCronModels::new(state.clone())));
+    }
 
     let mut runtime_context_join = None;
     let mut runtime_context_shutdown = None;

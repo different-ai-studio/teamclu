@@ -37,11 +37,11 @@ pub struct CronSchedule {
 /// Legacy marker written by older cron timeout handling when it aborted an AI response.
 pub const LEGACY_TIMEOUT_CUT_SHORT_MARKER: &str = "AI response was cut short after";
 
-/// Payload configuration - what to send to OpenCode
+/// Payload configuration - what to send to the agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CronPayload {
-    /// Prompt text to send to OpenCode
+    /// Prompt text to send to the agent
     pub message: String,
     /// Optional model override ("provider/model")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,8 +81,8 @@ pub const MIN_CRON_WALL_TIMEOUT_SECS: u64 = 60;
 /// daemon resets this on every event (tool start/end, streaming delta, etc.).
 pub const DEFAULT_CRON_IDLE_TIMEOUT_SECS: u64 = 300;
 
-/// Extra seconds the desktop waits beyond the job wall clock when talking to
-/// amuxd, so a slow persist/finalize does not look like a client hang.
+/// Extra seconds the scheduler waits beyond the job wall clock for the turn to
+/// come back, so a slow persist/finalize does not look like a hang.
 pub const CRON_CLIENT_TIMEOUT_SLACK_SECS: u64 = 60;
 
 /// Resolve the wall-clock timeout for a cron job payload.
@@ -178,7 +178,7 @@ pub struct CronJob {
     pub enabled: bool,
     /// Schedule configuration
     pub schedule: CronSchedule,
-    /// What to send to OpenCode
+    /// What to send to the agent
     pub payload: CronPayload,
     /// Optional notification delivery
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -196,6 +196,14 @@ pub struct CronJob {
     /// Computed next execution time
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_run_at: Option<DateTime<Utc>>,
+    /// Workspace the job belongs to and runs in. `None` is a global job: it
+    /// runs in the agent's default workspace, which the turn path resolves.
+    ///
+    /// The desktop used to keep one job file per workspace, so the path was
+    /// the storage key and never part of the job. One team-scoped store needs
+    /// it on the job itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_path: Option<String>,
 }
 
 /// A record of a single cron job execution
@@ -216,7 +224,7 @@ pub struct CronRunRecord {
     /// Last executor heartbeat while the run was active
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_heartbeat_at: Option<DateTime<Utc>>,
-    /// OpenCode session ID used for this run
+    /// Cloud session id used for this run
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Truncated AI response summary

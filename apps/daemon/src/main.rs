@@ -3,6 +3,7 @@ mod channels;
 mod cli;
 mod collab;
 mod config;
+mod cron;
 mod daemon;
 mod device_id;
 mod download_progress;

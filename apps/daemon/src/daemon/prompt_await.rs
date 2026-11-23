@@ -1,4 +1,4 @@
-/// Keep in sync with `apps/desktop/src/commands/cron/types.rs`.
+/// Keep in sync with `crate::cron::types` (the scheduler that sends these).
 pub(crate) const DEFAULT_CRON_WALL_TIMEOUT_SECS: u64 = 3600;
 pub(crate) const MAX_CRON_WALL_TIMEOUT_SECS: u64 = 3600;
 pub(crate) const MIN_CRON_WALL_TIMEOUT_SECS: u64 = 60;

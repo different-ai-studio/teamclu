@@ -1,35 +1,51 @@
-use super::amuxd_client;
-use super::types::DeliveryChannel;
-use crate::commands::gateway;
-use crate::commands::gateway::email_config::EmailConfig;
+//! Announce a run's result on a channel. Ported from the desktop's
+//! `commands/cron/delivery.rs`.
+//!
+//! WeCom and SeaTalk go through the daemon's own running gateway
+//! ([`CronExecutor::channel_send`]) and carry their own credentials. The other
+//! channels read credentials from a `teamclu.json`: the job's workspace, or the
+//! team workspace for a global job.
 
-/// Manages delivery of cron job results to channels.
-/// Delegates to gateway modules for actual sending — no reimplementation.
-/// Most channels still read credentials from the workspace `.teamclu/teamclu.json`.
-/// WeCom and SeaTalk are routed through the amuxd-owned gateway; WeCom also reads
-/// ownerId from the daemon config dir when no explicit target is set.
-#[derive(Debug, Clone)]
+use std::sync::Arc;
+
+use super::types::DeliveryChannel;
+use super::CronExecutor;
+use teamclu_gateway as gateway;
+use teamclu_gateway::email_config::EmailConfig;
+
+const CONFIG_FILE_NAME: &str = teamclu_gateway::CONFIG_FILE_NAME;
+
 pub struct DeliveryManager {
-    workspace_path: String,
+    /// Where channel credentials are read from.
+    config_root: String,
+    executor: Arc<dyn CronExecutor>,
 }
 
 impl DeliveryManager {
-    pub fn new(workspace_path: String) -> Self {
-        Self { workspace_path }
+    pub fn new(workspace_path: Option<String>, executor: Arc<dyn CronExecutor>) -> Self {
+        let config_root = workspace_path
+            .filter(|p| !p.trim().is_empty())
+            .unwrap_or_else(|| {
+                crate::config::layout::team_workspace_dir(&crate::config::layout::active_team())
+                    .to_string_lossy()
+                    .into_owned()
+            });
+        Self {
+            config_root,
+            executor,
+        }
     }
 
-    /// Send a notification through the specified channel.
-    /// Reads fresh config from teamclu.json each time so channel setting changes
-    /// are picked up without requiring a restart.
+    /// Send a notification through the specified channel. Reads fresh config
+    /// each time, so a channel settings change needs no restart.
     pub async fn send_notification(
         &self,
         channel: &DeliveryChannel,
         target: &str,
         message: &str,
     ) -> Result<(), String> {
-        // These two are amuxd-owned and carry their own credentials, so they
-        // must not go through `read_teamclu_config` — a workspace without
-        // `teamclu.json` would fail a delivery that needs nothing from it.
+        // amuxd-owned channels carry their own credentials: they must not
+        // require a teamclu.json the workspace may not have.
         match channel {
             DeliveryChannel::Wecom => return self.send_wecom(target, message).await,
             DeliveryChannel::Seatalk => return self.send_seatalk(target, message).await,
@@ -59,33 +75,13 @@ impl DeliveryManager {
             DeliveryChannel::Email => self.send_email(&config, target, message).await,
             DeliveryChannel::Kook => self.send_kook(&config, target, message).await,
             DeliveryChannel::Wechat => self.send_wechat(&config, target, message).await,
-            // Both returned above; an arm is still required for exhaustiveness.
             DeliveryChannel::Wecom | DeliveryChannel::Seatalk => Ok(()),
         }
     }
 
-    /// Read the teamclu.json config file from workspace
     fn read_teamclu_config(&self) -> Result<serde_json::Value, String> {
-        let path = format!(
-            "{}/{}/{}",
-            self.workspace_path,
-            crate::commands::TEAMCLU_DIR,
-            crate::commands::CONFIG_FILE_NAME
-        );
-        let content = std::fs::read_to_string(&path).map_err(|e| {
-            format!(
-                "Failed to read {}: {}",
-                crate::commands::CONFIG_FILE_NAME,
-                e
-            )
-        })?;
-        serde_json::from_str(&content).map_err(|e| {
-            format!(
-                "Failed to parse {}: {}",
-                crate::commands::CONFIG_FILE_NAME,
-                e
-            )
-        })
+        gateway::read_config_value(&self.config_root)
+            .map_err(|e| format!("{CONFIG_FILE_NAME} in {}: {e}", self.config_root))
     }
 
     // ==================== Discord ====================
@@ -100,28 +96,23 @@ impl DeliveryManager {
         let token = config["channels"]["discord"]["token"]
             .as_str()
             .filter(|t| !t.is_empty())
-            .ok_or_else(|| {
-                format!(
-                    "Discord bot token not configured in {}",
-                    crate::commands::CONFIG_FILE_NAME
-                )
-            })?;
+            .ok_or_else(|| format!("Discord bot token not configured in {}", CONFIG_FILE_NAME))?;
 
         // Determine the Discord channel ID to send to
         let channel_id = if target.starts_with("dm:") {
             let user_id = target.strip_prefix("dm:").unwrap_or(target);
-            log::info!("[Cron Delivery] Discord DM to user: {}", user_id);
+            tracing::info!("[Cron Delivery] Discord DM to user: {}", user_id);
             gateway::discord::create_dm_channel(token, user_id).await?
         } else if target.starts_with("channel:") {
             let ch_id = target
                 .strip_prefix("channel:")
                 .unwrap_or(target)
                 .to_string();
-            log::info!("[Cron Delivery] Discord channel: {}", ch_id);
+            tracing::info!("[Cron Delivery] Discord channel: {}", ch_id);
             ch_id
         } else {
             // No prefix: assume user ID, try creating DM
-            log::info!(
+            tracing::info!(
                 "[Cron Delivery] Discord target '{}' without prefix, trying as DM",
                 target
             );
@@ -139,7 +130,7 @@ impl DeliveryManager {
             gateway::discord::send_channel_message(token, &channel_id, &chunk).await?;
         }
 
-        log::info!("[Cron Delivery] Discord message sent to {}", target);
+        tracing::info!("[Cron Delivery] Discord message sent to {}", target);
         Ok(())
     }
 
@@ -155,28 +146,18 @@ impl DeliveryManager {
         let app_id = config["channels"]["feishu"]["appId"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                format!(
-                    "Feishu app ID not configured in {}",
-                    crate::commands::CONFIG_FILE_NAME
-                )
-            })?;
+            .ok_or_else(|| format!("Feishu app ID not configured in {}", CONFIG_FILE_NAME))?;
         let app_secret = config["channels"]["feishu"]["appSecret"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                format!(
-                    "Feishu app secret not configured in {}",
-                    crate::commands::CONFIG_FILE_NAME
-                )
-            })?;
+            .ok_or_else(|| format!("Feishu app secret not configured in {}", CONFIG_FILE_NAME))?;
 
         let chunks = split_message(message, 4000);
         for chunk in chunks {
             gateway::feishu::send_chat_message(app_id, app_secret, target, &chunk).await?;
         }
 
-        log::info!("[Cron Delivery] Feishu message sent to {}", target);
+        tracing::info!("[Cron Delivery] Feishu message sent to {}", target);
         Ok(())
     }
 
@@ -195,10 +176,7 @@ impl DeliveryManager {
     ) -> Result<(), String> {
         let email_val = &config["channels"]["email"];
         if email_val.is_null() {
-            return Err(format!(
-                "Email not configured in {}",
-                crate::commands::CONFIG_FILE_NAME
-            ));
+            return Err(format!("Email not configured in {}", CONFIG_FILE_NAME));
         }
 
         // Parse into the gateway's EmailConfig type (same struct used by the email gateway)
@@ -207,7 +185,7 @@ impl DeliveryManager {
 
         gateway::email::send_notification_email(
             &email_config,
-            &self.workspace_path,
+            &self.config_root,
             target,
             "[TeamClu] Cron Job Notification",
             message,
@@ -227,26 +205,21 @@ impl DeliveryManager {
         let token = config["channels"]["kook"]["token"]
             .as_str()
             .filter(|t| !t.is_empty())
-            .ok_or_else(|| {
-                format!(
-                    "KOOK bot token not configured in {}",
-                    crate::commands::CONFIG_FILE_NAME
-                )
-            })?;
+            .ok_or_else(|| format!("KOOK bot token not configured in {}", CONFIG_FILE_NAME))?;
 
         let (target_id, is_dm) = if target.starts_with("dm:") {
             let user_id = target.strip_prefix("dm:").unwrap_or(target);
-            log::info!("[Cron Delivery] KOOK DM to user: {}", user_id);
+            tracing::info!("[Cron Delivery] KOOK DM to user: {}", user_id);
             (user_id.to_string(), true)
         } else if target.starts_with("channel:") {
             let ch_id = target
                 .strip_prefix("channel:")
                 .unwrap_or(target)
                 .to_string();
-            log::info!("[Cron Delivery] KOOK channel: {}", ch_id);
+            tracing::info!("[Cron Delivery] KOOK channel: {}", ch_id);
             (ch_id, false)
         } else {
-            log::info!(
+            tracing::info!(
                 "[Cron Delivery] KOOK target '{}' without prefix, trying as DM",
                 target
             );
@@ -259,7 +232,7 @@ impl DeliveryManager {
             gateway::kook::send_kook_message_http(token, &target_id, &chunk, is_dm).await?;
         }
 
-        log::info!("[Cron Delivery] KOOK message sent to {}", target);
+        tracing::info!("[Cron Delivery] KOOK message sent to {}", target);
         Ok(())
     }
 
@@ -288,7 +261,7 @@ impl DeliveryManager {
                 target
             ))?;
 
-        use crate::commands::gateway::wechat;
+        use teamclu_gateway::wechat;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -310,10 +283,12 @@ impl DeliveryManager {
 
         let chunks = split_message(message, 4000);
         for chunk in chunks {
-            amuxd_client::channel_send("wecom", &dispatch_target, &chunk).await?;
+            self.executor
+                .channel_send("wecom", &dispatch_target, &chunk)
+                .await?;
         }
 
-        log::info!(
+        tracing::info!(
             "[Cron Delivery] WeCom message sent via amuxd to {}",
             dispatch_target
         );
@@ -328,10 +303,12 @@ impl DeliveryManager {
         let dispatch_target = seatalk_cron_target_to_dispatch(target)?;
         let chunks = split_message(message, 4000);
         for chunk in chunks {
-            amuxd_client::channel_send("seatalk", &dispatch_target, &chunk).await?;
+            self.executor
+                .channel_send("seatalk", &dispatch_target, &chunk)
+                .await?;
         }
 
-        log::info!(
+        tracing::info!(
             "[Cron Delivery] SeaTalk message sent via amuxd to {}",
             dispatch_target
         );
@@ -341,24 +318,20 @@ impl DeliveryManager {
     /// Resolve WeCom ownerId from amuxd's persisted gateway state, with a legacy
     /// fallback to the workspace teamclu.json for pre-migration installs.
     fn resolve_wecom_owner_id(&self) -> Result<String, String> {
-        let daemon_root = crate::commands::amuxd_home_dir()
-            .to_string_lossy()
-            .into_owned();
-        // The gateway's ChannelManager runs sessions in the team's own
-        // worktree now, so that is where wecom.rs records ownerId; the home
-        // root and the cron job's workspace stay as legacy fallbacks.
-        let team_workspace = crate::commands::amuxd_active_team()
-            .map(|t| {
-                crate::commands::amuxd_team_workspace_dir(&t)
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .unwrap_or_default();
+        let daemon_root = crate::config::layout::root().to_string_lossy().into_owned();
+        let team = crate::config::layout::active_team();
+        let team_workspace = if team == crate::config::layout::UNCLAIMED_TEAM {
+            String::new()
+        } else {
+            crate::config::layout::team_workspace_dir(&team)
+                .to_string_lossy()
+                .into_owned()
+        };
 
         for root in [
             team_workspace.as_str(),
             daemon_root.as_str(),
-            self.workspace_path.as_str(),
+            self.config_root.as_str(),
         ]
         .into_iter()
         .filter(|r| !r.is_empty())
@@ -383,7 +356,6 @@ impl DeliveryManager {
     }
 }
 
-/// Map cron UI target strings to amuxd `dispatch_send` shape.
 fn wecom_cron_target_to_dispatch(target: &str) -> Result<String, String> {
     if let Some(id) = target.strip_prefix("single:") {
         return Ok(format!("user:{id}"));

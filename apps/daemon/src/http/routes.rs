@@ -17,6 +17,7 @@ use super::app_ops;
 use super::apps;
 use super::auth;
 use super::config;
+use super::cron;
 use super::knowledge_inbox;
 use super::limit::{body_limit_layer, rate_limit_layer};
 use super::live_events;
@@ -128,6 +129,23 @@ pub fn build(state: HttpState) -> Router {
         // `amux/{team}/{actor}/rpc/req` topic, dispatched over loopback so a
         // same-machine UI's commands skip the broker round-trip.
         .route("/v1/rpc", post(rpc::dispatch))
+        // Daemon-owned cron (ADR-0010). The desktop settings page and its
+        // introspect `/cron-*` handlers both proxy here.
+        .route("/v1/cron/jobs", get(cron::list_jobs).post(cron::create_job))
+        .route(
+            "/v1/cron/jobs/:job_id",
+            axum::routing::patch(cron::update_job).delete(cron::delete_job),
+        )
+        .route("/v1/cron/jobs/:job_id/enabled", post(cron::set_enabled))
+        .route("/v1/cron/jobs/:job_id/run", post(cron::run_job))
+        .route("/v1/cron/jobs/:job_id/runs", get(cron::get_runs))
+        .route("/v1/cron/import", post(cron::import_jobs))
+        .route("/v1/cron/manage", post(cron::manage))
+        .route("/v1/cron/status", get(cron::status))
+        .route(
+            "/v1/cron/restart-imminent",
+            post(cron::set_restart_imminent),
+        )
         // Register a workspace into the cloud `amux.workspaces` table
         // (idempotent). Used by the desktop on first launch to ensure its
         // default team workspace (`~/.amuxd/teams/<teamId>`) exists there.

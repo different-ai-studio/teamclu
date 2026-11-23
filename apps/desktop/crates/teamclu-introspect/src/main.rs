@@ -109,7 +109,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_cron_job",
-            "description": "Create, pause, resume, delete, list, or inspect cron jobs. New jobs are stored as Global tasks (the default settings list). The TeamClu desktop app must be running. When announcing results to this chat, set delivery.to to this run's reply_token (from the prompt) or an explicit wecom target such as single:<userid> / group:<chatid> — an empty to is not this conversation.",
+            "description": "Create, pause, resume, delete, list, or inspect cron jobs. New jobs are stored as Global tasks (the default settings list). Works without the desktop app: jobs live in the local amuxd daemon, which runs them. When announcing results to this chat, set delivery.to to this run's reply_token (from the prompt) or an explicit wecom target such as single:<userid> / group:<chatid> — an empty to is not this conversation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -668,7 +668,7 @@ async fn handle_request(
                         Err(e) => tool_err(&e),
                     }
                 }
-                "manage_cron_job" => match cron::handle(workspace, api_port, &arguments).await {
+                "manage_cron_job" => match cron::handle(workspace, &arguments).await {
                     Ok(v) => {
                         let text = serde_json::to_string_pretty(&v).unwrap_or_default();
                         tool_ok(&text)

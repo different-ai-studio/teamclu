@@ -2,7 +2,6 @@
 //
 // Listens on 127.0.0.1:13144 and handles:
 //   POST /send-wecom        — send a proactive WeCom message
-//   POST /cron-manage       — create/list/pause/resume/delete/run/get_runs (MCP)
 //   POST /team-sync-all     — trigger team sync
 //   POST /env-var-set       — create or update an env var (`scope`: personal | team)
 //   POST /env-var-delete    — delete an env var (`scope`: personal | team)
@@ -324,7 +323,6 @@ fn router(app: AppHandle, token: Arc<str>, verifier: caller::CallerVerifier) -> 
         .route("/send-wecom", post_route!(handle_send_wecom))
         .route("/send-seatalk", post_route!(handle_send_seatalk))
         .route("/channel-state", post_route!(handle_channel_state))
-        .route("/cron-manage", post_route!(handle_cron_manage))
         .route("/team-sync-all", post_route!(handle_team_sync_all))
         .route("/env-var-set", post_route!(handle_env_var_set))
         .route("/env-var-delete", post_route!(handle_env_var_delete))
@@ -463,12 +461,12 @@ async fn handle_send_wecom(app: &AppHandle, body: &[u8]) -> Result<String, Strin
 
     let media = media_bytes
         .as_ref()
-        .map(|bytes| super::cron::amuxd_client::ChannelSendMedia {
+        .map(|bytes| super::amuxd_channel_send::ChannelSendMedia {
             bytes,
             filename: media_filename,
         });
 
-    super::cron::amuxd_client::channel_send_media_at(
+    super::amuxd_channel_send::channel_send_media_at(
         &super::amuxd_control::endpoint(),
         "wecom",
         &dispatch_target,
@@ -499,14 +497,6 @@ async fn handle_team_sync_all(app: &AppHandle, _body: &[u8]) -> Result<String, S
         .and_then(|cw| cw.clone());
     let result =
         super::team_sync_proxy::daemon_team_sync(workspace.as_deref(), true, false).await?;
-    serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
-}
-
-async fn handle_cron_manage(app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {e}"))?;
-    let cron_state = app.state::<super::cron::CronState>();
-    let result = super::cron::mcp_manage(app, &cron_state, &v).await?;
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }
 
@@ -711,13 +701,14 @@ async fn handle_send_seatalk(_app: &AppHandle, body: &[u8]) -> Result<String, St
     if message.trim().is_empty() {
         return Err("send-seatalk: 'message' is required".to_string());
     }
-    let dispatch_target = super::cron::delivery::seatalk_cron_target_to_dispatch(target)?;
+    let dispatch_target = super::amuxd_channel_send::seatalk_target_to_dispatch(target)?;
 
-    super::cron::amuxd_client::channel_send_at(
+    super::amuxd_channel_send::channel_send_media_at(
         &super::amuxd_control::endpoint(),
         "seatalk",
         &dispatch_target,
         message,
+        None,
     )
     .await?;
 
