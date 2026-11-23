@@ -4,6 +4,9 @@ import type { ComposerAttachment } from "@/lib/attachments/composer-attachment";
 /** Composer with no session yet (new chat, actor preselect). */
 export const UNBOUND_COMPOSER_KEY = "";
 
+/** Text and local file paths. Picked file bytes are not stored. */
+export const COMPOSER_DRAFT_STORAGE_KEY = "teamclu-composer-drafts";
+
 /** Stable empty list so selectors do not re-render while a session has no files. */
 export const EMPTY_COMPOSER_FILES: ComposerAttachment[] = [];
 
@@ -39,6 +42,242 @@ interface ComposerDraftState {
   restore: (sessionId: string, text: string, files: ComposerAttachment[]) => void;
   clear: (key: string) => void;
   clearAll: () => void;
+  /** Replace memory with the snapshot saved for the next launch. */
+  loadPersisted: () => void;
+}
+
+interface PersistedCloudPath {
+  kind: "cloud";
+  name: string;
+  size: number;
+  path: string;
+  type: string;
+}
+
+type PersistedFileEntry =
+  | Extract<ComposerAttachment, { kind: "local" }>
+  | PersistedCloudPath;
+
+interface PersistedComposerDraft {
+  textByKey: Record<string, string>;
+  filesByKey: Record<string, PersistedFileEntry[]>;
+}
+
+type CloudFileReader = (entry: PersistedCloudPath) => Promise<File | null>;
+
+const dirtyFileKeys = new Set<string>();
+let hydrateToken = 0;
+let hydratedToken = -1;
+let hydrateInflight: Promise<void> | null = null;
+
+async function readCloudFileFromDisk(entry: PersistedCloudPath): Promise<File | null> {
+  try {
+    const { readFile } = await import("@tauri-apps/plugin-fs");
+    const bytes = await readFile(entry.path);
+    return new File([new Uint8Array(bytes)], entry.name, {
+      type: entry.type || "application/octet-stream",
+    });
+  } catch {
+    return null;
+  }
+}
+
+let cloudFileReader: CloudFileReader = readCloudFileFromDisk;
+
+/** Test hook. Passing null restores the desktop file read. */
+export function setComposerDraftCloudReader(reader: CloudFileReader | null): void {
+  cloudFileReader = reader ?? readCloudFileFromDisk;
+}
+
+const EMPTY_PERSISTED: PersistedComposerDraft = { textByKey: {}, filesByKey: {} };
+
+function isLocalAttachment(
+  value: unknown,
+): value is Extract<ComposerAttachment, { kind: "local" }> {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<Extract<ComposerAttachment, { kind: "local" }>>;
+  return (
+    item.kind === "local" &&
+    typeof item.name === "string" &&
+    item.name.length > 0 &&
+    typeof item.path === "string" &&
+    item.path.length > 0 &&
+    typeof item.size === "number" &&
+    Number.isFinite(item.size)
+  );
+}
+
+function isPersistedCloudPath(value: unknown): value is PersistedCloudPath {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<PersistedCloudPath>;
+  return (
+    item.kind === "cloud" &&
+    typeof item.name === "string" &&
+    item.name.length > 0 &&
+    typeof item.path === "string" &&
+    item.path.length > 0 &&
+    typeof item.type === "string" &&
+    typeof item.size === "number" &&
+    Number.isFinite(item.size)
+  );
+}
+
+function parseFileEntries(value: unknown): PersistedFileEntry[] {
+  if (!Array.isArray(value)) return [];
+  const entries: PersistedFileEntry[] = [];
+  for (const item of value) {
+    if (isLocalAttachment(item)) {
+      entries.push({ kind: "local", name: item.name, size: item.size, path: item.path });
+      continue;
+    }
+    if (isPersistedCloudPath(item)) entries.push(item);
+  }
+  return entries;
+}
+
+/** Text and paths only. A cloud file keeps the path it was picked from, not its bytes. */
+export function persistedComposerDraft(state: {
+  textByKey: Record<string, string>;
+  filesByKey: Record<string, ComposerAttachment[]>;
+}): PersistedComposerDraft {
+  const textByKey: Record<string, string> = {};
+  for (const [key, text] of Object.entries(state.textByKey)) {
+    if (text) textByKey[key] = text;
+  }
+  const filesByKey: Record<string, PersistedFileEntry[]> = {};
+  for (const [key, files] of Object.entries(state.filesByKey)) {
+    const entries: PersistedFileEntry[] = [];
+    for (const item of files) {
+      if (isLocalAttachment(item)) {
+        entries.push({ kind: "local", name: item.name, size: item.size, path: item.path });
+        continue;
+      }
+      if (item.kind === "cloud" && item.path) {
+        entries.push({
+          kind: "cloud",
+          name: item.file.name,
+          size: item.file.size,
+          path: item.path,
+          type: item.file.type,
+        });
+      }
+    }
+    if (entries.length > 0) filesByKey[key] = entries;
+  }
+  return { textByKey, filesByKey };
+}
+
+export function parsePersistedComposerDraft(raw: unknown): PersistedComposerDraft {
+  if (!raw || typeof raw !== "object") return EMPTY_PERSISTED;
+  const record = raw as {
+    textByKey?: unknown;
+    filesByKey?: unknown;
+  };
+  const textByKey: Record<string, string> = {};
+  if (record.textByKey && typeof record.textByKey === "object") {
+    for (const [key, text] of Object.entries(record.textByKey)) {
+      if (typeof text === "string" && text) textByKey[key] = text;
+    }
+  }
+  const filesByKey: Record<string, PersistedFileEntry[]> = {};
+  if (record.filesByKey && typeof record.filesByKey === "object") {
+    for (const [key, entries] of Object.entries(record.filesByKey)) {
+      const parsed = parseFileEntries(entries);
+      if (parsed.length > 0) filesByKey[key] = parsed;
+    }
+  }
+  return { textByKey, filesByKey };
+}
+
+function memoryFromPersisted(saved: PersistedComposerDraft): {
+  textByKey: Record<string, string>;
+  filesByKey: Record<string, ComposerAttachment[]>;
+} {
+  const filesByKey: Record<string, ComposerAttachment[]> = {};
+  for (const [key, entries] of Object.entries(saved.filesByKey)) {
+    const local = entries.filter((entry) => entry.kind === "local");
+    if (local.length > 0) filesByKey[key] = local;
+  }
+  return { textByKey: saved.textByKey, filesByKey };
+}
+
+function readPersisted(): PersistedComposerDraft {
+  try {
+    const raw = localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
+    if (!raw) return EMPTY_PERSISTED;
+    return parsePersistedComposerDraft(JSON.parse(raw));
+  } catch {
+    return EMPTY_PERSISTED;
+  }
+}
+
+function writePersisted(state: {
+  textByKey: Record<string, string>;
+  filesByKey: Record<string, ComposerAttachment[]>;
+}): void {
+  try {
+    const snapshot = persistedComposerDraft(state);
+    if (
+      Object.keys(snapshot.textByKey).length === 0 &&
+      Object.keys(snapshot.filesByKey).length === 0
+    ) {
+      localStorage.removeItem(COMPOSER_DRAFT_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(COMPOSER_DRAFT_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    /* private mode or quota */
+  }
+}
+
+const persistedAtLaunch = readPersisted();
+const launchedMemory = memoryFromPersisted(persistedAtLaunch);
+
+function markFilesDirty(key: string): void {
+  dirtyFileKeys.add(key);
+}
+
+async function restoreCloudPaths(token: number): Promise<void> {
+  const saved = readPersisted();
+  const restored: Record<string, ComposerAttachment[]> = {};
+  for (const [key, entries] of Object.entries(saved.filesByKey)) {
+    if (dirtyFileKeys.has(key)) continue;
+    if (!entries.some((entry) => entry.kind === "cloud")) continue;
+    const files: ComposerAttachment[] = [];
+    for (const entry of entries) {
+      if (entry.kind === "local") {
+        files.push(entry);
+        continue;
+      }
+      const file = await cloudFileReader(entry);
+      if (!file) continue;
+      files.push({ kind: "cloud", file, path: entry.path });
+    }
+    if (files.length > 0) restored[key] = files;
+  }
+  if (token !== hydrateToken) return;
+  useComposerDraftStore.setState((state) => {
+    const filesByKey = { ...state.filesByKey };
+    for (const [key, files] of Object.entries(restored)) {
+      if (dirtyFileKeys.has(key)) continue;
+      filesByKey[key] = files;
+    }
+    return { filesByKey };
+  });
+  hydratedToken = token;
+}
+
+/** Re-read cloud attachments from the paths saved with the draft. */
+export function hydrateComposerDraftFiles(): Promise<void> {
+  if (hydratedToken === hydrateToken) return Promise.resolve();
+  if (hydrateInflight) return hydrateInflight;
+  const token = hydrateToken;
+  hydrateInflight = restoreCloudPaths(token)
+    .catch(() => {})
+    .finally(() => {
+      hydrateInflight = null;
+    });
+  return hydrateInflight;
 }
 
 function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
@@ -49,28 +288,41 @@ function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T
 }
 
 export const useComposerDraftStore = create<ComposerDraftState>((set, get) => ({
-  textByKey: {},
-  filesByKey: {},
+  textByKey: launchedMemory.textByKey,
+  filesByKey: launchedMemory.filesByKey,
   text: (key) => get().textByKey[key] ?? "",
   files: (key) => get().filesByKey[key] ?? EMPTY_COMPOSER_FILES,
-  setText: (key, text) =>
+  setText: (key, text) => {
+    let changed = false;
     set((s) => {
       if (!text) {
         if (!(key in s.textByKey)) return s;
+        changed = true;
         return { textByKey: withoutKey(s.textByKey, key) };
       }
       if (s.textByKey[key] === text) return s;
+      changed = true;
       return { textByKey: { ...s.textByKey, [key]: text } };
-    }),
-  setFiles: (key, files) =>
+    });
+    if (changed) writePersisted(get());
+  },
+  setFiles: (key, files) => {
+    let changed = false;
     set((s) => {
       if (files.length === 0) {
         if (!(key in s.filesByKey)) return s;
+        changed = true;
         return { filesByKey: withoutKey(s.filesByKey, key) };
       }
       if (s.filesByKey[key] === files) return s;
+      changed = true;
       return { filesByKey: { ...s.filesByKey, [key]: files } };
-    }),
+    });
+    if (changed) {
+      markFilesDirty(key);
+      writePersisted(get());
+    }
+  },
   updateFiles: (key, updater) => {
     const prev = get().files(key);
     const next = updater(prev);
@@ -88,6 +340,7 @@ export const useComposerDraftStore = create<ComposerDraftState>((set, get) => ({
         filesByKey: files?.length ? { ...s.filesByKey, [toKey]: files } : s.filesByKey,
       };
     });
+    writePersisted(get());
   },
   takeForSend: (sessionId, alsoClearKey) => {
     const state = get();
@@ -114,19 +367,40 @@ export const useComposerDraftStore = create<ComposerDraftState>((set, get) => ({
       }
       return changed ? { textByKey, filesByKey } : s;
     });
+    for (const key of keys) markFilesDirty(key);
+    writePersisted(get());
     return { text, files };
   },
   restore: (sessionId, text, files) => {
     get().setText(sessionId, text);
     get().setFiles(sessionId, files);
   },
-  clear: (key) =>
+  clear: (key) => {
+    let changed = false;
     set((s) => {
       if (!(key in s.textByKey) && !(key in s.filesByKey)) return s;
+      changed = true;
       return {
         textByKey: withoutKey(s.textByKey, key),
         filesByKey: withoutKey(s.filesByKey, key),
       };
-    }),
-  clearAll: () => set({ textByKey: {}, filesByKey: {} }),
+    });
+    if (changed) {
+      markFilesDirty(key);
+      writePersisted(get());
+    }
+  },
+  clearAll: () => {
+    hydrateToken += 1;
+    dirtyFileKeys.clear();
+    set({ textByKey: {}, filesByKey: {} });
+    writePersisted(get());
+  },
+  loadPersisted: () => {
+    hydrateToken += 1;
+    dirtyFileKeys.clear();
+    const saved = readPersisted();
+    const memory = memoryFromPersisted(saved);
+    set(memory);
+  },
 }));

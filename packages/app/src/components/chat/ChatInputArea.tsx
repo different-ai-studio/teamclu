@@ -48,6 +48,7 @@ import { useComposerInsertStore } from "@/stores/composer-insert";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
 import { exceedsNonImageLimit, isImageFile } from "@/lib/attachments/attachment-constants";
+import { desktopPathForFile } from "@/lib/workspace/read-desktop-files";
 import type { ComposerAttachment, LocalPathAttachment } from "@/lib/attachments/composer-attachment";
 import {
   ComposerCloudFileChip,
@@ -350,48 +351,6 @@ export function ChatInputArea({
     [draftKey],
   );
 
-  // Per-actor draft persistence (Actors tab → navigate away → restore).
-  // Only the no-session composer. A real session keeps its own draft.
-  const draftStorageKey =
-    activeSessionId || !draftPreselectedActor
-      ? null
-      : `teamclu-actor-draft:${draftPreselectedActor.id}`;
-  const justRestoredDraftRef = React.useRef(false);
-
-  React.useEffect(() => {
-    if (!draftStorageKey) return;
-    let saved: string | null = null;
-    try {
-      saved = localStorage.getItem(draftStorageKey);
-    } catch {
-      /* localStorage disabled */
-    }
-    if (saved != null && saved !== useComposerDraftStore.getState().text(draftKey)) {
-      justRestoredDraftRef.current = true;
-      useComposerDraftStore.getState().setText(draftKey, saved);
-    }
-  }, [draftKey, draftStorageKey]);
-
-  React.useEffect(() => {
-    if (!draftStorageKey) return;
-    if (justRestoredDraftRef.current) {
-      justRestoredDraftRef.current = false;
-      return;
-    }
-    const handle = setTimeout(() => {
-      try {
-        if (inputValue) {
-          localStorage.setItem(draftStorageKey, inputValue);
-        } else {
-          localStorage.removeItem(draftStorageKey);
-        }
-      } catch {
-        /* localStorage disabled */
-      }
-    }, 300);
-    return () => clearTimeout(handle);
-  }, [draftStorageKey, inputValue]);
-
   // Voice input / "Add to Agent": append transcript or file mention to input.
   // The thread composer leaves this to the main one, or both would fight.
   React.useEffect(() => {
@@ -451,7 +410,10 @@ export function ChatInputArea({
       });
     }
     if (accepted.length > 0) {
-      onAppendPendingFiles(accepted.map((file) => ({ kind: "cloud", file })));
+      onAppendPendingFiles(accepted.map((file) => {
+        const path = desktopPathForFile(file);
+        return path ? { kind: "cloud" as const, file, path } : { kind: "cloud" as const, file };
+      }));
     }
   }, [onAppendPendingFiles, t]);
 

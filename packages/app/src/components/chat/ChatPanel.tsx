@@ -38,6 +38,7 @@ import type { ComposerAttachment } from "@/lib/attachments/composer-attachment";
 import {
   composerDraftKey,
   EMPTY_COMPOSER_FILES,
+  hydrateComposerDraftFiles,
   useComposerDraftStore,
 } from "@/stores/composer-draft-store";
 import { ChatInputArea } from "./ChatInputArea";
@@ -115,6 +116,10 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   // `null` locality is "the daemon has not said" and leaves the composer alone.
   const { app: activeSessionApp, local: activeSessionAppLocal } =
     useSessionApp(activeSessionId);
+
+  React.useEffect(() => {
+    void hydrateComposerDraftFiles();
+  }, []);
 
   React.useEffect(() => {
     if (!activeSessionId) return;

@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ComposerAttachment } from "@/lib/attachments/composer-attachment";
 import {
+  COMPOSER_DRAFT_STORAGE_KEY,
   UNBOUND_COMPOSER_KEY,
   composerDraftKey,
+  hydrateComposerDraftFiles,
+  setComposerDraftCloudReader,
   useComposerDraftStore,
 } from "../composer-draft-store";
 
@@ -15,6 +18,7 @@ const file: ComposerAttachment = {
 
 describe("composer draft store", () => {
   beforeEach(() => {
+    setComposerDraftCloudReader(null);
     useComposerDraftStore.getState().clearAll();
   });
 
@@ -66,6 +70,53 @@ describe("composer draft store", () => {
     expect(useComposerDraftStore.getState().text("session-1")).toBe("draft");
     expect(useComposerDraftStore.getState().files("session-1")).toEqual([file]);
     expect(useComposerDraftStore.getState().text(UNBOUND_COMPOSER_KEY)).toBe("");
+  });
+
+  it("keeps text and local paths after a restart, and does not store picked file bytes", () => {
+    const store = useComposerDraftStore.getState();
+    const picked = { kind: "cloud" as const, file: new File(["hello-bytes"], "pic.png") };
+    store.setText("a", "hello");
+    store.setFiles("a", [file, picked]);
+
+    const saved = JSON.parse(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "{}");
+    expect(saved.textByKey.a).toBe("hello");
+    expect(saved.filesByKey.a).toEqual([file]);
+    expect(JSON.stringify(saved)).not.toContain("hello-bytes");
+
+    useComposerDraftStore.setState({ textByKey: {}, filesByKey: {} });
+    useComposerDraftStore.getState().loadPersisted();
+
+    expect(useComposerDraftStore.getState().text("a")).toBe("hello");
+    expect(useComposerDraftStore.getState().files("a")).toEqual([file]);
+  });
+
+  it("stores a cloud attachment as its path and reads that file back", async () => {
+    const store = useComposerDraftStore.getState();
+    const picked = {
+      kind: "cloud" as const,
+      file: new File(["hello-bytes"], "pic.png", { type: "image/png" }),
+      path: "/tmp/pic.png",
+    };
+    store.setFiles("a", [picked]);
+
+    const saved = JSON.parse(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "{}");
+    expect(saved.filesByKey.a).toEqual([
+      { kind: "cloud", name: "pic.png", size: picked.file.size, path: "/tmp/pic.png", type: "image/png" },
+    ]);
+    expect(JSON.stringify(saved)).not.toContain("hello-bytes");
+
+    useComposerDraftStore.setState({ textByKey: {}, filesByKey: {} });
+    useComposerDraftStore.getState().loadPersisted();
+    setComposerDraftCloudReader(async () => new File(["from-disk"], "pic.png", { type: "image/png" }));
+    await hydrateComposerDraftFiles();
+
+    const restored = useComposerDraftStore.getState().files("a");
+    expect(restored).toHaveLength(1);
+    const cloud = restored[0];
+    expect(cloud?.kind).toBe("cloud");
+    if (cloud?.kind !== "cloud") return;
+    expect(cloud.path).toBe("/tmp/pic.png");
+    expect(await cloud.file.text()).toBe("from-disk");
   });
 
   it("maps a missing session onto the unbound key", () => {

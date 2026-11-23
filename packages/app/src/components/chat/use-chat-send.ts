@@ -53,6 +53,7 @@ import { attachmentUploadFailureDetail, uploadAttachment } from "@/lib/attachmen
 import { localAttachmentToken } from "@/lib/attachments/composer-attachment";
 import {
   UNBOUND_COMPOSER_KEY,
+  hydrateComposerDraftFiles,
   useComposerDraftStore,
 } from "@/stores/composer-draft-store";
 import {
@@ -131,6 +132,7 @@ export function useChatSend({
   ) => {
     // v2: workspace-ready gate removed — the legacy sidecar flag is gone.
     // Single-window scope sends via MQTT + Supabase regardless.
+    await hydrateComposerDraftFiles();
     const text = message.text?.trim() || "";
     // Dictation is an independent send source. It must not consume a typed
     // draft or attachments that happen to be waiting in the composer.
@@ -807,7 +809,9 @@ export function useChatSend({
       }
 
       // Keep the unbound composer painted while the new session becomes
-      // active, then send clears both keys.
+      // active, then send clears both keys. Re-read cloud files from their
+      // saved paths first so the copy includes them.
+      await hydrateComposerDraftFiles();
       useComposerDraftStore.getState().copyOnto(UNBOUND_COMPOSER_KEY, sessionId);
 
       // Optimistic list row + switch — do not await a full session-list

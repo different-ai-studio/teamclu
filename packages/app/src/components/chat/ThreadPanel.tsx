@@ -12,7 +12,10 @@ import { toast } from "sonner";
 import { useSessionLiveInterestStore } from "@/stores/session-live-interest-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
-import { useComposerDraftStore } from "@/stores/composer-draft-store";
+import {
+  hydrateComposerDraftFiles,
+  useComposerDraftStore,
+} from "@/stores/composer-draft-store";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { threadDraftSessionId } from "@/lib/session/thread-fork";
@@ -178,6 +181,7 @@ export function ThreadPanel({ parentSessionId }: { parentSessionId: string }) {
     }
     const draftKey = threadDraftSessionId(parentSessionId, rootMessageId);
     const session = await getBackend().sessions.createThread(parentSessionId, rootMessageId);
+    await hydrateComposerDraftFiles();
     useComposerDraftStore.getState().copyOnto(draftKey, session.id);
     const draftAgents = useEngagedAgentStore.getState().getAgents(draftKey);
     if (draftAgents.length > 0) {
