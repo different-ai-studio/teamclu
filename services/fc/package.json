@@ -30,7 +30,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.16",
     "@redocly/cli": "^2.79.0",
-    "@types/node": "^20.16.0",
+    "@types/node": "^26.6.6",
     "openapi-typescript": "^7.13.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
