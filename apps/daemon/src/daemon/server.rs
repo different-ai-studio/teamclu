@@ -1263,9 +1263,11 @@ impl DaemonServer {
         // The scheduler lives here now, not in the desktop (ADR-0010): it
         // needs the command channel to run a turn, so it starts once that
         // exists. Jobs fire whether or not a desktop is attached.
+        let control_loop_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.cron_service
             .start(Arc::new(cron::SockCronExecutor {
                 tx: sock_tx.clone(),
+                control_loop_ready: Arc::clone(&control_loop_ready),
             }))
             .await;
 
@@ -1904,6 +1906,9 @@ impl DaemonServer {
             // turn between commands.
             let mut housekeeping = tokio::time::interval(Duration::from_millis(50));
             housekeeping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // From here `sock_rx` is drained; cron may send turns. This loop
+            // never falls back to 'outer (the supervisor owns reconnects).
+            control_loop_ready.store(true, std::sync::atomic::Ordering::Release);
             loop {
                 tokio::select! {
                     _ = &mut shutdown => {

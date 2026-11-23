@@ -1024,13 +1024,27 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
 /// the same path through the main loop it always did — only the sender moved.
 pub(crate) struct SockCronExecutor {
     pub(crate) tx: tokio::sync::mpsc::Sender<super::SockCommand>,
+    /// Set once the control loop drains `tx`. It starts only after the daemon
+    /// has a team, a broker and a token; before that a command would wait
+    /// forever, and the run with it.
+    pub(crate) control_loop_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
+
+/// Why a cron run fails before the control loop is up.
+pub(crate) const CRON_NOT_CONNECTED_ERROR: &str =
+    "amuxd is not connected yet (no team claimed, or offline since it started); cron runs need its cloud connection";
 
 impl SockCronExecutor {
     async fn call(
         &self,
         make: impl FnOnce(oneshot::Sender<String>) -> super::SockCommand,
     ) -> Result<serde_json::Value, String> {
+        if !self
+            .control_loop_ready
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(CRON_NOT_CONNECTED_ERROR.to_string());
+        }
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(make(reply_tx))
@@ -1163,6 +1177,49 @@ mod tests {
     use crate::runtime::PermissionPolicy;
     use std::sync::Arc;
     use teamclu_runtime_env::team_crypto::{self, SecretEntry};
+
+    #[tokio::test]
+    async fn cron_executor_fails_fast_before_the_control_loop_runs() {
+        // Unclaimed, or offline since boot: nothing drains the command
+        // channel yet, so a sent command would wait forever.
+        use crate::cron::CronExecutor;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let executor = super::SockCronExecutor {
+            tx,
+            control_loop_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            executor.prepare_session("cron/j/r", Some("j")),
+        )
+        .await
+        .expect("must not wait for the control loop")
+        .unwrap_err();
+        assert!(err.contains("not connected"), "{err}");
+        assert!(rx.try_recv().is_err(), "nothing should be queued");
+    }
+
+    #[tokio::test]
+    async fn cron_executor_forwards_once_the_control_loop_runs() {
+        use crate::cron::CronExecutor;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let executor = super::SockCronExecutor {
+            tx,
+            control_loop_ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        tokio::spawn(async move {
+            if let Some(crate::daemon::server::SockCommand::CronPrepareSession {
+                reply_tx, ..
+            }) = rx.recv().await
+            {
+                let _ = reply_tx.send(r#"{"ok":true,"result":{"session_id":"s-1"}}"#.into());
+            }
+        });
+        assert_eq!(
+            executor.prepare_session("cron/j/r", None).await.unwrap(),
+            "s-1"
+        );
+    }
 
     #[test]
     fn cron_job_id_parsed_from_session_key() {

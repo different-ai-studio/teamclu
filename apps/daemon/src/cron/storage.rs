@@ -238,6 +238,13 @@ impl CronStorage {
         out
     }
 
+    /// Load the current root (adopting unclaimed leftovers) without touching
+    /// it. Run reads call this first: adoption moves run files, and the boot
+    /// sweep for interrupted runs comes before anything has listed jobs.
+    async fn load(&self) {
+        self.with_jobs(|_| ((), false)).await;
+    }
+
     // ==================== Job CRUD ====================
 
     pub async fn list_jobs(&self) -> Vec<CronJob> {
@@ -451,6 +458,7 @@ impl CronStorage {
 
     /// Run history for a job, most recent first, one record per run id.
     pub async fn get_runs(&self, job_id: &str, limit: Option<usize>) -> Vec<CronRunRecord> {
+        self.load().await;
         let root = self.root();
         let _runs = self.runs_lock.lock().await;
         let Ok(content) = std::fs::read_to_string(Self::run_file(&root, job_id)) else {
@@ -477,6 +485,7 @@ impl CronStorage {
     /// Latest state of every run still marked `running` on disk — runs a
     /// previous daemon process was executing when it stopped.
     pub async fn get_latest_running_runs(&self) -> Vec<CronRunRecord> {
+        self.load().await;
         let root = self.root();
         let _runs = self.runs_lock.lock().await;
         let Ok(entries) = std::fs::read_dir(Self::runs_dir(&root)) else {
@@ -635,6 +644,31 @@ pub(crate) mod tests {
 
         // Persisted: a fresh store over the team root sees both.
         assert_eq!(CronStorage::at(team).list_jobs().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn interrupted_runs_left_in_unclaimed_are_found_on_boot() {
+        // A daemon stopped mid-run while unclaimed, then came back claimed.
+        // The boot sweep reads runs before anything has listed jobs, so it
+        // must adopt first or the run stays `running` forever.
+        let dir = tempfile::tempdir().unwrap();
+        let unclaimed = dir.path().join("_unclaimed/cron");
+        let team = dir.path().join("team-a/cron");
+
+        let before = CronStorage::at(unclaimed.clone());
+        before.add_job(make_job("early")).await;
+        let mut interrupted = make_run("run-i", RunStatus::Running);
+        interrupted.job_id = "early".into();
+        before.append_run(&interrupted).await;
+        CronStorage::at(team.clone())
+            .add_job(make_job("mine"))
+            .await;
+
+        let u = unclaimed.clone();
+        let storage = CronStorage::at(team).adopting(move || u.clone());
+        let running = storage.get_latest_running_runs().await;
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].run_id, "run-i");
     }
 
     #[tokio::test]
