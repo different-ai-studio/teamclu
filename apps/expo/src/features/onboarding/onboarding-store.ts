@@ -31,7 +31,7 @@ import {
   type OAuthProvider,
 } from "./onboarding-oauth";
 type OnboardingApi = ReturnType<
-  (typeof import("../../lib/supabase/onboarding-api"))["createOnboardingApi"]
+  (typeof import("../../lib/auth/onboarding-api"))["createOnboardingApi"]
 >;
 
 type OnboardingListener = () => void;

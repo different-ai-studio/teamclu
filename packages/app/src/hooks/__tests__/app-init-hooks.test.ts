@@ -15,7 +15,7 @@ const {
   mockExists,
   mockInvoke,
   mockListen,
-  mockLoadCurrentNodeId,
+  mockLoadCurrentActorId,
   mockLoadMembers,
   mockHydrateFromCache,
   mockLoadPersonal,
@@ -29,7 +29,7 @@ const {
   mockExists: vi.fn(),
   mockInvoke: vi.fn(),
   mockListen: vi.fn(),
-  mockLoadCurrentNodeId: vi.fn(),
+  mockLoadCurrentActorId: vi.fn(),
   mockLoadMembers: vi.fn(),
   mockHydrateFromCache: vi.fn(),
   mockLoadPersonal: vi.fn(),
@@ -68,10 +68,7 @@ const workspaceState = {
   setWorkspace: mockSetWorkspace,
   setWorkspaceBootstrapped: mockSetWorkspaceBootstrapped,
   setWorkspaceReady: mockSetWorkspaceReady,
-  // useAppInit selects these runtime-readiness actions; the daemon-control
-  // migration replaced OpenCode lifecycle selectors with these.
-  setOpenCodeBootstrapped: vi.fn(),
-  setOpenCodeReady: vi.fn(),
+  // useAppInit selects this runtime-readiness action.
   setDaemonHttpReady: vi.fn(),
   daemonHttpReady: false,
   workspaceBootstrapped: false,
@@ -134,10 +131,10 @@ vi.mock('@/stores/git-repos', () => ({
   }),
 }))
 
-vi.mock('@/stores/team-members', () => ({
-  useTeamMembersStore: {
+vi.mock('@/stores/device-identity', () => ({
+  useDeviceIdentityStore: {
     getState: () => ({
-      loadCurrentNodeId: mockLoadCurrentNodeId,
+      loadCurrentActorId: mockLoadCurrentActorId,
       loadMembers: mockLoadMembers,
     }),
   },
@@ -192,7 +189,7 @@ beforeEach(() => {
   mockExists.mockResolvedValue(true)
   mockInvoke.mockResolvedValue(null)
   mockListen.mockResolvedValue(vi.fn())
-  mockLoadCurrentNodeId.mockResolvedValue(undefined)
+  mockLoadCurrentActorId.mockResolvedValue(undefined)
   mockLoadMembers.mockResolvedValue(undefined)
   mockHydrateFromCache.mockResolvedValue(undefined)
   mockLoadPersonal.mockResolvedValue(undefined)
@@ -296,17 +293,17 @@ describe('useTauriBodyClass', () => {
   })
 })
 
-describe('useGitReposInit', () => {
+describe('useTeamBootstrapInit', () => {
   it('loads current node id at startup', async () => {
     mockIsTauri.mockReturnValue(true)
     workspaceState.workspacePath = '/workspace-team'
     workspaceState.workspaceReady = true
 
-    const { useGitReposInit } = await import('@/hooks/use-git-repos-init')
-    renderHook(() => useGitReposInit())
+    const { useTeamBootstrapInit } = await import('@/hooks/use-team-bootstrap-init')
+    renderHook(() => useTeamBootstrapInit())
 
     await waitFor(() => {
-      expect(mockLoadCurrentNodeId).toHaveBeenCalled()
+      expect(mockLoadCurrentActorId).toHaveBeenCalled()
     })
   })
 })

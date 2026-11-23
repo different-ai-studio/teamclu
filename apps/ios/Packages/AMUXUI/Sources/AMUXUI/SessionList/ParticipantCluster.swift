@@ -16,19 +16,14 @@ struct ParticipantPreview: Hashable, Identifiable {
     let displayName: String
     let isAgent: Bool
     let isCurrentUser: Bool
-    /// "claude" | "opencode" | "codex" | nil — drives the agent glyph.
+    /// Stored backend name (pi; legacy rows may hold old names) or nil.
     let defaultAgentType: String?
 
     var id: String { actorID }
 
     var glyph: String {
         if isAgent {
-            switch defaultAgentType {
-            case "claude", "claude_code": return "CC"
-            case "opencode":    return "OC"
-            case "codex":       return "CX"
-            default:            return Self.initials(from: displayName, fallback: "AG")
-            }
+            return Self.initials(from: displayName, fallback: "AG")
         }
         return Self.initials(from: displayName, fallback: "·")
     }
@@ -87,8 +82,7 @@ struct ParticipantCluster: View {
             return Style(background: Color.amux.cinnabar, foreground: .white)
         }
         if p.isAgent {
-            let fg: Color = (p.defaultAgentType == "claude" || p.defaultAgentType == "claude_code") ? Color.amux.cinnabar : Color.amux.basalt
-            return Style(background: Color.amux.pebble, foreground: fg)
+            return Style(background: Color.amux.pebble, foreground: Color.amux.basalt)
         }
         // Deterministic palette rotation for "other humans" — same hash
         // input we use elsewhere (Members list) so the chip color is

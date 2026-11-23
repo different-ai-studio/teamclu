@@ -18,7 +18,6 @@ function makeRepo(overrides = {}) {
     listThreadSummaries: record("listThreadSummaries"),
     listSessionIdsForActor: record("listSessionIdsForActor"),
     listWorkspacesByIdsSlim: record("listWorkspacesByIdsSlim"),
-    listShortcutRoleBindings: record("listShortcutRoleBindings"),
     submitFeedback: record("submitFeedback"),
     listFeedback: record("listFeedback"),
     deleteFeedback: record("deleteFeedback"),
@@ -205,21 +204,6 @@ test("POST /v1/workspaces/by-ids rejects non-array ids", async () => {
     body: { teamId: "t1", ids: "no" },
   });
   assert.equal(res.statusCode, 400);
-});
-
-test("GET /v1/teams/:teamId/shortcut-role-bindings returns items", async () => {
-  const repo = makeRepo({
-    listShortcutRoleBindings: () => [
-      { resource_id: "sc1", permission_roles: [{ role_id: "r1" }] },
-    ],
-  });
-  const res = await request(repo, {
-    method: "GET",
-    path: "/v1/teams/team-1/shortcut-role-bindings",
-  });
-  assert.equal(res.statusCode, 200);
-  assert.deepEqual(repo.calls[0].args, ["team-1"]);
-  assert.equal(JSON.parse(res.body).items[0].resource_id, "sc1");
 });
 
 // Telemetry route tests

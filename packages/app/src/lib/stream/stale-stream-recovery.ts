@@ -7,12 +7,11 @@ import {
 import type { AgentStreamEntry } from "@/stores/v2-streaming-store";
 
 /**
- * Recovery for live turns whose terminal `statusChange` never arrived.
+ * Finds live turns that have gone quiet.
  *
- * The 8s watchdog in App.tsx is armed inside the terminal branch, so it only
- * covers "terminal arrived but the daemon AGENT_REPLY did not". MQTT is QoS0:
- * when the terminal event itself is dropped (daemon stall, reconnect gap) no
- * timer is ever armed and the composer dock spins forever.
+ * After ACP Idle the composer waits 20s for the daemon AGENT_REPLY, then
+ * closes the dock. This sweep does not close a turn that is still
+ * `streaming`: a dropped Idle must not look like agent_settled.
  */
 type StaleLiveStream = {
   sessionId: string;

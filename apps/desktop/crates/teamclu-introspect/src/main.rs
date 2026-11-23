@@ -1,5 +1,6 @@
 mod apps;
 mod capabilities;
+mod channel_state;
 mod channels;
 mod config;
 mod cron;
@@ -39,9 +40,9 @@ struct Args {
     #[arg(long, default_value = ".")]
     workspace: String,
 
-    /// Port of the local TeamClu API server, used only when the desktop has
+    /// Port of the desktop introspect API, used only when the desktop has
     /// not published one in `<amuxd home>/run/introspect.http.port`.
-    #[arg(long, default_value_t = 1420)]
+    #[arg(long, default_value_t = 13144)]
     api_port: u16,
 
     /// amuxd control socket. Used for token-addressed sends, which only the
@@ -88,7 +89,7 @@ fn tool_definitions() -> Value {
                     "channel": {
                         "type": "string",
                         "description": "The channel to send through, or 'all' to broadcast to all configured channels.",
-                        "enum": ["all", "wecom", "discord", "email", "feishu", "kook", "wechat", "seatalk"]
+                        "enum": ["all", "wecom", "seatalk", "discord", "email", "feishu", "kook", "wechat"]
                     },
                     "message": {
                         "type": "string",
@@ -180,7 +181,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "sync_team_dir",
-            "description": "Sync the shared team directory. Pulls remote Git changes, pushes local changes, and returns a summary.",
+            "description": "Sync the shared team directory (team knowledge and documents) through the TeamClu daemon: uploads local changes, downloads remote ones, and returns a summary.",
             "inputSchema": {
                 "type": "object",
                 "properties": {}
@@ -433,7 +434,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_skills",
-            "description": "Create, update, or read a personal reusable skill stored under ~/.agents/skills/<slug>/. Use this for normal skills shared across OpenCode, Pi, and Claude Code. For installed team Skills use manage_team_skills get_draft/update_draft instead. Do not write skills directly to .opencode/skills, .pi/skills, or .claude/skills.",
+            "description": "Create, update, or read a personal reusable skill stored under ~/.agents/skills/<slug>/. Use this for normal personal skills. For installed team Skills use manage_team_skills get_draft/update_draft instead. Do not write skills directly to .opencode/skills, .pi/skills, or .claude/skills.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -649,13 +650,15 @@ async fn handle_request(
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             let tool_result = match tool_name {
-                "get_my_capabilities" => match capabilities::handle(workspace, &arguments).await {
-                    Ok(v) => {
-                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                        tool_ok(&text)
+                "get_my_capabilities" => {
+                    match capabilities::handle(workspace, api_port, &arguments).await {
+                        Ok(v) => {
+                            let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                            tool_ok(&text)
+                        }
+                        Err(e) => tool_err(&e),
                     }
-                    Err(e) => tool_err(&e),
-                },
+                }
                 "send_channel_message" => {
                     match send::handle(workspace, api_port, sock, &arguments).await {
                         Ok(v) => {
@@ -798,6 +801,40 @@ async fn handle_request(
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// How often a call that is still running tells the client so.
+///
+/// The MCP client in pi gives up on a request after 60 s of silence, and some
+/// calls here legitimately take minutes — a deploy builds, uploads and
+/// finalizes. Progress notifications reset that clock (the client asks for them
+/// by sending a `progressToken`), so a call stays alive exactly as long as it is
+/// actually running, with no fixed cap that a slow build could outgrow.
+const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The request's `params._meta.progressToken`, when the client sent one.
+fn progress_token(req: &Value) -> Option<Value> {
+    req.get("params")?
+        .get("_meta")?
+        .get("progressToken")
+        .filter(|token| token.is_string() || token.is_number())
+        .cloned()
+}
+
+/// `notifications/progress` for one heartbeat. MCP requires `progress` to grow
+/// with every notification for a token; there is no total, the work has none.
+fn progress_notification(token: &Value, progress: u64) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": { "progressToken": token, "progress": progress }
+    })
+}
+
+fn write_line(stdout: &std::sync::Mutex<std::io::Stdout>, message: &Value) {
+    let mut out = stdout.lock().unwrap();
+    let _ = writeln!(out, "{}", message);
+    let _ = out.flush();
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -861,10 +898,27 @@ async fn main() {
         let workspace = workspace.clone();
         let sock = sock.clone();
         requests.spawn(async move {
-            if let Some(response) = handle_request(&req, &workspace, api_port, &sock).await {
-                let mut out = stdout.lock().unwrap();
-                let _ = writeln!(out, "{}", response);
-                let _ = out.flush();
+            let work = handle_request(&req, &workspace, api_port, &sock);
+            let response = match progress_token(&req) {
+                None => work.await,
+                Some(token) => {
+                    tokio::pin!(work);
+                    let start = tokio::time::Instant::now() + PROGRESS_INTERVAL;
+                    let mut tick = tokio::time::interval_at(start, PROGRESS_INTERVAL);
+                    let mut beats = 0u64;
+                    loop {
+                        tokio::select! {
+                            response = &mut work => break response,
+                            _ = tick.tick() => {
+                                beats += 1;
+                                write_line(&stdout, &progress_notification(&token, beats));
+                            }
+                        }
+                    }
+                }
+            };
+            if let Some(response) = response {
+                write_line(&stdout, &response);
             }
         });
     }
@@ -880,6 +934,28 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_token_is_read_from_request_meta() {
+        let req =
+            json!({"id":1,"method":"tools/call","params":{"_meta":{"progressToken":7},"name":"x"}});
+        assert_eq!(progress_token(&req), Some(json!(7)));
+        let req = json!({"id":1,"method":"tools/call","params":{"_meta":{"progressToken":"t"}}});
+        assert_eq!(progress_token(&req), Some(json!("t")));
+        let req = json!({"id":1,"method":"tools/call","params":{"name":"x"}});
+        assert_eq!(progress_token(&req), None);
+        let req = json!({"id":1,"method":"tools/call","params":{"_meta":{"progressToken":null}}});
+        assert_eq!(progress_token(&req), None);
+    }
+
+    #[test]
+    fn progress_notification_carries_the_token_and_count() {
+        let n = progress_notification(&json!("t"), 3);
+        assert_eq!(n["method"], "notifications/progress");
+        assert_eq!(n["params"]["progressToken"], "t");
+        assert_eq!(n["params"]["progress"], 3);
+        assert!(n.get("id").is_none());
+    }
 
     #[test]
     fn tool_names_are_unique() {

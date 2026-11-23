@@ -8,6 +8,7 @@ import type { AppDataRowsPage, AppDataTable, AppRow } from '@/lib/backend/types'
 const backend = vi.hoisted(() => ({
   readAppDataRows: vi.fn(),
   updateAppDataRow: vi.fn(),
+  insertAppDataRow: vi.fn(),
   deleteAppDataRow: vi.fn(),
 }))
 
@@ -177,4 +178,55 @@ it('confirms before deleting a row', async () => {
   await userEvent.click(within(dialog).getByText('Delete'))
   await waitFor(() => expect(backend.deleteAppDataRow).toHaveBeenCalledWith('app-1', 'items', rowKey))
   await waitFor(() => expect(screen.queryByText('first')).toBeNull())
+})
+
+it('adds a row: empty fields are left out so the column takes its default', async () => {
+  backend.insertAppDataRow.mockResolvedValue({
+    id: 3,
+    title: 'fresh',
+    updated_at: '2031-01-01T00:00:00.000Z',
+  })
+  render(<AppDataBrowser app={APP} tables={[ITEMS]} canEdit initialTable="items" />)
+  await screen.findByText('first')
+
+  await userEvent.click(screen.getByTestId('app-data-insert'))
+  await userEvent.type(await screen.findByTestId('app-data-insert-title'), 'fresh')
+  await userEvent.click(screen.getByTestId('app-data-insert-save'))
+
+  await waitFor(() =>
+    expect(backend.insertAppDataRow).toHaveBeenCalledWith('app-1', 'items', { title: 'fresh' }),
+  )
+  // The stored row (with its generated key) is what appears, not the draft.
+  expect(await screen.findByTitle('2031-01-01T00:00:00.000Z')).toBeTruthy()
+  expect(screen.queryByTestId('app-data-insert-form')).toBeNull()
+})
+
+it('keeps the form open with what was typed when the insert fails', async () => {
+  backend.insertAppDataRow.mockRejectedValue(new Error('a row with this unique value already exists'))
+  render(<AppDataBrowser app={APP} tables={[ITEMS]} canEdit initialTable="items" />)
+  await screen.findByText('first')
+
+  await userEvent.click(screen.getByTestId('app-data-insert'))
+  await userEvent.type(await screen.findByTestId('app-data-insert-id'), '1')
+  await userEvent.click(screen.getByTestId('app-data-insert-save'))
+
+  await waitFor(() => expect(backend.insertAppDataRow).toHaveBeenCalled())
+  expect((screen.getByTestId('app-data-insert-id') as HTMLInputElement).value).toBe('1')
+})
+
+it('lets an admin add a row even to a table with no primary key', async () => {
+  backend.readAppDataRows.mockResolvedValue(
+    page({ table: 'audit_log', columns: AUDIT.columns, primaryKey: [], editable: false, rows: [] }),
+  )
+  render(<AppDataBrowser app={APP} tables={[AUDIT]} canEdit initialTable="audit_log" />)
+  const button = await screen.findByTestId('app-data-insert')
+  await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+})
+
+it('does not offer adding a row to a prompt-tier member', async () => {
+  render(<AppDataBrowser app={APP} tables={[ITEMS]} canEdit={false} initialTable="items" />)
+  await screen.findByText('first')
+  const button = screen.getByTestId('app-data-insert') as HTMLButtonElement
+  expect(button.disabled).toBe(true)
+  expect(button.getAttribute('title')).toMatch(/admin/)
 })

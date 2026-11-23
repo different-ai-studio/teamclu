@@ -18,24 +18,7 @@ import {
 } from "@/hooks/use-tool-call-file-on-disk";
 import { ToolCallStatusGlyph } from "./ToolCallStatusGlyph";
 import { ToolCallDisclosure } from "./ToolCallDisclosure";
-
-// Generate unified diff for new file (empty before)
-function generateNewFileDiff(content: string, filePath: string): string {
-  const lines: string[] = [];
-  lines.push(`diff --git a/${filePath} b/${filePath}`);
-  lines.push('new file mode 100644');
-  lines.push(`--- /dev/null`);
-  lines.push(`+++ b/${filePath}`);
-  
-  const contentLines = content.split('\n');
-  lines.push(`@@ -0,0 +1,${contentLines.length} @@`);
-  
-  for (const line of contentLines) {
-    lines.push(`+${line}`);
-  }
-  
-  return lines.join('\n');
-}
+import { generateNewFileDiff } from "./new-file-diff";
 
 export function WriteToolCard({ toolCall }: { toolCall: ToolCall }) {
   const { t } = useTranslation();

@@ -79,6 +79,81 @@ describe('QuestionInputDock', () => {
     expect(mockSkipQuestion).not.toHaveBeenCalled();
   });
 
+  it('submits every remaining pick when multiple is set', async () => {
+    render(
+      <QuestionInputDock
+        pendingQuestion={{
+          questionId: 'question-event-multi',
+          toolCallId: 'tool-call-multi',
+          messageId: 'message-multi',
+          questions: [
+            {
+              id: 'q-1',
+              header: '范围',
+              question: '哪些要保留？',
+              multiple: true,
+              options: [
+                { label: 'Alpha', value: 'alpha' },
+                { label: 'Beta', value: 'beta' },
+              ],
+            },
+          ],
+          source: 'agent',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Select all that apply')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /alpha/i }));
+    fireEvent.click(screen.getByRole('button', { name: /beta/i }));
+    fireEvent.click(screen.getByRole('button', { name: /alpha/i }));
+    fireEvent.click(screen.getByRole('button', { name: /submit answer/i }));
+
+    await waitFor(() => {
+      expect(mockAnswerQuestion).toHaveBeenCalledWith(
+        { 'q-1': ['beta'] },
+        'question-event-multi',
+      );
+    });
+  });
+
+  it('does not advance to the next question after one multi-select pick', () => {
+    render(
+      <QuestionInputDock
+        pendingQuestion={{
+          questionId: 'question-event-multi-next',
+          toolCallId: 'tool-call-multi-next',
+          messageId: 'message-multi-next',
+          questions: [
+            {
+              id: 'q-1',
+              header: '范围',
+              question: '哪些要保留？',
+              multiple: true,
+              options: [
+                { label: 'Alpha', value: 'alpha' },
+                { label: 'Beta', value: 'beta' },
+              ],
+            },
+            {
+              id: 'q-2',
+              header: '下一步',
+              question: '然后呢？',
+              options: [{ label: '继续', value: 'continue' }],
+            },
+          ],
+          source: 'agent',
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /alpha/i }));
+
+    expect(screen.getByText('哪些要保留？')).toBeTruthy();
+    expect(screen.queryByText('然后呢？')).toBeNull();
+    expect(mockAnswerQuestion).not.toHaveBeenCalled();
+  });
+
   it('still rejects a normal single-question flow when skipped', async () => {
     render(
       <QuestionInputDock

@@ -5,9 +5,8 @@ import { getBackend } from '@/lib/backend'
 import { useProviderStore } from './provider'
 import { useWorkspaceStore } from './workspace'
 import { useCurrentTeamStore } from './current-team'
-import { isTauri } from '@/lib/utils'
 import { workspaceScopedKey } from '@/lib/config/storage'
-import { appStoragePrefix, TEAM_REPO_DIR, type TeamModelOption } from '@/lib/config/build-config'
+import { appStoragePrefix, type TeamModelOption } from '@/lib/config/build-config'
 import { getFeatures } from '@/lib/config/remote-features'
 
 
@@ -69,18 +68,12 @@ interface TeamModeState {
   teamModelOptions: TeamModelOption[] // available model choices from build config
   _appliedConfigKey: string | null // fingerprint of last applied config to avoid redundant apply
   devUnlocked: boolean // hidden dev mode: unlocks model selector & hidden dirs in team mode
-  teamGitFileSyncStatusMap: Record<string, 'modified' | 'new'>
-  /** True while a Git team sync is in progress (for file tree loading indicator) */
-  teamGitSyncing: boolean
-  /** ISO timestamp of last successful team repo sync (read from teamclu.json) */
-  teamGitLastSyncAt: string | null
 
   loadTeamConfig: (workspacePath: string) => Promise<void>
   applyTeamModel: (workspacePath: string, force?: boolean) => Promise<void>
   switchTeamModel: (modelId: string, workspacePath: string) => Promise<void>
   clearTeamMode: (workspacePath?: string) => Promise<void>
   setDevUnlocked: (unlocked: boolean) => void
-  loadTeamGitFileSyncStatus: (workspacePath: string) => Promise<void>
 }
 
 interface CloudTeamLlm {
@@ -112,22 +105,9 @@ export const useTeamModeStore = create<TeamModeState>((set, get) => ({
   teamModelOptions: [],
   _appliedConfigKey: null,
   devUnlocked: true,
-  teamGitSyncing: false,
-  teamGitLastSyncAt: null,
-  teamGitFileSyncStatusMap: {},
 
   loadTeamConfig: async (_workspacePath: string) => {
     const cloudLlm = await fetchCloudTeamLlm()
-    // Load last sync timestamp from teamclu.json (git mode persists it via team_sync_repo)
-    if (isTauri()) {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core')
-        const teamConfig = await invoke<{ lastSyncAt?: string | null } | null>('get_team_config', {
-          workspacePath: _workspacePath,
-        })
-        set({ teamGitLastSyncAt: teamConfig?.lastSyncAt ?? null })
-      } catch { /* ignore */ }
-    }
     // We load the LLM provider config below; it is gated on whether the
     // workspace has any team LLM config, independent of share mode.
     {
@@ -229,36 +209,6 @@ export const useTeamModeStore = create<TeamModeState>((set, get) => ({
     set({ devUnlocked: true })
   },
 
-  loadTeamGitFileSyncStatus: async (workspacePath: string) => {
-    if (!isTauri() || !workspacePath) return
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      const result = await invoke<{
-        branch: string | null
-        clean: boolean
-        files: Array<{ path: string; status: string; staged: boolean }>
-      }>('git_status', { path: `${workspacePath}/${TEAM_REPO_DIR}` })
-      const map: Record<string, 'modified' | 'new'> = {}
-      for (const f of result.files) {
-        if (f.status === 'untracked') {
-          map[f.path] = 'new'
-        } else if (
-          f.status === 'modified' ||
-          f.status === 'added' ||
-          f.status === 'deleted' ||
-          f.status === 'renamed' ||
-          f.status === 'copied'
-        ) {
-          map[f.path] = 'modified'
-        }
-        // 'ignored' and 'unknown' are omitted
-      }
-      set({ teamGitFileSyncStatusMap: map })
-    } catch (e) {
-      console.debug('[team-mode] loadTeamGitFileSyncStatus skipped:', e)
-    }
-  },
-
   clearTeamMode: async (workspacePath?: string) => {
     // When LLM config is locked, prevent exiting team mode. The lock now
     // comes from the Cloud API when it sends one, and falls back to the
@@ -266,7 +216,7 @@ export const useTeamModeStore = create<TeamModeState>((set, get) => ({
     if (getFeatures().lockLlmConfig) return
 
     // Set state immediately to trigger UI updates
-    set({ teamModelConfig: null, _appliedConfigKey: null, teamGitFileSyncStatusMap: {} })
+    set({ teamModelConfig: null, _appliedConfigKey: null })
 
     if (workspacePath) {
       try {

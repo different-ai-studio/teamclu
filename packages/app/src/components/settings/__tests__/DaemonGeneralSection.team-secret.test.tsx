@@ -82,7 +82,6 @@ vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
 }))
 
 vi.mock('@/lib/daemon/daemon-local-client', () => ({
-  getCursorAgentSettings: vi.fn(async () => ({ apiKeyConfigured: false })),
   getDaemonHttpEndpoint: vi.fn(async () => null),
   openDaemonSetupConsole: vi.fn(async () => true),
 }))

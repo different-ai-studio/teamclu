@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
 import { MessageList, type MessageListHandle } from "./MessageList";
+import type { ComposerAttachment } from "@/lib/attachments/composer-attachment";
 import { ChatInputArea } from "./ChatInputArea";
 import type { ActiveStreamingAgent } from "./ComposerStack";
 import { useSessionStreams } from "@/lib/stream/session-streams";
@@ -99,7 +100,7 @@ export function SessionChatColumn({
   const { t } = useTranslation();
   const mentionSessionId = mentionSessionIdProp ?? composerSessionId;
   const messageListRef = React.useRef<MessageListHandle>(null);
-  const [pendingFiles, setPendingFiles] = React.useState<File[]>([]);
+  const [pendingFiles, setPendingFiles] = React.useState<ComposerAttachment[]>([]);
   const [composerDraft, setComposerDraft] = React.useState("");
   const noop = React.useCallback(() => {}, []);
   const noopSetBool = React.useCallback((_value: React.SetStateAction<boolean>) => {}, []);
@@ -478,12 +479,7 @@ export function SessionChatColumn({
     return agents;
   }, [v2Streams, engagedAgents]);
 
-  const v2HasActiveStream = useV2StreamingStore((s) =>
-    sessionId
-      ? Object.values(s.byKey).some((e) => e.sessionId === sessionId && e.active)
-      : false,
-  );
-  const isStreaming = activeStreamingAgents.length > 0 || v2HasActiveStream;
+  const isStreaming = activeStreamingAgents.length > 0;
 
   const handleInterruptAgent = React.useCallback(
     (agentActorId: string) => {
@@ -554,7 +550,7 @@ export function SessionChatColumn({
     messageListRef.current?.pauseAutoFollowIfReading();
   }, []);
 
-  const appendPendingFiles = React.useCallback((files: File[]) => {
+  const appendPendingFiles = React.useCallback((files: ComposerAttachment[]) => {
     setPendingFiles((prev) => [...prev, ...files]);
   }, []);
   const removePendingFile = React.useCallback((index: number) => {

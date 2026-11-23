@@ -1,5 +1,5 @@
 /**
- * TeamClu pi extension — permission gate + amuxd remote-tools MCP bridge.
+ * TeamClu pi extension — permission gate + workspace MCP bridge.
  *
  * Shipped inside amuxd (include_str!), materialized to
  * `~/.amuxd/pi/extensions/teamclu.ts` at pi spawn and loaded via `-e <path>`.
@@ -11,15 +11,9 @@
  *   Re-read on every tool call (the daemon appends patterns to it when the
  *   host approves a permission with option_id "always"). Missing or invalid
  *   file ⇒ { defaultAction: "ask", alwaysAllowed: [] }.
- *   Pattern semantics: for `bash` the match key is the command string, for
+ *   Pattern semantics: for `bash` and `powershell` the match key is the command string, for
  *   every other tool it is the tool name. A pattern ending in " *" is a
  *   prefix match on the first word(s); otherwise exact string equality.
- *
- * - `TEAMCLU_REMOTE_TOOLS_CMD` — JSON array, e.g.
- *       ["/path/to/amuxd", "remote-tools-mcp", "--sock=/path/amuxd.sock"]
- *   A stdio MCP server. When set, the extension connects to it, lists its
- *   tools, and registers each as a pi tool proxying tools/call. Unset ⇒ no
- *   bridge.
  *
  * - `TEAMCLU_MCP_SERVERS` — JSON object of the workspace's other MCP servers,
  *   normalized by `pi_server_spec` (`pi_rpc/mod.rs`) into the two shapes
@@ -562,17 +556,23 @@ function loadRules(): Rules {
   }
 }
 
-/** Match key: bash → the command string; other tools → the tool name. */
+/** Tools whose `command` input is a shell command line. pi registers
+ * `powershell` alongside `bash` on Windows (see `assets/pi-host/host.mjs`).
+ * Keyed on the command, not the tool name, so "always allow" on one command
+ * does not approve every later command in that shell. */
+const SHELL_TOOLS = new Set(["bash", "powershell"]);
+
+/** Match key: shell tools → the command string; other tools → the tool name. */
 function matchKey(toolName: string, input: Record<string, unknown>): string {
-  if (toolName === "bash" && typeof input.command === "string") return input.command.trim();
+  if (SHELL_TOOLS.has(toolName) && typeof input.command === "string") return input.command.trim();
   return toolName;
 }
 
 /** Persisted "always allow" pattern for this call (what the daemon appends). */
 function alwaysPattern(toolName: string, input: Record<string, unknown>): string {
-  if (toolName === "bash" && typeof input.command === "string") {
+  if (SHELL_TOOLS.has(toolName) && typeof input.command === "string") {
     const first = input.command.trim().split(/\s+/)[0] ?? "";
-    return first ? `${first} *` : "bash";
+    return first ? `${first} *` : toolName;
   }
   return toolName;
 }
@@ -612,8 +612,15 @@ function summarize(toolName: string, input: Record<string, unknown>): string {
  * `${...}`, the same key opencode uses. Absent/invalid env ⇒ no-op.
  */
 function registerTeamProvider(pi: ExtensionAPI): void {
+  // Every outcome is logged (stderr lands in amuxd's log as `WARN pi_rpc`).
+  // A host without team models used to look identical whether the payload
+  // was missing, unparsable, empty, or registered without its credential —
+  // and on Windows that was exactly the question nobody could answer.
   const raw = process.env.TEAMCLU_TEAM_PROVIDER;
-  if (!raw) return;
+  if (!raw) {
+    console.error("[teamclu] team provider: TEAMCLU_TEAM_PROVIDER not set; no team models");
+    return;
+  }
   let cfg: {
     name?: string;
     baseUrl?: string;
@@ -623,10 +630,16 @@ function registerTeamProvider(pi: ExtensionAPI): void {
   try {
     cfg = JSON.parse(raw);
   } catch (e) {
-    console.error(`[teamclu] invalid TEAMCLU_TEAM_PROVIDER: ${e}`);
+    console.error(`[teamclu] team provider: invalid TEAMCLU_TEAM_PROVIDER: ${e}`);
     return;
   }
-  if (!cfg.baseUrl || !Array.isArray(cfg.models) || cfg.models.length === 0) return;
+  if (!cfg.baseUrl || !Array.isArray(cfg.models) || cfg.models.length === 0) {
+    console.error(
+      `[teamclu] team provider: skipped (baseUrl=${cfg.baseUrl ? "set" : "missing"}, ` +
+        `models=${Array.isArray(cfg.models) ? cfg.models.length : "missing"})`,
+    );
+    return;
+  }
   const apiKeyEnv = cfg.apiKeyEnv || "tc_api_key";
   const models = cfg.models
     .filter((m) => m && m.id)
@@ -639,7 +652,13 @@ function registerTeamProvider(pi: ExtensionAPI): void {
       contextWindow: 256000,
       maxTokens: 16000,
     }));
-  if (models.length === 0) return;
+  if (models.length === 0) {
+    console.error("[teamclu] team provider: skipped (no model has an id)");
+    return;
+  }
+  // Presence only, never the value. Without it pi registers the provider and
+  // then lists none of its models as available.
+  const keyBound = Boolean(process.env[apiKeyEnv]);
   try {
     pi.registerProvider("team", {
       name: cfg.name || "Team",
@@ -648,6 +667,10 @@ function registerTeamProvider(pi: ExtensionAPI): void {
       api: "openai-completions",
       models,
     });
+    console.error(
+      `[teamclu] team provider: registered ${models.length} model(s) ` +
+        `[${models.map((m) => m.id).join(",")}], ${apiKeyEnv} ${keyBound ? "bound" : "NOT bound"}`,
+    );
   } catch (e) {
     console.error(`[teamclu] registerProvider(team) failed: ${e}`);
   }
@@ -781,6 +804,9 @@ type McpTool = { name: string; description?: string; inputSchema?: unknown };
  *  hang session startup. */
 const MAX_TOOL_PAGES = 50;
 
+/** Upper bound on one MCP tool call that keeps reporting progress. */
+const MCP_CALL_MAX_TOTAL_MS = 60 * 60_000;
+
 /** One connected MCP server. */
 class McpBridge {
   private constructor(
@@ -810,15 +836,21 @@ class McpBridge {
     }
     const [command, ...args] = spec.command;
     const client = make();
-    await client.connect(
-      new sdk.StdioClientTransport({
-        command,
-        args,
-        env: childEnv(label, spec.environment),
-        // The server's own stderr belongs in pi's, which amuxd captures.
-        stderr: "inherit",
-      }),
-    );
+    const transport = new sdk.StdioClientTransport({
+      command,
+      args,
+      env: childEnv(label, spec.environment),
+      // The server's own stderr belongs in pi's, which amuxd captures.
+      stderr: "inherit",
+    });
+    const started = Date.now();
+    // `connect` spawns the server and then runs the initialize handshake; log
+    // the pid as soon as the spawn has happened so a server that never answers
+    // still leaves its pid in the log.
+    const connecting = client.connect(transport);
+    queueMicrotask(() => mcpTiming(label, `spawned pid=${transport.pid ?? "?"} cmd=${command}`));
+    await connecting;
+    mcpTiming(label, `initialized pid=${transport.pid ?? "?"} in ${Date.now() - started}ms`);
     return new McpBridge(client, label);
   }
 
@@ -852,8 +884,18 @@ class McpBridge {
   callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
     return this.client.callTool({ name, arguments: args ?? {} }, undefined, {
       signal,
-      // A tool that reports progress is working, not stuck.
+      // A tool that reports progress is working, not stuck. The SDK only sends
+      // a progressToken — the server's cue that progress is wanted — when
+      // `onprogress` is set, so without it this reset never fired and every
+      // call died at the SDK's 60 s default. A TeamClu app deploy (build,
+      // upload, finalize) takes minutes; teamclu-introspect heartbeats while a
+      // call runs, so the 60 s now means "silent for 60 s", not "slow".
+      onprogress: () => {},
       resetTimeoutOnProgress: true,
+      // Still bounded: a server that heartbeats forever cannot hold a turn
+      // longer than the slowest deploy the desktop allows (a container build
+      // is given 50 minutes).
+      maxTotalTimeout: MCP_CALL_MAX_TOTAL_MS,
     });
   }
 
@@ -1095,15 +1137,36 @@ function writeToolCache(label: string, signature: string, tools: McpTool[]): voi
   }
 }
 
+/**
+ * One line per MCP startup milestone, tagged with this host's pid so lines from
+ * the host amuxd just retired and the one replacing it can be told apart.
+ * Diagnostic: the Windows install smoke showed a session attach waiting ~11s
+ * longer on beta.123 than beta.122, and nothing in the log said which server
+ * held it up or whose child it was.
+ */
+function mcpTiming(label: string, what: string): void {
+  console.error(`[teamclu] MCP ${label}: ${what} (host pid=${process.pid})`);
+}
+
+/**
+ * How long a session start waits for a server it has never listed before.
+ * Long enough for a local binary (teamclu-introspect: ~100ms), far short of an
+ * npx install (4–16s cold). See the no-cache branch of `ensureBridge`.
+ */
+const MCP_COLD_START_GRACE_MS = 3_000;
+
 /** Connect and list, or throw. */
 async function handshake(
   label: string,
   spec: McpServerSpec,
   sdk: Sdk,
 ): Promise<{ bridge: McpBridge; tools: McpTool[] }> {
+  const started = Date.now();
   const bridge = await McpBridge.connect(label, spec, sdk);
   try {
-    return { bridge, tools: await bridge.listTools() };
+    const tools = await bridge.listTools();
+    mcpTiming(label, `listed ${tools.length} tool(s); handshake ${Date.now() - started}ms`);
+    return { bridge, tools };
   } catch (e) {
     void bridge.close(); // never leak a connection whose listing failed
     throw e;
@@ -1117,7 +1180,9 @@ async function handshake(
  *
  * Returns as soon as a tool list is known: from the live registry, from the
  * on-disk cache (connecting in the background), or — only on the very first run
- * for a given spec — from a full handshake.
+ * for a given spec — from a full handshake, if it finishes within
+ * `MCP_COLD_START_GRACE_MS`. A slower first handshake returns an empty,
+ * provisional entry and registers the tools when it lands.
  */
 async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promise<BridgeEntry> {
   const signature = bridgeSignature(spec);
@@ -1147,6 +1212,7 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
   };
 
   const cached = readToolCache(label, signature);
+  mcpTiming(label, cached ? "tool cache hit; connecting in the background" : "no tool cache; waiting for the handshake");
   if (cached) {
     const pending = handshake(label, spec, sdk);
     const entry: BridgeEntry = {
@@ -1175,16 +1241,69 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
     return entry;
   }
 
-  const { bridge, tools } = await handshake(label, spec, sdk);
-  writeToolCache(label, signature, tools);
+  // No cache: the first run for this spec. Wait a little — a local server
+  // (teamclu-introspect) answers in ~100ms and should be in the first prompt —
+  // but never for an npx install. Those took 4–16s on a fresh Windows runner,
+  // all of it inside `new_session`, which pushed StartRuntime past amuxd's 20s
+  // RPC deadline (beta.123). Past the grace period the session starts without
+  // this server and its tools are registered on the live session once the
+  // handshake lands, the same way a `tools/list_changed` refresh is applied.
+  const pending = handshake(label, spec, sdk);
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  const grace = new Promise<null>((resolve) => {
+    graceTimer = setTimeout(() => resolve(null), MCP_COLD_START_GRACE_MS);
+  });
+  // A handshake that fails within the grace period still throws to the caller.
+  const settled = await Promise.race([pending, grace]).finally(() => clearTimeout(graceTimer));
+
+  if (settled) {
+    const { bridge, tools } = settled;
+    writeToolCache(label, signature, tools);
+    const entry: BridgeEntry = {
+      ready: Promise.resolve(bridge),
+      signature,
+      tools,
+      provisional: false,
+    };
+    BRIDGE_REGISTRY.set(label, entry);
+    watchToolList(entry, bridge);
+    return entry;
+  }
+
   const entry: BridgeEntry = {
-    ready: Promise.resolve(bridge),
+    ready: pending.then((r) => r.bridge),
     signature,
-    tools,
-    provisional: false,
+    tools: [],
+    provisional: true,
   };
+  // Tool calls await `entry.ready` and see its rejection; nothing else does,
+  // so keep a failed background handshake from surfacing as unhandled.
+  entry.ready.catch(() => {});
   BRIDGE_REGISTRY.set(label, entry);
-  watchToolList(entry, bridge);
+  mcpTiming(
+    label,
+    `handshake still running after ${MCP_COLD_START_GRACE_MS}ms; starting the session without its tools`,
+  );
+  void pending.then(
+    ({ bridge, tools }) => {
+      // Replaced or removed while connecting: `disposeEntry` closes it.
+      if (BRIDGE_REGISTRY.get(label) !== entry) return;
+      entry.tools = tools;
+      entry.provisional = false;
+      writeToolCache(label, signature, tools);
+      watchToolList(entry, bridge);
+      // Register on the instance that is live now, as the list_changed path
+      // does: the one that started this bridge may belong to an ended session.
+      const target = WATCH_STATE.target;
+      if (target) registerBridgeTools(target.pi, target.ownTools, label, entry);
+      mcpTiming(label, `connected after the session started; registered ${tools.length} tool(s)`);
+    },
+    (e) => {
+      // Drop the entry so the next session retries.
+      if (BRIDGE_REGISTRY.get(label) === entry) BRIDGE_REGISTRY.delete(label);
+      console.error(`[teamclu] MCP bridge failed in the background (${label}): ${e}`);
+    },
+  );
   return entry;
 }
 
@@ -1211,7 +1330,7 @@ function disposeRemovedBridges(configured: Set<string>): void {
 /**
  * Read the workspace MCP config the same way amuxd does when it builds
  * `TEAMCLU_MCP_SERVERS` (`pi_server_spec` in `pi_rpc/mod.rs`): skip the
- * daemon's own remote-tools entry and `enabled: false`; a `type: "remote"`
+ * stale `amuxd-remote-tools` entry and `enabled: false`; a `type: "remote"`
  * entry needs a URL, anything else needs a non-empty string `command` array.
  *
  * Kept deliberately in sync with the Rust side — the env payload is a snapshot
@@ -1269,9 +1388,12 @@ async function reconcileBridges(
   servers: Record<string, McpServerSpec>,
 ): Promise<void> {
   const names = Object.keys(servers);
-  // "remote-tools" is bridged from its own env contract, not from this file.
-  disposeRemovedBridges(new Set([...names, "remote-tools"]));
+  disposeRemovedBridges(new Set(names));
+  const started = Date.now();
   await Promise.all(names.map((name) => bridgeMcpServer(pi, ownTools, name, servers[name])));
+  console.error(
+    `[teamclu] MCP bridges ready in ${Date.now() - started}ms [${names.join(",")}] (host pid=${process.pid})`,
+  );
 }
 
 /**
@@ -1992,7 +2114,7 @@ export default async function (pi: ExtensionAPI) {
   // Team shared LLM — register before startup finishes so its models appear.
   registerTeamProvider(pi);
 
-  // Tools this extension registered itself (remote-tools proxies). They are
+  // Tools this extension registered itself (MCP bridge proxies). They are
   // daemon-provided, already trusted — skip the permission gate for them.
   const ownTools = new Set<string>();
 
@@ -2114,20 +2236,7 @@ export default async function (pi: ExtensionAPI) {
   });
 
   // -- MCP bridges (pi has no native MCP) -----------------------------------
-  // 1) amuxd remote-tools (single stdio command, its own env contract).
-  const cmdRaw = process.env.TEAMCLU_REMOTE_TOOLS_CMD;
-  if (cmdRaw) {
-    try {
-      const cmd = JSON.parse(cmdRaw);
-      if (Array.isArray(cmd) && cmd.length > 0 && cmd.every((c) => typeof c === "string")) {
-        await bridgeMcpServer(pi, ownTools, "remote-tools", { type: "local", command: cmd });
-      }
-    } catch (e) {
-      console.error(`[teamclu] invalid TEAMCLU_REMOTE_TOOLS_CMD: ${e}`);
-    }
-  }
-
-  // 2) The workspace's other MCP servers (from opencode.json `mcp`), bridged so
+  // The workspace's MCP servers (from opencode.json `mcp`), bridged so
   //    pi gets the same tools opencode loads natively — local and remote alike,
   //    normalized by amuxd into:
   //    { "<name>": { "type": "local",  "command": [...], "environment": {…} } }

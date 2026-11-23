@@ -263,7 +263,7 @@ mod tests {
         assert!(!key_requires_reload("mqtt.broker_url"));
 
         assert!(key_requires_restart("mqtt.broker_url"));
-        assert!(key_requires_restart("agents.claude_code.binary"));
+        assert!(key_requires_restart("agents.pi.node"));
         assert!(key_requires_restart("http.bind"));
         assert!(key_requires_restart("update.auto"));
         assert!(!key_requires_restart("channels.discord.bot_token"));

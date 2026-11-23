@@ -22,6 +22,7 @@ function PopoverContent({
   align = "center",
   sideOffset = 4,
   container,
+  forceMount,
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Content> & {
   /**
@@ -34,9 +35,12 @@ function PopoverContent({
   container?: React.ComponentProps<typeof PopoverPrimitive.Portal>["container"]
 }) {
   return (
-    <PopoverPrimitive.Portal container={container}>
+    // forceMount goes to the Portal as well: on the Content alone it is never
+    // reached, since the Portal renders nothing while the popover is closed.
+    <PopoverPrimitive.Portal container={container} forceMount={forceMount}>
       <PopoverPrimitive.Content
         data-slot="popover-content"
+        forceMount={forceMount}
         align={align}
         sideOffset={sideOffset}
         className={cn(

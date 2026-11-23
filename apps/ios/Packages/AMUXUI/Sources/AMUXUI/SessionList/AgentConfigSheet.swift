@@ -8,28 +8,14 @@ public struct AgentConfigSheet: View {
     }
 
     public enum AgentType: String, CaseIterable, Identifiable, Sendable {
-        /// pi is the only runtime the daemon runs (#1247); the legacy cases
-        /// stay so old stored values still parse, and the daemon reroutes them.
+        /// pi is the only runtime the daemon runs (#1247, ADR-0014). Legacy
+        /// stored values (claude / opencode / codex / cursor) parse as pi.
         case pi
-        case claude = "claude"
-        case opencode, codex
         public var id: String { rawValue }
-        public var label: String {
-            switch self {
-            case .pi: "Pi"
-            case .claude: "Claude"
-            case .opencode: "OpenCode"
-            case .codex: "Codex"
-            }
-        }
+        public var label: String { "Pi" }
 
         public static func fromStoredValue(_ value: String?) -> AgentType {
-            switch value {
-            case "claude", "claude_code", "claude-code": .claude
-            case "opencode": .opencode
-            case "codex": .codex
-            default: .pi
-            }
+            .pi
         }
 
         public static func supported(from values: [String]) -> [AgentType] {
@@ -116,10 +102,7 @@ extension AgentConfigSheet.AgentType {
     /// NewSessionSheet and AddAgentSheet share one mapping.
     var asAmuxAgentType: Amux_AgentType {
         switch self {
-        case .pi:        return .pi
-        case .claude:    return .claudeCode
-        case .opencode:  return .opencode
-        case .codex:     return .codex
+        case .pi: return .pi
         }
     }
 }

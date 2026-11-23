@@ -88,7 +88,8 @@ test("listSessions maps current actor session rpc rows", async () => {
     },
   }]);
   // The row grew after this test was written: source/cronJobId came with cron
-  // sessions, participantCount with the list redesign. A fixture that omits
+  // sessions, participantCount with the list redesign, hasMention with the
+  // mention badge (#1835). A fixture that omits
   // them exercises the defaults, which is the contract clients rely on.
   assert.deepEqual(rows, [{
     id: "session-1",
@@ -99,6 +100,7 @@ test("listSessions maps current actor session rpc rows", async () => {
     lastMessageAt: "2026-05-27T01:00:00Z",
     lastMessagePreview: "hello",
     hasUnread: true,
+    hasMention: false,
     source: "user",
     cronJobId: null,
     summary: null,
@@ -367,7 +369,7 @@ test("auth repo claimInvite forwards the caller bearer for member claims", async
     tableData: {
       teams: [{ id: "team-9", oid: "org-9" }],
       roles: [{ id: "role-member", org_id: "org-9", code: "member", is_system: true }],
-      roles_users: [],
+      org_roles_users: [],
     },
   });
   const repo = createSupabaseAuthRepository({
@@ -406,7 +408,7 @@ test("auth repo claimInvite forwards the caller bearer for member claims", async
   // authed client carrying the caller bearer.
   assert.equal(createCalls.length, 2);
   assert.equal(createCalls[1].options.global.headers.Authorization, "Bearer member-jwt");
-  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  const insert = adminCalls.find((c) => c.table === "org_roles_users" && c.op === "insert");
   assert.ok(insert, "member roles_users must be inserted via service-role");
   assert.equal(insert.row.user_id, "joiner-user-1");
   assert.equal(insert.row.role_id, "role-member");
@@ -423,7 +425,7 @@ test("auth repo claimInvite grants the org role to the identity the actor joined
       actors: [{ id: "actor-9", user_id: "identity-in-org-9" }],
       teams: [{ id: "team-9", oid: "org-9" }],
       roles: [{ id: "role-member", org_id: "org-9", code: "member", is_system: true }],
-      roles_users: [],
+      org_roles_users: [],
     },
   });
   const repo = createSupabaseAuthRepository({
@@ -452,7 +454,7 @@ test("auth repo claimInvite grants the org role to the identity the actor joined
 
   const result = await repo.claimInvite("invite-token", { accessToken: "member-jwt" });
   assert.equal(result.refreshToken, "rt-for-identity");
-  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  const insert = adminCalls.find((c) => c.table === "org_roles_users" && c.op === "insert");
   assert.ok(insert, "member roles_users must be inserted via service-role");
   assert.equal(insert.row.user_id, "identity-in-org-9");
 });
@@ -808,7 +810,7 @@ test("createTeam routes to create_team with the caller's JWT org as fallback", a
       tableData: {
         teams: [{ id: "team-9", oid: "org-real" }],
         roles: [{ id: ownerRoleId, org_id: "org-real", code: "owner", is_system: true }],
-        roles_users: [],
+        org_roles_users: [],
       },
     });
     const repo = createRepo(caller, { createServiceRoleClient: () => admin });
@@ -832,7 +834,7 @@ test("createTeam routes to create_team with the caller's JWT org as fallback", a
     assert.equal(team.name, "香蕉攀岩");
     assert.equal(team.slug, "banana");
     // Owner binding must go through service-role (not caller JWT / RLS).
-    const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+    const insert = adminCalls.find((c) => c.table === "org_roles_users" && c.op === "insert");
     assert.ok(insert, "roles_users owner insert must use service-role client");
     assert.equal(insert.row.user_id, "u1");
     assert.equal(insert.row.role_id, ownerRoleId);
@@ -872,7 +874,7 @@ test("createTeam mints a personal org when the caller carries none — never DEF
       tableData: {
         teams: [{ id: "team-solo", oid: "org-mine" }],
         roles: [{ id: "role-owner", org_id: "org-mine", code: "owner", is_system: true }],
-        roles_users: [],
+        org_roles_users: [],
       },
     });
     const repo = createRepo(caller, { createServiceRoleClient: () => admin });
@@ -919,7 +921,7 @@ test("joinPublicTeam assigns member roles_users via service-role", async () => {
       tableData: {
         teams: [{ id: "team-public", oid: "org-real" }],
         roles: [{ id: memberRoleId, org_id: "org-real", code: "member", is_system: true }],
-        roles_users: [],
+        org_roles_users: [],
       },
     });
     const repo = createRepo(caller, { createServiceRoleClient: () => admin });
@@ -928,7 +930,7 @@ test("joinPublicTeam assigns member roles_users via service-role", async () => {
 
     assert.equal(rpcCalls[0]?.name, "join_public_team");
     assert.equal(team.id, "team-public");
-    const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+    const insert = adminCalls.find((c) => c.table === "org_roles_users" && c.op === "insert");
     assert.ok(insert, "roles_users member insert must use service-role client");
     assert.equal(insert.row.user_id, "u-join");
     assert.equal(insert.row.role_id, memberRoleId);
@@ -976,7 +978,7 @@ test("bootstrapTeam verifies a trusted external JWT without a local GoTrue looku
     tableData: {
       teams: [{ id: "team-bootstrap", oid: "betly-org-1" }],
       roles: [{ id: "role-owner", org_id: "betly-org-1", code: "owner", is_system: true }],
-      roles_users: [],
+      org_roles_users: [],
     },
   });
   const repo = createRepo(caller, {
@@ -998,7 +1000,7 @@ test("bootstrapTeam verifies a trusted external JWT without a local GoTrue looku
     },
   }]);
   assert.equal(team.id, "team-bootstrap");
-  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  const insert = adminCalls.find((c) => c.table === "org_roles_users" && c.op === "insert");
   assert.ok(insert, "bootstrap must assign owner via service-role");
   assert.equal(insert.row.user_id, "betly-user-1");
 });
@@ -1018,7 +1020,7 @@ test("bootstrapTeam passes the shared tenant so the partner org stays on the old
       tableData: {
         teams: [{ id: "t", oid: "betly-org-1" }],
         roles: [{ id: "role-owner", org_id: "betly-org-1", code: "owner", is_system: true }],
-        roles_users: [],
+        org_roles_users: [],
       },
     });
     const repo = createRepo(caller, {
@@ -1545,7 +1547,7 @@ const ORG_ADMIN_DIRECTORY_ROW = {
 };
 const ORG_ROLE_TABLES = {
   teams: [{ oid: "org-1" }],
-  roles_users: [{ user_id: "user-admin", role_id: "role-admin" }],
+  org_roles_users: [{ user_id: "user-admin", role_id: "role-admin" }],
   roles: [{ id: "role-admin", code: "admin", name: "管理员", status: "active" }],
 };
 
@@ -2375,7 +2377,7 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
     "envPendingRedeploy", "typePendingRedeploy", "artifactVerification", "deployProgress",
     "createdAt", "createdByActorId",
     "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
-    "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "invitedByActorId", "name", "oauthClientId",
+    "gitAccountAuth", "gitAuthKind", "gitCommitSha", "gitHttpUrl", "gitRemoteUrl", "id", "invitedByActorId", "name", "oauthClientId",
     "provisionStatus", "publicUrl", "relationship",
     "runtime", "slug", "startSpec", "teamId", "type", "updatedAt", "visibility", "workspaceId",
   ].sort());
@@ -2584,6 +2586,67 @@ test("apps: getApp carries the caller's relationship too", async () => {
   assert.equal(app?.invitedByActorId, "actor-lin");
 });
 
+test("apps: list and get read the custom domain back, never its token", async () => {
+  const bound = {
+    ...APP_ROW,
+    custom_domain: "shop.example.org",
+    custom_domain_token: "secret-token",
+    custom_domain_verified_at: "2026-11-01T00:00:00Z",
+  };
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ seed: { apps: [bound] }, calls }));
+
+  const [listed] = await repo.listApps({ teamId: "team-1", limit: 25 });
+  const got = await repo.getApp("app-1");
+  for (const app of [listed, got]) {
+    assert.equal(app?.customDomain, "shop.example.org");
+    assert.equal(app?.customDomainVerifiedAt, "2026-11-01T00:00:00.000Z");
+    assert.ok(!JSON.stringify(app).includes("secret-token"));
+  }
+  // The columns have to be asked for; a fake that returns the whole row would
+  // otherwise pass this without the select ever naming them.
+  for (const call of calls.filter((c) => c.table === "apps" && c.op === "select" && c.columns !== "*")) {
+    assert.ok(call.columns.includes("custom_domain"), call.columns);
+    assert.ok(call.columns.includes("custom_domain_verified_at"), call.columns);
+    assert.ok(!call.columns.includes("custom_domain_token"), call.columns);
+  }
+});
+
+test("apps: an unbound app reads back as no domain, not a missing field", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, custom_domain: null, custom_domain_verified_at: null }] } }));
+  const app = await repo.getApp("app-1");
+  assert.equal(app?.customDomain, null);
+  assert.equal(app?.customDomainVerifiedAt, null);
+});
+
+test("apps: getAppCustomDomain hands an admin the DNS records again", async () => {
+  const previous = process.env.APPS_PUBLIC_DOMAIN;
+  process.env.APPS_PUBLIC_DOMAIN = "apps.example.com";
+  try {
+    const repo = appsRepo(appsSupabase({
+      seed: { apps: [{ ...APP_ROW, custom_domain: "shop.example.org", custom_domain_token: "tok-1", custom_domain_verified_at: null }] },
+    }));
+    const out = await repo.getAppCustomDomain("app-1");
+    assert.equal(out?.domain, "shop.example.org");
+    assert.equal(out?.verified, false);
+    assert.ok(out?.dns.length > 0);
+    assert.ok(out?.dns.some((r: any) => String(r.value).includes("tok-1")), "the TXT proof carries the stored token");
+  } finally {
+    if (previous === undefined) delete process.env.APPS_PUBLIC_DOMAIN;
+    else process.env.APPS_PUBLIC_DOMAIN = previous;
+  }
+});
+
+test("apps: getAppCustomDomain is null for a member without admin", async () => {
+  const row = { ...APP_ROW, custom_domain: "shop.example.org", custom_domain_token: "tok-1" };
+  const admin = appsSupabase({ seed: { apps: [row] } });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [row] }, actorRow: { id: "actor-other" } }),
+    { createServiceRoleClient: () => admin },
+  );
+  assert.equal(await repo.getAppCustomDomain("app-1"), null);
+});
+
 test("apps: getApp returns null when RLS hides the row", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [] } }));
   assert.equal(await repo.getApp("missing"), null);
@@ -2613,24 +2676,53 @@ test("apps: getAppMembership returns null when app is missing", async () => {
   assert.equal(await repo.getAppMembership("missing"), null);
 });
 
+const MEMBER_2_ACTOR = { id: "member-2", team_id: "team-1", actor_type: "member", user_id: "user-2" };
+
 test("apps: listAppAccess returns rows for creator", async () => {
-  const accessRows = [{
+  const accessRows: any[] = [{
     app_id: "app-1",
     member_id: "member-2",
     permission_level: "prompt",
     granted_by_member_id: "actor-app-1",
     created_at: "2026-08-27T00:00:00.000Z",
   }];
-  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows } });
+  const unclaimedAgent = { id: "agent-3", team_id: "team-1", actor_type: "agent", user_id: null };
+  accessRows.push({
+    app_id: "app-1",
+    member_id: "agent-3",
+    permission_level: "read",
+    granted_by_member_id: "actor-app-1",
+    created_at: "2026-08-28T00:00:00.000Z",
+  });
+  const admin = appsSupabase({
+    seed: { apps: [APP_ROW], app_member_access: accessRows, actors: [MEMBER_2_ACTOR, unclaimedAgent] },
+  });
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), {
     createServiceRoleClient: () => admin,
   });
   const items = await repo.listAppAccess("app-1");
+  // A row written before the rename still reads back under the new name; an
+  // agent with no account yet is marked not connected.
   assert.deepEqual(items, [{
     memberId: "member-2",
-    permissionLevel: "prompt",
+    permissionLevel: "write",
     grantedByMemberId: "actor-app-1",
     createdAt: "2026-08-27T00:00:00.000Z",
+    actorType: "member",
+    connected: true,
+    displayName: null,
+    inherited: false,
+    inheritedFrom: null,
+  }, {
+    memberId: "agent-3",
+    permissionLevel: "read",
+    grantedByMemberId: "actor-app-1",
+    createdAt: "2026-08-28T00:00:00.000Z",
+    actorType: "agent",
+    connected: false,
+    displayName: null,
+    inherited: false,
+    inheritedFrom: null,
   }]);
 });
 
@@ -2654,7 +2746,7 @@ test("apps: listAppAccess returns null when app is not visible", async () => {
 
 test("apps: setAppAccess upserts for creator", async () => {
   const calls: any[] = [];
-  const admin = appsSupabase({ seed: { apps: [APP_ROW] }, calls });
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], actors: [MEMBER_2_ACTOR] }, calls });
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] }, calls }), {
     createServiceRoleClient: () => admin,
   });
@@ -2675,7 +2767,7 @@ test("apps: setAppAccess returns null for non-creator without admin", async () =
     appsSupabase({ seed: { apps: [APP_ROW] }, actorRow: { id: "actor-other" } }),
     { createServiceRoleClient: () => admin },
   );
-  assert.equal(await repo.setAppAccess("app-1", "member-2", "prompt"), null);
+  assert.equal(await repo.setAppAccess("app-1", "member-2", "write"), null);
 });
 
 test("apps: setAppAccess allows admin member who is not creator", async () => {
@@ -2687,14 +2779,57 @@ test("apps: setAppAccess allows admin member who is not creator", async () => {
     granted_by_member_id: "actor-app-1",
     created_at: "2026-08-27T00:00:00.000Z",
   }];
-  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows } });
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows, actors: [MEMBER_2_ACTOR] } });
   const repo = appsRepo(
     appsSupabase({ seed: { apps: [APP_ROW], app_member_access: accessRows }, actorRow: adminMember }),
     { createServiceRoleClient: () => admin },
   );
+  // An old client still sends "view"; it is stored and returned as "read".
   const row = await repo.setAppAccess("app-1", "member-2", "view");
-  assert.equal(row?.permissionLevel, "view");
+  assert.equal(row?.permissionLevel, "read");
   assert.equal(row?.grantedByMemberId, "admin-member");
+});
+
+test("apps: setAppAccess grants an agent in the app's team", async () => {
+  const agentActor = { id: "agent-2", team_id: "team-1", actor_type: "agent", user_id: "daemon-user-2" };
+  const calls: any[] = [];
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], actors: [agentActor] }, calls });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), { createServiceRoleClient: () => admin });
+  const row = await repo.setAppAccess("app-1", "agent-2", "write");
+  assert.equal(row?.memberId, "agent-2");
+  assert.equal(row?.permissionLevel, "write");
+});
+
+test("apps: setAppAccess refuses an agent with no account yet", async () => {
+  const unclaimed = { id: "agent-3", team_id: "team-1", actor_type: "agent", user_id: null };
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], actors: [unclaimed] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), { createServiceRoleClient: () => admin });
+  await assert.rejects(
+    () => repo.setAppAccess("app-1", "agent-3", "write"),
+    (e: any) => e?.statusCode === 422 && e?.code === "agent_not_connected",
+  );
+});
+
+test("apps: setAppAccess refuses an actor from another team", async () => {
+  const outsider = { id: "member-x", team_id: "team-2", actor_type: "member", user_id: "user-x" };
+  const admin = appsSupabase({ seed: { apps: [APP_ROW], actors: [outsider] } });
+  const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), { createServiceRoleClient: () => admin });
+  await assert.rejects(
+    () => repo.setAppAccess("app-1", "member-x", "read"),
+    (e: any) => e?.statusCode === 422 && e?.code === "grantee_not_in_team",
+  );
+});
+
+test("apps: an agent that administers an app is recorded as the grantor", async () => {
+  const agentCreated = { ...APP_ROW, created_by_actor_id: "agent-actor-9" };
+  const calls: any[] = [];
+  const admin = appsSupabase({ seed: { apps: [agentCreated], actors: [MEMBER_2_ACTOR] }, calls });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [agentCreated] }, actorRow: { id: "agent-actor-9", actor_type: "agent" } }),
+    { createServiceRoleClient: () => admin },
+  );
+  const row = await repo.setAppAccess("app-1", "member-2", "write");
+  assert.equal(row?.grantedByMemberId, "agent-actor-9");
 });
 
 test("apps: setAppAccess rejects invalid permissionLevel", async () => {
@@ -2764,7 +2899,7 @@ test("apps: removeAppAccess revokes Gitea deploy keys for the member", async () 
   assert.deepEqual(deleted, [10]);
 });
 
-test("apps: setAppAccess downgrade to view revokes Gitea deploy keys", async () => {
+test("apps: setAppAccess downgrade to read revokes Gitea deploy keys", async () => {
   const now = 1_700_000_000_000;
   const memberId = "member-2";
   const accessRows = [{
@@ -2782,17 +2917,17 @@ test("apps: setAppAccess downgrade to view revokes Gitea deploy keys", async () 
     ],
     deleteDeployKey: async (_appId: string, id: number) => { deleted.push(id); },
   });
-  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows } });
+  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows, actors: [MEMBER_2_ACTOR] } });
   const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), {
     createServiceRoleClient: () => admin,
     gitea,
   });
-  const row = await repo.setAppAccess("app-1", memberId, "view");
-  assert.equal(row?.permissionLevel, "view");
+  const row = await repo.setAppAccess("app-1", memberId, "read");
+  assert.equal(row?.permissionLevel, "read");
   assert.deepEqual(deleted.sort(), [20, 21]);
 });
 
-test("apps: setAppAccess prompt to admin does not revoke deploy keys", async () => {
+test("apps: setAppAccess write to admin does not revoke deploy keys", async () => {
   const memberId = "member-2";
   const accessRows = [{
     app_id: "app-1",
@@ -2805,7 +2940,7 @@ test("apps: setAppAccess prompt to admin does not revoke deploy keys", async () 
   const gitea = fakeGitea({
     listDeployKeys: async () => { listCalled = true; return []; },
   });
-  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows } });
+  const admin = appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows, actors: [MEMBER_2_ACTOR] } });
   const repo = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] } }), {
     createServiceRoleClient: () => admin,
     gitea,
@@ -2886,22 +3021,31 @@ test("apps: an agent administers the apps it created, and no others", async () =
     callerActorId: "agent-actor-1",
     // Written to `*_member_id` columns, which reference `amux.members`.
     callerMemberId: null,
+    inherited: false,
   });
   assert.equal(await repo.isAppCreator("team-1", "agent-actor-1"), true);
 
-  // A grant row naming the agent cannot exist for real (`member_id` is a
-  // member); even seeded, it confers nothing on an app the agent did not make.
-  const members = appsRepo(
+  // On an app it did not make, an agent has exactly what it was granted
+  // (grants are keyed on actors since 20261117000000) ...
+  const granted = appsRepo(
     appsSupabase({
       seed: {
         apps: [GITEA_MANAGED_APP],
-        app_member_access: [{ app_id: "app-1", member_id: "agent-actor-1", permission_level: "admin" }],
+        app_member_access: [{ app_id: "app-1", member_id: "agent-actor-1", permission_level: "write" }],
       },
       actorRow: agent,
     }),
   );
-  assert.equal(await members.resolveAppCallerPermissionForApp(GITEA_MANAGED_APP), null);
-  assert.equal(await members.cancelAppDeployPreflight("app-1", { deployToken: "t" }), null);
+  assert.deepEqual(await granted.resolveAppCallerPermissionForApp(GITEA_MANAGED_APP), {
+    level: "write",
+    callerActorId: "agent-actor-1",
+    callerMemberId: null,
+    inherited: false,
+  });
+  // ... and with no grant, nothing.
+  const ungranted = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] }, actorRow: agent }));
+  assert.equal(await ungranted.resolveAppCallerPermissionForApp(GITEA_MANAGED_APP), null);
+  assert.equal(await ungranted.cancelAppDeployPreflight("app-1", { deployToken: "t" }), null);
 });
 
 test("apps: an agent's own app is minted a key in the agent's name", async () => {
@@ -2996,6 +3140,7 @@ test("apps: deleteApp requires completed uninstall, archives workspace, and remo
   const ossDeleted: string[] = [];
   const oauthDisabled: string[] = [];
   let archivedRepo = false;
+  const giteaOrder: string[] = [];
   const calls: any[] = [];
   const admin = appsSupabase({
     calls,
@@ -3017,8 +3162,13 @@ test("apps: deleteApp requires completed uninstall, archives workspace, and remo
     gitea: fakeGitea({
       listDeployKeys: async () => [{ id: 9, title: "jit-x" }],
       deleteDeployKey: async (_appId: string, id: number) => { deletedKeys.push(id); },
+      removeAllAppAccess: async () => {
+        giteaOrder.push("removeAllAppAccess");
+        return { collaborators: 2, teams: 1 };
+      },
       archiveAndRenameAppRepo: async () => {
         archivedRepo = true;
+        giteaOrder.push("archive");
         return { sshUrl: "git@gitea.example:teamclaw-apps/deleted-tc-app-app-1.git" };
       },
     }),
@@ -3036,6 +3186,9 @@ test("apps: deleteApp requires completed uninstall, archives workspace, and remo
   assert.equal(await repo.deleteApp("app-1"), true);
   assert.deepEqual(deletedKeys, [9]);
   assert.ok(archivedRepo);
+  // Archiving only stops pushes: whoever could clone the app must lose that
+  // too, and before the rename, while the repo still answers to its app name.
+  assert.deepEqual(giteaOrder, ["removeAllAppAccess", "archive"]);
   assert.deepEqual(oauthDisabled, []);
   assert.deepEqual(fcDeleted, []);
   assert.deepEqual(ossDeleted, []);
@@ -3098,13 +3251,13 @@ test("apps: git head compares against the deployed commit only when asked", asyn
     git_commit_sha: "deadbee",
   };
   let compares = 0;
-  const gitea = {
+  const gitea = fakeGitea({
     getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
     compareCommits: async () => {
       compares += 1;
       return 4;
     },
-  };
+  });
   const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }), { gitea });
 
   const plain = await repo.getAppGitHead("app-1");
@@ -3126,12 +3279,12 @@ test("apps: a deployed commit that IS the head needs no forge round trip", async
     git_auth_kind: "gitea_deploy_key",
     git_commit_sha: "abc123",
   };
-  const gitea = {
+  const gitea = fakeGitea({
     getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
     compareCommits: async () => {
       throw new Error("must not be called");
     },
-  };
+  });
   const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }), { gitea });
   const out = await repo.getAppGitHead("app-1", { compare: true });
   assert.equal(out.undeployedCommits, 0);
@@ -3145,12 +3298,12 @@ test("apps: an app that never deployed reports an unknown distance, not zero", a
     git_auth_kind: "gitea_deploy_key",
     git_commit_sha: null,
   };
-  const gitea = {
+  const gitea = fakeGitea({
     getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
     compareCommits: async () => {
       throw new Error("must not be called");
     },
-  };
+  });
   const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }), { gitea });
   const out = await repo.getAppGitHead("app-1", { compare: true });
   assert.equal(out.deployedSha, null);
@@ -3316,6 +3469,38 @@ test("apps: a view-only member is answered read-only, not handed the agent path"
   assert.ok(issued[0].title.startsWith("jit-member-other-"), `titled for the member, got ${issued[0].title}`);
 });
 
+test("apps: a read grant does not leave an agent with less than an ungranted agent", async () => {
+  // The team-scoped agent path below still issues write keys (phase 1 leaves it
+  // alone). Narrowing a granted agent to read-only would invert the two.
+  const issued: unknown[] = [];
+  const gitea = fakeGitea({
+    createDeployKey: async (_appId: string, _title: string, _key: string, opts: unknown) => {
+      issued.push(opts);
+      return { id: 9 };
+    },
+  });
+  const repo = appsRepo(
+    appsSupabase({
+      seed: {
+        apps: [GITEA_MANAGED_APP],
+        app_member_access: [{
+          app_id: "app-1",
+          member_id: "agent-actor-1",
+          permission_level: "read",
+          granted_by_member_id: "actor-app-1",
+          created_at: "2026-11-16T00:00:00.000Z",
+        }],
+      },
+      actorRow: { id: "agent-actor-1", actor_type: "agent" },
+    }),
+    { gitea },
+  );
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.equal(cred?.readOnly, false);
+  assert.equal(issued.length, 1);
+  assert.notDeepEqual(issued[0], { readOnly: true });
+});
+
 test("apps: an agent actor from another team gets nothing", async () => {
   const gitea = fakeGitea({
     createDeployKey: async () => { throw new Error("must not be called"); },
@@ -3440,6 +3625,27 @@ test("apps: createApp inserts a pending app when importing an external repo", as
     gitRemoteUrl: "https://github.com/owner/repo.git",
   });
   assert.equal(app.provisionStatus, "pending");
+});
+
+test("apps: createApp grants write to the agents the caller picked", async () => {
+  const calls: any[] = [];
+  const agentActor = { id: "agent-7", team_id: "team-1", actor_type: "agent", user_id: "daemon-7" };
+  const unclaimed = { id: "agent-8", team_id: "team-1", actor_type: "agent", user_id: null };
+  const supabase = appsSupabase({ calls, seed: { actors: [agentActor, unclaimed] } });
+  const repo = appsRepo(supabase, { createServiceRoleClient: () => supabase.serviceRole() });
+  const app = await repo.createApp({
+    teamId: "team-1",
+    name: "Granted App",
+    type: "slides",
+    visibility: "personal",
+    gitRemoteUrl: "https://github.com/owner/repo.git",
+    grantActorIds: ["agent-7", "agent-8"],
+  });
+  assert.equal(app.provisionStatus, "pending");
+  const upserts = calls.filter((c) => c.table === "app_member_access" && c.op === "upsert");
+  // The connected agent is granted; the one with no account is skipped, and
+  // its refusal does not undo the app.
+  assert.deepEqual(upserts.map((c) => [c.row.member_id, c.row.permission_level]), [["agent-7", "write"]]);
 });
 
 test("apps: updateApp returns null when no row updated (RLS non-creator)", async () => {
@@ -4753,6 +4959,122 @@ test("setParticipantWorkspace answers 404 for a session the caller cannot see", 
   assert.equal(seatWrites().length, 0);
 });
 
+// The cursor and the model live on the agent's seat (ADR-0005). The table has
+// no UPDATE policy, so on the caller's token both writes matched nothing and
+// still answered 204: belayo had no row with a model and no cursor newer than
+// the backfill. They are authorized here and written through the service role.
+function seatStateFixture({ actorRow = { id: "agent-1" }, access = [], seated = true }: any = {}) {
+  const seed = {
+    sessions: [{ id: "sess-1", team_id: "team-1" }],
+    agents: [{ id: "agent-1", owner_member_id: "member-1" }],
+    agent_member_access: access,
+    session_participants: seated ? [{ session_id: "sess-1", actor_id: "agent-1" }] : [],
+  };
+  const callerCalls: any[] = [];
+  const adminCalls: any[] = [];
+  const caller = appsSupabase({ seed, actorRow, calls: callerCalls });
+  const admin = appsSupabase({ seed, actorRow, calls: adminCalls });
+  const repo = appsRepo(caller, { createServiceRoleClient: () => admin });
+  const writes = (calls: any[]) =>
+    calls.filter((c) => c.table === "session_participants" && c.op === "update");
+  return { repo, seatWrites: () => writes(adminCalls), callerWrites: () => writes(callerCalls), adminCalls };
+}
+
+test("updateParticipantCursor writes the agent's own cursor through the service role", async () => {
+  const { repo, seatWrites, callerWrites, adminCalls } = seatStateFixture();
+  await repo.updateParticipantCursor("sess-1", "agent-1", { lastProcessedMessageId: "msg-9" });
+  assert.equal(callerWrites().length, 0);
+  assert.equal(seatWrites().length, 1);
+  assert.equal(seatWrites()[0].row.last_processed_message_id, "msg-9");
+  // The agent writing its own seat needs no agent lookup.
+  assert.equal(adminCalls.filter((c) => c.table === "agents").length, 0);
+});
+
+test("updateParticipantModel writes the agent's own model through the service role", async () => {
+  const { repo, seatWrites, callerWrites } = seatStateFixture();
+  await repo.updateParticipantModel("sess-1", "agent-1", { model: "team/fable" });
+  assert.equal(callerWrites().length, 0);
+  assert.equal(seatWrites().length, 1);
+  assert.equal(seatWrites()[0].row.model, "team/fable");
+});
+
+test("updateParticipantModel lets the agent's owner write it", async () => {
+  const { repo, seatWrites } = seatStateFixture({ actorRow: { id: "member-1" } });
+  await repo.updateParticipantModel("sess-1", "agent-1", { model: "team/fable" });
+  assert.equal(seatWrites().length, 1);
+});
+
+for (const method of ["updateParticipantCursor", "updateParticipantModel"] as const) {
+  const input: any = method === "updateParticipantCursor"
+    ? { lastProcessedMessageId: "msg-9" }
+    : { model: "team/fable" };
+
+  test(`${method} refuses a member who neither owns nor administers the agent`, async () => {
+    const { repo, seatWrites } = seatStateFixture({
+      actorRow: { id: "member-2" },
+      access: [{ agent_id: "agent-1", member_id: "member-2", permission_level: "member" }],
+    });
+    await assert.rejects(
+      () => (repo as any)[method]("sess-1", "agent-1", input),
+      (err: any) => err?.statusCode === 403,
+    );
+    assert.equal(seatWrites().length, 0);
+  });
+
+  test(`${method} answers 404 when the actor has no seat in the session`, async () => {
+    const { repo } = seatStateFixture({ seated: false });
+    await assert.rejects(
+      () => (repo as any)[method]("sess-1", "agent-1", input),
+      (err: any) => err?.statusCode === 404,
+    );
+  });
+
+  test(`${method} answers 404 for a session the caller cannot see`, async () => {
+    const { repo, seatWrites } = seatStateFixture();
+    await assert.rejects(
+      () => (repo as any)[method]("sess-missing", "agent-1", input),
+      (err: any) => err?.statusCode === 404,
+    );
+    assert.equal(seatWrites().length, 0);
+  });
+}
+
+// `session_read_markers` has no DELETE policy either: "mark as unread" deleted
+// nothing on the caller's token and answered 204.
+function readMarkerFixture({ actorRow = { id: "member-1" } }: any = {}) {
+  const seed = {
+    sessions: [{ id: "sess-1", team_id: "team-1" }],
+    session_read_markers: [
+      { id: "m-1", session_id: "sess-1", actor_id: "member-1" },
+      { id: "m-2", session_id: "sess-1", actor_id: "member-2" },
+      { id: "m-3", session_id: "sess-2", actor_id: "member-1" },
+    ],
+  };
+  const callerCalls: any[] = [];
+  const caller = appsSupabase({ seed, actorRow, calls: callerCalls });
+  const admin = appsSupabase({ seed, actorRow });
+  const repo = appsRepo(caller, { createServiceRoleClient: () => admin });
+  return { repo, admin, callerCalls };
+}
+
+test("markSessionUnread deletes only the caller's own marker for that session", async () => {
+  const { repo, admin, callerCalls } = readMarkerFixture();
+  await repo.markSessionUnread("sess-1");
+  const { data: left } = await admin.from("session_read_markers").select("id");
+  assert.deepEqual(left.map((r: any) => r.id).sort(), ["m-2", "m-3"]);
+  assert.equal(callerCalls.filter((c) => c.table === "session_read_markers").length, 0);
+});
+
+test("markSessionUnread answers 404 for a session the caller cannot see", async () => {
+  const { repo, admin } = readMarkerFixture();
+  await assert.rejects(
+    () => repo.markSessionUnread("sess-missing"),
+    (err: any) => err?.statusCode === 404,
+  );
+  const { data: left } = await admin.from("session_read_markers").select("id");
+  assert.equal(left.length, 3);
+});
+
 test("listWorkspacesByIdsSlim says who holds each row and whether it is archived", async () => {
   const repo = appsRepo(appsSupabase({
     seed: {
@@ -4850,6 +5172,63 @@ test("upsertWorkspace writes path_key and treats trailing slash plus .. as the s
   assert.equal(out.id, "ws-existing");
 });
 
+// amuxd used Path::canonicalize, which returns a verbatim path on Windows.
+// Normalized naively, `\\?\C:\...` became `/?/C:/...`: a path no machine can
+// open (runtimes failed with WORKSPACE_PATH_UNAVAILABLE), stored next to the
+// plain row the desktop had registered for the same folder. Found by the
+// Windows install smoke.
+test("upsertWorkspace strips a Windows verbatim prefix and reuses the plain row", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({
+    calls,
+    seed: {
+      workspaces: [{
+        id: "ws-plain",
+        team_id: "team-b",
+        name: "proj",
+        path: "C:/Users/dev/proj",
+        path_key: "C:/Users/dev/proj",
+        agent_id: "agent-1",
+        archived: false,
+      }],
+    },
+  }));
+
+  const out = await repo.upsertWorkspace({
+    teamId: "team-b",
+    name: "proj",
+    path: "\\\\?\\C:\\Users\\dev\\proj",
+    agentId: "agent-1",
+  });
+
+  const upsert = calls.find((c) => c.table === "workspaces" && c.op === "upsert");
+  assert.equal(upsert?.row.id, "ws-plain", "must reuse the row the desktop registered");
+  assert.equal(upsert?.row.path, "C:/Users/dev/proj");
+  assert.equal(upsert?.row.path_key, "C:/Users/dev/proj");
+  assert.equal(out.id, "ws-plain");
+});
+
+test("upsertWorkspace stores a verbatim Windows path in plain form when it is new", async () => {
+  for (const [input, expected] of [
+    ["\\\\?\\D:\\work\\app", "D:/work/app"],
+    // The collapsed form such rows were stored with before this fix.
+    ["/?/D:/work/app", "D:/work/app"],
+    // A verbatim UNC path lands where a plain UNC path does today.
+    ["\\\\?\\UNC\\server\\share\\app", "/server/share/app"],
+    ["\\\\server\\share\\app", "/server/share/app"],
+    // Plain paths are untouched.
+    ["C:\\Users\\dev\\proj", "C:/Users/dev/proj"],
+    ["/home/dev/proj", "/home/dev/proj"],
+  ]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls }));
+    await repo.upsertWorkspace({ teamId: "team-b", name: "w", path: input, agentId: "agent-1" });
+    const upsert = calls.find((c) => c.table === "workspaces" && c.op === "upsert");
+    assert.equal(upsert?.row.path, expected, `path for ${JSON.stringify(input)}`);
+    assert.equal(upsert?.row.path_key, expected, `path_key for ${JSON.stringify(input)}`);
+  }
+});
+
 test("createCronSession stamps the primary agent's default_workspace_id", async () => {
   const calls: any[] = [];
   const supabase = appsSupabase({
@@ -4905,6 +5284,7 @@ function fakeAppData(over: Record<string, unknown> = {}) {
   return {
     listTables: async () => [{ name: "items", columns: [], primaryKey: ["id"], editable: true }],
     readRows: async () => ({ table: "items", columns: [], primaryKey: ["id"], editable: true, rows: [], nextCursor: null }),
+    insertRow: async () => ({ id: 2, title: "inserted" }),
     updateRow: async () => ({ id: 1, title: "stored" }),
     deleteRow: async () => {},
     ...over,
@@ -4933,7 +5313,32 @@ test("app data: the creator (admin) can read and write", async () => {
   assert.deepEqual(await repo.updateAppDataRow("app-1", "items", "WzFd", { patch: { title: "x" } }), {
     row: { id: 1, title: "stored" },
   });
+  assert.deepEqual(await repo.insertAppDataRow("app-1", "items", { values: { title: "x" } }), {
+    row: { id: 2, title: "inserted" },
+  });
   assert.deepEqual(await repo.deleteAppDataRow("app-1", "items", "WzFd"), { ok: true });
+});
+
+test("app data: insert needs values as an object", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP);
+  await assert.rejects(
+    () => repo.insertAppDataRow("app-1", "items", { values: [1, 2] }),
+    (e: any) => e?.statusCode === 400 && e?.code === "validation_failed",
+  );
+});
+
+test("app data: a constraint violation is the caller's 4xx, named by SQLSTATE only", async () => {
+  const repo = dataRepo(DEPLOYED_DATA_APP, {
+    appData: fakeAppData({
+      insertRow: async () => {
+        throw Object.assign(new Error("duplicate key value violates unique constraint (secret value)"), { code: "23505" });
+      },
+    }),
+  });
+  await assert.rejects(
+    () => repo.insertAppDataRow("app-1", "items", { values: { id: 1 } }),
+    (e: any) => e?.statusCode === 409 && e?.code === "duplicate_key" && !/secret/.test(e?.message ?? ""),
+  );
 });
 
 test("app data: prompt reads, but PATCH and DELETE are 403", async () => {
@@ -4949,6 +5354,10 @@ test("app data: prompt reads, but PATCH and DELETE are 403", async () => {
     () => repo.deleteAppDataRow("app-1", "items", "WzFd"),
     (e: any) => e?.statusCode === 403,
   );
+  await assert.rejects(
+    () => repo.insertAppDataRow("app-1", "items", { values: { title: "x" } }),
+    (e: any) => e?.statusCode === 403,
+  );
 });
 
 test("app data: view tier cannot see the feature at all", async () => {
@@ -4956,6 +5365,7 @@ test("app data: view tier cannot see the feature at all", async () => {
   assert.equal(await repo.listAppDataTables("app-1"), null);
   assert.equal(await repo.readAppDataRows("app-1", "items", {}), null);
   assert.equal(await repo.updateAppDataRow("app-1", "items", "WzFd", { patch: { t: 1 } }), null);
+  assert.equal(await repo.insertAppDataRow("app-1", "items", { values: { t: 1 } }), null);
 });
 
 test("app data: a non-member gets nothing", async () => {
@@ -5284,7 +5694,9 @@ test("app data: a driver error never carries the SQL or the row values out", asy
     appData: fakeAppData({
       readRows: async () => {
         throw Object.assign(new Error('duplicate key value violates unique constraint'), {
-          code: "23505",
+          // Not one of the constraint codes mapped to a 4xx: this exercises the
+          // generic path, where only the SQLSTATE may come through.
+          code: "XX000",
           query: "select * from app_x.customers where email = $1",
           parameters: ["ceo@example.com"],
           detail: "Key (email)=(ceo@example.com) already exists.",
@@ -5987,7 +6399,7 @@ test("auth info aggregates only the active application organization catalog",asy
  assert.deepEqual(info.organization,{id:"org-1",name:"Organization"});
  assert.deepEqual(info.roles,[{id:"review",code:"reviewer",name:"Reviewer",status:"active"}]);
  assert.deepEqual(info.authRules,[{path:"/staff",auth:"required",audience:"org"}]);
- assert.equal(calls.some(c=>c.table==="roles_users"),false);
+ assert.equal(calls.some(c=>c.table==="org_roles_users"),false);
  assert.ok(calls.some(c=>c.table==="roles" && c.op==="eq" && c.column==="org_id" && c.value==="org-1"));
 });
 test("auth info rejects organization mismatch and propagates directory failures",async()=>{

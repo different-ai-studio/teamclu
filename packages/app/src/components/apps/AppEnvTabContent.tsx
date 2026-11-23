@@ -16,8 +16,10 @@ import {
 } from '@/components/ui/alert-dialog'
 import { getBackend } from '@/lib/backend'
 import { useAppsStore } from '@/stores/apps-store'
+import { requestAgentDeploy } from '@/lib/apps/app-deploy-prompt'
 import { AppTabShell } from './AppTabShell'
 import type { AppEnvVar, AppRow } from '@/lib/backend/types'
+import { isDeployInFlight } from '@/lib/apps/app-list-helpers'
 
 /**
  * The variables and secrets the deployed app runs with.
@@ -80,8 +82,7 @@ export function AppEnvTabContent({ appId }: { appId: string }) {
 
 function EnvBody({ app }: { app: AppRow }) {
   const { t } = useTranslation()
-  const deploy = useAppsStore((s) => s.deploy)
-  const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
+  const deploying = isDeployInFlight(app)
   const invalidateAppSummary = useAppsStore((s) => s.invalidateAppSummary)
   const refreshApp = useAppsStore((s) => s.refreshApp)
 
@@ -188,7 +189,7 @@ function EnvBody({ app }: { app: AppRow }) {
             size="sm"
             className="h-9 gap-1.5 rounded-[7px] text-[13px]"
             disabled={deploying || app.provisionStatus !== 'ready'}
-            onClick={() => void deploy(app.id)}
+            onClick={() => void requestAgentDeploy(app)}
             data-testid="app-env-redeploy-now"
           >
             {deploying ? (

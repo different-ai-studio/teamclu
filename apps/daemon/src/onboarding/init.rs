@@ -31,9 +31,10 @@ pub async fn run(raw_url: &str, config_path: Option<&Path>) -> Result<InitOutcom
         .await
         .map_err(actionable_invite_claim_error)?;
 
-    let refresh_token = claim.refresh_token.clone().ok_or_else(|| {
-        anyhow!("claim_team_invite did not return a refresh token (kind=member?)")
-    })?;
+    let refresh_token = claim
+        .refresh_token
+        .clone()
+        .ok_or_else(|| anyhow!("invite claim did not return a refresh token (kind=member?)"))?;
 
     let cfg = CloudApiConfig {
         url: cloud_url,
@@ -312,7 +313,6 @@ mod tests {
                     password: None,
                 },
                 agents: AgentsConfig::default(),
-                transport: None,
                 team_id: Some("team-1".into()),
                 channels: Default::default(),
                 idle_runtime_timeout_secs: None,
@@ -416,7 +416,6 @@ mod tests {
                     password: None,
                 },
                 agents: AgentsConfig::default(),
-                transport: None,
                 team_id: Some("team-old".into()),
                 channels: Default::default(),
                 idle_runtime_timeout_secs: None,

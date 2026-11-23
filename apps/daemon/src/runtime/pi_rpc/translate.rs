@@ -2,16 +2,39 @@
 //!
 //! Pure, per-session stateful translation of pi `--mode rpc` events
 //! (`message_update` with `assistantMessageEvent` deltas, tool execution
-//! lifecycle, turn stop reasons, extension errors) into the same `AcpEvent`
-//! vocabulary the opencode HTTP backend emits
-//! (`runtime/opencode_http/translate.rs`), so gateway / MQTT / frontend / iOS
-//! consumers see no difference.
+//! lifecycle, turn stop reasons, extension errors) into the `AcpEvent`
+//! vocabulary that gateway / MQTT / frontend / iOS consumers render.
 
 use std::collections::HashMap;
 
 use crate::proto::amux;
 
-use crate::runtime::acp_translate::truncate_tool_summary;
+/// Max chars carried in a `ToolResult.summary`.
+const TOOL_SUMMARY_LIMIT: usize = 20_000;
+
+pub fn truncate_tool_summary(summary: String) -> String {
+    if summary.chars().count() > TOOL_SUMMARY_LIMIT {
+        format!(
+            "{}...",
+            summary.chars().take(TOOL_SUMMARY_LIMIT).collect::<String>()
+        )
+    } else {
+        summary
+    }
+}
+
+/// StatusChange event helper (turn open/close markers the aggregator keys on).
+pub fn status_change(old: amux::AgentStatus, new: amux::AgentStatus) -> amux::AcpEvent {
+    amux::AcpEvent {
+        event: Some(amux::acp_event::Event::StatusChange(
+            amux::AcpStatusChange {
+                old_status: old as i32,
+                new_status: new as i32,
+            },
+        )),
+        model: String::new(),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BlockKind {
@@ -171,7 +194,8 @@ fn params_from_args(args: Option<&serde_json::Value>) -> HashMap<String, String>
 /// clients already render (same buckets as the opencode mapping).
 fn tool_kind_for(tool: &str) -> &'static str {
     match tool {
-        "bash" => "execute",
+        // `powershell` is pi's Windows shell tool (enabled by `assets/pi-host/host.mjs`).
+        "bash" | "powershell" => "execute",
         "edit" | "write" | "multi_edit" => "edit",
         "read" => "read",
         "grep" | "glob" | "find" | "list" => "search",
@@ -775,6 +799,26 @@ mod tests {
         );
         match end[0].event.as_ref().unwrap() {
             amux::acp_event::Event::Output(o) => assert_eq!(o.text, "two"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn powershell_tool_renders_as_execute() {
+        let mut s = TranslateState::default();
+        let start = ev(
+            &mut s,
+            r#"{"type":"tool_execution_start","toolCallId":"call_ps","toolName":"powershell","args":{"command":"winget --version"}}"#,
+        );
+        match start[0].event.as_ref().unwrap() {
+            amux::acp_event::Event::ToolUse(t) => {
+                assert_eq!(t.tool_name, "powershell");
+                assert_eq!(t.tool_kind, "execute");
+                assert_eq!(
+                    t.params.get("command"),
+                    Some(&"winget --version".to_string())
+                );
+            }
             other => panic!("unexpected: {other:?}"),
         }
     }

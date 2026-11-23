@@ -9,7 +9,6 @@ import type { MemberRoleRef, OrgRolesBackend } from "@/lib/backend/cloud-api/org
 import type { AdminBackend } from "@/lib/backend/cloud-api/admin";
 import type { OAuthProvider } from "@/lib/auth";
 import type { AppTypeId } from "@/lib/apps/app-types";
-import type { ArtifactVerification } from "@/lib/apps/artifact-verification";
 
 export type { MemberRoleRef, OrgRole, OrgRoleCreate, OrgRolePatch, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
 export type {
@@ -110,7 +109,6 @@ export interface AuthBackend {
   verifyPhoneOtpResult(phone: string, code: string): Promise<import("@/lib/auth/auth-client").PhoneLoginResult>;
   /** Log in as a specific user when the phone is linked to multiple accounts. */
   loginWithPhoneUser(phone: string, code: string, userId: string): Promise<AuthSession | null>;
-  signInWithPassword(email: string, password: string): Promise<AuthSession | null>;
   signInWithOAuth(provider: OAuthProvider): Promise<AuthSession | null>;
   signOut(): Promise<void>;
   claimInvite(token: string): Promise<AuthClaimResult>;
@@ -266,7 +264,11 @@ export interface SessionsBackend {
     participantWorkspaces?: Record<string, { workspaceId: string; workspacePath: string | null }>;
   }>;
   addParticipants(sessionId: string, actorIds: string[]): Promise<void>;
-  updateSessionTitle(sessionId: string, title: string): Promise<void>;
+  updateSessionTitle(
+    sessionId: string,
+    title: string,
+    options?: { lock?: boolean },
+  ): Promise<boolean>;
   archiveSession(sessionId: string, archivedAt: string): Promise<void>;
   getSessionParticipants(sessionId: string): Promise<SessionParticipant[]>;
   getSession(sessionId: string, teamId?: string | null): Promise<SessionDetailRow | null>;
@@ -906,6 +908,8 @@ export interface ActorsBackend {
   }): Promise<void>;
   listAgentAccess(agentId: string): Promise<AgentAccessBackendRow[]>;
   listTeamMembersForAccess(teamId: string): Promise<TeamMemberOptionBackendRow[]>;
+  /** Members and agents of the team, for the app access picker. */
+  listTeamActorsForAppAccess(teamId: string): Promise<AppAccessCandidate[]>;
   upsertAgentAccess(input: {
     agentId: string;
     memberId: string;
@@ -960,7 +964,6 @@ export interface ShortcutRow {
   created_at?: string | null;
   updated_at?: string | null;
   sort_order?: number | null;
-  visible_roles?: string[] | null;
 }
 
 export interface ShortcutCreateArgs {
@@ -974,27 +977,12 @@ export interface ShortcutCreateArgs {
   p_target?: string;
 }
 
-interface ShortcutTeamRoleRow {
-  id: string;
-  team_id: string;
-  code: string;
-  name: string;
-}
-
-interface ShortcutRoleBindingRow {
-  resource_id: string;
-  permission_roles: Array<{ role_id: string }>;
-}
-
 export interface ShortcutsBackend {
   listShortcuts(scope: string, teamId?: string): Promise<ShortcutRow[]>;
   createShortcut(input: ShortcutCreateArgs): Promise<{ id: string }>;
   updateShortcut(id: string, patch: Record<string, unknown>): Promise<void>;
   deleteShortcut(id: string): Promise<void>;
   batchMove(input: { ids?: string[]; targetScope?: string; moves?: Record<string, unknown>[]; [key: string]: unknown }): Promise<unknown>;
-  setVisibleRoles(input: { shortcutId?: string; roleIds?: string[]; roles?: string[]; [key: string]: unknown }): Promise<void>;
-  listTeamRoles(teamId: string): Promise<ShortcutTeamRoleRow[]>;
-  listShortcutRoleBindings(teamId: string): Promise<ShortcutRoleBindingRow[]>;
 }
 
 export interface NotificationPrefs {
@@ -1011,18 +999,6 @@ export interface NotificationsBackend {
   savePreferences(input: NotificationPrefs): Promise<void>;
   setSessionMuted(input: { sessionId: string; userId: string; muted: boolean }): Promise<void>;
   listMutedSessionIds(userId: string): Promise<string[]>;
-}
-
-export interface TeamWorkspaceConfigRow {
-  team_id: string;
-  workspace_path?: string | null;
-  git_url?: string | null;
-  git_branch?: string | null;
-  git_token?: string | null;
-  ai_gateway_endpoint?: string | null;
-  enabled?: boolean;
-  updated_at?: string | null;
-  metadata?: Record<string, unknown> | null;
 }
 
 /** A single LLM model entry ({id, name}). */
@@ -1050,8 +1026,6 @@ export interface TeamLlmConfigInput {
 }
 
 export interface TeamWorkspaceConfigBackend {
-  load(teamId: string): Promise<TeamWorkspaceConfigRow | null>;
-  save(input: TeamWorkspaceConfigRow): Promise<void>;
   /** Read the per-team LLM config block from the cloud workspace-config. */
   loadLlmConfig(teamId: string): Promise<TeamLlmConfig | null>;
   /** Persist the per-team LLM config to the cloud; returns the saved config. */
@@ -1121,6 +1095,18 @@ export interface AppStartSpec {
   port?: number;
   layers?: string[];
   healthCheckPath?: string;
+  /** 保持在线: one instance kept running (FC minimum instances 1). Omitted = off. */
+  alwaysOn?: boolean;
+}
+
+/** The daemon's check of a build artifact, as the last successful deploy left it. */
+export interface ArtifactVerification {
+  status: string;
+  unknownFiles: string[];
+  revision: string;
+  target?: string;
+  hostOs?: string;
+  hostArch?: string;
 }
 
 export interface AppDeployDeclaration {
@@ -1325,6 +1311,13 @@ export interface AppRow {
    *  holds a deploy key for it; null when the app was imported from a remote we
    *  have no credential for — those deploy the local workdir as it sits. */
   gitAuthKind: string | null;
+  /**
+   * Per-account Gitea auth: the repo's HTTPS address, and true when the
+   * checkout should use it with the person's or agent's own account. The
+   * stored `gitRemoteUrl` stays the SSH one the daemon uses with deploy keys.
+   */
+  gitAccountAuth?: boolean;
+  gitHttpUrl?: string | null;
   /** HEAD SHA at last successful deploy; null before first deploy completes. */
   gitCommitSha: string | null;
   /** Build kind persisted from the last successful deploy declaration. */
@@ -1378,37 +1371,6 @@ export interface AppRow {
   publicUrl: string | null;
   createdAt: string;
   updatedAt: string;
-}
-
-/** `POST /v1/apps/:id/deploy` response — app row plus the OSS upload handle the
- *  local daemon needs to upload the build artifact. */
-export interface DeployAppResult extends AppRow {
-  /**
-   * Archive deploys. Absent for a container app, which pushes an image instead
-   * — exactly one of these and `image` is ever set.
-   */
-  ossObjectName?: string;
-  presignedPut?: string;
-  /** Container deploys: where to push the image, and short-lived credentials. */
-  image?: {
-    reference: string;
-    registry: string;
-    username: string;
-    password: string;
-    expiresAt?: string;
-  };
-  /** Short-lived bearer for finalize; not stored on the app row in mapApp. */
-  deployToken: string;
-  /** Null for an imported app: there is no forge commit to pin the deploy to. */
-  gitCommitSha: string | null;
-  revision: string;
-}
-
-export interface AppDeployPreflightResult {
-  token: string;
-  /** Safe correlation id; unlike token, may be shown in diagnostics. */
-  attemptId?: string | null;
-  preview: { firstDeploy: boolean; requiresMigrationApproval: boolean; changes: Array<{ field: string; from: unknown; to: unknown }> };
 }
 
 /** A JIT deploy key for a Gitea-managed app's repo. */
@@ -1465,15 +1427,59 @@ export interface AppMembership {
   member: boolean;
 }
 
-/** Per-member app permission (`view` | `prompt` | `admin`). */
-export type AppPermissionLevel = "view" | "prompt" | "admin";
+/**
+ * Per-actor app permission. Named after Gitea's collaborator levels so the
+ * grant maps onto the app's Git repository one to one (`read` | `write` |
+ * `admin`). They were `view` | `prompt` | `admin` before 2026-11-17.
+ */
+export type AppPermissionLevel = "read" | "write" | "admin";
 
 /** Row from `GET /v1/apps/:id/access` or `PUT …/access/:memberId`. */
 export interface AppMemberAccessRow {
+  /** The grantee's actor id — a member or an agent. */
   memberId: string;
   permissionLevel: AppPermissionLevel;
   grantedByMemberId: string | null;
-  createdAt: string;
+  /** Null for an inherited row, which has no grant of its own. */
+  createdAt: string | null;
+  /** Present on the list: what the grantee is. */
+  actorType?: "member" | "agent" | null;
+  /** Present on the list: false for an agent whose daemon has not claimed an account. */
+  connected?: boolean | null;
+  /**
+   * Present on the list: the grantee's name, read by the server — the
+   * caller's own directory hides agents it may not talk to.
+   */
+  displayName?: string | null;
+  /**
+   * Present on the list: an agent that reaches the app through its owner
+   * rather than a grant of its own. Read-only; follows the owner's access.
+   */
+  inherited?: boolean;
+  inheritedFrom?: { actorId: string; displayName: string | null } | null;
+}
+
+/** `POST /v1/git/token`. */
+export interface GitTokenGrant {
+  token: string;
+  expiresAt: string;
+  ttlSeconds: number;
+  userId: string;
+  /** This account's Gitea user name. */
+  userName: string;
+  /** Host of the TeamClu git server, for the credential helper. */
+  gitHost: string | null;
+  /** Scheme git reaches that host with; the helper is keyed on `<scheme>://<host>`. Older servers omit it (https). */
+  gitScheme?: 'https' | 'http';
+}
+
+/** Someone in the team an app can be granted to — a member or an agent. */
+export interface AppAccessCandidate {
+  id: string;
+  displayName: string;
+  actorType: "member" | "agent";
+  /** False for an agent with no account yet: it cannot be granted. */
+  connected: boolean;
 }
 
 export interface AppSessionRow {
@@ -1608,13 +1614,12 @@ export interface AppsBackend {
     /** Optional repo to import. The app is cloned from it instead of being
      *  seeded with a starter template. */
     gitRemoteUrl?: string | null;
+    /** Agents to grant `write` on the new app (they get nothing by default). */
+    grantActorIds?: string[];
   }): Promise<AppRow>;
   getApp(appId: string): Promise<AppRow | null>;
   listAppSessions(appId: string): Promise<AppSessionRow[]>;
   updateAppProvisionStatus(appId: string, provisionStatus: string): Promise<AppRow | null>;
-  /** Report a deploy-lifecycle status the client owns (today: `deploy_error`
-   *  when the local daemon build never finished). Returns null on 404. */
-  updateAppDeployStatus(appId: string, fcStatus: string, deployError?: string, deployToken?: string): Promise<AppRow | null>;
   /** Rename an app (PATCH name). Returns null on 404. */
   renameApp(appId: string, name: string): Promise<AppRow | null>;
   /**
@@ -1635,30 +1640,6 @@ export interface AppsBackend {
    * next deploy (see `typePendingRedeploy`). Leaving `data_app` keeps the data.
    */
   setAppType(appId: string, type: AppTypeId): Promise<AppRow | null>;
-  /** Start FC deploy: provisions the function + returns the OSS upload handle.
-   *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
-  deployApp(
-    appId: string,
-    input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; preflightToken: string; useAppCodeDomain?: boolean },
-  ): Promise<DeployAppResult>;
-  preflightAppDeploy(appId: string, input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; migrationIntent?: boolean }): Promise<AppDeployPreflightResult>;
-  cancelAppDeployPreflight(appId: string, deployToken: string): Promise<{ cancelled: boolean }>;
-  /** Finalize FC deploy after the artifact is uploaded: points the function at
-   *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
-  finalizeDeploy(
-    appId: string,
-    input: {
-      gitCommitSha?: string;
-      revision: string;
-      deployToken: string;
-      /** The daemon-validated build and start contract from `teamclu.app.json`. */
-      declaration: AppDeployDeclaration;
-      /** The image a container build pushed. Required for one, refused for
-       *  anything else — see the control plane's parseDeployedImage. */
-      image?: string;
-      artifactVerification?: ArtifactVerification;
-    },
-  ): Promise<AppRow>;
   /** The credential for the app's repo: a JIT Gitea deploy key for a
    *  Gitea-managed app, or the stored token for an imported http(s) repo
    *  (`authKind` says which). Returns null on 404, and for an app that has
@@ -1685,6 +1666,13 @@ export interface AppsBackend {
   getAppMembership(appId: string): Promise<AppMembership | null>;
   /** List per-member grants (creator or app admin only). Null on 404. */
   listAppAccess(appId: string): Promise<AppMemberAccessRow[] | null>;
+  /**
+   * Mint this person's git-only token (`POST /v1/git/token`). The desktop
+   * stores it for `amuxd git-credential`; it opens git and nothing else.
+   */
+  mintGitToken(): Promise<GitTokenGrant>;
+  /** Revoke every git token of this account (`POST /v1/git/token/revoke`), on sign-out. */
+  revokeGitTokens(): Promise<void>;
   /** Upsert a member grant (creator or app admin only). Null on 404. */
   setAppAccess(
     appId: string,
@@ -1705,6 +1693,11 @@ export interface AppsBackend {
    * across two PATCHes would be rejected on the intermediate state.
    */
   updateAppAuth(appId: string, patch: AppAuthPatch): Promise<AppRow | null>;
+  /**
+   * The bound domain with the DNS records to publish. Admin only: null (404)
+   * for anyone who may not change it, who reads the domain off the app row.
+   */
+  getAppCustomDomain(appId: string): Promise<AppCustomDomain | null>;
   /** Bind a domain the owner controls. Returns the DNS records to publish. */
   setAppCustomDomain(appId: string, domain: string): Promise<AppCustomDomain | null>;
   /** Check the published TXT proof. */
@@ -1727,11 +1720,18 @@ export interface AppsBackend {
     rowKey: string,
     patch: Record<string, unknown>,
   ): Promise<Record<string, unknown>>;
+  /** Insert one row; columns left out take their default. Returns the row
+   *  **re-read after the write**, generated key included. */
+  insertAppDataRow(
+    appId: string,
+    table: string,
+    values: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
   /** Delete one row by key. */
   deleteAppDataRow(appId: string, table: string, rowKey: string): Promise<void>;
 
   // --- File storage (design 2026-09-09-app-storage-design) ---
-  // `view` may browse and download, `prompt` may also upload and delete,
+  // `read` may browse and download, `write` may also upload and delete,
   // `admin` may set the quota and purge. Every app's files live under one
   // prefix of a shared bucket; there is no bucket per app.
 
@@ -1914,6 +1914,15 @@ export interface SystemBackend {
   heartbeat(): Promise<void>;
 }
 
+export interface DiagnosticReceipt {
+  receiptId: string;
+  expiresAt: string;
+}
+
+export interface DiagnosticsBackend {
+  uploadZip(body: Blob): Promise<DiagnosticReceipt>;
+}
+
 export interface TeamCluBackend {
   kind: BackendKind;
   auth: AuthBackend;
@@ -1933,6 +1942,7 @@ export interface TeamCluBackend {
   workspaces: WorkspacesBackend;
   sync: SyncBackend;
   telemetry: TelemetryBackend;
+  diagnostics: DiagnosticsBackend;
   system: SystemBackend;
   teamSkills: TeamSkillsBackend;
   marketplace: MarketplaceBackend;

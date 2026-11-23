@@ -309,10 +309,15 @@ pub(super) async fn close_turn(shared: &Arc<Shared>, session_id: &str) {
             } else {
                 route.translate.take_turn_error()
             };
-            Some((route.event_tx.clone(), reply_to, failure))
+            Some((
+                route.event_tx.clone(),
+                reply_to,
+                failure,
+                route.pool_key.clone(),
+            ))
         }
     };
-    if let Some((event_tx, reply_to, failure)) = closed {
+    if let Some((event_tx, reply_to, failure, pool_key)) = closed {
         // Failure first: `turn_aggregator` decides the turn's outcome from an
         // Error seen *before* Active→Idle.
         if let Some(ev) = failure {
@@ -321,14 +326,15 @@ pub(super) async fn close_turn(shared: &Arc<Shared>, session_id: &str) {
                 .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to.clone()))
                 .await;
         }
-        let ev = crate::runtime::acp_translate::status_change(
-            amux::AgentStatus::Active,
-            amux::AgentStatus::Idle,
-        );
+        let ev =
+            super::translate::status_change(amux::AgentStatus::Active, amux::AgentStatus::Idle);
         crate::runtime::agent_trace::log_acp_event(session_id, &ev);
         let _ = event_tx
             .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to))
             .await;
+        // After the frames, so the client sees the turn end before its host is
+        // replaced: a credential change that arrived mid-turn waited for this.
+        super::retire_stale_host_after_turn(shared, &pool_key);
     }
 }
 

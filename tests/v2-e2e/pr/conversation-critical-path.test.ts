@@ -5,6 +5,7 @@ import {
   clickSelector,
   domCount,
   domText,
+  expandStreamingTool,
   launchV2E2EApp,
   stopV2E2EApp,
   v2Call,
@@ -425,6 +426,7 @@ describe("V2 PR conversation critical path", () => {
       summary: "grep 成功结果",
     });
     await waitForSelector(`[data-testid="v2-streaming-tool"][data-tool-id="${successToolId}"][data-tool-status="completed"]`);
+    await expandStreamingTool(successToolId);
     await waitForText("grep 成功结果");
 
     await v2Call("startTool", {
@@ -445,6 +447,7 @@ describe("V2 PR conversation critical path", () => {
       summary: "bash 失败结果",
     });
     await waitForSelector(`[data-testid="v2-streaming-tool"][data-tool-id="${failedToolId}"][data-tool-status="failed"]`);
+    await expandStreamingTool(failedToolId);
     await waitForText("bash 失败结果");
 
     await v2Call("setAgentError", {
@@ -457,8 +460,12 @@ describe("V2 PR conversation critical path", () => {
     await waitForText("Agent deterministic error");
     await waitForText("stack: deterministic failure");
 
-    expect(await domCount('[data-testid="pending-permission-card"]')).toBe(0);
-    expect(await domCount('[data-testid="pending-permission-inline"]')).toBe(0);
+    // A pending permission belongs to the composer's approval panel, never to
+    // the thread. It stays there until the daemon reports it resolved
+    // (handle-session-event-permission-resolved), which an agent error alone
+    // does not simulate — so assert where it renders, not that it is gone.
+    expect(await domCount('[data-testid="v2-message-list"] [data-testid="pending-permission-card"]')).toBe(0);
+    expect(await domCount('[data-testid="composer-approval-chrome"] [data-testid="pending-permission-card"]')).toBe(1);
     expect(await domText('[data-testid="v2-message-list"]')).not.toContain("Awaiting permission");
   });
 });

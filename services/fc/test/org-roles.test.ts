@@ -3,9 +3,6 @@
  *
  * Design: docs/specs/2026-09-15-org-roles-permissions-design.md §2.1
  * OpenAPI: GET/POST /v1/teams/{teamId}/roles, PATCH/DELETE .../roles/{roleId}
- *
- * Shortcuts RBAC listTeamRoles lives at GET /v1/teams/:teamId/shortcut-roles
- * after the path collision fix (OpenAPI Task 2 claimed /roles for org roles).
  */
 
 import { test, describe } from "node:test";
@@ -117,7 +114,6 @@ function fakeRepo(overrides: Record<string, unknown> = {}) {
       { id: ADMIN_ROLE, code: "admin", name: "管理员" },
       { id: MEMBER_ROLE, code: "member", name: "成员" },
     ]),
-    listTeamRoles: record("listTeamRoles", [{ id: "sr-1", teamId: TEAM, code: "admin", name: "Admin" }]),
     ...overrides,
   };
 }
@@ -217,16 +213,6 @@ describe("org roles routes", () => {
     assert.equal(res.statusCode, 403);
   });
 
-  test("GET /v1/teams/:teamId/shortcut-roles calls listTeamRoles (relocated)", async () => {
-    const repo = fakeRepo();
-    const res = await request(
-      { httpMethod: "GET", path: `/v1/teams/${TEAM}/shortcut-roles` },
-      repo,
-    );
-    assert.equal(res.statusCode, 200);
-    assert.deepEqual(repo.calls[0], { method: "listTeamRoles", args: [TEAM] });
-  });
-
   test("GET /v1/teams/:teamId/members/:actorId/roles lists member roles", async () => {
     const repo = fakeRepo();
     const res = await request(
@@ -291,6 +277,7 @@ function makeStubHost(opts: {
   bindings?: BindingRow[];
   /** When set, deleteOrgRole binding count uses this instead of bindings.length. */
   bindingCount?: number;
+  staffBindingCount?: number;
   member?: boolean;
   actorUserId?: string | null;
 }) {
@@ -586,6 +573,13 @@ function makeStubHost(opts: {
       }
       if (table === "roles_users") {
         return {
+          select() {
+            return { eq: async () => ({count: opts.staffBindingCount ?? 0, error: null}) };
+          },
+        };
+      }
+      if (table === "org_roles_users") {
+        return {
           select(cols?: string, selOpts?: { count?: string; head?: boolean }) {
             const q = rolesUsersQuery("select");
             return q.select(cols, selOpts);
@@ -783,6 +777,13 @@ describe("makeOrgRolesRepo", () => {
       },
     );
     assert.equal(host._roles.length, 1, "role row kept when bindings present");
+  });
+
+  test("deleteOrgRole preserves roles assigned only to Betly staff", async () => {
+    const host = makeStubHost({teamRole:"owner", roles:[seededCustom], staffBindingCount:1});
+    await assert.rejects(() => makeOrgRolesRepo(host).deleteOrgRole(TEAM,CUSTOM_ROLE),
+      (err:unknown) => err instanceof ApiError && err.statusCode===409);
+    assert.equal(host._roles.length,1);
   });
 
   test("deleteOrgRole without bindings removes role", async () => {
@@ -1055,6 +1056,7 @@ describe("makeOrgRolesRepo", () => {
     };
     const callerJwtClient = {
       from(table: string) {
+        if (table === "org_roles_users") return this.schema().from(table);
         if (table === "teams") {
           return {
             select() {
@@ -1089,7 +1091,7 @@ describe("makeOrgRolesRepo", () => {
                 },
               };
             }
-            if (table === "roles_users") {
+            if (table === "org_roles_users") {
               return {
                 select() {
                   const api: any = {

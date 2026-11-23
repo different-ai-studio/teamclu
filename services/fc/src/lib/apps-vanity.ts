@@ -1,5 +1,5 @@
 import { readFunctionNamingMode, type FunctionNamingMode } from "./apps-function-identity.js";
-import { classifyOriginEndpoint, signOriginToken, ORIGIN_VERSION_HEADER, type OriginAuthConfig, type OriginTarget } from "./apps-origin-auth.js";
+import { privateFcTriggerUrl, classifyOriginEndpoint, signOriginToken, ORIGIN_VERSION_HEADER, type OriginAuthConfig, type OriginTarget } from "./apps-origin-auth.js";
 import { appCodeStorageCandidates, appPublicUrl, parseAppPublicHost } from "./apps-public-host.js";
 
 /**
@@ -27,6 +27,7 @@ export interface VanityApp {
   functionNamingMode?: FunctionNamingMode;
   usesAppCodeDomain?: boolean;
   fcEndpoint: string | null;
+  fcFunctionName?: string | null;
   fcStatus: string | null;
   /** `apps.team_id`. Identity of the owning team; no longer the org source. */
   teamId: string | null;
@@ -93,7 +94,7 @@ export function selectByIdPrefix(rows: VanityApp[], idPrefix: string): VanityApp
  * result. At most one row per team shares a slug, so the list is tiny.
  */
 const LOOKUP_COLUMNS =
-  "id, slug, app_code, function_naming_mode, uses_app_code_domain, fc_endpoint, fc_status, team_id, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
+  "id, slug, app_code, function_naming_mode, uses_app_code_domain, fc_endpoint, fc_function_name, fc_status, team_id, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
 
 function mapVanityRow(r: any): VanityApp {
   return {
@@ -103,6 +104,7 @@ function mapVanityRow(r: any): VanityApp {
     functionNamingMode: readFunctionNamingMode(r.function_naming_mode),
     usesAppCodeDomain: r.uses_app_code_domain,
     fcEndpoint: r.fc_endpoint ?? null,
+    ...(r.fc_function_name ? { fcFunctionName: r.fc_function_name } : {}),
     fcStatus: r.fc_status ?? null,
     teamId: r.team_id ?? null,
     orgId: r.org_id ?? null,
@@ -409,12 +411,17 @@ export async function proxyToApp(
   endpoint: string,
   fetchImpl: typeof fetch = fetch,
   identity: ProxyIdentity | null = null,
-  origin?: { target: OriginTarget; config: OriginAuthConfig },
+  origin?: { target: OriginTarget; config: OriginAuthConfig; verifiedPrivateRegion?: string },
 ): Promise<Response> {
   let protectedOrigin = false;
   let upstream: URL;
   try {
-    if (origin) protectedOrigin = classifyOriginEndpoint(endpoint, origin.target, origin.config.routeDomain) === "protected";
+    if (origin?.verifiedPrivateRegion) {
+      if (!privateFcTriggerUrl(endpoint, origin.verifiedPrivateRegion)) throw new Error("Invalid native FC endpoint");
+      protectedOrigin = true;
+    } else if (origin) {
+      protectedOrigin = classifyOriginEndpoint(endpoint, origin.target, origin.config.routeDomain) === "protected";
+    }
     upstream = new URL(endpoint);
   } catch {
     return new Response("app origin is unavailable", { status: 503 });
@@ -436,6 +443,13 @@ export async function proxyToApp(
   headers.delete("x-teamclu-user-id");
   headers.delete("x-teamclu-user-email");
   headers.delete("x-teamclu-org-id");
+  // Gitea's reverse-proxy identity headers. An app endpoint is a stored URL its
+  // creator can change; if it ever pointed at a Gitea, these would name the
+  // Gitea user. FC is not on Gitea's network, but the proxy never forwards
+  // them anyway.
+  for (const name of [...headers.keys()]) {
+    if (name.toLowerCase().startsWith("x-webauth-")) headers.delete(name);
+  }
   if (identity) {
     headers.set("x-teamclu-user-id", identity.userId);
     headers.set("x-teamclu-user-email", identity.email);

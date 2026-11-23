@@ -82,3 +82,22 @@ export function createSessionsCache(
     },
   };
 }
+
+/**
+ * The team's sessions for a screen that only reads them (search, the forward
+ * picker, an actor's recent sessions): the rows the sessions list last cached,
+ * or one network walk when nothing is cached yet.
+ *
+ * Each of those screens used to page through every session on the team on
+ * every mount. The list refreshes the cache whenever it regains focus, so the
+ * cached rows are at most one list visit old.
+ */
+export async function loadTeamSessionsPreferCache(
+  teamId: string,
+  listSessions: (teamId: string) => Promise<SessionSummary[]>,
+  cache: Pick<SessionsCache, "load"> = createSessionsCache(),
+): Promise<SessionSummary[]> {
+  const cached = await cache.load(teamId);
+  if (cached) return cached;
+  return listSessions(teamId);
+}

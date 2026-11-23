@@ -3,7 +3,7 @@
 -- duplicated; admin_type stays capped at 2.
 begin;
 
-select plan(7);
+select plan(9);
 
 create or replace function pg_temp.as_anon()
 returns void language plpgsql as $$
@@ -76,11 +76,23 @@ insert into public.roles_users (user_id, role_id, org_id, status, expires_at, cr
   ('55bb0000-0000-4000-8000-000000000001', '55ee0000-0000-4000-8000-000000000005', '55aa0000-0000-4000-8000-000000000002', 'active', null, now()),
   ('55bb0000-0000-4000-8000-000000000002', '55ee0000-0000-4000-8000-000000000001', '55aa0000-0000-4000-8000-000000000001', 'active', null, now());
 
+-- Collaboration authority is inherited in its own store, without becoming a
+-- staff role. Keep the public.roles_users cases above for explicit staff roles.
+insert into amux.org_roles_users (user_id,role_id,org_id)
+select '55bb0000-0000-4000-8000-000000000001',id,org_id from public.roles
+where org_id='55aa0000-0000-4000-8000-000000000001' and code='admin';
+
 create temp table t as
   select pg_temp.claim_agent('55cc0000-0000-4000-8000-000000000001', '55dd0000-0000-4000-8000-000000000001') as agent;
 
 select is(pg_temp.bot_roles((select agent from t)), array['t55_finance', 't55_reports'],
           'a new bot gets its owner''s active, unexpired roles in the team''s org only');
+select ok(exists(select 1 from amux.org_roles_users ru join amux.actors a on a.user_id=ru.user_id
+  join public.roles r on r.id=ru.role_id where a.id=(select agent from t) and r.code='admin'),
+  'a bot separately inherits its inviter collaboration admin role');
+select ok(not exists(select 1 from public.roles_users ru join amux.actors a on a.user_id=ru.user_id
+  join public.roles r on r.id=ru.role_id where a.id=(select agent from t) and r.code='admin'),
+  'collaboration inheritance never creates an employee admin grant');
 select is((select ru.expires_at from public.roles_users ru
              join amux.actors a on a.user_id = ru.user_id
             where a.id = (select agent from t) and ru.role_id = '55ee0000-0000-4000-8000-000000000002'),

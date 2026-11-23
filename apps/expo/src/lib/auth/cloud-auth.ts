@@ -15,9 +15,9 @@ import { createSessionStore, type SessionStore, type StoredSession } from "./ses
 
 /**
  * Cloud-only auth client. Exposes a Supabase-`auth`-shaped facade so the app's
- * existing consumers (`supabase.auth.getSession()`, `onAuthStateChange`,
+ * existing consumers (`cloudAuth.auth.getSession()`, `onAuthStateChange`,
  * `setSession`, `signOut`, `getUser`, `updateUser`) and the
- * `supabaseAccessToken(client)` bearer bridge keep working unchanged, while all
+ * `cloudAccessToken(client)` bearer bridge keep working unchanged, while all
  * I/O goes through the FC `/v1/auth/*` GoTrue proxy + the persisted
  * `SessionStore`. Mirrors iOS `CloudAPIAppOnboardingStore`.
  *

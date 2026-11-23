@@ -27,6 +27,7 @@ import {
   savePiTranscript,
 } from '@/lib/session/pi-transcript-export'
 import { proposeSessionToKnowledge } from '@/lib/knowledge/propose-from-session'
+import { ContentColumnRestoreButton } from '@/components/content-column/ContentColumn'
 
 export function NarrowChatHeader() {
   const { t } = useTranslation()
@@ -202,6 +203,7 @@ export function NarrowChatHeader() {
             </DropdownMenu>
           )
         ) : null}
+        <ContentColumnRestoreButton />
       </div>
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>

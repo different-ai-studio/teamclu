@@ -2,6 +2,8 @@ import * as React from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DiagnosticReport } from '@/lib/diagnostics/diagnostic-report'
+import { uploadDiagnosticZip } from '@/lib/diagnostics/diagnostic-upload'
+import { saveDiagnosticZip } from '@/lib/diagnostics/diagnostic-report'
 import { DiagnosticsSection } from '../DiagnosticsSection';
 
 const forceResetMock = vi.hoisted(() => vi.fn(async () => {}))
@@ -38,6 +40,8 @@ vi.mock('react-i18next', () => ({
         : String(fallback?.defaultValue ?? _key),
   }),
 }))
+
+vi.mock('@/lib/diagnostics/diagnostic-upload', () => ({ uploadDiagnosticZip: vi.fn() }))
 
 vi.mock('sonner', () => ({
   toast: {
@@ -170,4 +174,17 @@ describe('DiagnosticsSection daemon reset remediation', () => {
     })
     expect(screen.getByTestId('daemon-onboarding-wizard')).toBeTruthy()
   })
+
+  it('keeps local ZIP export usable after cloud upload fails', async () => {
+    diagnosticsState.report = sampleReport
+    vi.mocked(uploadDiagnosticZip).mockRejectedValueOnce(new Error('Network offline'))
+    vi.mocked(saveDiagnosticZip).mockResolvedValueOnce('/tmp/local.zip')
+    render(<DiagnosticsSection />)
+    fireEvent.click(screen.getByRole('button', { name: 'settings.diagnostics.upload.action' }))
+    fireEvent.click(screen.getByRole('button', { name: 'settings.diagnostics.upload.confirm' }))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: '导出 zip 包' }))
+    await waitFor(() => expect(saveDiagnosticZip).toHaveBeenCalledWith(sampleReport))
+  })
+
 })

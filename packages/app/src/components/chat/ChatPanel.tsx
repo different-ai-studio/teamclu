@@ -34,6 +34,7 @@ import { isAgentActorType } from "@/lib/actor/actor-type";
 import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
 import { createQuickSession, describeQuickSessionFailure, type QuickSessionFailureReason } from "@/lib/session/create-quick-session";
 import { isSoloAgentSession } from "@/lib/session/session-empty-thread-starters";
+import type { ComposerAttachment } from "@/lib/attachments/composer-attachment";
 import { ChatInputArea } from "./ChatInputArea";
 import type { ActiveStreamingAgent } from "./ComposerStack";
 import { useSessionStreams } from "@/lib/stream/session-streams";
@@ -277,7 +278,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   // ── Local state ───────────────────────────────────────────────────────
   // draftInput lives in ChatInputArea (store subscription) so typing does not
   // re-render this panel / MessageList.
-  const [pendingFiles, setPendingFiles] = React.useState<File[]>([]);
+  const [pendingFiles, setPendingFiles] = React.useState<ComposerAttachment[]>([]);
   // engagedAgents is per-session: each @-mentioned agent shows as a pill in
   // the prompt-input toolbar. Switching away from a session and back
   // restores its engaged set rather than carrying one across sessions.
@@ -843,8 +844,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     return () => clearTimeout(timer);
   }, [sessionError, clearSessionError]);
 
-  // SSE connection is managed by SSEProvider in App.tsx (persists across mode switches)
-
   // v2: pending permissions arrive on the ACP/MQTT stream — no HTTP poll fallback.
 
   // ── Session loading ───────────────────────────────────────────────────
@@ -898,12 +897,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     };
   }, [workspaceBootstrapped, workspacePath, loadSessions, resetSessions, setError]);
 
-  // NOTE: No polling fallback needed.
-  // SSE /event endpoint streams ALL events (Bus.subscribeAll) including
-  // session.created and session.updated, which are handled as global events
-  // in the SSE client. The SSE connection is established as soon as baseUrl
-  // is available, regardless of whether a session is active.
-
   // ── Input height change → forward to MessageList ───────────────────────
   const handleInputHeightChange = React.useCallback((height: number) => {
     messageListRef.current?.handleInputHeightChange(height);
@@ -915,7 +908,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
 
   // ── File handling ─────────────────────────────────────────────────────
 
-  const appendPendingFiles = React.useCallback((files: File[]) => {
+  const appendPendingFiles = React.useCallback((files: ComposerAttachment[]) => {
     setPendingFiles((prev) => [...prev, ...files]);
   }, []);
 

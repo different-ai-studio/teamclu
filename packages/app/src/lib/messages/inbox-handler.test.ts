@@ -282,6 +282,39 @@ describe("handleInboxEnvelope", () => {
     expect(store.clearSessionAttention).toHaveBeenCalledWith("s1");
   });
 
+  it("hands an app access hint over without a session id or any message side effect", () => {
+    const store = makeStore(["s1"]);
+    const onMessagePing = vi.fn();
+    const onAppAccessChanged = vi.fn();
+    const logger = { warn: vi.fn() };
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { v: 2, type: "app.access", team_id: "team-1", app_id: "app-1", ts: 1 }),
+      "u1",
+      store,
+      logger,
+      { onMessagePing, onAppAccessChanged },
+    );
+    expect(onAppAccessChanged).toHaveBeenCalledWith("team-1", "app-1");
+    // No session_id is expected on this hint — it must not be logged as broken.
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(onMessagePing).not.toHaveBeenCalled();
+    expect(store.noteInboxMessage).not.toHaveBeenCalled();
+    expect(store.patchRow).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(INBOX_LIST_REFRESH_MS);
+    expect(store.loadFirstPage).not.toHaveBeenCalled();
+    expect(store.refreshAfterInbox).not.toHaveBeenCalled();
+
+    onAppAccessChanged.mockClear();
+    handleInboxEnvelope(
+      makeEnv("inbox/u1", { type: "app.access", app_id: "app-1" }),
+      "u1",
+      store,
+      logger,
+      { onAppAccessChanged },
+    );
+    expect(onAppAccessChanged).not.toHaveBeenCalled();
+  });
+
   it("handles a roster hint before unread and message side effects", () => {
     const store = makeStore(["s1"]);
     const onMessagePing = vi.fn();

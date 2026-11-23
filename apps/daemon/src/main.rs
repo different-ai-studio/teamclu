@@ -18,14 +18,12 @@ mod knowledge;
 mod logging;
 mod mcp_probe;
 mod mqtt;
-mod nats;
 mod node_install;
 mod onboarding;
 mod pi_install;
 mod process_util;
 mod proto;
 mod provider_config;
-mod remote_tools;
 mod route_probe;
 mod runtime;
 mod self_update;
@@ -125,8 +123,7 @@ fn main() -> anyhow::Result<()> {
                             // of why a runtime child died: a pi host that fails to
                             // boot writes its stack to stderr and nothing at all to
                             // stdout.
-                            .add_directive("pi_rpc=info".parse().unwrap())
-                            .add_directive("opencode_serve=info".parse().unwrap()),
+                            .add_directive("pi_rpc=info".parse().unwrap()),
                     )
                     .with(
                         tracing_subscriber::fmt::layer()
@@ -164,7 +161,6 @@ fn main() -> anyhow::Result<()> {
                     "amuxd {failed} never stayed up after an update; restored {restored}"
                 );
             }
-            cli::process::prepare_daemon_start()?;
             config::layout::purge_v1_layout();
             config::layout::ensure();
             config::layout::scrub_team_state_credentials();
@@ -250,14 +246,6 @@ fn main() -> anyhow::Result<()> {
             let path = config::DaemonConfig::default_path();
             cli::config_cmd::run(args, &path)?;
         }
-        Commands::RemoteToolsMcp(args) => {
-            let sock = args
-                .sock
-                .clone()
-                .unwrap_or_else(config::DaemonConfig::sock_path);
-            let _ = (&args.session_id, &args.team_id, &args.member_actor_id);
-            cli::remote_tools_mcp::run(&sock)?;
-        }
         Commands::GitSsh(args) => {
             let sock = args
                 .sock
@@ -274,7 +262,11 @@ fn main() -> anyhow::Result<()> {
                 .clone()
                 .unwrap_or_else(config::DaemonConfig::sock_path);
             // stdout is git's to read, so nothing else may print there.
-            std::process::exit(cli::git_credential::run(&sock, &args.app, &args.operation));
+            let code = match args.app.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+                Some(app) => cli::git_credential::run(&sock, app, &args.operation),
+                None => cli::git_account::run(args.brand.as_deref(), &args.operation),
+            };
+            std::process::exit(code);
         }
         Commands::TestClient { config, action } => {
             tracing_subscriber::fmt()

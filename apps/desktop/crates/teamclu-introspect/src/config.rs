@@ -1,23 +1,26 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-pub const TEAMCLU_DIR: &str = ".teamclu";
-pub const CONFIG_FILE_NAME: &str = "teamclu.json";
-
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
+//
+// Brand-aware, like the desktop and the daemon. These used to be the literals
+// `.teamclu` and `teamclu.json`, so on a white-label build the sidecar read
+// and wrote roles, cron jobs and the workspace config in a different directory
+// from the app it serves. The helpers resolve to the brand's directory and
+// fall back to the official one when only that exists.
 
-fn teamclu_dir(workspace: &str) -> PathBuf {
-    Path::new(workspace).join(TEAMCLU_DIR)
+fn meta_path(workspace: &str, rel: &str) -> PathBuf {
+    teamclu_runtime_env::resolve_workspace_meta_path_from_env(Path::new(workspace), rel)
 }
 
 fn config_path(workspace: &str) -> PathBuf {
-    teamclu_dir(workspace).join(CONFIG_FILE_NAME)
+    teamclu_runtime_env::resolve_workspace_config_path_from_env(Path::new(workspace))
 }
 
-fn roles_dir(workspace: &str) -> PathBuf {
-    teamclu_dir(workspace).join("roles")
+pub fn roles_dir(workspace: &str) -> PathBuf {
+    meta_path(workspace, "roles")
 }
 
 // ---------------------------------------------------------------------------

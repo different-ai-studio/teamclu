@@ -42,7 +42,6 @@ pnpm-debug.log*
 config.json
 build.config.local.json
 
-services/pocketbase/pb_data/
 build.config.production.json
 
 
@@ -52,14 +51,13 @@ apps/desktop/target/
 apps/desktop/binaries/*
 !apps/desktop/binaries/.gitkeep
 !apps/desktop/binaries/README.md
-!apps/desktop/binaries/build-rag-mcp-server.sh
-!apps/desktop/binaries/build-autoui-mcp-server.sh
 apps/desktop/.tauri_private_key
 apps/desktop/.tauri_private_key.pub
 
 # Testing
 coverage/
-tests/screenshots/
+# Built from tests/_utils/window-query.swift with swiftc when needed.
+tests/_utils/window-query
 apps/ios/build/
 # Any other derived-data path someone points -derivedDataPath at. A
 # measurement run with its own output directory has committed 19k files
@@ -90,10 +88,6 @@ venv/
 !pnpm-lock.yaml
 !/Cargo.lock
 logs
-playwright-report/
-screenshots/
-test-results/
-playwright-report/
 
 # Worktrees
 .worktrees/
@@ -137,7 +131,6 @@ docs/design/
 
 # Scripts
 scripts/sync-task-to-preview.sh
-scripts/ship-pr.sh
 scripts/release-to-backend.sh
 
 # Stress test reports
@@ -193,3 +186,6 @@ playwright-report/
 screenshots/
 tmp/
 log/
+
+# Android SDK location, machine-specific
+local.properties

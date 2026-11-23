@@ -1,8 +1,8 @@
 // services/fc/src/lib/sync-handlers.ts
 //
 // FC /sync/* endpoint handlers — OSS Sync v3 (spec §3).
-// Each export is a standalone async function; the router in index.mjs
-// dispatches here after JWT/actor auth.
+// Each export is a standalone async function; `legacy-sync.ts`
+// (`handleSyncRequest`, mounted by app.ts) dispatches here after JWT/actor auth.
 //
 // Sync metadata lives in Supabase (createServiceRoleClient + .from() / .rpc());
 // blob bytes live in Supabase Storage (see team-blob-storage.ts).
@@ -51,7 +51,7 @@ export interface SyncHandlerDeps {
   sumLiveBytes?: (teamId: string) => Promise<number | null>;
   /**
    * MQTT publisher for knowledge sync hints. `undefined` → resolve from
-   * push-deps (null when MQTT_BROKER_URL is unset). Explicit `null` skips.
+   * push-deps (null when both publisher URLs are unset). Explicit `null` skips.
    */
   mqtt?: SyncMqttPublisher | null;
   /** Clock override for hint `at` (tests). */
@@ -1059,68 +1059,6 @@ export async function handleSyncVersions(
   }
 
   return json(200, { versions, nextCursor });
-}
-
-// ---------------------------------------------------------------------------
-// POST /sync/set-mode — owner-only sync_mode switch (Tranche 5)
-// ---------------------------------------------------------------------------
-/**
- * Switch a team's sync_mode.
- * Body: { teamId: string, mode: 'git' | 'oss' }
- * Returns: { mode: string } | 400 | 403
- */
-export async function handleSyncSetMode(
-  userId: string,
-  body: Record<string, unknown> | undefined,
-  deps: SyncHandlerDeps = {},
-) {
-  const { teamId, mode } = body ?? {};
-  if (!teamId) return json(400, { error: 'teamId is required' });
-  if (!mode) return json(400, { error: 'mode is required' });
-  if (mode !== 'git' && mode !== 'oss') return json(400, { error: `invalid mode: ${mode}` });
-
-  // --- supabase path (unchanged) ---
-  const supabase = createServiceRoleClient();
-
-  const { data, error } = await supabase
-    .schema("amux").rpc('set_team_sync_mode', { p_team_id: teamId, p_mode: mode });
-
-  if (error) {
-    const code = error.code;
-    if (code === '22023') return json(400, { error: error.message });
-    if (code === '42501') return json(403, { error: error.message });
-    return json(500, { error: error.message });
-  }
-
-  return json(200, { mode: data ?? mode });
-}
-
-// ---------------------------------------------------------------------------
-// POST /sync/team-mode — read team sync_mode (Tranche 5)
-// ---------------------------------------------------------------------------
-/**
- * Return the sync_mode for a team (read-only).
- * Body: { teamId: string }
- * Returns: { mode: 'git' | 'oss' | null }
- */
-export async function handleSyncTeamMode(
-  userId: string,
-  body: Record<string, unknown> | undefined,
-  deps: SyncHandlerDeps = {},
-) {
-  const { teamId } = body ?? {};
-  if (!teamId) return json(400, { error: 'teamId is required' });
-
-  // --- supabase path (unchanged) ---
-  const supabase = createServiceRoleClient();
-  const { data, error } = await supabase
-    .schema("amux").rpc('get_team_sync_mode', { p_team_id: teamId });
-
-  if (error) {
-    return json(500, { error: error.message });
-  }
-
-  return json(200, { mode: data ?? null });
 }
 
 // ---------------------------------------------------------------------------

@@ -3,11 +3,9 @@ pub mod amuxd_layout;
 pub mod atomic_write;
 pub mod env_activation;
 pub mod env_catalog;
-pub mod mcp_resolve;
 pub mod merge;
 pub mod node;
 pub mod opencode_config;
-pub mod opencode_db;
 pub mod personal_secrets;
 pub mod resolved_env;
 pub mod session_context;
@@ -16,6 +14,7 @@ pub mod team_crypto;
 pub mod team_provider;
 pub mod team_provider_sync;
 pub mod version;
+pub mod windows_path;
 pub mod workspace_instructions;
 
 /// Ratchet keeping home-directory names spelled in `storage_namespace` only.
@@ -62,8 +61,7 @@ pub use team_provider::{
     ManagedLlmProvider, ManagedLlmState,
 };
 pub use team_provider_sync::{
-    resolve_workspace_runtime_config, sync_global_team_provider, SecretResolveScope,
-    TeamProviderSyncResult,
+    resolve_workspace_runtime_config, sync_global_team_provider, TeamProviderSyncResult,
 };
 
 pub use amuxd_layout::{active_team as active_amuxd_team, team_state_dir as amuxd_team_state_dir};
@@ -82,12 +80,11 @@ pub use storage_namespace::{
     STORAGE_NAMESPACE_MIGRATION_MARKER, TEAM_SHARED_DIR_NAME, WORKSPACE_CONFIG_FILE,
     WORKSPACE_META_DIR,
 };
+pub use windows_path::{path_for_node, path_for_node_str};
 pub use workspace_instructions::{
     claude_md_block_present, load_system_prompt, sync_teamclu_claude_md,
 };
 
-/// Same as [`OFFICIAL_STORAGE_DIR`] — kept for existing call sites.
-pub const APP_SECRETS_DIR: &str = OFFICIAL_STORAGE_DIR;
 pub const DEFAULT_TEAM_REPO_DIR: &str = "teamclu-team";
 
 #[derive(Debug, Clone, Default)]
@@ -135,11 +132,7 @@ pub fn assemble_runtime_env(
     let personal = personal_secrets::load_personal_env()?;
     let resolved_env = resolved_env::resolve_runtime_env(personal, team_env, system);
     sync_global_team_provider(managed_llm, &resolved_env.bindings, ai_proxy_base.as_deref())?;
-    let _sync = resolve_workspace_runtime_config(
-        workspace,
-        &resolved_env.bindings,
-        SecretResolveScope::SkipWorkspaceResolve,
-    )?;
+    let _sync = resolve_workspace_runtime_config(workspace)?;
     Ok(RuntimeEnvBundle {
         extra_env: resolved_env.bindings.clone(),
         resolved_env,

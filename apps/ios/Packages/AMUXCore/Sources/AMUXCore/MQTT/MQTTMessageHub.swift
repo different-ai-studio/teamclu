@@ -5,7 +5,7 @@ import Foundation
 /// `MQTTService` exposes a `messages()` AsyncStream API that yields every
 /// incoming MQTT packet to every caller. That worked when there were two
 /// consumers, but the app now has TeamcluService, SessionListViewModel,
-/// SessionDetailViewModel, ConnectionMonitor, and a dozen RPC awaiters
+/// SessionDetailViewModel, and a dozen RPC awaiters
 /// each calling `messages()` and filtering the same stream of payloads.
 /// Each consumer pays an extra decode and continuation copy per message.
 ///

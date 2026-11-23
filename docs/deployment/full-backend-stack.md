@@ -280,13 +280,13 @@ LiteLLM 容器（`ghcr.io/berriai/litellm-database`，库 `_litellm` 由 `litell
 
 - Desktop 安装包自带 + launchd/systemd 服务
 - Self-host 可选：`docker compose --profile daemon up -d --build amuxd`
-- 开发机：`scripts/deploy-daemon.sh`
+- 开发机：`scripts/deploy-daemon-binaries.sh`
 
 Daemon 需要：
 
 1. 有效的 team invite token（`./amuxd/mint-invite.sh`）
 2. Cloud API URL（bootstrap 拉 MQTT）
-3. LLM 端点（`OPENCODE_*`）才能跑 agent session
+3. 团队 AI 网关（daemon 从 Cloud API 的 `workspace-config` 读取 `llm`）才能跑 agent session；运行时 pi 由 entrypoint 的 `amuxd install-pi` 装进 state 卷
 
 ---
 
@@ -392,7 +392,7 @@ cd services/supabase && npm test   # pgTAP（若已配置）
 
 | 现象 | 排查方向 |
 |------|----------|
-| 客户端报 schema 过旧 / `disable_team_share` | Cloud API 与 Supabase migration 未同步部署 |
+| 客户端报 schema 过旧（FC 错误码 `schema_drift`） | Cloud API 与 Supabase migration 未同步部署 |
 | MQTT 连不上 | 检查 `MQTT_BROKER_URL`、Caddy WS 路由、JWT secret 一致性 |
 | PostgREST 404 on `amux.*` | `PGRST_DB_SCHEMAS` 缺 `amux` 或未 reload |
 | LiteLLM 503 `litellm_unavailable` | `LITELLM_MASTER_KEY` 未配置 |

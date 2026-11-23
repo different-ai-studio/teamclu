@@ -21,6 +21,7 @@
 //! is not there.
 
 pub mod delivery;
+pub mod expr;
 pub mod scheduler;
 pub mod storage;
 pub mod types;
@@ -245,6 +246,7 @@ impl CronService {
         workspace_path: Option<&str>,
     ) -> Result<CronJob, String> {
         let workspace_path = validate_workspace(workspace_path)?;
+        expr::validate_schedule(&request.schedule)?;
         let now = chrono::Utc::now();
         let mut job = CronJob {
             id: uuid::Uuid::new_v4().to_string(),
@@ -269,6 +271,9 @@ impl CronService {
     }
 
     pub async fn update_job(&self, request: UpdateCronJobRequest) -> Result<CronJob, String> {
+        if let Some(schedule) = request.schedule.as_ref() {
+            expr::validate_schedule(schedule)?;
+        }
         let job = self
             .storage
             .modify_job(&request.id.clone(), move |job| {

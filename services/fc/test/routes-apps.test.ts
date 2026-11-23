@@ -375,6 +375,25 @@ test("GET /v1/apps/:id/git-head returns the head, and compares only when asked",
   assert.deepEqual(seen, [{ compare: true }, { compare: false }, { compare: false }]);
 });
 
+test("GET /v1/apps/:id/custom-domain returns the domain with its records", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/custom-domain")[2];
+  const view = { domain: "shop.example.org", verified: false, verifiedAt: null, dns: [{ type: "TXT" }] };
+  const res = await handler({ params: { appId: "app-1" }, repository: { getAppCustomDomain: async () => view } });
+  assert.deepEqual(res.body, view);
+});
+
+test("GET /v1/apps/:id/custom-domain 404s for a caller who may not change it", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/custom-domain")[2];
+  await assert.rejects(
+    () => handler({ params: { appId: "app-1" }, repository: { getAppCustomDomain: async () => null } }),
+    (e) => (e as { statusCode?: number }).statusCode === 404,
+  );
+});
+
 test("GET /v1/apps/:id/membership returns member verdict", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
@@ -403,7 +422,7 @@ test("PUT /v1/apps/:id/access/:memberId 404s when repo returns null (non-admin)"
   await assert.rejects(
     () => handler({
       params: { appId: "app-1", memberId: "member-2" },
-      json: { permissionLevel: "prompt" },
+      json: { permissionLevel: "write" },
       repository: { setAppAccess: async () => null },
     }),
     (e) => (e as { statusCode?: number }).statusCode === 404,
@@ -416,7 +435,7 @@ test("GET /v1/apps/:id/access returns access rows", async () => {
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/access")[2];
   const items = [{
     memberId: "member-2",
-    permissionLevel: "prompt",
+    permissionLevel: "write",
     grantedByMemberId: "actor-app-1",
     createdAt: "2026-08-27T00:00:00.000Z",
   }];
@@ -588,6 +607,37 @@ test("PATCH .../rows/:rowKey forwards the opaque key and body", async () => {
     appId: "app-1", table: "items", rowKey: "WzJd", body: { patch: { title: "x" } },
   });
   assert.deepEqual(res.body, { row: { id: 2 } });
+});
+
+test("POST .../rows inserts through the repository and answers 201", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find(
+    (r) => r[0] === "POST" && r[1] === "/v1/apps/:appId/data/tables/:table/rows",
+  )[2];
+  let seen: any;
+  const res = await handler({
+    params: { appId: "app-1", table: "items" },
+    json: { values: { title: "new" } },
+    repository: {
+      insertAppDataRow: async (appId: string, table: string, body: any) => {
+        seen = { appId, table, body };
+        return { row: { id: 9, title: "new" } };
+      },
+    },
+  });
+  assert.deepEqual(seen, { appId: "app-1", table: "items", body: { values: { title: "new" } } });
+  assert.equal(res.statusCode, 201);
+  assert.deepEqual(res.body, { row: { id: 9, title: "new" } });
+
+  await assert.rejects(
+    () => handler({
+      params: { appId: "app-1", table: "items" },
+      json: { values: {} },
+      repository: { insertAppDataRow: async () => null },
+    }),
+    (e: any) => e?.statusCode === 404,
+  );
 });
 
 test("DELETE .../rows/:rowKey 404s when the repo says the app is invisible", async () => {
@@ -1034,8 +1084,14 @@ test('POST undeploy accepts an operation but never claims completion for 202',as
 test('authenticated heartbeat runs persistent cleanup with raw service client and no repository',async()=>{
  const {router,routes}=makeRouter();const tables:string[]=[];
  const client:any={rpc:async(name:string)=>{assert.equal(name,'report_expired_app_undeploy_calls');return {data:null,error:null}},from:(table:string)=>{tables.push(table);const q:any={then:(resolve:any)=>resolve({data:[],error:null})};for(const key of ['select','eq','in','order','limit','not','lte','delete','lt'])q[key]=()=>q;return q;}};
- registerApps(router,{createServiceRoleClient:()=>client,makeAppUndeployDeps:()=>({})});
+ const deployKeys = { scanned: 1, revoked: 1, failed: 0 };
+ registerApps(router,{
+   createServiceRoleClient:()=>client,
+   makeAppUndeployDeps:()=>({}),
+   deployKeySweep:()=>async (actual: unknown)=>{assert.equal(actual,client);return deployKeys;},
+ });
  const tick=findRoute(routes,'POST','/v1/internal/app-cron/tick');assert.equal(tick[3].auth,'cron-tick');
  const result=await tick[2]({repository:undefined});
  assert.equal(result.body.cleanup.processed,0);assert.ok(tables.includes('app_lifecycle_operations'));assert.ok(tables.includes('app_cron_jobs'));
+ assert.deepEqual(result.body.deployKeys, deployKeys);
 });

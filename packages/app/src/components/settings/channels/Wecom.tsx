@@ -38,6 +38,8 @@ import { botSecretPath, loadChannelSecretKeys } from '@/lib/team/channel-secret-
 import { ChannelRuntimeOptions } from './ChannelRuntimeOptions'
 import { inheritedRuntime, pinChannelRuntime } from './channel-runtime'
 import { useChannelRuntimeDefaults } from './use-channel-runtime-defaults'
+import { pollWecomQrUntilDone, type WecomQrPollPhase } from './wecom-qr-session'
+import { mergeScannedWecomBot } from '@/stores/channels/wecom'
 import { useShallow } from 'zustand/react/shallow'
 
 // WeCom Setup Wizard
@@ -79,7 +81,7 @@ const WECOM_WIZARD_STEPS = [
   },
 ]
 
-function WeComSetupWizard({
+export function WeComSetupWizard({
   open,
   onOpenChange,
   onCredentialsSave,
@@ -88,7 +90,7 @@ function WeComSetupWizard({
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onCredentialsSave: (botId: string, secret: string) => void
+  onCredentialsSave: (botId: string, secret: string) => Promise<void>
   existingBotId?: string
   existingSecret?: string
 }) {
@@ -98,86 +100,136 @@ function WeComSetupWizard({
   const [secret, setSecret] = React.useState(existingSecret || '')
   const [method, setMethod] = React.useState<'qr' | 'manual' | null>(null)
   const [qrAuthUrl, setQrAuthUrl] = React.useState<string | null>(null)
-  const [, setQrScode] = React.useState<string | null>(null)
   const [qrLoading, setQrLoading] = React.useState(false)
   const [qrError, setQrError] = React.useState<string>('')
-  const [scanStatus, setScanStatus] = React.useState<string>('')
-  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
-  const errorCountRef = React.useRef(0)
+  const [scanPhase, setScanPhase] = React.useState<WecomQrPollPhase>('waiting')
+  const [saveState, setSaveState] = React.useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const abortRef = React.useRef<AbortController | null>(null)
+  const sessionRef = React.useRef(0)
+  const viewGen = React.useRef(0)
+  const saveStateRef = React.useRef(saveState)
+  const savedKeyRef = React.useRef('')
+  const savingKeyRef = React.useRef('')
+  const persistFlight = React.useRef<Promise<boolean> | null>(null)
+  const readyRef = React.useRef(false)
+  saveStateRef.current = saveState
 
   const { startWecomQrAuth, pollWecomQrAuth } = useChannelsStore(
     useShallow((s) => ({ startWecomQrAuth: s.startWecomQrAuth, pollWecomQrAuth: s.pollWecomQrAuth })),
   )
 
-  const cleanupPolling = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-    errorCountRef.current = 0
-  }
+  const stopPolling = React.useCallback(() => {
+    abortRef.current?.abort()
+    abortRef.current = null
+  }, [])
 
   React.useEffect(() => {
     if (open) {
+      viewGen.current += 1
+      readyRef.current = false
+      savedKeyRef.current = ''
+      savingKeyRef.current = ''
+      persistFlight.current = null
+      saveStateRef.current = 'idle'
       setStep(0)
       setBotId(existingBotId || '')
       setSecret(existingSecret || '')
       setMethod(null)
       setQrAuthUrl(null)
-      setQrScode(null)
       setQrLoading(false)
       setQrError('')
-      setScanStatus('')
-      cleanupPolling()
+      setScanPhase('waiting')
+      setSaveState('idle')
+      stopPolling()
     }
-    return () => cleanupPolling()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+    return () => stopPolling()
+  }, [open, existingBotId, existingSecret, stopPolling])
+
+  const persistCredentials = React.useCallback((rawId: string, rawSecret: string): Promise<boolean> => {
+    const id = rawId.trim()
+    const sec = rawSecret.trim()
+    if (!id || !sec) return Promise.resolve(false)
+    const key = `${id}\0${sec}`
+    if (saveStateRef.current === 'saved' && savedKeyRef.current === key) return Promise.resolve(true)
+    if (persistFlight.current && savingKeyRef.current === key && saveStateRef.current === 'saving') {
+      return persistFlight.current
+    }
+    const gen = viewGen.current
+    savingKeyRef.current = key
+    saveStateRef.current = 'saving'
+    setSaveState('saving')
+    // The promise refers to itself in `finally`. A const in its own
+    // initializer is still in the temporal dead zone, which `tsc` rejects.
+    const flight: { current: Promise<boolean> | null } = { current: null }
+    flight.current = (async () => {
+      try {
+        await onCredentialsSave(id, sec)
+        savedKeyRef.current = key
+        saveStateRef.current = 'saved'
+        if (gen === viewGen.current) {
+          setBotId(id)
+          setSecret(sec)
+          setSaveState('saved')
+        }
+        return true
+      } catch {
+        saveStateRef.current = 'error'
+        if (gen === viewGen.current) setSaveState('error')
+        return false
+      } finally {
+        if (persistFlight.current === flight.current) persistFlight.current = null
+      }
+    })()
+    persistFlight.current = flight.current
+    return flight.current
+  }, [onCredentialsSave])
 
   const fetchQrCode = async () => {
+    stopPolling()
+    const session = ++sessionRef.current
+    const ac = new AbortController()
+    abortRef.current = ac
     setQrLoading(true)
     setQrError('')
-    setScanStatus('')
-    cleanupPolling()
+    setQrAuthUrl(null)
+    setScanPhase('waiting')
     try {
       const data = await startWecomQrAuth()
+      if (ac.signal.aborted || session !== sessionRef.current) return
+      if (!data?.auth_url || !data?.scode) {
+        setQrLoading(false)
+        setQrError(t('settings.channels.wecom.scanError', 'Failed to get QR code. Please try again or use manual input.'))
+        return
+      }
       setQrAuthUrl(data.auth_url)
-      setQrScode(data.scode)
       setQrLoading(false)
-
-      // Start polling
-      pollRef.current = setInterval(async () => {
-        try {
-          const result = await pollWecomQrAuth(data.scode)
-          errorCountRef.current = 0
-          if (result.status === 'success' && result.botId && result.secret) {
-            cleanupPolling()
-            setScanStatus('success')
-            setBotId(result.botId)
-            setSecret(result.secret)
-            // Advance to complete step — credentials saved on "Finish"
-            setStep(WECOM_WIZARD_STEPS.findIndex(s => s.id === 'complete'))
-          }
-        } catch {
-          errorCountRef.current++
-          if (errorCountRef.current >= 3) {
-            cleanupPolling()
-            setQrError(t('settings.channels.wecom.scanError', 'Failed to get QR code. Please try again or use manual input.'))
-          }
-        }
-      }, 3000)
-
-      // Auto-expire after 5 minutes
-      setTimeout(() => {
-        if (pollRef.current) {
-          cleanupPolling()
-          setQrError(t('settings.channels.wecom.scanTimeout', 'QR code expired. Please try again.'))
-          setQrAuthUrl(null)
-        }
-      }, 300000)
-    } catch (e) {
+      const outcome = await pollWecomQrUntilDone({
+        signal: ac.signal,
+        poll: () => pollWecomQrAuth(data.scode),
+        onPending: (phase) => {
+          if (!ac.signal.aborted && session === sessionRef.current) setScanPhase(phase)
+        },
+      })
+      if (ac.signal.aborted || session !== sessionRef.current) return
+      if (outcome.type === 'ready') {
+        readyRef.current = true
+        setBotId(outcome.botId)
+        setSecret(outcome.secret)
+        setStep(WECOM_WIZARD_STEPS.findIndex(s => s.id === 'complete'))
+        await persistCredentials(outcome.botId, outcome.secret)
+        return
+      }
+      setQrAuthUrl(null)
+      if (outcome.type === 'expired' || outcome.type === 'timeout') {
+        setQrError(t('settings.channels.wecom.scanTimeout', 'QR code expired. Please try again.'))
+      } else if (outcome.type === 'error') {
+        setQrError(t('settings.channels.wecom.pollFailed', 'Lost contact while waiting for the scan. The QR code was cleared — try again, or enter the Bot ID and Secret manually.'))
+      }
+    } catch {
+      if (ac.signal.aborted || session !== sessionRef.current) return
       setQrLoading(false)
-      setQrError(String(e))
+      setQrAuthUrl(null)
+      setQrError(t('settings.channels.wecom.scanError', 'Failed to get QR code. Please try again or use manual input.'))
     }
   }
 
@@ -185,23 +237,25 @@ function WeComSetupWizard({
     const currentId = WECOM_WIZARD_STEPS[step]?.id
     if (currentId === 'choose-method') {
       if (method === 'qr') {
-        const qrStep = WECOM_WIZARD_STEPS.findIndex(s => s.id === 'qr-scan')
-        setStep(qrStep)
-        // Auto-fetch QR code when entering scan step
-        setTimeout(() => fetchQrCode(), 100)
+        setStep(WECOM_WIZARD_STEPS.findIndex(s => s.id === 'qr-scan'))
+        void fetchQrCode()
       } else {
-        const manualStep = WECOM_WIZARD_STEPS.findIndex(s => s.id === 'get-credentials')
-        setStep(manualStep)
+        setStep(WECOM_WIZARD_STEPS.findIndex(s => s.id === 'get-credentials'))
       }
     } else if (step < WECOM_WIZARD_STEPS.length - 1) {
-      setStep(step + 1)
+      const next = step + 1
+      setStep(next)
+      if (WECOM_WIZARD_STEPS[next]?.id === 'complete' && botId.trim() && secret.trim()) {
+        readyRef.current = true
+        void persistCredentials(botId, secret)
+      }
     }
   }
 
   const handleBack = () => {
     const currentId = WECOM_WIZARD_STEPS[step]?.id
     if (currentId === 'qr-scan' || currentId === 'get-credentials') {
-      cleanupPolling()
+      stopPolling()
       setQrAuthUrl(null)
       setQrError('')
       setStep(WECOM_WIZARD_STEPS.findIndex(s => s.id === 'choose-method'))
@@ -210,16 +264,27 @@ function WeComSetupWizard({
     }
   }
 
-  const handleClose = () => {
-    cleanupPolling()
+  const dismissWizard = async () => {
+    stopPolling()
+    if (readyRef.current && botId.trim() && secret.trim()) {
+      const ok = await persistCredentials(botId, secret)
+      if (!ok) return
+    }
     onOpenChange(false)
   }
 
   const handleComplete = () => {
-    if (botId.trim() && secret.trim()) {
-      onCredentialsSave(botId.trim(), secret.trim())
-    }
-    onOpenChange(false)
+    void (async () => {
+      if (saveStateRef.current === 'saved') {
+        stopPolling()
+        onOpenChange(false)
+        return
+      }
+      if (botId.trim() && secret.trim()) {
+        readyRef.current = true
+        await persistCredentials(botId, secret)
+      }
+    })()
   }
 
   const currentStep = WECOM_WIZARD_STEPS[step]
@@ -342,7 +407,7 @@ function WeComSetupWizard({
               </div>
             )}
 
-            {qrAuthUrl && !qrLoading && (
+            {qrAuthUrl && !qrLoading && !qrError && (
               <div className="flex flex-col items-center space-y-4">
                 <div className="p-4 bg-white rounded-xl shadow-sm border">
                   <QRCodeSVG value={qrAuthUrl} size={200} level="M" />
@@ -350,16 +415,15 @@ function WeComSetupWizard({
                 <p className="text-[13px] text-muted-foreground text-center">
                   {t('settings.channels.wecom.scanInstructions', 'Open WeCom on your phone and scan this QR code to authorize.')}
                 </p>
-                {scanStatus !== 'success' && (
+                {scanPhase === 'scanned' ? (
+                  <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {t('settings.channels.wecom.scannedConfirm', 'QR scanned — confirm on your phone to finish. Credentials appear here after that.')}
+                  </div>
+                ) : (
                   <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     {t('settings.channels.wecom.waitingScan', 'Waiting for scan...')}
-                  </div>
-                )}
-                {scanStatus === 'success' && (
-                  <div className="flex items-center gap-2 text-[13px] text-emerald-600 dark:text-emerald-400">
-                    <CheckCircle2 className="h-4 w-4" />
-                    {t('settings.channels.wecom.scanSuccess', 'Authorization successful! Credentials obtained.')}
                   </div>
                 )}
               </div>
@@ -457,8 +521,36 @@ function WeComSetupWizard({
             <div className="space-y-2">
               <h3 className="text-lg font-semibold">{t('settings.channels.allSet', "You're all set!")}</h3>
               <p className="text-[13px] text-muted-foreground">
-                {t('settings.channels.wecom.completeMessage', 'Your WeCom bot is now configured. Click "Finish" to save your settings and start using the bot.')}
+                {t('settings.channels.wecom.completeMessage', 'The bot credential is saved on this device. Turn the gateway on if it is off. You do not need to save again.')}
               </p>
+            </div>
+
+            {botId.trim() && (
+              <div className="p-4 rounded-lg bg-muted/50 text-left space-y-1" data-testid="wecom-saved-bot">
+                <p className="text-[13px] font-medium">{t('settings.channels.wecom.botId', 'Bot ID')}</p>
+                <p className="font-mono text-[13px] break-all" data-testid="wecom-saved-bot-id">{botId.trim()}</p>
+              </div>
+            )}
+
+            <div data-testid="wecom-credential-save-state" className="text-[13px]">
+              {saveState === 'saving' && (
+                <div className="flex items-center justify-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t('settings.channels.wecom.credentialSaving', 'Saving credentials…')}
+                </div>
+              )}
+              {saveState === 'saved' && (
+                <div className="flex items-center justify-center gap-2 text-emerald-600 dark:text-emerald-400">
+                  <CheckCircle2 className="h-4 w-4" />
+                  {t('settings.channels.wecom.credentialSaved', 'Credentials saved on this device.')}
+                </div>
+              )}
+              {saveState === 'error' && (
+                <div className="flex items-center justify-center gap-2 text-red-600">
+                  <AlertCircle className="h-4 w-4" />
+                  {t('settings.channels.wecom.credentialSaveFailed', "Couldn't save credentials. Stay on this page and retry — closing now would drop them.")}
+                </div>
+              )}
             </div>
 
             <div className="p-4 rounded-lg bg-muted/50 text-left space-y-2">
@@ -477,7 +569,7 @@ function WeComSetupWizard({
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next) void dismissWizard() }}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -533,9 +625,11 @@ function WeComSetupWizard({
               <ArrowRight className="h-4 w-4" />
             </Button>
           ) : (
-            <Button onClick={handleComplete} className="gap-2">
+            <Button onClick={handleComplete} className="gap-2" disabled={saveState === 'saving'}>
               <Sparkles className="h-4 w-4" />
-              {t('settings.channels.finishSetup', 'Finish Setup')}
+              {saveState === 'error'
+                ? t('settings.channels.wecom.retrySave', 'Retry save')
+                : t('settings.channels.finishSetup', 'Finish Setup')}
             </Button>
           )}
         </DialogFooter>
@@ -558,8 +652,9 @@ export function WeComChannel() {
     refreshWecomStatus,
     setWecomHasChanges,
     toggleWecomEnabled,
+    commitScannedWecomBot,
   } = useChannelsStore(
-    useShallow((s) => ({ wecom: s.wecom, wecomIsLoading: s.wecomIsLoading, wecomGatewayStatus: s.wecomGatewayStatus, wecomHasChanges: s.wecomHasChanges, loadWecomConfig: s.loadWecomConfig, saveWecomConfig: s.saveWecomConfig, startWecomGateway: s.startWecomGateway, stopWecomGateway: s.stopWecomGateway, refreshWecomStatus: s.refreshWecomStatus, setWecomHasChanges: s.setWecomHasChanges, toggleWecomEnabled: s.toggleWecomEnabled })),
+    useShallow((s) => ({ wecom: s.wecom, wecomIsLoading: s.wecomIsLoading, wecomGatewayStatus: s.wecomGatewayStatus, wecomHasChanges: s.wecomHasChanges, loadWecomConfig: s.loadWecomConfig, saveWecomConfig: s.saveWecomConfig, startWecomGateway: s.startWecomGateway, stopWecomGateway: s.stopWecomGateway, refreshWecomStatus: s.refreshWecomStatus, setWecomHasChanges: s.setWecomHasChanges, toggleWecomEnabled: s.toggleWecomEnabled, commitScannedWecomBot: s.commitScannedWecomBot })),
   )
   const botStatuses = useChannelsStore(s => s.wecomBotStatuses)
   const loadWecomBotStatuses = useChannelsStore(s => s.loadWecomBotStatuses)
@@ -646,9 +741,14 @@ export function WeComChannel() {
 
   const startDisabled = bots.length === 0 || bots.some(b => !b.botId || !b.secret)
 
-  const handleWizardSave = (botId: string, secret: string) => {
-    updateLocalConfig({ bots: [...bots, { enabled: true, botId, secret }], enabled: true })
-    setWecomHasChanges(true)
+  const handleWizardSave = async (botId: string, secret: string) => {
+    const { appliedToStore } = await commitScannedWecomBot(botId, secret)
+    if (!appliedToStore) {
+      updateLocalConfig((prev) => ({
+        bots: mergeScannedWecomBot(prev.bots ?? [], botId, secret),
+      }))
+      setWecomHasChanges(true)
+    }
   }
 
   return (

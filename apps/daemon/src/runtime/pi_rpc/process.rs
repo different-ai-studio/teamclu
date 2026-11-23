@@ -59,9 +59,6 @@ pub(crate) struct PoolKey {
 pub(crate) struct SpawnEnv {
     pub(crate) extra_env: HashMap<String, String>,
     pub(crate) force_env_override: bool,
-    /// `TEAMCLU_REMOTE_TOOLS_CMD` (JSON array string) from the session's mcp
-    /// config.
-    pub(crate) remote_tools_cmd: Option<String>,
     /// `TEAMCLU_MCP_SERVERS` (JSON object string) — the workspace's other
     /// enabled local MCP servers, bridged into pi by the extension.
     pub(crate) mcp_servers: Option<String>,
@@ -95,6 +92,10 @@ pub(crate) struct PiProcess {
     /// pass the busy check with the answer the first one already invalidated.
     pub(crate) switch_lock: tokio::sync::Mutex<()>,
     child: parking_lot::Mutex<tokio::process::Child>,
+    /// The child's process group (unix): the child is spawned as the leader of
+    /// its own group so [`Self::kill`] can take its descendants with it.
+    #[cfg(unix)]
+    pgid: Option<u32>,
     /// Last few stderr lines from this child, for error reporting.
     ///
     /// When a child dies during startup its stdout carries nothing at all —
@@ -105,6 +106,12 @@ pub(crate) struct PiProcess {
     /// Fingerprint of what this child was spawned with (binary + mode + env).
     /// `ensure` respawns when it no longer matches the wanted spawn.
     env_fingerprint: String,
+    /// The env this child was spawned with, kept so a later `ensure` can say
+    /// *what* changed when the fingerprint no longer matches, and can put it
+    /// back when the replacement would be a degraded copy (see `ensure`).
+    spawn_env: SpawnEnv,
+    /// `node | package root | mode` this child was launched with.
+    launch_desc: String,
     /// Set by every deliberate `kill()` (eviction, env-change respawn,
     /// shutdown). The stdout-EOF handler reads it to tell a crash — worth a
     /// respawn + `get_entries` backfill — from a child that was told to die
@@ -128,10 +135,30 @@ impl PiProcess {
         matches!(self.child.lock().try_wait(), Ok(None))
     }
 
+    /// Kill the child and everything it started.
+    ///
+    /// Killing only the Node process orphaned its MCP stdio servers: each
+    /// eviction left a set of them running with no parent to stop them, and
+    /// evictions are routine (env change, credential change, idle reap). The
+    /// child leads its own process group, so the signal goes to the group.
+    /// Tools the agent started detached sit in their own session and are not
+    /// reached, same as before.
     pub(crate) fn kill(&self) {
         self.retired
             .store(true, std::sync::atomic::Ordering::Release);
-        let _ = self.child.lock().start_kill();
+        let mut child = self.child.lock();
+        #[cfg(unix)]
+        if let Some(pgid) = self.pgid {
+            // Only while the leader is unreaped: its pid then cannot have been
+            // handed to another process, so the group id still names ours.
+            if matches!(child.try_wait(), Ok(None)) {
+                // SAFETY: plain syscall; a group that is already gone is ESRCH.
+                unsafe {
+                    libc::killpg(pgid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+        }
+        let _ = child.start_kill();
     }
 
     pub(crate) fn is_retired(&self) -> bool {
@@ -144,6 +171,12 @@ pub(crate) struct PiProcessPool {
     procs: parking_lot::Mutex<HashMap<PoolKey, Arc<PiProcess>>>,
     /// Last spawn env per key — what a crash respawn uses.
     envs: parking_lot::Mutex<HashMap<PoolKey, SpawnEnv>>,
+    /// Keys whose child outlived a refresh because it was mid-turn, and must
+    /// be replaced once that turn settles. See [`Self::refresh_sparing`].
+    pending_retire: parking_lot::Mutex<HashSet<PoolKey>>,
+    /// When a child was first seen with no attached session. See
+    /// [`Self::reap_idle`].
+    unattached_since: parking_lot::Mutex<HashMap<PoolKey, Instant>>,
     context_service:
         parking_lot::RwLock<Option<Arc<crate::runtime::context_service::RuntimeContextService>>>,
 }
@@ -153,6 +186,8 @@ impl PiProcessPool {
         Self {
             procs: parking_lot::Mutex::new(HashMap::new()),
             envs: parking_lot::Mutex::new(HashMap::new()),
+            pending_retire: parking_lot::Mutex::new(HashSet::new()),
+            unattached_since: parking_lot::Mutex::new(HashMap::new()),
             context_service: parking_lot::RwLock::new(None),
         }
     }
@@ -173,6 +208,16 @@ impl PiProcessPool {
     fn retire_process(&self, proc: &PiProcess) {
         self.clear_generation_for_process(proc);
         if proc.is_alive() {
+            // The pid ties this retirement to the `host pid=` the extension
+            // stamps on its MCP startup lines. On Windows `kill` ends only the
+            // Node process, so that host's MCP servers may outlive it; the
+            // Windows install smoke dumps the process table to show whether
+            // they do.
+            info!(
+                pid = ?proc.child.lock().id(),
+                generation = %proc.generation_id,
+                "retiring pi host"
+            );
             proc.kill();
         }
     }
@@ -184,7 +229,6 @@ impl PiProcessPool {
             LaunchMode::Host => "host",
             LaunchMode::LegacyRpc => "rpc",
         };
-        let remote = env.remote_tools_cmd.clone().unwrap_or_default();
         let servers = env.mcp_servers.clone().unwrap_or_default();
         // Sort extra env for a stable fingerprint regardless of map order.
         let mut extra: Vec<String> = env
@@ -194,7 +238,7 @@ impl PiProcessPool {
             .collect();
         extra.sort();
         format!(
-            "node={}\x1fpkg={}\x1fmode={mode}\x1fforce={}\x1fremote={remote}\x1fservers={servers}\x1fextra={}",
+            "node={}\x1fpkg={}\x1fmode={mode}\x1fforce={}\x1fservers={servers}\x1fextra={}",
             launch.node.display(),
             launch.package_root.display(),
             env.force_env_override,
@@ -288,6 +332,112 @@ impl PiProcessPool {
         killed
     }
 
+    /// Replace every child except those in `busy`, and mark the busy ones to
+    /// be replaced when their turn settles.
+    ///
+    /// A provider credential change has to reach every child, since each read
+    /// its config at spawn. It used to be [`Self::kill_all`], which also took
+    /// down turns that were running in other workspaces: one person saving an
+    /// API key ended everyone else's reply on that machine. A child that is
+    /// mid-turn now finishes on the credentials it started with and is
+    /// replaced by [`Self::retire_if_pending`] afterwards. Returns the number
+    /// killed now.
+    pub(crate) fn refresh_sparing(&self, busy: &HashSet<PoolKey>) -> usize {
+        let killed = self.kill_except(busy);
+        let spared: Vec<PoolKey> = self
+            .procs
+            .lock()
+            .iter()
+            .filter(|(_, p)| p.is_alive())
+            .map(|(k, _)| k.clone())
+            .collect();
+        if !spared.is_empty() {
+            info!(
+                spared = spared.len(),
+                "pi hosts mid-turn kept; they are replaced when the turn settles"
+            );
+            self.pending_retire.lock().extend(spared);
+        }
+        killed
+    }
+
+    /// Whether `key`'s child is waiting to be replaced after its turn.
+    pub(crate) fn is_pending_retire(&self, key: &PoolKey) -> bool {
+        self.pending_retire.lock().contains(key)
+    }
+
+    /// Replace `key`'s child if a refresh spared it. The caller has checked
+    /// that no turn is running on it. The next prompt respawns the child
+    /// through [`Self::ensure`] with the recorded spawn env.
+    pub(crate) fn retire_if_pending(&self, key: &PoolKey) -> bool {
+        if !self.pending_retire.lock().remove(key) {
+            return false;
+        }
+        let Some(proc) = self.procs.lock().remove(key) else {
+            return false;
+        };
+        let was_alive = proc.is_alive();
+        self.retire_process(&proc);
+        if was_alive {
+            info!(worktree = %key.worktree, "pi host replaced after its turn settled");
+        }
+        was_alive
+    }
+
+    /// Kill children that have had no attached session for `ttl`, and forget
+    /// the bookkeeping of keys that have neither a child nor a session.
+    ///
+    /// Nothing else ends a child whose sessions have all detached: it stayed
+    /// resident, with its MCP servers, until the daemon exited. On a small
+    /// machine that is what the memory goes to. `attached` is every key some
+    /// session routes to; `now` is passed in so the rule can be tested without
+    /// waiting. Returns the number killed.
+    pub(crate) fn reap_idle(
+        &self,
+        attached: &HashSet<PoolKey>,
+        now: Instant,
+        ttl: std::time::Duration,
+    ) -> usize {
+        let victims: Vec<Arc<PiProcess>> = {
+            let mut procs = self.procs.lock();
+            let mut since = self.unattached_since.lock();
+            procs.retain(|_, p| p.is_alive());
+            since.retain(|k, _| procs.contains_key(k) && !attached.contains(k));
+            let mut expired = Vec::new();
+            for key in procs.keys() {
+                if attached.contains(key) {
+                    continue;
+                }
+                let first_seen = *since.entry(key.clone()).or_insert(now);
+                if now.saturating_duration_since(first_seen) >= ttl {
+                    expired.push(key.clone());
+                }
+            }
+            expired
+                .into_iter()
+                .filter_map(|k| {
+                    since.remove(&k);
+                    procs.remove(&k)
+                })
+                .collect()
+        };
+        let killed = victims.len();
+        for p in &victims {
+            self.retire_process(p);
+        }
+        // A key with no child and no session will never be respawned from its
+        // recorded env; keeping it only keeps its secrets in memory. The key
+        // carries the env revision, so every env change used to add one.
+        {
+            let procs = self.procs.lock();
+            self.envs
+                .lock()
+                .retain(|k, _| procs.contains_key(k) || attached.contains(k));
+            self.pending_retire.lock().retain(|k| procs.contains_key(k));
+        }
+        killed
+    }
+
     /// Kill and drop the children of one isolation domain. Precise eviction:
     /// invalidating workspace A must not take down workspace B's sessions.
     pub(crate) fn kill_domain(&self, domain: &IsolationDomainKey) -> usize {
@@ -314,6 +464,7 @@ impl PiProcessPool {
     }
 
     /// Ensure a live child for `key`, recording `env` as the key's spawn env.
+    #[track_caller]
     pub(crate) fn ensure_with_env(
         &self,
         shared: &Arc<Shared>,
@@ -326,11 +477,13 @@ impl PiProcessPool {
 
     /// Ensure a live child for `key` using its recorded spawn env (empty when
     /// the key has never attached — e.g. a catalog probe).
+    #[track_caller]
     pub(crate) fn ensure(
         &self,
         shared: &Arc<Shared>,
         key: &PoolKey,
     ) -> crate::error::Result<Arc<PiProcess>> {
+        let caller = std::panic::Location::caller();
         let env = self.envs.lock().get(key).cloned().unwrap_or_default();
         let launch = self.resolve_launch();
         let want = self.spawn_fingerprint(&env, &launch);
@@ -338,13 +491,41 @@ impl PiProcessPool {
             if p.env_fingerprint == want {
                 return Ok(p);
             }
+            let diff = SpawnDiff::between(&p.spawn_env, &p.launch_desc, &env, &launch);
+            // A respawn under the SAME key that would lose the team provider
+            // can only be a degraded env (a probe's, or none at all): the key
+            // carries a hash of the whole `extra_env`, so a real change to the
+            // team provider (a team turning its gateway off) lands on a
+            // different key and never comes through here. Swapping a working
+            // host for one without team models is what made every following
+            // `set_model team/…` fail with "Model not found" and every prompt
+            // fall back to pi's `unknown/unknown` ("No API key found for the
+            // selected model"). Keep the live host and its env instead.
+            if let Some(lost) = diff.lost_team_binding() {
+                warn!(
+                    worktree = %key.worktree,
+                    caller = %caller,
+                    lost,
+                    diff = %diff,
+                    "pi env change would drop the team provider; keeping the live host"
+                );
+                self.envs.lock().insert(key.clone(), p.spawn_env.clone());
+                return Ok(p);
+            }
             // Env or mode changed since this child spawned (e.g. a prewarmed
             // child that predates the session's MCP servers/secrets) — replace.
-            info!(worktree = %key.worktree, "pi env changed; respawning");
+            info!(
+                worktree = %key.worktree,
+                caller = %caller,
+                diff = %diff,
+                "pi env changed; respawning"
+            );
             self.retire_process(&p);
             self.procs.lock().remove(key);
         }
         let proc = self.spawn(shared, key, &env, &launch, want)?;
+        // A child spawned now has read the current config: nothing to replace.
+        self.pending_retire.lock().remove(key);
         self.procs.lock().insert(key.clone(), Arc::clone(&proc));
         Ok(proc)
     }
@@ -352,7 +533,7 @@ impl PiProcessPool {
     /// Ensure a live child for a *catalog probe*, without ever replacing one.
     ///
     /// `model_catalog_for_context` builds its [`SpawnEnv`] from a trait method
-    /// that carries neither `force_env_override` nor the remote-tools command,
+    /// that does not carry `force_env_override`,
     /// so a probe's env is a strictly poorer copy of the attach env for the
     /// same key and the two fingerprints can never match. Routed through
     /// [`Self::ensure`], every catalog publish therefore killed the child the
@@ -362,8 +543,13 @@ impl PiProcessPool {
     ///
     /// A probe only needs *a* live child to ask for the model list, and the
     /// catalog is host-level in both modes, so reusing whatever is already
-    /// running costs nothing. Only a cold key spawns, and the probe's env is
-    /// deliberately not recorded for the key: the next attach owns that.
+    /// running costs nothing. Only a cold key spawns, and the probe's env never
+    /// replaces one an attach recorded for the key: the attach owns that, and a
+    /// later crash respawn must rebuild the attach's child, not the probe's.
+    /// (This used to go through `ensure_with_env`, which overwrote the record
+    /// despite what this comment promised.) A key nothing has recorded yet
+    /// keeps the probe's env, so the child it spawns can be respawned at all.
+    #[track_caller]
     pub(crate) fn ensure_for_catalog(
         &self,
         shared: &Arc<Shared>,
@@ -373,7 +559,8 @@ impl PiProcessPool {
         if let Some(p) = self.get(key) {
             return Ok(p);
         }
-        self.ensure_with_env(shared, key, env)
+        self.envs.lock().entry(key.clone()).or_insert(env);
+        self.ensure(shared, key)
     }
 
     /// Resolve what to spawn: binary + host/legacy mode. Read fresh per spawn
@@ -491,9 +678,6 @@ impl PiProcessPool {
             "TEAMCLU_SKILL_CREATION_POLICY",
             crate::config::SKILL_CREATION_POLICY,
         );
-        if let Some(remote_cmd) = &env.remote_tools_cmd {
-            cmd.env("TEAMCLU_REMOTE_TOOLS_CMD", remote_cmd);
-        }
         if let Some(servers) = &env.mcp_servers {
             cmd.env("TEAMCLU_MCP_SERVERS", servers);
         }
@@ -534,6 +718,12 @@ impl PiProcessPool {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        // Leader of its own process group, so `PiProcess::kill` reaches the
+        // MCP servers it starts. A terminal Ctrl-C no longer reaches it
+        // directly; the daemon's own shutdown kills it, and the host exits on
+        // stdin EOF if the daemon dies without one.
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         // `sandboxed` is on this line because nothing else can report it:
         // `sandbox-exec` execs into node, so the process it leaves behind
@@ -546,6 +736,10 @@ impl PiProcessPool {
             worktree,
             session_dir = %session_dir.display(),
             sandboxed = sandbox_profile.is_some(),
+            force_env_override = env.force_env_override,
+            extra_env_keys = env.extra_env.len(),
+            team_provider = env.extra_env.contains_key(TEAM_PROVIDER_ENV),
+            gateway_token = env.extra_env.contains_key(GATEWAY_TOKEN_ENV),
             "spawning pi child"
         );
         let mut child = cmd
@@ -613,8 +807,12 @@ impl PiProcessPool {
             open_sessions: parking_lot::Mutex::new(HashMap::new()),
             active_acp_session: parking_lot::Mutex::new(None),
             switch_lock: tokio::sync::Mutex::new(()),
+            #[cfg(unix)]
+            pgid: child.id(),
             child: parking_lot::Mutex::new(child),
             env_fingerprint: fingerprint,
+            spawn_env: env.clone(),
+            launch_desc: launch.describe(),
             retired: std::sync::atomic::AtomicBool::new(false),
             stderr_tail,
         });
@@ -638,10 +836,116 @@ struct ResolvedLaunch {
     mode: LaunchMode,
 }
 
+impl ResolvedLaunch {
+    /// `node | package root | mode`, for telling a launch change apart from
+    /// an env change when a child is respawned.
+    fn describe(&self) -> String {
+        format!(
+            "{} | {} | {:?}",
+            self.node.display(),
+            self.package_root.display(),
+            self.mode
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum LaunchMode {
     Host,
     LegacyRpc,
+}
+
+/// The env var the pi extension registers the team gateway from
+/// (`assets/pi-extension/teamclu.ts`, `registerTeamProvider`).
+const TEAM_PROVIDER_ENV: &str = "TEAMCLU_TEAM_PROVIDER";
+/// The binding `TEAMCLU_TEAM_PROVIDER`'s `apiKeyEnv` names. Without it pi
+/// registers the team provider but treats every model on it as unavailable.
+const GATEWAY_TOKEN_ENV: &str = "tc_gateway_token";
+
+/// What differs between the env a live child was spawned with and the env an
+/// `ensure` now wants — names only, never values, so it can go in a log line.
+///
+/// Exists because "pi env changed; respawning" used to be the whole story: on
+/// Windows hosts were being replaced right after an attach by children with no
+/// team models, and the log could not say whether the env, the MCP servers, the
+/// override flag or the launch had changed, nor who asked.
+#[derive(Debug, Default)]
+struct SpawnDiff {
+    launch_changed: bool,
+    force_changed: Option<(bool, bool)>,
+    mcp_servers_changed: bool,
+    added: Vec<String>,
+    removed: Vec<String>,
+    changed: Vec<String>,
+}
+
+impl SpawnDiff {
+    fn between(
+        old: &SpawnEnv,
+        old_launch: &str,
+        new: &SpawnEnv,
+        new_launch: &ResolvedLaunch,
+    ) -> Self {
+        let mut diff = SpawnDiff {
+            launch_changed: old_launch != new_launch.describe(),
+            force_changed: (old.force_env_override != new.force_env_override)
+                .then_some((old.force_env_override, new.force_env_override)),
+            mcp_servers_changed: old.mcp_servers != new.mcp_servers,
+            ..Default::default()
+        };
+        for (k, v) in &new.extra_env {
+            match old.extra_env.get(k) {
+                None => diff.added.push(k.clone()),
+                Some(old_v) if old_v != v => diff.changed.push(k.clone()),
+                Some(_) => {}
+            }
+        }
+        for k in old.extra_env.keys() {
+            if !new.extra_env.contains_key(k) {
+                diff.removed.push(k.clone());
+            }
+        }
+        diff.added.sort();
+        diff.removed.sort();
+        diff.changed.sort();
+        diff
+    }
+
+    /// The team binding the new env would lose, if any.
+    fn lost_team_binding(&self) -> Option<&'static str> {
+        [TEAM_PROVIDER_ENV, GATEWAY_TOKEN_ENV]
+            .into_iter()
+            .find(|k| self.removed.iter().any(|r| r == k))
+    }
+}
+
+impl std::fmt::Display for SpawnDiff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut parts: Vec<String> = Vec::new();
+        if self.launch_changed {
+            parts.push("launch".into());
+        }
+        if let Some((old, new)) = self.force_changed {
+            parts.push(format!("force_env_override {old}->{new}"));
+        }
+        if self.mcp_servers_changed {
+            parts.push("mcp_servers".into());
+        }
+        for (label, keys) in [
+            ("added", &self.added),
+            ("removed", &self.removed),
+            ("changed", &self.changed),
+        ] {
+            if !keys.is_empty() {
+                parts.push(format!("{label}=[{}]", keys.join(",")));
+            }
+        }
+        if parts.is_empty() {
+            f.write_str("nothing")
+        } else {
+            f.write_str(&parts.join("; "))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,8 +1396,8 @@ mod tests {
 
     /// A catalog probe and an attach land on the same [`PoolKey`] with
     /// fingerprints that can never match: `model_catalog_for_context`
-    /// implements a trait method carrying neither `force_env_override` nor the
-    /// remote-tools command, while an attach passes the assembled spawn env
+    /// implements a trait method that does not carry `force_env_override`,
+    /// while an attach passes the assembled spawn env
     /// through, whose `force_env_override` is unconditionally true
     /// (`runtime/env_assembly.rs`). This asserts the divergence rather than
     /// wishing it away — it is why the probe must not go through `ensure`.
@@ -1109,13 +1413,11 @@ mod tests {
         let attach = SpawnEnv {
             extra_env: extra_env.clone(),
             force_env_override: true,
-            remote_tools_cmd: Some(r#"["amuxd","remote-tools-mcp"]"#.to_string()),
             mcp_servers: None,
         };
         let probe = SpawnEnv {
             extra_env,
             force_env_override: false,
-            remote_tools_cmd: None,
             mcp_servers: None,
         };
         assert_ne!(
@@ -1242,6 +1544,136 @@ mod tests {
         shared.pool.kill_all();
     }
 
+    #[test]
+    fn spawn_diff_names_what_changed_without_values() {
+        let launch = ResolvedLaunch {
+            node: PathBuf::from("/n/node"),
+            package_root: PathBuf::from("/p"),
+            mode: LaunchMode::Host,
+        };
+        let old = SpawnEnv {
+            extra_env: HashMap::from([
+                (TEAM_PROVIDER_ENV.to_string(), "{\"models\":[]}".to_string()),
+                (GATEWAY_TOKEN_ENV.to_string(), "secret-token".to_string()),
+                ("KEEP".to_string(), "same".to_string()),
+                ("ROTATED".to_string(), "v1".to_string()),
+            ]),
+            force_env_override: true,
+            mcp_servers: Some("{}".into()),
+        };
+        let new = SpawnEnv {
+            extra_env: HashMap::from([
+                ("KEEP".to_string(), "same".to_string()),
+                ("ROTATED".to_string(), "v2".to_string()),
+                ("FRESH".to_string(), "x".to_string()),
+            ]),
+            force_env_override: false,
+            mcp_servers: Some("{}".into()),
+        };
+        let diff = SpawnDiff::between(&old, &launch.describe(), &new, &launch);
+        let text = diff.to_string();
+        assert_eq!(
+            text,
+            "force_env_override true->false; added=[FRESH]; \
+             removed=[TEAMCLU_TEAM_PROVIDER,tc_gateway_token]; changed=[ROTATED]"
+        );
+        assert!(!text.contains("secret-token"), "values never reach the log");
+        assert_eq!(diff.lost_team_binding(), Some(TEAM_PROVIDER_ENV));
+
+        let same = SpawnDiff::between(&old, &launch.describe(), &old, &launch);
+        assert_eq!(same.to_string(), "nothing");
+        assert_eq!(same.lost_team_binding(), None);
+    }
+
+    /// The Windows field report (2026-11-20): a session attached to a host
+    /// with the team models, and tens of milliseconds later the same pool key
+    /// was respawned from an env without them. Every `set_model team/…` after
+    /// that failed with "Model not found", and every prompt fell back to pi's
+    /// `unknown/unknown` ("No API key found for the selected model") until the
+    /// host was reaped. A same-key env that drops the team provider is a
+    /// degraded copy, never a real change (that changes the key), so the live
+    /// host and its env stay.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn same_key_env_without_the_team_provider_keeps_the_live_host() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+
+        let bin_dir = tempfile::tempdir().unwrap();
+        let fake_pi = bin_dir.path().join("fake-pi");
+        std::fs::write(&fake_pi, "#!/bin/sh\ncat > /dev/null\n").unwrap();
+        std::fs::set_permissions(&fake_pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pkg = bin_dir.path().join("pkg");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::write(pkg.join("dist/cli.js"), "").unwrap();
+        let config_path = crate::config::DaemonConfig::default_path();
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                "[actor]\nid = \"d\"\nname = \"m\"\n[mqtt]\nbroker_url = \"tcp://x:1883\"\n\
+                 [agents.pi]\nnode = {:?}\npackage_root = {:?}\nsession_host = \"rpc\"\n",
+                fake_pi.to_string_lossy(),
+                pkg.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let worktree = tempfile::tempdir().unwrap();
+        let shared = super::Shared::new();
+        let key = PoolKey {
+            domain: IsolationDomainKey::Workspace("ws-1".into()),
+            env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),
+            worktree: worktree.path().to_string_lossy().into_owned(),
+        };
+        let team_env = SpawnEnv {
+            extra_env: HashMap::from([
+                (TEAM_PROVIDER_ENV.to_string(), "{}".to_string()),
+                (GATEWAY_TOKEN_ENV.to_string(), "tok".to_string()),
+            ]),
+            force_env_override: true,
+            mcp_servers: None,
+        };
+
+        let attached = shared
+            .pool
+            .ensure_with_env(&shared, &key, team_env.clone())
+            .expect("attach spawn");
+
+        // A later caller records an env for the same key that has lost the
+        // team binding (the shape of a probe's, or of nothing recorded).
+        let again = shared
+            .pool
+            .ensure_with_env(&shared, &key, SpawnEnv::default())
+            .expect("ensure");
+        assert!(
+            Arc::ptr_eq(&attached, &again),
+            "the host with the team provider is kept"
+        );
+        assert!(attached.is_alive());
+        assert_eq!(
+            shared.pool.envs.lock().get(&key),
+            Some(&team_env),
+            "the key's record is put back, so a crash respawn rebuilds the team host"
+        );
+
+        // A same-key change that keeps the team binding still respawns.
+        let mut with_mcp = team_env.clone();
+        with_mcp.mcp_servers = Some("{\"x\":{}}".into());
+        let replaced = shared
+            .pool
+            .ensure_with_env(&shared, &key, with_mcp)
+            .expect("respawn");
+        assert!(
+            !Arc::ptr_eq(&attached, &replaced),
+            "a real change still respawns"
+        );
+
+        shared.pool.kill_all();
+    }
+
     /// GET /providers used to `kill_all()` when `provider.team` bytes changed.
     /// After daemon start the desktop fetches that list on the first send,
     /// while a prompt is already on the attached host — and a prewarmed
@@ -1359,6 +1791,233 @@ mod tests {
 
         in_flight.abort();
         shared.pool.kill_all();
+    }
+
+    /// Writes a fake `pi` and a `daemon.toml` pointing at it. The script is the
+    /// child's whole behaviour; the guards must outlive the test body.
+    #[cfg(unix)]
+    fn fake_pi_home(
+        script: &str,
+    ) -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        crate::test_brand_env::BrandEnvGuard,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let bin_dir = tempfile::tempdir().unwrap();
+        let fake_pi = bin_dir.path().join("fake-pi");
+        std::fs::write(&fake_pi, script).unwrap();
+        std::fs::set_permissions(&fake_pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pkg = bin_dir.path().join("pkg");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::write(pkg.join("dist/cli.js"), "").unwrap();
+        let config_path = crate::config::DaemonConfig::default_path();
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                "[actor]\nid = \"d\"\nname = \"m\"\n[mqtt]\nbroker_url = \"tcp://x:1883\"\n\
+                 [agents.pi]\nnode = {:?}\npackage_root = {:?}\nsession_host = \"rpc\"\n",
+                fake_pi.to_string_lossy(),
+                pkg.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        (home, bin_dir, env)
+    }
+
+    #[cfg(unix)]
+    fn test_key(workspace: &str, dir: &tempfile::TempDir) -> PoolKey {
+        PoolKey {
+            domain: IsolationDomainKey::Workspace(workspace.into()),
+            env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),
+            worktree: dir.path().to_string_lossy().into_owned(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_route(key: &PoolKey, turn_active: bool) -> crate::runtime::pi_rpc::Route {
+        let (tx, _rx) = crate::runtime::pi_rpc::event_sink::EventSink::capture();
+        crate::runtime::pi_rpc::Route {
+            event_tx: tx,
+            permission: crate::runtime::permission_policy::PermissionPolicy::Ask,
+            pool_key: key.clone(),
+            session_path: "/s.jsonl".into(),
+            turn_active,
+            user_cancel_requested: false,
+            turn_reply_to: None,
+            turn_requester: None,
+            translate: crate::runtime::pi_rpc::translate::TranslateState::default(),
+            last_entry_id: None,
+        }
+    }
+
+    #[cfg(unix)]
+    async fn wait_dead(proc: &PiProcess) -> bool {
+        let dead_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while proc.is_alive() && std::time::Instant::now() < dead_by {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        !proc.is_alive()
+    }
+
+    /// Saving a provider credential used to `kill_all()`: a reply running in
+    /// another workspace died with "process exited before responding". The
+    /// busy host must finish its turn and only then be replaced.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_credential_refresh_waits_for_a_running_turn() {
+        let _home = fake_pi_home("#!/bin/sh\ncat > /dev/null\n");
+        let busy_dir = tempfile::tempdir().unwrap();
+        let idle_dir = tempfile::tempdir().unwrap();
+        let shared = super::Shared::new();
+        let busy_key = test_key("ws-busy", &busy_dir);
+        let idle_key = test_key("ws-idle", &idle_dir);
+        let busy = shared
+            .pool
+            .ensure_with_env(&shared, &busy_key, SpawnEnv::default())
+            .expect("busy spawn");
+        let idle = shared
+            .pool
+            .ensure_with_env(&shared, &idle_key, SpawnEnv::default())
+            .expect("idle spawn");
+        shared
+            .routes
+            .lock()
+            .insert("pi:/busy.jsonl".into(), test_route(&busy_key, true));
+        shared
+            .routes
+            .lock()
+            .insert("pi:/idle.jsonl".into(), test_route(&idle_key, false));
+
+        let busy_keys: HashSet<PoolKey> = [busy_key.clone()].into_iter().collect();
+        assert_eq!(shared.pool.refresh_sparing(&busy_keys), 1);
+        assert!(
+            wait_dead(&idle).await,
+            "an attached but idle host is replaced now"
+        );
+        assert!(busy.is_alive(), "the host with a running turn is not");
+        assert!(shared.pool.is_pending_retire(&busy_key));
+
+        // Still mid-turn: the hook must not fire.
+        crate::runtime::pi_rpc::retire_stale_host_after_turn(&shared, &busy_key);
+        assert!(busy.is_alive());
+
+        // The turn settles.
+        shared
+            .routes
+            .lock()
+            .get_mut("pi:/busy.jsonl")
+            .unwrap()
+            .turn_active = false;
+        crate::runtime::pi_rpc::retire_stale_host_after_turn(&shared, &busy_key);
+        assert!(wait_dead(&busy).await, "replaced once its turn settled");
+        assert!(!shared.pool.is_pending_retire(&busy_key));
+
+        // The next prompt gets a fresh child for the same key.
+        let respawned = shared.pool.ensure(&shared, &busy_key).expect("respawn");
+        assert!(respawned.is_alive());
+        assert!(!Arc::ptr_eq(&busy, &respawned));
+        shared.pool.kill_all();
+    }
+
+    /// A host whose sessions all detached stayed resident until daemon exit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_host_with_no_session_is_reaped_after_the_ttl() {
+        let _home = fake_pi_home("#!/bin/sh\ncat > /dev/null\n");
+        let attached_dir = tempfile::tempdir().unwrap();
+        let loose_dir = tempfile::tempdir().unwrap();
+        let shared = super::Shared::new();
+        let attached_key = test_key("ws-attached", &attached_dir);
+        let loose_key = test_key("ws-loose", &loose_dir);
+        let attached = shared
+            .pool
+            .ensure_with_env(&shared, &attached_key, SpawnEnv::default())
+            .expect("attached spawn");
+        let loose = shared
+            .pool
+            .ensure_with_env(&shared, &loose_key, SpawnEnv::default())
+            .expect("loose spawn");
+        let keep: HashSet<PoolKey> = [attached_key.clone()].into_iter().collect();
+        let ttl = std::time::Duration::from_secs(600);
+        let t0 = Instant::now();
+
+        assert_eq!(
+            shared.pool.reap_idle(&keep, t0, ttl),
+            0,
+            "the clock starts now"
+        );
+        assert_eq!(
+            shared.pool.reap_idle(&keep, t0 + ttl / 2, ttl),
+            0,
+            "not yet"
+        );
+        // A session attaching in between resets the clock.
+        let both: HashSet<PoolKey> = [attached_key.clone(), loose_key.clone()]
+            .into_iter()
+            .collect();
+        assert_eq!(shared.pool.reap_idle(&both, t0 + ttl, ttl), 0);
+        assert_eq!(
+            shared.pool.reap_idle(&keep, t0 + ttl + ttl / 2, ttl),
+            0,
+            "detached again: a fresh ttl"
+        );
+        assert_eq!(shared.pool.reap_idle(&keep, t0 + ttl * 3, ttl), 1);
+        assert!(wait_dead(&loose).await);
+        assert!(attached.is_alive(), "a host with a session is never reaped");
+        assert!(
+            !shared.pool.envs.lock().contains_key(&loose_key),
+            "its recorded spawn env went with it"
+        );
+        assert!(shared.pool.envs.lock().contains_key(&attached_key));
+        shared.pool.kill_all();
+    }
+
+    /// Killing only the host left its MCP servers running with no parent.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn killing_a_host_takes_its_children_with_it() {
+        let pid_dir = tempfile::tempdir().unwrap();
+        let pid_file = pid_dir.path().join("child.pid");
+        let _home = fake_pi_home(&format!(
+            "#!/bin/sh\nsleep 300 &\necho $! > {:?}\ncat > /dev/null\n",
+            pid_file.to_string_lossy()
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let shared = super::Shared::new();
+        let key = test_key("ws", &dir);
+        let host = shared
+            .pool
+            .ensure_with_env(&shared, &key, SpawnEnv::default())
+            .expect("spawn");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let grandchild: i32 = loop {
+            if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                if let Ok(pid) = text.trim().parse() {
+                    break pid;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake pi never started"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        // SAFETY: signal 0 only probes for existence.
+        let alive = |pid: i32| unsafe { libc::kill(pid, 0) == 0 };
+        assert!(alive(grandchild));
+
+        shared.pool.kill_all();
+        assert!(wait_dead(&host).await);
+        let gone_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive(grandchild) && std::time::Instant::now() < gone_by {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!alive(grandchild), "the host's child outlived it");
     }
 
     /// The 2026-09-16 freeze: one session whose events nobody drains must not

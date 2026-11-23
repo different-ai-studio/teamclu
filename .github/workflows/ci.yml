@@ -1,10 +1,27 @@
 name: CI
 
+# Docs-only changes skip CI. The ignore list is deliberately narrow: only
+# docs/ and the root-level Markdown files, which no build or test reads.
+# Markdown elsewhere is NOT ignored — the daemon include_str!s SKILL.md and
+# knowledge templates, so those files are inputs. No check is required on main
+# today; if one becomes required, a skipped run would leave it pending.
 on:
   push:
-    branches: [main, master]
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
   pull_request:
-    branches: [main, master]
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+
+# A new push to a PR supersedes the run in flight. Pushes to main are never
+# cancelled, so every main commit keeps its own result.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   frontend:
@@ -26,12 +43,19 @@ jobs:
           node-version: lts/*
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6.1.0
+        uses: pnpm/action-setup@v6.1.1
+
+      # Ask pnpm where its store is instead of guessing: the path moved with
+      # pnpm 11 (…/store/v11 under the setup-pnpm dir), and the hard-coded v3
+      # path made every run log "Cache not found" and then save nothing.
+      - name: Locate pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       - name: Cache pnpm store
         uses: actions/cache@v6
         with:
-          path: ~/.local/share/pnpm/store/v3
+          path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: pnpm-store-${{ runner.os }}-
 
@@ -47,14 +71,12 @@ jobs:
       - name: Run unit tests
         run: pnpm test:unit
 
-      # The agent bridges are plain Node packages outside the pnpm workspace, so
-      # nothing here ever ran their tests. Both suites import only node builtins
-      # and their own module, so they need no install step.
-      - name: Run agent bridge tests
+      # The pi extension is plain Node outside the pnpm workspace, so nothing
+      # else runs its tests. Both suites import only node builtins and their
+      # own module, so they need no install step.
+      - name: Run pi extension tests
         run: >-
           node --test
-          apps/daemon/shared/session-context-client.test.mjs
-          apps/daemon/shared/session-context-plugin-install.test.mjs
           apps/daemon/assets/pi-extension/session-context.test.mjs
           apps/daemon/assets/pi-extension/cloud-token-redaction.test.mjs
 
@@ -79,12 +101,11 @@ jobs:
       - name: Run script tests
         run: pnpm test:scripts
 
-      # Smoke/E2E use tauri-mcp and require a built Tauri app (pnpm tauri:build),
-      # which this job does not build — so this stays advisory and never gates.
-      # Run locally or in a job that builds the app to execute smoke/e2e.
-      - name: Run smoke tests
-        run: pnpm test:smoke
-        continue-on-error: true
+      # Smoke/E2E (pnpm test:smoke) use tauri-mcp and need a built Tauri app,
+      # which this job does not build. The step that used to run them here
+      # failed on every run ("TeamClu binary not found") behind
+      # continue-on-error, so it told nobody anything; run them locally or in
+      # a job that builds the app.
 
   rust-check:
     name: Rust Format & Clippy
@@ -290,6 +311,34 @@ jobs:
           npm run build       # tsconfig.json — what the image actually compiles
           npm test
 
+  # services/fc sits outside the pnpm workspace, so `pnpm test:unit` never
+  # reaches it, and until this job its ~105 test files ran in no workflow: two
+  # of them sat red on main for weeks. The env-parity guard CLAUDE.md calls
+  # "enforced" also only ran after merge, inside the Belayo deploy.
+  #
+  # Node 22, not the image's Node 20: `npm test` passes a quoted glob to
+  # `node --test`, which only expands it from Node 21 on. The tests that need
+  # a local Supabase skip themselves when it is not reachable.
+  cloud-api:
+    name: Cloud API (typecheck, build, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/fc/package-lock.json
+
+      - name: Cloud API — typecheck, build, tests
+        working-directory: services/fc
+        run: |
+          npm ci
+          npm run typecheck   # tsconfig.test.json — covers test/ too
+          npm run build       # tsconfig.json — what the image actually compiles
+          npm test
+
   daemon-linux:
     name: Daemon Unit Tests (Linux)
     runs-on: ubuntu-latest
@@ -376,11 +425,33 @@ jobs:
       # The full unit-test suite is NOT run here: the broader daemon tests
       # carry Unix assumptions (paths, sockets) beyond this port's scope, so
       # behavioral verification on Windows is done manually on a real machine.
-      - name: Check amuxd compiles on Windows
-        run: cargo check -p amuxd --locked
-
+      # (A separate `cargo check -p amuxd` used to run first; the build below
+      # type-checks the same code, so it only compiled amuxd twice.)
       - name: Build amuxd on Windows
-        run: cargo build -p amuxd --locked
+        run: cargo build -p amuxd -p teamclu-introspect --locked
+
+      # Both sidecars are built with plain cargo, so they only skip
+      # VCRUNTIME140.dll because their build.rs links the VC runtime statically
+      # (static_vcruntime). A clean Windows install has no VC++ Redistributable,
+      # and an import here shows up as "找不到 VCRUNTIME140.dll" when the desktop
+      # starts the sidecar. The desktop exe is covered by the Tauri CLI.
+      - name: Sidecars must not import VCRUNTIME140.dll
+        shell: bash
+        run: |
+          set -euo pipefail
+          READOBJ="$(command -v llvm-readobj || true)"
+          [ -n "$READOBJ" ] || READOBJ="/c/Program Files/LLVM/bin/llvm-readobj.exe"
+          [ -x "$READOBJ" ] || { echo "::error::llvm-readobj not found on the runner"; exit 1; }
+          fail=0
+          for exe in target/debug/amuxd.exe target/debug/teamclu-introspect.exe; do
+            imports="$("$READOBJ" --coff-imports "$exe" | grep -i 'Name: .*\.dll' || true)"
+            echo "== $exe"; echo "$imports"
+            if echo "$imports" | grep -qi 'vcruntime'; then
+              echo "::error::$exe imports the VC runtime DLL; it will not start without the VC++ Redistributable"
+              fail=1
+            fi
+          done
+          exit $fail
 
   desktop-windows:
     name: Desktop (Windows)

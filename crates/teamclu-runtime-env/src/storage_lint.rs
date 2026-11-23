@@ -49,7 +49,6 @@ const DEBT: &[&str] = &[
     "apps/daemon/src/team_link.rs",
     "apps/daemon/src/team_shared_env.rs",
     "apps/daemon/src/workspace_meta_gate.rs",
-    "apps/desktop/crates/teamclu-introspect/src/config.rs",
     "apps/desktop/crates/teamclu-introspect/src/cron.rs",
     // Not a home directory either: probe files written INSIDE an
     // already-resolved skills root (`.teamclu-write-probe-<n>`,
@@ -71,7 +70,6 @@ const DEBT: &[&str] = &[
     "crates/teamclu-gateway/src/lib.rs",
     "crates/teamclu-runtime-env/src/active_session.rs",
     "crates/teamclu-runtime-env/src/env_catalog.rs",
-    "crates/teamclu-runtime-env/src/mcp_resolve.rs",
     "crates/teamclu-runtime-env/src/opencode_config.rs",
     "crates/teamclu-runtime-env/src/team_provider_sync.rs",
     "packages/app/src/components/settings/__tests__/GeneralSectionDefaultPermission.test.tsx",

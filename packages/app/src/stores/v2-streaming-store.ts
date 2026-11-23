@@ -59,6 +59,9 @@ export interface StreamingPermissionRequest {
   requesterActorId?: string;
 }
 
+/** streaming: pi 还没 settled。awaiting_reply: 已收到 Idle，等终稿。closed: 直播条撤掉。 */
+export type StreamTurnPhase = "streaming" | "awaiting_reply" | "closed";
+
 export interface AgentStreamEntry {
   sessionId: string;
   actorId: string;
@@ -72,6 +75,11 @@ export interface AgentStreamEntry {
   errorDetails: string | null;
   lastUpdate: number;           // ms epoch
   active: boolean;              // true while streaming; false after finalize
+  /**
+   * 直播条是否还该挂着。没这个字段的旧条目仍按 active && !error 判断。
+   * 只有 Idle（agent_settled）或明确收工才离开 streaming。
+   */
+  turnPhase?: StreamTurnPhase;
   /** Per-turn id; archived rows copy it for precise skipArchive cleanup. */
   streamId: string;
 }
@@ -184,6 +192,10 @@ interface State {
   ) => void;
   /** Re-open live rendering after statusChange marked the turn inactive too early. */
   markActorStreamActive: (sessionId: string, actorId: string) => void;
+  /** ACP Idle（pi agent_settled）。直播条继续挂着，等终稿。 */
+  noteTurnSettled: (sessionId: string, actorId: string) => void;
+  /** 撤掉直播条。只用于已 Idle 后终稿超时，或空回复。 */
+  closeLiveDock: (sessionId: string, actorId: string, opts?: { reason?: string }) => void;
   /** Empty active stream for statusChange ACTIVE — shows planning placeholder in UI. */
   beginPlanningPlaceholder: (sessionId: string, actorId: string) => void;
   /** Drop live byKey; archive tools/thinking only when parts_json did not persist them. */
@@ -325,6 +337,7 @@ function emptyEntry(sessionId: string, actorId: string): AgentStreamEntry {
     errorDetails: null,
     lastUpdate: Date.now(),
     active: true,
+    turnPhase: "streaming",
     streamId: nextStreamId(sessionId, actorId),
   };
 }
@@ -677,14 +690,22 @@ function finishTaskSubagentOnComplete(
   });
 }
 
-/** Get the entry to mutate. If a previous-turn entry exists but is inactive
- * (finalized), capture it for archival and start a fresh entry for the new
- * turn — keeps prior turns' thinking + tool_calls visible in the UI. */
+/** Get the entry to mutate. `awaiting_reply` stays in place, including late
+ * deltas after Idle. An active `streaming` turn stays too. A closed turn, or a
+ * turn already finalized (`active === false`), is archived for the next event. */
 function prepareMutation(state: State, sessionId: string, actorId: string): MutationPrep {
   const key = k(sessionId, actorId);
   const existing = state.byKey[key];
   if (!existing) return { entry: emptyEntry(sessionId, actorId), toArchive: null };
-  if (existing.active) return { entry: existing, toArchive: null };
+  const phase = existing.turnPhase;
+  // Idle 之后的迟到增量仍属于这一轮。streaming 且已经 finalize（active=false）
+  // 则是上一轮收尾，下一条事件要另开一轮。
+  if (
+    phase === "awaiting_reply" ||
+    (existing.active && (phase === "streaming" || phase == null))
+  ) {
+    return { entry: existing, toArchive: null };
+  }
   archiveCounter += 1;
   const archived: ArchivedEntry = {
     ...existing,
@@ -1353,6 +1374,7 @@ export const useV2StreamingStore = create<State>((set, get) => ({
             parts,
             lastUpdate: Date.now(),
             active: false,
+            turnPhase: existing.turnPhase ?? "streaming",
           },
         },
         revisionBySession: bumpRevision(state.revisionBySession, sessionId),
@@ -1384,6 +1406,7 @@ export const useV2StreamingStore = create<State>((set, get) => ({
           parts,
           lastUpdate: Date.now(),
           active: false,
+          turnPhase: existing.turnPhase ?? "streaming",
         },
       },
       revisionBySession: bumpRevision(state.revisionBySession, sessionId),
@@ -1415,6 +1438,7 @@ export const useV2StreamingStore = create<State>((set, get) => ({
           parts: syncToolParts(entryParts(existing), toolCalls),
           lastUpdate: Date.now(),
           active: false,
+          turnPhase: "closed",
         },
       },
       revisionBySession: bumpRevision(state.revisionBySession, sessionId),
@@ -1430,17 +1454,71 @@ export const useV2StreamingStore = create<State>((set, get) => ({
     get().archiveSubagentsForParent(sessionId, actorId);
   },
 
+  noteTurnSettled: (sessionId, actorId) => {
+    const key = k(sessionId, actorId);
+    const existing = get().byKey[key];
+    if (!existing || existing.turnPhase === "closed") return;
+    if (existing.turnPhase === "awaiting_reply") return;
+    set({
+      byKey: {
+        ...get().byKey,
+        [key]: { ...existing, turnPhase: "awaiting_reply", lastUpdate: Date.now() },
+      },
+      revisionBySession: bumpRevision(get().revisionBySession, sessionId),
+    });
+  },
+
+  closeLiveDock: (sessionId, actorId, opts) => {
+    const key = k(sessionId, actorId);
+    const state = get();
+    const existing = state.byKey[key];
+    const now = Date.now();
+    // Archived copies keep the phase they had when parked. The dock treats
+    // any streaming / awaiting_reply row as still replying, so a close that
+    // only updates byKey leaves that copy holding the bar.
+    let archivedChanged = false;
+    const archived = state.archived.map((entry) => {
+      if (entry.sessionId !== sessionId || entry.actorId !== actorId) return entry;
+      if (!isStreamInterruptible(entry)) return entry;
+      archivedChanged = true;
+      return { ...entry, active: false, turnPhase: "closed" as const, lastUpdate: now };
+    });
+    const liveOpen = Boolean(existing && isStreamInterruptible(existing));
+    if (!liveOpen && !archivedChanged) return;
+    const byKey = { ...state.byKey };
+    if (liveOpen && existing) {
+      const toolCalls = finishUnresolvedTools(existing.toolCalls, {
+        interrupted: opts?.reason === "interrupt",
+      });
+      byKey[key] = {
+        ...existing,
+        toolCalls,
+        parts: syncToolParts(entryParts(existing), toolCalls),
+        active: false,
+        turnPhase: "closed",
+        lastUpdate: now,
+      };
+    }
+    set({
+      byKey,
+      archived,
+      revisionBySession: bumpRevision(state.revisionBySession, sessionId),
+    });
+  },
+
   markActorStreamActive: (sessionId, actorId) => {
     const state = get();
     const key = k(sessionId, actorId);
     const existing = state.byKey[key];
     if (!existing || existing.active) return;
+    if (existing.turnPhase === "awaiting_reply" || existing.turnPhase === "closed") return;
     set({
       byKey: {
         ...state.byKey,
         [key]: {
           ...existing,
           active: true,
+          turnPhase: "streaming",
           lastUpdate: Date.now(),
         },
       },
@@ -1453,7 +1531,13 @@ export const useV2StreamingStore = create<State>((set, get) => ({
     const state = get();
     const key = k(sessionId, actorId);
     const existing = state.byKey[key];
-    if (existing?.active && streamEntryHasVisibleContent(existing)) {
+    const phase = existing?.turnPhase;
+    if (
+      existing?.active &&
+      phase !== "awaiting_reply" &&
+      phase !== "closed" &&
+      streamEntryHasVisibleContent(existing)
+    ) {
       logInterruptMsgDiag("stream.beginPlanning.skip", {
         sessionId,
         actorId,
@@ -1463,7 +1547,21 @@ export const useV2StreamingStore = create<State>((set, get) => ({
       return;
     }
 
-    const { entry, toArchive } = prepareMutation(state, sessionId, actorId);
+    let entry: AgentStreamEntry;
+    let toArchive: ArchivedEntry | null;
+    if (
+      existing &&
+      (phase === "awaiting_reply" || phase === "closed" || !existing.active)
+    ) {
+      archiveCounter += 1;
+      toArchive = {
+        ...existing,
+        archiveId: `${sessionId}::${actorId}::${archiveCounter}`,
+      };
+      entry = emptyEntry(sessionId, actorId);
+    } else {
+      ({ entry, toArchive } = prepareMutation(state, sessionId, actorId));
+    }
     logInterruptMsgDiag("stream.beginPlanning", {
       sessionId,
       actorId,
@@ -2041,7 +2139,11 @@ export function selectStreamsForSession(state: State, sessionId: string): AgentS
 }
 
 export function isStreamInterruptible(entry: AgentStreamEntry): boolean {
-  return entry.active && !entry.errorMessage;
+  if (entry.turnPhase === "closed") return false;
+  if (entry.turnPhase === "streaming" || entry.turnPhase === "awaiting_reply") {
+    return true;
+  }
+  return entry.active;
 }
 
 export function selectPersistedPlanForSession(

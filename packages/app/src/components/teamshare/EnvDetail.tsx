@@ -5,10 +5,12 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useEnvVarsStore } from '@/stores/env-vars'
-import { useTeamMembersStore } from '@/stores/team-members'
+import { useDeviceIdentityStore } from '@/stores/device-identity'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
 import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
+import { isTeamSecretMissingError } from '@/lib/team/team-secret-error'
+import type { TranslateWithFallback } from '@/lib/translate-fn'
 
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -34,17 +36,8 @@ const KEY_ID_RE = /^[a-z0-9_]{1,64}$/
 const PERSONAL_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /** Match SharedSecretsState init failures — keep keywords aligned with EnvVarsSection. */
-function isTeamSecretMissingError(message: string): boolean {
-  return (
-    message.includes('not initialized') ||
-    message.includes('Missing team encryption key') ||
-    message.includes('No team configured') ||
-    message.includes('derived_key not set')
-  )
-}
-
 function toastSaveError(
-  t: (key: string, fallback: string, options?: Record<string, string>) => string,
+  t: TranslateWithFallback,
   err: unknown,
 ) {
   const msg = err instanceof Error ? err.message : String(err)
@@ -73,18 +66,18 @@ function toastSaveError(
  *
  * The store only ever had `reset()` called on it — the one component that used
  * to load it was the old Settings > Env Variables page, and that navigation
- * entry is gone. So `currentNodeId` stayed null, every team write sent
+ * entry is gone. So `currentActorId` stayed null, every team write sent
  * `nodeId: ''`, and the Rust command refused it ("nodeId is required for team
  * env vars"). Loading it where it is consumed keeps that from drifting apart
  * again. The store call is idempotent and returns early once resolved.
  */
-function useCurrentNodeId(): string | null {
-  const currentNodeId = useTeamMembersStore((s) => s.currentNodeId)
-  const loadCurrentNodeId = useTeamMembersStore((s) => s.loadCurrentNodeId)
+function useCurrentActorId(): string | null {
+  const currentActorId = useDeviceIdentityStore((s) => s.currentActorId)
+  const loadCurrentActorId = useDeviceIdentityStore((s) => s.loadCurrentActorId)
   React.useEffect(() => {
-    if (!currentNodeId) void loadCurrentNodeId()
-  }, [currentNodeId, loadCurrentNodeId])
-  return currentNodeId
+    if (!currentActorId) void loadCurrentActorId()
+  }, [currentActorId, loadCurrentActorId])
+  return currentActorId
 }
 
 export function EnvCreateForm({
@@ -102,7 +95,7 @@ export function EnvCreateForm({
   const setCatalogEntry = useEnvVarsStore((s) => s.setCatalogEntry)
   // Team-scope writes are node-attributed; the Rust command rejects the call
   // outright without it (env_vars.rs: "nodeId is required for team env vars").
-  const currentNodeId = useCurrentNodeId()
+  const currentActorId = useCurrentActorId()
   const [scope, setScope] = React.useState<'team' | 'personal'>('team')
   const [keyId, setKeyId] = React.useState('')
   const [value, setValue] = React.useState('')
@@ -118,7 +111,7 @@ export function EnvCreateForm({
   // Team writes need the local daemon actor. Say so, rather than greying the
   // button out for a reason that is nowhere on screen.
   const teamBlocker =
-    scope === 'team' && !currentNodeId
+    scope === 'team' && !currentActorId
       ? t('teamShare.envDetail.needsDaemon', 'Waiting for the local daemon — team keys are attributed to it.')
       : keyId.length > 0 && !keyValid
         ? scope === 'team'
@@ -137,7 +130,7 @@ export function EnvCreateForm({
       await setCatalogEntry(scope, keyId.trim(), value, {
         description: description.trim() || undefined,
         category: category.trim() || 'custom',
-        ...(scope === 'team' ? { nodeId: currentNodeId ?? '' } : {}),
+        ...(scope === 'team' ? { nodeId: currentActorId ?? '' } : {}),
       })
       toast.success(t('teamShare.envDetail.added', 'Added'))
       onDone()
@@ -146,7 +139,7 @@ export function EnvCreateForm({
     } finally {
       setBusy(false)
     }
-  }, [canSubmit, setCatalogEntry, scope, keyId, value, description, category, currentNodeId, t, onDone])
+  }, [canSubmit, setCatalogEntry, scope, keyId, value, description, category, currentActorId, t, onDone])
 
   return (
     <div className="space-y-3">
@@ -304,7 +297,7 @@ export function EnvDetail({ keyId: selectionId }: { keyId: string }) {
   const undecryptable = isTeam && teamItem?.decrypted === false
   const setCatalogEntry = useEnvVarsStore((s) => s.setCatalogEntry)
   const deleteCatalogEntry = useEnvVarsStore((s) => s.deleteCatalogEntry)
-  const currentNodeId = useCurrentNodeId()
+  const currentActorId = useCurrentActorId()
   const select = useTeamShareBrowserStore((s) => s.select)
   const loadCounts = useTeamShareBrowserStore((s) => s.loadCounts)
 
@@ -331,7 +324,7 @@ export function EnvDetail({ keyId: selectionId }: { keyId: string }) {
         description: description.trim() || undefined,
         category: category.trim() || 'custom',
         // Only the team scope is node-attributed; the personal store ignores it.
-        ...(isTeam ? { nodeId: currentNodeId ?? '' } : {}),
+        ...(isTeam ? { nodeId: currentActorId ?? '' } : {}),
       })
       setEditing(false)
       setValue('')
@@ -341,13 +334,13 @@ export function EnvDetail({ keyId: selectionId }: { keyId: string }) {
     } finally {
       setBusy(false)
     }
-  }, [busy, value, setCatalogEntry, scope, isTeam, keyId, description, category, currentNodeId, t])
+  }, [busy, value, setCatalogEntry, scope, isTeam, keyId, description, category, currentActorId, t])
 
   const remove = React.useCallback(async () => {
     if (busy) return
     setBusy(true)
     try {
-      await deleteCatalogEntry(scope, keyId, isTeam ? { nodeId: currentNodeId ?? '' } : {})
+      await deleteCatalogEntry(scope, keyId, isTeam ? { nodeId: currentActorId ?? '' } : {})
       select('env', null)
       await loadCounts()
       toast.success(t('teamShare.envDetail.deleted', 'Deleted'))
@@ -360,7 +353,7 @@ export function EnvDetail({ keyId: selectionId }: { keyId: string }) {
     } finally {
       setBusy(false)
     }
-  }, [busy, deleteCatalogEntry, scope, isTeam, keyId, currentNodeId, select, loadCounts, t])
+  }, [busy, deleteCatalogEntry, scope, isTeam, keyId, currentActorId, select, loadCounts, t])
 
   if (isTeam && absent) return <LocalAgentRequiredCard />
   if (!item) return null

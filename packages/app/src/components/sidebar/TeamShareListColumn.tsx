@@ -1322,11 +1322,12 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                                 if (workspacePath) {
                                   try {
                                     await notifyDaemonSkillsChanged(encodeWorkspaceId(workspacePath))
-                                  } catch {
+                                  } catch (e) {
                                     toast.error(
                                       t(
                                         'teamShare.skillSavedRefreshFailed',
-                                        'Skill 已保存，但新会话可能暂时仍使用旧缓存。',
+                                        'Skill 已保存，但新会话可能暂时仍使用旧缓存。{{msg}}',
+                                        { msg: e instanceof Error ? e.message : String(e) },
                                       ),
                                     )
                                   }

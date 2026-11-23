@@ -118,8 +118,6 @@ pub struct RuntimeHandle {
     /// enqueue time — so queued prompts cannot overwrite an earlier turn.
     /// Cleared on Active→Idle.
     pub pending_reply_to_message_id: Option<String>,
-    /// Human member actor whose client receives remote-tool RPC for this runtime.
-    pub remote_tool_member_id: String,
     /// Gateway runtimes auto-allow ACP tool permissions; collab runtimes do not.
     pub is_gateway: bool,
     /// Fingerprint of the resolved personal/team/system snapshot used at spawn.
@@ -128,9 +126,6 @@ pub struct RuntimeHandle {
     /// changes effective bindings. Never exposed through RuntimeInfo.
     pub env_snapshot: Option<teamclu_runtime_env::ResolvedEnvSnapshot>,
     pub env_team_id: Option<String>,
-    /// Another session on the shared OpenCode host may have dropped MCP; refresh
-    /// on the next Idle transition (never detach/resume while Active).
-    pub remote_tools_mcp_refresh_pending: bool,
     /// Turn-scoped native skill baseline for unsupported-directory detection.
     pub native_skill_turn_guard: Option<crate::runtime::NativeSkillTurnGuard>,
 }
@@ -181,12 +176,10 @@ impl RuntimeHandle {
             last_processed_message_id: None,
             pending_reply_to_message_id: None,
             available_models: Vec::new(),
-            remote_tool_member_id: String::new(),
             is_gateway: false,
             env_fingerprint: None,
             env_snapshot: None,
             env_team_id: None,
-            remote_tools_mcp_refresh_pending: false,
             native_skill_turn_guard: None,
         }
     }
@@ -455,12 +448,10 @@ impl RuntimeHandle {
             last_processed_message_id: None,
             pending_reply_to_message_id: None,
             available_models: Vec::new(),
-            remote_tool_member_id: String::new(),
             is_gateway: false,
             env_fingerprint: None,
             env_snapshot: None,
             env_team_id: None,
-            remote_tools_mcp_refresh_pending: false,
             native_skill_turn_guard: None,
         }
     }

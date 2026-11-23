@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useAppsStore } from '@/stores/apps-store'
+import { getBackend } from '@/lib/backend'
 import type { AppCustomDomain, AppRow } from '@/lib/backend/types'
 
 /**
@@ -13,8 +14,9 @@ import type { AppCustomDomain, AppRow } from '@/lib/backend/types'
  * Three states, and the middle one is the whole reason this is not a single
  * text field: a bound-but-unverified domain has DNS records the owner still has
  * to publish, and those records carry a token that lives only on the server.
- * Re-binding the same name is idempotent precisely so this can re-read them
- * after a reload without invalidating a record the owner already added.
+ * They are read back with GET /custom-domain, which answers only an admin of
+ * the app; for anyone else it 404s, and the section shows the domain and its
+ * state from the app row without the controls they could not use.
  */
 
 function DnsRow({ record }: { record: AppCustomDomain['dns'][number] }) {
@@ -67,14 +69,34 @@ export function AppCustomDomainSection({ app }: { app: AppRow }) {
   const [busy, setBusy] = React.useState<'bind' | 'verify' | 'unbind' | null>(null)
   const [pendingMessage, setPendingMessage] = React.useState<string | null>(null)
 
+  // Null until asked; false once the server said this caller cannot manage it.
+  const [canManage, setCanManage] = React.useState<boolean | null>(null)
+
+  const bound = Boolean(app.customDomain)
+  const verified = Boolean(app.customDomainVerifiedAt)
+
+  const loadRecords = React.useCallback(async (): Promise<void> => {
+    try {
+      const view = await getBackend().apps.getAppCustomDomain(app.id)
+      setCanManage(view !== null)
+      // Only an unverified domain has anything left to publish.
+      setRecords(view && !view.verified ? view.dns : [])
+    } catch (e) {
+      // The records are a convenience; the domain and its state are already
+      // on screen from the row. Leave the manual "show records" path open.
+      console.warn('[AppCustomDomainSection] could not read the DNS records', e)
+    }
+  }, [app.id])
+
   React.useEffect(() => {
     setDraft(app.customDomain ?? '')
     setRecords([])
     setPendingMessage(null)
-  }, [app.id, app.customDomain])
+    setCanManage(null)
+    if (app.customDomain) void loadRecords()
+  }, [app.id, app.customDomain, app.customDomainVerifiedAt, loadRecords])
 
-  const bound = Boolean(app.customDomain)
-  const verified = Boolean(app.customDomainVerifiedAt)
+  const readOnly = canManage === false
 
   const doBind = async () => {
     const domain = draft.trim()
@@ -122,7 +144,7 @@ export function AppCustomDomainSection({ app }: { app: AppRow }) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder={t('apps.controlPanel.customDomainPlaceholder', 'app.example.com')}
-          disabled={busy !== null}
+          disabled={busy !== null || readOnly}
           className="h-8 flex-1 rounded-[7px] font-mono text-[12.5px]"
           data-testid="app-control-domain-input"
         />
@@ -131,7 +153,7 @@ export function AppCustomDomainSection({ app }: { app: AppRow }) {
           size="sm"
           variant="outline"
           className="h-8 shrink-0 rounded-[7px] text-[12px]"
-          disabled={busy !== null || !draft.trim() || draft.trim() === app.customDomain}
+          disabled={busy !== null || readOnly || !draft.trim() || draft.trim() === app.customDomain}
           onClick={() => void doBind()}
           data-testid="app-control-domain-bind"
         >
@@ -157,7 +179,7 @@ export function AppCustomDomainSection({ app }: { app: AppRow }) {
               ? t('apps.controlPanel.domainStatusVerified', '已生效')
               : t('apps.controlPanel.domainStatusPending', '待校验')}
           </span>
-          {!verified && (
+          {!verified && !readOnly && (
             <>
               <Button
                 type="button"
@@ -180,27 +202,30 @@ export function AppCustomDomainSection({ app }: { app: AppRow }) {
                   variant="ghost"
                   className="h-7 rounded-[7px] text-[11.5px]"
                   disabled={busy !== null}
-                  onClick={() => void doBind()}
+                  onClick={() => void loadRecords()}
+                  data-testid="app-control-domain-show-records"
                 >
                   {t('apps.controlPanel.domainShowRecords', '查看要添加的记录')}
                 </Button>
               )}
             </>
           )}
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="h-7 rounded-[7px] text-[11.5px] text-destructive"
-            disabled={busy !== null}
-            onClick={() => void doUnbind()}
-          >
-            {busy === 'unbind' ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              t('apps.controlPanel.domainUnbind', '解绑')
-            )}
-          </Button>
+          {!readOnly && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 rounded-[7px] text-[11.5px] text-destructive"
+              disabled={busy !== null}
+              onClick={() => void doUnbind()}
+            >
+              {busy === 'unbind' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                t('apps.controlPanel.domainUnbind', '解绑')
+              )}
+            </Button>
+          )}
         </div>
       )}
 

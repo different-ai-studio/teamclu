@@ -34,6 +34,11 @@ use super::types::{
 
 type RootFn = Arc<dyn Fn() -> PathBuf + Send + Sync>;
 
+/// How many run records a job's history file keeps. The history view shows
+/// 50 and the MCP tool 10; uncapped, a job that ran every few minutes grew its
+/// file without bound — and the file is rewritten on every heartbeat of a run.
+const MAX_RUN_RECORDS_PER_JOB: usize = 200;
+
 struct Loaded {
     root: PathBuf,
     data: CronJobsData,
@@ -434,6 +439,9 @@ impl CronStorage {
             Self::append_line(&root, record);
             return;
         }
+        if lines.len() > MAX_RUN_RECORDS_PER_JOB {
+            lines.drain(..lines.len() - MAX_RUN_RECORDS_PER_JOB);
+        }
         let tmp = path.with_extension("jsonl.tmp");
         let body = lines.join("\n") + "\n";
         if let Err(e) = std::fs::write(&tmp, body).and_then(|_| std::fs::rename(&tmp, &path)) {
@@ -642,6 +650,29 @@ pub(crate) mod tests {
         };
         assert_eq!(fresh.list_jobs().await.len(), 1);
         assert!(unclaimed.join("jobs.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn run_history_is_capped_when_a_run_is_updated() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = CronStorage::at(dir.path().to_path_buf());
+        let total = MAX_RUN_RECORDS_PER_JOB + 25;
+        for i in 0..total {
+            storage
+                .append_run(&make_run(&format!("run-{i}"), RunStatus::Success))
+                .await;
+        }
+        let last = format!("run-{}", total - 1);
+        storage
+            .update_last_run(&make_run(&last, RunStatus::Failed))
+            .await;
+
+        let runs = storage.get_runs("job-1", None).await;
+        assert_eq!(runs.len(), MAX_RUN_RECORDS_PER_JOB);
+        assert!(runs
+            .iter()
+            .any(|r| r.run_id == last && r.status == RunStatus::Failed));
+        assert!(!runs.iter().any(|r| r.run_id == "run-0"));
     }
 
     #[tokio::test]

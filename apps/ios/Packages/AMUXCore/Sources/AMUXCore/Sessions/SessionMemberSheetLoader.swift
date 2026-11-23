@@ -28,7 +28,7 @@ public struct MemberSheetAgent: Identifiable, Equatable, Sendable {
     /// resolving the worktree filesystem path on restart. Distinct from
     /// `workspacePath`, which still holds the same UUID for legacy display.
     public let workspaceID: String?
-    /// Backend spelling ("claude" / "opencode" / "codex" / "pi" / "cursor"),
+    /// Backend spelling ("pi"; legacy attachments also map to "pi"),
     /// derived from the attachment's `Amux_AgentType`. Used to map back to the
     /// proto enum for `runtimeStartRpc` on restart. Distinct from `agentType`,
     /// which carries the capitalised display name.
@@ -178,9 +178,8 @@ public struct SessionMemberSheetLoader: Sendable {
     /// Human-readable backend type for the chip's subtitle line.
     public static func displayName(forBackendType backendType: String?) -> String {
         switch backendType {
-        case "claude": return "Claude"
-        case "opencode": return "OpenCode"
-        case "codex": return "Codex"
+        // pi is the only runtime (ADR-0014); legacy spellings run pi too.
+        case "claude", "claude_code", "claude-code", "opencode", "codex", "cursor": return "Pi"
         case .some(let s) where !s.isEmpty: return s.capitalized
         default: return ""
         }

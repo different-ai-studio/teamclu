@@ -207,7 +207,7 @@ function mockSheetData(
       row.agent_id,
       create(RuntimeInfoSchema, {
         runtimeId: row.runtime_id ?? '',
-        agentType: row.backend_type === 'opencode' ? AgentType.OPENCODE : AgentType.CLAUDE_CODE,
+        agentType: AgentType.PI,
         currentModel: row.current_model ?? '',
         workspaceId: row.workspace_id ?? '',
       }),
@@ -265,7 +265,7 @@ describe('SessionActorSheet', () => {
     // Prime the runtime-state-store with a live ACTIVE/ACTIVE runtime
     const info = create(RuntimeInfoSchema, {
       runtimeId: '05532480',
-      agentType: AgentType.CLAUDE_CODE,
+      agentType: AgentType.PI,
       state: RuntimeLifecycle.ACTIVE,
       status: AgentStatus.ACTIVE,
       currentModel: 'claude-opus-4-7',
@@ -306,14 +306,14 @@ describe('SessionActorSheet', () => {
     // (`coalesce_session_runtimes` enforces it), so there is nothing to pick.
     useRuntimeStateStore.getState().upsert('rt-new', 'dev-a', create(RuntimeInfoSchema, {
       runtimeId: 'rt-new',
-      agentType: AgentType.CLAUDE_CODE,
+      agentType: AgentType.PI,
       state: RuntimeLifecycle.ACTIVE,
       status: AgentStatus.IDLE,
       currentModel: 'new-model',
     }))
     useRuntimeStateStore.getState().upsert('rt-old', 'dev-a', create(RuntimeInfoSchema, {
       runtimeId: 'rt-old',
-      agentType: AgentType.CLAUDE_CODE,
+      agentType: AgentType.PI,
       state: RuntimeLifecycle.ACTIVE,
       status: AgentStatus.IDLE,
       currentModel: 'old-model',

@@ -68,70 +68,6 @@ fn same_runtime_workspace(
 }
 
 impl DaemonServer {
-    /// Bind remote-tool routing metadata to a live runtime.
-    /// Route selection is message-level via `remote_context_id`; this binding is
-    /// retained only for compatibility/diagnostics and must not trigger ACP resume.
-    pub(crate) async fn bind_remote_tool_member(
-        &self,
-        runtime_id: &str,
-        session_id: &str,
-        member_actor_id: &str,
-        _team_id: &str,
-    ) {
-        if session_id.is_empty() || member_actor_id.is_empty() {
-            return;
-        }
-        {
-            let mut agents = self.agents.lock().await;
-            if let Some(h) = agents.get_handle_mut(runtime_id) {
-                h.remote_tool_member_id = member_actor_id.to_string();
-            }
-        }
-        {
-            let mut targets = self.session_remote_targets.lock().await;
-            targets.prune_expired();
-            targets.set(session_id, member_actor_id);
-        }
-        // Host-level `amuxd-remote-tools` injection is paused.
-    }
-
-    /// Legacy no-op. Remote-tools MCP is now a host baseline; reattaching a
-    /// session can perturb OpenCode's shared MCP registry.
-    pub(crate) async fn flush_pending_remote_tools_mcp_refresh(&self, runtime_id: &str) {
-        let mut agents = self.agents.lock().await;
-        if let Some(h) = agents.get_handle_mut(runtime_id) {
-            h.remote_tools_mcp_refresh_pending = false;
-        }
-    }
-
-    /// Legacy no-op. Host-level MCP baseline removes the need to refresh peers
-    /// by ACP resume.
-    async fn sync_peer_remote_tools_on_worktree(
-        &self,
-        _worktree: &str,
-        _workspace_id: &str,
-        _exclude_runtime_id: &str,
-        _team_id: &str,
-    ) {
-    }
-
-    /// Keep remote-tools routing metadata on a live collab runtime while MCP
-    /// auto-injection is paused. This does not claim that the runtime has the MCP.
-    pub(crate) async fn ensure_live_runtime_remote_tools(
-        &self,
-        runtime_id: &str,
-        session_id: &str,
-        requester_actor_id: &str,
-        team_id: &str,
-    ) {
-        if session_id.is_empty() || requester_actor_id.is_empty() {
-            return;
-        }
-
-        self.bind_remote_tool_member(runtime_id, session_id, requester_actor_id, team_id)
-            .await;
-    }
-
     /// Spawns a Claude Code subprocess and publishes lifecycle state
     /// transitions on the retained runtime state topic. Shared by legacy
     /// AcpCommand::StartAgent and RPC RuntimeStart handlers.
@@ -197,6 +133,98 @@ impl DaemonServer {
         gateway_binding_exists(self.backend.as_ref(), session_id).await
     }
 
+    /// Permission for a runtime that is about to be created or resumed.
+    ///
+    /// A mode the caller sent for this start wins. Otherwise the session's own
+    /// record wins, then a channel binding (full access), then the device-wide
+    /// default. With none of those, an interactive session stays Ask.
+    pub(super) fn permission_for_session_start(
+        &self,
+        session_id: &str,
+        is_gateway: bool,
+        client_mode: &str,
+    ) -> crate::runtime::PermissionPolicy {
+        let client = client_mode.trim();
+        if !client.is_empty() {
+            return crate::runtime::PermissionPolicy::resolve_for_session(is_gateway, client);
+        }
+        if let Some(stored) = self.sessions.permission_mode(session_id) {
+            let fallback = if is_gateway {
+                crate::runtime::PermissionPolicy::Full
+            } else {
+                crate::runtime::PermissionPolicy::Ask
+            };
+            return crate::runtime::PermissionPolicy::from_wire(Some(stored), fallback);
+        }
+        if is_gateway {
+            return crate::runtime::PermissionPolicy::Full;
+        }
+        if let Some(device_default) = self.sessions.default_permission_mode() {
+            return crate::runtime::PermissionPolicy::from_wire(
+                Some(device_default),
+                crate::runtime::PermissionPolicy::Ask,
+            );
+        }
+        crate::runtime::PermissionPolicy::Ask
+    }
+
+    /// Record a mode the caller marked as this session's own choice.
+    /// A resolved device default is applied for the start and is not recorded here.
+    pub(super) fn remember_client_permission(
+        &mut self,
+        session_id: &str,
+        client_mode: &str,
+        permission: crate::runtime::PermissionPolicy,
+        remember: bool,
+    ) {
+        if !remember || client_mode.trim().is_empty() {
+            return;
+        }
+        self.remember_permission_mode(session_id, permission);
+    }
+
+    /// Keep the one device-wide default a desktop reported. Empty does not clear it.
+    pub(super) fn note_device_permission_default(&mut self, mode: &str) {
+        let mode = mode.trim();
+        if mode.is_empty() {
+            return;
+        }
+        let normalized = crate::runtime::PermissionPolicy::from_wire(
+            Some(mode),
+            crate::runtime::PermissionPolicy::Ask,
+        )
+        .as_wire_str();
+        if self.sessions.default_permission_mode() == Some(normalized) {
+            return;
+        }
+        self.sessions.set_default_permission_mode(normalized);
+        if let Err(e) = self.sessions.save(&self.sessions_path) {
+            warn!(error = %e, "failed to persist device permission default");
+        }
+    }
+
+    pub(super) fn remember_permission_mode(
+        &mut self,
+        session_id: &str,
+        permission: crate::runtime::PermissionPolicy,
+    ) {
+        if session_id.is_empty() {
+            return;
+        }
+        let wire = permission.as_wire_str();
+        if self.sessions.permission_mode(session_id) == Some(wire) {
+            return;
+        }
+        self.sessions.set_permission_mode(session_id, wire);
+        if let Err(e) = self.sessions.save(&self.sessions_path) {
+            warn!(
+                session_id,
+                error = %e,
+                "failed to persist session permission mode"
+            );
+        }
+    }
+
     pub(crate) async fn apply_start_runtime(
         &mut self,
         agent_type: amux::AgentType,
@@ -205,15 +233,16 @@ impl DaemonServer {
         session_id: &str,
         initial_prompt: &str,
         initial_model_override: Option<String>,
-        requester_actor_id: &str,
         reset_backend_binding: bool,
         fork_from: Option<(String, String)>,
         client_permission_mode: &str,
+        remember_permission: bool,
+        device_default_mode: &str,
     ) -> Result<StartRuntimeOutcome, StartRuntimeError> {
         info!(workspace_id, worktree, session_id, "apply_start_runtime");
+        self.note_device_permission_default(device_default_mode);
 
         let team_id = self.config.team_id.clone().unwrap_or_default();
-        let wants_remote_mcp = !session_id.is_empty() && !requester_actor_id.is_empty();
 
         // Resolve workspace + worktree via the cloud-backed WorkspaceResolver.
         // The cloud UUID (`workspace_id`) IS the workspace id now — there is
@@ -400,10 +429,6 @@ impl DaemonServer {
         if !superseded.is_empty() {
             for rid in &superseded {
                 self.agents.lock().await.stop_runtime(rid).await;
-                self.remote_tool_turn_contexts
-                    .lock()
-                    .await
-                    .clear_runtime(rid);
             }
             info!(
                 session_id,
@@ -413,17 +438,11 @@ impl DaemonServer {
         }
 
         if let Some(existing) = existing_runtime {
-            let (existing_acp_session_id, existing_worktree, existing_remote_member) = {
+            let (existing_acp_session_id, existing_worktree) = {
                 let agents = self.agents.lock().await;
                 agents
                     .get_handle(&existing)
-                    .map(|h| {
-                        (
-                            h.acp_session_id.clone(),
-                            h.worktree.clone(),
-                            h.remote_tool_member_id.clone(),
-                        )
-                    })
+                    .map(|h| (h.acp_session_id.clone(), h.worktree.clone()))
                     .unwrap_or_default()
             };
             info!(
@@ -432,8 +451,6 @@ impl DaemonServer {
                 runtime_id = %existing,
                 acp_session_id = %existing_acp_session_id,
                 handle_worktree = %existing_worktree,
-                remote_tool_member_id = %existing_remote_member,
-                wants_remote_mcp,
                 "apply_start_runtime: dedup hit; reusing existing runtime"
             );
             // TODO(perf-runtime-start-throttle): See the same id on the client
@@ -482,22 +499,7 @@ impl DaemonServer {
                     }
                 }
             }
-            if wants_remote_mcp {
-                self.ensure_live_runtime_remote_tools(
-                    &existing,
-                    session_id,
-                    requester_actor_id,
-                    &team_id,
-                )
-                .await;
-            }
             if !initial_prompt.trim().is_empty() {
-                self.prepare_remote_tool_context_for_turn(
-                    &existing,
-                    session_id,
-                    requester_actor_id,
-                )
-                .await;
                 if let Err(e) = self
                     .agents
                     .lock()
@@ -542,7 +544,8 @@ impl DaemonServer {
             // "switch back to Ask" — the live pi route may already be Full from RPC.
             if !client_permission_mode.trim().is_empty() {
                 let is_gateway = self.session_has_gateway_binding(session_id).await;
-                let permission = crate::runtime::PermissionPolicy::resolve_for_session(
+                let permission = self.permission_for_session_start(
+                    session_id,
                     is_gateway,
                     client_permission_mode,
                 );
@@ -554,6 +557,12 @@ impl DaemonServer {
                 };
                 match cleared_result {
                     Ok(cleared) => {
+                        self.remember_client_permission(
+                            session_id,
+                            client_permission_mode,
+                            permission,
+                            remember_permission,
+                        );
                         self.publish_auto_granted_permissions(session_id, &cleared, "")
                             .await;
                     }
@@ -653,8 +662,8 @@ impl DaemonServer {
                         &ws_id,
                         initial_prompt,
                         initial_model_override.as_deref(),
-                        requester_actor_id,
                         client_permission_mode,
+                        remember_permission,
                     )
                     .await?
                 {
@@ -678,12 +687,12 @@ impl DaemonServer {
         // answer hangs the turn. `get_session_binding` returns the live binding
         // or the durable `gateway_key`, so RuntimeStart from the desktop keeps
         // the same full-access policy the gateway spawn path already uses
-        // (`is_gateway` ⇒ `PermissionPolicy::Full`).
+        // (`is_gateway` ⇒ `PermissionPolicy::Full`). A session's own choice is
+        // remembered. A device default is not copied onto the session; a
+        // restart with no client mode reads that one default.
         let is_gateway = self.session_has_gateway_binding(session_id).await;
-        let permission = crate::runtime::PermissionPolicy::resolve_for_session(
-            is_gateway,
-            client_permission_mode,
-        );
+        let permission =
+            self.permission_for_session_start(session_id, is_gateway, client_permission_mode);
         let context = self
             .assemble_execution_context(
                 &resolved_worktree,
@@ -741,11 +750,6 @@ impl DaemonServer {
 
         let forbid_new_session_fallback = resume_acp_session_id.is_some();
 
-        // Do not write / pass `remote-tools-host.json` — auto-inject of
-        // `amuxd-remote-tools` is paused. Re-enable via write_remote_tools_mcp_config.
-        let mcp_config_path = None;
-        let should_bind_remote_target = !session_id.is_empty() && !requester_actor_id.is_empty();
-
         if let Some(supervisor) = self.runtime_supervisor.as_ref() {
             supervisor
                 .require_skills_refresh_for_attach(&ws_id, std::path::Path::new(&resolved_worktree))
@@ -774,7 +778,6 @@ impl DaemonServer {
                 (!ws_id.is_empty()).then_some(ws_id.as_str()),
                 session_id,
                 initial_model_override,
-                mcp_config_path,
                 resume_acp_session_id,
                 forbid_new_session_fallback,
                 context,
@@ -817,14 +820,7 @@ impl DaemonServer {
             );
         }
 
-        if should_bind_remote_target {
-            self.bind_remote_tool_member(&new_id, session_id, requester_actor_id, &team_id)
-                .await;
-        }
-
         if !initial_prompt.trim().is_empty() {
-            self.prepare_remote_tool_context_for_turn(&new_id, session_id, requester_actor_id)
-                .await;
             if let Err(e) = self
                 .agents
                 .lock()
@@ -869,6 +865,12 @@ impl DaemonServer {
         if !session_id.is_empty() && !acp_sid.is_empty() {
             self.upsert_session_binding(session_id, &ws_id, agent_type, &acp_sid);
         }
+        self.remember_client_permission(
+            session_id,
+            client_permission_mode,
+            permission,
+            remember_permission,
+        );
 
         // ACTIVE — refresh the actor snapshot so clients see the attachment.
         let _ = self.publish_actor_state().await;
@@ -880,11 +882,6 @@ impl DaemonServer {
         // insertion point — the handle is fully populated (session_id)
         // and state is ACTIVE.
         self.catchup_runtime(&new_id).await;
-
-        if should_bind_remote_target {
-            self.sync_peer_remote_tools_on_worktree(&resolved_worktree, &ws_id, &new_id, &team_id)
-                .await;
-        }
 
         Ok(StartRuntimeOutcome {
             runtime_id: new_id,
@@ -937,11 +934,6 @@ impl DaemonServer {
             );
         }
 
-        self.remote_tool_turn_contexts
-            .lock()
-            .await
-            .clear_runtime(&runtime_id);
-
         if stop.purge_binding {
             let cloud_session_id = runtime_id.clone();
             if !stop.workspace_id.trim().is_empty() {
@@ -972,11 +964,6 @@ impl DaemonServer {
     /// Detach: refresh MQTT actor snapshot only — bindings stay in runtimes.toml.
     pub(crate) async fn publish_runtime_detached(&mut self, _runtime_id: &str) {
         let _ = self.publish_actor_state().await;
-    }
-
-    #[allow(dead_code)]
-    pub(crate) async fn publish_runtime_stopped(&mut self, runtime_id: &str) {
-        self.publish_runtime_detached(runtime_id).await;
     }
 
     pub(crate) async fn handle_start_runtime(
@@ -1013,10 +1000,11 @@ impl DaemonServer {
                 &start.session_id,
                 &start.initial_prompt,
                 initial_model_override.clone(),
-                &request.requester_actor_id,
                 start.reset_backend_binding,
                 fork_from.clone(),
                 &start.permission_mode,
+                start.remember_permission,
+                &start.default_permission_mode,
             )
             .await;
 
@@ -1045,10 +1033,11 @@ impl DaemonServer {
                             &start.session_id,
                             &start.initial_prompt,
                             initial_model_override,
-                            &request.requester_actor_id,
                             start.reset_backend_binding,
                             fork_from,
                             &start.permission_mode,
+                            start.remember_permission,
+                            &start.default_permission_mode,
                         )
                         .await
                     }
@@ -1216,8 +1205,33 @@ impl DaemonServer {
     ) -> crate::proto::teamclu::RpcResponse {
         use crate::proto::teamclu::{rpc_response, RpcResponse, SessionPermissionModeResult};
 
+        if body.set_device_default {
+            self.note_device_permission_default(&body.permission_mode);
+        }
+
         let session_id = body.session_id.trim();
         if session_id.is_empty() {
+            if body.set_device_default {
+                let effective = self
+                    .sessions
+                    .default_permission_mode()
+                    .unwrap_or(crate::runtime::PermissionPolicy::Ask.as_wire_str())
+                    .to_string();
+                return RpcResponse {
+                    request_id: request.request_id.clone(),
+                    success: true,
+                    error: String::new(),
+                    requester_client_id: request.requester_client_id.clone(),
+                    requester_actor_id: request.requester_actor_id.clone(),
+                    result: Some(rpc_response::Result::SessionPermissionModeResult(
+                        SessionPermissionModeResult {
+                            accepted: true,
+                            effective_mode: effective,
+                            rejected_reason: String::new(),
+                        },
+                    )),
+                };
+            }
             return RpcResponse {
                 request_id: request.request_id.clone(),
                 success: false,
@@ -1250,6 +1264,11 @@ impl DaemonServer {
 
         match sync_result {
             Ok(cleared) => {
+                // The dropdown sets `remember`. A global-default push applies
+                // to the live runtime and leaves the session record alone.
+                if body.remember {
+                    self.remember_permission_mode(session_id, permission);
+                }
                 self.publish_auto_granted_permissions(
                     session_id,
                     &cleared,

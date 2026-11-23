@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import React from 'react'
 import { RightPanel } from '@/components/panel/RightPanel';
 
@@ -10,14 +10,14 @@ vi.mock('react-i18next', () => ({
 }))
 
 // Mutable so tests can change the store's activeTab
-const mockStoreState = { activeTab: 'shortcuts' as string }
+const mockStoreState = { activeTab: 'files' as string }
 
 vi.mock('@/stores/workspace', () => ({
   useWorkspaceStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector(mockStoreState),
 }))
 
-const mockSelection = { activeSessionId: null as string | null }
+const mockSelection = { activeSessionId: null as string | null, currentSessionId: null as string | null }
 vi.mock('@/stores/session-selection-store', () => ({
   useSessionSelectionStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector(mockSelection),
@@ -38,9 +38,6 @@ vi.mock('@/components/workspace/FileBrowser', () => ({
     React.createElement('div', { 'data-testid': 'file-browser', 'data-variant': variant }),
 }))
 
-vi.mock('@/components/panel/ShortcutsPanel', () => ({
-  ShortcutsPanel: () => React.createElement('div', { 'data-testid': 'shortcuts-panel' }),
-}))
 
 vi.mock('@/components/panel/ActorsView', () => ({
   ActorsView: () => React.createElement('div', { 'data-testid': 'actors-view' }),
@@ -64,15 +61,22 @@ const mockLocalWorkspace = {
   bindingResolved: true,
   boundPath: '/Volumes/openbeta/workspace/teamclu' as string | null,
   needsWorkspace: false,
+  otherAgentNames: [] as string[],
 }
+const { switchToSessionWorkspaceIfNeeded } = vi.hoisted(() => ({
+  switchToSessionWorkspaceIfNeeded: vi.fn(async () => {}),
+}))
+vi.mock('@/lib/session/session-by-workspace', () => ({ switchToSessionWorkspaceIfNeeded }))
+
 vi.mock('@/hooks/use-session-local-workspace', () => ({
   useSessionLocalWorkspace: () => mockLocalWorkspace,
 }))
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockStoreState.activeTab = 'shortcuts'
+  mockStoreState.activeTab = 'files'
   mockSelection.activeSessionId = null
+  mockSelection.currentSessionId = null
   mockLocalWorkspace.hasLocalAgent = true
   mockLocalWorkspace.agentId = 'agent-local'
   mockLocalWorkspace.agentName = 'Mac-mini-3'
@@ -83,24 +87,16 @@ beforeEach(() => {
 })
 
 describe('RightPanel', () => {
-  it('renders the shortcuts tab from the store', () => {
-    render(React.createElement(RightPanel))
-    expect(screen.getByTestId('shortcuts-panel')).toBeDefined()
-    expect(screen.queryByTestId('file-browser')).toBeNull()
-  })
-
   it('renders the files tab as a panel-variant FileBrowser', () => {
     mockStoreState.activeTab = 'files'
     render(React.createElement(RightPanel))
     expect(screen.getByTestId('file-browser').getAttribute('data-variant')).toBe('panel')
-    expect(screen.queryByTestId('shortcuts-panel')).toBeNull()
   })
 
   it('defaultTab overrides the store tab', () => {
-    mockStoreState.activeTab = 'shortcuts'
+    mockStoreState.activeTab = 'actors'
     render(React.createElement(RightPanel, { defaultTab: 'files' }))
     expect(screen.getByTestId('file-browser')).toBeDefined()
-    expect(screen.queryByTestId('shortcuts-panel')).toBeNull()
   })
 
   // A session created a second ago may still be switching the workspace store.
@@ -166,14 +162,33 @@ describe('RightPanel', () => {
     expect(screen.queryByTestId('session-workspace-picker')).toBeNull()
   })
 
-  it('files tab still says agent not started while the store has not followed a known binding', () => {
+  // The window has not moved to a folder the session is bound to — mid-switch,
+  // or a switch that was skipped. Saying "Agent 尚未启动" there blamed the agent.
+  it('files tab names the bound folder when the store has not followed it', () => {
     mockStoreState.activeTab = 'files'
     mockLocalWorkspace.path = null
     mockLocalWorkspace.bindingResolved = true
     mockLocalWorkspace.boundPath = '/tmp/bound'
     render(React.createElement(RightPanel))
-    expect(screen.getByTestId('files-agent-not-started')).toBeDefined()
+    const pane = screen.getByTestId('files-workspace-not-switched')
+    expect(pane.textContent).toContain('还没切换到该会话的工作目录')
+    expect(pane.textContent).toContain('/tmp/bound')
+    expect(screen.queryByTestId('files-agent-not-started')).toBeNull()
     expect(screen.queryByTestId('files-no-workspace')).toBeNull()
+    expect(screen.queryByTestId('session-workspace-picker')).toBeNull()
+  })
+
+  it('the switch button runs the guarded session workspace switch', async () => {
+    mockStoreState.activeTab = 'files'
+    mockSelection.currentSessionId = 'sess-1'
+    mockLocalWorkspace.path = null
+    mockLocalWorkspace.bindingResolved = true
+    mockLocalWorkspace.boundPath = '/tmp/bound'
+    render(React.createElement(RightPanel))
+    fireEvent.click(screen.getByTestId('files-workspace-switch'))
+    await waitFor(() =>
+      expect(switchToSessionWorkspaceIfNeeded).toHaveBeenCalledWith('team-current', 'sess-1'),
+    )
   })
 
   it('files tab names the agent and its folder under the tree', () => {

@@ -105,8 +105,3 @@ export function parseReplyQuoteContent(
 
   return { agentNames, body };
 }
-
-/** @deprecated Prefer parseReplyQuoteContent — kept for call sites that only need text. */
-export function formatReplyQuoteSnippet(content: string, maxLen = 80): string {
-  return parseReplyQuoteContent(content, maxLen).body;
-}

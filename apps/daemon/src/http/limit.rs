@@ -12,7 +12,6 @@
 
 use axum::{
     extract::{Request, State},
-    http::header,
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -68,10 +67,9 @@ impl RateLimiter {
         }
     }
 
-    #[allow(dead_code)]
     pub fn vacuum(&self) {
         // Drop entries that have been at full capacity for a while. Cheap
-        // best-effort sweep called from the existing token reaper.
+        // best-effort sweep called from the token reaper (`spawn_reapers`).
         let now = Instant::now();
         let mut map = self.inner.lock();
         map.retain(|_, b| now.duration_since(b.last_refill).as_secs() < 600);
@@ -125,19 +123,6 @@ pub async fn rate_limit_layer(
 /// streams are never body-capped here.
 pub fn body_limit_layer(max_bytes: usize) -> tower_http::limit::RequestBodyLimitLayer {
     tower_http::limit::RequestBodyLimitLayer::new(max_bytes)
-}
-
-/// Custom rejection so the body-size limit returns problem+json
-/// instead of axum's default plain-text 413.
-#[allow(dead_code)]
-pub fn body_too_large_response() -> Response {
-    let mut resp = HttpError::validation("request body exceeds configured limit").into_response();
-    *resp.status_mut() = http::StatusCode::PAYLOAD_TOO_LARGE;
-    resp.headers_mut().insert(
-        header::CONTENT_TYPE,
-        header::HeaderValue::from_static("application/problem+json"),
-    );
-    resp
 }
 
 #[cfg(test)]

@@ -55,8 +55,10 @@ remains **尚未执行** until live FC and gateway behavior are measured.
 
 `.github/workflows/belayo-cloud-api.yml` builds `services/fc` as an immutable
 amd64 image, pushes it to Alibaba ACR through the Dokploy manager, rolls
-`teamclu-cloud-api-shadow-qjau6z` on `dokploy-worker-2`, and verifies both the
-internal and public health endpoints before updating Dokploy's desired image.
+`teamclu-cloud-api-shadow-qjau6z` on `dokploy-worker-2`, and asks the new task
+for `/healthz` over the overlay network before updating Dokploy's desired image
+(`.github/scripts/belayo-rollout.sh`; a failed check rolls the service back).
+A last step then checks the public endpoint from the runner.
 It runs automatically for Cloud API changes merged to `main` and can also be
 started manually.
 
@@ -92,6 +94,10 @@ MQTT_BROKER_URL=wss://mqtt.service.ucar.cc/mqtt
 MQTT_PUBLIC_TCP_BROKER_URL=mqtt://transport.service.ucar.cc:1883
 MQTT_USE_TLS=true
 ```
+
+`MQTT_INTERNAL_URL` is on the allowlist and stays empty here. Belayo's Cloud API
+is not on the EMQX compose network, so an internal hostname would fail every
+publish. Empty falls back to `MQTT_BROKER_URL`. Do not set it to `mqtt://emqx:1883`.
 
 The Dokploy `emqx` Compose service owns an HTTPS domain with these settings:
 

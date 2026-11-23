@@ -155,47 +155,6 @@ pub struct SessionWorkspaceRow {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimRow {
-    pub id: String,
-    pub idea_id: String,
-    pub actor_id: String,
-    pub claimed_at: String,
-    pub created_at: String,
-    pub updated_at: String,
-    pub deleted_at: Option<String>,
-    pub synced_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubmissionRow {
-    pub id: String,
-    pub idea_id: String,
-    pub actor_id: String,
-    pub content: Option<String>,
-    pub submitted_at: String,
-    pub created_at: String,
-    pub updated_at: String,
-    pub deleted_at: Option<String>,
-    pub synced_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeEventRow {
-    pub id: String,
-    pub session_id: String,
-    pub turn_id: Option<String>,
-    pub sender_actor_id: Option<String>,
-    pub kind: String,
-    pub content: String,
-    pub metadata_json: Option<String>,
-    pub model: Option<String>,
-    pub created_at: String,
-}
-
 /// Optional knobs for [`LocalCacheStore::message_load_session_with`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MessageLoadOptions<'a> {

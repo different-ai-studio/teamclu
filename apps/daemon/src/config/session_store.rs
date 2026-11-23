@@ -17,6 +17,19 @@ pub struct SessionBinding {
 pub struct SessionStore {
     #[serde(default, alias = "sessions")]
     pub bindings: Vec<SessionBinding>,
+    /// Last mode a client chose for a cloud session (`default` / `full_access`).
+    ///
+    /// Absent means the session was never switched, so a later start still uses
+    /// the gateway/ask default. Kept beside the bindings because a restart that
+    /// nobody is driving has no client to ask, and the choice is per session
+    /// rather than per workspace binding.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub permission_modes: HashMap<String, String>,
+    /// Device-wide default (`default` / `full_access`) last reported by a desktop.
+    /// Sessions with no record of their own follow this. Absent means the
+    /// desktop has not reported one, so those sessions stay Ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_permission_mode: Option<String>,
 }
 
 /// Legacy on-disk row (pre-binding refactor). Used only for migration.
@@ -98,12 +111,19 @@ impl SessionStore {
 
     /// Collapse duplicate composite keys (last row wins). Safety net for hand-edited files.
     fn deduped(self) -> Self {
+        let SessionStore {
+            bindings,
+            permission_modes,
+            default_permission_mode,
+        } = self;
         let mut by_key: HashMap<(String, String, i32), SessionBinding> = HashMap::new();
-        for binding in self.bindings {
+        for binding in bindings {
             by_key.insert(binding.composite_key(), binding);
         }
         Self {
             bindings: by_key.into_values().collect(),
+            permission_modes,
+            default_permission_mode,
         }
     }
 
@@ -143,7 +163,51 @@ impl SessionStore {
                 acp_session_id,
             });
         }
-        Self { bindings }
+        Self {
+            bindings,
+            permission_modes: HashMap::new(),
+            default_permission_mode: None,
+        }
+    }
+
+    /// Device-wide default last reported by a desktop, if one was recorded.
+    pub fn default_permission_mode(&self) -> Option<&str> {
+        self.default_permission_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|mode| !mode.is_empty())
+    }
+
+    /// Record the device-wide default. An empty mode leaves the stored value alone.
+    pub fn set_default_permission_mode(&mut self, mode: &str) {
+        let mode = mode.trim();
+        if mode.is_empty() {
+            return;
+        }
+        self.default_permission_mode = Some(mode.to_string());
+    }
+
+    /// The mode a client last chose for this session, if one was recorded.
+    pub fn permission_mode(&self, cloud_session_id: &str) -> Option<&str> {
+        self.permission_modes
+            .get(cloud_session_id)
+            .map(String::as_str)
+            .filter(|mode| !mode.is_empty())
+    }
+
+    /// Record `mode` (`default` / `full_access`). An empty mode clears the row
+    /// so the next start falls back to the gateway/ask default.
+    pub fn set_permission_mode(&mut self, cloud_session_id: &str, mode: &str) {
+        if cloud_session_id.is_empty() {
+            return;
+        }
+        let mode = mode.trim();
+        if mode.is_empty() {
+            self.permission_modes.remove(cloud_session_id);
+            return;
+        }
+        self.permission_modes
+            .insert(cloud_session_id.to_string(), mode.to_string());
     }
 
     pub fn save(&self, path: &Path) -> crate::error::Result<()> {
@@ -152,7 +216,7 @@ impl SessionStore {
         }
         let content = toml::to_string_pretty(self)
             .map_err(|e| crate::error::AmuxError::Config(e.to_string()))?;
-        std::fs::write(path, content)?;
+        super::atomic_file::write(path, &content)?;
         Ok(())
     }
 
@@ -316,6 +380,27 @@ created_at = 5
             store.lookup("cloud-1", "ws-a", 3).unwrap().acp_session_id,
             "acp-new"
         );
+    }
+
+    #[test]
+    fn permission_mode_round_trips_and_survives_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runtimes.toml");
+        let mut store = SessionStore::default();
+        store.upsert(SessionBinding::new("s1", "ws-a", 1, "acp-1"));
+        store.upsert(SessionBinding::new("s1", "ws-a", 1, "acp-2"));
+        store.set_permission_mode("s1", "full_access");
+        store.set_permission_mode("s2", "  ");
+        store.set_default_permission_mode("full_access");
+        store.set_default_permission_mode("  ");
+        store.save(&path).unwrap();
+
+        let loaded = SessionStore::load(&path).unwrap();
+        assert_eq!(loaded.bindings.len(), 1);
+        assert_eq!(loaded.permission_mode("s1"), Some("full_access"));
+        assert_eq!(loaded.permission_mode("s2"), None);
+        assert_eq!(loaded.permission_mode("missing"), None);
+        assert_eq!(loaded.default_permission_mode(), Some("full_access"));
     }
 
     #[test]

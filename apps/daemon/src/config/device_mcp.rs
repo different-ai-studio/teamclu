@@ -53,6 +53,16 @@ pub const RETIRED_DEVICE_MCP_NAMES: &[&str] = &["amuxd-send", "autoui"];
 /// Pinned on purpose: this process can click the user's whole desktop.
 const OPEN_COMPUTER_USE_PACKAGE: &str = "open-computer-use@1.1.4";
 
+/// The default `chrome-control` server's npm spec.
+const CHROME_DEVTOOLS_MCP_PACKAGE: &str = "chrome-devtools-mcp@latest";
+
+/// npm specs of the npx-launched servers this file seeds enabled by default, in
+/// the exact spelling their `npx -y <spec>` command uses. `pi install` warms
+/// npx's cache with these (`pi_install::prewarm_default_mcp_packages`): npx
+/// keys that cache on the spec string, so a different spelling would miss.
+pub(crate) const DEFAULT_NPX_MCP_PACKAGES: &[&str] =
+    &[CHROME_DEVTOOLS_MCP_PACKAGE, OPEN_COMPUTER_USE_PACKAGE];
+
 /// Seconds for the settings-page tool probe. The default probe waits 10s, and
 /// a cold `npx -y open-computer-use mcp` handshake takes about 17s, so the
 /// page otherwise reports `timeout after 10s` and zero tools.
@@ -318,7 +328,7 @@ pub fn ensure_device_mcp() -> Result<bool, WorkspaceControlError> {
             serde_json::json!({
                 "type": "local",
                 "enabled": true,
-                "command": ["npx", "-y", "chrome-devtools-mcp@latest", "--autoConnect"]
+                "command": ["npx", "-y", CHROME_DEVTOOLS_MCP_PACKAGE, "--autoConnect"]
             }),
         );
         changed = true;

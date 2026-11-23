@@ -123,7 +123,7 @@ export type MessageRow = {
   metadataJson?: string | null;
   model?: string | null;
   mentionsJson?: string | null;
-  /** 'supabase' | 'mqtt-live' | 'local-only' */
+  /** 'cloud_api' | 'mqtt-live' | 'local-only' (rows cached by older builds may say 'supabase') */
   origin: string;
   createdAt: string;
   updatedAt: string;
@@ -135,7 +135,7 @@ export type MessageRow = {
   partsJson?: string | null;
 };
 
-/** Mirror of Rust `OutboxRow`. One pending/in-flight send through Supabase +
+/** Mirror of Rust `OutboxRow`. One pending/in-flight send through the Cloud API +
  * MQTT with exponential backoff. `messageId` matches the optimistic UI bubble
  * id so live echo can flip status → delivered. */
 export type OutboxRow = {
@@ -174,19 +174,6 @@ export type IdeaRow = {
   updatedAt: string;
   deletedAt?: string | null;
   syncedAt: string;
-};
-
-type AgentRuntimeEventRow = {
-  id: string;
-  sessionId: string;
-  turnId?: string | null;
-  senderActorId?: string | null;
-  /** 'agent_tool_call' | 'agent_tool_result' | 'agent_thinking' */
-  kind: string;
-  content: string;
-  metadataJson?: string | null;
-  model?: string | null;
-  createdAt: string;
 };
 
 // ── actor ──────────────────────────────────────────────────────────────────
@@ -324,14 +311,6 @@ export async function loadSessionIdsForActor(
   return invoke("local_cache_session_participant_load_actor", { actorId, teamId });
 }
 
-export async function softDeleteSessionParticipant(
-  id: string,
-  deletedAt: string,
-): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("local_cache_session_participant_soft_delete", { id, deletedAt });
-}
-
 // ── message ────────────────────────────────────────────────────────────────
 
 export async function upsertMessagesBatch(rows: MessageRow[]): Promise<void> {
@@ -388,7 +367,7 @@ export async function softDeleteMessage(
 
 /** Merge parts_json into an existing message row without bumping updated_at.
  * Used when the streaming pipeline finalizes — we attach thinking/tool_call
- * parts to the AGENT_REPLY that already landed via Supabase/MQTT. */
+ * parts to the AGENT_REPLY that already landed via the Cloud API / MQTT. */
 export async function setMessageParts(
   messageId: string,
   partsJson: string,
@@ -489,15 +468,3 @@ export async function clearTeam(teamId: string): Promise<void> {
   if (!isTauri()) return;
   await invoke("local_cache_clear_team", { teamId });
 }
-
-// ── Backwards-compat re-exports for agent runtime event cache callers ───────
-// The narrow API is preserved; long-term these callers will migrate
-// to the generic upsert/load pattern.
-
-export async function insertAgentRuntimeEvent(
-  row: AgentRuntimeEventRow,
-): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("local_cache_agent_runtime_event_insert", { record: row });
-}
-

@@ -1,21 +1,10 @@
 import { create, type StoreApi } from "zustand";
 import { getBackend } from "@/lib/backend";
 import {
-  ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE,
-  PUBLIC_DEPLOY_CONFIRM_MESSAGE,
-  publicDeployConfirm,
-  legacyAppDomainChoice,
-} from "@/lib/apps/app-deploy-confirm";
-import {
   seedDaemonApp,
-  buildDaemonApp,
-  daemonAppManifest,
   cloneDaemonApp,
   daemonAppWorkdir,
   daemonLocalAppIds,
-  encodeWorkspaceId,
-  getDaemonEnvActivationDiagnostics,
-  type BuildAppResult,
   type DaemonGitHttpsCredential,
   type SeedAppResult,
 } from "@/lib/daemon/daemon-local-client";
@@ -25,7 +14,6 @@ import { useAuthStore } from "@/stores/auth-store";
 import i18n from "@/lib/i18n";
 import { usesStoredHttpsCredential } from "@/lib/apps/app-list-helpers";
 import { keepRelationship } from "@/lib/apps/app-relationship";
-import { artifactVerificationError } from "@/lib/apps/artifact-verification";
 import type { AppTypeId } from "@/lib/apps/app-types";
 import type {
   AppRow,
@@ -44,10 +32,6 @@ interface AppsState {
   loading: boolean;
   error: string | null;
   teamId: string | null;
-  /** App ids with a deploy in flight — drives per-row spinner / disabled state. */
-  deployingIds: string[];
-  /** Per-app deploy phase for the column footer progress bar. */
-  deployProgressByAppId: Record<string, DeployProgress>;
   /** Last session opened for each app — a hint for re-open, not a 1:1 binding. */
   sessionIdByAppId: Record<string, string>;
   /** Reverse map for control-panel app resolution (session → app). */
@@ -99,14 +83,14 @@ interface AppsState {
      * resolves the app's workdir from that binding.
      */
     adoptLocalDir?: string | null;
+    /** Agents to grant `write` on the new app (they get nothing by default). */
+    grantActorIds?: string[];
   }) => Promise<AppRow>;
   /** Re-ask the daemon which apps are on this machine. */
   refreshLocalApps: (teamId?: string | null) => Promise<void>;
   /** Clone a team app onto this machine (the library dialog's "download"). */
   download: (app: AppRow) => Promise<void>;
   reseed: (appId: string) => Promise<void>;
-  /** Full FC deploy: startDeploy → daemon build+upload → finalize. */
-  deploy: (appId: string) => Promise<void>;
   rename: (appId: string, name: string) => Promise<void>;
   /**
    * Bumped whenever a management tab changes something the control panel
@@ -152,31 +136,6 @@ interface AppsState {
 
 type SetState = StoreApi<AppsState>["setState"];
 
-export type DeployPhase = "prepare" | "build" | "finalize" | "done";
-
-interface DeployProgress {
-  phase: DeployPhase;
-  startedAt: number;
-}
-
-function setDeployProgress(set: SetState, appId: string, phase: DeployPhase): void {
-  set((s) => ({
-    deployProgressByAppId: {
-      ...s.deployProgressByAppId,
-      [appId]: { phase, startedAt: Date.now() },
-    },
-  }));
-}
-
-function clearDeployProgress(set: SetState, appId: string): void {
-  set((s) => {
-    if (!(appId in s.deployProgressByAppId)) return s;
-    const next = { ...s.deployProgressByAppId };
-    delete next[appId];
-    return { deployProgressByAppId: next };
-  });
-}
-
 /** Merge a fresh app row (from create/deploy/rename responses) into the store. */
 function mergeRow(set: SetState, row: AppRow): void {
   set((s) => ({ items: s.items.map((a) => (a.id === row.id ? keepRelationship(a, row) : a)) }));
@@ -215,23 +174,6 @@ async function patchStatus(set: SetState, appId: string, status: string): Promis
     if (updated) set((s) => ({ items: s.items.map((a) => (a.id === appId ? keepRelationship(a, updated) : a)) }));
   } catch (e) {
     console.warn("app status writeback failed (non-fatal)", e);
-  }
-}
-
-/**
- * Report a local build failure through the normal status update. Approval
- * cancellation only withdraws its unused preflight reservation.
- */
-async function finishFailedDeployAttempt(set: SetState, appId: string, deployToken: string, reason?: string): Promise<void> {
-  try {
-    if (reason) {
-      const updated = await getBackend().apps.updateAppDeployStatus(appId, "deploy_error", reason, deployToken);
-      if (updated) mergeRow(set, updated);
-    } else {
-      await getBackend().apps.cancelAppDeployPreflight(appId, deployToken);
-    }
-  } catch (e) {
-    console.warn("deploy attempt writeback failed (non-fatal)", e);
   }
 }
 
@@ -372,16 +314,6 @@ export function isGiteaManaged(app: Pick<AppRow, "gitAuthKind">): boolean {
   return app.gitAuthKind === "gitea_deploy_key";
 }
 
-function mapCloudDeployError(e: unknown): string {
-  if (e && typeof e === "object" && "code" in e && "message" in e) {
-    const err = e as { code: unknown; message: unknown };
-    if (typeof err.code === "string" && typeof err.message === "string") {
-      return mapDeployErrorReason(`${err.code}: ${err.message}`);
-    }
-  }
-  return mapDeployErrorReason(e instanceof Error ? e.message : String(e));
-}
-
 /**
  * Explain a seed failure the raw daemon text does not.
  *
@@ -517,6 +449,7 @@ async function runSeed(
   let result: SeedAppResult = { outcome: "unreachable", workdir: null, error: null };
   try {
     const cloneFrom = cloneUrl?.trim() || app.gitRemoteUrl;
+    const httpUrl = accountGitUrl(app);
     result = cloneCredential
       ? await seedDaemonApp(
           app.id,
@@ -528,15 +461,29 @@ async function runSeed(
           adoptExisting,
           cloneCredential,
         )
-      : await seedDaemonApp(
-          app.id,
-          app.teamId,
-          app.name,
-          app.type,
-          cloneFrom,
-          deployKeyPem,
-          adoptExisting,
-        );
+      : httpUrl
+        ? // Per-account git: no http(s) import credential, then the HTTPS
+          // address the checkout's people and agents should push to.
+          await seedDaemonApp(
+            app.id,
+            app.teamId,
+            app.name,
+            app.type,
+            cloneFrom,
+            deployKeyPem,
+            adoptExisting,
+            null,
+            httpUrl,
+          )
+        : await seedDaemonApp(
+            app.id,
+            app.teamId,
+            app.name,
+            app.type,
+            cloneFrom,
+            deployKeyPem,
+            adoptExisting,
+          );
   } catch (e) {
     console.warn("app seed kick failed (non-fatal)", e);
   } finally {
@@ -558,6 +505,11 @@ async function runSeed(
 }
 
 /** The deploy-key half of a credential reply, or null for any other kind. */
+/** The HTTPS address a per-account app's checkout should use, or null to stay on SSH. */
+function accountGitUrl(app: AppRow): string | null {
+  return app.gitAccountAuth && app.gitHttpUrl?.trim() ? app.gitHttpUrl.trim() : null;
+}
+
 function deployKeyOf(cred: AppGitCredential | null): AppGitDeployKeyCredential | null {
   return cred?.authKind === "deploy_key" ? cred : null;
 }
@@ -688,7 +640,9 @@ export async function ensureAppCheckout(
   try {
     result = httpsCredential
       ? await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem, httpsCredential)
-      : await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem);
+      : accountGitUrl(app)
+        ? await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem, null, accountGitUrl(app))
+        : await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem);
   } catch (e) {
     console.warn("app clone kick failed (non-fatal)", e);
   } finally {
@@ -742,8 +696,6 @@ export const useAppsStore = create<AppsState>((set, get) => ({
   loading: false,
   error: null,
   teamId: null,
-  deployingIds: [],
-  deployProgressByAppId: {},
   sessionIdByAppId: {},
   appIdBySessionId: {},
   selectedAppId: null,
@@ -890,183 +842,6 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     // quiet (status is already `error`).
     if (result.outcome === "failed" && app.gitRemoteUrl) {
       await toastError("仓库克隆失败", mapSeedErrorReason(result.error));
-    }
-  },
-  deploy: async (appId) => {
-    const app = get().items.find((a) => a.id === appId);
-    if (!app) return;
-    if (get().deployingIds.includes(appId)) return;
-    if (app.provisionStatus !== "ready") {
-      await toastError("应用尚未就绪，无法部署");
-      return;
-    }
-
-    if (app.workspaceId) {
-      // Daemon `/v1/workspaces/:id/*` routes take a base64url-encoded absolute
-      // path, not the cloud workspace UUID stored on the app row.
-      const workdirInfo = await daemonAppWorkdir(app.id, app.teamId);
-      const workspacePath = workdirInfo?.workdir?.trim();
-      if (workspacePath) {
-        const envDiag = await getDaemonEnvActivationDiagnostics(
-          encodeWorkspaceId(workspacePath),
-          app.teamId,
-        );
-        if (envDiag?.workspace_has_active_turn) {
-          const accepted = await publicDeployConfirm.run(
-            i18n.t("apps.deployActiveTurnWarning", ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE),
-          );
-          if (!accepted) return;
-        }
-      }
-    }
-
-    let useAppCodeDomain = false;
-    const domainChoice = legacyAppDomainChoice(app);
-    set((s) => ({ deployingIds: [...s.deployingIds, appId] }));
-    setDeployProgress(set, appId, "prepare");
-    let reservationToken: string | undefined;
-    let buildStarted = false;
-    let deployError: string | undefined;
-    try {
-      // Only a Gitea-managed app deploys a commit off the forge. An imported
-      // app has no repo of ours and no credential for the one it came from, so
-      // it deploys the workdir as it sits — which is how it worked before
-      // Gitea existed, and going through Gitea unconditionally broke it.
-      const viaGitea = isGiteaManaged(app);
-      let gitCommitSha: string | undefined;
-      if (viaGitea) {
-        const head = await getBackend().apps.getGitHead(appId);
-        if (!head?.sha) {
-          throw new Error("无法读取 Gitea 默认分支 HEAD，请确认仓库已 push");
-        }
-        gitCommitSha = head.sha;
-      }
-
-      // What the checkout declares, read before the deploy is minted: a
-      // container app is handed a registry to push to and everything else a
-      // presigned URL to upload to, and only the machine holding the checkout
-      // can say which this is.
-      const declared = await daemonAppManifest(appId, app.teamId);
-      if (viaGitea && (!declared.clean || declared.gitCommitSha !== gitCommitSha)) {
-        throw new Error("部署前请提交并推送所有改动，且本地 HEAD 必须与 Gitea HEAD 一致");
-      }
-      const revision = viaGitea ? gitCommitSha! : declared.contentDigest;
-      // The UI presents the exact server preview before using this intent.
-      // Keep the token so every exit can release this attempt's reservation.
-      const preflight = await getBackend().apps.preflightAppDeploy(appId, {
-        revision, declaration: declared.declaration, ...(gitCommitSha ? { gitCommitSha } : {}), migrationIntent: true,
-      });
-      reservationToken = preflight.token;
-      if (app.authMode === "none" || domainChoice || preflight.preview.changes.length > 0) {
-        const fields = preflight.preview.changes.map(c => `${c.field}: ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join("\n");
-        const message = app.authMode === "none"
-          ? i18n.t("apps.deployPublicWarning", PUBLIC_DEPLOY_CONFIRM_MESSAGE)
-          : i18n.t("apps.deployConfirmMessage", "确认部署此应用？");
-        const accepted = await publicDeployConfirm.run(
-          `${message}${fields ? `\n\n本次变更：\n${fields}` : ""}`,
-          domainChoice ? {
-            domainChoice,
-            onDomainChoice: (checked) => { useAppCodeDomain = checked; },
-          } : undefined,
-        );
-        if (!accepted) return;
-      }
-      const started = await getBackend().apps.deployApp(appId, {
-        ...(useAppCodeDomain ? { useAppCodeDomain: true } : {}),
-        ...(gitCommitSha ? { gitCommitSha } : {}),
-        revision,
-        declaration: declared.declaration,
-        preflightToken: preflight.token,
-      });
-      reservationToken = started.deployToken;
-      buildStarted = true;
-      mergeRow(set, started);
-
-      setDeployProgress(set, appId, "build");
-      let gitRemoteUrl: string | undefined;
-      let deployKeyPem: string | undefined;
-      let deployKeyId: number | null = null;
-      if (viaGitea) {
-        const cred = deployKeyOf(await getBackend().apps.getGitCredential(appId));
-        if (!cred?.privateKeyPem || !cred.remoteUrl) {
-          throw new Error("无法获取 Gitea 部署凭证");
-        }
-        gitRemoteUrl = cred.remoteUrl;
-        deployKeyPem = cred.privateKeyPem;
-        deployKeyId = cred.deployKeyId ?? null;
-      }
-
-      let build: BuildAppResult;
-      try {
-        build = await buildDaemonApp(appId, app.teamId, {
-        gitCommitSha,
-          revision,
-          gitRemoteUrl,
-          deployKeyPem,
-          // Exactly one of these is set — see the control plane's startDeploy.
-          presignedPut: started.presignedPut,
-          image: started.image,
-        });
-      } finally {
-        // The daemon only needs the key for the fetch inside the build; hand it
-        // back whether that succeeded or not.
-        await returnGitCredential(appId, deployKeyId);
-      }
-      if (build.outcome !== "built") {
-        const reason =
-          build.outcome === "unreachable"
-            ? mapDeployErrorReason("amuxd daemon is not connected")
-            : mapDeployErrorReason(build.error ?? "应用构建或上传失败");
-        deployError = reason;
-        await toastError("部署失败：构建未完成", reason);
-        return;
-      }
-      if (!build.declaration) {
-        throw new Error("amuxd build response did not include declaration");
-      }
-      if (build.revision !== revision || (viaGitea && build.gitCommitSha !== revision)) {
-        throw new Error("构建版本与预检版本不一致，已停止发布");
-      }
-      const verificationError = artifactVerificationError(build.artifactVerification, revision);
-      if (verificationError) throw new Error(verificationError);
-
-      // No success toast. It showed `fcEndpoint` — the raw FC function URL —
-      // which is not the address the product hands out (that is the app's
-      // vanity domain, and the row already carries it into the UI). A popup
-      // naming the wrong host on every deploy is worse than no popup: the
-      // merged row flips the row to live on its own.
-      setDeployProgress(set, appId, "finalize");
-      // Finalize the exact revision that passed preflight and was built.
-      const builtSha = build.gitCommitSha ?? gitCommitSha;
-      const finalized = await getBackend().apps.finalizeDeploy(appId, {
-        ...(builtSha ? { gitCommitSha: builtSha } : {}),
-        revision,
-        // How the app says it starts. The control plane used to assume one
-        // answer for every app; this is the app's own, read off its
-        // declaration by the daemon that just built it.
-        declaration: build.declaration,
-        // The image that build actually pushed. A container app has no code
-        // object, so finalizing without it would point the function at whatever
-        // the previous deploy left in OSS.
-        ...(build.image ? { image: build.image } : {}),
-        artifactVerification: build.artifactVerification!,
-        deployToken: started.deployToken,
-      });
-      // The merged row carries `authModePendingRedeploy` straight from the
-       // server, so a successful finalize clears the warning on its own — there
-       // is no local flag left to reset here.
-      mergeRow(set, finalized);
-      reservationToken = undefined;
-      setDeployProgress(set, appId, "done");
-    } catch (e) {
-      const reason = mapCloudDeployError(e);
-      deployError = reason;
-      await toastError(i18n.t("apps.deployFailed", "Deploy failed"), reason);
-    } finally {
-      if (reservationToken) await finishFailedDeployAttempt(set, appId, reservationToken, buildStarted ? deployError : undefined);
-      set((s) => ({ deployingIds: s.deployingIds.filter((id) => id !== appId) }));
-      // Leave `done` visible briefly; footer clears the bar after linger.
-      window.setTimeout(() => clearDeployProgress(set, appId), 1200);
     }
   },
   rename: async (appId, name) => {
@@ -1273,7 +1048,6 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       set((s) => ({
         items: s.items.filter((a) => a.id !== appId),
         selectedAppId: s.selectedAppId === appId ? null : s.selectedAppId,
-        deployingIds: s.deployingIds.filter((id) => id !== appId),
       }));
       const { toast } = await import("sonner");
       toast.success(i18n.t("apps.deleted", "App deleted"));

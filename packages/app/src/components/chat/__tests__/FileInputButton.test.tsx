@@ -40,7 +40,7 @@ describe('FileInputButton', () => {
     const input = screen.getByTestId('file-input-browser') as HTMLInputElement
     const clickSpy = vi.spyOn(input, 'click')
 
-    fireEvent.click(screen.getByRole('button', { name: /attach files/i }))
+    fireEvent.click(screen.getByRole('button', { name: /添加附件/ }))
     expect(clickSpy).toHaveBeenCalledTimes(1)
     expect(openDialog).not.toHaveBeenCalled()
 
@@ -57,7 +57,7 @@ describe('FileInputButton', () => {
 
     render(<FileInputButton onFilesSelected={onFilesSelected} />)
 
-    fireEvent.click(screen.getByRole('button', { name: /attach files/i }))
+    fireEvent.click(screen.getByRole('button', { name: /添加附件/ }))
     await vi.waitFor(() => {
       expect(openDialog).toHaveBeenCalledTimes(1)
       expect(stat).toHaveBeenCalledWith('/tmp/a.png')

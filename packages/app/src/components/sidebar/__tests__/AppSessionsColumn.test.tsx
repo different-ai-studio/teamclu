@@ -18,7 +18,6 @@ vi.mock('@/components/ui/sidebar', () => ({
 }))
 vi.mock('@/components/app-sidebar', () => ({ SidebarCollapseToggle: () => null }))
 vi.mock('@/components/ui/traffic-lights', () => ({ TrafficLights: () => null }))
-vi.mock('@/components/apps/AppDeployFooter', () => ({ AppDeployFooter: () => null }))
 
 const listAppSessions = vi.fn()
 vi.mock('@/lib/backend', () => ({

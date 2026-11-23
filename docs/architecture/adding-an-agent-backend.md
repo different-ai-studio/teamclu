@@ -1,5 +1,7 @@
 # 接入一个新 Agent Type：适配文档与要点
 
+> **已废弃（ADR-0014，2026-09）.** 本地 runtime 已迁移至 pi-only；opencode / cursor / claude 后端已删除。本文保留作历史参考，现行架构见 `docs/architecture/pi-agent-backend.md`。
+
 > 面向的问题：TeamClu 现在有 opencode / pi / cursor / claude 四个 local agent
 > backend。本文记录**再接一个需要改什么、哪些坑是共性的**，以及四个已有实现
 > 在每个适配点上的真实做法对比。

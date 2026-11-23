@@ -38,11 +38,12 @@ struct SessionMemberSheetLoaderStaticHelpersTests {
                                                    now: now) == .active)
     }
 
-    @Test("displayName(forBackendType:) maps known backends, capitalizes others, empty on nil")
+    @Test("displayName(forBackendType:) shows pi for pi and legacy backends, capitalizes others, empty on nil")
     func backendDisplayName() {
-        #expect(SessionMemberSheetLoader.displayName(forBackendType: "claude") == "Claude")
-        #expect(SessionMemberSheetLoader.displayName(forBackendType: "opencode") == "OpenCode")
-        #expect(SessionMemberSheetLoader.displayName(forBackendType: "codex") == "Codex")
+        #expect(SessionMemberSheetLoader.displayName(forBackendType: "pi") == "Pi")
+        #expect(SessionMemberSheetLoader.displayName(forBackendType: "claude") == "Pi")
+        #expect(SessionMemberSheetLoader.displayName(forBackendType: "opencode") == "Pi")
+        #expect(SessionMemberSheetLoader.displayName(forBackendType: "codex") == "Pi")
         #expect(SessionMemberSheetLoader.displayName(forBackendType: "gemini") == "Gemini",
                 "unknown non-empty types are capitalized as a fallback")
         #expect(SessionMemberSheetLoader.displayName(forBackendType: nil).isEmpty)

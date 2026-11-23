@@ -13,11 +13,25 @@ import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
+import { assertTeamSkillSlug, canonicalTeamSkillSlug, teamSkillDisplayName } from "./team-skill-slug.js";
+import {
+  appLevelAtLeast,
+  callAgentInheritance,
+  higherAppLevel,
+  parseAppPermissionLevel,
+  storedAppPermissionLevel,
+  type AppPermissionLevel,
+} from "./app-permission.js";
 import {
   lookupMemberInboxRecipients,
   publishSessionParticipantsChanged,
   removedMemberUserId,
 } from "./session-participant-notify.js";
+import {
+  appAccessRecipientUserId,
+  publishAppAccessChanged,
+  type AppAccessGrantee,
+} from "./app-access-notify.js";
 import { buildSessionReadInboxPayload } from "./push-dispatch.js";
 import { ADMIN_LIST_CAP, clampPage, IN_FILTER_BATCH, jwtSessionId, resolvePlatformOperator, safeSearch } from "./platform-operators.js";
 import {
@@ -143,7 +157,13 @@ import {
 import type { AppLogKind } from "./provisioning/app-logs.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
-import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
+import {
+  giteaOrgName,
+  giteaUnavailable,
+  GITEA_AUTH_KIND,
+  repoOwnerFromRemote,
+} from "./provisioning/gitea.js";
+import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "./provisioning/gitea-sync-runner.js";
 import {
   APP_GIT_HTTPS_CREDENTIAL_KIND,
   deserializeGitHttpsCredential,
@@ -235,9 +255,10 @@ import {
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, MESSAGE_ATTACHMENT_SCAN_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
   appFunctionTargetFromRow, APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
-  mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
-  mapActor, mapTeamMember, mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
+  mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut,
+  mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
   mapFeedbackRow, mapLeaderboardRow, chunkedIn,
+  appGitAccountFields,
 } from "./supabase-repo/shared.js";
 export { publishableKeyFromEnv } from "./supabase-repo/shared.js";
 export { createSupabaseAuthRepository } from "./supabase-repo/auth.js";
@@ -356,7 +377,7 @@ function applySyncKeyset(query, cursor, limit) {
 
 function normalizeWorkspacePath(path: string | null | undefined): string | null {
   if (path == null) return null;
-  const trimmed = path.trim().replace(/\\/g, "/");
+  const trimmed = stripWindowsVerbatimPrefix(path.trim().replace(/\\/g, "/"));
   if (!trimmed) return null;
   const isAbs = trimmed.startsWith("/");
   const parts: string[] = [];
@@ -371,6 +392,31 @@ function normalizeWorkspacePath(path: string | null | undefined): string | null 
   const joined = parts.join("/");
   if (isAbs) return joined ? `/${joined}` : "/";
   return joined || null;
+}
+
+/**
+ * Drop Windows' verbatim prefix (`\\?\`), given a path whose backslashes are
+ * already forward slashes. Rust's `Path::canonicalize` returns verbatim paths
+ * on Windows, and amuxd before the `dunce` fix sent them as-is. Kept, the
+ * prefix made the path read as unix-absolute and normalize to `/?/C:/...`,
+ * which exists on no machine — every runtime on such a workspace failed with
+ * WORKSPACE_PATH_UNAVAILABLE, and the row never matched the same directory
+ * registered in plain form, so it was inserted as a duplicate.
+ *
+ * Also accepts the already-collapsed `/?/` form those rows were stored with.
+ *
+ * A verbatim UNC path (`\\?\UNC\server\share`) becomes `//server/share` and
+ * then normalizes exactly like a plain UNC path does today. That plain-UNC
+ * result (one leading slash) is its own, older problem and deliberately not
+ * changed here: changing it would re-key existing UNC rows.
+ */
+function stripWindowsVerbatimPrefix(path: string): string {
+  const verbatim = /^\/\/?\?\//.exec(path);
+  if (!verbatim) return path;
+  const rest = path.slice(verbatim[0].length);
+  if (/^UNC\//i.test(rest)) return `//${rest.slice(4)}`;
+  if (/^[A-Za-z]:(\/|$)/.test(rest)) return rest;
+  return path;
 }
 
 /**
@@ -500,19 +546,10 @@ async function archiveSessionsForWorkspace(supabase, workspaceId) {
   });
 }
 
-const APP_PERMISSION_LEVELS = new Set(["view", "prompt", "admin"]);
-
-function parseAppPermissionLevel(raw: string): string {
-  if (!APP_PERMISSION_LEVELS.has(raw)) {
-    throw new ApiError(400, "validation_failed", "permissionLevel must be view, prompt, or admin");
-  }
-  return raw;
-}
-
 function mapAppAccessRow(r: any) {
   return {
     memberId: r.member_id,
-    permissionLevel: r.permission_level,
+    permissionLevel: storedAppPermissionLevel(r.permission_level) ?? r.permission_level,
     grantedByMemberId: r.granted_by_member_id ?? null,
     createdAt: appIso(r.created_at)!,
   };
@@ -574,6 +611,13 @@ function mapAppCronRunRow(r: any) {
  * of the offending value in `detail`. Rethrowing one as-is puts the user's
  * business data into an HTTP body and, worse, into whatever logs the error.
  */
+const APP_DATA_CONSTRAINT_ERRORS: Record<string, { status: number; code: string; message: string }> = {
+  "23505": { status: 409, code: "duplicate_key", message: "a row with this unique value already exists" },
+  "23502": { status: 400, code: "not_null_violation", message: "a required column was left empty" },
+  "23503": { status: 409, code: "foreign_key_violation", message: "the row refers to a row that does not exist, or is still referred to" },
+  "23514": { status: 400, code: "check_violation", message: "a value breaks one of the table's check constraints" },
+};
+
 async function runAppData<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
@@ -587,8 +631,13 @@ async function runAppData<T>(fn: () => Promise<T>): Promise<T> {
     // the column's type ("abc" against an integer column). That is the caller's
     // input being wrong, not the database failing.
     if (sqlstate === "22P02" || sqlstate === "22007") {
-      throw new ApiError(400, "invalid_filter_value", "the filter value does not match the column's type");
+      throw new ApiError(400, "invalid_filter_value", "a value does not match the column's type");
     }
+    // Constraint violations on a write are the row being wrong, not the
+    // database failing — and the user can fix them. Named by SQLSTATE only:
+    // the driver's message and detail carry the offending value.
+    const constraint = APP_DATA_CONSTRAINT_ERRORS[sqlstate ?? ""];
+    if (constraint) throw new ApiError(constraint.status, constraint.code, constraint.message);
     console.warn(`[apps] app data query failed (sqlstate ${sqlstate ?? "unknown"})`);
     throw new ApiError(502, "app_data_query_failed", `the app database rejected the query${sqlstate ? ` (${sqlstate})` : ""}`);
   }
@@ -676,6 +725,10 @@ export function createSupabaseBusinessRepository(options) {
     deployUnavailableReason,
     gitea,
     giteaUnavailableReason,
+    // GITEA_ACCOUNT_AUTH: new apps under the TeamClu org, access mirrored to
+    // Gitea (provisioning/gitea-sync.ts). Read from the environment unless a
+    // caller (a test) says otherwise.
+    giteaAccountAuth = giteaAccountAuthEnabled(),
     gotrue,
     gotrueUnavailableReason,
     teardownDeps,
@@ -706,7 +759,8 @@ export function createSupabaseBusinessRepository(options) {
     fanoutMessage,
     // Optional inbox publish for a roster change. Absent in tests and in
     // processes that have no MQTT publisher. Failures are logged and do not
-    // change the HTTP result of the seat write.
+    // change the HTTP result of the seat write. Despite the name it is a plain
+    // `inbox/<user_id>` publisher, and app access hints ride it too.
     publishSessionParticipantInbox,
   } = options;
 
@@ -727,7 +781,28 @@ export function createSupabaseBusinessRepository(options) {
 
   // A partner-issued session has no auth.sessions row in this Supabase project.
   // Its JWT is verified locally only when the explicit trust secret is set.
-  async function getCurrentUser() {
+  //
+  // Every caller-identity read in this file goes through here. Eighteen of
+  // them used to call `supabase.auth.getUser()` directly, which skipped the
+  // trusted-JWT branch (those endpoints answered 401 to a partner session) and
+  // cost a GoTrue round trip each time - several per request on the paths that
+  // check membership more than once.
+  //
+  // The answer is remembered for the life of this repository, which is one
+  // request and one access token, so it cannot change underneath a caller.
+  // Only a resolved user is remembered: a failed lookup is retried.
+  let currentUser: Promise<any> | null = null;
+  function getCurrentUser(): Promise<any> {
+    if (currentUser) return currentUser;
+    const lookup = resolveCurrentUser();
+    currentUser = lookup;
+    void lookup.then(
+      (out) => { if (out?.error || !out?.data?.user?.id) currentUser = null; },
+      () => { currentUser = null; },
+    );
+    return lookup;
+  }
+  async function resolveCurrentUser() {
     if (!trustedExternalJwtSecret) return supabase.auth.getUser();
     try {
       const user = await verifyTrustedExternalJwt(accessToken, trustedExternalJwtSecret);
@@ -818,7 +893,7 @@ export function createSupabaseBusinessRepository(options) {
   }
 
   async function requireCallerTeamOwner(targetTeamId) {
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    const { data: authData, error: authErr } = await getCurrentUser();
     if (authErr || !authData?.user?.id) {
       throw new ApiError(401, "missing_auth", "authenticated user required");
     }
@@ -845,7 +920,7 @@ export function createSupabaseBusinessRepository(options) {
   }
 
   async function requireCallerTeamMember(targetTeamId) {
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    const { data: authData, error: authErr } = await getCurrentUser();
     if (authErr || !authData?.user?.id) {
       throw new ApiError(401, "missing_auth", "authenticated user required");
     }
@@ -868,7 +943,7 @@ export function createSupabaseBusinessRepository(options) {
   // which returns the oldest actor across ALL teams (not team-scoped) and has
   // caused cross-team leakage bugs.
   async function requireCallerTeamMemberActor(targetTeamId) {
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    const { data: authData, error: authErr } = await getCurrentUser();
     if (authErr || !authData?.user?.id) {
       throw new ApiError(401, "missing_auth", "authenticated user required");
     }
@@ -898,6 +973,18 @@ export function createSupabaseBusinessRepository(options) {
     return createServiceRoleClient();
   }
 
+  const giteaSync = makeGiteaSyncRunner({ gitea, enabled: giteaAccountAuth, serviceRoleClient });
+
+  /**
+   * The Gitea client bound to the owner an app's repo actually lives under:
+   * `GITEA_OWNER` for apps created before per-org repos, the TeamClu org's
+   * `o<uuid>` for newer ones. Read from the stored remote, so no column says it.
+   */
+  function appGitea(app: { git_remote_url?: string | null }) {
+    if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
+    return gitea.withOwner(repoOwnerFromRemote(app.git_remote_url) ?? gitea.owner);
+  }
+
   function scheduleSessionParticipantsChanged(sessionId: string, removedUserId: string | null = null) {
     if (!publishSessionParticipantInbox) return;
     void publishSessionParticipantsChanged({
@@ -907,6 +994,21 @@ export function createSupabaseBusinessRepository(options) {
       publish: publishSessionParticipantInbox,
     }).catch((err: unknown) => {
       console.error("[session-participants] notify failed (swallowed):", err);
+    });
+  }
+
+  /** Best-effort: a grant or revoke succeeds whether or not the hint lands. */
+  function scheduleAppAccessChanged(teamId: string, appId: string, grantee: AppAccessGrantee | null | undefined) {
+    if (!publishSessionParticipantInbox) return;
+    const userId = appAccessRecipientUserId(grantee);
+    if (!userId) return;
+    void publishAppAccessChanged({
+      teamId,
+      appId,
+      userId,
+      publish: publishSessionParticipantInbox,
+    }).catch((err: unknown) => {
+      console.error("[app-access] notify failed (swallowed):", err);
     });
   }
 
@@ -935,6 +1037,53 @@ export function createSupabaseBusinessRepository(options) {
       .maybeSingle();
     if (error) throw error;
     return Boolean(grant);
+  }
+
+  /**
+   * Write an agent's own working state on its seat in a session - the cursor
+   * and the model (ADR-0005).
+   *
+   * `session_participants` has no UPDATE policy, so an update on the caller's
+   * token matches nothing; PostgREST reports that as success and the routes
+   * answered 204 while the columns stayed frozen. As with
+   * `setParticipantWorkspace`, the write goes through the service role after
+   * the checks a policy would have made: the caller must see the session and
+   * speak for the agent (be it, own it, or hold admin on it). The daemon is
+   * the caller in practice and is the agent itself, so the common case costs
+   * no agent lookup.
+   *
+   * 404 when the actor has no seat: a write that changes nothing is the bug
+   * this replaces, not a success.
+   */
+  async function writeAgentSeat(sessionId, actorId, patch, what) {
+    const { data: session, error: sessionErr } = await supabase
+      .from("sessions")
+      .select("id, team_id")
+      .eq("id", sessionId)
+      .maybeSingle();
+    if (sessionErr) throw sessionErr;
+    if (!session) throw new ApiError(404, "not_found", "session not found");
+    const callerActorId = await requireCallerTeamMemberActor(String(session.team_id));
+    const admin = await serviceRoleClient(what);
+    if (callerActorId !== actorId) {
+      const agent = await findAgent(admin, actorId);
+      if (!(await callerSpeaksForAgent(admin, callerActorId, actorId, agent))) {
+        throw new ApiError(
+          403,
+          "forbidden",
+          "only the agent, its owner or one of its admins can write its session state",
+        );
+      }
+    }
+    const { data: seat, error } = await admin
+      .from("session_participants")
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq("session_id", sessionId)
+      .eq("actor_id", actorId)
+      .select("actor_id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!seat) throw new ApiError(404, "not_found", "participant not found");
   }
 
   /**
@@ -1054,12 +1203,12 @@ export function createSupabaseBusinessRepository(options) {
       const admin = await serviceRoleClient("revoke deploy keys on deauth");
       const { data: app, error } = await admin
         .from("apps")
-        .select("id, git_auth_kind")
+        .select("id, git_auth_kind, git_remote_url")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
       if (!app || app.git_auth_kind !== GITEA_AUTH_KIND) return;
-      await revokeActorDeployKeys(gitea, appId, memberId);
+      await revokeActorDeployKeys(appGitea(app), appId, memberId);
     } catch (e) {
       console.warn("[apps] deploy key revoke failed after deauth (non-fatal)", e);
     }
@@ -1085,7 +1234,7 @@ export function createSupabaseBusinessRepository(options) {
    * this is the daemon's own actor and never a human's.
    */
   async function resolveCurrentAgentActor(teamId: string): Promise<string | null> {
-    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    const { data: userData, error: userErr } = await getCurrentUser();
     if (userErr) throw userErr;
     const userId = userData?.user?.id;
     if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -1118,17 +1267,21 @@ export function createSupabaseBusinessRepository(options) {
     if (app.git_auth_kind !== GITEA_AUTH_KIND) return null;
     if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
 
-    const jit = await issueJitDeployKey(gitea, appId, actorId, Date.now(), { readOnly });
+    const jit = await issueJitDeployKey(appGitea(app), appId, actorId, Date.now(), { readOnly });
     return {
       remoteUrl: app.git_remote_url,
       authKind: "deploy_key" as const,
       ...jit,
+      // Per-account auth: the daemon keeps using this deploy key over SSH for
+      // its own seed/fetch, and points the checkout's people and agents at
+      // gitHttpUrl (spec §6). Absent → the checkout stays on SSH as before.
+      ...appGitAccountFields(app),
     };
   }
 
   /** The bearer caller's actor in `teamId`, or null; same lookup as the `resolveCallerActorForTeam` method, for the module hosts below. */
   async function callerActorForTeam(teamId: string): Promise<{ id: string } | null> {
-    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    const { data: userData, error: userErr } = await getCurrentUser();
     if (userErr) throw userErr;
     const userId = userData?.user?.id;
     if (!userId) return null;
@@ -1246,20 +1399,6 @@ export function createSupabaseBusinessRepository(options) {
       }
     },
 
-    async listDiscoverableTeams() {
-      const { data, error } = await supabase.rpc("list_discoverable_teams");
-      if (error) throw error;
-      return (data ?? []).map((r: any) => ({
-        id: r.team_id,
-        name: r.team_name,
-        slug: r.team_slug ?? null,
-        orgId: r.org_id ?? null,
-        orgName: r.org_name ?? null,
-        visibility: r.visibility ?? "public",
-        isMember: r.is_member === true,
-      }));
-    },
-
     // Self-service join of a PUBLIC team. Invoked when
     // the user picks a public team they are not yet a member of. The RPC adds a
     // plain 'member' actor (idempotent if already joined) and rejects anything
@@ -1296,6 +1435,8 @@ export function createSupabaseBusinessRepository(options) {
         userId: caller.user.id,
         code: joinedRole,
       });
+      // A new teammate reads the team's team-visible apps through its Gitea team.
+      await giteaSync.team(joinedTeamId);
       return mapTeam({
         id: joinedTeamId,
         name: row.team_name ?? row.name,
@@ -1579,12 +1720,20 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async removeTeamActor(_teamId, actorId) {
+      // Read the team before the actor is gone: the removal cascades their app
+      // grants away, and Gitea has to drop the same access.
+      let teamId: string | null = _teamId ?? null;
+      if (!teamId) {
+        const { data: actorRow } = await supabase.from("actors").select("team_id").eq("id", actorId).maybeSingle();
+        teamId = actorRow?.team_id ?? null;
+      }
       // Explicit amux schema: client default is already amux, but keep this
       // belt-and-suspenders so we never resolve a stale public.remove_team_actor.
       const { error } = await supabase
         .schema("amux")
         .rpc("remove_team_actor", { p_actor_id: actorId });
       if (error) throw error;
+      if (teamId) await giteaSync.team(teamId);
     },
 
     async updateCurrentActorProfile(actorId, { displayName, avatarUrl }) {
@@ -1684,6 +1833,10 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async setLlmConfig(teamId, input) {
+      // Every agent in the team sends its prompts to this baseUrl, so only an
+      // owner or admin may change it. The table's write policies say the same
+      // (20261119130000); this check answers 403 instead of an RLS error.
+      await this.requireTeamAdmin(teamId);
       const { error } = await supabase
         .from("team_workspace_config")
         .upsert(
@@ -2264,46 +2417,6 @@ export function createSupabaseBusinessRepository(options) {
       return { items };
     },
 
-    async getTeamDirectory(teamId) {
-      // Column names here are PostgREST aliases, not a rename: `actor_directory`
-      // exposes the discriminator as `actor_type` and `team_members` keys the
-      // actor as `member_id`. Selecting the mapper-side names directly (`kind`,
-      // `actor_id`) made this endpoint a guaranteed 500 — "column
-      // actor_directory.kind does not exist" — at any team size. Aliasing keeps
-      // mapActor/mapTeamMember and the response shape untouched.
-      const [actorsRes, membersRes] = await Promise.all([
-        supabase
-          .from("actor_directory")
-          .select("id, team_id, kind:actor_type, display_name, avatar_url, user_id")
-          .eq("team_id", teamId)
-          .or(LISTABLE_AGENT_STATUS_OR_FILTER),
-        supabase
-          .from("team_members")
-          .select("actor_id:member_id, team_id, joined_at")
-          .eq("team_id", teamId),
-      ]);
-      if (actorsRes.error) throw actorsRes.error;
-      if (membersRes.error) throw membersRes.error;
-      const actors = await enrichActorsWithOrgRoles(
-        supabase,
-        teamId,
-        (actorsRes.data ?? []).map(mapActor),
-      );
-      const rolesByActorId = new Map(
-        actors.map((a) => [a.id, { roles: a.roles ?? [], teamRole: a.teamRole ?? null }]),
-      );
-      const members = (membersRes.data ?? []).map((row) => {
-        const base = mapTeamMember(row);
-        const enriched = rolesByActorId.get(base.actorId);
-        return {
-          ...base,
-          roles: enriched?.roles ?? [],
-          role: enriched?.teamRole ?? null,
-        };
-      });
-      return { actors, members };
-    },
-
     async listSessions({ limit = 50, cursor = null, teamId = null, ideaId = null, kind = "all" }: any = {}) {
       // p_team_id is what resolves the caller's actor as of 20260804020000,
       // since a user has one actor row per team. It is also load-bearing for
@@ -2676,45 +2789,8 @@ export function createSupabaseBusinessRepository(options) {
       return mapWorkspace(data);
     },
 
-    async getTeamWorkspaceConfig(teamId) {
-      const { data, error } = await supabase
-        .from("team_workspace_config")
-        .select("team_id, default_workspace_id, pinned_workspace_ids, updated_at")
-        .eq("team_id", teamId)
-        .limit(1);
-      if (error) throw error;
-      const row = Array.isArray(data) ? data[0] : data;
-      if (!row) return null;
-      return {
-        teamId: requiredString(row.team_id, "workspaces.getTeamWorkspaceConfig", "team_id"),
-        defaultWorkspaceId: row.default_workspace_id ?? null,
-        pinnedWorkspaceIds: row.pinned_workspace_ids ?? [],
-        updatedAt: row.updated_at ?? null,
-      };
-    },
-
-    async putTeamWorkspaceConfig(teamId, input) {
-      const row = {
-        team_id: teamId,
-        default_workspace_id: input.defaultWorkspaceId ?? null,
-        pinned_workspace_ids: input.pinnedWorkspaceIds ?? [],
-      };
-      const { data, error } = await supabase
-        .from("team_workspace_config")
-        .upsert(row, { onConflict: "team_id" })
-        .select("team_id, default_workspace_id, pinned_workspace_ids, updated_at")
-        .single();
-      if (error) throw error;
-      return {
-        teamId: requiredString(data.team_id, "workspaces.putTeamWorkspaceConfig", "team_id"),
-        defaultWorkspaceId: data.default_workspace_id ?? null,
-        pinnedWorkspaceIds: data.pinned_workspace_ids ?? [],
-        updatedAt: data.updated_at ?? null,
-      };
-    },
-
     async writeForegroundPresence({ deviceId, foregroundUntil }) {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) {
@@ -2757,7 +2833,7 @@ export function createSupabaseBusinessRepository(options) {
     async registerDevicePushToken(input) {
       // Identity comes from the bearer token, not the client, mirroring
       // writeForegroundPresence. Clients send device/platform/provider/token.
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -2779,7 +2855,7 @@ export function createSupabaseBusinessRepository(options) {
     async putNotificationPrefs(input) {
       // Identity comes from the bearer token (auth.getUser), not the body —
       // CloudAPI clients no longer hold a Supabase user id.
-      const { data: prefUser, error: prefUserErr } = await supabase.auth.getUser();
+      const { data: prefUser, error: prefUserErr } = await getCurrentUser();
       if (prefUserErr) throw prefUserErr;
       const prefUserId = input.user_id ?? prefUser?.user?.id;
       if (!prefUserId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -3000,32 +3076,6 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
     },
 
-    async setShortcutVisibleRoles(shortcutId, { roleIds }) {
-      const { error } = await supabase.rpc("shortcut_set_visible_roles", {
-        p_shortcut_id: shortcutId,
-        p_role_ids: roleIds,
-      });
-      if (error) throw error;
-    },
-
-    async listTeamRoles(teamId) {
-      const { data, error } = await supabase
-        .from("team_roles")
-        .select("id, team_id, code, name")
-        .eq("team_id", teamId);
-      if (error) throw error;
-      return (data ?? []).map((r) => ({ id: r.id, teamId: r.team_id, code: r.code, name: r.name }));
-    },
-
-    async listTeamPermissions(teamId) {
-      const { data, error } = await supabase
-        .from("permissions")
-        .select("resource_id, permission_roles(role_id)")
-        .eq("team_id", teamId);
-      if (error) throw error;
-      return (data ?? []).map((r) => ({ resourceId: r.resource_id, roleIds: (r.permission_roles ?? []).map((x) => x.role_id) }));
-    },
-
     async createIdeaActivity(ideaId, body) {
       const { data, error } = await supabase.rpc("create_idea_activity", {
         p_idea_id: ideaId,
@@ -3063,7 +3113,7 @@ export function createSupabaseBusinessRepository(options) {
     async ensureAgentTypes({ supportedTypes, defaultAgentType }) {
       // Keep the default a member of the supported set (see normalizeAgentTypes).
       const norm = normalizeAgentTypes(supportedTypes, defaultAgentType);
-      const { data: authData, error: authErr } = await supabase.auth.getUser();
+      const { data: authData, error: authErr } = await getCurrentUser();
       if (authErr || !authData?.user?.id) {
         throw new Error("ensureAgentTypes: authenticated user required");
       }
@@ -3286,7 +3336,7 @@ export function createSupabaseBusinessRepository(options) {
       // and team MCP / team skills / team env must resolve that actor so the
       // daemon can install/read them — `resolveCurrentMemberActor` below is
       // member-only and is reserved for the human member directory.
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) return null;
@@ -3323,7 +3373,7 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async resolveWorkspaceUpsertAuth(input) {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -3646,7 +3696,10 @@ export function createSupabaseBusinessRepository(options) {
         }));
         const { error: partErr } = await supabase
           .from("session_participants")
-          .upsert(rows, { onConflict: "session_id,actor_id" });
+          // `ignoreDuplicates`: without it this is ON CONFLICT DO UPDATE, and
+          // the table has no UPDATE policy - a seat that already exists (the
+          // creator's, for one) would fail the whole call on RLS.
+          .upsert(rows, { onConflict: "session_id,actor_id", ignoreDuplicates: true });
         if (partErr) throw partErr;
       }
 
@@ -3759,33 +3812,6 @@ export function createSupabaseBusinessRepository(options) {
       }));
     },
 
-    async listShortcutRoleBindings(teamId) {
-      const { data, error } = await supabase
-        .from("permissions")
-        .select("resource_id, permission_roles(role_id)")
-        .eq("team_id", teamId)
-        .eq("resource_type", "shortcut");
-      if (error) throw error;
-      return data ?? [];
-    },
-
-    async loadTeamWorkspaceGitConfig(teamId) {
-      const { data, error } = await supabase
-        .from("team_workspace_config")
-        .select("team_id, git_url, git_branch, git_token, ai_gateway_endpoint, enabled, updated_at")
-        .eq("team_id", teamId)
-        .maybeSingle();
-      if (error) throw error;
-      return data ?? null;
-    },
-
-    async saveTeamWorkspaceGitConfig(input) {
-      const { error } = await supabase
-        .from("team_workspace_config")
-        .upsert(input, { onConflict: "team_id" });
-      if (error) throw error;
-    },
-
     // --- Sessions CRUD (single-session ops; list uses listSessions above) ---
 
     async getSession(sessionId, { teamId = null }: any = {}) {
@@ -3835,7 +3861,7 @@ export function createSupabaseBusinessRepository(options) {
       // (`created_by_actor_id = current_actor_id_for_team(team_id)`) then
       // rejects with a 403. Deriving it here guarantees the row always
       // satisfies RLS regardless of what the client sends.
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -3908,17 +3934,57 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async patchSession(sessionId, patch) {
-      const update: any = {};
-      if (patch.title !== undefined) update.title = patch.title;
-      if (patch.summary !== undefined) update.summary = patch.summary;
-      if (patch.archivedAt !== undefined) update.archived_at = patch.archivedAt;
-      if (patch.mode !== undefined) update.mode = patch.mode;
-      if (Object.keys(update).length === 0) {
+      const rest: any = {};
+      if (patch.summary !== undefined) rest.summary = patch.summary;
+      if (patch.archivedAt !== undefined) rest.archived_at = patch.archivedAt;
+      if (patch.mode !== undefined) rest.mode = patch.mode;
+      const lockTitle = patch.titleLocked === true && typeof patch.title === "string";
+      const generatedTitle = typeof patch.title === "string" && !lockTitle;
+
+      if (lockTitle) {
+        const { data, error } = await supabase
+          .from("sessions")
+          .update({ ...rest, title: patch.title, title_locked: true })
+          .eq("id", sessionId)
+          .select(SESSION_FULL_COLUMNS)
+          .maybeSingle();
+        if (error) throw error;
+        return data ? { ...mapSessionFull(data), titleLocked: true, titleApplied: true } : null;
+      }
+
+      if (generatedTitle) {
+        // One UPDATE ... WHERE id AND title_locked = false. A rename that
+        // commits first matches zero rows; the lock stays set.
+        const { data, error } = await supabase.rpc("apply_generated_session_title", {
+          p_session_id: sessionId,
+          p_title: patch.title,
+        });
+        if (error) throw error;
+        const written = Array.isArray(data) ? data[0] : data;
+        if (!written) return null;
+        if (Object.keys(rest).length > 0) {
+          const { error: restError } = await supabase
+            .from("sessions")
+            .update(rest)
+            .eq("id", sessionId);
+          if (restError) throw restError;
+        }
+        const current = await this.getSession(sessionId);
+        if (!current) return null;
+        return {
+          ...current,
+          title: written.title ?? current.title,
+          titleLocked: written.title_locked === true,
+          titleApplied: written.applied === true && (written.title ?? current.title) === patch.title,
+        };
+      }
+
+      if (Object.keys(rest).length === 0) {
         return this.getSession(sessionId);
       }
       const { data, error } = await supabase
         .from("sessions")
-        .update(update)
+        .update(rest)
         .eq("id", sessionId)
         .select(SESSION_FULL_COLUMNS)
         .maybeSingle();
@@ -3968,14 +4034,31 @@ export function createSupabaseBusinessRepository(options) {
       }
     },
 
+    /**
+     * Drop the caller's read marker so the session derives as unread again (no
+     * marker reads as "never read" in `list_current_actor_sessions`).
+     *
+     * `session_read_markers` has insert, select and update policies but no
+     * DELETE one, so this used to run on the caller's token, match nothing and
+     * still answer 204 - "mark as unread" did nothing on any client. The delete
+     * goes through the service role, pinned to the caller's own actor in the
+     * session's team, which is the row an "own marker" policy would have named.
+     */
     async markSessionUnread(sessionId) {
-      // Delete the caller's read marker so the session re-derives as unread.
-      // RLS scopes the delete to the current actor via the "write own markers"
-      // FOR ALL policy, so no explicit actor filter is needed here.
-      const { error } = await supabase
+      const { data: session, error: sessionErr } = await supabase
+        .from("sessions")
+        .select("id, team_id")
+        .eq("id", sessionId)
+        .maybeSingle();
+      if (sessionErr) throw sessionErr;
+      if (!session) throw new ApiError(404, "not_found", "session not found");
+      const callerActorId = await requireCallerTeamMemberActor(String(session.team_id));
+      const admin = await serviceRoleClient("clear a session read marker");
+      const { error } = await admin
         .from("session_read_markers")
         .delete()
-        .eq("session_id", sessionId);
+        .eq("session_id", sessionId)
+        .eq("actor_id", callerActorId);
       if (error) throw error;
     },
 
@@ -4120,7 +4203,8 @@ export function createSupabaseBusinessRepository(options) {
               workspaceByActor.get(input.primaryAgentActorId) ?? null,
             ),
           ],
-          { onConflict: "session_id,actor_id" },
+          // ON CONFLICT DO NOTHING - see createThread: no UPDATE policy here.
+          { onConflict: "session_id,actor_id", ignoreDuplicates: true },
         );
       if (partError) throw partError;
 
@@ -4141,7 +4225,7 @@ export function createSupabaseBusinessRepository(options) {
           .from("session_participants")
           .upsert(
             adminActorIds.map((actor_id) => ({ session_id: id, actor_id })),
-            { onConflict: "session_id,actor_id" },
+            { onConflict: "session_id,actor_id", ignoreDuplicates: true },
           );
         if (adminPartErr) throw adminPartErr;
       }
@@ -4442,16 +4526,17 @@ export function createSupabaseBusinessRepository(options) {
       };
     },
 
+    /**
+     * The agent's catch-up cursor for this session (ADR-0005).
+     *
+     * Written through `writeAgentSeat`: on the caller's token this matched no
+     * row and still answered 204, so the cursor never moved after the
+     * ADR-0005 backfill and a restarted daemon had nothing to resume from.
+     */
     async updateParticipantCursor(sessionId, actorId, { lastProcessedMessageId }) {
-      const { error } = await supabase
-        .from("session_participants")
-        .update({
-          last_processed_message_id: lastProcessedMessageId,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("session_id", sessionId)
-        .eq("actor_id", actorId);
-      if (error) throw error;
+      await writeAgentSeat(sessionId, actorId, {
+        last_processed_message_id: lastProcessedMessageId,
+      }, "advance a session participant's cursor");
     },
 
     /**
@@ -4460,15 +4545,12 @@ export function createSupabaseBusinessRepository(options) {
      * The column landed with the ADR-0005 migration alongside `workspace_id`
      * and the cursor, but only those two got writers: `model` was backfilled
      * from `agent_runtimes.current_model` and then never touched again, so
-     * every reader trusting the ADR got a frozen value. This is that writer.
+     * every reader trusting the ADR got a frozen value. This is that writer -
+     * and it only became one once it stopped writing on the caller's token
+     * (see `writeAgentSeat`).
      */
     async updateParticipantModel(sessionId, actorId, { model }) {
-      const { error } = await supabase
-        .from("session_participants")
-        .update({ model, updated_at: new Date().toISOString() })
-        .eq("session_id", sessionId)
-        .eq("actor_id", actorId);
-      if (error) throw error;
+      await writeAgentSeat(sessionId, actorId, { model }, "record a session participant's model");
     },
 
     /**
@@ -5006,7 +5088,7 @@ export function createSupabaseBusinessRepository(options) {
       teamId: string,
       appIds: string[],
     ): Promise<{ actorId: string | null; grants: Map<string, string | null> | null }> {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -5050,12 +5132,19 @@ export function createSupabaseBusinessRepository(options) {
        * Gitea repo it never pushes to.
        */
       localOnly?: boolean;
+      /**
+       * Actors (in practice: agents) to grant `write` on the new app. Agents
+       * get no access by default (spec decision 6); this is the create
+       * dialog's "also grant these agents" list. A grant that fails is logged
+       * and skipped — it must not undo a created app.
+       */
+      grantActorIds?: string[];
     }) {
       // Resolve the caller's actor in this team — the RLS insert policy
       // (created_by_actor_id = amux.current_actor_id_for_team(team_id)) requires
       // it. A member or an agent: a daemon's agent creates apps for the agents
       // on its machine (`amuxd app create`), and that policy takes any actor.
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -5146,6 +5235,15 @@ export function createSupabaseBusinessRepository(options) {
         }
       }
 
+      for (const actorId of [...new Set(input.grantActorIds ?? [])]) {
+        if (typeof actorId !== "string" || !actorId || actorId === resolved.id) continue;
+        try {
+          await this.setAppAccess(row.id, actorId, "write");
+        } catch (e) {
+          console.warn(`[apps] initial grant to ${actorId} on ${row.id} skipped: ${String((e as Error)?.message ?? e)}`);
+        }
+      }
+
       // Both import paths stop here: the app's code lives somewhere we did not
       // provision, so there is no repo of ours to create and no deploy key to
       // hold. `git_auth_kind` stays null, which is what makes deploy build the
@@ -5155,7 +5253,15 @@ export function createSupabaseBusinessRepository(options) {
       try {
         // The SSH URL, not `clone_url`: the deploy key is the only credential
         // we hand out for this repo, and it is useless over HTTPS.
-        const { sshUrl } = await gitea!.createAppRepo(row.id);
+        // Per-org repos (GITEA_ACCOUNT_AUTH): the repo lives under the app's
+        // TeamClu org, so Gitea's org is TeamClu's. Otherwise the shared owner.
+        let repoGitea = gitea!;
+        if (giteaAccountAuth && row.org_id) {
+          const owner = giteaOrgName(row.org_id);
+          await gitea!.ensureOrg(owner);
+          repoGitea = gitea!.withOwner(owner);
+        }
+        const { sshUrl } = await repoGitea.createAppRepo(row.id);
         const { data: updated, error: updErr } = await supabase
           .from("apps")
           .update({
@@ -5169,6 +5275,7 @@ export function createSupabaseBusinessRepository(options) {
           .select(APP_COLUMNS)
           .single();
         if (updErr) throw updErr;
+        await giteaSync.app(row.id);
         return mapApp(updated);
       } catch (e: unknown) {
         const msg = e instanceof ApiError ? e.message : String((e as Error)?.message ?? e);
@@ -5218,7 +5325,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain, deploy_token, deploy_started_at",
+          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain, deploy_token, deploy_started_at, visibility",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -5408,6 +5515,8 @@ export function createSupabaseBusinessRepository(options) {
       }
       // The proxy caches auth settings per host; without this a saved rule waits out the TTL.
       invalidateAppHosts({ id: appId, slug: cur.slug, appCode: cur.app_code, usesAppCodeDomain: cur.uses_app_code_domain, customDomain: cur.custom_domain });
+      // Team visibility is read access for the whole team in Gitea too.
+      if (set.visibility !== undefined && set.visibility !== cur.visibility) await giteaSync.app(appId);
       return mapApp(data);
     },
 
@@ -5441,6 +5550,19 @@ export function createSupabaseBusinessRepository(options) {
         ? supabase
         : await serviceRoleClient("bind an app custom domain authorized by an admin grant");
       return { cur, writer };
+    },
+
+    /**
+     * The custom domain with the DNS records to publish, for whoever may
+     * change it. The records embed the verification token, which is not on the
+     * app row, so this is how a client shows them again after a reload —
+     * without re-binding, which only an admin could do anyway. Null for a
+     * caller who is not an admin of a visible app (404, same as the writes).
+     */
+    async getAppCustomDomain(appId: string) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      return customDomainView(gate.cur);
     },
 
     async setAppCustomDomain(appId: string, rawDomain: unknown) {
@@ -5932,7 +6054,7 @@ export function createSupabaseBusinessRepository(options) {
      */
     async resolveAppDataTarget(
       appId: string,
-      required: "prompt" | "admin",
+      required: "write" | "admin",
     ): Promise<{ target: AppDataTarget } | null> {
       const { data: app, error } = await supabase
         .from("apps")
@@ -5943,9 +6065,9 @@ export function createSupabaseBusinessRepository(options) {
       if (!app) return null;
 
       const permission = await this.resolveAppCallerPermissionForApp(app);
-      // `view` is not "read-only access to the data" — design §6 hides the
+      // `read` is not "read-only access to the data" — design §6 hides the
       // feature from that tier entirely, so it must not learn the app has one.
-      if (!permission || permission.level === "view") return null;
+      if (!permission || permission.level === "read") return null;
       if (required === "admin" && permission.level !== "admin") {
         throw new ApiError(403, "forbidden", "editing this app's data requires admin access");
       }
@@ -5989,14 +6111,14 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async listAppDataTables(appId: string) {
-      const resolved = await this.resolveAppDataTarget(appId, "prompt");
+      const resolved = await this.resolveAppDataTarget(appId, "write");
       if (!resolved) return null;
       const ops = this.requireAppData();
       return { items: await runAppData(() => ops.listTables(resolved.target)) };
     },
 
     async readAppDataRows(appId: string, table: string, query: any = {}) {
-      const resolved = await this.resolveAppDataTarget(appId, "prompt");
+      const resolved = await this.resolveAppDataTarget(appId, "write");
       if (!resolved) return null;
       const ops = this.requireAppData();
       return runAppData(() =>
@@ -6008,6 +6130,18 @@ export function createSupabaseBusinessRepository(options) {
           limit: parsePageLimit(query.limit),
         }),
       );
+    },
+
+    async insertAppDataRow(appId: string, table: string, body: any = {}) {
+      const resolved = await this.resolveAppDataTarget(appId, "admin");
+      if (!resolved) return null;
+      const ops = this.requireAppData();
+      const values = body?.values ?? {};
+      if (!values || typeof values !== "object" || Array.isArray(values)) {
+        throw new ApiError(400, "validation_failed", "values must be an object of column values");
+      }
+      const row = await runAppData(() => ops.insertRow(resolved.target, { table, values }));
+      return { row };
     },
 
     async updateAppDataRow(appId: string, table: string, rowKey: string, body: any = {}) {
@@ -6037,7 +6171,7 @@ export function createSupabaseBusinessRepository(options) {
      *
      * Authorized like the data browser and for the same reason: an app's log
      * lines carry whatever it decided to print, which is its users' data. So
-     * `view` gets the same 404 the feature gives a non-member, and the caller's
+     * `read` gets the same 404 the feature gives a non-member, and the caller's
      * own permission on the app row is what decides — never the SLS credential,
      * which is one service account for every app on the deployment.
      *
@@ -6147,7 +6281,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!app) return null;
 
       const permission = await this.resolveAppCallerPermissionForApp(app);
-      if (!permission || permission.level === "view") return null;
+      if (!permission || permission.level === "read") return null;
 
       // Distinguishable from "no logs in that window", which is the answer that
       // sends someone looking for a bug that is not there.
@@ -6220,7 +6354,7 @@ export function createSupabaseBusinessRepository(options) {
      * itself; this only makes sure nothing irreversible happens first.
      */
     async isAppCreator(teamId: string, createdByActorId: string | null): Promise<boolean> {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -6251,18 +6385,33 @@ export function createSupabaseBusinessRepository(options) {
      *
      * The creator may be an agent actor — a daemon creating apps for the agents
      * on its machine (`amuxd app`) — and administers its own apps like anyone
-     * else. It is never a grantee: `app_member_access` is keyed on
-     * `amux.members`, so an agent holds no grant on an app it did not create.
-     * `callerMemberId` is null for an agent, because the `*_member_id` columns
-     * it is written to (who granted, who set an env var, who made a cron job)
-     * reference `amux.members` too; `callerActorId` is the caller either way.
+     * else. Since 20261117000000 an agent can also be a grantee:
+     * `app_member_access.member_id` references `amux.actors`, and grants are
+     * looked up by the caller's actor id. `callerMemberId` is still null for an
+     * agent, because the other `*_member_id` columns it is written to (who set
+     * an env var, who made a cron job) reference `amux.members`;
+     * `callerActorId` is the caller either way, and is what a grant records as
+     * its grantor.
+     *
+     * Since 20261120120000 an active agent also inherits its owner's level
+     * (`amux.agent_inherited_app_level`; the rule lives in the database). The
+     * higher of the agent's own grant and the inherited level wins.
+     * `inherited` is true when the level came from the owner — the callers
+     * that change who has access, or delete the app, refuse such a caller
+     * (`assertNotInheritedFor`): those are the two things a bot never does on
+     * its owner's behalf.
      */
     async resolveAppCallerPermissionForApp(app: {
       id: string;
       team_id: string;
       created_by_actor_id: string | null;
-    }): Promise<{ level: "view" | "prompt" | "admin"; callerActorId: string; callerMemberId: string | null } | null> {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+    }): Promise<{
+      level: AppPermissionLevel;
+      callerActorId: string;
+      callerMemberId: string | null;
+      inherited: boolean;
+    } | null> {
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -6270,25 +6419,53 @@ export function createSupabaseBusinessRepository(options) {
       const resolved = await this.resolveCurrentActor(app.team_id, userId);
       if (!resolved?.id) return null;
       const callerActorId = resolved.id;
-      const callerMemberId = resolved.actorType === "agent" ? null : resolved.id;
+      const isAgent = resolved.actorType === "agent";
+      const callerMemberId = isAgent ? null : resolved.id;
 
       if (app.created_by_actor_id === callerActorId) {
-        return { level: "admin", callerActorId, callerMemberId };
+        return { level: "admin", callerActorId, callerMemberId, inherited: false };
       }
-      if (!callerMemberId) return null;
 
       const { data: access, error: accErr } = await supabase
         .from("app_member_access")
         .select("permission_level")
         .eq("app_id", app.id)
-        .eq("member_id", callerMemberId)
+        .eq("member_id", callerActorId)
         .maybeSingle();
       if (accErr) throw accErr;
-      const level = access?.permission_level;
-      if (level === "view" || level === "prompt" || level === "admin") {
-        return { level, callerActorId, callerMemberId };
+      const granted = storedAppPermissionLevel(access?.permission_level);
+
+      let inheritedLevel: AppPermissionLevel | null = null;
+      if (isAgent && granted !== "admin") {
+        const viaOwner = await callAgentInheritance(supabase, "agent_inherited_app_level", {
+          p_app_id: app.id,
+          p_actor_id: callerActorId,
+        });
+        inheritedLevel = storedAppPermissionLevel(viaOwner);
       }
-      return null;
+
+      const level = higherAppLevel(granted, inheritedLevel);
+      if (!level) return null;
+      const inherited = level !== granted;
+      return { level, callerActorId, callerMemberId, inherited };
+    },
+
+    /**
+     * Refuse a caller whose level on the app came from its owner. Changing
+     * who has access and deleting the app stay with people and explicitly
+     * granted actors.
+     */
+    assertNotInheritedFor(
+      permission: { inherited?: boolean } | null,
+      action: "manage_access" | "delete_app",
+    ): void {
+      if (!permission?.inherited) return;
+      const what = action === "manage_access" ? "change who can access" : "delete";
+      throw new ApiError(
+        403,
+        "inherited_access_not_allowed",
+        `an agent cannot ${what} an app it reaches through its owner; ask a person with admin on the app`,
+      );
     },
 
     /**
@@ -6309,21 +6486,26 @@ export function createSupabaseBusinessRepository(options) {
       if (visible) {
         const permission = await this.resolveAppCallerPermissionForApp(visible);
         // A member the app knows about is answered on the member rules alone,
-        // never by falling through to the agent path below. `view` may download
+        // never by falling through to the agent path below. `read` may download
         // the code but not push to it, so its key cannot push.
+        //
+        // An agent's `read` grant does not narrow its key. The agent path below
+        // still gives every agent of the team a writable one (phase 1 leaves it
+        // alone — the daemon's own seed/clone/deploy run on it), so narrowing
+        // here would hand a granted agent less than an ungranted one.
         if (permission) {
           return {
             actorId: permission.callerActorId,
             app: visible,
-            readOnly: permission.level === "view",
+            readOnly: permission.level === "read" && permission.callerMemberId !== null,
           };
         }
         // A teammate with no grant on a team-visible app. The app list shows it
         // to them with a download button, and refusing the repo made that
         // button a dead end — while their own daemon, on the agent path below,
-        // could already push to it. Same terms as `view`.
+        // could already push to it. Same terms as `read`.
         if (visible.visibility === "team") {
-          const { data: userData, error: userErr } = await supabase.auth.getUser();
+          const { data: userData, error: userErr } = await getCurrentUser();
           if (userErr) throw userErr;
           const userId = userData?.user?.id;
           const member = userId
@@ -6341,10 +6523,12 @@ export function createSupabaseBusinessRepository(options) {
       // team-scoped: any agent actor in the app's team may mint a key for a
       // Gitea-managed app in that team.
       //
-      // Coarser than the per-app member rules on purpose — `app_member_access`
-      // is keyed on `amux.members`, so an agent actor cannot hold a per-app
-      // grant at all — and accepted when this path was chosen. The blast radius
-      // is one repo per key, and the key's title names the agent actor.
+      // Coarser than the per-app member rules on purpose, and accepted when
+      // this path was chosen. An agent can hold a per-app grant now, and that
+      // grant is what Gitea enforces on its own HTTPS pushes; this deploy-key
+      // path keeps the team-wide rule until the daemon's git moves to HTTPS and
+      // the keys are retired (phase-1 plan, "旧 deploy key 路径"). The blast
+      // radius is one repo per key, and the key's title names the agent actor.
       //
       // The row is re-read with the service role because `apps.visibility`
       // defaults to `personal`, which `apps_select_if_visible` hides from every
@@ -6483,7 +6667,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!resolved) return null;
       const { actorId } = resolved;
       if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
-      const revoked = await revokeOwnJitDeployKey(gitea, appId, actorId, deployKeyId);
+      const revoked = await revokeOwnJitDeployKey(appGitea(resolved.app), appId, actorId, deployKeyId);
       // `revoked: false` is not an error the caller can act on — the key is
       // unusable either way, which is the whole point of asking.
       return { revoked };
@@ -6499,7 +6683,7 @@ export function createSupabaseBusinessRepository(options) {
     async getAppGitHead(appId: string, opts: { compare?: boolean } = {}) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, git_auth_kind, git_commit_sha")
+        .select("id, git_auth_kind, git_commit_sha, git_remote_url")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -6510,7 +6694,8 @@ export function createSupabaseBusinessRepository(options) {
       if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
       if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
 
-      const head = await gitea.getRepoHead(appId);
+      const repoGitea = appGitea(existing);
+      const head = await repoGitea.getRepoHead(appId);
       const deployedSha = existing.git_commit_sha ?? null;
       if (!opts.compare) return { ...head, deployedSha, undeployedCommits: null };
 
@@ -6522,13 +6707,13 @@ export function createSupabaseBusinessRepository(options) {
       if (deployedSha === head.sha) {
         undeployedCommits = 0;
       } else if (deployedSha) {
-        undeployedCommits = await gitea.compareCommits(appId, deployedSha, head.sha);
+        undeployedCommits = await repoGitea.compareCommits(appId, deployedSha, head.sha);
       }
       return { ...head, deployedSha, undeployedCommits };
     },
 
     async getAppMembership(appId: string) {
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
@@ -6552,7 +6737,11 @@ export function createSupabaseBusinessRepository(options) {
      * Returns null when the app is not visible or the caller lacks manage rights
      * (routes surface 404 to avoid leaking app existence).
      */
-    async resolveAppAccessManager(appId: string): Promise<{ callerMemberId: string | null } | null> {
+    async resolveAppAccessManager(appId: string): Promise<{
+      callerActorId: string;
+      callerMemberId: string | null;
+      teamId: string;
+    } | null> {
       const { data: app, error } = await supabase
         .from("apps")
         .select("id, team_id, created_by_actor_id")
@@ -6563,7 +6752,12 @@ export function createSupabaseBusinessRepository(options) {
 
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission || permission.level !== "admin") return null;
-      return { callerMemberId: permission.callerMemberId };
+      this.assertNotInheritedFor(permission, "manage_access");
+      return {
+        callerActorId: permission.callerActorId,
+        callerMemberId: permission.callerMemberId,
+        teamId: app.team_id,
+      };
     },
 
     async listAppAccess(appId: string) {
@@ -6578,7 +6772,66 @@ export function createSupabaseBusinessRepository(options) {
         .eq("app_id", appId)
         .order("created_at", { ascending: true });
       if (error) throw error;
-      return (data ?? []).map(mapAppAccessRow);
+      const rows = data ?? [];
+
+      // The agents that reach the app through their owner (20261120120000).
+      // Listed after the grants, read-only: the way to take one away is to
+      // take its owner's access away.
+      const inheritedRows = await callAgentInheritance(admin, "app_inherited_agents", { p_app_id: appId });
+      const granted = new Set(rows.map((r: any) => r.member_id));
+      const inherited = ((inheritedRows ?? []) as any[]).filter(
+        (r) => r.agent_id && !granted.has(r.agent_id) && storedAppPermissionLevel(r.permission_level),
+      );
+
+      // Who each grantee is: the access tab shows agents apart from people,
+      // greys out an agent whose daemon never claimed an account, and shows
+      // the NAME from here — the caller's own directory hides agents it may
+      // not talk to, which left those rows as bare ids.
+      const ids = [
+        ...new Set(
+          [
+            ...rows.map((r: any) => r.member_id),
+            ...inherited.flatMap((r) => [r.agent_id, r.owner_actor_id]),
+          ].filter(Boolean),
+        ),
+      ];
+      const actors = new Map<string, any>();
+      if (ids.length > 0) {
+        const found = await chunkedIn(ids, async (chunk) => {
+          const { data: actorRows, error: actorErr } = await admin
+            .from("actors")
+            .select("id, actor_type, user_id, display_name")
+            .in("id", chunk);
+          if (actorErr) throw actorErr;
+          return actorRows ?? [];
+        });
+        for (const a of found) actors.set(a.id, a);
+      }
+      const describe = (actorId: string) => {
+        const actor = actors.get(actorId);
+        return {
+          actorType: actor?.actor_type ?? null,
+          connected: actor ? actor.actor_type !== "agent" || !!actor.user_id : null,
+          displayName: actor?.display_name ?? null,
+        };
+      };
+      return [
+        ...rows.map((r: any) => ({
+          ...mapAppAccessRow(r),
+          ...describe(r.member_id),
+          inherited: false,
+          inheritedFrom: null,
+        })),
+        ...inherited.map((r) => ({
+          memberId: r.agent_id,
+          permissionLevel: storedAppPermissionLevel(r.permission_level)!,
+          grantedByMemberId: null,
+          createdAt: null,
+          ...describe(r.agent_id),
+          inherited: true,
+          inheritedFrom: { actorId: r.owner_actor_id, displayName: actors.get(r.owner_actor_id)?.display_name ?? null },
+        })),
+      ];
     },
 
     async setAppAccess(appId: string, memberId: string, permissionLevel: string) {
@@ -6587,6 +6840,24 @@ export function createSupabaseBusinessRepository(options) {
       if (!manager) return null;
       // RLS manage policy is creator-only; admin grantees write via service role.
       const admin = await serviceRoleClient("manage app member access");
+      // The grantee is any actor in the app's team — a member or an agent. The
+      // database trigger enforces the team boundary; checking here first turns
+      // its 23514 into a sentence the access tab can show, and catches an agent
+      // that has no account yet (a device agent before its daemon claimed it),
+      // which could hold the row but never act on it.
+      const { data: grantee, error: granteeErr } = await admin
+        .from("actors")
+        .select("id, team_id, actor_type, user_id")
+        .eq("id", memberId)
+        .maybeSingle();
+      if (granteeErr) throw granteeErr;
+      if (!grantee || grantee.team_id !== manager.teamId
+          || (grantee.actor_type !== "member" && grantee.actor_type !== "agent")) {
+        throw new ApiError(422, "grantee_not_in_team", "the grantee must be a member or agent of the app's team");
+      }
+      if (grantee.actor_type === "agent" && !grantee.user_id) {
+        throw new ApiError(422, "agent_not_connected", "this agent has no account yet; connect its daemon first");
+      }
       const { data: priorAccess, error: priorErr } = await admin
         .from("app_member_access")
         .select("permission_level")
@@ -6602,7 +6873,7 @@ export function createSupabaseBusinessRepository(options) {
             app_id: appId,
             member_id: memberId,
             permission_level: level,
-            granted_by_member_id: manager.callerMemberId,
+            granted_by_member_id: manager.callerActorId,
             updated_at: now,
           },
           { onConflict: "app_id,member_id" },
@@ -6610,13 +6881,12 @@ export function createSupabaseBusinessRepository(options) {
         .select("member_id, permission_level, granted_by_member_id, created_at")
         .single();
       if (error) throw error;
-      const priorLevel = priorAccess?.permission_level;
-      if (
-        level === "view" &&
-        (priorLevel === "prompt" || priorLevel === "admin")
-      ) {
+      const priorLevel = storedAppPermissionLevel(priorAccess?.permission_level);
+      if (level === "read" && priorLevel && appLevelAtLeast(priorLevel, "write")) {
         await revokeAppMemberDeployKeysIfGitea(appId, memberId);
       }
+      await giteaSync.app(appId);
+      scheduleAppAccessChanged(manager.teamId, appId, grantee);
       return mapAppAccessRow(data);
     },
 
@@ -6624,6 +6894,14 @@ export function createSupabaseBusinessRepository(options) {
       const manager = await this.resolveAppAccessManager(appId);
       if (!manager) return null;
       const admin = await serviceRoleClient("manage app member access");
+      // Who to tell, read before the row goes. A failed lookup only costs the
+      // hint; the revoke itself must not depend on it.
+      const { data: grantee, error: granteeErr } = await admin
+        .from("actors")
+        .select("actor_type, user_id")
+        .eq("id", memberId)
+        .maybeSingle();
+      if (granteeErr) console.warn(`[app-access] grantee lookup for ${memberId} failed: ${granteeErr.message}`);
       const { error } = await admin
         .from("app_member_access")
         .delete()
@@ -6631,6 +6909,8 @@ export function createSupabaseBusinessRepository(options) {
         .eq("member_id", memberId);
       if (error) throw error;
       await revokeAppMemberDeployKeysIfGitea(appId, memberId);
+      await giteaSync.app(appId);
+      scheduleAppAccessChanged(manager.teamId, appId, granteeErr ? null : grantee);
       return true;
     },
 
@@ -6641,7 +6921,7 @@ export function createSupabaseBusinessRepository(options) {
     // (mintAppStorageCredentials) deliberately does not use it: an app is not a
     // member and has no permission level, it has a token.
 
-    async resolveAppStorageAccess(appId: string, minLevel: "view" | "prompt" | "admin") {
+    async resolveAppStorageAccess(appId: string, minLevel: AppPermissionLevel) {
       const { data: app, error } = await supabase
         .from("apps")
         .select(
@@ -6653,8 +6933,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!app) return null;
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission) return null;
-      const rank = { view: 0, prompt: 1, admin: 2 } as const;
-      if (rank[permission.level] < rank[minLevel]) return null;
+      if (!appLevelAtLeast(permission.level, minLevel)) return null;
       return { app, level: permission.level };
     },
 
@@ -6680,7 +6959,7 @@ export function createSupabaseBusinessRepository(options) {
         delimiter?: string | null;
       } = {},
     ) {
-      const access = await this.resolveAppStorageAccess(appId, "view");
+      const access = await this.resolveAppStorageAccess(appId, "read");
       if (!access) return null;
       const ops = this.requireAppStorage();
       const bucket = ops.bucketFor(access.app);
@@ -6700,14 +6979,14 @@ export function createSupabaseBusinessRepository(options) {
         items,
         folders,
         nextCursor: page.nextCursor,
-        canWrite: access.level !== "view",
+        canWrite: access.level !== "read",
       };
     },
 
     /**
      * Delete everything under one folder.
      *
-     * `prompt` and above, matching a single file's delete — a folder is not a
+     * `write` and above, matching a single file's delete — a folder is not a
      * different kind of thing in an object store, it is a prefix, and someone
      * who may delete each of its files one at a time may delete them together.
      *
@@ -6715,7 +6994,7 @@ export function createSupabaseBusinessRepository(options) {
      * app's storage is `purgeAppFiles`, which is admin-only and asks first.
      */
     async deleteAppFolder(appId: string, prefix: string) {
-      const access = await this.resolveAppStorageAccess(appId, "prompt");
+      const access = await this.resolveAppStorageAccess(appId, "write");
       if (!access) return null;
       const sub = normalizeAppFolderPrefix(prefix);
       if (!sub) {
@@ -6731,7 +7010,7 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async getAppStorageUsage(appId: string) {
-      const access = await this.resolveAppStorageAccess(appId, "view");
+      const access = await this.resolveAppStorageAccess(appId, "read");
       if (!access) return null;
       const ops = this.requireAppStorage();
       const quotaBytes = access.app.storage_quota_bytes ?? ops.defaultQuotaBytes;
@@ -6749,7 +7028,7 @@ export function createSupabaseBusinessRepository(options) {
      * platform-owned fact and no RLS policy lets a member set it.
      */
     async refreshAppStorageUsage(appId: string) {
-      const access = await this.resolveAppStorageAccess(appId, "view");
+      const access = await this.resolveAppStorageAccess(appId, "read");
       if (!access) return null;
       const ops = this.requireAppStorage();
       const usage = await ops.measure(ops.bucketFor(access.app), appFilesPrefix(appId));
@@ -6772,7 +7051,7 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async createAppFileUploadUrl(appId: string, input: { path: string; contentType?: string | null }) {
-      const access = await this.resolveAppStorageAccess(appId, "prompt");
+      const access = await this.resolveAppStorageAccess(appId, "write");
       if (!access) return null;
       const ops = this.requireAppStorage();
       const quotaBytes = access.app.storage_quota_bytes ?? ops.defaultQuotaBytes;
@@ -6790,7 +7069,7 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async createAppFileDownloadUrl(appId: string, path: string) {
-      const access = await this.resolveAppStorageAccess(appId, "view");
+      const access = await this.resolveAppStorageAccess(appId, "read");
       if (!access) return null;
       const ops = this.requireAppStorage();
       let key: string;
@@ -6811,7 +7090,7 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async deleteAppFile(appId: string, path: string) {
-      const access = await this.resolveAppStorageAccess(appId, "prompt");
+      const access = await this.resolveAppStorageAccess(appId, "write");
       if (!access) return null;
       const ops = this.requireAppStorage();
       let key: string;
@@ -6892,13 +7171,13 @@ export function createSupabaseBusinessRepository(options) {
 
     // ─── App environment (design 2026-09-10-app-control-panel §9) ───────────
     //
-    // Read is the `prompt` tier: the people who write the app's code are the
+    // Read is the `write` tier: the people who write the app's code are the
     // ones who need to know what its environment contains. Writing is `admin`,
     // like every other app mutation. A secret's value is never returned to
     // anyone, including the person who set it.
 
     /** The app row plus the caller's level, when it reaches `minLevel`. */
-    async resolveAppEnvAccess(appId: string, minLevel: "view" | "prompt" | "admin") {
+    async resolveAppEnvAccess(appId: string, minLevel: AppPermissionLevel) {
       const { data: app, error } = await supabase
         .from("apps")
         .select("id, team_id, created_by_actor_id")
@@ -6908,13 +7187,12 @@ export function createSupabaseBusinessRepository(options) {
       if (!app) return null;
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission) return null;
-      const rank = { view: 0, prompt: 1, admin: 2 } as const;
-      if (rank[permission.level] < rank[minLevel]) return null;
+      if (!appLevelAtLeast(permission.level, minLevel)) return null;
       return { app, level: permission.level, callerMemberId: permission.callerMemberId };
     },
 
     async listAppEnv(appId: string) {
-      const access = await this.resolveAppEnvAccess(appId, "prompt");
+      const access = await this.resolveAppEnvAccess(appId, "write");
       if (!access) return null;
       // `ciphertext` is deliberately not selected. RLS is row-level, so this
       // reader could ask for it; not asking is what keeps a sealed value from
@@ -7006,7 +7284,7 @@ export function createSupabaseBusinessRepository(options) {
 
     // ─── App scheduled tasks (design 2026-09-10-app-control-panel §5) ────────
     //
-    // Reads are open to anyone the app has named (RLS lets a `view` grantee
+    // Reads are open to anyone the app has named (RLS lets a `read` grantee
     // select); writes need `admin` and go through the service role, exactly
     // like the member-access grants above — the RLS manage policy is
     // creator-only and an admin grantee is not the creator.
@@ -7260,6 +7538,7 @@ export function createSupabaseBusinessRepository(options) {
 
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return false;
+      this.assertNotInheritedFor(permission, "delete_app");
 
       const assertUninstalled = (app: any) => {
         const neverDeployed = (app.fc_status == null || app.fc_status === "not_deployed")
@@ -7301,7 +7580,7 @@ export function createSupabaseBusinessRepository(options) {
       };
       const teardown: TeardownAppDeps = {
         // Explicit uninstall already removed deployment resources.
-        gitea,
+        gitea: gitea ? appGitea(existing) : gitea,
         deleteSecret: (kind) => deleteAppSecretSupabase(admin, appId, kind),
       };
       const { archivedRepoUrl } = await teardownAppResources(teardown, teardownInput);
@@ -7354,11 +7633,19 @@ export function createSupabaseBusinessRepository(options) {
       let rows = data ?? [];
 
       // Lazy marketplace align (§7.1).
+      // A few at a time rather than one after another: each alignment is its
+      // own two-to-five queries against a different skill, and a team that
+      // subscribes to a dozen marketplace skills paid for them in series on
+      // every poll.
       let alignedAny = false;
-      for (const r of rows) {
-        if (r.upstream_subscribed && r.origin === "marketplace") {
-          if (await this._alignMarketplaceSkillRow(r)) alignedAny = true;
-        }
+      const subscribed = rows.filter((r) => r.upstream_subscribed && r.origin === "marketplace");
+      for (let i = 0; i < subscribed.length; i += MARKETPLACE_ALIGN_CONCURRENCY) {
+        const moved = await Promise.all(
+          subscribed
+            .slice(i, i + MARKETPLACE_ALIGN_CONCURRENCY)
+            .map((r) => this._alignMarketplaceSkillRow(r)),
+        );
+        if (moved.some(Boolean)) alignedAny = true;
       }
       // Re-read only when something moved, and keep the filters on the server.
       // This is the endpoint every daemon polls on a 10-minute tick: the old
@@ -7413,14 +7700,12 @@ export function createSupabaseBusinessRepository(options) {
 
     async createTeamSkill(teamId, body: any = {}) {
       const fields = requireTeamSkillFields(body);
-      const slug = String(body.slug ?? "").trim();
-      if (!TEAM_SKILL_SLUG_RE.test(slug)) {
-        throw new ApiError(
-          400,
-          "validation_failed",
-          "slug must be 2-64 chars of [a-z0-9-] and start with a letter or digit",
-        );
-      }
+      // Lowercase here so `Deploy-Check` and `deploy-check` are one folder.
+      // macOS volumes are case-insensitive; Linux is not.
+      // NFC + ASCII lowercase. 整车成本智能表格 is stored unchanged.
+      const slug = canonicalTeamSkillSlug(body.slug);
+      assertTeamSkillSlug(slug);
+      const displayName = teamSkillDisplayName(body.displayName, slug);
       const changelog = String(body.changelog ?? "").trim();
       if (!changelog) throw new ApiError(400, "validation_failed", "changelog is required");
       const contentHash = String(body.contentHash ?? "").trim().toLowerCase();
@@ -7451,6 +7736,7 @@ export function createSupabaseBusinessRepository(options) {
         .insert({
           team_id: teamId,
           slug,
+          display_name: displayName,
           owner_actor_id: body.ownerActorId ?? callerActorId,
           summary: fields.summary,
           category: fields.category,
@@ -7665,6 +7951,9 @@ export function createSupabaseBusinessRepository(options) {
       if (fields.whenNotToUse !== undefined) update.when_not_to_use = fields.whenNotToUse;
       if (fields.requires !== undefined) update.requires = fields.requires;
       if (patch.ownerActorId !== undefined) update.owner_actor_id = patch.ownerActorId;
+      if (patch.displayName !== undefined) {
+        update.display_name = teamSkillDisplayName(patch.displayName, existing.slug);
+      }
       if (patch.status !== undefined) {
         if (!TEAM_SKILL_STATUSES.includes(patch.status)) {
           throw new ApiError(400, "validation_failed", `unknown status: ${patch.status}`);
@@ -8008,33 +8297,6 @@ export function createSupabaseBusinessRepository(options) {
           hasUpdate: (r.installed_version ?? 0) < (r.team_skills?.latest_version ?? 0),
         }))
         .sort((a: any, b: any) => String(a.slug).localeCompare(String(b.slug)));
-    },
-
-    /**
-     * Every actor carrying an install row for one skill.
-     *
-     * Only used to address the MQTT nudge after a publish — the reconcile is
-     * still what decides anything. Returns ids and nothing else, since the
-     * caller's entire job is to send "re-check now" to each of them.
-     */
-    async listTeamSkillInstallerActorIds(teamId, slug) {
-      const { data: skillRows, error: skillErr } = await supabase
-        .from("team_skills")
-        .select("id")
-        .eq("team_id", teamId)
-        .eq("slug", slug)
-        .limit(1);
-      if (skillErr) throw skillErr;
-      const skillId = skillRows?.[0]?.id;
-      if (!skillId) return [];
-
-      const { data, error } = await supabase
-        .from("team_skill_installs")
-        .select("actor_id")
-        .eq("team_id", teamId)
-        .eq("skill_id", skillId);
-      if (error) throw error;
-      return (data ?? []).map((r: any) => r.actor_id).filter(Boolean);
     },
 
     ...makeSupabaseMarketplaceMethods({
@@ -8422,7 +8684,8 @@ function mapTeamEnvSecretRow(row: any) {
 
 // ─── Team skills helpers ─────────────────────────────────────────────────────
 
-const TEAM_SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
+// How many marketplace-subscribed skills `listTeamSkills` aligns at once.
+const MARKETPLACE_ALIGN_CONCURRENCY = 4;
 
 const TEAM_SKILL_CATEGORIES = [
   "general", "coding", "devops", "data",
@@ -8500,6 +8763,10 @@ function mapTeamSkillRow(r: any, install?: any) {
     id: r.id,
     teamId: r.team_id,
     slug: r.slug,
+    displayName:
+      typeof r.display_name === "string" && r.display_name.trim()
+        ? r.display_name.trim()
+        : r.slug,
     ownerActorId: r.owner_actor_id,
     summary: r.summary,
     category: r.category,

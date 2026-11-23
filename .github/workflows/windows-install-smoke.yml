@@ -1,0 +1,80 @@
+name: Windows install smoke
+
+# Installs a released Windows installer on a fresh windows-latest runner and
+# checks it would start on a machine with nothing else installed: no binary
+# imports the VC++ runtime (the installer does not ship it — #1905), the
+# sidecars run, the desktop app stays up with a webview, and a silent uninstall
+# removes the sidecars. With a test account configured it then drives the
+# installed daemon through one real agent turn against the self-host test
+# environment (scripts/ci/windows-agent-smoke.ps1): password login, agent
+# invite, `amuxd init`, pi install, a mention, a reply, and a second turn the
+# agent can only answer by running a shell command. The image ships Git for
+# Windows, so the script hides Git Bash first: a user's machine often has no
+# Git, and that is where the agent used to end up with no shell at all.
+#
+# Secrets (both optional — without them the agent turn is skipped with a
+# warning):
+#   WINDOWS_SMOKE_EMAIL / WINDOWS_SMOKE_PASSWORD   self-host test account with
+#                                                  password login enabled
+#
+# Runs after every OSS release (release-oss.yml calls it with the installer it
+# just uploaded) and on demand. Manual runs default to the current TeamClu Beta.
+
+on:
+  workflow_dispatch:
+    inputs:
+      installer_url:
+        description: "URL of a *-setup.exe (empty = current TeamClu Beta from latest.json)"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      installer_url:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    # Install + checks take ~3 min; the managed Node/pi install and the agent
+    # turn (up to 5 min of waiting) are the rest.
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/ci
+
+      - name: Download installer
+        shell: pwsh
+        env:
+          INSTALLER_URL: ${{ inputs.installer_url }}
+        run: |
+          $url = $env:INSTALLER_URL
+          if (-not $url) {
+            $manifest = Invoke-RestMethod 'https://teamclaw.ucar.cc/beta/latest.json'
+            $url = $manifest.platforms.'windows-x86_64'.url
+            Write-Host "Current TeamClu Beta: $($manifest.version)"
+          }
+          if ($url -notmatch '-setup\.exe$') { throw "Not an NSIS installer URL: $url" }
+          Write-Host "Installer: $url"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\setup.exe"
+
+      - name: Install and check
+        shell: pwsh
+        env:
+          SMOKE_EMAIL: ${{ secrets.WINDOWS_SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.WINDOWS_SMOKE_PASSWORD }}
+          SMOKE_CLOUD_API_URL: https://api.teamclu-dev.ucar.cc
+        run: ./scripts/ci/windows-install-smoke.ps1 -Installer "$env:RUNNER_TEMP\setup.exe" -OutDir "$env:RUNNER_TEMP\smoke"
+
+      - name: Upload screenshot and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-install-smoke
+          path: ${{ runner.temp }}/smoke
+          if-no-files-found: ignore
+          retention-days: 7

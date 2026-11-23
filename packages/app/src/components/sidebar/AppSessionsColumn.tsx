@@ -10,13 +10,13 @@ import { cn } from '@/lib/utils'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useSidebar } from '@/components/ui/sidebar'
-import { AppDeployFooter } from '@/components/apps/AppDeployFooter'
 import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend'
 import { createAppSessionShell, openAppSession } from '@/lib/apps/app-session'
+import { upsertAppSessionsIntoList } from '@/lib/apps/app-session-list-rows'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { formatRelativeTime } from '@/lib/ui/date-format'
 import type { AppRow, AppSessionRow } from '@/lib/backend/types'
@@ -81,6 +81,7 @@ export function AppSessionsColumn({ app }: { app: AppRow }) {
       .then((rows) => {
         if (cancelled) return
         setSessions(sortAppSessionsForDisplay(rows))
+        upsertAppSessionsIntoList(app.id, rows)
       })
       .catch((e) => {
         console.error('[AppSessionsColumn] failed to load sessions', e)
@@ -139,18 +140,17 @@ export function AppSessionsColumn({ app }: { app: AppRow }) {
       const sessionId = await createAppSessionShell(app)
       if (!sessionId) return
       useAppsStore.getState().recordAppSession(app.id, sessionId)
-      setSessions((prev) => [
-        {
-          id: sessionId,
-          teamId: app.teamId,
-          title: app.name,
-          mode: 'collab',
-          lastMessageAt: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        ...prev,
-      ])
+      const row: AppSessionRow = {
+        id: sessionId,
+        teamId: app.teamId,
+        title: app.name,
+        mode: 'collab',
+        lastMessageAt: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      // createAppSessionShell has already put it into the session-list cache.
+      setSessions((prev) => [row, ...prev])
       await useUIStore.getState().switchToSession(sessionId, { keepSidebarFilter: true })
     } catch (e) {
       console.error('[AppSessionsColumn] failed to create session', e)
@@ -233,8 +233,6 @@ export function AppSessionsColumn({ app }: { app: AppRow }) {
           ))
         )}
       </div>
-
-      <AppDeployFooter app={app} />
     </div>
   )
 }

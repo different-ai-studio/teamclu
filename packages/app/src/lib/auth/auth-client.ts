@@ -2,6 +2,7 @@
 // Returns / consumes the raw GoTrue session shape.
 
 import { AuthError, type AuthUser, type OtpType, type Session } from "@/lib/auth/types";
+import { base64UrlToText } from "@/lib/base64";
 import {
   configureSessionStore,
   getSession,
@@ -27,7 +28,6 @@ export type PhoneLoginResult =
   | { type: 'multiUser'; users: PhoneUser[] };
 
 export type AuthClient = {
-  signInWithPassword(email: string, password: string): Promise<Session>;
   sendOtp(email: string, options?: Record<string, unknown>): Promise<void>;
   verifyOtp(email: string, token: string, type?: OtpType): Promise<Session>;
   sendPhoneOtp(phone: string, options?: Record<string, unknown>): Promise<void>;
@@ -90,9 +90,9 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
   try {
     const part = token.split(".")[1];
     if (!part) return null;
-    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
-    const pad = b64.length % 4 ? "=".repeat(4 - (b64.length % 4)) : "";
-    const parsed = JSON.parse(atob(b64 + pad));
+    // UTF-8, not atob(): the claims carry user_metadata.name, which is a
+    // Chinese name more often than not (see base64UrlToText).
+    const parsed = JSON.parse(base64UrlToText(part));
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;
@@ -206,11 +206,6 @@ export function createAuthClient(opts: AuthClientOptions): AuthClient {
   });
 
   return {
-    async signInWithPassword(email, password): Promise<Session> {
-      const data = (await post("/v1/auth/signin-password", { email, password })) as Session;
-      setSession(data, "SIGNED_IN");
-      return data;
-    },
     async sendOtp(email, options) {
       await post("/v1/auth/signin-otp", { email, options });
     },

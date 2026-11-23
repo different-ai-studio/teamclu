@@ -61,13 +61,6 @@ export function expandMemberMentionTokensInText(
   });
 }
 
-export function stripMemberMentionTokensFromText(text: string): string {
-  return text
-    .replace(/@\{member:[^}]+\}\s?/g, "")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-}
-
 export function textHasMemberMentionTokens(text: string): boolean {
   MEMBER_MENTION_TOKEN_RE.lastIndex = 0;
   return MEMBER_MENTION_TOKEN_RE.test(text);

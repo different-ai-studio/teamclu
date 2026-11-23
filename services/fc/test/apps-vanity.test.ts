@@ -218,36 +218,35 @@ test("a successful endpoint remains servable through active and failed redeploys
 
 // --- both entry points ------------------------------------------------------
 
-test("every createApp() call wires the vanity lookup", () => {
-  // There are two entries: the container (server.ts) and the Alibaba FC handler
-  // (index.ts). The first version of this feature wired only the handler, so
-  // the self-host container — the ONLY deployment that serves vanity hosts —
-  // registered neither the proxy nor `ask`, and answered a bare 404 that looked
-  // exactly like a DNS or certificate problem.
+test("the container entry is the only createApp() call and wires the vanity lookup", () => {
+  // There used to be two entries: the container (server.ts) and the Alibaba FC
+  // handler (index.ts). The first version of this feature wired only the
+  // handler, so the self-host container registered neither the proxy nor
+  // `ask`, and answered a bare 404 that looked exactly like a DNS or
+  // certificate problem. The FC handler is gone; keep it from coming back as a
+  // second, differently wired app.
   const here = path.dirname(fileURLToPath(import.meta.url));
-  for (const entry of ["server.ts", "index.ts"]) {
-    const src = fs.readFileSync(path.join(here, "../src", entry), "utf8");
-    assert.match(
-      src,
-      /createApp\(\{[\s\S]*?lookupVanityApp[\s\S]*?\}\)/,
-      `${entry} builds an app without lookupVanityApp`,
-    );
-  }
+  const server = fs.readFileSync(path.join(here, "../src/server.ts"), "utf8");
+  assert.match(
+    server,
+    /createApp\(\{[\s\S]*?lookupVanityApp[\s\S]*?\}\)/,
+    "server.ts builds an app without lookupVanityApp",
+  );
+  const index = fs.readFileSync(path.join(here, "../src/index.ts"), "utf8");
+  assert.doesNotMatch(index, /createApp\(\{/, "index.ts builds a second app");
 });
 
-test("every createApp() call wires the marketplace system repository", () => {
-  // Same two-entry trap as vanity: marketplace admin was wired only on the
-  // Aliyun FC handler. Self-host Docker uses server.ts and returned 503
-  // "marketplace admin repository not configured" for every admin publish.
+test("the container entry wires the marketplace system repository", () => {
+  // Marketplace admin was once wired only on the Aliyun FC handler. Self-host
+  // Docker uses server.ts and returned 503 "marketplace admin repository not
+  // configured" for every admin publish.
   const here = path.dirname(fileURLToPath(import.meta.url));
-  for (const entry of ["server.ts", "index.ts"]) {
-    const src = fs.readFileSync(path.join(here, "../src", entry), "utf8");
-    assert.match(
-      src,
-      /createApp\(\{[\s\S]*?createSystemRepository[\s\S]*?\}\)/,
-      `${entry} builds an app without createSystemRepository`,
-    );
-  }
+  const src = fs.readFileSync(path.join(here, "../src/server.ts"), "utf8");
+  assert.match(
+    src,
+    /createApp\(\{[\s\S]*?createSystemRepository[\s\S]*?\}\)/,
+    "server.ts builds an app without createSystemRepository",
+  );
 });
 
 // --- which database the lookup reads --------------------------------------
@@ -1205,3 +1204,25 @@ test("gateway carries code identity for public, legacy alias and custom hosts", 
     assert.equal(calls, 3);
   } finally { globalThis.fetch = oldFetch; }
 }));
+
+test("verified native FC HTTPS proxy signs only the private endpoint and preserves app authorization", async () => {
+  const host = "opaque-id.cn-hangzhou-vpc.fcapp.run";
+  const origin = { ...originOptions(), verifiedPrivateRegion: "cn-hangzhou" };
+  const request = new Request("https://public.example/path?q=1", {
+    headers: { Authorization: "Bearer app-token", "X-Teamclu-Origin-Authorization": "spoof" },
+  });
+  let calls = 0;
+  const fetcher = (async (url: URL, init: RequestInit) => {
+    calls++;
+    assert.equal(String(url), `https://${host}/path?q=1`);
+    const headers = new Headers(init.headers);
+    await verifyOriginHeader(headers, host);
+    assert.equal(headers.get("authorization"), "Bearer app-token");
+    return new Response("ok");
+  }) as typeof fetch;
+  assert.equal((await proxyToApp(request, `https://${host}`, fetcher, null, origin)).status, 200);
+  for (const invalid of [`http://${host}`, `https://${host}/unexpected`, "https://opaque-id.cn-hangzhou.fcapp.run", "https://opaque-id.cn-shenzhen-vpc.fcapp.run"]) {
+    assert.equal((await proxyToApp(request, invalid, fetcher, null, origin)).status, 503);
+  }
+  assert.equal(calls, 1);
+});

@@ -5,7 +5,7 @@
 -- current_member_id bug 20260813140000 fixed), and set_team_default_agent(B, …)
 -- must succeed for an admin of B.
 --
--- REWRITTEN for 20260915200000: roles are held in public.roles_users, which is
+-- REWRITTEN for 20260915200000: roles are held in amux.org_roles_users, which is
 -- ORG-scoped. "owner of A and admin of B" is therefore only expressible when
 -- A and B sit in DIFFERENT orgs — inside one org the two teams share one role
 -- set, by design (see the design spec's "union of roles"). Each team here gets
@@ -29,7 +29,7 @@ begin
 end;
 $$;
 
--- amux.current_team_role reads public.roles_users, which is ORG-scoped, so a
+-- amux.current_team_role reads amux.org_roles_users, which is ORG-scoped, so a
 -- fixture that seeds only amux.team_members.role leaves every actor at the
 -- `member` floor. Give the team an org (creating one on the fly if it has
 -- none — the orgs trigger seeds the four system roles) and the user a real
@@ -51,7 +51,7 @@ begin
   if v_role is null then
     raise exception 'fixture: no system role % for org %', p_code, v_org;
   end if;
-  insert into public.roles_users (user_id, role_id, org_id, status, store_id, is_primary)
+  insert into amux.org_roles_users (user_id, role_id, org_id, status, store_id, is_primary)
   values (p_user, v_role, v_org, 'active', null, false)
   on conflict do nothing;
 end;

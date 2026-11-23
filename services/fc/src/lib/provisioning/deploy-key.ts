@@ -137,10 +137,8 @@ export function generateDeployKeyPair(comment = "teamclu-app-deploy"): DeployKey
 // an agent's `git push` and leaves nothing behind at all.
 //
 // The expiry sweep is the backstop for holders that cannot — a desktop seed or
-// deploy that dies mid-flight, or a revoke that fails. It only runs when some
-// request touches the same repo again, so a repo nobody comes back to keeps
-// whatever it was left holding; that is the residual, and it is why revoking
-// at the holder matters rather than being an optimisation.
+// deploy that dies mid-flight, or a revoke that fails. The Cloud API heartbeat
+// also sweeps repositories that receive no further requests.
 
 /** How long a JIT deploy key is advertised as usable. */
 export const JIT_DEPLOY_KEY_TTL_MS = 15 * 60 * 1000;
@@ -176,7 +174,7 @@ function jitTitleMintedAt(title: string): number | null {
   return Number.isFinite(mintedAt) ? mintedAt : null;
 }
 
-/** ids of JIT keys minted longer than `ttlMs` ago. Foreign titles are left alone. */
+/** ids of JIT keys minted at least `ttlMs` ago. Foreign titles are left alone. */
 export function expiredJitDeployKeyIds(
   keys: { id: number; title: string }[],
   now = Date.now(),
@@ -186,7 +184,7 @@ export function expiredJitDeployKeyIds(
     .filter((k) => {
       const mintedAt = jitTitleMintedAt(k.title);
       if (mintedAt === null) return false;
-      return now - mintedAt > ttlMs;
+      return now - mintedAt >= ttlMs;
     })
     .map((k) => k.id);
 }
@@ -260,7 +258,7 @@ export async function revokeOwnJitDeployKey(
     return false;
   }
   // The listing is already paid for, so sweep the expired ones while we hold
-  // it. This is the only place a quiet repo gets tidied without a fresh mint.
+  // it, in addition to periodic background expiration.
   for (const id of expiredJitDeployKeyIds(keys, now)) {
     if (id === deployKeyId) continue;
     try {

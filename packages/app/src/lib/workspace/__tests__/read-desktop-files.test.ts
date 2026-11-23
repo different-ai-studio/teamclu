@@ -10,14 +10,16 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 }));
 
 describe("readDesktopPathsAsFiles", () => {
-  it("rejects oversize non-image files before reading bytes", async () => {
+  it("keeps oversize non-image files as local paths without reading bytes", async () => {
     const { stat, readFile } = await import("@tauri-apps/plugin-fs");
     const result = await readDesktopPathsAsFiles([
       "/tmp/big-report.pdf",
       "/tmp/note.txt",
     ]);
 
-    expect(result.oversize).toEqual(["big-report.pdf"]);
+    expect(result.local).toEqual([
+      { name: "big-report.pdf", size: 25 * 1024 * 1024, path: "/tmp/big-report.pdf" },
+    ]);
     expect(result.files).toHaveLength(1);
     expect(result.files[0]?.name).toBe("note.txt");
     expect(stat).toHaveBeenCalledTimes(2);

@@ -59,6 +59,22 @@ jobs:
           node --import tsx --test test/deploy-env-parity.test.ts
           npm run build
 
+      # Since 2026-11-11 the Dokploy manager takes SSH only from the company
+      # VPN (headscale), so a runner joins it as an ephemeral tag:ci node and
+      # reaches the manager on its private address, the way saas-mono's
+      # deploy workflows do. BELAYO_DOKPLOY_HOST must hold that private
+      # address; the public one times out on port 22.
+      #
+      # No --accept-routes in `args`: v4 always passes it itself
+      # (src/main.ts), and a second copy makes `tailscale up` exit with
+      # "flag provided multiple times".
+      - name: Join company VPN
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.BELAYO_CI_TS_AUTHKEY }}
+          args: --login-server=https://hs.mx5.cn
+          hostname: gha-teamclu-cloud-api-${{ github.run_id }}
+
       - name: Start ssh-agent
         run: |
           eval "$(ssh-agent -s)"
@@ -91,87 +107,14 @@ jobs:
           IMG="$IMAGE_REPO:shadow-${TAG::9}"
           scp .github/scripts/belayo-rollout.sh "root@$MGR:/tmp/belayo-rollout.sh"
           ssh "root@$MGR" chmod 700 /tmp/belayo-rollout.sh
-          ssh "root@$MGR" /tmp/belayo-rollout.sh "$SERVICE" "$IMG" "$WORKER" "$APP_ID"
+          ssh "root@$MGR" /tmp/belayo-rollout.sh "$SERVICE" "$IMG" "$WORKER" "$APP_ID" 9000
           ssh "root@$MGR" rm -f /tmp/belayo-rollout.sh
-          : <<'EOF'
-            set -Eeuo pipefail
-            SERVICE=$1
-            WORKER=$2
-            IMAGE_REPO=$3
-            TAG=$4
-            APP_ID=$5
-            IMG="$IMAGE_REPO:shadow-${TAG::9}"
-            echo "deploy-manager=$(hostname) service=$SERVICE image=$IMG"
-            OLD_IMAGE=$(docker service inspect "$SERVICE" --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
-            PG=$(docker ps --format '{{.Names}}' | grep dokploy-postgres | head -1)
-            OLD_DESIRED=$(docker exec -i "$PG" psql -U dokploy -d dokploy -Atc \
-              "select \"dockerImage\" from application where \"applicationId\" = '$APP_ID';")
-            test -n "$OLD_DESIRED"
 
-            rollback() {
-              echo "deployment failed; restoring $OLD_IMAGE"
-              docker exec -i "$PG" psql -U dokploy -d dokploy -v ON_ERROR_STOP=1 -c \
-                "update application set \"dockerImage\" = '$OLD_DESIRED' where \"applicationId\" = '$APP_ID';" \
-                >/dev/null || true
-              docker service update \
-                --with-registry-auth \
-                --update-order start-first \
-                --image "$OLD_IMAGE" \
-                --detach=true \
-                "$SERVICE" >/dev/null || true
-            }
-            trap rollback ERR
-
-            docker service update \
-              --with-registry-auth \
-              --update-order start-first \
-              --update-failure-action rollback \
-              --update-monitor 30s \
-              --image "$IMG" \
-              --detach=true \
-              "$SERVICE"
-
-            ok=""
-            for i in $(seq 1 45); do
-              state=$(docker service inspect "$SERVICE" --format '{{with .UpdateStatus}}{{.State}}{{end}}' 2>/dev/null || true)
-              reps=$(docker service ls --format '{{.Name}} {{.Replicas}}' | awk -v s="$SERVICE" '$1==s{print $2}')
-              node=$(docker service ps "$SERVICE" --filter desired-state=running --format '{{.Node}}' | head -1)
-              live=$(docker service ps "$SERVICE" --filter desired-state=running --format '{{.Image}}' | head -1)
-              if [ "$reps" = "1/1" ] && [ "$node" = "$WORKER" ] && [[ "$live" == "$IMG"* ]]; then
-                ok=1
-                break
-              fi
-              if [ "$state" = "paused" ] || [ "$state" = "rollback_completed" ]; then
-                echo "swarm gave up on the update: $state"
-                docker service ps "$SERVICE" --no-trunc | head -5
-                exit 1
-              fi
-              sleep 4
-            done
-            if [ -z "$ok" ]; then
-              echo "did not converge: replicas=$reps node=$node live=$live want=$IMG"
-              docker service ps "$SERVICE" --no-trunc | head -5
-              exit 1
-            fi
-
-            ports=$(docker service inspect "$SERVICE" --format '{{json .Spec.EndpointSpec.Ports}}')
-            [ "$ports" = "null" ] || [ "$ports" = "[]" ]
-            DOKPLOY=$(docker ps --format '{{.Names}}' | grep '^dokploy\.1\.' | head -1)
-            docker exec "$DOKPLOY" node -e \
-              "fetch('http://$SERVICE:9000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-
-            curl -fsS --max-time 20 https://teamclaw-api.ucar.cc/healthz >/dev/null
-            curl -fsS --max-time 20 https://teamclaw-api.ucar.cc/v1/config/public >/dev/null
-
-            # This updates Dokploy's control-plane desired image only. It is not
-            # a Belayo application-database migration.
-            docker exec -i "$PG" psql -U dokploy -d dokploy -v ON_ERROR_STOP=1 -c \
-              "update application set \"dockerImage\" = '$IMG' where \"applicationId\" = '$APP_ID';" \
-              >/dev/null
-            recorded=$(docker exec -i "$PG" psql -U dokploy -d dokploy -Atc \
-              "select \"dockerImage\" from application where \"applicationId\" = '$APP_ID';")
-            [ "$recorded" = "$IMG" ]
-
-            trap - ERR
-            echo "running image: $live on $node"
-          EOF
+      # The rollout script already asked the new task directly. This asks the
+      # way a client does, through Cloudflare and Traefik. A failure here is an
+      # ingress problem, not an image one, so it fails the run without rolling
+      # the service back.
+      - name: Smoke — the public endpoint answers
+        run: |
+          curl -fsS --max-time 20 -o /dev/null https://teamclaw-api.ucar.cc/healthz
+          curl -fsS --max-time 20 -o /dev/null https://teamclaw-api.ucar.cc/v1/config/public

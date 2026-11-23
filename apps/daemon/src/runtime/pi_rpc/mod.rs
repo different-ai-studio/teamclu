@@ -23,7 +23,7 @@
 //! channel as a marked `select` dialog (see `translate::QUESTION_MARKER`).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
-use crate::runtime::acp_translate::status_change;
+use self::translate::status_change;
 use crate::runtime::backend::{AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 use crate::runtime::manager::AgentLaunchConfig;
@@ -115,10 +115,83 @@ impl Shared {
     }
 }
 
+/// How long a pi host may sit with no attached session before it is killed.
+///
+/// Long enough that a prewarmed host is still there for the session it was
+/// started for, and that detaching and reopening a chat does not pay a cold
+/// start; short enough that a machine does not carry every workspace anyone
+/// touched today.
+const UNATTACHED_HOST_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// How often the idle sweep runs.
+const HOST_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Pool keys that have a turn running.
+fn busy_pool_keys(shared: &Shared) -> std::collections::HashSet<process::PoolKey> {
+    shared
+        .routes
+        .lock()
+        .values()
+        .filter(|r| r.turn_active)
+        .map(|r| r.pool_key.clone())
+        .collect()
+}
+
+/// Pool keys some session routes to.
+fn attached_pool_keys(shared: &Shared) -> std::collections::HashSet<process::PoolKey> {
+    shared
+        .routes
+        .lock()
+        .values()
+        .map(|r| r.pool_key.clone())
+        .collect()
+}
+
+/// After a turn on `key` settled: replace the host if a credential refresh
+/// spared it while it was busy, unless another session on it is still mid-turn.
+pub(crate) fn retire_stale_host_after_turn(shared: &Shared, key: &process::PoolKey) {
+    if !shared.pool.is_pending_retire(key) {
+        return;
+    }
+    if busy_pool_keys(shared).contains(key) {
+        return;
+    }
+    shared.pool.retire_if_pending(key);
+}
+
+/// Periodically kill hosts nobody is attached to. Ends when the backend does.
+async fn reap_idle_hosts_loop(shared: std::sync::Weak<Shared>) {
+    let mut tick = tokio::time::interval(HOST_REAP_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let Some(shared) = shared.upgrade() else {
+            return;
+        };
+        let attached = attached_pool_keys(&shared);
+        let killed =
+            shared
+                .pool
+                .reap_idle(&attached, std::time::Instant::now(), UNATTACHED_HOST_TTL);
+        if killed > 0 {
+            info!(
+                killed,
+                live = shared.pool.live_count(),
+                "reaped pi hosts with no attached session"
+            );
+        }
+    }
+}
+
 fn canonical_dir(worktree: &str) -> String {
-    std::fs::canonicalize(worktree)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| worktree.to_string())
+    // `canonicalize` on Windows is `\\?\D:\...`. Node 22+ resolves that
+    // prefix by calling `lstat` on a bare `D:`, which fails with EISDIR and
+    // aborts Wiki compile when the workspace is on that drive. The plain path
+    // is the same directory.
+    let path = Path::new(worktree);
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    teamclu_runtime_env::path_for_node(&resolved)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Stamp a `sessionId` onto a command for host-mode children; legacy children
@@ -218,28 +291,6 @@ fn split_model_id(model_id: &str) -> Option<(String, String)> {
     Some((provider.to_string(), model.to_string()))
 }
 
-/// Extract the `amuxd-remote-tools` server launch command from an amuxd MCP
-/// config value (`{"mcpServers": {"amuxd-remote-tools": {"command", "args"}}}`,
-/// the shape `remote_tools::mcp_config` writes). Returned as a JSON array
-/// string, the `TEAMCLU_REMOTE_TOOLS_CMD` contract of the pi extension.
-fn remote_tools_cmd_from_value(root: &serde_json::Value) -> Option<String> {
-    // Literal name (= remote_tools::REMOTE_TOOLS_MCP_SERVER_NAME); kept local
-    // so the integration-test harness need not pull in the remote_tools tree.
-    let server = root.get("mcpServers")?.get("amuxd-remote-tools")?;
-    let command = server.get("command").and_then(|v| v.as_str())?;
-    let mut cmd = vec![serde_json::json!(command)];
-    if let Some(args) = server.get("args").and_then(|v| v.as_array()) {
-        cmd.extend(args.iter().filter(|a| a.is_string()).cloned());
-    }
-    Some(serde_json::Value::Array(cmd).to_string())
-}
-
-fn remote_tools_cmd_from_mcp_config(path: &Path) -> Option<String> {
-    let body = std::fs::read_to_string(path).ok()?;
-    let root: serde_json::Value = serde_json::from_str(&body).ok()?;
-    remote_tools_cmd_from_value(&root)
-}
-
 /// Build the `TEAMCLU_MCP_SERVERS` payload for the pi extension from a
 /// workspace `opencode.json` (the MCP SSOT: team + inherent + user servers all
 /// merge into its `mcp` map). pi has no native MCP, so the extension connects
@@ -254,8 +305,8 @@ fn remote_tools_cmd_from_mcp_config(path: &Path) -> Option<String> {
 ///
 /// None when there is nothing to bridge. Excluded: disabled servers, local
 /// servers whose command path does not exist on this machine, remote servers
-/// with no URL, and `amuxd-remote-tools` (already bridged via
-/// `TEAMCLU_REMOTE_TOOLS_CMD`).
+/// with no URL, and a stale `amuxd-remote-tools` entry (that bridge was
+/// removed; its `remote-tools-mcp` subcommand no longer exists).
 /// The `command[0]` of an MCP server entry when it names a path that does not
 /// exist on this machine.
 ///
@@ -434,7 +485,6 @@ fn model_from_state(state: &serde_json::Value) -> Option<String> {
 struct AttachArgs {
     worktree: String,
     resume_acp_session_id: Option<String>,
-    mcp_config_path: Option<PathBuf>,
     initial_model_override: Option<String>,
     /// Daemon MRU, newest first. See `config::model_mru`.
     model_mru: Vec<String>,
@@ -533,10 +583,6 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
     let env = SpawnEnv {
         extra_env: args.extra_env,
         force_env_override: args.force_env_override,
-        remote_tools_cmd: args
-            .mcp_config_path
-            .as_deref()
-            .and_then(remote_tools_cmd_from_mcp_config),
         mcp_servers: mcp_servers_from_opencode_json(&worktree),
     };
     let proc = shared
@@ -783,7 +829,6 @@ pub(crate) async fn fork_branched_session(
     let env = SpawnEnv {
         extra_env,
         force_env_override,
-        remote_tools_cmd: None,
         mcp_servers: mcp_servers_from_opencode_json(&worktree),
     };
     let proc = shared
@@ -1176,13 +1221,17 @@ async fn do_prompt(
         )
         .await;
         // Close the turn — no turn_end/agent_settled arrives for a failed submit.
-        {
+        let settled_key = {
             let mut routes = shared.routes.lock();
-            if let Some(route) = routes.get_mut(session_id) {
+            routes.get_mut(session_id).map(|route| {
                 route.turn_active = false;
                 route.turn_reply_to = None;
                 route.turn_requester = None;
-            }
+                route.pool_key.clone()
+            })
+        };
+        if let Some(key) = settled_key {
+            retire_stale_host_after_turn(shared, &key);
         }
         emit_frame(
             &event_tx,
@@ -1572,9 +1621,6 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                     let _ = ack.send(());
                 }
             }
-            AcpCommand::Shutdown => {
-                shared.pool.kill_all();
-            }
         }
     }
 }
@@ -1602,6 +1648,7 @@ impl PiRpcBackend {
             .get_or_init(|| {
                 let (tx, rx) = mpsc::channel::<AcpCommand>(64);
                 tokio::spawn(command_loop(Arc::clone(&self.shared), rx));
+                tokio::spawn(reap_idle_hosts_loop(Arc::downgrade(&self.shared)));
                 tx
             })
             .clone()
@@ -1633,7 +1680,6 @@ impl AgentBackend for PiRpcBackend {
         force_env_override: bool,
         worktree: String,
         resume_acp_session_id: Option<String>,
-        mcp_config_path: Option<PathBuf>,
         initial_model_override: Option<String>,
         model_mru: Vec<String>,
         _initial_prompt: String,
@@ -1655,7 +1701,6 @@ impl AgentBackend for PiRpcBackend {
             AttachArgs {
                 worktree,
                 resume_acp_session_id,
-                mcp_config_path,
                 initial_model_override,
                 model_mru,
                 event_tx,
@@ -1714,10 +1759,6 @@ impl AgentBackend for PiRpcBackend {
         let env = SpawnEnv {
             extra_env,
             force_env_override,
-            // The remote-tools command arrives with the session's mcp config
-            // at attach; a prewarm that predates it respawns then (fingerprint
-            // change), same as before.
-            remote_tools_cmd: None,
             mcp_servers: mcp_servers_from_opencode_json(&worktree),
         };
         if let Err(e) = self.shared.pool.ensure_with_env(&self.shared, &key, env) {
@@ -1732,7 +1773,9 @@ impl AgentBackend for PiRpcBackend {
         // ANY agent type tore down every pi child when e.g. opencode auth
         // changed.
         if agent_types.contains(&amux::AgentType::Pi) {
-            self.shared.pool.kill_all()
+            // Not `kill_all()`: that ended turns running in other workspaces.
+            let busy = busy_pool_keys(&self.shared);
+            self.shared.pool.refresh_sparing(&busy)
         } else {
             0
         }
@@ -1745,7 +1788,10 @@ impl AgentBackend for PiRpcBackend {
     }
 
     fn invalidate_all_workspace_hosts(&mut self) -> usize {
-        self.shared.pool.kill_all()
+        // Reached from saving or removing a device-level provider credential.
+        // Hosts mid-turn are replaced when the turn settles, not under it.
+        let busy = busy_pool_keys(&self.shared);
+        self.shared.pool.refresh_sparing(&busy)
     }
 
     fn invalidate_unattached_workspace_hosts(&mut self) -> usize {
@@ -1904,7 +1950,6 @@ impl AgentBackend for PiRpcBackend {
         let env = SpawnEnv {
             extra_env,
             force_env_override: false,
-            remote_tools_cmd: None,
             mcp_servers: mcp_servers_from_opencode_json(&worktree),
         };
         // `ensure_for_catalog`, never `ensure_with_env`: this env is missing
@@ -1962,7 +2007,24 @@ impl AgentBackend for PiRpcBackend {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+
+    #[test]
+    fn canonical_dir_does_not_keep_a_windows_verbatim_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = canonical_dir(dir.path().to_str().unwrap());
+        assert!(
+            !got.starts_with(r"\\?\"),
+            "node cannot realpath a verbatim path: {got}"
+        );
+        assert!(Path::new(&got).is_dir(), "{got}");
+        assert_eq!(
+            canonical_dir(r"\\?\D:\team\documents\AI行业应用"),
+            r"D:\team\documents\AI行业应用"
+        );
+    }
 
     #[test]
     fn mid_turn_prompt_plan_steers_without_turn_open() {
@@ -2120,48 +2182,6 @@ mod tests {
             "pi:/s/a.jsonl",
         );
         assert!(legacy.get("sessionId").is_none());
-    }
-
-    #[test]
-    fn remote_tools_cmd_extracted_from_mcp_config_shape() {
-        let root = serde_json::json!({
-            "mcpServers": {
-                "amuxd-remote-tools": {
-                    "command": "/usr/local/bin/amuxd",
-                    "args": ["remote-tools-mcp", "--sock=/tmp/amuxd.sock"]
-                }
-            }
-        });
-        assert_eq!(
-            remote_tools_cmd_from_value(&root).as_deref(),
-            Some(r#"["/usr/local/bin/amuxd","remote-tools-mcp","--sock=/tmp/amuxd.sock"]"#)
-        );
-        // Other servers present but no amuxd-remote-tools → None.
-        let other = serde_json::json!({"mcpServers": {"something-else": {"command": "x"}}});
-        assert_eq!(remote_tools_cmd_from_value(&other), None);
-        assert_eq!(remote_tools_cmd_from_value(&serde_json::json!({})), None);
-        // Missing command → None.
-        let no_cmd = serde_json::json!({"mcpServers": {"amuxd-remote-tools": {"args": ["a"]}}});
-        assert_eq!(remote_tools_cmd_from_value(&no_cmd), None);
-    }
-
-    #[test]
-    fn remote_tools_cmd_from_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("remote-tools-host.json");
-        std::fs::write(
-            &path,
-            r#"{"mcpServers":{"amuxd-remote-tools":{"command":"amuxd","args":["remote-tools-mcp"]}}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            remote_tools_cmd_from_mcp_config(&path).as_deref(),
-            Some(r#"["amuxd","remote-tools-mcp"]"#)
-        );
-        assert_eq!(
-            remote_tools_cmd_from_mcp_config(&dir.path().join("missing.json")),
-            None
-        );
     }
 
     #[tokio::test]

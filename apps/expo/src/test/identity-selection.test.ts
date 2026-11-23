@@ -22,7 +22,7 @@ vi.mock("@react-native-async-storage/async-storage", () => {
 });
 
 type OnboardingApi = ReturnType<
-  (typeof import("../lib/supabase/onboarding-api"))["createOnboardingApi"]
+  (typeof import("../lib/auth/onboarding-api"))["createOnboardingApi"]
 >;
 
 const own: MyIdentity = {
@@ -272,7 +272,7 @@ describe("onboarding api — identities and join links", () => {
   }
 
   it("lists identities and drops rows without a user id", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const get = vi.fn().mockResolvedValue({
       items: [
         { userId: "u-own", orgId: "o1", orgName: "Own", adminType: 3, isCurrent: true },
@@ -290,7 +290,7 @@ describe("onboarding api — identities and join links", () => {
   });
 
   it("switches identity by installing the minted session", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const post = vi.fn().mockResolvedValue({ refreshToken: "rt-co" });
     const setRefreshSession = vi.fn().mockResolvedValue({ data: {}, error: null });
     const api = createOnboardingApi(makeClient({ post, setRefreshSession }));
@@ -302,7 +302,7 @@ describe("onboarding api — identities and join links", () => {
   });
 
   it("redeems a same-server join link through the app client", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const post = vi.fn().mockResolvedValue({ teamId: "t-1", alreadyMember: true });
     const api = createOnboardingApi(makeClient({ post }));
 
@@ -314,7 +314,7 @@ describe("onboarding api — identities and join links", () => {
   });
 
   it("redeems another server's link there, with this session's bearer", async () => {
-    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const { createOnboardingApi } = await import("../lib/auth/onboarding-api");
     const post = vi.fn();
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,

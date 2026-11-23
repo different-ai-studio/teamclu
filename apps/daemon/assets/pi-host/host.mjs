@@ -246,6 +246,36 @@ try {
   log(`http dispatcher setup skipped: ${e}`);
 }
 
+/** Built-in tool modifiers for every session in this host, or `undefined` for
+ * pi's default selection (`read`, `bash`, `edit`, `write`).
+ *
+ * On Windows, pi's `bash` tool needs Git Bash (or another `bash.exe` on PATH)
+ * and does not fall back to anything when it is missing. A machine without Git
+ * then gives the agent no way to run a command at all: not `winget`, not
+ * `python`, not even `powershell`, because those would go through `bash` too.
+ * pi ships a `powershell` tool for this (pwsh 7, else Windows PowerShell, both
+ * always present), it is just off by default. So on Windows add it, and drop
+ * `bash` when pi cannot resolve a bash shell, so the model is not offered a tool
+ * whose every call fails.
+ *
+ * `+name`/`-name` modify pi's default selection (and any `defaultTools` the
+ * user set in pi's settings) instead of replacing it. */
+function windowsToolModifiers() {
+  if (process.platform !== "win32") return undefined;
+  const modifiers = ["+powershell"];
+  if (typeof pi.getShellConfig === "function") {
+    try {
+      pi.getShellConfig(services.settingsManager.getShellPath?.());
+    } catch (e) {
+      log(`no bash shell on this machine, disabling the bash tool: ${String(e).split("\n")[0]}`);
+      modifiers.push("-bash");
+    }
+  }
+  return modifiers;
+}
+
+const sessionTools = windowsToolModifiers();
+
 const sessionDir = args.sessionDir;
 
 // ---------------------------------------------------------------------------
@@ -377,7 +407,11 @@ function makeUiContext(sessionId) {
 }
 
 async function adoptSession(sessionManager) {
-  const { session } = await pi.createAgentSessionFromServices({ services, sessionManager });
+  const { session } = await pi.createAgentSessionFromServices({
+    services,
+    sessionManager,
+    tools: sessionTools,
+  });
   const sessionId = sessionIdFor(session);
 
   await session.bindExtensions({
@@ -765,6 +799,40 @@ function requireSession(command) {
   return entry.session;
 }
 
+/** Why a model lookup came up empty, for the log and the error: which
+ * providers have models available, whether `provider` has any models at all,
+ * and its auth status. Ids and statuses only — no credentials. */
+function modelLookupDiagnostics(runtime, provider) {
+  const parts = [];
+  try {
+    const available = runtime.getAvailableSnapshot();
+    const providers = [...new Set(available.map((m) => m.provider))].sort();
+    parts.push(`available providers=[${providers.join(",")}]`);
+  } catch (e) {
+    parts.push(`available=? (${e})`);
+  }
+  try {
+    if (typeof runtime.getModels === "function") {
+      parts.push(`${provider} registered models=${[...runtime.getModels(provider)].length}`);
+    }
+  } catch {
+    // Diagnostics only.
+  }
+  try {
+    const status = runtime.getProviderAuthStatus?.(provider);
+    if (status !== undefined) parts.push(`${provider} auth=${JSON.stringify(status)}`);
+  } catch {
+    // Diagnostics only.
+  }
+  try {
+    const error = runtime.getError?.();
+    if (error) parts.push(`runtime error=${String(error).split("\n")[0]}`);
+  } catch {
+    // Diagnostics only.
+  }
+  return parts.join("; ");
+}
+
 async function handleCommand(command) {
   const id = command.id;
   switch (command.type) {
@@ -871,12 +939,33 @@ async function handleCommand(command) {
 
     case "set_model": {
       const session = requireSession(command);
-      const models = session.modelRuntime.getAvailableSnapshot();
-      const model = models.find(
-        (m) => m.provider === command.provider && m.id === command.modelId,
-      );
+      const find = () =>
+        session.modelRuntime
+          .getAvailableSnapshot()
+          .find((m) => m.provider === command.provider && m.id === command.modelId);
+      let model = find();
       if (!model) {
-        return fail(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
+        // The snapshot is what pi last computed, not what it would compute now:
+        // an extension's `registerProvider` only marks its models available
+        // provisionally and settles them in an asynchronous availability pass.
+        // Recompute once before refusing, rather than leaving the session on
+        // pi's `unknown/unknown` placeholder for the rest of its life.
+        try {
+          await session.modelRuntime.refresh({ allowNetwork: false });
+        } catch (e) {
+          log(`set_model: model refresh failed: ${e}`);
+        }
+        model = find();
+        if (model) log(`set_model: ${command.provider}/${command.modelId} found after a refresh`);
+      }
+      if (!model) {
+        const detail = modelLookupDiagnostics(session.modelRuntime, command.provider);
+        log(`set_model: ${command.provider}/${command.modelId} not found; ${detail}`);
+        return fail(
+          id,
+          "set_model",
+          `Model not found: ${command.provider}/${command.modelId} (${detail})`,
+        );
       }
       await session.setModel(model);
       return ok(id, "set_model", model);

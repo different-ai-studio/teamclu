@@ -23,7 +23,11 @@ import {
 } from '@/lib/tabs/app-tabs'
 import { isGiteaManaged, useAppsStore } from '@/stores/apps-store'
 import { AppStatusDot } from './AppStatusDot'
+import { AppDeployActions } from './AppDeployActions'
+import { AppLocalPathRow } from './AppLocalPathRow'
+import { AppGitUrlRow, appGitCloneUrl } from './AppGitUrlRow'
 import type { AppGitHead, AppRow } from '@/lib/backend/types'
+import { formatBytes } from '@/lib/ui/format-bytes'
 
 /**
  * A flat group of related settings.
@@ -176,19 +180,6 @@ export function describeCodeVersion(
 }
 
 /** Bytes for humans. Deliberately not a dependency; three lines. */
-function formatBytes(n: number | null | undefined): string | null {
-  if (n == null) return null
-  if (n < 1024) return `${n} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let v = n / 1024
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i += 1
-  }
-  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`
-}
-
 interface Summary {
   members: number | null
   // `first` rides along so opening the browser does not re-ask the server which
@@ -310,7 +301,6 @@ interface AppControlPanelProps {
  */
 export function AppControlPanel({ app }: AppControlPanelProps) {
   const { t } = useTranslation()
-  const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
   const rename = useAppsStore((s) => s.rename)
 
   const [editingName, setEditingName] = React.useState(false)
@@ -323,7 +313,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
     setNameDraft(app.name)
   }, [app.id, app.name])
 
-  const status = appStatusMeta(app, deploying)
+  const status = appStatusMeta(app)
 
   const handleRename = async () => {
     const trimmed = nameDraft.trim()
@@ -522,7 +512,9 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
             >
               {(() => {
                 const line = describeCodeVersion(app, summary.gitHead)
-                return t(line.key, line.fallback, line.vars)
+                return line.vars
+                  ? t(line.key, line.fallback, line.vars)
+                  : t(line.key, line.fallback)
               })()}
             </p>
           )}
@@ -530,6 +522,17 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto px-3.5 py-3.5">
+        <Group title={t('apps.controlPanel.deployGroup', '部署')}>
+          <AppDeployActions app={app} />
+        </Group>
+        <Group title={t('apps.localPath.title', '本地路径')}>
+          <AppLocalPathRow app={app} />
+        </Group>
+        {appGitCloneUrl(app) && (
+          <Group title={t('apps.gitUrl.title', 'Git 地址')}>
+            <AppGitUrlRow app={app} />
+          </Group>
+        )}
         <Group title={t('apps.controlPanel.runtimeGroup', '运行与数据')}>
           <SummaryRow
             label={t('apps.data.section', '线上数据')}

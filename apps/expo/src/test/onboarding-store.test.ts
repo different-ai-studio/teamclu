@@ -24,7 +24,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
   default: storageMock.api,
 }));
 type OnboardingApi = ReturnType<
-  (typeof import("../lib/supabase/onboarding-api"))["createOnboardingApi"]
+  (typeof import("../lib/auth/onboarding-api"))["createOnboardingApi"]
 >;
 
 function createDeferredPromise<T>() {

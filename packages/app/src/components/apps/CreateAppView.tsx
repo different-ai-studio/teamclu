@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AppWindow, ChevronRight, FolderOpen, Loader2, Save } from 'lucide-react'
+import { AppWindow, Bot, ChevronRight, FolderOpen, Loader2, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
@@ -12,6 +12,8 @@ import { isHttpGitUrl, splitGitUrlCredentials } from '@/lib/apps/git-url-credent
 import { closeCreateApp } from '@/lib/tabs/app-tabs'
 import { bindDaemonAppWorkdir, inspectDaemonDir } from '@/lib/daemon/daemon-local-client'
 import { isTauri } from '@/lib/utils'
+import { getBackend } from '@/lib/backend'
+import type { AppAccessCandidate } from '@/lib/backend/types'
 
 type Visibility = 'personal' | 'team'
 
@@ -97,6 +99,26 @@ export function CreateAppView() {
   const [picking, setPicking] = React.useState(false)
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  // Agents get no access to an app by default (they are granted like people).
+  // Offered here so "create, then let an agent build it" does not need a trip
+  // to the access tab first — but never pre-checked: the grant is the user's.
+  const [agents, setAgents] = React.useState<AppAccessCandidate[]>([])
+  const [grantAgentIds, setGrantAgentIds] = React.useState<string[]>([])
+  React.useEffect(() => {
+    if (!teamId) return
+    let cancelled = false
+    getBackend()
+      .actors.listTeamActorsForAppAccess(teamId)
+      .then((list) => {
+        if (!cancelled) setAgents(list.filter((a) => a.actorType === 'agent' && a.connected))
+      })
+      .catch(() => {
+        if (!cancelled) setAgents([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [teamId])
 
   // No reset effect: closing the tab unmounts this, and reopening it mounts a
   // fresh one. What the dialog needed a `!open` branch for, the tab gets free.
@@ -197,6 +219,7 @@ export function CreateAppView() {
         localOnly: source === 'local' && !adopting,
         adoptLocalDir: adopting ? localDir : null,
         ...(remote?.credential ? { gitCredential: remote.credential } : {}),
+        ...(grantAgentIds.length > 0 ? { grantActorIds: grantAgentIds } : {}),
       })
 
       if (source === 'local' && !adopting) {
@@ -492,6 +515,52 @@ export function CreateAppView() {
               )}
             </span>
           </div>
+
+          {agents.length > 0 && (
+            <div className="flex flex-col gap-1.5" data-testid="create-app-grant-agents">
+              <span className="text-[12.5px] font-semibold text-muted-foreground">
+                {t('apps.grantAgentsLabel', '同时授权给这些 agent')}
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {agents.map((agent) => {
+                  const checked = grantAgentIds.includes(agent.id)
+                  return (
+                    <label
+                      key={agent.id}
+                      className={cn(
+                        'flex cursor-pointer items-center gap-2 rounded-[9px] border px-3 py-2 text-[13px] transition-colors',
+                        checked
+                          ? 'border-coral bg-coral/5 text-foreground'
+                          : 'border-border-soft bg-paper text-ink-2 hover:bg-selected/30',
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={submitting}
+                        data-testid={`create-app-grant-agent-${agent.id}`}
+                        onChange={() =>
+                          setGrantAgentIds((prev) =>
+                            prev.includes(agent.id) ? prev.filter((id) => id !== agent.id) : [...prev, agent.id],
+                          )
+                        }
+                        className="h-3.5 w-3.5 accent-coral"
+                      />
+                      <Bot className="h-3.5 w-3.5 text-muted-foreground" />
+                      {agent.displayName}
+                      <span className="font-mono text-[11px] text-muted-foreground">write</span>
+                    </label>
+                  )
+                })}
+              </div>
+              <span className="text-[11.5px] text-faint">
+                {t(
+                  'apps.grantAgentsHint',
+                  'agent 默认没有权限。不勾选的话，它们推不了这个应用的代码，之后也可以在「协作权限」里再授权。',
+                )}
+              </span>
+            </div>
+          )}
 
           {error && (
             <div className="rounded-[9px] border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[12.5px] text-amber-700">

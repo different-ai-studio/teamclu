@@ -12,7 +12,7 @@ import { appDisplayName } from "@/lib/config/build-config";
 import { daemonHomeDisplayPath } from "@/lib/daemon/daemon-paths";
 import { parseSessionDeeplink } from "@/lib/session/session-deeplink";
 import { markStartup } from "@/lib/telemetry/startup-perf";
-import { BookOpen, ChevronLeft, X, PanelRightClose, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
+import { BookOpen, X, Loader2, RotateCw, MessageSquarePlus, Users, SlidersHorizontal } from "lucide-react";
 import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
 import { SessionShareButton } from "@/components/chat/SessionShareButton";
 import { ExportPiTranscriptButton } from "@/components/chat/ExportPiTranscriptButton";
@@ -20,12 +20,22 @@ import { SaveToKnowledgeButton } from "@/components/chat/SaveToKnowledgeButton";
 import { RefreshSkillsHeaderButton } from "@/components/chat/RefreshSkillsHeaderButton";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
-import { useGitReposInit } from "@/hooks/use-git-repos-init";
+import { useTeamBootstrapInit } from "@/hooks/use-team-bootstrap-init";
 import { useCronInit } from "@/hooks/use-cron-init";
 import { useAgentAppChanges } from "@/hooks/use-agent-app-changes";
 import { useWorkspaceRuntimeRefreshPoll } from "@/hooks/use-workspace-runtime-refresh-poll";
-import { useOpenCodePreload } from "@/hooks/use-opencode-preload";
 import { useExternalLinkHandler } from "@/hooks/use-external-link-handler";
+import { ChatFileMenuHost } from "@/components/chat/ChatFileMenuHost";
+import {
+  ContentColumn,
+  ContentColumnRestoreButton,
+  useContentColumnVisible,
+  useEffectiveContentColumnMode,
+} from "@/components/content-column/ContentColumn";
+import { SectionDetailColumn } from "@/components/content-column/SectionDetailColumn";
+import { sectionOpensInContentColumn, useSectionMode } from "@/lib/layout/section-mode";
+import { SessionDrawer } from "@/components/session-drawer/SessionDrawer";
+import { useOneSessionSidePanel } from "@/components/session-drawer/use-one-side-panel";
 import { useTauriBodyClass } from "@/hooks/use-tauri-body-class";
 import { useMemberPresenceHeartbeat } from "@/hooks/use-member-presence-heartbeat";
 import { useExtensionSessionCleanup } from "@/hooks/use-extension-session-cleanup";
@@ -42,7 +52,6 @@ import { MqttLiveWiring } from "@/components/MqttLiveWiring";
 import { TeamSkillAutoFollow } from "@/components/TeamSkillAutoFollow";
 import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
 import { ThreadHistoryLoader } from "@/components/ThreadHistoryLoader";
-import { AppDeployConfirmDialog } from "@/components/apps/AppDeployConfirmDialog";
 import { resolveControlPanelAppId } from "@/lib/apps/app-control-panel";
 import { lazyNamed } from "@/lib/lazy-component";
 import { useEverTrue } from "@/hooks/use-ever-true";
@@ -67,7 +76,7 @@ import { startEmbedPageContextListener, consumePendingLinkContext } from "@/lib/
 import { startEmbedLinkOpenListener } from "@/lib/embed/embed-link-session";
 import { useUIStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { useTabsStore, selectActiveTab, selectHasHiddenTabs } from "@/stores/tabs";
+import { useTabsStore } from "@/stores/tabs";
 import { isTeamShareOwnedTarget } from "@/lib/tabs/teamshare-target";
 import { useTeamShareBrowserStore } from "@/stores/team-share-browser";
 import { useHeaderPreferencesStore } from "@/stores/header-preferences-store";
@@ -82,8 +91,7 @@ import { useCurrentTeamStore } from "@/stores/current-team";
 import { useLocalAgentInstallStore } from "@/stores/local-agent-install";
 import { useAppsStore } from "@/stores/apps-store";
 import { E2E_BUILD, isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
-import { TrafficLights } from "@/components/ui/traffic-lights";
-import { SidebarInset, SidebarProvider, useSidebar } from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { HeaderPanelTab } from "@/app/chrome";
 import { MainContent } from "@/app/MainContent";
 import {
@@ -152,19 +160,21 @@ function AppContent() {
       <AutomationPanelDialog />
     </React.Suspense>
   ) : null;
-  const selectedAppId = useAppsStore((s) => s.selectedAppId);
   const appIdBySessionId = useAppsStore((s) => s.appIdBySessionId);
   const appItems = useAppsStore((s) => s.items);
   const activeSessionId = useSessionSelectionStore((s) => s.currentSessionId);
+  const activeSessionAppId = useSessionListStore((s) =>
+    activeSessionId ? s.rows.find((r) => r.id === activeSessionId)?.app_id ?? null : null,
+  );
 
   const controlPanelAppId = React.useMemo(
     () =>
       resolveControlPanelAppId({
-        selectedAppId,
         activeSessionId,
+        sessionAppId: activeSessionAppId,
         appIdBySessionId,
       }),
-    [selectedAppId, activeSessionId, appIdBySessionId],
+    [activeSessionId, activeSessionAppId, appIdBySessionId],
   );
   const controlPanelApp = React.useMemo(
     () => (controlPanelAppId ? appItems.find((a) => a.id === controlPanelAppId) ?? null : null),
@@ -185,7 +195,6 @@ function AppContent() {
   );
   const currentView = useUIStore((s) => s.currentView);
   const closeSettings = useUIStore((s) => s.closeSettings);
-  const sidebarFilter = useUIStore((s) => s.sidebarFilter);
   const authSession = useAuthStore((s) => s.session);
   // `load()` keeps the cached team while auth is still restoring, so it has to
   // run again once auth settles. The user id alone is not enough of a trigger:
@@ -193,23 +202,25 @@ function AppContent() {
   // linger with nothing to clear it.
   const authLoading = useAuthStore((s) => s.loading);
   const loadCurrentTeam = useCurrentTeamStore((s) => s.load);
-  // Team-share state drives the top-right "team shared files" tab visibility.
-  // Refresh it centrally (below) so the tab reflects the true share mode even
-  // before the user ever opens the panel or Settings → Team.
-  const mainContentLayout = useUIStore((s) => s.mainContentLayout);
+  // Column four covers columns two and three in full mode; the conversation
+  // stays mounted underneath, only out of sight.
+  const contentColumnVisible = useContentColumnVisible();
+  const contentColumnMode = useEffectiveContentColumnMode();
+  const contentColumnFull = contentColumnVisible && contentColumnMode === "full";
+  // Skills / knowledge / ideas / contacts / shortcuts replace the
+  // conversation: column three steps aside (still mounted) and the section's
+  // item opens in its place — its detail view, or for knowledge and shortcuts,
+  // column four's tabs.
+  const sectionMode = useSectionMode();
+  const conversationHidden = contentColumnFull || sectionMode !== null;
+  const showSectionDetail =
+    sectionMode !== null &&
+    !contentColumnFull &&
+    !(sectionOpensInContentColumn(sectionMode) && contentColumnVisible);
   // Header icon visibility — additive gates on top of the capability/session
   // conditions below. Defaults hidden; users enable per-icon in Settings →
   // General → "会话头部图标". See stores/header-preferences-store.ts.
   const showSkillsRefresh = useHeaderPreferencesStore((s) => s.showSkillsRefresh);
-  const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
-  const hasActiveFileTab = !!useTabsStore(selectActiveTab);
-  const hasHiddenTabs = useTabsStore(selectHasHiddenTabs);
-  /** Shortcuts open in the left dock for both shells.
-   * Only the workspace shell temporarily replaces the sidebar with that dock.
-   * Files pops out from the right (via the top-right files icon). */
-  const leftDockActive =
-    isPanelOpen &&
-    activeTab === "shortcuts";
   const showAppControlPanel = appControlPanelOpen && !!controlPanelApp;
   // The file tree reaches this machine's filesystem, so it only means
   // something for a session the local agent is in. Without this gate it kept
@@ -218,25 +229,23 @@ function AppContent() {
   const {
     hasLocalAgent: sessionHasLocalAgent,
     path: sessionWorkspacePath,
+    otherAgentNames: sessionOtherAgentNames,
   } = useSessionLocalWorkspace();
-  const showRightWorkspacePanel = isPanelOpen && !leftDockActive && !showAppControlPanel;
+  const showRightWorkspacePanel = isPanelOpen && !showAppControlPanel;
   const showRightSidePanel = showRightWorkspacePanel || showAppControlPanel;
+  const sessionDrawerTitle = showAppControlPanel
+    ? t("apps.controlPanel.title", "应用设置")
+    : activeTab === "actors"
+      ? t("chat.actorSheet.title", "Actors")
+      : t("navigation.files", "files");
+  const closeSessionDrawer = React.useCallback(() => {
+    if (useUIStore.getState().appControlPanelOpen) closeAppControlPanel();
+    closePanel();
+  }, [closeAppControlPanel, closePanel]);
+  useOneSessionSidePanel(showRightSidePanel, closeSessionDrawer);
   const settingsOpen = currentView === "settings";
   /** Extension welcome has its own empty state — skip duplicate "New Chat" header. */
   const showChatSessionHeader = !(embedMode && !activeSession);
-  const sectionHeaderTitle =
-    sidebarFilter.kind === "teamShare"
-      ? sidebarFilter.section === "skills"
-        ? t("teamShare.skills", "Skills")
-        : sidebarFilter.section === "mcp"
-          ? t("teamShare.mcp", "MCP")
-          : sidebarFilter.section === "env"
-            ? t("teamShare.env", "Environment Variables")
-            : t("teamShare.knowledge", "Knowledge")
-      : sidebarFilter.kind === "ideas"
-        ? t("ideas.allTitle", "Ideas")
-        : null;
-
   const handleCloseSettings = React.useCallback(() => {
     setFeedbackOpen(false);
     closeSettings();
@@ -262,7 +271,7 @@ function AppContent() {
   // Resolved by the MQTT-connect effect; used for presence + live wiring.
   const [myActorId, setMyActorId] = useState<string | null>(null);
   // Extracted hooks — initialization, panel state, keyboard shortcuts
-  const { initialWorkspaceResolved, openCodeError } = useWorkspaceInit();
+  const { initialWorkspaceResolved, daemonConnectionError } = useWorkspaceInit();
   const daemonHttpReady = useWorkspaceStore((s) => s.daemonHttpReady);
   const installTeamId = useCurrentTeamStore((s) => s.team?.id ?? null);
   const localAgentInstallStatus = useLocalAgentInstallStore((s) =>
@@ -276,8 +285,8 @@ function AppContent() {
     const DAEMON_TOAST_ID = "amuxd-daemon-unavailable";
     const suppressDaemonToast =
       localAgentInstallStatus === "absent" || localAgentInstallStatus === "pending";
-    if (isTauri() && workspacePath && !daemonHttpReady && openCodeError && !suppressDaemonToast) {
-      toast.error(openCodeError, {
+    if (isTauri() && workspacePath && !daemonHttpReady && daemonConnectionError && !suppressDaemonToast) {
+      toast.error(daemonConnectionError, {
         id: DAEMON_TOAST_ID,
         duration: Infinity,
         description: t("workspace.daemonUnavailableHint", {
@@ -293,10 +302,10 @@ function AppContent() {
     } else {
       toast.dismiss(DAEMON_TOAST_ID);
     }
-  }, [workspacePath, daemonHttpReady, openCodeError, localAgentInstallStatus, t]);
+  }, [workspacePath, daemonHttpReady, daemonConnectionError, localAgentInstallStatus, t]);
 
   useChannelGatewayInit();
-  useGitReposInit();
+  useTeamBootstrapInit();
   useCronInit();
   useAgentAppChanges();
   useWorkspaceRuntimeRefreshPoll();
@@ -445,28 +454,6 @@ function AppContent() {
     useSessionSelectionStore((s) => s.currentSessionId),
   );
 
-  /** When left dock opens, hide the main sidebar; restore prior expansion when it closes. */
-  const restoreSidebarAfterLeftDockRef = useRef<boolean | null>(null);
-  useEffect(() => {
-    if (leftDockActive) {
-      if (restoreSidebarAfterLeftDockRef.current === null) {
-        restoreSidebarAfterLeftDockRef.current = sidebarOpen;
-        if (sidebarOpen) {
-          setSidebarOpen(false);
-        }
-      } else if (sidebarOpen) {
-        // User re-opened sidebar while left dock is active — close the dock.
-        closePanel();
-      }
-    } else {
-      const shouldExpand = restoreSidebarAfterLeftDockRef.current === true;
-      restoreSidebarAfterLeftDockRef.current = null;
-      if (shouldExpand) {
-        setSidebarOpen(true);
-      }
-    }
-  }, [leftDockActive, sidebarOpen, setSidebarOpen, closePanel]);
-
   const settingsModal = (
     <Dialog
       open={settingsOpen}
@@ -568,57 +555,19 @@ function AppContent() {
       {showSidebar && (
         <AppSidebar onPickSection={breakpoint === 'narrow' ? openNarrowListSheet : undefined} />
       )}
-      {breakpoint !== 'narrow' && (
+      {breakpoint !== 'narrow' && !contentColumnFull && (
         <div className={cn('w-(--session-list-width) shrink-0 h-svh overflow-hidden', SIDEBAR_INTERACTIVE_CURSOR)}>
-          <SidebarSecondColumn showNewSessionActions={breakpoint === 'medium'} />
+          <SidebarSecondColumn />
         </div>
       )}
       <SidebarInset className="flex flex-row h-svh overflow-hidden relative">
+        {/* Column three: header + conversation (+ its side panel). */}
         <div
           className={cn(
-            "shrink-0 overflow-hidden border-border bg-background transition-[width,opacity,transform] duration-500 ease-out",
-            leftDockActive
-              ? "w-(--sidebar-width) translate-x-0 border-r opacity-100"
-              : "pointer-events-none w-0 -translate-x-4 border-r-0 opacity-0",
+            "flex flex-1 flex-col min-w-[360px] overflow-hidden",
+            conversationHidden && "hidden",
           )}
         >
-          <div className="flex h-full w-(--sidebar-width) flex-col overflow-hidden bg-background">
-            {leftDockActive && (
-              <>
-                <div
-                  className="flex h-12 shrink-0 items-center gap-1 border-b border-border bg-background px-2"
-                  data-tauri-drag-region
-                >
-                  <TrafficLights />
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 shrink-0 rounded-lg"
-                    onClick={() => closePanel()}
-                    title={t("shortcuts.backToSidebar", "Back to sidebar")}
-                    aria-label={t(
-                      "shortcuts.backToSidebar",
-                      "Back to sidebar",
-                    )}
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </Button>
-                  <span className="min-w-0 truncate text-sm font-medium">
-                    {t("navigation.shortcuts", "Shortcuts")}
-                  </span>
-                  <div className="min-w-0 flex-1" data-tauri-drag-region />
-                </div>
-                <div className="min-h-0 flex-1 overflow-hidden">
-                  <React.Suspense fallback={<PaneLoading />}>
-                    <RightPanel />
-                  </React.Suspense>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-        {/* Main column: header + main content */}
-        <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
           {breakpoint === 'narrow' && <NarrowChatHeader />}
           <>
           {/* Header with breadcrumb - sticky */}
@@ -629,20 +578,9 @@ function AppContent() {
           >
             {collapsedInsetLeading}
 
-            <button
-              className={cn(
-                "min-w-0 truncate text-sm text-left",
-                hasActiveFileTab && "cursor-pointer hover:text-foreground/70 transition-colors"
-              )}
-              onClick={() => {
-                if (hasActiveFileTab) {
-                  useTabsStore.getState().hideAll();
-                }
-              }}
-              disabled={!hasActiveFileTab}
-            >
-              {sectionHeaderTitle || activeSession?.title || t("chat.newChat", "New Chat")}
-            </button>
+            <span className="min-w-0 truncate text-sm text-left">
+              {activeSession?.title || t("chat.newChat", "New Chat")}
+            </span>
             {activeSession && !isSoloBuild() && (
               <button
                 onClick={async () => {
@@ -668,27 +606,6 @@ function AppContent() {
 
             {/* Panel tabs - right side of header */}
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
-              {mainContentLayout === "stacked" && (hasActiveFileTab || hasHiddenTabs) && (
-                <button
-                  className={cn(
-                    "rounded p-1 transition-colors hover:bg-muted hover:text-foreground",
-                    hasActiveFileTab ? "text-foreground" : "text-muted-foreground",
-                  )}
-                  onClick={() => {
-                    if (hasActiveFileTab) {
-                      useTabsStore.getState().hideAll();
-                    } else {
-                      useTabsStore.getState().restoreLastTab();
-                    }
-                  }}
-                  title={hasActiveFileTab
-                    ? t("navigation.hideTabs", "Hide files")
-                    : t("navigation.restoreTabs", "Show files")
-                  }
-                >
-                  <AppWindow className="h-4 w-4" />
-                </button>
-              )}
               {capabilities.workspace && sessionWorkspacePath && showSkillsRefresh && (
                 <RefreshSkillsHeaderButton workspacePath={sessionWorkspacePath} />
               )}
@@ -704,15 +621,31 @@ function AppContent() {
                 />
               )}
               {/* Workspace file tree — the folder the local agent works in for
-                  the open session. No local agent in it, no folder to show, so
-                  the entry disappears rather than pointing at whatever was open
-                  before. */}
+                  the open session. With no local agent in it there is no
+                  folder on this machine to show, so the entry is greyed out
+                  with a hint naming where the session's agent runs, rather
+                  than vanishing (which read as a bug) or pointing at whatever
+                  was open before. */}
               {capabilities.workspace && sessionHasLocalAgent && (
                 <HeaderPanelTab
                   icon={BookOpen}
                   label={t("navigation.files", "files")}
                   isActive={isPanelOpen && activeTab === "files"}
                   onClick={() => isPanelOpen && activeTab === "files" ? closePanel() : openPanel("files")}
+                />
+              )}
+              {capabilities.workspace && !sessionHasLocalAgent && hasCurrentSession && sessionOtherAgentNames.length > 0 && (
+                <HeaderPanelTab
+                  icon={BookOpen}
+                  label={t("navigation.files", "files")}
+                  isActive={false}
+                  disabled
+                  title={t(
+                    "navigation.filesUnavailableRemoteAgent",
+                    "This session's agent runs on {{agents}}, so its files are not on this machine. Switching to this machine's agent keeps the chat history but not those files.",
+                    { agents: sessionOtherAgentNames.join(", ") },
+                  )}
+                  onClick={() => {}}
                 />
               )}
               {/* The team shared files tab moved to the Knowledge entry in the
@@ -727,18 +660,9 @@ function AppContent() {
                   onClick={() => toggleAppControlPanel()}
                 />
               )}
-              {showRightSidePanel && (
-                <button
-                  className="ml-1 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  onClick={() => {
-                    if (showAppControlPanel) closeAppControlPanel();
-                    else closePanel();
-                  }}
-                  title={t("navigation.collapsePanel", "Collapse panel")}
-                >
-                  <PanelRightClose className="h-4 w-4" />
-                </button>
-              )}
+              {/* Column four is hidden but still holds tabs: bring it back.
+                  Last, nearest the edge column four opens from. */}
+              <ContentColumnRestoreButton />
             </div>
           </header>
           ) : null}
@@ -747,35 +671,37 @@ function AppContent() {
           <RuntimeRefreshWorkspaceBanner />
           <AgentsSkillsAccessBanner />
 
-          {/* Main content - Chat or file preview */}
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-            <MainContent />
+          {/* Conversation, with the session's side panel (files, actors, app
+              settings) at its right edge: the panel belongs to the session,
+              so it sits inside column three rather than after column four. */}
+          <div className="relative flex min-h-0 flex-1 overflow-hidden">
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <MainContent />
+            </div>
+            <SessionDrawer
+              open={showRightSidePanel}
+              title={sessionDrawerTitle}
+              onClose={closeSessionDrawer}
+            >
+              {showRightWorkspacePanel && (
+                <React.Suspense fallback={<PaneLoading />}>
+                  <RightPanel />
+                </React.Suspense>
+              )}
+              {showAppControlPanel && controlPanelApp && (
+                <React.Suspense fallback={<PaneLoading />}>
+                  <AppControlPanel app={controlPanelApp} />
+                </React.Suspense>
+              )}
+            </SessionDrawer>
           </div>
           </>
         </div>
 
-        {/* Right Panel - full height (RightPanel or AppControlPanel, mutually exclusive) */}
-        <div
-          className={cn(
-            "shrink-0 overflow-hidden border-l border-border bg-background transition-[width,opacity,transform] duration-500 ease-out",
-            showRightSidePanel
-              ? "w-72 translate-x-0 opacity-100"
-              : "pointer-events-none w-0 translate-x-4 border-l-0 opacity-0",
-          )}
-        >
-          <div className="h-full w-72">
-            {showRightWorkspacePanel && (
-              <React.Suspense fallback={<PaneLoading />}>
-                <RightPanel />
-              </React.Suspense>
-            )}
-            {showAppControlPanel && controlPanelApp && (
-              <React.Suspense fallback={<PaneLoading />}>
-                <AppControlPanel app={controlPanelApp} />
-              </React.Suspense>
-            )}
-          </div>
-        </div>
+        {showSectionDetail && sectionMode ? <SectionDetailColumn section={sectionMode} /> : null}
+
+        {/* Column four: files, previews, web and app tabs. */}
+        <ContentColumn />
       </SidebarInset>
       {settingsModal}
       {automationPanelDialog}
@@ -796,6 +722,8 @@ function App() {
   }, []);
 
   const breakpoint = useLayoutBreakpoint()
+  const navPinned = useUIStore((s) => s.navPinned)
+  const setNavPinned = useUIStore((s) => s.setNavPinned)
 
   // ── Global webview shortcuts (find, zoom, context menu) ──
   useWebviewShortcuts()
@@ -912,7 +840,6 @@ function App() {
 
   // Extracted hooks — initialization
   useTauriBodyClass();
-  useOpenCodePreload();
 
   // First-run onboarding (welcome, dependency setup, role, model) all lives in
   // AuthGate now, ahead of this component — see #881. By the time App renders,
@@ -920,16 +847,24 @@ function App() {
   const mainContent = (
     <>
       <SidebarProvider
-        overlay={breakpoint !== 'wide'}
+        // Inline (pinned list or icon rail) on desktop widths; a drawer only
+        // where there is no room for even the rail.
+        overlay={breakpoint === 'narrow'}
+        open={navPinned && breakpoint === 'wide'}
+        onOpenChange={setNavPinned}
         style={
           {
             "--sidebar-width": "220px",
+            // Wide enough that the macOS 26 traffic lights (≈18–78px in) keep a
+            // margin on their right, as they do on their left.
+            "--sidebar-width-icon": "92px",
             "--session-list-width": "280px",
           } as React.CSSProperties
         }
       >
         <AppContent />
       </SidebarProvider>
+      <ChatFileMenuHost />
       <Toaster
         position="top-center"
         offset={40}
@@ -938,7 +873,6 @@ function App() {
           descriptionClassName: '!text-muted-foreground !text-[11px]',
         }}
       />
-      <AppDeployConfirmDialog />
       <NewSessionDialog />
       {capabilities.pageCapture ? <PageAccessConsentDialog /> : null}
     </>

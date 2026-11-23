@@ -17,7 +17,7 @@ import {
   createConfiguredInviteApi,
   type PendingInvite,
 } from "../../src/features/onboarding/invite-api";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
 import { colors, hai, radii, spacing, typography } from "../../src/ui/theme";
 import { showToast } from "../../src/ui/Toast";
@@ -32,7 +32,7 @@ export default function PendingInvitesRoute() {
   const router = useRouter();
   const { t } = useTranslation();
   const { controller } = useOnboarding();
-  const inviteApi = useMemo(() => createConfiguredInviteApi(supabase), []);
+  const inviteApi = useMemo(() => createConfiguredInviteApi(cloudAuth), []);
 
   const [invites, setInvites] = useState<PendingInvite[]>([]);
   const [isLoading, setIsLoading] = useState(true);

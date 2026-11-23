@@ -41,11 +41,6 @@ impl LocalCacheStore {
             .await
     }
 
-    /// `id -> team_id` for every idea in `ids` that exists locally.
-    pub async fn teams_for_ideas(&self, ids: &[String]) -> Result<HashMap<String, String>, String> {
-        self.owner_lookup("idea", "teams_for_ideas", ids).await
-    }
-
     async fn owner_lookup(
         &self,
         table: &str,
@@ -74,25 +69,6 @@ impl LocalCacheStore {
             }
         }
         Ok(owners)
-    }
-
-    pub async fn team_for_idea(&self, idea_id: &str) -> Result<Option<String>, String> {
-        let conn = self.conn.lock().await;
-        let mut rows = conn
-            .query(
-                "SELECT team_id FROM idea WHERE id = ?1",
-                params![idea_id.to_string()],
-            )
-            .await
-            .map_err(|e| format!("team_for_idea: {}", e))?;
-        if let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| format!("team_for_idea row: {}", e))?
-        {
-            return Ok(row.get::<String>(0).ok());
-        }
-        Ok(None)
     }
 
     pub async fn team_for_actor(&self, actor_id: &str) -> Result<Option<String>, String> {
@@ -171,49 +147,11 @@ impl LocalCacheStore {
         }
         Ok(None)
     }
-
-    pub async fn team_for_claim(&self, id: &str) -> Result<Option<String>, String> {
-        let conn = self.conn.lock().await;
-        let mut rows = conn
-            .query(
-                "SELECT i.team_id FROM claim c JOIN idea i ON i.id = c.idea_id WHERE c.id = ?1",
-                params![id.to_string()],
-            )
-            .await
-            .map_err(|e| format!("team_for_claim: {}", e))?;
-        if let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| format!("team_for_claim row: {}", e))?
-        {
-            return Ok(row.get::<String>(0).ok());
-        }
-        Ok(None)
-    }
-
-    pub async fn team_for_submission(&self, id: &str) -> Result<Option<String>, String> {
-        let conn = self.conn.lock().await;
-        let mut rows = conn
-            .query(
-                "SELECT i.team_id FROM submission s JOIN idea i ON i.id = s.idea_id WHERE s.id = ?1",
-                params![id.to_string()],
-            )
-            .await
-            .map_err(|e| format!("team_for_submission: {}", e))?;
-        if let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| format!("team_for_submission row: {}", e))?
-        {
-            return Ok(row.get::<String>(0).ok());
-        }
-        Ok(None)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::local_cache::store::test_support::{actor, idea, new_store, outbox, session};
+    use crate::local_cache::store::test_support::{actor, new_store, outbox, session};
 
     #[tokio::test]
     async fn team_for_lookups_resolve_owner() {
@@ -224,10 +162,6 @@ mod tests {
             .unwrap();
         store
             .session_upsert_batch(&[session("s1", "teamA")])
-            .await
-            .unwrap();
-        store
-            .idea_upsert_batch(&[idea("i1", "teamB")])
             .await
             .unwrap();
         store
@@ -244,10 +178,6 @@ mod tests {
             Some("teamA")
         );
         assert_eq!(
-            store.team_for_idea("i1").await.unwrap().as_deref(),
-            Some("teamB")
-        );
-        assert_eq!(
             store.team_for_outbox("m1").await.unwrap().as_deref(),
             Some("teamA")
         );
@@ -259,17 +189,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn teams_for_sessions_and_ideas_map_only_known_ids() {
+    async fn teams_for_sessions_map_only_known_ids() {
         let (store, _dir) = new_store().await;
         store
             .session_upsert_batch(&[session("s1", "teamA"), session("s2", "teamB")])
             .await
             .unwrap();
-        store
-            .idea_upsert_batch(&[idea("i1", "teamA")])
-            .await
-            .unwrap();
-
         let owners = store
             .teams_for_sessions(&["s1".into(), "s2".into(), "ghost".into()])
             .await
@@ -277,9 +202,5 @@ mod tests {
         assert_eq!(owners.len(), 2);
         assert_eq!(owners.get("s1").map(String::as_str), Some("teamA"));
         assert_eq!(owners.get("s2").map(String::as_str), Some("teamB"));
-
-        let owners = store.teams_for_ideas(&["i1".into()]).await.unwrap();
-        assert_eq!(owners.get("i1").map(String::as_str), Some("teamA"));
-        assert!(store.teams_for_ideas(&[]).await.unwrap().is_empty());
     }
 }

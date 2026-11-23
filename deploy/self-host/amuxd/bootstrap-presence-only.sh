@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# One-shot bootstrap for presence-only amuxd on the self-host ECS box.
+# One-shot bootstrap for amuxd on the self-host ECS box.
 #
 # - Mints a daemon invite when AMUXD_JOIN_TOKEN is empty and no identity exists
 # - Writes AMUXD_JOIN_TOKEN (+ optional AMUXD_TEAM_ID) into deploy/self-host/.env
-# - Clears OPENCODE_* so the daemon stays presence-only
+# - Drops the legacy OPENCODE_* keys (the opencode runtime is gone, ADR-0014)
+#
+# The file name predates pi: agent sessions now run whenever the team has an AI
+# gateway, so "presence-only" no longer describes the result.
 #
 # Usage (on ECS, from deploy/self-host/):
 #   ./amuxd/bootstrap-presence-only.sh [TEAM_ID]
@@ -42,7 +45,7 @@ has_identity() {
          test -f /state/.amuxd/backend.toml
 }
 
-echo "=== presence-only bootstrap ==="
+echo "=== amuxd bootstrap ==="
 
 if has_identity; then
   echo "  existing amuxd identity in volume $STATE_VOLUME — skip invite mint"
@@ -57,7 +60,7 @@ if [ -n "$TEAM_ID" ]; then
   upsert_env AMUXD_TEAM_ID "$TEAM_ID"
 fi
 
-for key in OPENCODE_BASE_URL OPENCODE_API_KEY OPENCODE_MODEL; do
+for key in OPENCODE_BASE_URL OPENCODE_API_KEY OPENCODE_MODEL OPENCODE_PROVIDER_ID OPENCODE_PROVIDER_NAME; do
   clear_env "$key"
 done
 

@@ -50,21 +50,6 @@ impl RuntimeManager {
         owner_matches(handle, actor_id).then(|| session_id.to_string())
     }
 
-    /// Member actor bound for remote-tool RPC on the live runtime for `session_id`.
-    pub fn remote_tool_member_for_session(&self, session_id: &str) -> Option<String> {
-        self.runtime_ids_for_session(session_id)
-            .into_iter()
-            .find_map(|rid| {
-                self.get_handle(&rid).and_then(|h| {
-                    if h.remote_tool_member_id.is_empty() {
-                        None
-                    } else {
-                        Some(h.remote_tool_member_id.clone())
-                    }
-                })
-            })
-    }
-
     /// The cloud session this attachment serves, if it is session-bound.
     /// Ambient / bare-agent spawns have none.
     pub fn session_id_for_runtime(&self, runtime_id: &str) -> Option<String> {

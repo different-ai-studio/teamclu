@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Check, ChevronDown, Loader2, Shield, Trash2 } from 'lucide-react'
+import { Bot, Check, ChevronDown, Loader2, Shield, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
@@ -14,11 +14,15 @@ import {
 } from '@/components/ui/select'
 import { getBackend } from '@/lib/backend'
 import { useAppsStore } from '@/stores/apps-store'
-import { listTeamMembersForAccess, type TeamMemberOption } from '@/lib/daemon/daemon-agent-admin'
 import { AppTabShell } from './AppTabShell'
-import type { AppMemberAccessRow, AppPermissionLevel, AppRow } from '@/lib/backend/types'
+import type {
+  AppAccessCandidate,
+  AppMemberAccessRow,
+  AppPermissionLevel,
+  AppRow,
+} from '@/lib/backend/types'
 
-const PERMISSION_LEVELS: AppPermissionLevel[] = ['view', 'prompt', 'admin']
+const PERMISSION_LEVELS: AppPermissionLevel[] = ['read', 'write', 'admin']
 
 /**
  * Who on the team may work on this app.
@@ -29,6 +33,11 @@ const PERMISSION_LEVELS: AppPermissionLevel[] = ['view', 'prompt', 'admin']
  *
  * Not to be confused with the app permissions tab, which is about who on the
  * internet may open the deployed site. This one is about the workspace.
+ *
+ * Grantees are members and agents alike: an agent has its own account and no
+ * access by default, so this is also where an agent is let in to push. An
+ * agent whose daemon has not claimed an account yet is listed but cannot be
+ * picked — the grant would name nobody who can act on it.
  */
 export function AppAccessTabContent({ appId }: { appId: string }) {
   const { t } = useTranslation()
@@ -48,21 +57,23 @@ export function AppAccessTabContent({ appId }: { appId: string }) {
 
 function AccessBody({ app }: { app: AppRow }) {
   const { t } = useTranslation()
-  const [members, setMembers] = React.useState<TeamMemberOption[]>([])
+  const [members, setMembers] = React.useState<AppAccessCandidate[]>([])
   const [rows, setRows] = React.useState<AppMemberAccessRow[] | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [saving, setSaving] = React.useState(false)
   const [canManage, setCanManage] = React.useState(false)
   const [grantMemberId, setGrantMemberId] = React.useState('')
-  const [grantLevel, setGrantLevel] = React.useState<AppPermissionLevel>('prompt')
+  const [grantLevel, setGrantLevel] = React.useState<AppPermissionLevel>('write')
   const [memberPickerOpen, setMemberPickerOpen] = React.useState(false)
   const invalidateAppSummary = useAppsStore((s) => s.invalidateAppSummary)
 
-  const load = React.useCallback(async () => {
-    setLoading(true)
+  // `quiet`: a refresh after a change — no spinner, and a failure keeps what
+  // is on screen rather than blanking it.
+  const load = React.useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true)
     try {
       const [teamMembers, grants] = await Promise.all([
-        listTeamMembersForAccess(app.teamId),
+        getBackend().actors.listTeamActorsForAppAccess(app.teamId),
         getBackend().apps.listAppAccess(app.id),
       ])
       setMembers(teamMembers)
@@ -72,11 +83,12 @@ function AccessBody({ app }: { app: AppRow }) {
       setCanManage(grants !== null)
     } catch (e) {
       console.error('[AppAccessTab] failed to load access', e)
+      if (quiet) return
       setMembers([])
       setRows([])
       setCanManage(false)
     } finally {
-      setLoading(false)
+      if (!quiet) setLoading(false)
     }
   }, [app.id, app.teamId])
 
@@ -84,36 +96,55 @@ function AccessBody({ app }: { app: AppRow }) {
     void load()
   }, [load])
 
+  // The server's name first: the caller's directory hides agents it may not
+  // talk to, and those rows used to show as a bare id.
   const memberName = React.useCallback(
-    (memberId: string) => members.find((m) => m.id === memberId)?.displayName ?? memberId,
+    (row: AppMemberAccessRow) =>
+      row.displayName ?? members.find((m) => m.id === row.memberId)?.displayName ?? row.memberId,
+    [members],
+  )
+  const grantedRows = React.useMemo(() => (rows ?? []).filter((r) => !r.inherited), [rows])
+  const inheritedRows = React.useMemo(() => (rows ?? []).filter((r) => r.inherited), [rows])
+  const isAgent = React.useCallback(
+    (row: AppMemberAccessRow) =>
+      row.actorType === 'agent' || members.find((m) => m.id === row.memberId)?.actorType === 'agent',
     [members],
   )
 
+  // Never the app's own creator: they are admin by construction.
   const candidates = React.useMemo(
-    () => members.filter((m) => !rows?.some((row) => row.memberId === m.id)),
-    [members, rows],
+    () =>
+      members.filter(
+        (m) => m.id !== app.createdByActorId && !rows?.some((row) => row.memberId === m.id),
+      ),
+    [members, rows, app.createdByActorId],
+  )
+  const pickable = React.useMemo(() => candidates.filter((m) => m.connected), [candidates])
+  const agentsToGrant = React.useMemo(
+    () => candidates.filter((m) => m.actorType === 'agent' && m.connected),
+    [candidates],
   )
 
   React.useEffect(() => {
-    if (candidates.length === 0) {
+    if (pickable.length === 0) {
       setGrantMemberId('')
       return
     }
-    if (!candidates.some((m) => m.id === grantMemberId)) {
-      setGrantMemberId(candidates[0]?.id ?? '')
+    if (!pickable.some((m) => m.id === grantMemberId)) {
+      setGrantMemberId(pickable[0]?.id ?? '')
     }
-  }, [candidates, grantMemberId])
+  }, [pickable, grantMemberId])
 
   const failed = (e: unknown) =>
     toast.error(t('apps.controlPanel.accessError', '权限操作失败'), {
       description: e instanceof Error ? e.message : String(e),
     })
 
-  const grant = async () => {
-    if (!grantMemberId || !canManage) return
+  const grant = async (memberId = grantMemberId, level = grantLevel) => {
+    if (!memberId || !canManage) return
     setSaving(true)
     try {
-      const row = await getBackend().apps.setAppAccess(app.id, grantMemberId, grantLevel)
+      const row = await getBackend().apps.setAppAccess(app.id, memberId, level)
       if (row) {
         setRows((prev) => {
           const list = prev ?? []
@@ -125,6 +156,8 @@ function AccessBody({ app }: { app: AppRow }) {
         })
         toast.success(t('apps.controlPanel.accessGranted', '已授权'))
         invalidateAppSummary()
+        // A person's level moves their agents' inherited rows with it.
+        void load(true)
       }
     } catch (e) {
       failed(e)
@@ -137,7 +170,10 @@ function AccessBody({ app }: { app: AppRow }) {
     setSaving(true)
     try {
       const row = await getBackend().apps.setAppAccess(app.id, memberId, level)
-      if (row) setRows((prev) => (prev ?? []).map((r) => (r.memberId === memberId ? row : r)))
+      if (row) {
+        setRows((prev) => (prev ?? []).map((r) => (r.memberId === memberId ? row : r)))
+        void load(true)
+      }
     } catch (e) {
       failed(e)
     } finally {
@@ -153,6 +189,7 @@ function AccessBody({ app }: { app: AppRow }) {
         setRows((prev) => (prev ?? []).filter((r) => r.memberId !== memberId))
         toast.success(t('apps.controlPanel.accessRevoked', '已撤销'))
         invalidateAppSummary()
+        void load(true)
       }
     } catch (e) {
       failed(e)
@@ -185,17 +222,18 @@ function AccessBody({ app }: { app: AppRow }) {
         <span>
           {t(
             'apps.controlPanel.permissionsHint',
-            'view 仅可见；prompt 可协作改代码；admin 可部署与授权。',
+            'read 可查看和下载代码；write 可改代码；admin 可部署和授权。权限会同步到 Git 仓库。agent 自动继承主人对应用的权限（但不能授权、不能删除应用），只有主人没有权限时才需要单独授权。',
           )}
         </span>
       </div>
 
-      {rows && rows.length > 0 ? (
+      {grantedRows.length > 0 ? (
         <ul className="divide-y divide-border-soft rounded-lg border border-border-soft">
-          {rows.map((row) => (
+          {grantedRows.map((row) => (
             <li key={row.memberId} className="flex items-center justify-between gap-3 px-3 py-2.5">
-              <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
-                {memberName(row.memberId)}
+              <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] text-foreground">
+                <span className="truncate">{memberName(row)}</span>
+                {isAgent(row) && <AgentBadge />}
               </span>
               <Select
                 value={row.permissionLevel}
@@ -233,6 +271,72 @@ function AccessBody({ app }: { app: AppRow }) {
         </p>
       )}
 
+      {inheritedRows.length > 0 && (
+        <div className="space-y-2" data-testid="app-access-inherited">
+          <p className="text-[12.5px] font-medium text-foreground">
+            {t('apps.controlPanel.inheritedAgents', '经主人继承的 agent')}
+          </p>
+          <p className="text-[12px] text-muted-foreground">
+            {t(
+              'apps.controlPanel.inheritedAgentsHint',
+              '这些 agent 的主人有本应用的权限，agent 跟随主人的级别；要收回，请调整主人的权限。',
+            )}
+          </p>
+          <ul className="divide-y divide-border-soft rounded-lg border border-border-soft">
+            {inheritedRows.map((row) => (
+              <li
+                key={row.memberId}
+                className="flex items-center justify-between gap-3 px-3 py-2"
+                data-testid={`app-access-inherited-${row.memberId}`}
+              >
+                <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] text-foreground">
+                  <span className="truncate">{memberName(row)}</span>
+                  <AgentBadge />
+                  {row.inheritedFrom && (
+                    <span className="truncate text-[12px] text-muted-foreground">
+                      {t('apps.controlPanel.inheritedFrom', '经 {{owner}} 继承', {
+                        owner: row.inheritedFrom.displayName ?? row.inheritedFrom.actorId,
+                      })}
+                    </span>
+                  )}
+                </span>
+                <span className="shrink-0 font-mono text-[11.5px] text-muted-foreground">
+                  {t(`apps.controlPanel.permission.${row.permissionLevel}`, row.permissionLevel)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {agentsToGrant.length > 0 && (
+        <div className="space-y-2 border-t border-border-soft pt-4" data-testid="app-access-quick-agents">
+          <p className="text-[12.5px] text-muted-foreground">
+            {t('apps.controlPanel.quickGrantAgents', '授权给 agent')}
+          </p>
+          <ul className="flex flex-wrap gap-2">
+            {agentsToGrant.map((agent) => (
+              <li key={agent.id}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 rounded-[7px] text-[12.5px]"
+                  disabled={saving}
+                  onClick={() => void grant(agent.id, 'write')}
+                  data-testid={`app-access-quick-grant-${agent.id}`}
+                  title={t('apps.controlPanel.quickGrantWrite', '授予 write')}
+                >
+                  <Bot className="h-3.5 w-3.5" />
+                  {agent.displayName}
+                  <span className="font-mono text-[11px] text-muted-foreground">write</span>
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {candidates.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-t border-border-soft pt-4">
           <Popover open={memberPickerOpen} onOpenChange={setMemberPickerOpen}>
@@ -247,8 +351,8 @@ function AccessBody({ app }: { app: AppRow }) {
                 className="h-9 min-w-[180px] flex-1 justify-between rounded-[7px] px-3 text-[13px] font-normal"
               >
                 <span className="truncate">
-                  {candidates.find((m) => m.id === grantMemberId)?.displayName ??
-                    t('apps.controlPanel.pickMember', '选择成员')}
+                  {pickable.find((m) => m.id === grantMemberId)?.displayName ??
+                    t('apps.controlPanel.pickMember', '选择成员或 agent')}
                 </span>
                 <ChevronDown className="h-4 w-4 shrink-0 text-faint" />
               </Button>
@@ -263,14 +367,22 @@ function AccessBody({ app }: { app: AppRow }) {
                       key={m.id}
                       value={m.id}
                       keywords={[m.displayName]}
+                      disabled={!m.connected}
                       onSelect={() => {
+                        if (!m.connected) return
                         setGrantMemberId(m.id)
                         setMemberPickerOpen(false)
                       }}
+                      title={
+                        m.connected
+                          ? undefined
+                          : t('apps.controlPanel.agentNotConnected', '这个 agent 还没连上，连上后才能授权')
+                      }
                       className="text-[13px]"
                     >
                       <Check className={m.id === grantMemberId ? 'opacity-100' : 'opacity-0'} />
-                      {m.displayName}
+                      <span className="truncate">{m.displayName}</span>
+                      {m.actorType === 'agent' && <AgentBadge />}
                     </CommandItem>
                   ))}
                 </CommandList>
@@ -306,5 +418,15 @@ function AccessBody({ app }: { app: AppRow }) {
         </div>
       )}
     </div>
+  )
+}
+
+function AgentBadge() {
+  const { t } = useTranslation()
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-[5px] bg-surface-2 px-1.5 py-0.5 font-mono text-[10.5px] text-muted-foreground">
+      <Bot className="h-3 w-3" />
+      {t('apps.controlPanel.agentBadge', 'agent')}
+    </span>
   )
 }

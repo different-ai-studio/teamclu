@@ -58,3 +58,18 @@ export function bytesToBase64Url(bytes: Uint8Array): string {
 export function textToBase64Url(text: string): string {
   return bytesToBase64Url(new TextEncoder().encode(text));
 }
+
+/**
+ * The UTF-8 text behind a base64 or base64url segment (padding optional) —
+ * the inverse of `textToBase64Url`, and what a JWT payload needs.
+ *
+ * Never `atob()` alone for text: it returns one Latin-1 character per byte,
+ * so `JSON.parse(atob(payload))` turns 董闯 (e8 91 a3 e9 97 af) into
+ * "è\u0091£é\u0097¯". That garbled name was read off the session and
+ * written into app checkouts as the git author.
+ */
+export function base64UrlToText(segment: string): string {
+  const normalized = segment.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+  return new TextDecoder('utf-8').decode(base64ToBytes(padded));
+}

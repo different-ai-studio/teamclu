@@ -50,11 +50,11 @@ TeamClu is split into a client layer, an agent host, and a cloud backend:
                              │
                     ┌────────┴────────┐
                     │   amux daemon   │  agent host + channel gateways
-                    │    (amuxd)      │  + team sync (git / OSS)
+                    │    (amuxd)      │  + team sync (OSS)
                     └────────┬────────┘
                              │ HTTP / RPC
                     ┌────────┴────────┐
-                    │ local agents    │  opencode (default), …
+                    │ local agents    │  pi
                     └─────────────────┘
 ```
 
@@ -87,7 +87,7 @@ This step isn't needed for builds signed and notarized with an Apple Developer c
 
 ## Quick start (development)
 
-**Prerequisites:** Node.js >= 20, pnpm >= 10, Rust >= 1.70
+**Prerequisites:** Node.js >= 24 (`engines` in `package.json`), pnpm 11 (pinned by `packageManager`; `corepack enable` picks it up), Rust 1.97.1 (pinned by `rust-toolchain.toml`; rustup installs it on first build)
 
 ```bash
 pnpm install
@@ -174,7 +174,7 @@ We welcome contributions! See the [Contributing Guide](CONTRIBUTING.md) for deta
 ## Tech stack
 
 - **Desktop**: Tauri 2.0 (Rust)
-- **Daemon**: Rust (`amuxd`), local agent backends (opencode HTTP, …)
+- **Daemon**: Rust (`amuxd`), local agent runtime (pi over stdio JSONL)
 - **Frontend**: React 19 + TypeScript, Tailwind CSS 4, Zustand
 - **iOS**: SwiftUI + SwiftPM (`AMUXCore`)
 - **Editors**: Tiptap (Markdown / HTML), CodeMirror 6 (code), Shiki (highlighting)

@@ -9,7 +9,7 @@ use crate::socket_server::SocketResponse;
 pub mod app_bridge;
 pub mod app_info;
 pub mod cookies;
-#[cfg(feature = "devtools")]
+#[cfg(any(debug_assertions, feature = "devtools"))]
 pub mod devtools;
 pub mod dispatch_pointer;
 pub mod events;
@@ -38,7 +38,7 @@ pub mod zoom;
 pub use app_bridge::handle_app_bridge;
 pub use app_info::handle_get_app_info;
 pub use cookies::handle_manage_cookies;
-#[cfg(feature = "devtools")]
+#[cfg(any(debug_assertions, feature = "devtools"))]
 pub use devtools::handle_manage_devtools;
 pub use dispatch_pointer::handle_dispatch_pointer;
 pub use events::handle_manage_events;
@@ -102,10 +102,10 @@ pub async fn handle_command<R: Runtime>(
         commands::NAVIGATE_WEBVIEW => handle_navigate_webview(app, payload).await,
         commands::MANAGE_EVENTS => handle_manage_events(app, payload).await,
         commands::MANAGE_COOKIES => handle_manage_cookies(app, payload).await,
-        #[cfg(feature = "devtools")]
+        #[cfg(any(debug_assertions, feature = "devtools"))]
         commands::MANAGE_DEVTOOLS => handle_manage_devtools(app, payload).await,
-        #[cfg(not(feature = "devtools"))]
-        commands::MANAGE_DEVTOOLS => Ok(SocketResponse::err(None, "manage_devtools requires the 'devtools' feature: tauri-plugin-mcp = { features = [\"devtools\"] }".to_string())),
+        #[cfg(not(any(debug_assertions, feature = "devtools")))]
+        commands::MANAGE_DEVTOOLS => Ok(SocketResponse::err(None, "manage_devtools is only available in debug builds (or with the plugin's 'devtools' feature)".to_string())),
         commands::MANAGE_ZOOM => handle_manage_zoom(app, payload).await,
         commands::MANAGE_WEBVIEW_STATE => handle_manage_webview_state(app, payload).await,
         commands::TYPE_INTO_FOCUSED => handle_type_into_focused(app, payload).await,

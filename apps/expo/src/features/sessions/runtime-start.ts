@@ -66,44 +66,22 @@ type ResolveRuntimeRestartPlanInput = {
   workspaces: RuntimeStartWorkspace[];
 };
 
+/**
+ * The daemon runs pi only (ADR-0014). Legacy stored names (claude, opencode,
+ * codex, cursor) also start pi: sending their old enum values only produced a
+ * `runtime_start` the daemon had to reroute or refuse.
+ */
 export function resolveExpoAgentType(
-  value: string | null | undefined,
+  _value: string | null | undefined,
 ): AgentType {
-  switch (value) {
-    case "opencode":
-      return AgentType.OPENCODE;
-    case "codex":
-      return AgentType.CODEX;
-    case "cursor":
-      return AgentType.CURSOR;
-    case "claude-code":
-    case "claude_code":
-    case "claude":
-      return AgentType.CLAUDE_CODE;
-    case "pi":
-    default:
-      // The daemon runs pi only (ADR-0014). Defaulting to Claude Code sent a
-      // `runtime_start` every current daemon refuses.
-      return AgentType.PI;
-  }
+  return AgentType.PI;
 }
 
 function pickAgentType(
   agent: RuntimeStartAgent,
   explicitSelection?: RuntimeStartSelection | null,
 ): AgentType {
-  if (explicitSelection) return resolveExpoAgentType(explicitSelection.agentType);
-
-  const known = new Set(["pi", "claude", "claude-code", "claude_code", "opencode", "codex", "cursor"]);
-  const supported = agent.agentTypes.filter((type) => known.has(type));
-  // The default only counts if the agent still lists it — a stale default is
-  // exactly the `agent_type must be in agent_types` rejection.
-  const preferred =
-    agent.defaultAgentType &&
-    (supported.length === 0 || supported.includes(agent.defaultAgentType))
-      ? agent.defaultAgentType
-      : supported[0] ?? "pi";
-  return resolveExpoAgentType(preferred);
+  return resolveExpoAgentType(explicitSelection?.agentType ?? agent.defaultAgentType);
 }
 
 /**

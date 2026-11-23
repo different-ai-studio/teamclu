@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { base64ToBytes, bytesToBase64, bytesToDataUrl } from '@/lib/base64';
+import { base64ToBytes, base64UrlToText, bytesToBase64, bytesToDataUrl, textToBase64Url } from '@/lib/base64';
 
 function roundTrip(bytes: Uint8Array) {
   return base64ToBytes(bytesToBase64(bytes));
@@ -62,5 +62,23 @@ describe('base64url', () => {
       .replace(/\//g, '_')
       .replace(/=+$/, '');
     expect(textToBase64Url('标题')).toBe(expected);
+  });
+
+  it('decodes base64url text as UTF-8, not one Latin-1 character per byte', () => {
+    const name = '董闯';
+    const encoded = textToBase64Url(name);
+    // Unpadded, base64url alphabet — exactly what a JWT segment looks like.
+    expect(encoded).not.toMatch(/[=+/]/);
+    expect(base64UrlToText(encoded)).toBe(name);
+    expect(Array.from(new TextEncoder().encode(base64UrlToText(encoded)))).toEqual([
+      0xe8, 0x91, 0xa3, 0xe9, 0x97, 0xaf,
+    ]);
+  });
+
+  it('accepts padded standard base64 too, and emoji outside the BMP', () => {
+    const text = '{"name":"龙亭亭 🧗"}';
+    const padded = bytesToBase64(new TextEncoder().encode(text));
+    expect(base64UrlToText(padded)).toBe(text);
+    expect(JSON.parse(base64UrlToText(textToBase64Url(text)))).toEqual({ name: '龙亭亭 🧗' });
   });
 });

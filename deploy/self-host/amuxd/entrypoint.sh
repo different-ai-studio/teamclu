@@ -56,40 +56,14 @@ else
   echo "amuxd: existing identity found in $STATE_DIR; skipping invite claim"
 fi
 
-# ── opencode LLM provider ─────────────────────────────────────────────────────
-# If an LLM key is provided, configure opencode with a single OpenAI-compatible
-# provider (base URL + key + model) and let the daemon auto-discover opencode so
-# it can run agent sessions. Without a key, keep discovery OFF (presence-only):
-# opencode with no provider can't run, so we don't advertise it.
-if [ -n "${OPENCODE_API_KEY:-}" ]; then
-  PROVIDER_ID="${OPENCODE_PROVIDER_ID:-selfhost}"
-  PROVIDER_NAME="${OPENCODE_PROVIDER_NAME:-Self-host LLM}"
-  MODEL="${OPENCODE_MODEL:?OPENCODE_MODEL must be set when OPENCODE_API_KEY is set}"
-  BASE_URL="${OPENCODE_BASE_URL:?OPENCODE_BASE_URL must be set when OPENCODE_API_KEY is set}"
-  OC_CFG_DIR="${HOME:-/state}/.config/opencode"
-  mkdir -p "$OC_CFG_DIR"
-  # Write via a tiny JSON emitter (values already in scope; printf keeps them quoted).
-  opencode_cfg() {
-    printf '{\n'
-    printf '  "$schema": "https://opencode.ai/config.json",\n'
-    printf '  "provider": {\n'
-    printf '    "%s": {\n' "$PROVIDER_ID"
-    printf '      "npm": "@ai-sdk/openai-compatible",\n'
-    printf '      "name": "%s",\n' "$PROVIDER_NAME"
-    printf '      "options": { "baseURL": "%s", "apiKey": "%s" },\n' "$BASE_URL" "$OPENCODE_API_KEY"
-    printf '      "models": { "%s": {} }\n' "$MODEL"
-    printf '    }\n'
-    printf '  },\n'
-    printf '  "model": "%s/%s"\n' "$PROVIDER_ID" "$MODEL"
-    printf '}\n'
-  }
-  opencode_cfg > "$OC_CFG_DIR/opencode.json"
-  chmod 600 "$OC_CFG_DIR/opencode.json"
-  unset AMUXD_NO_AUTO_DISCOVER
-  echo "amuxd: opencode configured (provider=$PROVIDER_ID model=$MODEL baseURL=$BASE_URL); agent discovery enabled"
-else
-  export AMUXD_NO_AUTO_DISCOVER=1
-  echo "amuxd: no OPENCODE_API_KEY — agent discovery disabled (presence-only)"
+# ── agent runtime ─────────────────────────────────────────────────────────────
+# The agent runtime is pi (ADR-0014) on an amuxd-managed Node. Install (or
+# repair) it into the state volume; idempotent, so later starts are a no-op.
+# A failed install leaves the daemon up (presence + sync still work) and is
+# retried on the next start. The LLM is the team AI gateway, which the daemon
+# reads from the Cloud API — nothing to configure here.
+if ! amuxd install-pi; then
+  echo "amuxd: pi runtime install failed; agent sessions will not start until it succeeds" >&2
 fi
 
 echo "amuxd: starting daemon ..."

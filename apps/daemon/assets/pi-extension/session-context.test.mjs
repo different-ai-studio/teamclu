@@ -779,10 +779,16 @@ test("session title does not set a title when LLM returns nothing", async () => 
   assert.deepEqual(titles, []);
 });
 
-test("session title does not run twice for the same session", async () => {
+test("session title does not call setTitle again for the same pi file", async () => {
   let calls = 0;
+  const titles = [];
   const titleMarkers = new Map();
-  const ctx = { ui: { sessionId: "pi:/tmp/c.json", setTitle() {} } };
+  const ctx = {
+    ui: {
+      sessionId: "pi:/tmp/c.jsonl",
+      setTitle: (title) => titles.push(title),
+    },
+  };
   const deps = {
     titleMarkers,
     llmTitle: async () => {
@@ -793,7 +799,28 @@ test("session title does not run twice for the same session", async () => {
   await maybeGenerateSessionTitle({ prompt: "hello" }, ctx, deps);
   await maybeGenerateSessionTitle({ prompt: "hello again" }, ctx, deps);
   assert.equal(calls, 1);
-  assert.equal(titleMarkers.get("pi:/tmp/c.json"), "Once");
+  assert.deepEqual(titles, ["Once"]);
+  assert.equal(titleMarkers.get("pi:/tmp/c.jsonl"), "Once");
+});
+
+test("a new pi session file still generates a title when it has no marker", async () => {
+  const titles = [];
+  const titleMarkers = new Map();
+  const deps = {
+    titleMarkers,
+    llmTitle: async () => "Fresh",
+  };
+  await maybeGenerateSessionTitle(
+    { prompt: "first file" },
+    { ui: { sessionId: "pi:/tmp/old.jsonl", setTitle: (title) => titles.push(title) } },
+    deps,
+  );
+  await maybeGenerateSessionTitle(
+    { prompt: "new file" },
+    { ui: { sessionId: "pi:/tmp/new.jsonl", setTitle: (title) => titles.push(title) } },
+    deps,
+  );
+  assert.deepEqual(titles, ["Fresh", "Fresh"]);
 });
 
 test("session title source never calls pi.getSessionName or setSessionName", () => {
@@ -807,6 +834,25 @@ test("before_agent_start and tool_call swallow stale extension ctx", () => {
   assert.match(src, /function isStaleExtensionCtxError/);
   assert.match(src, /before_agent_start skipped stale ctx/);
   assert.match(src, /tool_call skipped stale ctx/);
+});
+
+test("Windows hosts get pi's powershell tool, and the gate keys it on the command", () => {
+  // Without Git Bash, pi's bash tool fails every call and the agent had no
+  // shell at all (could not even run `winget install`). The host adds the
+  // powershell tool on Windows; the permission gate must treat it like bash,
+  // or one "always allow" would approve every later PowerShell command.
+  const host = fs.readFileSync(
+    fileURLToPath(new URL("../pi-host/host.mjs", import.meta.url)),
+    "utf8",
+  );
+  assert.match(host, /process\.platform !== "win32"/);
+  assert.match(host, /"\+powershell"/);
+  assert.match(host, /"-bash"/);
+  assert.match(host, /tools: sessionTools/);
+
+  const ext = fs.readFileSync(fileURLToPath(new URL("./teamclu.ts", import.meta.url)), "utf8");
+  assert.match(ext, /const SHELL_TOOLS = new Set\(\["bash", "powershell"\]\)/);
+  assert.match(ext, /SHELL_TOOLS\.has\(toolName\) && typeof input\.command === "string"\) return input\.command/);
 });
 
 test("extension tells the agent to read wiki/index.md first and lets the Wiki win", () => {

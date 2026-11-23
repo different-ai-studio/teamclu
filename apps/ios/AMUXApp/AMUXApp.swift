@@ -58,20 +58,14 @@ struct AMUXApp: App {
             Task { await PushBootstrap.shared.handleApnsToken(hex) }
         }
 
-        // Wire Cloud-API-backed push adapters. The access-token closure reads
-        // the current token straight from the Keychain-backed session each
-        // call (no refresh here — the onboarding SessionStore owns refresh, so
-        // we avoid double-refresh races). Identity is derived server-side from
-        // the bearer; registration no-ops gracefully until a session exists.
+        // Wire Cloud-API-backed push adapters. The bearer comes from the
+        // shared SessionStore (`CloudAccessToken`) that onboarding also uses,
+        // so an expired token is refreshed once, not raced. Identity is
+        // derived server-side from the bearer; registration no-ops gracefully
+        // until a session exists.
         if let config = CloudAPIConfigurationStore.configuration() {
             let sessionStorage = KeychainSessionStorage()
-            let pushClient = CloudAPIClient(configuration: config, accessToken: {
-                guard let session = try sessionStorage.load(),
-                      session.expiresAt.timeIntervalSinceNow > 0 else {
-                    throw CloudAPIError.missingAccessToken
-                }
-                return session.accessToken
-            })
+            let pushClient = CloudAPIClient(configuration: config, accessToken: CloudAccessToken.provider())
             PushBootstrap.shared.registerWithCloudAPI(
                 client: pushClient,
                 isAuthenticated: { (try? sessionStorage.load()) != nil }

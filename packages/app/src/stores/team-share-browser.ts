@@ -76,6 +76,12 @@ import type {
   TeamSkillCategory,
   TeamSkillStatus,
 } from '@/lib/backend/cloud-api/team-skills'
+import {
+  normalizeTeamSkillSlug,
+  shouldRetirePersonalOnShare,
+  SkillSlugInvalidError,
+  teamSkillDisplayName,
+} from '@/lib/skills/team-skill-slug'
 import type { TeamMcpServer, TeamMcpServerWrite } from '@/lib/backend/cloud-api/team-mcp'
 import {
   encodeWorkspaceId,
@@ -238,6 +244,8 @@ interface TeamKnowledgeItem {
 
 interface TeamSkillShareInput {
   slug: string
+  /** Title stored beside the id. For a Chinese skill this is the same string. */
+  displayName?: string
   summary: string
   category: TeamSkillCategory
   whenToUse: string
@@ -560,7 +568,7 @@ function registryItem(
   return {
     id: skill.slug,
     slug: skill.slug,
-    name: skill.slug,
+    name: skill.displayName?.trim() || skill.slug,
     invocationName: local?.invocationName ?? skill.slug,
     category: skill.category,
     content: local?.content ?? '',
@@ -1690,6 +1698,14 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // skill-loader stores parent dir in dirPath and folder name in filename.
     const sourceDir = `${skill.dirPath}/${skill.filename}`
 
+    // The registry id is the install folder and the SKILL.md name. 整车成本智能表格
+    // stays that string. ASCII letters are lowercased so Deploy-Check and
+    // deploy-check are one directory on macOS and Windows.
+    const normalized = normalizeTeamSkillSlug(input.slug)
+    if (normalized.issue) throw new SkillSlugInvalidError(input.slug, normalized.issue)
+    const publishedSlug = normalized.slug
+    const displayName = teamSkillDisplayName(input.displayName ?? skill.name, publishedSlug)
+
     // Check the name before anything is uploaded, against the whole registry —
     // not the list on screen, which is this Agent's inventory and leaves out a
     // skill nobody installed here. The server rejects a duplicate slug too, but
@@ -1698,15 +1714,15 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // stays as the backstop for a name that appeared since this fetch.
     const backend = getBackend()
     const myActorId = useCurrentTeamStore.getState().currentMember?.id ?? null
-    const installedHere = get().skills.items.some((s) => s.origin === 'registry' && s.slug === input.slug)
+    const installedHere = get().skills.items.some((s) => s.origin === 'registry' && s.slug === publishedSlug)
     const registry = await backend.teamSkills.listTeamSkills(teamId).catch(() => null)
-    const existing = registry?.find((s) => s.slug === input.slug) ?? null
+    const existing = registry?.find((s) => s.slug === publishedSlug) ?? null
     const resume = existing && isResumableShare(existing, myActorId, installedHere) ? existing : null
     if (installedHere || (existing && !resume)) {
-      throw new SkillSlugTakenError(input.slug)
+      throw new SkillSlugTakenError(publishedSlug)
     }
-    if (!registry && takenShareSlugs(get().skillRegistry, get().skills.items, myActorId).has(input.slug)) {
-      throw new SkillSlugTakenError(input.slug)
+    if (!registry && takenShareSlugs(get().skillRegistry, get().skills.items, myActorId).has(publishedSlug)) {
+      throw new SkillSlugTakenError(publishedSlug)
     }
 
     // A resumed share installs the v1 an earlier attempt published, so it
@@ -1723,7 +1739,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
 
       const packed = await invoke<{ contentHash: string; size: number }>('team_skill_pack_and_upload', {
         dirPath: sourceDir,
-        slug: input.slug,
+        slug: publishedSlug,
         teamId,
         cloudApiUrl,
         accessToken,
@@ -1731,7 +1747,8 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
 
       published = await backend.teamSkills
         .publishTeamSkill(teamId, {
-          slug: input.slug,
+          slug: publishedSlug,
+          displayName,
           summary: input.summary,
           category: input.category,
           whenToUse: input.whenToUse,
@@ -1742,7 +1759,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
           requires: input.requires ?? null,
         })
         .catch((e) => {
-          if (isSlugConflict(e)) throw new SkillSlugTakenError(input.slug)
+          if (isSlugConflict(e)) throw new SkillSlugTakenError(publishedSlug)
           throw e
         })
     }
@@ -1764,7 +1781,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       await invoke('team_skill_install_from_dir', {
         request: {
           workspacePath: wsPath,
-          slug: input.slug,
+          slug: publishedSlug,
           teamId,
           sourceDir,
           version: 1,
@@ -1784,13 +1801,13 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       // its own actor, so a record on the member is one nothing that renders
       // this list ever reads. That is how a freshly shared skill used to
       // disappear from the column the moment it was shared.
-      await backend.teamSkills.installTeamSkill(teamId, input.slug, {
+      await backend.teamSkills.installTeamSkill(teamId, publishedSlug, {
         version: 1,
         ...(subjectActorId ? { actorId: subjectActorId } : {}),
       })
     } catch (e) {
       await get().loadSection('skills', { force: true }).catch(() => {})
-      throw new SkillShareIncompleteError(input.slug, e)
+      throw new SkillShareIncompleteError(publishedSlug, e)
     }
 
     // Retire the original now that the pack exists and the server knows about
@@ -1799,19 +1816,21 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // keeps editing is the one that is no longer the team's, while publish and
     // dirty detection read the one they never touch.
     //
-    // Only when the names match: a deliberate rename on share means the author
-    // wants both. And only after everything above succeeded, so a failed upload
-    // never costs them the original.
+    // A publishable id the author deliberately changed keeps both copies.
+    // The same id, including a Chinese folder, is one skill, so the personal
+    // copy is set aside — otherwise it stays loaded and never receives updates.
+    // Only after everything above succeeded, so a failed upload never costs
+    // them the original.
     let retiredPath: string | null = null
-    if (input.slug === skill.filename) {
+    if (shouldRetirePersonalOnShare(skill.filename, publishedSlug)) {
       retiredPath = await invoke<string>('team_skill_retire_personal', {
         dirPath: sourceDir,
-        slug: input.slug,
+        slug: publishedSlug,
       }).catch(() => null)
     }
 
     await get().loadSection('skills', { force: true })
-    get().select('skills', input.slug)
+    get().select('skills', publishedSlug)
     return retiredPath
   },
 

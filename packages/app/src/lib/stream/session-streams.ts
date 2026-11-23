@@ -12,10 +12,11 @@ const EMPTY_OUTLINE: unknown[] = [];
 
 /**
  * The parts of a session's streams that the chat column derives from: which
- * entries exist and in what order, whether each is live, its plan and its
- * pending permissions. Text deltas only touch `outputText`/`thinkingText`/
- * `parts`/`lastUpdate` and keep these references, so they leave the outline
- * shallow-equal.
+ * entries exist and in what order, whether each is live, its phase, its plan
+ * and its pending permissions. Text deltas only touch `outputText`/
+ * `thinkingText`/`parts`/`lastUpdate` and keep these references, so they
+ * leave the outline shallow-equal. `turnPhase` is included because the dock
+ * hides on phase alone — `active` may already be false.
  */
 export function selectSessionStreamOutline(
   state: ReturnType<typeof useV2StreamingStore.getState>,
@@ -28,6 +29,7 @@ export function selectSessionStreamOutline(
       e.streamId,
       e.actorId,
       e.active,
+      e.turnPhase ?? null,
       e.errorMessage,
       e.planEntries,
       e.pendingPermissionsByRequestId,

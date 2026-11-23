@@ -1,9 +1,9 @@
 //! Team share commands.
 //!
 //! What is left is the team encryption key and read-only status. Enabling and
-//! disconnecting are gone: share mode is a server-side switch that is already on
-//! for every team, and the cloud refuses to turn it back off
-//! (`DELETE /v1/teams/:id/share-mode` answers 410).
+//! disconnecting are gone: there is no share-mode switch any more (team sync
+//! only checks the auto-sync toggle), and the cloud refuses the old
+//! `DELETE /v1/teams/:id/share-mode` with 410.
 //!
 //! Team *creation* and *joining* used to live here too. Both were removed once
 //! it was clear nothing reached them: the frontend creates teams through the

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { applySessionTitlePatch } from "../src/lib/session-title-lock.js";
 import {
   decodeCursor,
   encodeCursor,
@@ -711,67 +712,6 @@ test("repository Supabase errors are normalized", async () => {
   assert.equal(JSON.parse(response.body).error.code, "conflict");
 });
 
-test("GET /v1/teams/:teamId/workspace-defaults returns 404 when not set", async () => {
-  const repo = fakeRepo();
-  const response = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/teams/team-1/workspace-defaults",
-    headers: { Authorization: "Bearer token" },
-  }, { createRepository: () => repo });
-
-  assert.equal(response.statusCode, 404);
-  assert.equal(JSON.parse(response.body).error.code, "not_found");
-  assert.deepEqual(repo.calls[0], { method: "getTeamWorkspaceConfig", teamId: "team-1" });
-});
-
-test("GET /v1/teams/:teamId/workspace-defaults returns config when set", async () => {
-  const repo = fakeRepo({
-    teamWorkspaceConfigs: {
-      "team-1": {
-        teamId: "team-1",
-        defaultWorkspaceId: "workspace-1",
-        pinnedWorkspaceIds: [],
-        updatedAt: "2026-05-27T01:00:00Z",
-      },
-    },
-  });
-  const response = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/teams/team-1/workspace-defaults",
-    headers: { Authorization: "Bearer token" },
-  }, { createRepository: () => repo });
-
-  assert.equal(response.statusCode, 200);
-  const body = JSON.parse(response.body);
-  assert.deepEqual(body.defaultWorkspaceId, "workspace-1");
-});
-
-test("PUT /v1/teams/:teamId/workspace-config upserts config", async () => {
-  const repo = fakeRepo();
-  const response = await handleBusinessApiRequest({
-    httpMethod: "PUT",
-    path: "/v1/teams/team-1/workspace-config",
-    headers: { Authorization: "Bearer token" },
-    body: JSON.stringify({
-      defaultWorkspaceId: "workspace-2",
-      pinnedWorkspaceIds: ["workspace-3"],
-    }),
-  }, { createRepository: () => repo });
-
-  assert.equal(response.statusCode, 200);
-  const body = JSON.parse(response.body);
-  assert.deepEqual(body.defaultWorkspaceId, "workspace-2");
-  assert.deepEqual(body.pinnedWorkspaceIds, ["workspace-3"]);
-  assert.deepEqual(repo.calls[0], {
-    method: "putTeamWorkspaceConfig",
-    teamId: "team-1",
-    input: {
-      defaultWorkspaceId: "workspace-2",
-      pinnedWorkspaceIds: ["workspace-3"],
-    },
-  });
-});
-
 test("POST /v1/heartbeat calls repository.heartbeat", async () => {
   const repo = fakeRepo();
   const response = await handleBusinessApiRequest({
@@ -935,25 +875,6 @@ test("PATCH /v1/workspaces/:workspaceId updates workspace", async () => {
   });
 });
 
-test("GET /v1/teams/:teamId/directory returns actors and members", async () => {
-  const repo = fakeRepo();
-  const response = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/teams/team-1/directory",
-    headers: { Authorization: "Bearer token" },
-  }, { createRepository: () => repo });
-
-  assert.equal(response.statusCode, 200);
-  const body = JSON.parse(response.body);
-  assert.ok(Array.isArray(body.actors));
-  assert.ok(Array.isArray(body.members));
-  assert.equal(body.actors.length, 1);
-  assert.equal(body.actors[0].displayName, "Alice");
-  assert.equal(body.members.length, 1);
-  assert.equal(body.members[0].role, "member");
-  assert.deepEqual(repo.calls[0], { method: "getTeamDirectory", teamId: "team-1" });
-});
-
 test("GET /v1/sessions/:sessionId returns session with participants", async () => {
   const repo = fakeRepo();
   const response = await handleBusinessApiRequest({
@@ -1007,7 +928,44 @@ test("PATCH /v1/sessions/:sessionId updates session", async () => {
   assert.equal(response.statusCode, 200);
   const body = JSON.parse(response.body);
   assert.equal(body.title, "New title");
+  assert.equal(body.titleApplied, true);
   assert.deepEqual(repo.calls[0], { method: "patchSession", sessionId: "session-1", patch: { title: "New title" } });
+});
+
+test("PATCH /v1/sessions/:sessionId is 404 when the session is missing", async () => {
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PATCH",
+    path: "/v1/sessions/session-missing",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ title: "Standup (09:30)", titleLocked: true }),
+  }, { createRepository: () => fakeRepo({ sessions: [{ id: "session-other", title: "Other", titleLocked: false }] }) });
+
+  assert.equal(response.statusCode, 404);
+});
+
+test("PATCH generated title does not replace a title locked by a person", async () => {
+  const repo = fakeRepo();
+  const locked = await handleBusinessApiRequest({
+    httpMethod: "PATCH",
+    path: "/v1/sessions/session-1",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ title: "Standup (09:30)", titleLocked: true }),
+  }, { createRepository: () => repo });
+  assert.equal(locked.statusCode, 200);
+  assert.equal(JSON.parse(locked.body).title, "Standup (09:30)");
+  assert.equal(JSON.parse(locked.body).titleApplied, true);
+
+  const generated = await handleBusinessApiRequest({
+    httpMethod: "PATCH",
+    path: "/v1/sessions/session-1",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ title: "深圳美食推荐" }),
+  }, { createRepository: () => repo });
+  assert.equal(generated.statusCode, 200);
+  const body = JSON.parse(generated.body);
+  assert.equal(body.title, "Standup (09:30)");
+  assert.equal(body.titleLocked, true);
+  assert.equal(body.titleApplied, false);
 });
 
 test("POST /v1/sessions creates session", async () => {
@@ -1659,47 +1617,6 @@ test("POST /v1/shortcuts/batch-move calls repo.batchMoveShortcuts", async () => 
   assert.deepEqual(repo.calls[0], { method: "batchMoveShortcuts", input: { moves: [{ shortcutId: "shortcut-1", parentId: null, position: 0 }] } });
 });
 
-test("PUT /v1/shortcuts/:shortcutId/visible-roles calls repo.setShortcutVisibleRoles", async () => {
-  const repo = fakeRepo();
-  const response = await handleBusinessApiRequest({
-    httpMethod: "PUT",
-    path: "/v1/shortcuts/shortcut-1/visible-roles",
-    headers: { Authorization: "Bearer token", "Content-Type": "application/json" },
-    body: JSON.stringify({ roleIds: ["role-1"] }),
-  }, { createRepository: () => repo });
-
-  assert.equal(response.statusCode, 204);
-  assert.deepEqual(repo.calls[0], { method: "setShortcutVisibleRoles", shortcutId: "shortcut-1", input: { roleIds: ["role-1"] } });
-});
-
-test("GET /v1/teams/:teamId/shortcut-roles calls repo.listTeamRoles", async () => {
-  const repo = fakeRepo();
-  const response = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/teams/team-1/shortcut-roles",
-    headers: { Authorization: "Bearer token" },
-  }, { createRepository: () => repo });
-
-  assert.equal(response.statusCode, 200);
-  const body = JSON.parse(response.body);
-  assert.ok(Array.isArray(body.items));
-  assert.deepEqual(repo.calls[0], { method: "listTeamRoles", teamId: "team-1" });
-});
-
-test("GET /v1/teams/:teamId/permissions calls repo.listTeamPermissions", async () => {
-  const repo = fakeRepo();
-  const response = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/teams/team-1/permissions",
-    headers: { Authorization: "Bearer token" },
-  }, { createRepository: () => repo });
-
-  assert.equal(response.statusCode, 200);
-  const body = JSON.parse(response.body);
-  assert.ok(Array.isArray(body.items));
-  assert.deepEqual(repo.calls[0], { method: "listTeamPermissions", teamId: "team-1" });
-});
-
 // ── Ideas ─────────────────────────────────────────────────────────────────────
 
 test("GET /v1/ideas returns 400 without teamId", async () => {
@@ -1952,35 +1869,6 @@ function session(id, lastMessageAt) {
     updatedAt: lastMessageAt,
   };
 }
-
-// ─── /v1/agents/runtimes ───────────────────────────────────────────────────
-
-
-
-test("GET /v1/agents/runtimes returns 404 for missing runtime", async () => {
-  const repo = fakeRepo();
-  const response = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/agents/runtimes",
-    queryStringParameters: { sessionId: "session-missing", runtimeId: "runtime-abc" },
-    headers: { Authorization: "Bearer token" },
-  }, { createRepository: () => repo });
-  assert.equal(response.statusCode, 404);
-});
-
-
-test("GET /v1/agents/runtimes/latest returns 404 for missing", async () => {
-  const repo = fakeRepo();
-  const response = await handleBusinessApiRequest({
-    httpMethod: "GET",
-    path: "/v1/agents/runtimes/latest",
-    queryStringParameters: { agentId: "actor-missing", sessionId: "session-1" },
-    headers: { Authorization: "Bearer token" },
-  }, { createRepository: () => repo });
-  assert.equal(response.statusCode, 404);
-});
-
-
 
 test("POST /v1/agents/types/ensure dispatches to repo.ensureAgentTypes", async () => {
   const repo = fakeRepo();
@@ -2305,11 +2193,10 @@ test("GET /v1/teams/:teamId/leaderboard defaults to week period", async () => {
 
 type SyncPageOpts = { limit?: number | null; cursor?: string | null };
 
-function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, workspaces = [], ideas = null, messages = [], syncRows = [] } = {}) {
+function fakeRepo({ sessions = [], error = null, workspaces = [], ideas = null, messages = [], syncRows = [] } = {}) {
   const calls = [];
   const messageStore = messages.slice();
   const syncStore = syncRows.slice();
-  const configs = { ...teamWorkspaceConfigs };
   const workspaceStore = workspaces.length > 0 ? workspaces.slice() : [
     { id: "workspace-1", teamId: "team-1", name: "Alpha", slug: null, archived: false, metadata: null, createdAt: "2026-05-01T00:00:00Z", updatedAt: "2026-05-01T00:00:00Z" },
   ];
@@ -2329,7 +2216,7 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async listSessions(args) { calls.push({ method: "listSessions", args }); if (error) throw error; return sessions.length > 0 ? sessions : sessionStore; },
     async listSessionsV2(args) { calls.push({ method: "listSessionsV2", args }); if (error) throw error; return sessions.length > 0 ? sessions : sessionStore; },
     async getSession(sessionId, opts: { teamId?: string | null } = {}) { calls.push({ method: "getSession", sessionId, teamId: opts?.teamId ?? null }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; return store.find(s => s.id === sessionId) ?? null; },
-    async patchSession(sessionId, patch) { calls.push({ method: "patchSession", sessionId, patch }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); if (!s) return null; if (patch.title !== undefined) s.title = patch.title; return s; },
+    async patchSession(sessionId, patch) { calls.push({ method: "patchSession", sessionId, patch }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); if (!s) return null; if (patch.title === undefined) return s; const next = applySessionTitlePatch(s, patch); s.title = next.title; s.titleLocked = next.titleLocked; return { ...s, titleLocked: next.titleLocked, titleApplied: next.titleApplied }; },
     async createSession(input) { calls.push({ method: "createSession", input }); if (error) throw error; const id = input.id ?? "session-new"; const newS = { id, teamId: input.teamId, title: input.title, mode: input.mode, ideaId: null, lastMessageAt: null, lastMessagePreview: null, hasUnread: false, createdAt: "2026-05-27T03:00:00Z", updatedAt: "2026-05-27T03:00:00Z", participants: (input.participantActorIds ?? []).map(a => ({ sessionId: id, actorId: a, role: "member", joinedAt: null })) }; sessionStore.push(newS); return newS; },
     async markSessionViewed(sessionId, lastReadMessageId) { calls.push({ method: "markSessionViewed", sessionId, lastReadMessageId }); if (error) throw error; },
     async markSessionUnread(sessionId) { calls.push({ method: "markSessionUnread", sessionId }); if (error) throw error; },
@@ -2354,15 +2241,12 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async patchMessage(messageId, patch) { calls.push({ method: "patchMessage", messageId, patch }); if (error) throw error; return { id: messageId, teamId: "team-1", sessionId: "session-1", turnId: null, senderActorId: "actor-1", replyToMessageId: null, kind: "text", content: patch.content ?? "hello", metadata: patch.metadata ?? null, model: null, createdAt: "2026-05-27T01:00:00Z", updatedAt: "2026-05-27T02:00:00Z" }; },
     async deleteMessage(messageId) { calls.push({ method: "deleteMessage", messageId }); if (error) throw error; },
     async claimInvite(token) { calls.push({ method: "claimInvite", token }); if (error) throw error; return { actorId: "actor-1", teamId: "team-1", actorType: "member", displayName: "Alice", refreshToken: null }; },
-    async getTeamWorkspaceConfig(teamId) { calls.push({ method: "getTeamWorkspaceConfig", teamId }); if (error) throw error; return configs[teamId] ?? null; },
-    async putTeamWorkspaceConfig(teamId, input) { calls.push({ method: "putTeamWorkspaceConfig", teamId, input }); if (error) throw error; configs[teamId] = { teamId, defaultWorkspaceId: input.defaultWorkspaceId ?? null, pinnedWorkspaceIds: input.pinnedWorkspaceIds ?? [], updatedAt: "2026-05-27T01:00:00Z" }; return configs[teamId]; },
     async heartbeat() { calls.push({ method: "heartbeat" }); if (error) throw error; },
     async writeForegroundPresence(input) { calls.push({ method: "writeForegroundPresence", input }); if (error) throw error; },
     async listWorkspaces(args) { calls.push({ method: "listWorkspaces", args }); if (error) throw error; return { items: workspaceStore }; },
     async upsertWorkspace(input) { calls.push({ method: "upsertWorkspace", input }); if (error) throw error; const existing = workspaceStore.find(w => w.id === input.id); if (existing) { Object.assign(existing, input); return existing; } const newW = { id: input.id ?? "workspace-new", teamId: input.teamId, name: input.name, slug: input.slug ?? null, archived: input.archived ?? false, metadata: input.metadata ?? null, createdAt: "2026-05-27T01:00:00Z", updatedAt: "2026-05-27T01:00:00Z" }; workspaceStore.push(newW); return newW; },
     async getWorkspace(workspaceId) { calls.push({ method: "getWorkspace", workspaceId }); if (error) throw error; return workspaceStore.find(w => w.id === workspaceId) ?? null; },
     async patchWorkspace(workspaceId, patch) { calls.push({ method: "patchWorkspace", workspaceId, patch }); if (error) throw error; const w = workspaceStore.find(w => w.id === workspaceId); if (!w) return null; if (patch.name !== undefined) w.name = patch.name; if (patch.archived !== undefined) w.archived = patch.archived; return w; },
-    async getTeamDirectory(teamId) { calls.push({ method: "getTeamDirectory", teamId }); if (error) throw error; return { actors: [{ id: "actor-1", teamId: "team-1", kind: "user", displayName: "Alice", avatarUrl: null, metadata: null }], members: [{ actorId: "actor-1", teamId: "team-1", role: "member", joinedAt: "2026-05-27T01:00:00Z" }] }; },
     async renameTeam(teamId, input) { calls.push({ method: "renameTeam", teamId, input }); if (error) throw error; return { id: teamId, name: input.name, slug: null, createdAt: null }; },
     async createTeamInvite(teamId, input) { calls.push({ method: "createTeamInvite", teamId, input }); if (error) throw error; return { token: "invite-token", inviteId: "invite-1", expiresAt: input.expiresAt ?? null }; },
     // `created` is a repo-only flag so the route can choose 201 vs 200; it is
@@ -2400,9 +2284,6 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async updateShortcut(shortcutId, patch) { calls.push({ method: "updateShortcut", shortcutId, patch }); if (error) throw error; return { id: shortcutId, teamId: "team-1", parentId: null, kind: "link", label: patch.label ?? "Home", payload: null, position: 0, visibleRoleIds: [], createdAt: "2026-05-01T00:00:00Z", updatedAt: "2026-05-27T02:00:00Z" }; },
     async deleteShortcut(shortcutId) { calls.push({ method: "deleteShortcut", shortcutId }); if (error) throw error; },
     async batchMoveShortcuts(input) { calls.push({ method: "batchMoveShortcuts", input }); if (error) throw error; },
-    async setShortcutVisibleRoles(shortcutId, input) { calls.push({ method: "setShortcutVisibleRoles", shortcutId, input }); if (error) throw error; },
-    async listTeamRoles(teamId) { calls.push({ method: "listTeamRoles", teamId }); if (error) throw error; return [{ id: "role-1", teamId, code: "admin", name: "Admin" }]; },
-    async listTeamPermissions(teamId) { calls.push({ method: "listTeamPermissions", teamId }); if (error) throw error; return [{ resourceId: "resource-1", roleIds: ["role-1"] }]; },
     async upsertAgentRuntime(body) { calls.push({ method: "upsertAgentRuntime", body }); if (error) throw error; return { id: body.id ?? "runtime-row-1" }; },
     async getAgentRuntime(args) { calls.push({ method: "getAgentRuntime", args }); if (error) throw error; if (args.sessionId === "session-missing") return null; return { id: "runtime-row-1", agentActorId: "actor-1", sessionId: args.sessionId, runtimeId: args.runtimeId ?? "runtime-abc", backendSessionId: args.backendSessionId ?? "backend-1", lastProcessedMessageId: null, metadata: null, createdAt: null, updatedAt: null }; },
     async getLatestAgentRuntime(args) { calls.push({ method: "getLatestAgentRuntime", args }); if (error) throw error; if (args.agentId === "actor-missing") return null; return { id: "runtime-row-1", agentActorId: args.agentId, sessionId: args.sessionId, runtimeId: "runtime-abc", backendSessionId: "backend-1", lastProcessedMessageId: null, metadata: null, createdAt: null, updatedAt: null }; },

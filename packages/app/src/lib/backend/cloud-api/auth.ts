@@ -72,10 +72,6 @@ export function createAuthModule(
       const next = await authClient.loginWithPhoneUser(phone, code, userId);
       return mapSession(next);
     },
-    async signInWithPassword(email: string, password: string): Promise<AuthSession | null> {
-      const next = await authClient.signInWithPassword(email, password);
-      return mapSession(next);
-    },
     async signInWithOAuth(provider: OAuthProvider): Promise<AuthSession | null> {
       // Same PKCE endpoints either way — only the redirect capture differs, so
       // the runner is picked by platform rather than branching inside it.

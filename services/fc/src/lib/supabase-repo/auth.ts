@@ -52,6 +52,9 @@ export function createSupabaseAuthRepository(options) {
     smsConfigOrgId = undefined,
     sendSms = undefined,
     verifyCaptcha = undefined,
+    // Re-sync a team's apps to Gitea after someone joins it
+    // (provisioning/gitea-sync-runner.ts). Absent: nothing to mirror to.
+    syncTeamToGitea = undefined as undefined | ((teamId: string) => Promise<void>),
   } = options;
 
   if (!supabaseUrl) throw new Error("SUPABASE_URL is required");
@@ -202,6 +205,7 @@ export function createSupabaseAuthRepository(options) {
           ctx.accessToken,
         );
       }
+      if (!result.alreadyMember) await syncTeamToGitea?.(result.teamId);
       return result;
     },
 
@@ -227,9 +231,12 @@ export function createSupabaseAuthRepository(options) {
         displayName: requiredString(row.display_name, "auth.claimInvite", "display_name"),
         refreshToken: row.refresh_token ?? null,
       };
-      // Member invites: write roles_users (authz SoT) via service-role.
-      // Agents have no public.users row and skip assignment.
+      // Member invites write collaboration bindings via service-role.
+      // Agent inheritance is handled atomically inside the claim RPC.
       await assignMemberRoleOnClaim(client, result, ctx.accessToken);
+      // A new member reads the team's team-visible apps through its Gitea team;
+      // a newly connected agent can finally use the grants it was given.
+      await syncTeamToGitea?.(result.teamId);
       return result;
     },
 
@@ -298,6 +305,9 @@ export function createSupabaseAuthRepository(options) {
         refreshToken: row.refresh_token ?? null,
       };
       await assignMemberRoleOnClaim(client, result, ctx.accessToken);
+      // A new member reads the team's team-visible apps through its Gitea team;
+      // a newly connected agent can finally use the grants it was given.
+      await syncTeamToGitea?.(result.teamId);
       return result;
     },
 

@@ -1,5 +1,7 @@
 # Agent Backend 探测与云端上报流程
 
+> **已废弃（ADR-0014，2026-09）.** 本地 runtime 已迁移至 pi-only；opencode / cursor / claude 后端已删除。本文保留作历史参考，现行架构见 `docs/architecture/pi-agent-backend.md`。
+
 > 状态：说明文档（2026-06-11；2026-08-04 勘误）  
 > 背景：Settings → Daemon → General 中 **Backend types** 显示  
 > *"This daemon has not advertised any backend types yet."*，  
@@ -290,7 +292,7 @@ Settings 显示 Backend types 为空
 │         • daemon 启动后是否只尝试一次上报
 │
 └─ daemon 是否在跑？ get_daemon_http_info 是否可用？
-    └─ 否 → 先解决 onboarding / foreground start / deploy-daemon.sh
+    └─ 否 → 先解决 onboarding / foreground start / deploy-daemon-binaries.sh
 ```
 
 ---

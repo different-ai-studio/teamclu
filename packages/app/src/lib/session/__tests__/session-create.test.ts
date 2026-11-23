@@ -517,6 +517,7 @@ describe('startAgentRuntimesAsync', () => {
       expect.objectContaining({
         sessionId: 'sess-1',
         permissionMode: 'full_access',
+        rememberPermission: true,
       }),
     )
   })

@@ -10,7 +10,6 @@
 
 use chrono::{DateTime, Local, Utc};
 use chrono_tz::Tz;
-use cron::Schedule as CronScheduleParser;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -456,8 +455,9 @@ pub fn compute_next_run(job: &CronJob, after: Option<DateTime<Utc>>) -> Option<D
             // passed to `after()`. Default is the system local wall clock
             // (Unix crontab semantics); `schedule.tz` is an IANA override.
             let expr = job.schedule.expr.as_deref()?;
-            // 5-field → the crate's 7-field (sec min hour dom month dow year).
-            let schedule = match CronScheduleParser::from_str(&format!("0 {expr} *")) {
+            // Standard crontab in, the `cron` crate's notation out — see
+            // `expr.rs` for why the day-of-week field cannot pass through.
+            let schedule = match super::expr::parse(expr) {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::error!("cron: invalid cron expression '{expr}': {e}");
@@ -713,9 +713,10 @@ mod tests {
 
     #[test]
     fn cron_weekday_expression_fires_on_correct_days() {
-        // Quartz notation in the `cron` crate: 1=Sun … 7=Sat; 2-6 is Mon–Fri.
+        // Standard crontab: 1=Mon .. 5=Fri (`expr.rs` translates for the
+        // `cron` crate, which numbers days from Sunday=1).
         let mut s = sched(ScheduleKind::Cron);
-        s.expr = Some("0 10 * * 2-6".into());
+        s.expr = Some("0 10 * * 1-5".into());
         s.tz = Some("UTC".into());
         let anchor = Utc.with_ymd_and_hms(2024, 6, 2, 11, 0, 0).unwrap();
         assert_eq!(

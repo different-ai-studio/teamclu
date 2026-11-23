@@ -29,9 +29,10 @@ import {
 } from "../../src/features/actors/team-resources-api";
 import { createWorkspacesApi } from "../../src/features/workspaces/workspace-api";
 import { createConfiguredSessionsApi } from "../../src/features/sessions/api-provider";
+import { loadTeamSessionsPreferCache } from "../../src/features/sessions/session-cache";
 import { createIdeasApi } from "../../src/features/ideas/idea-api";
-import { supabase } from "../../src/lib/supabase/client";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
 import { createRuntimeRpcClient } from "../../src/lib/teamclu/runtime-rpc";
 import { showToast } from "../../src/ui/Toast";
 
@@ -52,19 +53,19 @@ export default function ActorDetailRoute() {
   const isMe = actorId !== null && actorId === state.currentMemberActorId;
 
   const actorsApi = useMemo(
-    () => createActorsApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
   const agentAccessApi = useMemo(
-    () => createAgentAccessApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createAgentAccessApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
   const workspacesApi = useMemo(
-    () => createWorkspacesApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createWorkspacesApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
   const teamResourcesApi = useMemo(
-    () => createTeamResourcesApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createTeamResourcesApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
 
@@ -134,7 +135,7 @@ export default function ActorDetailRoute() {
     if (!teamId || !actorId || actor?.actorType !== "member") return;
     let cancelled = false;
     setMemberStats(null);
-    const getAccessToken = supabaseAccessToken(supabase);
+    const getAccessToken = cloudAccessToken(cloudAuth);
     void loadMemberActivityStats({
       actorId,
       loadLeaderboard: () =>
@@ -280,7 +281,9 @@ export default function ActorDetailRoute() {
         if (cancelled) return;
         const sessionIdSet = new Set(sessionIds);
         const teamSessions = teamId
-          ? await createConfiguredSessionsApi(supabase).listSessions(teamId)
+          ? await loadTeamSessionsPreferCache(teamId, (id) =>
+              createConfiguredSessionsApi(cloudAuth).listSessions(id),
+            )
           : [];
         if (cancelled) return;
         const sessions = teamSessions

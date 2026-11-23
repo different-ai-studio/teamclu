@@ -48,23 +48,11 @@ import {
 } from '@/components/ui/alert-dialog'
 import { toast } from 'sonner'
 import { SectionHeader, SettingCard } from './shared'
+import { formatRelative } from './format-relative'
 import { DaemonManualResetCard } from './DaemonManualResetCard'
 import { TeamSecretEntry } from './team/TeamSecretEntry'
 
 const permissionLevels: AgentPermissionLevel[] = ['view', 'prompt', 'admin']
-
-function formatRelative(value: string | null): string {
-  if (!value) return '-'
-  const time = new Date(value).getTime()
-  if (!Number.isFinite(time)) return value
-  const diff = Date.now() - time
-  if (diff < 60_000) return 'just now'
-  const minutes = Math.floor(diff / 60_000)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
-}
 
 export function DaemonGeneralSection() {
   const gate = useLocalAgentSectionGate()
@@ -796,7 +784,7 @@ function DaemonGeneralSectionBody() {
             <AlertDialogDescription>
               {t(
                 'settings.daemonGeneral.forceReloadConfirmDesc',
-                '将停止本工作区活跃的 Agent runtime，并重启全局 OpenCode serve。进行中的回复可能中断；之后需再发消息或新建会话才会使用最新环境变量。一般情况下可等待空闲后自动生效。',
+                '将停止本工作区活跃的 Agent runtime。进行中的回复可能中断；之后需再发消息或新建会话才会使用最新环境变量。一般情况下可等待空闲后自动生效。',
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>

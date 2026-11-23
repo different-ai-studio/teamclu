@@ -19,7 +19,6 @@ mod local_cache;
 pub mod mqtt;
 pub mod opencode_paths;
 pub mod process_util;
-pub mod proto;
 #[cfg(target_os = "macos")]
 mod screenshot_drop;
 pub mod sentry_utils;
@@ -38,6 +37,10 @@ fn shell_profile_files(shell: &str, home: &str) -> Vec<String> {
         &[".zshrc", ".zprofile", ".zshenv", ".zlogin"]
     } else if shell.ends_with("bash") {
         &[".bashrc", ".bash_profile", ".bash_login", ".profile"]
+    } else if shell.ends_with("fish") {
+        // Without an entry here the mtime is always 0, the cache never
+        // matches, and a fish user paid for the probe on every launch.
+        &[".config/fish/config.fish"]
     } else {
         return Vec::new();
     };
@@ -113,7 +116,9 @@ fn parse_probed_path(stdout: &str) -> Option<String> {
         .rev()
         .find_map(|line| line.trim().strip_prefix(PATH_PROBE_SENTINEL))
         .map(str::to_string)
-        .filter(|path| !path.is_empty())
+        // A second marker inside the value means the shell expanded `$PATH` as
+        // a list and repeated our prefix per entry. That is not a PATH.
+        .filter(|path| !path.is_empty() && !path.contains(PATH_PROBE_SENTINEL))
 }
 
 /// Run `<shell> [-i] -l -c 'echo <sentinel>$PATH'` with a hard wall-clock
@@ -133,7 +138,11 @@ fn spawn_shell_path_probe(shell: &str, interactive: bool) -> std::io::Result<std
     use crate::process_util::CommandNoWindow;
     use std::process::Stdio;
 
-    let script = format!("echo {PATH_PROBE_SENTINEL}$PATH");
+    // Quoted on purpose. In fish `$PATH` is a list, and an unquoted
+    // `marker$PATH` expands to one `marker/dir` word per entry — the app then
+    // set PATH to that string. Quoted, fish joins the list with `:`; bash and
+    // zsh print the same thing either way.
+    let script = format!("echo \"{PATH_PROBE_SENTINEL}$PATH\"");
     let mut args: Vec<&str> = Vec::new();
     if interactive {
         args.push("-i");
@@ -393,7 +402,6 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init())
         // File-list clipboard, so the file tree can exchange copies with Finder.
         .plugin(tauri_plugin_clipboard::init())
         // Restore window size + position across launches. Per-window state is
@@ -402,9 +410,22 @@ pub fn run() {
         .plugin({
             #[cfg(debug_assertions)]
             {
+                // TAURI_MCP_SOCKET lets an E2E run drive its own app while a
+                // developer's `tauri dev` keeps the default socket. The pid
+                // file next to it tells the harness which process that is,
+                // so it never has to guess by name.
+                let socket = std::env::var("TAURI_MCP_SOCKET")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp/tauri-mcp.sock"));
+                let pid_file = std::path::PathBuf::from(format!("{}.pid", socket.display()));
+                if let Err(e) = std::fs::write(&pid_file, std::process::id().to_string()) {
+                    tracing::debug!(error = %e, path = %pid_file.display(), "tauri-mcp pid file not written");
+                }
                 tauri_plugin_mcp::init_with_config(
                     tauri_plugin_mcp::PluginConfig::new(String::from("teamclu"))
-                        .socket_path(std::path::PathBuf::from("/tmp/tauri-mcp.sock"))
+                        .socket_path(socket),
                 )
             }
             #[cfg(not(debug_assertions))]
@@ -444,6 +465,10 @@ pub fn run() {
             commands::daemon_http::get_daemon_team_id,
             commands::daemon_http::list_local_daemon_workspaces,
             commands::daemon_http::register_daemon_workspace,
+            commands::git_credential::git_credential_status,
+            commands::git_credential::git_credential_verify,
+            commands::git_credential::git_credential_write,
+            commands::git_credential::git_credential_clear,
             commands::introspect_auth::set_introspect_auth,
             commands::introspect_auth::clear_introspect_auth,
             commands::show_in_folder,
@@ -453,11 +478,13 @@ pub fn run() {
             commands::acp_debug_log::acp_debug_reveal_log,
             commands::open_with_default_app,
             commands::open_in_terminal,
+            commands::open_with_app::open_path_with_app,
             commands::system_appearance::get_system_accent_color,
             commands::system_share::system_share_text,
             commands::window::open_local_agent_panel_window,
             commands::window::register_window_workspace,
             fs_scope::allow_fs_scope_dirs,
+            fs_scope::path_is_directory,
             commands::window::set_window_title,
             commands::mqtt_bus::mqtt_connect,
             commands::mqtt_bus::mqtt_subscribe,
@@ -514,7 +541,6 @@ pub fn run() {
             commands::cron::cron_toggle_enabled,
             commands::cron::cron_run_job,
             commands::cron::cron_get_runs,
-            commands::cron::cron_refresh_delivery,
             commands::cron::cron_any_job_running,
             commands::cron::cron_set_restart_imminent,
             commands::daemon_onboarding::daemon_init,
@@ -525,7 +551,6 @@ pub fn run() {
             commands::amuxd_supervisor::daemon_restart_managed,
             commands::setup::setup_list_requirements,
             commands::setup::setup_install,
-            commands::setup::restart_local_daemon,
             commands::clawhub::clawhub_search,
             commands::clawhub::clawhub_explore,
             commands::clawhub::clawhub_get_skill,
@@ -602,16 +627,6 @@ pub fn run() {
             local_cache::commands::local_cache_outbox_list_all,
             local_cache::commands::local_cache_idea_upsert_batch,
             local_cache::commands::local_cache_idea_load_team,
-            local_cache::commands::local_cache_idea_soft_delete,
-            local_cache::commands::local_cache_claim_upsert_batch,
-            local_cache::commands::local_cache_claim_load_idea,
-            local_cache::commands::local_cache_claim_soft_delete,
-            local_cache::commands::local_cache_submission_upsert_batch,
-            local_cache::commands::local_cache_submission_load_idea,
-            local_cache::commands::local_cache_submission_soft_delete,
-            local_cache::commands::local_cache_agent_runtime_event_insert,
-            local_cache::commands::local_cache_agent_runtime_event_load,
-            local_cache::commands::local_cache_agent_runtime_event_prune,
             local_cache::commands::local_cache_watermark_get,
             local_cache::commands::local_cache_watermark_set,
             local_cache::commands::local_cache_clear_team,
@@ -641,6 +656,8 @@ pub fn run() {
             commands::window_chrome::quit_app,
             commands::window_chrome::get_window_close_preference,
             commands::window_chrome::set_window_close_preference,
+            commands::ui_layout_prefs::get_ui_layout_prefs,
+            commands::ui_layout_prefs::set_ui_layout_pref,
             commands::tray_menu::update_tray_menu_labels,
             commands::app_menu::update_app_menu_labels,
             commands::team_share::enable::team_share_set_team_secret,
@@ -1058,6 +1075,13 @@ mod path_env_tests {
     }
 
     #[test]
+    fn a_list_expanded_per_entry_is_not_a_path() {
+        // What an unquoted `marker$PATH` prints in fish.
+        let stdout = format!("{PATH_PROBE_SENTINEL}/a/bin {PATH_PROBE_SENTINEL}/b/bin\n");
+        assert_eq!(parse_probed_path(&stdout), None);
+    }
+
+    #[test]
     fn zsh_profiles_cover_the_interactive_file_version_managers_write_to() {
         let files = shell_profile_files("/bin/zsh", "/home/u");
         assert!(files.contains(&"/home/u/.zshrc".to_string()), "{files:?}");
@@ -1065,7 +1089,11 @@ mod path_env_tests {
             files.contains(&"/home/u/.zprofile".to_string()),
             "{files:?}"
         );
-        assert!(shell_profile_files("/usr/bin/fish", "/home/u").is_empty());
+        assert_eq!(
+            shell_profile_files("/usr/bin/fish", "/home/u"),
+            vec!["/home/u/.config/fish/config.fish".to_string()]
+        );
+        assert!(shell_profile_files("/bin/sh", "/home/u").is_empty());
     }
 
     #[test]

@@ -92,7 +92,8 @@ mod tests {
 
     #[test]
     fn problem_detail_prefers_the_detail_field() {
-        let body = r#"{"type":"x","title":"Validation failed","status":422,"detail":"Job not found: j1"}"#;
+        let body =
+            r#"{"type":"x","title":"Validation failed","status":422,"detail":"Job not found: j1"}"#;
         assert_eq!(problem_detail(body), "Job not found: j1");
         assert_eq!(problem_detail("plain text"), "plain text");
     }

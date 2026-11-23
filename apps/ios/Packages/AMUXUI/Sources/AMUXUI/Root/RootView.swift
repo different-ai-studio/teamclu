@@ -519,13 +519,10 @@ public struct RootView: View {
 
         if let repo = sessionsRepoLocal,
            let records = try? await repo.listSessions(teamID: teamID) {
+            // Each record carries the server-side has_unread (the source of
+            // truth is session_read_markers.last_read_at vs
+            // sessions.last_message_at), so the sync sets it on every page.
             viewModel.syncSessionRecords(records, modelContext: modelContext)
-            // Overlay server-side has_unread on top of the just-synced rows.
-            // Same RPC the desktop session list uses — the source of truth
-            // is session_read_markers.last_read_at vs sessions.last_message_at.
-            if let flags = try? await repo.fetchUnreadFlags(teamID: teamID, limit: 100) {
-                viewModel.applyUnreadFlags(flags, modelContext: modelContext)
-            }
             await refreshSessionContextNames(records: records, runtime: runtime, teamID: teamID)
         } else if let repo = sessionIDsRepoLocal,
                   let ids = try? await repo.listSessionIDs(teamID: teamID) {

@@ -16,17 +16,11 @@ import { isChromeExtension } from '@/lib/config/platform'
 import { readExtensionDiagnosticsOptIn } from '@/lib/extension/page-access'
 
 import { ensureBundledAmuxdCurrent } from '@/lib/daemon/daemon-version-upgrade'
-import { initJwtBridge } from '@/lib/daemon/jwt-bridge'
 import { installConsoleCapture, redactSentryBreadcrumb } from '@/lib/diagnostics/console-capture'
 import { markStartup } from '@/lib/telemetry/startup-perf'
 import { removeStartupSkeleton } from './lib/utils'
 
 markStartup('main:start')
-
-// Sync the Supabase JWT into teamclu.json so FC-backed commands (team share,
-// LiteLLM, OSS sync) can authenticate. Must run at startup, before any of those
-// features open. No-op outside Tauri.
-initJwtBridge()
 
 // Pull the public (unauthenticated) config: the Web SSO target and the
 // login-method feature flags.
@@ -37,6 +31,10 @@ initJwtBridge()
 // known snapshot already painted, and this only updates it.
 void fetchPublicConfig()
 void ensureBundledAmuxdCurrent()
+
+// Sentry's own v10-compatible denylist (header / query-param names matched as
+// substrings): proxy chains, client IPs and user identity headers.
+const SENTRY_PII_HEADER_DENYLIST = ['forwarded', '-ip', 'remote-', 'via', '-user']
 
 // Initialize Sentry for frontend error tracking. The import is dynamic (see
 // `initSentry`) so the SDK stays out of the startup chunk; captures raised
@@ -72,7 +70,30 @@ void initSentry({
   // SEC-4: no IP / user identity by default, and every breadcrumb (console
   // arguments, fetch URLs) goes through the same redaction the Diagnostics
   // viewer uses. The Rust process applies the same policy in main.rs.
-  sendDefaultPii: false,
+  //
+  // Sentry 11 removed `sendDefaultPii` and flipped the default: with no
+  // `dataCollection` it collects user info (and lets ingest infer the IP),
+  // cookies, headers, bodies and query params. This block is the SDK's
+  // documented "keep the v10 defaults" set, i.e. what `sendDefaultPii: false`
+  // gave us. `userInfo: false` is the one that keeps the IP out: the browser
+  // client then sends `infer_ip: "never"` and skips the session `{{auto}}` IP.
+  dataCollection: {
+    userInfo: false,
+    cookies: false,
+    httpHeaders: {
+      request: { deny: SENTRY_PII_HEADER_DENYLIST },
+      response: { deny: SENTRY_PII_HEADER_DENYLIST },
+    },
+    httpBodies: [],
+    urlQueryParams: { deny: SENTRY_PII_HEADER_DENYLIST },
+    genAI: { inputs: false, outputs: false },
+    databaseQueryData: false,
+    graphQL: { document: false, variables: false },
+  },
+  // Sentry 11 also attaches a stack trace to captureMessage(). Our reporters
+  // group messages by an explicit fingerprint and never needed one; keep the
+  // v10 payload rather than grow every event.
+  attachStacktrace: false,
   // The random per-install id the client-version report already uses — no
   // account, email or IP. Set as the initial scope so the session opened at
   // init carries it: Release Health counts users from the session's id, and

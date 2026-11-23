@@ -22,6 +22,7 @@ import {
 } from "@/lib/daemon/introspect-auth-bridge";
 import { clearSessionFeatures } from "@/lib/config/remote-features";
 import { getEffectiveServerConfig, getEffectiveServerConfigSync } from "@/lib/config/server-config";
+import { revokeGitCredential, syncGitCredential } from "@/lib/apps/git-credential";
 import { logSignOut, type SignOutReason } from "@/lib/auth/sign-out-log";
 import { markStartup } from "@/lib/telemetry/startup-perf";
 
@@ -75,7 +76,6 @@ interface AuthState {
   sendPhoneOtp: (phone: string) => Promise<boolean>;
   verifyPhoneOtp: (code: string) => Promise<void>;
   resetOtp: () => void;
-  signInWithPassword: (email: string, password: string) => Promise<boolean>;
   signInWithOAuth: (provider: OAuthProvider) => Promise<boolean>;
   cancelOAuth: () => void;
   claimInvite: (token: string) => Promise<AuthClaimResult | null>;
@@ -108,8 +108,7 @@ function configuredServerUrl(): string | undefined {
 
 /**
  * Codes the Cloud API returns for a rejected sign-in that the user can act on.
- * Shown instead of the raw upstream message ("auth.signInWithPassword: Invalid
- * login credentials"), which read like a server fault.
+ * Shown instead of the raw upstream message, which reads like a server fault.
  */
 const FRIENDLY_AUTH_ERRORS: Record<string, { key: string; fallback: string }> = {
   invalid_credentials: { key: "auth.errors.invalidCredentials", fallback: "Incorrect email or password." },
@@ -234,6 +233,13 @@ async function enterClaimedTeam(teamId: string): Promise<void> {
   }
 }
 
+/** The git token follows the person, never a shared support account. */
+async function syncGitCredentialForSession(session: AuthSession | null): Promise<void> {
+  if (!session) return;
+  const support = await import("@/lib/admin/support-session");
+  await syncGitCredential(session, { isSupportSession: support.isInSupportSession(session.user?.id ?? null) });
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   session: null,
   loading: true,
@@ -278,6 +284,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       void fetchAndApplyBootstrap({ accessToken: session.accessToken });
     }
     void syncIntrospectAuthBridge(session);
+    void syncGitCredentialForSession(session);
     // StrictMode double-invokes the effect that calls hydrate, and this
     // subscription outlives it. Drop the previous one first so a cold start
     // doesn't accumulate listeners that each re-run bootstrap on every auth
@@ -289,6 +296,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         void fetchAndApplyBootstrap({ accessToken: session.accessToken });
       }
       void syncIntrospectAuthBridge(session);
+      void syncGitCredentialForSession(session);
     });
   },
   sendOtp: async (email) => {
@@ -392,22 +400,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
   resetOtp: () => set({ otpEmail: null, otpPhone: null, phoneMultiUsers: [], pendingPhoneOTPToken: "", errorMessage: null }),
-  signInWithPassword: async (email, password) => {
-    if (!hasBackendConfig()) {
-      set({ loading: false, errorMessage: BACKEND_CONFIG_MISSING_MESSAGE });
-      return false;
-    }
-    set({ loading: true, authFlow: "idle", errorMessage: null });
-    try {
-      const signedIn = await getBackend().auth.signInWithPassword(email, password);
-      const { session, choices } = await resolveIdentityChoice(signedIn);
-      set({ session: storeSession(session), identityChoices: choices, loading: false, otpEmail: null, otpPhone: null });
-      return true;
-    } catch (error) {
-      set({ loading: false, errorMessage: errorMessageFor(error) });
-      return false;
-    }
-  },
   signInWithOAuth: async (provider) => {
     if (!hasBackendConfig()) {
       set({ loading: false, errorMessage: BACKEND_CONFIG_MISSING_MESSAGE });
@@ -587,6 +579,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // An operator signing out forgets any support session kept for later.
     support.forgetSupportSession();
     logSignOut(reason, { user: get().session?.user?.id, server: configuredServerUrl(), detail });
+    // Before the session goes: revoking needs it to authenticate.
+    await revokeGitCredential();
     await getBackend().auth.signOut();
     set({ session: null, authFlow: "idle", otpEmail: null, otpPhone: null, phoneMultiUsers: [], pendingPhoneOTPToken: "", pendingInvites: [], identityChoices: null });
     void clearIntrospectAuthBridge();

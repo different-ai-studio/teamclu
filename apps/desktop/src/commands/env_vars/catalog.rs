@@ -19,6 +19,15 @@ pub(crate) fn resolve_workspace_path(
     crate::commands::team::resolve_workspace_path(workspace_path, window, registry)
 }
 
+/// Serialises every personal env-var write in this process.
+///
+/// Set and delete each read the whole encrypted blob, change one key and write
+/// it back, then do the same to the index. The MCP sidecar runs each request
+/// on its own task, so an agent setting two variables in one turn issued two
+/// overlapping writes: both reported ok and the later write dropped the
+/// earlier key.
+static PERSONAL_ENV_WRITE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // ─── Tauri Commands ─────────────────────────────────────────────────────
 
 /// Internal: write env var to encrypted blob and update teamclu.json index for a given workspace.
@@ -29,6 +38,7 @@ pub(crate) async fn env_var_set_for_workspace(
     value: String,
     description: Option<String>,
 ) -> Result<(), String> {
+    let _write = PERSONAL_ENV_WRITE.lock().await;
     let key_clone = key.clone();
     let value_clone = value.clone();
     let wp = workspace_path.to_string();
@@ -111,6 +121,7 @@ pub(crate) async fn env_var_delete_for_workspace(
     workspace_path: &str,
     key: String,
 ) -> Result<(), String> {
+    let _write = PERSONAL_ENV_WRITE.lock().await;
     let mut entries = read_env_index(workspace_path)?;
 
     if let Some(entry) = entries.iter().find(|e| env_keys_match(&e.key, &key)) {

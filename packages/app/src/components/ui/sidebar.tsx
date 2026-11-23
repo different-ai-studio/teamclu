@@ -143,11 +143,12 @@ function SidebarProvider({
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [toggleSidebar])
 
-  // We add a state so that we can do data-state="expanded" or "collapsed".
-  // This makes it easier to style the sidebar with Tailwind classes.
-  // As a drawer the sidebar never takes inline room, so it reads as collapsed:
-  // surfaces that show an expand control when it is collapsed keep showing it.
-  const state = open && !isMobile ? "expanded" : "collapsed"
+  // `state` answers one question for the columns beside the sidebar: is there
+  // a nav on screen, or must they draw their own traffic lights and an expand
+  // control? Inline the sidebar is always on screen — pinned open as the full
+  // list, or closed down to the icon rail (`collapsible="icon"`) — so only the
+  // drawer reads as collapsed. Whether it is pinned is `open`.
+  const state = isMobile ? "collapsed" : "expanded"
 
   const contextValue = React.useMemo<SidebarContextProps>(
     () => ({
@@ -201,7 +202,7 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, registerSidebar } = useSidebar()
+  const { isMobile, open, openMobile, setOpenMobile, registerSidebar } = useSidebar()
   React.useEffect(() => registerSidebar(), [registerSidebar])
 
   if (collapsible === "none") {
@@ -244,11 +245,14 @@ function Sidebar({
     )
   }
 
+  // The element's own state follows `open`, not the context `state` above:
+  // closed, it narrows to the rail (or slides away for `offcanvas`).
+  const ownState = open ? "expanded" : "collapsed"
   return (
     <div
       className="group peer text-sidebar-foreground hidden md:block"
-      data-state={state}
-      data-collapsible={state === "collapsed" ? collapsible : ""}
+      data-state={ownState}
+      data-collapsible={ownState === "collapsed" ? collapsible : ""}
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"

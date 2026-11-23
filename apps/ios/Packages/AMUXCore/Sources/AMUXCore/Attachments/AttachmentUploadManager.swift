@@ -18,20 +18,14 @@ public class AttachmentUploadManager: NSObject, @unchecked Sendable {
     }
 
     /// Convenience factory used by AMUXUI to build a manager wired to the
-    /// Cloud API. The access-token closure reads the current token from the
-    /// Keychain-backed session each call (refresh is owned by the onboarding
-    /// SessionStore), so uploads carry the user's bearer for storage RLS.
+    /// Cloud API. The bearer comes from the shared, refreshing SessionStore
+    /// (`CloudAccessToken`), so uploads carry the user's token for storage RLS
+    /// even after the access token has lapsed.
     public static func fromMainBundle(modelContext: ModelContext) throws -> AttachmentUploadManager {
         guard let config = CloudAPIConfigurationStore.configuration() else {
             throw UploadError.uploadFailed("Cloud API is not configured")
         }
-        let storage = KeychainSessionStorage()
-        let client = CloudAPIClient(configuration: config, accessToken: {
-            guard let session = try storage.load(), session.expiresAt.timeIntervalSinceNow > 0 else {
-                throw CloudAPIError.missingAccessToken
-            }
-            return session.accessToken
-        })
+        let client = CloudAPIClient(configuration: config, accessToken: CloudAccessToken.provider())
         return AttachmentUploadManager(modelContext: modelContext, client: client)
     }
 

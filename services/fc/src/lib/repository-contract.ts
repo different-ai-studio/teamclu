@@ -154,29 +154,6 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     assert.equal(w.archived, true);
   });
 
-  test("repository contract: getTeamWorkspaceConfig returns null when absent", async () => {
-    const repo = createRepository();
-    const cfg = await repo.getTeamWorkspaceConfig("team-no-config");
-    assert.equal(cfg, null);
-  });
-
-  test("repository contract: putTeamWorkspaceConfig upserts row", async () => {
-    const repo = createRepository();
-    const teamId = "team-1";
-    const next = {
-      teamId,
-      defaultWorkspaceId: "workspace-1",
-      pinnedWorkspaceIds: [],
-    };
-    const out = await repo.putTeamWorkspaceConfig(teamId, next);
-    assert.deepEqual(out.defaultWorkspaceId, "workspace-1");
-    assert.deepEqual(out.pinnedWorkspaceIds, []);
-
-    const cfg = await repo.getTeamWorkspaceConfig(teamId);
-    assert.ok(cfg, "config should exist after put");
-    assert.deepEqual(cfg.defaultWorkspaceId, "workspace-1");
-  });
-
   test("repository contract: getSession returns session with participants", async () => {
     const repo = createRepository();
     const s = await repo.getSession("session-1");
@@ -190,6 +167,31 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     const s = await repo.patchSession("session-1", { title: "Updated title" });
     assert.ok(s, "session should exist");
     assert.equal(s.title, "Updated title");
+    assert.equal(s.titleApplied, true);
+    assert.equal(s.titleLocked, false);
+  });
+
+  test("repository contract: a locked rename keeps the person's title", async () => {
+    const repo = createRepository();
+    const locked = await repo.patchSession("session-1", {
+      title: "Standup (09:30)",
+      titleLocked: true,
+    });
+    assert.equal(locked.title, "Standup (09:30)");
+    assert.equal(locked.titleLocked, true);
+    assert.equal(locked.titleApplied, true);
+
+    const generated = await repo.patchSession("session-1", { title: "深圳美食推荐" });
+    assert.equal(generated.title, "Standup (09:30)");
+    assert.equal(generated.titleLocked, true);
+    assert.equal(generated.titleApplied, false);
+
+    const renamedAgain = await repo.patchSession("session-1", {
+      title: "发布计划",
+      titleLocked: true,
+    });
+    assert.equal(renamedAgain.title, "发布计划");
+    assert.equal(renamedAgain.titleLocked, true);
   });
 
   test("repository contract: createSession returns session with participants", async () => {
@@ -521,34 +523,6 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     }
   });
 
-test("repository contract: getTeamDirectory returns actors and members", async () => {
-    const repo = createRepository();
-    const result = await repo.getTeamDirectory("team-1");
-
-    assert.ok(Array.isArray(result.actors), "actors must be an array");
-    assert.ok(Array.isArray(result.members), "members must be an array");
-    assert.ok(result.actors.length >= 1, "contract fixture must include at least one actor");
-    assert.ok(result.members.length >= 1, "contract fixture must include at least one member");
-
-    const actor = result.actors[0];
-    assert.deepEqual(Object.keys(actor).sort(), [
-      "avatarUrl",
-      "displayName",
-      "id",
-      "kind",
-      "metadata",
-      "teamId",
-    ].sort());
-
-    const member = result.members[0];
-    assert.deepEqual(Object.keys(member).sort(), [
-      "actorId",
-      "joinedAt",
-      "role",
-      "teamId",
-    ].sort());
-  });
-
   test("repository contract: renameTeam updates team name", async () => {
     const repo = createRepository();
     const team = await repo.renameTeam("team-1", { name: "Updated Team Name" });
@@ -646,7 +620,6 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     assert.ok(result.length >= 1, "contract fixture must include at least one shortcut");
     const shortcut = result[0];
     // snake_case row — consumed directly by the desktop client's ShortcutRow.
-    // Role visibility is a separate endpoint (listShortcutRoleBindings).
     assert.deepEqual(Object.keys(shortcut).sort(), [
       "created_at",
       "icon",
@@ -696,30 +669,6 @@ test("repository contract: getTeamDirectory returns actors and members", async (
         { shortcutId: "shortcut-1", parentId: null, position: 0 },
       ],
     });
-  });
-
-  test("repository contract: setShortcutVisibleRoles succeeds", async () => {
-    const repo = createRepository();
-    await repo.setShortcutVisibleRoles("shortcut-1", { roleIds: ["role-1"] });
-  });
-
-  test("repository contract: listTeamRoles returns items", async () => {
-    const repo = createRepository();
-    const result = await repo.listTeamRoles("team-1");
-    assert.ok(Array.isArray(result), "result must be an array");
-    assert.ok(result.length >= 1, "contract fixture must include at least one role");
-    const role = result[0];
-    assert.deepEqual(Object.keys(role).sort(), ["code", "id", "name", "teamId"].sort());
-  });
-
-  test("repository contract: listTeamPermissions returns items", async () => {
-    const repo = createRepository();
-    const result = await repo.listTeamPermissions("team-1");
-    assert.ok(Array.isArray(result), "result must be an array");
-    assert.ok(result.length >= 1, "contract fixture must include at least one permission");
-    const perm = result[0];
-    assert.ok(perm.resourceId, "permission must have resourceId");
-    assert.ok(Array.isArray(perm.roleIds), "roleIds must be an array");
   });
 
   test("repository contract: listIdeas returns paged ideas with canonical fields", async () => {

@@ -1,6 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { publicDeployConfirm } from "@/lib/apps/app-deploy-confirm";
-import i18n from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({
   listApps: vi.fn(),
@@ -28,7 +26,6 @@ const mocks = vi.hoisted(() => ({
   daemonAppManifest: vi.fn(),
   bindAppWorkdir: vi.fn(),
   bindDaemonAppWorkdir: vi.fn(),
-  getDaemonEnvActivationDiagnostics: vi.fn(),
   toastError: vi.fn(),
   workdirExists: vi.fn(),
   readDir: vi.fn(),
@@ -73,7 +70,6 @@ vi.mock("@/lib/daemon/daemon-local-client", () => ({
   buildDaemonApp: mocks.buildDaemonApp,
   daemonAppManifest: mocks.daemonAppManifest,
   bindDaemonAppWorkdir: mocks.bindDaemonAppWorkdir,
-  getDaemonEnvActivationDiagnostics: mocks.getDaemonEnvActivationDiagnostics,
 }));
 
 vi.mock("@tauri-apps/plugin-fs", () => ({
@@ -89,51 +85,11 @@ vi.mock("sonner", () => ({ toast: { error: mocks.toastError, success: vi.fn() } 
 
 vi.mock("@/lib/apps/app-session", () => ({ bindAppWorkdir: mocks.bindAppWorkdir }));
 
-vi.mock("@/lib/apps/app-deploy-confirm", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/apps/app-deploy-confirm")>(),
-  publicDeployConfirm: { run: vi.fn(async () => true) },
-  PUBLIC_DEPLOY_CONFIRM_MESSAGE:
-    "此应用未启用登录保护，任何拿到链接的人都能访问。\n\n确定继续部署吗？",
-  ACTIVE_TURN_DEPLOY_CONFIRM_MESSAGE:
-    "此应用的工作区有 AI 正在运行。现在部署可能把未完成的改动打包上线。\n\n确定继续部署吗？",
-}));
-
 /** What the daemon client returns: an outcome plus where it wrote. */
 const seedResult = (
   outcome: "seeded" | "failed" | "unreachable",
   over: { workdir?: string | null; error?: string | null } = {},
 ) => ({ outcome, workdir: null, error: null, ...over });
-
-const defaultDeclaration = {
-  build: { kind: "node", output: ".output" },
-  start: {
-    fcRuntime: "custom.debian10",
-    command: ["/opt/nodejs20/bin/node"],
-    args: ["server/index.mjs"],
-    port: 9000,
-  },
-};
-const revision = "abc1234567890";
-const contentDigest = `sha256:${"a".repeat(64)}`;
-const manifest = (declaration = defaultDeclaration) => ({
-  declaration,
-  gitCommitSha: revision,
-  clean: true,
-  contentDigest,
-});
-
-const buildResult = (
-  outcome: "built" | "failed" | "unreachable",
-  error: string | null = null,
-  gitCommitSha: string | null = null,
-  declaration: typeof defaultDeclaration | null = defaultDeclaration,
-  image: string | null = null,
-) => ({ outcome, error, gitCommitSha: gitCommitSha ?? revision, declaration, image, revision });
-
-const withCheckedVerification = <T extends ReturnType<typeof buildResult>>(build: T) => ({
-  ...build,
-  artifactVerification: { status: "checked" as const, revision: build.revision, target: "Linux/x86_64", hostOs: "macos", hostArch: "aarch64", unknownFiles: [] },
-});
 
 const gitCred = {
   remoteUrl: "git@gitea:team/app-1.git",
@@ -513,6 +469,35 @@ describe("apps-store", () => {
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
 
+  it("create: a per-account app tells the daemon its HTTPS address", async () => {
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({
+        provisionStatus: "repo_created",
+        gitRemoteUrl: "ssh://git@gitea:2222/o1/tc-app-app-1.git",
+        gitAuthKind: "gitea_deploy_key",
+        gitAccountAuth: true,
+        gitHttpUrl: "https://gitea/o1/tc-app-app-1.git",
+      }),
+    );
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.seedDaemonApp.mockResolvedValueOnce(seedResult("seeded"));
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().create({ teamId: "team-1", name: "N", type: "static_web", visibility: "team" });
+    // The seed push still goes over SSH with the deploy key; the HTTPS address
+    // is for whoever uses the checkout afterwards.
+    expect(mocks.seedDaemonApp).toHaveBeenCalledWith(
+      "app-1",
+      "team-1",
+      "App",
+      "fullstack_tanstack_postgres",
+      "ssh://git@gitea:2222/o1/tc-app-app-1.git",
+      gitCred.privateKeyPem,
+      false,
+      null,
+      "https://gitea/o1/tc-app-app-1.git",
+    );
+  });
+
   it("create: the directory the daemon wrote to is recorded on the app's workspace", async () => {
     mocks.createApp.mockResolvedValueOnce(appRow({ provisionStatus: "pending" }));
     mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
@@ -852,654 +837,36 @@ describe("ensureAppCheckout", () => {
   });
 });
 
-describe("apps-store deploy", () => {
-  const readyApp = (over = {}) =>
-    appRow({
-      provisionStatus: "ready",
-      teamId: "team-1",
-      fcStatus: null,
-      authMode: "platform",
-      gitRemoteUrl: "git@gitea:team/app-1.git",
-      gitAuthKind: "gitea_deploy_key",
-      ...over,
-    });
-
+describe("apps-store undeploy and delete", () => {
+  let useAppsStore: typeof import("./apps-store").useAppsStore;
   beforeEach(async () => {
     vi.clearAllMocks();
-    mocks.daemonAppWorkdir.mockResolvedValue({
-      workdir: "/workdir/app-1",
-      deviceName: "test-host",
-    });
-    mocks.deployApp.mockReset();
-    mocks.buildDaemonApp.mockReset();
-    mocks.finalizeDeploy.mockReset();
-    mocks.getGitHead.mockResolvedValue({ sha: "abc1234567890" });
-    mocks.getGitCredential.mockResolvedValue(gitCred);
-    mocks.daemonAppManifest.mockResolvedValue(manifest());
-    mocks.preflightAppDeploy.mockResolvedValue({
-      token: "preflight-1",
-      preview: { firstDeploy: true, changes: [], requiresMigrationApproval: false },
-    });
-    mocks.cancelAppDeployPreflight.mockResolvedValue({ cancelled: false });
-    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
-      workspace_has_active_turn: false,
-    });
-    vi.mocked(publicDeployConfirm.run).mockReset().mockResolvedValue(true);
-    const mod = await import("./apps-store");
-    mod.useAppsStore.setState({
-      items: [readyApp()],
-      loaded: true,
-      loading: false,
-      error: null,
-      teamId: "team-1",
-      deployingIds: [],
-    });
+    ({ useAppsStore } = await import("./apps-store"));
+    useAppsStore.setState({ items: [appRow({ id: "app-1", fcStatus: "live" })], selectedAppId: "app-1" } as never);
   });
 
-  const legacyApp = (over = {}) => readyApp({
-    usesAppCodeDomain: false,
-    fcStatus: "live",
-    fcEndpoint: "https://origin.example",
-    appCode: "k7m2q9vx4n8p",
-    publicUrl: "https://old.apps.example",
-    appCodeUrl: "https://a-k7m2q9vx4n8p.apps.example",
-    ...over,
-  });
-
-  it.each([
-    ["platform", false], ["platform", true], ["platform", null],
-    ["none", false], ["none", true], ["none", null],
-  ] as const)("one %s deploy confirmation controls domain migration: %s", async (authMode, choice) => {
-    const legacy = legacyApp({ authMode });
-    const { useAppsStore } = await import("./apps-store");
-    useAppsStore.setState({ items: [legacy] });
-    vi.mocked(publicDeployConfirm.run).mockImplementationOnce(async (_message, options) => {
-      if (choice !== null) options?.onDomainChoice?.(choice);
-      return choice !== null;
-    });
-    if (choice !== null) {
-      mocks.deployApp.mockResolvedValueOnce({ ...legacy, deployToken: "tok-1", presignedPut: "https://oss/put" });
-      mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
-      mocks.finalizeDeploy.mockResolvedValueOnce(legacy);
-    }
-    await useAppsStore.getState().deploy("app-1");
-    expect(publicDeployConfirm.run).toHaveBeenCalledTimes(1);
-    expect(publicDeployConfirm.run).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
-      domainChoice: { currentUrl: "https://old.apps.example", codeUrl: "https://a-k7m2q9vx4n8p.apps.example" },
-    }));
-    if (choice === null) {
-      expect(mocks.deployApp).not.toHaveBeenCalled();
-      expect(mocks.buildDaemonApp).not.toHaveBeenCalled();
-    } else {
-      expect(mocks.deployApp).toHaveBeenCalledWith("app-1", {
-        gitCommitSha: revision, revision, declaration: defaultDeclaration, preflightToken: "preflight-1",
-        ...(choice ? { useAppCodeDomain: true } : {}),
-      });
-    }
-  });
-
-  // Catch reconstructing URLs from appCode or replacing the management UUID with it.
-  // Raw cached rows and full API rows must take the same consumer path.
-  it.each([
-    ["k7m2q9vx4n8p", false], ["k7m2q9vx4n8p", true],
-    ["a-k7m2q9vx4n8p", false], ["a-k7m2q9vx4n8p", true],
-  ] as const)("preserves supplied URLs and UUID management for code %s (opt-in: %s)", async (appCode, optIn) => {
-    const appId = "18e4ecad-6189-495b-a873-7fe09179a5f5";
-    const legacy = legacyApp({ id: appId, appCode });
-    const { useAppsStore } = await import("./apps-store");
-    mocks.listApps.mockResolvedValueOnce([legacy]);
-    await useAppsStore.getState().load("team-1", { force: true });
-    vi.mocked(publicDeployConfirm.run).mockImplementationOnce(async (_message, options) => {
-      options?.onDomainChoice?.(optIn);
-      return true;
-    });
-    mocks.deployApp.mockResolvedValueOnce({ ...legacy, deployToken: "tok-1", presignedPut: "https://oss/put" });
-    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
-    const finalized = {
-      ...legacy,
-      usesAppCodeDomain: optIn,
-      publicUrl: optIn ? "https://a-k7m2q9vx4n8p.apps.example" : "https://old.apps.example",
-    };
-    mocks.finalizeDeploy.mockResolvedValueOnce(finalized);
-
-    await useAppsStore.getState().deploy(appId);
-
-    expect(publicDeployConfirm.run).toHaveBeenCalledExactlyOnceWith(expect.any(String), expect.objectContaining({
-      domainChoice: {
-        currentUrl: "https://old.apps.example",
-        codeUrl: "https://a-k7m2q9vx4n8p.apps.example",
-      },
-    }));
-    expect(mocks.deployApp).toHaveBeenCalledExactlyOnceWith(appId, {
-      gitCommitSha: revision, revision, declaration: defaultDeclaration, preflightToken: "preflight-1",
-      ...(optIn ? { useAppCodeDomain: true } : {}),
-    });
-    expect(mocks.finalizeDeploy).toHaveBeenCalledExactlyOnceWith(appId, {
-      gitCommitSha: revision, revision, declaration: defaultDeclaration, deployToken: "tok-1",
-      artifactVerification: expect.objectContaining({ status: "checked", revision }),
-    });
-    expect(useAppsStore.getState().items).toEqual([finalized]);
-    expect(useAppsStore.getState().deployingIds).toEqual([]);
-    expect(mocks.cancelAppDeployPreflight).not.toHaveBeenCalled();
-
-    mocks.updateAppAuth.mockResolvedValueOnce({ ...finalized, authMode: "none" });
-    expect(await useAppsStore.getState().updateAuthPolicy(appId, { authMode: "none" })).toBe(true);
-    expect(useAppsStore.getState().items[0]).toMatchObject({ id: appId, appCode, authMode: "none" });
-    const operation = {
-      id: "5e9f6907-88b0-4fd4-81bc-8e6cc24638f6", appId, status: "pending" as const,
-      startedAt: "2026-10-25T00:00:00.000Z", updatedAt: "2026-10-25T00:00:00.000Z", error: null, steps: {},
-    };
+  it("merges the accepted undeploy row; completion is left to status polling", async () => {
+    const operation = { id: "op-1", appId: "app-1", status: "pending", steps: {} };
     mocks.undeployApp.mockResolvedValueOnce({
-      app: { ...finalized, fcStatus: "uninstalling", undeployOperation: operation }, operation,
+      app: appRow({ id: "app-1", fcStatus: "uninstalling", undeployOperation: operation }),
+      operation,
     });
-    expect(await useAppsStore.getState().undeployApp(appId)).toBe(true);
-    expect(useAppsStore.getState().items[0]).toMatchObject({ id: appId, appCode, fcStatus: "uninstalling" });
-    // Only a later server read proves uninstall completed, allowing deletion.
-    mocks.listApps.mockResolvedValueOnce([{
-      ...finalized, fcStatus: "uninstalled", fcEndpoint: null,
-      undeployOperation: { ...operation, status: "succeeded" },
-    }]);
-    await useAppsStore.getState().load("team-1", { force: true });
-    expect(useAppsStore.getState().items[0]).toMatchObject({ id: appId, fcStatus: "uninstalled" });
+    expect(await useAppsStore.getState().undeployApp("app-1")).toBe(true);
+    expect(useAppsStore.getState().items[0]).toMatchObject({ id: "app-1", fcStatus: "uninstalling" });
+  });
+
+  it("toasts a rejected undeploy and leaves the row alone", async () => {
+    mocks.undeployApp.mockRejectedValueOnce(new Error("conflict"));
+    expect(await useAppsStore.getState().undeployApp("app-1")).toBe(false);
+    expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "live" });
+    expect(mocks.toastError).toHaveBeenCalled();
+  });
+
+  it("drops a deleted app and clears its selection", async () => {
     mocks.deleteApp.mockResolvedValueOnce(true);
-    expect(await useAppsStore.getState().deleteApp(appId)).toBe(true);
+    expect(await useAppsStore.getState().deleteApp("app-1")).toBe(true);
     expect(useAppsStore.getState().items).toEqual([]);
-    // Check every external management/daemon call used by this lifecycle.
-    for (const boundary of [
-      mocks.getGitHead, mocks.daemonAppManifest, mocks.preflightAppDeploy,
-      mocks.getGitCredential, mocks.buildDaemonApp, mocks.revokeGitCredential,
-      mocks.updateAppAuth, mocks.undeployApp, mocks.deleteApp,
-    ]) {
-      expect(boundary).toHaveBeenCalledTimes(1);
-      expect(boundary.mock.calls[0][0]).toBe(appId);
-    }
-    expect(mocks.toastError).not.toHaveBeenCalled();
-  });
-
-  it.each(["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"])("cancels the UUID reservation without deploying code %s", async (appCode) => {
-    const appId = "18e4ecad-6189-495b-a873-7fe09179a5f5";
-    const legacy = legacyApp({ id: appId, appCode });
-    const { useAppsStore } = await import("./apps-store");
-    useAppsStore.setState({ items: [legacy] });
-    vi.mocked(publicDeployConfirm.run).mockResolvedValueOnce(false);
-
-    await useAppsStore.getState().deploy(appId);
-
-    expect(mocks.cancelAppDeployPreflight).toHaveBeenCalledExactlyOnceWith(appId, "preflight-1");
-    expect(mocks.deployApp).not.toHaveBeenCalled();
-    expect(mocks.buildDaemonApp).not.toHaveBeenCalled();
-    expect(mocks.finalizeDeploy).not.toHaveBeenCalled();
-    expect(useAppsStore.getState().items).toEqual([legacy]);
-    expect(useAppsStore.getState().deployingIds).toEqual([]);
-  });
-
-  it("keeps the active-agent warning separate from the single domain-aware confirmation", async () => {
-    const legacy = legacyApp({ authMode: "none" });
-    const { useAppsStore } = await import("./apps-store");
-    useAppsStore.setState({ items: [legacy] });
-    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValueOnce({ workspace_has_active_turn: true });
-    vi.mocked(publicDeployConfirm.run)
-      .mockResolvedValueOnce(true)
-      .mockImplementationOnce(async (_message, options) => {
-        options?.onDomainChoice?.(true);
-        return true;
-      });
-    mocks.deployApp.mockResolvedValueOnce({ ...legacy, deployToken: "tok-1", presignedPut: "https://oss/put" });
-    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
-    mocks.finalizeDeploy.mockResolvedValueOnce(legacy);
-
-    await useAppsStore.getState().deploy("app-1");
-    const prompts = vi.mocked(publicDeployConfirm.run).mock.calls;
-    expect(prompts).toHaveLength(2);
-    expect(prompts[0]).toEqual([expect.stringContaining("AI 正在运行")]);
-    expect(prompts[1][0]).toContain("任何拿到链接的人都能访问");
-    expect(prompts.filter(([, options]) => options?.domainChoice)).toHaveLength(1);
-    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", expect.objectContaining({ useAppCodeDomain: true }));
-  });
-
-  it("an accepted attempt with no choice callback keeps legacy mode after a checked attempt", async () => {
-    const legacy = legacyApp();
-    const { useAppsStore } = await import("./apps-store");
-    useAppsStore.setState({ items: [legacy] });
-    mocks.deployApp.mockResolvedValue({ ...legacy, deployToken: "tok-1", presignedPut: "https://oss/put" });
-    mocks.buildDaemonApp.mockResolvedValue(withCheckedVerification(buildResult("built")));
-    mocks.finalizeDeploy.mockResolvedValue(legacy);
-    vi.mocked(publicDeployConfirm.run)
-      .mockImplementationOnce(async (_message, options) => {
-        options?.onDomainChoice?.(true);
-        return true;
-      })
-      .mockResolvedValueOnce(true);
-
-    await useAppsStore.getState().deploy("app-1");
-    await useAppsStore.getState().deploy("app-1");
-    expect(mocks.deployApp.mock.calls.map(([, input]) => input)).toEqual([
-      { gitCommitSha: revision, revision, declaration: defaultDeclaration, preflightToken: "preflight-1", useAppCodeDomain: true },
-      { gitCommitSha: revision, revision, declaration: defaultDeclaration, preflightToken: "preflight-1" },
-    ]);
-  });
-
-  it("a container app pushes an image and finalizes with it", async () => {
-    // The whole point of the container path: no OSS upload handle is minted,
-    // the daemon is handed a registry instead, and the image it pushed is what
-    // the function is pointed at.
-    const declaration = {
-      build: { kind: "container", output: ".", dockerfile: "Dockerfile", context: "." },
-      start: { port: 5000, healthCheckPath: "/api/health" },
-    };
-    mocks.daemonAppManifest.mockResolvedValue(manifest(declaration));
-    const image = {
-      reference: "registry.cn-shenzhen.aliyuncs.com/tc/tc-app-app-1:abc1234567890",
-      registry: "registry.cn-shenzhen.aliyuncs.com",
-      username: "temp-user",
-      password: "temp-token",
-    };
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp(),
-      fcStatus: "awaiting_build",
-      image,
-      deployToken: "tok-1",
-      gitCommitSha: "abc1234567890",
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(
-      withCheckedVerification(buildResult("built", null, null, declaration, image.reference)),
-    );
-    mocks.finalizeDeploy.mockResolvedValueOnce({
-      ...readyApp(),
-      fcStatus: "live",
-      fcEndpoint: "https://x.fcapp.run",
-    });
-
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", {
-      gitCommitSha: revision,
-      revision,
-      declaration,
-      preflightToken: "preflight-1",
-    });
-    expect(mocks.buildDaemonApp).toHaveBeenCalledWith(
-      "app-1",
-      "team-1",
-      expect.objectContaining({ image, presignedPut: undefined }),
-    );
-    expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
-      gitCommitSha: revision,
-      revision,
-      declaration,
-      image: image.reference,
-      deployToken: "tok-1",
-      artifactVerification: expect.objectContaining({ status: "checked", revision }),
-    });
-    expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "live" });
-  });
-
-  it("happy path: git-head → deploy → daemon build → finalize", async () => {
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp(),
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-      gitCommitSha: "abc1234567890",
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
-    mocks.finalizeDeploy.mockResolvedValueOnce({
-      ...readyApp(),
-      fcStatus: "live",
-      fcEndpoint: "https://x.fcapp.run",
-    });
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(mocks.getGitHead).toHaveBeenCalledWith("app-1");
-    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", {
-      gitCommitSha: revision,
-      revision,
-      declaration: defaultDeclaration,
-      preflightToken: "preflight-1",
-    });
-    expect(mocks.daemonAppManifest).toHaveBeenCalledWith("app-1", "team-1");
-    expect(mocks.getGitCredential).toHaveBeenCalledWith("app-1");
-    expect(mocks.buildDaemonApp).toHaveBeenCalledWith("app-1", "team-1", {
-      gitCommitSha: "abc1234567890",
-      revision,
-      gitRemoteUrl: gitCred.remoteUrl,
-      deployKeyPem: gitCred.privateKeyPem,
-      presignedPut: "https://oss/put?sig=x",
-      image: undefined,
-    });
-    expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
-      gitCommitSha: revision,
-      revision,
-      declaration: defaultDeclaration,
-      deployToken: "tok-1",
-      artifactVerification: expect.objectContaining({ status: "checked", revision }),
-    });
-    expect(mocks.updateAppDeployStatus).not.toHaveBeenCalled();
-    expect(useAppsStore.getState().items[0]).toMatchObject({
-      fcStatus: "live",
-      fcEndpoint: "https://x.fcapp.run",
-    });
-    expect(useAppsStore.getState().deployingIds).toEqual([]);
-  });
-
-  it("refuses to finalize a build from a different commit", async () => {
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp(),
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-      gitCommitSha: "abc1234567890",
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(
-      buildResult("built", null, "def4567890123"),
-    );
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(mocks.buildDaemonApp).toHaveBeenCalledWith(
-      "app-1",
-      "team-1",
-      expect.objectContaining({ gitCommitSha: "abc1234567890" }),
-    );
-    expect(mocks.finalizeDeploy).not.toHaveBeenCalled();
-    expect(mocks.updateAppDeployStatus).toHaveBeenCalledWith(
-      "app-1", "deploy_error", expect.stringContaining("构建版本与预检版本不一致"), "tok-1",
-    );
-  });
-
-  it("shows why amuxd could not read the declaration instead of a generic failure", async () => {
-    mocks.daemonAppManifest.mockRejectedValueOnce(
-      new Error('invalid teamclu.app.json: expected `,` or `}` at line 3 column 5'),
-    );
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(mocks.preflightAppDeploy).not.toHaveBeenCalled();
-    expect(mocks.toastError).toHaveBeenCalledWith(
-      expect.anything(), { description: expect.stringContaining("invalid teamclu.app.json") },
-    );
-  });
-
-  it("explains a deploy from a machine without the app's checkout", async () => {
-    mocks.daemonAppManifest.mockRejectedValueOnce(
-      new Error("app checkout not found on this machine: /Users/x/.amuxd/apps/app-1"),
-    );
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(mocks.toastError).toHaveBeenCalledWith(
-      expect.anything(), { description: expect.stringContaining("这台电脑上没有这个应用的代码目录") },
-    );
-  });
-
-  it("finalizes with how the app says it starts", async () => {
-    // The control plane assumed one answer for every app (node,
-    // server/index.mjs, 9000). An app that builds elsewhere deployed a function
-    // that could not boot, and nothing said so until the instance failed.
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp(),
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-      gitCommitSha: "abc1234567890",
-    });
-    const declaration = {
-      build: { kind: "node", output: "dist" },
-      start: { fcRuntime: "custom.debian12", command: ["node"], args: ["index.js"], port: 8080 },
-    };
-    mocks.daemonAppManifest.mockResolvedValue(manifest(declaration));
-    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built", null, null, declaration)));
-    mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp(), fcStatus: "live" });
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(mocks.finalizeDeploy).toHaveBeenCalledWith(
-      "app-1",
-      expect.objectContaining({ declaration }),
-    );
-  });
-
-  it("authMode=none prompts for public deploy confirmation", async () => {
-    const { useAppsStore } = await import("./apps-store");
-    useAppsStore.setState({ items: [readyApp({ authMode: "none" })] });
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp({ authMode: "none" }),
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
-    mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp({ authMode: "none" }), fcStatus: "live" });
-
-    await useAppsStore.getState().deploy("app-1");
-    expect(vi.mocked(publicDeployConfirm.run)).toHaveBeenCalled();
-    expect(mocks.deployApp).toHaveBeenCalled();
-  });
-
-  it("authMode=none: declined confirm aborts deploy", async () => {
-    vi.mocked(publicDeployConfirm.run).mockResolvedValue(false);
-    const { useAppsStore } = await import("./apps-store");
-    useAppsStore.setState({ items: [readyApp({ authMode: "none" })] });
-
-    await useAppsStore.getState().deploy("app-1");
-    expect(mocks.getGitHead).toHaveBeenCalled();
-    expect(mocks.preflightAppDeploy).toHaveBeenCalled();
-    expect(mocks.deployApp).not.toHaveBeenCalled();
-    expect(mocks.cancelAppDeployPreflight).toHaveBeenCalledWith("app-1", "preflight-1");
-  });
-
-  it("authMode=platform skips public confirm", async () => {
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp({ authMode: "platform" }),
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
-    mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp({ authMode: "platform" }), fcStatus: "live" });
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-    expect(vi.mocked(publicDeployConfirm.run)).not.toHaveBeenCalled();
-  });
-
-  it("a rejected deploy start cannot fail another caller's build with a reused token", async () => {
-    mocks.deployApp.mockRejectedValueOnce(new Error("a deploy is already in progress"));
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-    expect(mocks.cancelAppDeployPreflight).toHaveBeenCalledWith("app-1", "preflight-1");
-    expect(mocks.buildDaemonApp).not.toHaveBeenCalled();
-    expect(mocks.updateAppDeployStatus).not.toHaveBeenCalled();
-  });
-
-  it("active turn prompts for deploy confirmation", async () => {
-    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValueOnce({
-      workspace_has_active_turn: true,
-    });
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp({ authMode: "platform" }),
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
-    mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp({ authMode: "platform" }), fcStatus: "live" });
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(mocks.getDaemonEnvActivationDiagnostics).toHaveBeenCalledWith(
-      mocks.encodeWorkspaceId("/workdir/app-1"),
-      "team-1",
-    );
-    expect(vi.mocked(publicDeployConfirm.run)).toHaveBeenCalledTimes(1);
-    expect(mocks.deployApp).toHaveBeenCalled();
-  });
-
-  it("active-turn warning follows the current language after the store is loaded", async () => {
-    const previousLanguage = i18n.language;
-    const { useAppsStore } = await import("./apps-store");
-    // Tests default to a Chinese-only build, so load English explicitly.
-    const { default: english } = await import("@/locales/en.json");
-    i18n.addResourceBundle("en", "translation", english, true, true);
-    const messages: string[] = [];
-    vi.mocked(publicDeployConfirm.run).mockImplementation(async (message) => {
-      messages.push(message);
-      return false;
-    });
-    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
-      workspace_has_active_turn: true,
-    });
-
-    try {
-      await i18n.changeLanguage("zh-CN");
-      await useAppsStore.getState().deploy("app-1");
-      await i18n.changeLanguage("en");
-      await useAppsStore.getState().deploy("app-1");
-
-      expect(messages).toHaveLength(2);
-      expect(messages[0]).toContain("有 AI 正在运行");
-      expect(messages[1]).toContain("AI is running");
-      expect(messages[1]).not.toMatch(/[\u3400-\u9fff]/);
-      expect(mocks.deployApp).not.toHaveBeenCalled();
-    } finally {
-      await i18n.changeLanguage(previousLanguage);
-    }
-  });
-
-  it("active turn: declined confirm aborts deploy", async () => {
-    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValueOnce({
-      workspace_has_active_turn: true,
-    });
-    vi.mocked(publicDeployConfirm.run).mockResolvedValue(false);
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(vi.mocked(publicDeployConfirm.run)).toHaveBeenCalledTimes(1);
-    expect(mocks.getGitHead).not.toHaveBeenCalled();
-    expect(mocks.deployApp).not.toHaveBeenCalled();
-  });
-
-  it("unreachable env-diagnostics does not block deploy", async () => {
-    mocks.getDaemonEnvActivationDiagnostics.mockResolvedValueOnce(null);
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp({ authMode: "platform" }),
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
-    mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp({ authMode: "platform" }), fcStatus: "live" });
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(vi.mocked(publicDeployConfirm.run)).not.toHaveBeenCalled();
-    expect(mocks.deployApp).toHaveBeenCalled();
-  });
-
-  it("a daemon build that never finishes is reported as deploy_error", async () => {
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp(),
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("unreachable"));
-    mocks.updateAppDeployStatus.mockResolvedValueOnce({ ...readyApp(), fcStatus: "deploy_error" });
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(mocks.finalizeDeploy).not.toHaveBeenCalled();
-    expect(mocks.updateAppDeployStatus).toHaveBeenCalledWith(
-      "app-1", "deploy_error", expect.stringContaining("amuxd"), "tok-1",
-    );
-    expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "deploy_error" });
-  });
-
-  it("maps dirty-tree daemon errors to Chinese copy", async () => {
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp(),
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(
-      buildResult("failed", "uncommitted or unpushed changes; commit and push first"),
-    );
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-    expect(mocks.updateAppDeployStatus).toHaveBeenCalledWith(
-      "app-1", "deploy_error", expect.stringContaining("未提交"), "tok-1",
-    );
-  });
-
-  it("a thrown finalize is reported as deploy_error and clears the in-flight flag", async () => {
-    mocks.deployApp.mockResolvedValueOnce({
-      ...readyApp(),
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
-    mocks.finalizeDeploy.mockRejectedValueOnce(new Error("fc exploded"));
-    const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(mocks.updateAppDeployStatus).toHaveBeenCalledWith("app-1", "deploy_error", "fc exploded", "tok-1");
-    expect(useAppsStore.getState().deployingIds).toEqual([]);
-  });
-
-  it("an imported app deploys from the workdir, never through Gitea", async () => {
-    // It has no tc-app-<id> repo, so git-head and git-credential both 404 —
-    // routing every deploy through Gitea made these apps undeployable.
-    const { useAppsStore } = await import("./apps-store");
-    const imported = readyApp({
-      gitRemoteUrl: "https://github.com/me/site.git",
-      gitAuthKind: null,
-      authMode: "platform",
-    });
-    useAppsStore.setState({ items: [imported] });
-    mocks.deployApp.mockResolvedValueOnce({
-      ...imported,
-      fcStatus: "awaiting_build",
-      presignedPut: "https://oss/put?sig=x",
-      deployToken: "tok-1",
-      gitCommitSha: null,
-    });
-    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification({ ...buildResult("built"), revision: contentDigest, gitCommitSha: null }));
-    mocks.finalizeDeploy.mockResolvedValueOnce({ ...imported, fcStatus: "live" });
-
-    await useAppsStore.getState().deploy("app-1");
-
-    expect(mocks.getGitHead).not.toHaveBeenCalled();
-    expect(mocks.getGitCredential).not.toHaveBeenCalled();
-    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", {
-      revision: contentDigest,
-      declaration: defaultDeclaration,
-      preflightToken: "preflight-1",
-    });
-    expect(mocks.buildDaemonApp).toHaveBeenCalledWith("app-1", "team-1", {
-      gitCommitSha: undefined,
-      revision: contentDigest,
-      gitRemoteUrl: undefined,
-      deployKeyPem: undefined,
-      presignedPut: "https://oss/put?sig=x",
-      image: undefined,
-    });
-    expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
-      revision: contentDigest,
-      declaration: defaultDeclaration,
-      deployToken: "tok-1",
-      artifactVerification: expect.objectContaining({ status: "checked", revision: contentDigest }),
-    });
-    expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "live" });
-  });
-
-  it("refuses to deploy an app that is not seeded yet", async () => {
-    const { useAppsStore } = await import("./apps-store");
-    useAppsStore.setState({ items: [appRow({ provisionStatus: "repo_created" })] });
-    await useAppsStore.getState().deploy("app-1");
-    expect(mocks.deployApp).not.toHaveBeenCalled();
+    expect(useAppsStore.getState().selectedAppId).toBeNull();
   });
 });
 
@@ -1768,7 +1135,6 @@ describe("apps-store: private repo credentials", () => {
     expect(JSON.stringify(mocks.toastError.mock.calls)).toContain("尚未就绪");
   });
 });
-
 
 describe('auth policy save outcomes', () => {
   it('keeps the original stored row after a rejected write', async () => {

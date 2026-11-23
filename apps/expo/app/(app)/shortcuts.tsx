@@ -23,7 +23,7 @@ import {
 } from "../../src/features/shortcuts/shortcut-types";
 import { Hairline } from "../../src/ui/atoms/Hairline";
 import { SectionEyebrow } from "../../src/ui/atoms/SectionEyebrow";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { createShortcutRowsCache } from "../../src/lib/db/team-cache";
 import { colors, hai, radii, spacing, typography } from "../../src/ui/theme";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
@@ -62,7 +62,7 @@ export default function ShortcutsRoute() {
         setIsLoading(false);
       }
       try {
-        const rows = await createConfiguredShortcutsApi(supabase).listShortcuts(teamId);
+        const rows = await createConfiguredShortcutsApi(cloudAuth).listShortcuts(teamId);
         if (!cancelled) setShortcuts(rows);
         void shortcutsCache.save(teamId, rows);
       } catch (err) {
@@ -103,7 +103,7 @@ export default function ShortcutsRoute() {
     const next = editDraft.trim();
     if (!next) return;
     try {
-      await createConfiguredShortcutsApi(supabase).renameShortcut(id, next);
+      await createConfiguredShortcutsApi(cloudAuth).renameShortcut(id, next);
       setShortcuts((prev) =>
         prev.map((row) => (row.id === id ? { ...row, label: next } : row)),
       );
@@ -125,7 +125,7 @@ export default function ShortcutsRoute() {
           style: "destructive",
           onPress: async () => {
             try {
-              await createConfiguredShortcutsApi(supabase).deleteShortcut(shortcut.id);
+              await createConfiguredShortcutsApi(cloudAuth).deleteShortcut(shortcut.id);
               setShortcuts((prev) => prev.filter((row) => row.id !== shortcut.id));
             } catch (err) {
               setError(err instanceof Error ? err.message : t("Couldn't delete."));

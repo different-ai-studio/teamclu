@@ -11,8 +11,8 @@ import {
   AttachmentDrawerSheet,
   type AttachmentSource,
 } from "../../src/features/sessions/screens/AttachmentDrawerSheet";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { PermissionPrimerSheet } from "../../src/ui/PermissionPrimerSheet";
 
 type PickedAsset = {
@@ -40,7 +40,7 @@ export default function AttachRoute() {
     try {
       for (const asset of assets) {
         const uploaded = await uploadAttachment({
-          getAccessToken: supabaseAccessToken(supabase),
+          getAccessToken: cloudAccessToken(cloudAuth),
           teamId,
           sessionId,
           localUri: asset.uri,

@@ -20,8 +20,8 @@ import {
   defaultNotificationPrefs,
   type NotificationPrefs as PushPrefs,
 } from "../../src/features/notifications/notification-prefs-api";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { Hairline } from "../../src/ui/atoms/Hairline";
 import { SectionEyebrow } from "../../src/ui/atoms/SectionEyebrow";
 import { showToast } from "../../src/ui/Toast";
@@ -52,7 +52,7 @@ export default function NotificationsRoute() {
   const [pushPrefs, setPushPrefs] = useState<PushPrefs>(defaultNotificationPrefs);
   const userIdRef = useRef<string | null>(null);
   const pushApiRef = useRef(
-    createNotificationPrefsApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    createNotificationPrefsApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
   );
 
   useEffect(() => {
@@ -64,7 +64,7 @@ export default function NotificationsRoute() {
           const parsed = JSON.parse(raw);
           setPrefs({ ...DEFAULT_PREFS, ...parsed });
         }
-        const { data } = await supabase.auth.getSession();
+        const { data } = await cloudAuth.auth.getSession();
         userIdRef.current = data.session?.user.id ?? null;
         const remote = await pushApiRef.current.load();
         if (!cancelled) setPushPrefs(remote);

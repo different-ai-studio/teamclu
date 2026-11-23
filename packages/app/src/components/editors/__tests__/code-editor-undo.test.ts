@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { EditorState, Transaction } from '@codemirror/state';
 import { history, historyField, undo } from '@codemirror/commands';
+import { computeMinimalChange } from '../utils';
 
 /**
  * Reproduce the undo behavior of CodeEditor's external content sync.
@@ -16,29 +17,6 @@ import { history, historyField, undo } from '@codemirror/commands';
  * The fix: dispatch a minimal diff (common prefix/suffix shrink) instead of
  * a wholesale replacement, so history outside the changed region survives.
  */
-
-function computeMinimalChange(
-  oldStr: string,
-  newStr: string,
-): { from: number; to: number; insert: string } | null {
-  if (oldStr === newStr) return null;
-  let prefix = 0;
-  const minLen = Math.min(oldStr.length, newStr.length);
-  while (prefix < minLen && oldStr.charCodeAt(prefix) === newStr.charCodeAt(prefix)) {
-    prefix++;
-  }
-  let oldEnd = oldStr.length;
-  let newEnd = newStr.length;
-  while (
-    oldEnd > prefix &&
-    newEnd > prefix &&
-    oldStr.charCodeAt(oldEnd - 1) === newStr.charCodeAt(newEnd - 1)
-  ) {
-    oldEnd--;
-    newEnd--;
-  }
-  return { from: prefix, to: oldEnd, insert: newStr.slice(prefix, newEnd) };
-}
 
 function applyExternalSync(
   state: EditorState,

@@ -73,7 +73,7 @@ pub mod deferred;
 pub mod records;
 pub use records::{
     ActorDirectoryRow, BackendParticipantRow, BackendSessionAndParticipants, BackendSessionRow,
-    ClaimResult, GatewaySessionRow, SessionAppContext, SessionRoster, SessionRosterEntry,
+    GatewaySessionRow, SessionAppContext, SessionRoster, SessionRosterEntry,
     SessionRosterSelfAgent, StoredMessage, WorkspaceRow, WorkspaceUpsert,
 };
 
@@ -200,6 +200,11 @@ pub struct TeamSkillDownload {
 #[serde(rename_all = "camelCase")]
 pub struct AppGitCredential {
     pub remote_url: String,
+    /// HTTPS address of the same repo when the app uses per-account Gitea
+    /// auth. The deploy key above stays the daemon's own way in over SSH; this
+    /// is where the checkout points people and agents (spec §6).
+    #[serde(default)]
+    pub git_http_url: Option<String>,
     /// `deploy_key` or `https_token`.
     #[serde(default)]
     pub auth_kind: Option<String>,
@@ -473,11 +478,6 @@ pub trait Backend: Send + Sync {
     }
 
     // ── Business operations ───────────────────────────────────────────────
-    /// Claim a team invite token. Used both by the human onboarding path
-    /// and by the daemon's `claim_daemon_invite` flow.
-    #[allow(dead_code)]
-    async fn claim_team_invite(&self, token: &str) -> BackendResult<ClaimResult>;
-
     /// The workspace `actor_id` works in for `session_id`, from its
     /// participant row. `None` when unset — callers fall back to the agent's
     /// default workspace, the same path a brand-new session takes.
@@ -825,10 +825,14 @@ pub trait Backend: Send + Sync {
         request_id: &str,
     ) -> BackendResult<()>;
 
-    /// Update a session's title. Default is a no-op so test doubles and
-    /// backends without session storage don't have to care.
-    async fn update_session_title(&self, _session_id: &str, _title: &str) -> BackendResult<()> {
-        Ok(())
+    /// Update a session's title from a generated title.
+    ///
+    /// `Ok(true)` means the cloud row changed. `Ok(false)` means the row is
+    /// title-locked (a person renamed it) and the title was left alone.
+    /// The default reports success so test doubles that ignore titles still
+    /// look like an unlocked write.
+    async fn update_session_title(&self, _session_id: &str, _title: &str) -> BackendResult<bool> {
+        Ok(true)
     }
 
     /// Add (or ignore-if-present) a participant on `session_participants`.

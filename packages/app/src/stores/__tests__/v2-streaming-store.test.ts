@@ -500,19 +500,58 @@ describe("v2-streaming-store", () => {
     expect(entry.thinkingText).toBe("Already thinking");
   });
 
-  it("markActorStreamActive re-opens a stream after finishSessionActor", () => {
+  it("keeps awaiting_reply text when a late delta arrives", () => {
+    const store = useV2StreamingStore.getState();
+    store.appendThinking("s1", "a1", "报销规则说明");
+    store.noteTurnSettled("s1", "a1");
+    store.finalize("s1", "a1");
+    store.appendThinking("s1", "a1", "再说一点");
+
+    const entry = useV2StreamingStore.getState().byKey["s1::a1"];
+    expect(entry.thinkingText).toContain("报销规则说明");
+    expect(entry.thinkingText).toContain("再说一点");
+    expect(entry.turnPhase).toBe("awaiting_reply");
+    expect(isStreamInterruptible(entry)).toBe(true);
+    expect(useV2StreamingStore.getState().archived).toHaveLength(0);
+  });
+
+  it("beginPlanning after Idle archives the settled turn", () => {
+    const store = useV2StreamingStore.getState();
+    store.appendThinking("s1", "a1", "报销规则说明");
+    store.noteTurnSettled("s1", "a1");
+    store.beginPlanningPlaceholder("s1", "a1");
+
+    const live = useV2StreamingStore.getState().byKey["s1::a1"];
+    expect(live.thinkingText).toBe("");
+    expect(live.turnPhase).toBe("streaming");
+    expect(useV2StreamingStore.getState().archived[0]?.thinkingText).toContain("报销规则说明");
+  });
+
+  it("markActorStreamActive does not reopen a turn that is awaiting the reply", () => {
+    const store = useV2StreamingStore.getState();
+    store.appendOutput("s1", "a1", "还在等终稿");
+    store.noteTurnSettled("s1", "a1");
+    store.finalize("s1", "a1");
+
+    store.markActorStreamActive("s1", "a1");
+
+    const entry = useV2StreamingStore.getState().byKey["s1::a1"];
+    expect(entry.turnPhase).toBe("awaiting_reply");
+    expect(entry.active).toBe(false);
+    expect(entry.outputText).toBe("还在等终稿");
+  });
+
+  it("markActorStreamActive does not reopen a closed turn", () => {
     const store = useV2StreamingStore.getState();
     store.appendOutput("s1", "a1", "Hello");
     store.finishSessionActor("s1", "a1");
 
-    expect(useV2StreamingStore.getState().byKey["s1::a1"].active).toBe(false);
-
     store.markActorStreamActive("s1", "a1");
-    store.appendOutput("s1", "a1", " world");
 
-    const [stream] = selectStreamsForSession(useV2StreamingStore.getState(), "s1");
-    expect(stream.active).toBe(true);
-    expect(stream.outputText).toBe("Hello world");
+    const entry = useV2StreamingStore.getState().byKey["s1::a1"];
+    expect(entry.active).toBe(false);
+    expect(entry.turnPhase).toBe("closed");
+    expect(entry.outputText).toBe("Hello");
   });
 
   it("finishSessionActor stops unresolved tool calls from loading", () => {
@@ -534,7 +573,41 @@ describe("v2-streaming-store", () => {
     expect(stream.parts[0].toolCall?.status).toBe("failed");
   });
 
-  it("treats errored streams as visible but not interruptible", () => {
+  it("closeLiveDock drops archived copies that would keep the dock up", () => {
+    const store = useV2StreamingStore.getState();
+    store.appendThinking("s1", "a1", "思考");
+    store.finalize("s1", "a1");
+    store.appendOutput("s1", "a1", " ");
+
+    const before = selectStreamsForSession(useV2StreamingStore.getState(), "s1");
+    expect(useV2StreamingStore.getState().archived).toHaveLength(1);
+    expect(before.some((entry) => isStreamInterruptible(entry))).toBe(true);
+
+    store.closeLiveDock("s1", "a1", { reason: "empty-reply" });
+
+    const after = selectStreamsForSession(useV2StreamingStore.getState(), "s1");
+    expect(after.every((entry) => entry.turnPhase === "closed")).toBe(true);
+    expect(after.every((entry) => isStreamInterruptible(entry))).toBe(false);
+    expect(after.every((entry) => entry.errorMessage == null)).toBe(true);
+  });
+
+  it("closeLiveDock still closes an archived copy after the live slot is gone", () => {
+    const store = useV2StreamingStore.getState();
+    store.appendThinking("s1", "a1", "思考");
+    store.finalize("s1", "a1");
+    store.appendOutput("s1", "a1", " ");
+    const { "s1::a1": _live, ...rest } = useV2StreamingStore.getState().byKey;
+    useV2StreamingStore.setState({ byKey: rest });
+
+    store.closeLiveDock("s1", "a1", { reason: "empty-reply" });
+
+    const archived = useV2StreamingStore.getState().archived;
+    expect(archived).toHaveLength(1);
+    expect(archived[0]?.turnPhase).toBe("closed");
+    expect(isStreamInterruptible(archived[0]!)).toBe(false);
+  });
+
+  it("keeps an errored stream on the dock until the turn is closed", () => {
     const store = useV2StreamingStore.getState();
     store.appendOutput("s1", "a1", "Partial output");
     store.setError("s1", "a1", "No output", "Model misconfigured");
@@ -542,7 +615,7 @@ describe("v2-streaming-store", () => {
     const [stream] = selectStreamsForSession(useV2StreamingStore.getState(), "s1");
     expect(stream.active).toBe(true);
     expect(stream.errorMessage).toBe("No output");
-    expect(isStreamInterruptible(stream)).toBe(false);
+    expect(isStreamInterruptible(stream)).toBe(true);
   });
 
   it("clearStaleStreamErrors removes error-only live and archived streams", () => {

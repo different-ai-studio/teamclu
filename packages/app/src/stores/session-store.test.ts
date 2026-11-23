@@ -118,6 +118,41 @@ describe("session-store", () => {
     expect(useSessionStore.getState().pendingQuestions).toHaveLength(0);
   });
 
+  it("sends every selected label for a multi-select question", async () => {
+    useSessionStore.setState({
+      pendingQuestions: [
+        {
+          questionId: "q1",
+          toolCallId: "tc1",
+          messageId: "m1",
+          sessionId: "s1",
+          agentActorId: "a1",
+          questions: [
+            {
+              id: "q-1",
+              header: "Pick",
+              question: "Which?",
+              multiple: true,
+              options: [
+                { label: "A", value: "A" },
+                { label: "C", value: "C" },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    await useSessionStore.getState().answerQuestion({ "q-1": ["A", "C"] }, "q1");
+
+    expect(mockAnswerAcpQuestion).toHaveBeenCalledWith(
+      expect.objectContaining({ answers: [["A", "C"]] }),
+    );
+    expect(useSessionStore.getState().answeredQuestionsByToolCallId.tc1?.answers).toEqual({
+      "q-1": "A, C",
+    });
+  });
+
   it("keeps a peer settlement that landed while this client's answer was in flight", async () => {
     useSessionStore.setState({
       pendingQuestions: [

@@ -7,10 +7,11 @@ const ORG_ID = "7860249f-5359-44f0-8dff-94a99ca07409";
 const OTHER_ORG = "22222222-2222-4222-8222-222222222222";
 
 function db(users: Array<{ id: string; auth_user_id: string | null; deleted_at: string | null }>,
-  bindings: Array<{ user_id: string; org_id: string; status: string }>) {
+  bindings: Array<{ user_id: string; org_id: string; status: string }>,
+  collaborationBindings: Array<{user_id:string;org_id:string;status:string}> = []) {
   return {
     schema(name: string) {
-      assert.equal(name, "public");
+      assert.ok(name === "public" || name === "amux");
       return {
         from(table: string) {
           const filters: Record<string, unknown> = {};
@@ -20,7 +21,7 @@ function db(users: Array<{ id: string; auth_user_id: string | null; deleted_at: 
             is(key: string, value: unknown) { filters[key] = value; return this; },
             in(key: string, value: unknown[]) { filters[key] = value; return this; },
             then(resolve: (result: { data: unknown[]; error: null }) => unknown) {
-              const rows = table === "users" ? users : bindings;
+              const rows = table === "users" ? users : name === "amux" ? collaborationBindings : bindings;
               return Promise.resolve(resolve({ data: rows.filter(row =>
                 Object.entries(filters).every(([key, value]) =>
                   Array.isArray(value) ? value.includes((row as any)[key]) : (row as any)[key] === value)), error: null }));
@@ -99,4 +100,12 @@ test("a reused auth account loses role identity immediately when its binding bec
  assert.deepEqual(await findAppOrgRoleIdentities(admin,AUTH_ID,ORG_ID),[AUTH_ID]);
  bindings.splice(0);
  assert.deepEqual(await findAppOrgRoleIdentities(admin,AUTH_ID,ORG_ID),[]);
+});
+
+
+test("collaboration app access survives without a Betly staff binding",async()=>{
+  const admin=db([{id:AUTH_ID,auth_user_id:AUTH_ID,deleted_at:null}],[],[
+    {user_id:AUTH_ID,org_id:ORG_ID,status:"active"}
+  ]);
+  assert.deepEqual(await findAppOrgRoleIdentities(admin,AUTH_ID,ORG_ID),[AUTH_ID]);
 });

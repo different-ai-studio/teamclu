@@ -12,8 +12,8 @@
 //! through jiti in place, so a bare import resolves the way Node's does —
 //! walking up from the extension's directory — and finds that `node_modules`
 //! one level up (verified against pi 0.84.4 in both host and `--mode rpc`
-//! modes, #1250). Without the SDK there is no remote-tools bridge and no
-//! workspace MCP at all, which is why it counts towards `doctor().satisfied`.
+//! modes, #1250). Without the SDK there is no workspace MCP at all, which is
+//! why it counts towards `doctor().satisfied`.
 
 use std::path::PathBuf;
 

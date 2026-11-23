@@ -1,12 +1,13 @@
 /**
- * message-sync.ts — Sync messages from Supabase into local libsql cache.
+ * message-sync.ts — Sync messages from the Cloud API into the local libsql cache.
  *
- * updated_at: ✓ present on messages (confirmed via information_schema)
- * Watermark key: "messages:<sessionId>" namespaced by teamId.
+ * Delta-pulled by `updated_at`. Watermark key: "messages:<sessionId>"
+ * namespaced by teamId.
  *
- * Origin is set to "supabase" for all rows pulled from Supabase.
- * MQTT-live messages are written with origin="mqtt-live" directly in the
- * envelope handler in App.tsx.
+ * Rows pulled here carry origin = the backend kind (`"cloud_api"`; rows cached
+ * by older builds may still say `"supabase"`). MQTT-live messages are written
+ * with origin="mqtt-live" by `components/mqtt-live-wiring/handle-live-message.ts`
+ * and `lib/agent/agent-turn-flush.ts`.
  */
 
 import { getBackend } from "@/lib/backend";
@@ -14,7 +15,7 @@ import type { BackendKind, MessageSyncRow } from "@/lib/backend/types";
 import * as cache from "@/lib/cache/local-cache";
 import { isTauri } from "@/lib/utils";
 
-// Supabase column on public.messages is `metadata` (jsonb), not `metadata_json`.
+// The Cloud API row carries `metadata` (the jsonb column), not `metadata_json`.
 // We stringify it into local libsql's metadata_json TEXT column.
 function mapRow(r: MessageSyncRow, origin: BackendKind): cache.MessageRow {
   const metadataJson =
@@ -44,7 +45,7 @@ function mapRow(r: MessageSyncRow, origin: BackendKind): cache.MessageRow {
 }
 
 /**
- * Pull messages for a session from Supabase (delta or full),
+ * Pull messages for a session from the Cloud API (delta or full),
  * upsert into local cache, bump per-session watermark.
  *
  * @returns number of rows synced

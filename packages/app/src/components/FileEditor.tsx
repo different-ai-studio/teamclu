@@ -445,8 +445,7 @@ export function FileEditor({
 
   // Fetch the file's baseline content from the daemon for gutter decorations
   // (team files only). The daemon's `team_file_content(..., "baseline")` proxy
-  // resolves to git HEAD in git mode and to the last-synced copy in oss mode,
-  // so the gutter works for both team share modes.
+  // resolves to the last-synced copy of the file.
   useEffect(() => {
     const teamId = useCurrentTeamStore.getState().team?.id;
     if (!isTauri() || !teamSyncKey || !teamId) {

@@ -17,12 +17,12 @@ describe('startNewChat detail cleanup', () => {
     })
     useUIStore.setState({
       currentView: 'chat',
-      mainContentLayout: 'split',
+      contentColumnMode: 'full',
       sidebarFilter: { kind: 'teamShare', section: 'knowledge' },
     } as Partial<ReturnType<typeof useUIStore.getState>>)
   })
 
-  it('leaves a knowledge detail and enters the draft session in split layout', async () => {
+  it('leaves a knowledge detail and enters the draft session', async () => {
     useTabsStore.getState().openTab({
       type: 'file',
       target: '/workspace/teamclu-team/knowledge/spec.md',
@@ -43,7 +43,6 @@ describe('startNewChat detail cleanup', () => {
 
     expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'all' })
     await vi.waitFor(() => {
-      expect(useTabsStore.getState().getActiveTab()).toBeNull()
       expect(useWorkspaceStore.getState().selectedFile).toBeNull()
       expect(useTeamShareBrowserStore.getState().detailTarget).toBeNull()
       expect(useSessionSelectionStore.getState().activeSessionId).toBeNull()

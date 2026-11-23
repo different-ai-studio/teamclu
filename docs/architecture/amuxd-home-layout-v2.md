@@ -96,6 +96,8 @@ daemon.toml  device-id  mcp.json  teams/  run/  logs/  cache/  bin/
 │   └── amuxd.log                      # 轮换：单文件上限 + 保留份数（§3.3）
 │
 ├── cache/                             # 机器级缓存，删了只影响性能
+│   ├── git-account.json               # 云端确认的 TeamClu git 主机 + 云端 API 地址（`amuxd git-credential` 全局模式用）
+│   ├── git-access.json                # 最近确认有权限的（账号, 仓库），10 分钟内不再问云端
 │   ├── model-catalog.toml             # 键控：backend → worktree
 │   ├── model-mru.toml                 # 键控：backend
 │   ├── node/<version>/                # amuxd 托管的 Node.js（ADR-0015）
@@ -326,6 +328,7 @@ system_prompt = "…"
 | `~/.{brand}/telemetry-consent.json` | 桌面端 | 遥测授权 |
 | `~/.{brand}/git/` | 桌面端 | 个人 skills 等资源的 git 检出（`lib/git/manager.ts`） |
 | `~/.{brand}/config.json` | 桌面端 | `lib/git/manager.ts` 的仓库配置 |
+| `~/.{brand}/git-credential.json` | 桌面端（0600） | 这个人的 git 专用 token（`POST /v1/git/token` 签发，30 天，退出登录即吊销）；`amuxd git-credential` 只读。见 `docs/specs/2026-11-16-app-platform-identity-design.md` §4 |
 | `<workspace>/.{brand}/` | 双方 | `{brand}.json`、`knowledge.db`、`bm25_index/`、`stats.json`、`cron-jobs.json`、`allowlist.json` |
 | `<workspace>/teamclu-team` | daemon | 软链 → `~/.amuxd/teams/<id>/shared/teamclu-team`，**链接名跨品牌固定** |
 | `~/.opencode/bin/opencode` | opencode 安装器 | 官方二进制 |

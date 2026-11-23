@@ -10,12 +10,9 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
-import { normalizeDaemonEnvActivationDiagnostics } from '@/lib/diagnostics/env-diagnostics'
 import { useAuthStore } from '@/stores/auth-store'
 import { isTauri, openExternalUrl } from '@/lib/utils'
 import { textToBase64Url } from '@/lib/base64'
-import type { AppDeployDeclaration } from '@/lib/backend/types'
-import type { ArtifactVerification } from '@/lib/apps/artifact-verification'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
 
@@ -486,102 +483,6 @@ async function daemonFetchNoContent(
   return { ok: true, status: resp.status }
 }
 
-interface DaemonConfigEntry {
-  key: string
-  value: unknown
-  display: string
-  secret: boolean
-}
-
-interface DaemonMutateConfigResponse {
-  key: string
-  requiresReload?: boolean
-  requiresRestart?: boolean
-}
-
-/** Read a single daemon.toml key via `/v1/config/:key`. Returns null when absent (404). */
-async function getDaemonConfigEntry(key: string): Promise<DaemonConfigEntry | null> {
-  const result = await daemonFetch<DaemonConfigEntry>(`/v1/config/${encodeURIComponent(key)}`)
-  if (!result.ok) {
-    if (result.status === 404) return null
-    throw new Error(result.error || `failed to read config key ${key}`)
-  }
-  return result.data
-}
-
-/** Write a daemon.toml key. Secret values are write-only on read (see `getDaemonConfigEntry`). */
-async function setDaemonConfigValue(
-  key: string,
-  value: string | number | boolean,
-): Promise<DaemonMutateConfigResponse> {
-  const result = await daemonFetch<DaemonMutateConfigResponse>(`/v1/config/${encodeURIComponent(key)}`, {
-    method: 'PUT',
-    body: JSON.stringify({ value }),
-  })
-  if (!result.ok) throw new Error(result.error || `failed to set config key ${key}`)
-  return result.data
-}
-
-interface CursorAgentSettings {
-  apiKeyConfigured: boolean
-  defaultModel: string
-}
-
-const CURSOR_DEFAULT_MODEL = 'composer-2.5'
-const CURSOR_API_KEY_ENV = 'CURSOR_API_KEY'
-
-/**
- * Cursor SDK backend settings. The default model is machine config
- * (daemon.toml `[agents.cursor]`); the API key is a *personal* credential and
- * lives in the personal env store (`CURSOR_API_KEY`), where the daemon reads
- * it — never in daemon.toml.
- */
-export async function getCursorAgentSettings(): Promise<CursorAgentSettings> {
-  const [apiKeyValue, modelEntry] = await Promise.all([
-    // Presence only: `env_var_get` returns a mask when set, rejects when absent.
-    invoke<string>('env_var_get', { key: CURSOR_API_KEY_ENV }).catch(() => ''),
-    getDaemonConfigEntry('agents.cursor.default_model'),
-  ])
-  const defaultModel =
-    typeof modelEntry?.value === 'string' && modelEntry.value.trim()
-      ? modelEntry.value.trim()
-      : CURSOR_DEFAULT_MODEL
-  return {
-    apiKeyConfigured: typeof apiKeyValue === 'string' && apiKeyValue.trim().length > 0,
-    defaultModel,
-  }
-}
-
-export async function saveCursorAgentSettings(input: {
-  apiKey?: string
-  defaultModel?: string
-}): Promise<{ requiresRestart: boolean }> {
-  let requiresRestart = false
-  const trimmedKey = input.apiKey?.trim()
-  if (trimmedKey) {
-    await invoke('env_catalog_set', {
-      scope: 'personal',
-      key: CURSOR_API_KEY_ENV,
-      value: trimmedKey,
-    })
-    // The pool captures the key at config load; a running daemon picks the
-    // new one up on restart.
-    requiresRestart = true
-  }
-  const trimmedModel = input.defaultModel?.trim()
-  if (trimmedModel) {
-    const resp = await setDaemonConfigValue('agents.cursor.default_model', trimmedModel)
-    requiresRestart = requiresRestart || (resp.requiresRestart ?? true)
-  }
-  return { requiresRestart }
-}
-
-/** Restart the desktop-managed amuxd after config edits that require it. */
-export async function restartLocalDaemon(): Promise<void> {
-  invalidateDaemonConnection()
-  await invoke('restart_local_daemon')
-}
-
 // ─── Workspace-control types (mirrors Rust workspace_control.rs) ──────────────
 
 export interface DaemonProviderInfo {
@@ -686,8 +587,7 @@ export interface DaemonModelCatalog {
 
 /**
  * `GET /v1/workspaces/:id/model-catalog` — models grouped by the agent backend
- * that would run them (OpenCode, Claude Code, Codex). Source of truth for the
- * cron dialog, replacing the OpenCode-only provider list.
+ * that would run them (pi). Source of truth for the cron dialog.
  */
 export async function getDaemonModelCatalog(
   workspaceId: string,
@@ -957,6 +857,8 @@ export async function cloneDaemonApp(
   gitRemoteUrl: string,
   deployKeyPem?: string | null,
   httpsCredential?: DaemonGitHttpsCredential | null,
+  /** Per-account git: where the checkout's people and agents should push. */
+  gitHttpUrl?: string | null,
 ): Promise<SeedAppResult> {
   try {
     const result = await daemonFetch<{ status: string; workdir?: string }>('/v1/apps/seed', {
@@ -967,6 +869,7 @@ export async function cloneDaemonApp(
         gitRemoteUrl: gitRemoteUrl.trim(),
         cloneOnly: true,
         ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
+        ...(gitHttpUrl?.trim() ? { gitHttpUrl: gitHttpUrl.trim() } : {}),
         ...httpsCredentialBody(httpsCredential),
         ...resolveSeedGitUserIdentity(),
       }),
@@ -1003,6 +906,8 @@ export async function seedDaemonApp(
   adoptExisting?: boolean,
   /** The token for an http(s) `gitRemoteUrl` that needs a login. */
   httpsCredential?: DaemonGitHttpsCredential | null,
+  /** Per-account git: where the checkout's people and agents should push. */
+  gitHttpUrl?: string | null,
 ): Promise<SeedAppResult> {
   try {
     const result = await daemonFetch<{ status: string; workdir?: string }>('/v1/apps/seed', {
@@ -1015,6 +920,7 @@ export async function seedDaemonApp(
         ...(gitRemoteUrl?.trim() ? { gitRemoteUrl: gitRemoteUrl.trim() } : {}),
         ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
         ...(adoptExisting ? { adoptExisting: true } : {}),
+        ...(gitHttpUrl?.trim() ? { gitHttpUrl: gitHttpUrl.trim() } : {}),
         ...httpsCredentialBody(httpsCredential),
         ...resolveSeedGitUserIdentity(),
       }),
@@ -1032,65 +938,6 @@ export async function seedDaemonApp(
     console.warn('[daemon-local-client] app seed unavailable (non-fatal):', err)
     return { outcome: "unreachable", workdir: null, error: null }
   }
-}
-
-/**
- * Kick the local daemon to build an app's artifact and upload it to OSS via the
- * presigned PUT URL minted by the cloud `deploy` call. The daemon runs the build
- * in `<amuxd home>/apps/<appId>` (it must already be seeded) and PUTs the zip.
- *
- * Three-state outcome (never throws), mirroring {@link seedDaemonApp}:
- * - `"built"`       — the daemon built + uploaded successfully.
- * - `"failed"`      — daemon reachable but the build/upload failed (terminal).
- * - `"unreachable"` — daemon down/unreachable; the caller should not finalize.
- */
-type BuildAppOutcome = "built" | "failed" | "unreachable";
-
-export interface BuildAppResult {
-  outcome: BuildAppOutcome
-  /** Why it failed, for the toast. Null unless the outcome is `failed`. */
-  error: string | null
-  /** The exact Gitea commit the daemon built; null for imported checkouts. */
-  gitCommitSha: string | null
-  revision: string | null
-  artifactVerification: ArtifactVerification | null
-  /**
-   * The validated build and start declaration from `teamclu.app.json`. Handed
-   * to finalize so the function is built and started the way the app expects.
-   */
-  declaration: AppDeployDeclaration | null
-  /**
-   * The image this build pushed, for an app whose `build.kind` is
-   * `"container"`. Null for every other app — that one uploaded an archive to
-   * the presigned URL instead.
-   */
-  image: string | null
-}
-
-/**
- * The three git fields are all-or-nothing, and the daemon enforces that.
- *
- * With them it fetches the app's Gitea repo and builds that exact commit; with
- * none of them it builds the workdir as it sits, which is the only thing it can
- * do for an app imported from a remote this deployment has no credential for.
- */
-interface BuildDaemonAppInput {
-  revision: string
-  gitCommitSha?: string | null
-  gitRemoteUrl?: string | null
-  deployKeyPem?: string | null
-  /** Archive deploys. Exactly one of this and `image` is set. */
-  presignedPut?: string | null
-  /** Container deploys: where to push the image, minted by the control plane. */
-  image?: AppImagePushHandle | null
-}
-
-/** Registry handle for one container deploy. Carries a password — never log it. */
-export interface AppImagePushHandle {
-  reference: string
-  registry: string
-  username: string
-  password: string
 }
 
 /**
@@ -1124,34 +971,6 @@ interface DaemonAppWorkdirInfo {
  * from "no apps are local", because the two mean opposite things for what the
  * sidebar should show.
  */
-/**
- * What the app's checkout declares about how it is built (`teamclu.app.json`).
- *
- * Asked before the deploy is minted, because the answer decides which kind of
- * handle the control plane hands back: a container app pushes an image, every
- * other app uploads an archive. Null when the daemon cannot say; callers must
- * stop before minting a deploy with the wrong destination.
- */
-export async function daemonAppManifest(
-  appId: string,
-  teamId?: string | null,
-): Promise<{ declaration: AppDeployDeclaration; gitCommitSha: string | null; clean: boolean; contentDigest: string }> {
-  // Throws with the daemon's own detail: a deploy cannot go on without the
-  // declaration, and the reason (no checkout here, bad teamclu.app.json, git
-  // failing) is the only thing the user can act on.
-  const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
-  const result = await daemonFetch<{ declaration?: AppDeployDeclaration; gitCommitSha?: string; clean?: boolean; contentDigest?: string }>(
-    `/v1/apps/${encodeURIComponent(appId)}/manifest${query}`,
-  )
-  if (!result.ok) {
-    throw new Error(problemDetailFromErrorBody(result.error).detail || `amuxd could not read the app declaration (${result.status})`)
-  }
-  if (!result.data?.declaration || !result.data?.contentDigest) {
-    throw new Error('amuxd did not return the app declaration')
-  }
-  return { declaration: result.data.declaration, gitCommitSha: result.data.gitCommitSha ?? null, clean: result.data.clean === true, contentDigest: result.data.contentDigest }
-}
-
 export async function daemonLocalAppIds(teamId?: string | null): Promise<string[] | null> {
   try {
     const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
@@ -1296,63 +1115,6 @@ export async function moveDaemonAppWorkdir(
   } catch (err) {
     console.warn('[daemon-local-client] app workdir move unavailable:', err)
     return { outcome: 'unreachable', workdir: null, error: null }
-  }
-}
-
-export async function buildDaemonApp(
-  appId: string,
-  teamId: string,
-  input: BuildDaemonAppInput,
-): Promise<BuildAppResult> {
-  try {
-    const result = await daemonFetch<{
-      status: string
-      gitCommitSha?: string
-      revision?: string
-      image?: string
-      declaration?: AppDeployDeclaration
-      artifactVerification?: ArtifactVerification
-    }>('/v1/apps/build', {
-      method: 'POST',
-      body: JSON.stringify({
-        appId,
-        teamId,
-        revision: input.revision,
-        ...(input.gitCommitSha?.trim() ? { gitCommitSha: input.gitCommitSha.trim() } : {}),
-        ...(input.gitRemoteUrl?.trim() ? { gitRemoteUrl: input.gitRemoteUrl.trim() } : {}),
-        ...(input.deployKeyPem?.trim() ? { deployKeyPem: input.deployKeyPem.trim() } : {}),
-        ...(input.image ? { image: input.image } : {}),
-        ...(input.presignedPut?.trim() ? { presignedPut: input.presignedPut.trim() } : {}),
-      }),
-    })
-    if (result.ok) {
-      return {
-        outcome: "built",
-        error: null,
-        gitCommitSha: result.data?.gitCommitSha?.trim() || null,
-        revision: result.data?.revision?.trim() || null,
-        declaration: result.data?.declaration ?? null,
-        artifactVerification: result.data?.artifactVerification ?? null,
-        image: result.data?.image?.trim() || null,
-      }
-    }
-    if (result.status === 0) {
-      console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null, gitCommitSha: null, revision: null, declaration: null, artifactVerification: null, image: null }
-    }
-    console.warn('[daemon-local-client] app build failed:', result.error)
-    return {
-      outcome: "failed",
-      error: problemDetailFromErrorBody(result.error).detail || null,
-      gitCommitSha: null,
-      revision: null,
-      declaration: null,
-      artifactVerification: null,
-      image: null,
-    }
-  } catch (err) {
-    console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null, gitCommitSha: null, revision: null, declaration: null, artifactVerification: null, image: null }
   }
 }
 
@@ -1501,14 +1263,6 @@ export async function installDaemonTeamMcp(name: string): Promise<DaemonTeamMcpI
   )
 }
 
-/** Uninstall a team MCP server for the daemon's own agent actor. */
-export async function uninstallDaemonTeamMcp(name: string): Promise<DaemonTeamMcpInstallOutcome> {
-  return daemonFetchData<DaemonTeamMcpInstallOutcome>(
-    `/v1/team/mcp-servers/${encodeURIComponent(name)}/install`,
-    { method: 'DELETE' },
-  )
-}
-
 // ─── Runtime ──────────────────────────────────────────────────────────────────
 
 export type DaemonRuntimeRefreshStatus = 'clean' | 'pending' | 'applying' | 'failed'
@@ -1628,17 +1382,6 @@ export interface DaemonEnvActivationDiagnostics {
   opencode_serve_cached_env_keys: string[]
   missing_served_env_keys: string[]
   active_handle_env_keys: string[]
-}
-
-export async function getDaemonEnvActivationDiagnostics(
-  workspaceId: string,
-  teamId?: string | null,
-): Promise<DaemonEnvActivationDiagnostics | null> {
-  const query = teamId?.trim() ? `?team_id=${encodeURIComponent(teamId.trim())}` : ''
-  const result = await daemonFetch<DaemonEnvActivationDiagnostics>(
-    `/v1/workspaces/${workspaceId}/runtime/env-diagnostics${query}`,
-  )
-  return result.ok ? normalizeDaemonEnvActivationDiagnostics(result.data) : null
 }
 
 // ─── Team share ───────────────────────────────────────────────────────────────

@@ -7,8 +7,8 @@ import { memberIdeas } from "../../src/features/actors/member-activity-stats";
 import { ActorIdeasListScreen } from "../../src/features/actors/screens/ActorIdeasListScreen";
 import { createIdeasApi } from "../../src/features/ideas/idea-api";
 import type { Idea } from "../../src/features/ideas/idea-types";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 
 export default function ActorIdeasRoute() {
   const { t } = useTranslation();
@@ -32,7 +32,7 @@ export default function ActorIdeasRoute() {
     let cancelled = false;
     setIsLoading(true);
     setErrorMessage(null);
-    void createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) })
+    void createIdeasApi({ getAccessToken: cloudAccessToken(cloudAuth) })
       .listIdeas(teamId)
       .then((rows) => {
         // Same selection as the count that opened this list.

@@ -23,8 +23,8 @@ use async_trait::async_trait;
 use std::sync::{Arc, OnceLock};
 
 use super::records::{
-    ActorDirectoryRow, BackendSessionAndParticipants, ClaimResult, GatewaySessionRow,
-    StoredMessage, WorkspaceRow, WorkspaceUpsert,
+    ActorDirectoryRow, BackendSessionAndParticipants, GatewaySessionRow, StoredMessage,
+    WorkspaceRow, WorkspaceUpsert,
 };
 use super::{
     AgentDefaults, AppGitCredential, Backend, BackendError, BackendResult, BootstrapMqttOverride,
@@ -245,11 +245,6 @@ impl Backend for DeferredBackend {
 
     fn cloud_base_url(&self) -> Option<String> {
         self.inner_opt()?.cloud_base_url()
-    }
-
-    // ── Business operations ───────────────────────────────────────────────
-    async fn claim_team_invite(&self, token: &str) -> BackendResult<ClaimResult> {
-        self.inner()?.claim_team_invite(token).await
     }
 
     async fn fetch_session_workspace(
@@ -564,7 +559,7 @@ impl Backend for DeferredBackend {
             .await
     }
 
-    async fn update_session_title(&self, session_id: &str, title: &str) -> BackendResult<()> {
+    async fn update_session_title(&self, session_id: &str, title: &str) -> BackendResult<bool> {
         self.inner()?.update_session_title(session_id, title).await
     }
 

@@ -19,13 +19,6 @@ export interface ShortcutNode {
   children?: ShortcutNode[]
 }
 
-export interface TeamRole {
-  id: string
-  teamId: string
-  code: string
-  name: string
-}
-
 export class ShortcutsRpcError extends Error {
   constructor(public readonly code: string | null, message: string) {
     super(message)
@@ -142,42 +135,6 @@ export async function rpcShortcutBatchMove(moves: ShortcutMove[]): Promise<numbe
       p_moves: moves.map(m => ({ id: m.id, parent_id: m.parentId, order: m.order })),
     })
     return result as number
-  } catch (error) {
-    throw asShortcutsRpcError(error)
-  }
-}
-
-export async function rpcShortcutSetVisibleRoles(
-  shortcutId: string,
-  roleIds: string[],
-): Promise<void> {
-  try {
-    await getBackend().shortcuts.setVisibleRoles({
-      p_shortcut_id: shortcutId,
-      p_role_ids: roleIds,
-    })
-  } catch (error) {
-    throw asShortcutsRpcError(error)
-  }
-}
-
-export async function selectTeamRoles(teamId: string): Promise<TeamRole[]> {
-  try {
-    const rows = await getBackend().shortcuts.listTeamRoles(teamId)
-    return rows.map(r => ({ id: r.id, teamId: r.team_id, code: r.code, name: r.name }))
-  } catch (error) {
-    throw asShortcutsRpcError(error)
-  }
-}
-
-export async function selectShortcutRoleBindings(teamId: string): Promise<Map<string, string[]>> {
-  try {
-    const data = await getBackend().shortcuts.listShortcutRoleBindings(teamId)
-    const m = new Map<string, string[]>()
-    for (const p of data) {
-      m.set(p.resource_id, p.permission_roles.map(pr => pr.role_id))
-    }
-    return m
   } catch (error) {
     throw asShortcutsRpcError(error)
   }

@@ -1386,37 +1386,6 @@ fn parse_email(uid: u32, raw: &[u8]) -> Result<EmailMessage, String> {
     })
 }
 
-#[allow(dead_code)]
-fn extract_emails_from_header(raw: &str) -> Vec<String> {
-    if raw.trim().is_empty() {
-        return Vec::new();
-    }
-
-    let mut emails: Vec<String> = Vec::new();
-    for part in raw.split(',') {
-        let item = part.trim();
-        if item.is_empty() {
-            continue;
-        }
-
-        let candidate = if let (Some(start), Some(end)) = (item.find('<'), item.rfind('>')) {
-            if end > start + 1 {
-                item[start + 1..end].trim()
-            } else {
-                item
-            }
-        } else {
-            item
-        };
-
-        let cleaned = candidate.trim().trim_matches('"').to_lowercase();
-        if cleaned.contains('@') {
-            emails.push(cleaned);
-        }
-    }
-    emails
-}
-
 fn build_expected_alias_recipient(config: &EmailConfig) -> Option<String> {
     let alias = config.recipient_alias.trim();
     if alias.is_empty() {

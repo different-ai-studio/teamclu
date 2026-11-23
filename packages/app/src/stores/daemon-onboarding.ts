@@ -944,8 +944,17 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
     // the record; that check is what `ensure-for-device` now does server-side —
     // an agent owned by someone else counts as absent and this account gets its
     // own.
+    //
+    // `forceIdentityRebind` asks for a rebind but does not override the record:
+    // when the daemon was last bound by this very user in this very team, the
+    // rebind it asks for has already happened. switchToTeam sends it on every
+    // account change, while AuthGate refreshes on the same session change
+    // without it; when AuthGate's pass bound first, the forced pass bound
+    // again — a second invite claim and a second amuxd restart per switch.
+    const alreadyBoundHere =
+      recorded?.teamId === currentTeamId && recorded.userId === currentUserId
     const identityChanged = !!currentUserId && !!(
-      opts?.forceIdentityRebind ||
+      (opts?.forceIdentityRebind && !alreadyBoundHere) ||
       (recorded?.teamId === currentTeamId && recorded.userId !== currentUserId)
     )
     if (identityChanged) {

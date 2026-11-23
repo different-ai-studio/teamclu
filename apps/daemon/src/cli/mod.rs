@@ -4,11 +4,11 @@ pub mod clear;
 pub mod config_cmd;
 pub mod daemon_http;
 pub mod doctor;
+pub mod git_account;
 pub mod git_credential;
 pub mod git_ssh;
 pub mod manage;
 pub mod process;
-pub mod remote_tools_mcp;
 pub mod service;
 pub mod setup;
 pub mod sock;
@@ -30,6 +30,9 @@ pub struct Cli {
 pub enum Commands {
     /// Start the daemon (writes ~/.amuxd/amuxd.pid while running).
     Start {
+        /// Accepted and ignored: `start` always runs in the foreground and
+        /// leaves backgrounding to whatever launched it (the desktop app, a
+        /// service manager, `nohup`). Kept so older scripts still parse.
         #[arg(short, long)]
         daemonize: bool,
         #[arg(long)]
@@ -112,9 +115,6 @@ pub enum Commands {
         #[arg(long)]
         no_restart: bool,
     },
-    /// Run the remote-tools MCP server on stdio. Proxies browser/client tools
-    /// to the bound TeamClu client over MQTT RPC.
-    RemoteToolsMcp(RemoteToolsMcpArgs),
     /// The `ssh` git runs inside an app checkout. Set as `core.sshCommand` by
     /// seed/clone; fetches a JIT Gitea deploy key from the daemon per
     /// connection so an agent's plain `git push` works with nothing persisted.
@@ -160,9 +160,10 @@ pub struct TeamArgs {
 pub enum TeamAction {
     /// Provision the secrets a headless daemon cannot obtain on its own.
     ///
-    /// `--team-secret` decrypts the team's shared env vars (`_secrets/`) and
-    /// encrypts OSS blobs. It is user-held and has no server-side copy, so a
-    /// headless install can only be handed one here.
+    /// `--team-secret` seals this machine's copy of the team's secrets and
+    /// decrypts team files uploaded before sync switched to plaintext
+    /// (ADR-0008). Sync itself does not need it. It is user-held and has no
+    /// server-side copy, so a headless install can only be handed one here.
     Secrets(TeamSecretsArgs),
 }
 
@@ -175,14 +176,13 @@ pub struct TeamSecretsArgs {
 #[derive(Subcommand, Debug)]
 pub enum TeamSecretsAction {
     /// Set one or more secrets. Omitted fields keep their stored value.
-    /// Restart the daemon afterwards: the sync timer snapshots its workspace
-    /// list at startup.
+    /// Restart the daemon afterwards so it picks the new value up.
     Set {
         /// Team to write. Defaults to `team_id` from daemon.toml.
         #[arg(long)]
         team_id: Option<String>,
-        /// Team secret, 64 hex chars. Decrypts the team's shared env vars and
-        /// encrypts the blobs OSS sync uploads.
+        /// Team secret, 64 hex chars. Seals the local secrets file and
+        /// decrypts team files uploaded before sync switched to plaintext.
         #[arg(long, alias = "oss-secret")]
         team_secret: Option<String>,
     },
@@ -202,19 +202,6 @@ pub enum TeamSecretsAction {
 }
 
 #[derive(Args, Debug)]
-pub struct RemoteToolsMcpArgs {
-    #[arg(long, default_value = "")]
-    pub session_id: String,
-    #[arg(long, default_value = "")]
-    pub team_id: String,
-    /// Member actor that owns the RPC topic (`amux/{team}/{id}/rpc/req`).
-    #[arg(long, alias = "client-actor-id", default_value = "")]
-    pub member_actor_id: String,
-    #[arg(long)]
-    pub sock: Option<std::path::PathBuf>,
-}
-
-#[derive(Args, Debug)]
 pub struct GitSshArgs {
     /// App whose repo this connection is for. Baked into `core.sshCommand`.
     #[arg(long)]
@@ -230,9 +217,15 @@ pub struct GitSshArgs {
 
 #[derive(Args, Debug)]
 pub struct GitCredentialArgs {
-    /// App whose repo git is asking about. Baked into `credential.helper`.
+    /// App whose repo git is asking about (an imported http(s) repo's stored
+    /// token). Without it: per-account git for the TeamClu git host — the
+    /// agent's or the person's own identity (see `cli::git_account`).
     #[arg(long)]
-    pub app: String,
+    pub app: Option<String>,
+    /// Brand whose desktop wrote the person's git token. Baked in for a
+    /// white-label brand; git runs the helper with no brand in its environment.
+    #[arg(long)]
+    pub brand: Option<String>,
     #[arg(long)]
     pub sock: Option<std::path::PathBuf>,
     /// `get`, `store` or `erase` — appended by git.

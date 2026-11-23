@@ -24,8 +24,8 @@ use async_trait::async_trait;
 
 use crate::backend::{
     ActorDirectoryRow, AgentDefaults, AppGitCredential, Backend, BackendError, BackendResult,
-    BackendSessionAndParticipants, BootstrapMqttOverride, ClaimResult, GatewaySessionRow,
-    ManagedLlmConfig, StoredMessage, WorkspaceRow, WorkspaceUpsert,
+    BackendSessionAndParticipants, BootstrapMqttOverride, GatewaySessionRow, ManagedLlmConfig,
+    StoredMessage, WorkspaceRow, WorkspaceUpsert,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,7 +120,6 @@ pub struct MockState {
     pub cron_sessions: Vec<RecordedCronSession>,
 
     // ── Pre-seeded responses for reads ─────────────────────────────────
-    pub claim_result: Option<ClaimResult>,
     pub sessions: HashMap<String, BackendSessionAndParticipants>,
     pub messages_by_session: HashMap<String, Vec<StoredMessage>>,
     pub gateway_session_index: HashMap<String, (String, Option<String>)>,
@@ -173,6 +172,11 @@ pub struct MockState {
     /// What `cloud_base_url` answers. `None` (the default) is the mock's
     /// "no HTTP surface"; a test standing up a fake Cloud API sets its address.
     pub cloud_base_url: Option<String>,
+    /// When true, `update_session_title` reports the cloud row as title-locked
+    /// (`Ok(false)`) instead of applying the generated title.
+    pub refuse_generated_title: bool,
+    /// `(session_id, title)` pairs passed to `update_session_title`.
+    pub generated_title_writes: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +239,7 @@ impl Backend for MockBackend {
     /// on a fully onboarded daemon.
     async fn app_git_credential(&self, app_id: &str) -> BackendResult<AppGitCredential> {
         Ok(AppGitCredential {
+            git_http_url: None,
             remote_url: format!("ssh://git@gitea.test/apps/{app_id}.git"),
             auth_kind: Some("deploy_key".to_string()),
             private_key_pem: "mock-key".to_string(),
@@ -339,15 +344,6 @@ impl Backend for MockBackend {
 
     async fn get_effective_default_agent(&self, _team_id: &str) -> BackendResult<Option<String>> {
         Ok(None)
-    }
-
-    async fn claim_team_invite(&self, _token: &str) -> BackendResult<ClaimResult> {
-        self.state
-            .lock()
-            .unwrap()
-            .claim_result
-            .clone()
-            .ok_or_else(|| BackendError::Validation("invite invalid or expired".into()))
     }
 
     async fn fetch_session_cursor(
@@ -826,6 +822,14 @@ impl Backend for MockBackend {
             .get(agent_actor_id)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn update_session_title(&self, session_id: &str, title: &str) -> BackendResult<bool> {
+        let mut state = self.state.lock().unwrap();
+        state
+            .generated_title_writes
+            .push((session_id.to_string(), title.to_string()));
+        Ok(!state.refuse_generated_title)
     }
 
     async fn upsert_session_participant(

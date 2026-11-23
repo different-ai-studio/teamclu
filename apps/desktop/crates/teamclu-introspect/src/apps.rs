@@ -298,7 +298,7 @@ fn access_body(workspace: &str, arguments: &Value) -> Result<Value, String> {
     Ok(body)
 }
 
-const DATA_ACTIONS: [&str; 4] = ["tables", "rows", "update_row", "delete_row"];
+const DATA_ACTIONS: [&str; 5] = ["tables", "rows", "insert_row", "update_row", "delete_row"];
 
 fn data_body(workspace: &str, arguments: &Value) -> Result<Value, String> {
     let (action, mut body) = app_body(workspace, arguments, &DATA_ACTIONS)?;
@@ -323,6 +323,17 @@ fn data_body(workspace: &str, arguments: &Value) -> Result<Value, String> {
                 "filter_value",
             ],
         ),
+        "insert_row" => {
+            // `{}` inserts a row of defaults, so only a missing or non-object
+            // `values` is a mistake.
+            if !arguments.get("values").is_some_and(Value::is_object) {
+                return Err(
+                    "insert_row needs `values` — an object of column → value ({} inserts defaults)"
+                        .to_string(),
+                );
+            }
+            copy_args(arguments, &mut body, &["values"]);
+        }
         "update_row" | "delete_row" => {
             // Addressed by primary key only. `key` is the column → value map for
             // this row's primary key; `row_key` is the opaque form a previous
@@ -540,14 +551,14 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "manage_app_data",
-            "description": "Read and edit the rows in a deployed app's own database — its real production data. Use it to check what the app actually stored, or to fix one bad row. Reads need `prompt` permission on the app and writes need `admin`; only apps with a database (data_app) that have been deployed have one. Writes address exactly one row by primary key; there is no bulk update or delete.",
+            "description": "Read and edit the rows in a deployed app's own database — its real production data. Use it to check what the app actually stored, add a row, or fix one bad row. Reads need `prompt` permission on the app and writes need `admin`; only apps with a database (data_app) that have been deployed have one. Every write touches exactly one row: insert_row adds one, update_row / delete_row address one by primary key; there is no bulk insert, update or delete.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
                         "enum": DATA_ACTIONS,
-                        "description": "tables: what tables exist, with their columns and primary key. rows: one page of rows. update_row / delete_row: change exactly one row."
+                        "description": "tables: what tables exist, with their columns and primary key. rows: one page of rows. insert_row: add one row and get it back as stored (generated key included). update_row / delete_row: change exactly one row."
                     },
                     "app_id": { "type": "string", "description": APP_SELECTOR_ID },
                     "app_name": { "type": "string", "description": APP_SELECTOR_NAME },
@@ -567,6 +578,11 @@ pub fn tool_definitions() -> Vec<Value> {
                     "patch": {
                         "type": "object",
                         "description": "update_row: column → new value. Primary-key columns cannot be changed here.",
+                        "additionalProperties": true
+                    },
+                    "values": {
+                        "type": "object",
+                        "description": "insert_row: column → value. Columns left out take their default (an auto-increment key, now()); {} inserts a row of defaults. Values are sent as given and cast by Postgres to the column type.",
                         "additionalProperties": true
                     }
                 },
@@ -889,6 +905,39 @@ mod tests {
     fn rows_needs_a_table() {
         let err = data_body(WS, &json!({ "action": "rows", "app_id": APP })).unwrap_err();
         assert!(err.contains("needs `table`"), "{err}");
+    }
+
+    #[test]
+    fn insert_row_needs_values_as_an_object() {
+        let err = data_body(
+            WS,
+            &json!({ "action": "insert_row", "app_id": APP, "table": "items" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("values"), "{err}");
+        let err = data_body(
+            WS,
+            &json!({ "action": "insert_row", "app_id": APP, "table": "items", "values": [1] }),
+        )
+        .unwrap_err();
+        assert!(err.contains("values"), "{err}");
+    }
+
+    #[test]
+    fn insert_row_forwards_values_and_accepts_an_empty_row() {
+        let body = data_body(
+            WS,
+            &json!({ "action": "insert_row", "app_id": APP, "table": "items", "values": { "title": "x" } }),
+        )
+        .unwrap();
+        assert_eq!(body["values"], json!({ "title": "x" }));
+        assert_eq!(body["table"], "items");
+        let body = data_body(
+            WS,
+            &json!({ "action": "insert_row", "app_id": APP, "table": "items", "values": {} }),
+        )
+        .unwrap();
+        assert_eq!(body["values"], json!({}));
     }
 
     #[test]

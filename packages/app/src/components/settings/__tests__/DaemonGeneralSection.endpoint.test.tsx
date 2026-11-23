@@ -90,7 +90,6 @@ vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
 }))
 
 vi.mock('@/lib/daemon/daemon-local-client', () => ({
-  getCursorAgentSettings: vi.fn(async () => ({ apiKeyConfigured: false })),
   reloadDaemonRuntime: (...args: unknown[]) => mockReloadDaemonRuntime(...args),
   encodeWorkspaceId: (path: string) => mockEncodeWorkspaceId(path),
   getDaemonHttpEndpoint: (...args: unknown[]) => mockGetDaemonHttpEndpoint(...args),

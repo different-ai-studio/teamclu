@@ -52,21 +52,6 @@ pub fn save_team_secret(
     Ok(notice)
 }
 
-/// `save_team_secret` for callers with nowhere to display the notice.
-///
-/// The store rebuild is still recorded in the log, so the event is never
-/// silent — it just is not surfaced in a UI that has no place for it.
-pub fn save_team_secret_logged(
-    workspace_path: &str,
-    team_id: &str,
-    secret: &str,
-) -> Result<(), String> {
-    if let Some(notice) = save_team_secret(workspace_path, team_id, secret)? {
-        log::warn!("{notice}");
-    }
-    Ok(())
-}
-
 /// Why a team secret could not be read back.
 #[derive(Debug)]
 pub enum TeamSecretReadError {
@@ -105,10 +90,4 @@ pub fn load_team_secret(
         return Ok(value.to_string());
     }
     Err(TeamSecretReadError::NotConfigured)
-}
-
-pub fn delete_team_secret(workspace_path: &str, team_id: &str) -> Result<(), String> {
-    let mut blob = super::env_vars::read_env_blob(workspace_path)?;
-    blob.remove(&team_secret_blob_key(team_id));
-    super::env_vars::write_env_blob(&blob)
 }

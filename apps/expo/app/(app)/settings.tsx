@@ -19,9 +19,9 @@ import {
 } from "../../src/features/settings/screens/SettingsScreen";
 import { createConfiguredInviteApi } from "../../src/features/onboarding/invite-api";
 import { createTeamsApi } from "../../src/features/teams/teams-api";
-import { cloudApiBaseUrl, supabaseAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudApiBaseUrl, cloudAccessToken } from "../../src/lib/cloud-api/client";
 import { getKnownMqttUrl } from "../../src/lib/mqtt/config";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { showToast } from "../../src/ui/Toast";
 
 /** Owner/admin can write the team default agent; everyone else reads it. */
@@ -53,22 +53,22 @@ export default function SettingsRoute() {
   const [teamDefaultAgentError, setTeamDefaultAgentError] = useState<string | null>(null);
 
   const actorsApi = useMemo(
-    () => createActorsApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
   const agentAccessApi = useMemo(
-    () => createAgentAccessApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createAgentAccessApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
   const teamsApi = useMemo(
-    () => createTeamsApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createTeamsApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
   const pushPrefsApi = useMemo(
-    () => createNotificationPrefsApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createNotificationPrefsApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
-  const inviteApi = useMemo(() => createConfiguredInviteApi(supabase), []);
+  const inviteApi = useMemo(() => createConfiguredInviteApi(cloudAuth), []);
   const [pendingInviteCount, setPendingInviteCount] = useState(0);
 
   // Refreshed on every focus, so declining in the invites sheet updates the
@@ -92,7 +92,7 @@ export default function SettingsRoute() {
 
   useEffect(() => {
     let cancelled = false;
-    void supabase.auth.getUser().then(({ data }) => {
+    void cloudAuth.auth.getUser().then(({ data }) => {
       if (cancelled) return;
       setUserEmail(data.user?.email ?? null);
     });
@@ -289,7 +289,7 @@ export default function SettingsRoute() {
           style: "destructive",
           onPress: async () => {
             setIsSigningOut(true);
-            await supabase.auth.signOut();
+            await cloudAuth.auth.signOut();
             setIsSigningOut(false);
             router.replace("/");
           },

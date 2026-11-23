@@ -48,6 +48,7 @@ import {
   teamContentRootForPath,
 } from '@/lib/team/team-skill-paths';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { computeMinimalChange } from "./utils";
 
 export interface MarkdownEditorHandle {
   /** Apply external content with diff-based agent highlighting */
@@ -403,28 +404,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, EditorProps>(
     useEffect(() => {
       const view = viewRef.current;
       if (!view) return;
-      const currentDoc = view.state.doc.toString();
-      if (currentDoc === content) return;
-
-      let prefix = 0;
-      const minLen = Math.min(currentDoc.length, content.length);
-      while (prefix < minLen && currentDoc.charCodeAt(prefix) === content.charCodeAt(prefix)) {
-        prefix++;
-      }
-      let oldEnd = currentDoc.length;
-      let newEnd = content.length;
-      while (
-        oldEnd > prefix &&
-        newEnd > prefix &&
-        currentDoc.charCodeAt(oldEnd - 1) === content.charCodeAt(newEnd - 1)
-      ) {
-        oldEnd--;
-        newEnd--;
-      }
+      const change = computeMinimalChange(view.state.doc.toString(), content);
+      if (!change) return;
 
       isExternalUpdate.current = true;
       view.dispatch({
-        changes: { from: prefix, to: oldEnd, insert: content.slice(prefix, newEnd) },
+        changes: change,
         annotations: Transaction.addToHistory.of(false),
       });
       isExternalUpdate.current = false;

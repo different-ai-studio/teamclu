@@ -71,4 +71,14 @@ describe('AppsNavSection', () => {
     // sessions, so leaving it set would make this row unable to reach the list.
     expect(useAppsStore.getState().selectedAppId).toBe(null)
   })
+
+  it('re-reads the app list when the section is opened', () => {
+    // Loaded once per team otherwise: an app someone shared with this user
+    // stayed out of the list until a restart.
+    render(<AppsNavSection />)
+    const load = useAppsStore.getState().load as ReturnType<typeof vi.fn>
+    load.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: /^应用/ }))
+    expect(load).toHaveBeenCalledWith('team-1', { force: true })
+  })
 })

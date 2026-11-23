@@ -69,6 +69,16 @@ pub async fn handle(
         return Err("At least one of 'message' or 'file_path' is required.".to_string());
     }
 
+    // Only WeCom can carry a file on this path. The others used to take the
+    // text and drop the file without a word, so the agent reported an
+    // attachment as sent that never left the machine.
+    if file_path.is_some() && channel != "wecom" {
+        return Err(format!(
+            "Channel '{channel}' cannot send a file from this tool. Send the file \
+             through 'wecom' or with this chat's 'reply_token', or send text only."
+        ));
+    }
+
     if channel == "all" {
         send_broadcast(workspace, api_port, message, target).await
     } else {
@@ -94,14 +104,15 @@ async fn send_broadcast(
 ) -> Result<Value, String> {
     let config = crate::config::read_teamclu_config(workspace)?;
     let channels_val = config.get("channels").cloned().unwrap_or(json!({}));
+    let daemon = crate::channel_state::daemon_configured(api_port).await;
 
-    let channel_names = ["wecom", "discord", "feishu", "kook", "wechat", "seatalk"];
+    let channel_names = ["wecom", "seatalk", "discord", "feishu", "kook", "wechat"];
     let mut results = serde_json::Map::new();
     let mut sent_count = 0usize;
     let mut failed_count = 0usize;
 
     for name in channel_names {
-        if !crate::capabilities::is_channel_bound_pub(name, &channels_val) {
+        if !crate::channel_state::is_bound(name, &channels_val, &daemon) {
             results.insert(
                 name.to_string(),
                 json!({"status": "skipped", "reason": "not bound"}),
@@ -145,12 +156,24 @@ async fn send_single(
     target: Option<&str>,
     image_data: Option<&(Vec<u8>, String)>,
 ) -> Result<Value, String> {
+    // amuxd sends these and holds their credentials. Nothing about them is in
+    // the workspace file, so gating on it refused a WeCom bot that settings
+    // had set up; let the daemon answer whether it can send.
+    match channel {
+        "wecom" => return send_wecom(api_port, message, target, image_data).await,
+        "seatalk" => return send_seatalk(api_port, message, target).await,
+        _ => {}
+    }
+
     let config = crate::config::read_teamclu_config(workspace)?;
     let channels_val = config.get("channels").cloned().unwrap_or(json!({}));
 
-    // Verify bound
+    // The senders below read credentials from the workspace file. A channel
+    // set up in settings has none there, and saying "not configured" to that
+    // was simply wrong.
     if channel != "email" && !crate::capabilities::is_channel_bound_pub(channel, &channels_val) {
-        return Err(format!("Channel '{channel}' is not configured / bound"));
+        let daemon = crate::channel_state::daemon_configured(api_port).await;
+        return Err(crate::channel_state::unavailable_reason(channel, &daemon));
     }
 
     match channel {
@@ -158,10 +181,30 @@ async fn send_single(
         "feishu" => send_feishu(&channels_val, message, target).await,
         "kook" => send_kook(&channels_val, message, target).await,
         "wechat" => send_wechat(&channels_val, message, target).await,
-        "wecom" => send_wecom(api_port, message, target, image_data).await,
         "email" => Err("Email sending from MCP is not yet supported.".to_string()),
         other => Err(format!("Unknown channel: {other}")),
     }
+}
+
+// ─── SeaTalk ──────────────────────────────────────────────────────────────────
+
+/// Through the desktop app to amuxd's running gateway, like WeCom.
+async fn send_seatalk(api_port: u16, message: &str, target: Option<&str>) -> Result<Value, String> {
+    let tgt = target.unwrap_or("").trim();
+    if tgt.is_empty() {
+        return Err(
+            "SeaTalk send requires a 'target' (single:<employee_code> or group:<group_id>)"
+                .to_string(),
+        );
+    }
+    let body = json!({ "target": tgt, "message": message });
+    let resp = crate::desktop_api::send(api_port, "/send-seatalk", &body).await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("SeaTalk send failed ({status}): {text}"));
+    }
+    Ok(json!({ "channel": "seatalk", "target": tgt }))
 }
 
 // ─── Discord ──────────────────────────────────────────────────────────────────

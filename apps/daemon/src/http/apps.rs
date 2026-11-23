@@ -290,6 +290,140 @@ pub struct SeedAppBody {
     /// over it is the one thing that must not happen.
     #[serde(default)]
     pub adopt_existing: Option<bool>,
+    /// The repo's HTTPS address when the app uses per-account Gitea auth (the
+    /// cloud's `gitHttpUrl`). The seed/clone still runs over SSH with the deploy
+    /// key; afterwards the checkout is pointed at this for people and agents.
+    #[serde(default)]
+    pub git_http_url: Option<String>,
+}
+
+/// `(scheme, host)` of the git host, lowercased, as `http_remote_authority` reports it.
+type GitAuthority = (String, String);
+
+/// How long the cloud's answer about its git host is reused.
+const GIT_AUTHORITY_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+static GIT_AUTHORITY: std::sync::Mutex<Option<(String, GitAuthority, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudGitHost {
+    git_host: String,
+    #[serde(default)]
+    git_scheme: Option<String>,
+}
+
+fn authority_of(reply: CloudGitHost) -> Option<GitAuthority> {
+    let host = reply.git_host.trim().to_ascii_lowercase();
+    if host.is_empty() || host.contains(['/', '@', ' ']) {
+        return None;
+    }
+    let scheme = match reply.git_scheme.as_deref().map(str::trim) {
+        Some(s) if s.eq_ignore_ascii_case("http") => "http",
+        _ => "https",
+    };
+    Some((scheme.to_string(), host))
+}
+
+/// The git host this daemon's own cloud names (`GET /v1/git/host`), or None
+/// when the cloud cannot be asked or does not do per-account git.
+///
+/// The `gitHttpUrl` a seed/build request carries is the caller's word. The
+/// credential helper hands a login to whatever host ends up trusted, so that
+/// word is checked against the one party that knows: the cloud this daemon is
+/// configured for.
+async fn cloud_git_authority(api_base: Option<&str>) -> Option<GitAuthority> {
+    let base = api_base
+        .map(|b| b.trim().trim_end_matches('/'))
+        .filter(|b| !b.is_empty())?;
+    if let Ok(guard) = GIT_AUTHORITY.lock() {
+        if let Some((cached_base, authority, at)) = guard.as_ref() {
+            if cached_base == base && at.elapsed() < GIT_AUTHORITY_TTL {
+                return Some(authority.clone());
+            }
+        }
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let res = client
+        .get(format!("{base}/v1/git/host"))
+        .send()
+        .await
+        .ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    let authority = authority_of(res.json::<CloudGitHost>().await.ok()?)?;
+    if let Ok(mut guard) = GIT_AUTHORITY.lock() {
+        *guard = Some((
+            base.to_string(),
+            authority.clone(),
+            std::time::Instant::now(),
+        ));
+    }
+    Some(authority)
+}
+
+/// Whether `http_url` is on the cloud's git host. With no answer from the cloud
+/// (offline), a host it named earlier still counts.
+fn account_git_url_is_trusted(
+    http_url: &str,
+    cloud: Option<&GitAuthority>,
+    cache: &crate::sync::git_account_cache::AccountCache,
+) -> bool {
+    let Some(authority) = crate::sync::app_git::http_remote_authority(http_url) else {
+        return false;
+    };
+    match cloud {
+        Some(cloud) => *cloud == authority,
+        None => cache.answers(&authority.0, &authority.1),
+    }
+}
+
+/// Point a freshly seeded/cloned/built checkout at per-account HTTPS, and
+/// remember the host so `amuxd git-credential` answers for it. Best-effort: the
+/// operation that called this already succeeded, and a checkout left on SSH
+/// still works through the git-ssh shim.
+///
+/// `cloud` is `cloud_git_authority`'s answer. An address that is not on that
+/// host is left alone — neither the checkout nor the helper's trusted host may
+/// follow a URL only the caller vouches for.
+fn apply_account_git(
+    dir: &std::path::Path,
+    app_id: &str,
+    ssh_remote: &str,
+    http_url: Option<&str>,
+    api_base: Option<&str>,
+    cloud: Option<&GitAuthority>,
+) {
+    let Some(http_url) = http_url.map(str::trim).filter(|u| !u.is_empty()) else {
+        return;
+    };
+    let cache = crate::sync::git_account_cache::read_account_cache();
+    if !account_git_url_is_trusted(http_url, cloud, &cache) {
+        tracing::warn!(
+            app_id,
+            "apps: the per-account git address is not on this cloud's git host; leaving the checkout on SSH"
+        );
+        return;
+    }
+    match crate::sync::app_git::set_repo_account_git(dir, ssh_remote, http_url) {
+        Ok(()) => {
+            if let Some((scheme, host)) = cloud {
+                if let Err(e) =
+                    crate::sync::git_account_cache::remember_git_host(scheme, host, api_base)
+                {
+                    tracing::debug!(app_id, error = %e, "apps: could not remember the git host");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(app_id, error = %e, "apps: could not point the checkout at per-account git")
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -430,9 +564,10 @@ pub async fn app_manifest(
 /// `app_clone` skips the clone and leaves the directory untouched.
 pub async fn seed_app(
     principal: Principal,
-    State(_state): State<HttpState>,
+    State(state): State<HttpState>,
     Json(body): Json<SeedAppBody>,
 ) -> Result<Json<SeedAppResponse>, HttpError> {
+    let api_base = state.backend.as_ref().and_then(|b| b.cloud_base_url());
     require_scope(&principal, "workspace:write")?;
 
     let workdir_path = resolve_workdir(
@@ -491,7 +626,27 @@ pub async fn seed_app(
         None => None,
     };
 
+    let git_http_url = body
+        .git_http_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .map(str::to_string);
+    let git_authority = match git_http_url {
+        Some(_) => cloud_git_authority(api_base.as_deref()).await,
+        None => None,
+    };
     let seed_result = tokio::task::spawn_blocking(move || {
+        let account = |url: &str| {
+            apply_account_git(
+                &workdir_path,
+                &app_id,
+                url,
+                git_http_url.as_deref(),
+                api_base.as_deref(),
+                git_authority.as_ref(),
+            )
+        };
         let vars = crate::sync::app_templates::TemplateVars {
             app_id: &app_id,
             app_name: &app_name,
@@ -509,6 +664,7 @@ pub async fn seed_app(
                     git_user_email: git_user_email.as_deref(),
                 };
                 let out = crate::sync::app_seed::adopt_app_repo(&workdir_path, &push)?;
+                account(url);
                 Ok(("seeded", out.git_commit_sha))
             }
             (Some(url), Some(key)) if clone_only => {
@@ -520,6 +676,7 @@ pub async fn seed_app(
                     git_user_name.as_deref(),
                     git_user_email.as_deref(),
                 )?;
+                account(url);
                 Ok(("ready", None))
             }
             (Some(url), Some(key)) => {
@@ -531,6 +688,7 @@ pub async fn seed_app(
                     git_user_email: git_user_email.as_deref(),
                 };
                 let out = crate::sync::app_seed::seed_app_repo(&workdir_path, &vars, Some(&push))?;
+                account(url);
                 Ok(("seeded", out.git_commit_sha))
             }
             (Some(url), None) => {
@@ -621,6 +779,10 @@ pub struct BuildAppBody {
     /// "container"`. Carries a registry password — never logged.
     #[serde(default)]
     pub image: Option<ImagePushBody>,
+    /// See [`SeedAppBody::git_http_url`]. Re-applied on every deploy, which is
+    /// what moves an existing checkout to per-account git once its app has it.
+    #[serde(default)]
+    pub git_http_url: Option<String>,
 }
 
 /// The registry handle the control plane mints for one container deploy.
@@ -714,10 +876,20 @@ fn build_destination(
 /// this deployment holds no credential for that remote.
 pub async fn build_app(
     principal: Principal,
-    State(_state): State<HttpState>,
+    State(state): State<HttpState>,
     Json(body): Json<BuildAppBody>,
 ) -> Result<Json<BuildAppResponse>, HttpError> {
+    let api_base = state.backend.as_ref().and_then(|b| b.cloud_base_url());
+    let build_git_http_url = body.git_http_url.clone();
     require_scope(&principal, "workspace:write")?;
+    let build_git_authority = match build_git_http_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+    {
+        Some(_) => cloud_git_authority(api_base.as_deref()).await,
+        None => None,
+    };
 
     // Split now rather than inside the build closure: the upload URL is needed
     // after the build, and the registry handle during it.
@@ -793,6 +965,14 @@ pub async fn build_app(
         )?;
         if let Some(git) = git_ctx.as_ref() {
             crate::sync::app_build::verify_git_build_revision(&workdir_path, git)?;
+            apply_account_git(
+                &workdir_path,
+                git.app_id,
+                git.remote_url,
+                build_git_http_url.as_deref(),
+                api_base.as_deref(),
+                build_git_authority.as_ref(),
+            );
         }
         if !use_git
             && crate::sync::app_git::checkout_content_digest(&workdir_path)? != expected_revision
@@ -1262,6 +1442,69 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
 
 #[cfg(test)]
 mod tests {
+    use crate::sync::git_account_cache::AccountCache;
+
+    fn authority(scheme: &str, host: &str) -> super::GitAuthority {
+        (scheme.to_string(), host.to_string())
+    }
+
+    #[test]
+    fn only_an_address_on_the_clouds_git_host_is_trusted() {
+        let cloud = authority("https", "gitea.example.com");
+        let none = AccountCache::default();
+        let trusted = |url: &str| super::account_git_url_is_trusted(url, Some(&cloud), &none);
+        assert!(trusted("https://gitea.example.com/o1/tc-app-1.git"));
+        assert!(trusted("https://Gitea.Example.com/o1/tc-app-1.git"));
+        // What a caller could put in `gitHttpUrl` to have the helper trust it.
+        assert!(!trusted("https://attacker.example/x/y.git"));
+        assert!(!trusted("http://gitea.example.com/o1/tc-app-1.git"));
+        assert!(!trusted(
+            "https://gitea.example.com.attacker.example/o1/tc-app-1.git"
+        ));
+        assert!(!trusted("git@gitea.example.com:o1/tc-app-1.git"));
+    }
+
+    #[test]
+    fn with_the_cloud_unreachable_only_a_host_it_named_before_is_trusted() {
+        let cache = AccountCache {
+            hosts: vec!["gitea.example.com".into()],
+            ..Default::default()
+        };
+        assert!(super::account_git_url_is_trusted(
+            "https://gitea.example.com/o1/tc-app-1.git",
+            None,
+            &cache
+        ));
+        assert!(!super::account_git_url_is_trusted(
+            "https://attacker.example/x/y.git",
+            None,
+            &cache
+        ));
+        assert!(!super::account_git_url_is_trusted(
+            "https://gitea.example.com/o1/tc-app-1.git",
+            None,
+            &AccountCache::default()
+        ));
+    }
+
+    #[test]
+    fn the_clouds_answer_is_read_as_scheme_and_host() {
+        let reply = |host: &str, scheme: Option<&str>| super::CloudGitHost {
+            git_host: host.into(),
+            git_scheme: scheme.map(str::to_string),
+        };
+        assert_eq!(
+            super::authority_of(reply("Gitea.Example.com", None)),
+            Some(authority("https", "gitea.example.com"))
+        );
+        assert_eq!(
+            super::authority_of(reply("gitea.localhost:8080", Some("http"))),
+            Some(authority("http", "gitea.localhost:8080"))
+        );
+        assert_eq!(super::authority_of(reply("", None)), None);
+        assert_eq!(super::authority_of(reply("evil.example/x", None)), None);
+    }
+
     #[test]
     fn workdir_response_carries_selected_daemon_host_facts() {
         let response = super::AppWorkdirResponse {

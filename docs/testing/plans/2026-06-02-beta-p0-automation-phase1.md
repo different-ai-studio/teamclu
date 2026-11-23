@@ -26,6 +26,10 @@ VITE_TEAMCLU_E2E=true pnpm tauri:build:debug
 ```
 Expected: build completes; `.cargo-target/debug/teamclu` exists and is newer than before.
 
+`scripts/tauri-cli.js` gives an E2E build `app.security.devCsp` (see `scripts/lib/e2e-csp.js`): the production CSP forbids `'unsafe-eval'`, and the harness's `execute_js` evaluates strings, so without it every call fails with an EvalError.
+
+To run beside a developer's own `tauri dev` (which holds `/tmp/tauri-mcp.sock`), start the E2E binary with `TAURI_MCP_SOCKET=/tmp/<other>.sock` and run the suite with the same variable. A debug build writes `<socket>.pid` beside the socket; the harness reads it to know which process it is driving and never kills or raises any other TeamClu window.
+
 - [ ] **Step 2: Sanity-check the existing PR suite is green on this build**
 
 Run:

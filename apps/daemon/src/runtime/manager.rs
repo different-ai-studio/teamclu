@@ -133,7 +133,7 @@ pub struct RuntimeManager {
     /// slash commands) used to populate `RuntimeInfo`. See `agent_runtime_state`.
     agent_state: PerAgentRuntimeState,
     /// Last-known model catalog per (backend, worktree) for this device. The
-    /// catalog belongs to the one global `opencode serve` / pi / cursor child,
+    /// catalog belongs to the pi host child,
     /// not to any single binding — see `config::model_catalog` for why storing
     /// it per-handle produced sessions that could never leave 连接中.
     model_catalog: DeviceModelCatalog,
@@ -269,8 +269,8 @@ impl RuntimeManager {
 
     pub fn default_launch_configs() -> HashMap<amux::AgentType, AgentLaunchConfig> {
         HashMap::from([(
-            amux::AgentType::ClaudeCode,
-            AgentLaunchConfig::new("claude", Vec::new(), "claude"),
+            amux::AgentType::Pi,
+            AgentLaunchConfig::new("pi", Vec::new(), "pi"),
         )])
     }
 
@@ -279,9 +279,8 @@ impl RuntimeManager {
     /// model-catalog probe.
     ///
     /// pi, always (#1247) — there is no `agents.local_agent` to select from. It used to be inferred by probing
-    /// `launch_configs` for Opencode, then Codex, then falling back to
-    /// ClaudeCode — which had no branch for Pi or Cursor, so a pi or cursor
-    /// daemon reported ClaudeCode here. That fed `launch_config_for` and made
+    /// `launch_configs` for legacy backends and fell back to ClaudeCode, so a
+    /// pi daemon reported ClaudeCode here. That fed `launch_config_for` and made
     /// the catalog probe check for the `claude` binary, failing before it ever
     /// reached the real backend, and made `recent_models` read the MRU under the
     /// wrong backend key.
@@ -289,9 +288,8 @@ impl RuntimeManager {
         self.default_agent_type
     }
 
-    /// Backend id for the configured local agent (`"opencode"` / `"pi"` /
-    /// `"cursor"` / `"claude"`) — the key both `ModelMru` and
-    /// `DeviceModelCatalog` are partitioned by.
+    /// Backend id for the local agent (always `"pi"` today) — the key both
+    /// `ModelMru` and `DeviceModelCatalog` are partitioned by.
     pub fn local_backend_type(&self) -> &'static str {
         self.launch_config_for(self.default_agent_type())
             .backend_type
@@ -474,7 +472,7 @@ impl RuntimeManager {
         ))
     }
 
-    /// Canonical backend id (`"opencode"` / `"pi"`) a runtime runs on.
+    /// Canonical backend id (`"pi"`) a runtime runs on.
     fn backend_id_for_runtime(&self, agent_id: &str) -> &'static str {
         let agent_type = self
             .agents
@@ -637,7 +635,6 @@ impl RuntimeManager {
             session_id,
             None,
             None,
-            None,
             false,
             context,
         )
@@ -648,8 +645,6 @@ impl RuntimeManager {
     /// `create_gateway_session_with_model` to honour a per-session
     /// `set_model` override the gateway recorded before the first prompt.
     /// `initial_model_override` is a full pi model id (e.g. `anthropic/claude-sonnet-4-6`).
-    /// `mcp_config_path`, when `Some`, is forwarded as `--mcp-config <path>`
-    /// to the spawned claude-code so it can call amuxd's `send` tool.
     #[allow(clippy::too_many_arguments)]
     pub async fn start_runtime_with_model(
         &mut self,
@@ -659,7 +654,6 @@ impl RuntimeManager {
         remote_workspace_id: Option<&str>,
         session_id: &str,
         initial_model_override: Option<String>,
-        mcp_config_path: Option<PathBuf>,
         resume_acp_session_id: Option<String>,
         forbid_new_session_fallback: bool,
         context: ExecutionContext,
@@ -739,7 +733,6 @@ impl RuntimeManager {
                 force_env_override,
                 worktree.clone(),
                 resume_acp_session_id,
-                mcp_config_path,
                 initial_model_override.clone(),
                 // No device MRU: every entry point pins a model when it is
                 // created, so attach has nothing left to infer from (ADR-0007).
@@ -852,7 +845,6 @@ impl RuntimeManager {
         workspace_id: &str,
         remote_workspace_id: Option<&str>,
         prompt: &str,
-        mcp_config_path: Option<std::path::PathBuf>,
         forbid_new_session_fallback: bool,
         context: ExecutionContext,
     ) -> crate::error::Result<String> {
@@ -910,7 +902,6 @@ impl RuntimeManager {
                 force_env_override,
                 worktree.clone(),
                 Some(acp_session_id.to_string()),
-                mcp_config_path,
                 None,
                 // No device MRU: every entry point pins a model when it is
                 // created, so attach has nothing left to infer from (ADR-0007).
@@ -999,8 +990,8 @@ impl RuntimeManager {
 
     /// Model catalog for a workspace directory (cron catalog UI).
     /// Probe the configured local backend for its live model catalog. The
-    /// backend trait dispatches to opencode (serve `/config/providers`) or pi
-    /// (`get_available_models`, spawning a child if none is live).
+    /// pi backend answers via `get_available_models`, spawning a child if none
+    /// is live.
     pub async fn probe_catalog_models(
         &mut self,
         workspace_path: &std::path::Path,
@@ -1156,7 +1147,7 @@ impl RuntimeManager {
     ///
     /// Every `RuntimeInfo` leaving this daemon goes through here. Without it,
     /// an idle binding — or a historical `SessionStore` row replayed by
-    /// `publish_all_agent_states` — advertises an empty catalog, and clients
+    /// `publish_actor_state` — advertises an empty catalog, and clients
     /// read that as "no models", which pins the session's pill at 连接中.
     pub fn fill_catalog(&self, info: &mut amux::RuntimeInfo) {
         if !info.available_models.is_empty() {
@@ -1165,23 +1156,13 @@ impl RuntimeManager {
         info.available_models = self.catalog_for_worktree(&info.worktree);
     }
 
-    /// Every agent type a backend may hold a long-lived host process for.
-    ///
-    /// This used to be spelled inline as `[Opencode, Codex]` at both call sites,
-    /// which meant cursor and pi bridge processes were never evicted: cursor kept
-    /// serving with a stale API key after the user changed it in Settings, and
-    /// both survived daemon exit. Codex was listed despite having no backend at
-    /// all. Listing every implemented type is safe — `evict_agent_types` only
-    /// removes hosts that exist.
-    const EVICTABLE_AGENT_TYPES: &'static [amux::AgentType] = &[
-        amux::AgentType::Opencode,
-        amux::AgentType::Pi,
-        amux::AgentType::Cursor,
-        amux::AgentType::ClaudeCode,
-    ];
+    /// Every agent type a backend may hold a long-lived host process for: pi,
+    /// the only runtime (ADR-0014). `evict_agent_types` only removes hosts
+    /// that exist.
+    const EVICTABLE_AGENT_TYPES: &'static [amux::AgentType] = &[amux::AgentType::Pi];
 
-    /// Invalidate long-lived ACP host processes after provider credentials change.
-    pub async fn evict_acp_hosts_after_provider_auth_change(&mut self) {
+    /// Invalidate long-lived agent host processes after provider credentials change.
+    pub async fn evict_agent_hosts_after_provider_auth_change(&mut self) {
         let removed = self
             .agent_backend
             .lock()
@@ -1220,7 +1201,7 @@ impl RuntimeManager {
 
     /// Full local-runtime teardown for daemon exit (`amuxd stop` / SIGTERM).
     /// Stops every session handle, then kills backend host processes
-    /// (`opencode serve` process group including MCP children).
+    /// (pi host processes including MCP children).
     pub async fn shutdown_for_exit(&mut self) {
         let ids = self.agent_ids();
         for id in ids {
@@ -1708,7 +1689,7 @@ impl RuntimeManager {
     //
     // The methods below are called from the `channels::AmuxdAgentHandle`
     // (impl of `teamclu_gateway::AgentHandle`) so a gateway can drive an
-    // in-process ACP agent without speaking to opencode's HTTP server.
+    // in-process agent session directly.
 
     /// Spawn an ACP-backed agent for a freshly-bound gateway conversation.
     /// Used by `AmuxdAgentHandle::create_session`. The returned String is the
@@ -1769,7 +1750,7 @@ impl RuntimeManager {
         _agent_type_override: Option<amux::AgentType>,
         // Runtime environment for the spawn. Gateway callers assemble the team
         // env (secrets, `tc_api_key`, `provider.team`) so a gateway-first cold
-        // start does not launch the shared `opencode serve` without any
+        // start does not launch a pi host without any
         // provider credentials; `is_gateway` must stay true on whatever is
         // passed.
     ) -> crate::error::Result<String> {
@@ -1859,7 +1840,6 @@ impl RuntimeManager {
                 None,
                 session_id,
                 initial_model,
-                None,
                 None,
                 false,
                 ExecutionContext {
@@ -2231,7 +2211,6 @@ mod tests {
             _force_env_override: bool,
             _worktree: String,
             _resume_acp_session_id: Option<String>,
-            _mcp_config_path: Option<PathBuf>,
             _initial_model_override: Option<String>,
             _model_mru: Vec<String>,
             _initial_prompt: String,
@@ -3088,7 +3067,6 @@ mod tests {
                 "workspace-1",
                 None,
                 "session-1",
-                None,
                 None,
                 None,
                 false,

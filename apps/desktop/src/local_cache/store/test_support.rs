@@ -1,6 +1,6 @@
 //! Fixtures shared by the store's per-table test modules.
 
-use super::{ActorRow, IdeaRow, LocalCacheStore, MessageRow, OutboxRow, SessionRow};
+use super::{ActorRow, LocalCacheStore, MessageRow, OutboxRow, SessionRow};
 use tempfile::tempdir;
 
 /// Returns (store, tempdir). Caller must hold `_dir` to keep the temp directory alive.
@@ -47,26 +47,6 @@ pub(super) fn session(id: &str, team: &str) -> SessionRow {
         metadata_json: None,
         source: None,
         cron_job_id: None,
-        created_at: "2024-01-01T00:00:00Z".to_string(),
-        updated_at: "2024-01-01T00:00:00Z".to_string(),
-        deleted_at: None,
-        synced_at: "2024-01-01T00:00:00Z".to_string(),
-    }
-}
-
-pub(super) fn idea(id: &str, team: &str) -> IdeaRow {
-    IdeaRow {
-        id: id.to_string(),
-        team_id: team.to_string(),
-        workspace_id: None,
-        parent_id: None,
-        title: "T".to_string(),
-        description: None,
-        status: None,
-        created_by: None,
-        archived: 0,
-        sort_order: Some(0),
-        metadata_json: None,
         created_at: "2024-01-01T00:00:00Z".to_string(),
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         deleted_at: None,

@@ -1,11 +1,13 @@
 # OSS 多节点同步 E2E
 
-2 个真实 amuxd Linux 容器加入同一真实 team，经 cloud FC + 阿里云 OSS 互相同步，验证收敛与冲突处理。
+2 个真实 amuxd Linux 容器加入同一真实 team，经 Cloud API（FC）的团队 blob 存储互相同步，验证收敛与冲突处理。blob 后端由目标 FC 决定：默认 Supabase Storage，`TEAM_BLOBS_BACKEND=s3` 时是 OSS/S3。
 
 ## 前置
 - Docker + docker compose
 - Node >= 20.6
-- **无需测试账号**：harness 每个用例自 signup 一个全新临时 owner（cloud FC 限制"一账号一团队"）。`.env.local` 只需 `CLOUD_API_URL` + 端口（都有默认；`cp .env.local.example .env.local` 即可）。
+- owner 账号二选一（`cp .env.local.example .env.local` 后填）：
+  - 设 `OSS_E2E_OWNER_EMAIL` + `OSS_E2E_OWNER_PASSWORD`：用这个预先建好的账号密码登录，每个用例仍新建自己的 team。CI 走这条。
+  - 都不设：每个用例 signup 一个临时 owner。只有目标 GoTrue 开了 `ENABLE_EMAIL_AUTOCONFIRM=true`（本地栈 `deploy/self-host/.env.local.example` 是开的）signup 才会直接返回 session，否则 harness 报 `signup: no access_token`。
 
 ## 跑
 1. 构建镜像（首次 / daemon 源码变更后）：`docker compose build node-a`（多阶段，镜像内编 Linux amuxd，需 `protobuf-compiler`，已在 Dockerfile）。
@@ -46,11 +48,11 @@ sync，每次 sync 内含 manifest/upload/download 多次调用）。
   （与轻量场景同机制）。
 
 ## 清理
-- 每个用例全新临时 team（`e2e-oss-<ts>`）+ 全新 throwaway owner 账号，跑完 `compose down -v` 销毁容器并 best-effort 移除成员。
-- **cloud FC 无删除 team 端点**：临时 team / owner 账号会残留（按时间戳命名便于识别）；OSS blob 按 `teams/<teamId>/` key 前缀隔离，可定期手动清理。
+- 每个用例全新临时 team（`e2e-oss-<ts>`）（未设预置 owner 时还有一个 throwaway owner 账号），跑完 `compose down -v` 销毁容器并 best-effort 移除成员。
+- **cloud FC 无删除 team 端点**：临时 team（和 throwaway owner 账号）会残留（按时间戳命名便于识别）；blob 按 team 前缀隔离，可定期手动清理。
 
 ## 已知风险 / 注意
-- 真打生产 Cloud API + 真 OSS：有真实写入与少量成本，故非默认 CI，仅手动/按需（`.github/workflows/oss-e2e.yml` 手动触发）。
+- 打的是真实 Cloud API（默认 self-host 测试环境）：有真实写入，故不在 PR CI 里。`.github/workflows/oss-e2e.yml` 每晚跑一次默认场景，也可手动触发（可选目标地址、重场景、三节点）。它需要 `OSS_E2E_OWNER_EMAIL` / `OSS_E2E_OWNER_PASSWORD` 两个 secret。
 - Knowledge 同步是**明文**（ADR-0008）：team secret 不是前置条件。`provisionTwoNodeTeam` 默认不设 secret；需要时传 `{ withSecret: true }`。场景 18 断言「无 secret 也能收敛」。
 - Harness 默认关掉 `team_share.auto_sync`，显式 `sync()` 带 `forceSync: true`。否则 MQTT/fs-watch 会在 `settle()` 窗口里先把远端拉到 B，冲突场景退化成「B 在已同步基础上再推」，断言永远红。
 - 场景 03（并发改）/05（远端删除）是 daemon 两个 bug 修复的回归守卫，断言"修复后正确行为"（改动保留为 sidecar / 删除传播）。

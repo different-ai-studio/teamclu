@@ -92,7 +92,7 @@ export interface FileNode {
 // the team repo dir, which is empty now that knowledge syncs to
 // `shared/knowledge`, and its header entry already moved to the left-nav
 // Knowledge column.
-export type RightPanelTab = "shortcuts" | "files" | "actors";
+export type RightPanelTab = "files" | "actors";
 
 // Undo operation types for file operations
 interface UndoOperation {
@@ -112,14 +112,6 @@ interface WorkspaceState {
   workspacePath: string | null;
   workspaceName: string | null;
   isLoadingWorkspace: boolean;
-
-  // OpenCode sidecar state. This runtime is restored for settings,
-  // automations, and gateway integrations; ChatPanel stays daemon-owned.
-  openCodeBootstrapped: boolean;
-  openCodeReady: boolean;
-  openCodeUrl: string | null;
-  setOpenCodeBootstrapped: (bootstrapped: boolean, url?: string) => void;
-  setOpenCodeReady: (ready: boolean, url?: string) => void;
 
   /** Local amuxd daemon HTTP control plane is reachable (`/v1/healthz`). */
   daemonHttpReady: boolean;
@@ -360,25 +352,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspacePath: null,
   workspaceName: null,
   isLoadingWorkspace: false,
-  openCodeBootstrapped: false,
-  openCodeReady: false,
-  openCodeUrl: null,
-  setOpenCodeBootstrapped: (bootstrapped: boolean, url?: string) =>
-    set(
-      bootstrapped
-        ? { openCodeBootstrapped: true, ...(url ? { openCodeUrl: url } : {}) }
-        : { openCodeBootstrapped: false, openCodeReady: false, openCodeUrl: null },
-    ),
-  setOpenCodeReady: (ready: boolean, url?: string) =>
-    set({
-      openCodeReady: ready,
-      ...(ready ? { openCodeBootstrapped: true } : {}),
-      ...(url ? { openCodeUrl: url } : {}),
-    }),
   daemonHttpReady: false,
   setDaemonHttpReady: (ready: boolean) => set({ daemonHttpReady: ready }),
   isPanelOpen: false,
-  activeTab: "shortcuts",
+  activeTab: "files",
   fileTree: [],
   externalTrees: {},
   expandedPaths: new Set<string>(),
@@ -477,9 +454,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     set({
       isLoadingWorkspace: true,
-      openCodeBootstrapped: false,
-      openCodeReady: false,
-      openCodeUrl: null,
       daemonHttpReady: false,
       workspacePath: expandedPath,
       workspaceName: getFolderName(expandedPath),
@@ -529,12 +503,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     // Reset team mode state — each workspace has its own team config
     try {
-      const { useTeamMembersStore } = await import("./team-members");
-      useTeamMembersStore.getState().reset();
+      const { useDeviceIdentityStore } = await import("./device-identity");
+      useDeviceIdentityStore.getState().reset();
       useTeamModeStore.setState({
         teamModelConfig: null,
         _appliedConfigKey: null,
-        teamGitSyncing: false,
       });
       // Load team config immediately so sidebar shows team tag on startup
       useTeamModeStore.getState().loadTeamConfig(expandedPath).catch(() => {});
@@ -598,31 +571,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     } catch {
       /* ignore storage errors */
     }
-    if (isTauri()) {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("clear_last_workspace");
-      } catch { /* ignore */ }
-    }
 
     // Reset team mode state
     try {
-      const { useTeamMembersStore } = await import("./team-members");
+      const { useDeviceIdentityStore } = await import("./device-identity");
       const { useTeamModeStore } = await import("./team-mode");
-      useTeamMembersStore.getState().reset();
+      useDeviceIdentityStore.getState().reset();
       useTeamModeStore.setState({
         teamModelConfig: null,
         _appliedConfigKey: null,
-        teamGitSyncing: false,
       });
     } catch { /* ignore */ }
 
     set({
       workspacePath: null,
       workspaceName: null,
-      openCodeBootstrapped: false,
-      openCodeReady: false,
-      openCodeUrl: null,
       daemonHttpReady: false,
       fileTree: [],
       expandedPaths: new Set<string>(),

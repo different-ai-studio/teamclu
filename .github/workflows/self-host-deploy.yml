@@ -27,14 +27,6 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TRUSTED_EXTERNAL_JWT_SECRET: ${{ secrets.TRUSTED_EXTERNAL_JWT_SECRET }}
           AGENT_MANAGEMENT_GRANT_SECRET: ${{ secrets.AGENT_MANAGEMENT_GRANT_SECRET }}
-          FC_SUPABASE_URL: ${{ secrets.FC_SUPABASE_URL }}
-          FC_SUPABASE_PUBLIC_URL: ${{ secrets.FC_SUPABASE_PUBLIC_URL }}
-          FC_SUPABASE_ANON_KEY: ${{ secrets.FC_SUPABASE_ANON_KEY }}
-          FC_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.FC_SUPABASE_SERVICE_ROLE_KEY }}
-          BELAYO_TEST_RDS_PRIVATE_HOST: ${{ secrets.BELAYO_TEST_RDS_PRIVATE_HOST }}
-          BELAYO_TEST_RDS_PORT: ${{ secrets.BELAYO_TEST_RDS_PORT }}
-          BELAYO_TEST_RDS_USER: ${{ secrets.BELAYO_TEST_RDS_USER }}
-          BELAYO_TEST_RDS_PASSWORD: ${{ secrets.BELAYO_TEST_RDS_PASSWORD }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           AUTH_EGRESS_PROXY: ${{ secrets.AUTH_EGRESS_PROXY }}
@@ -45,7 +37,7 @@ jobs:
           username: ${{ secrets.ECS_USER }}
           key: ${{ secrets.ECS_SSH_PRIVATE_KEY }}
           command_timeout: 30m
-          envs: DEEPSEEK_API_KEY,TRUSTED_EXTERNAL_JWT_SECRET,AGENT_MANAGEMENT_GRANT_SECRET,FC_SUPABASE_URL,FC_SUPABASE_PUBLIC_URL,FC_SUPABASE_ANON_KEY,FC_SUPABASE_SERVICE_ROLE_KEY,BELAYO_TEST_RDS_PRIVATE_HOST,BELAYO_TEST_RDS_PORT,BELAYO_TEST_RDS_USER,BELAYO_TEST_RDS_PASSWORD,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,AUTH_EGRESS_PROXY,TEAMCLAW_ALIYUN_ACCESS_KEY_ID,TEAMCLAW_ALIYUN_ACCESSKEY_SECRET
+          envs: DEEPSEEK_API_KEY,TRUSTED_EXTERNAL_JWT_SECRET,AGENT_MANAGEMENT_GRANT_SECRET,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,AUTH_EGRESS_PROXY,TEAMCLAW_ALIYUN_ACCESS_KEY_ID,TEAMCLAW_ALIYUN_ACCESSKEY_SECRET
           script: |
             set -e
             cd /opt/teamclaw
@@ -81,12 +73,9 @@ jobs:
               fi
               echo "  set $1"
             }
-            # The FC_SUPABASE_* overrides select an EXTERNAL Supabase for fc.
-            # Unlike the values above, an empty secret here must clear the .env
-            # line rather than leave the previous one standing: otherwise
-            # deleting the secret cannot ever point fc back at the bundled
-            # Supabase (docker-compose defaults SUPABASE_URL to http://kong:8000
-            # only when FC_SUPABASE_URL is unset).
+            # Unlike upsert_env, an empty secret here must clear the .env line
+            # rather than leave the previous one standing: otherwise deleting
+            # the secret can never hand the setting back to its compose default.
             sync_env() { # $1=key $2=value — empty value deletes the key
               if [ -z "$2" ]; then
                 if grep -q "^$1=" .env; then
@@ -106,10 +95,6 @@ jobs:
             # in every team. sync_env so clearing the GitHub secret clears the
             # server value instead of leaving a stale key signing grants.
             sync_env AGENT_MANAGEMENT_GRANT_SECRET "$AGENT_MANAGEMENT_GRANT_SECRET"
-            sync_env FC_SUPABASE_URL "$FC_SUPABASE_URL"
-            sync_env FC_SUPABASE_PUBLIC_URL "$FC_SUPABASE_PUBLIC_URL"
-            sync_env FC_SUPABASE_ANON_KEY "$FC_SUPABASE_ANON_KEY"
-            sync_env FC_SUPABASE_SERVICE_ROLE_KEY "$FC_SUPABASE_SERVICE_ROLE_KEY"
 
             # Alibaba OSS credentials for FC (team sync when TEAM_BLOBS_BACKEND=s3,
             # and the shared apps-artifact profile when APPS_ACCESS_KEY_* are unset).
@@ -133,102 +118,6 @@ jobs:
             upsert_env APPS_SLS_PROJECT "serverless-cn-shenzhen-5003014c-4786-50e5-96f4-2ce61d669184"
             upsert_env APPS_SLS_LOGSTORE "default-logs"
 
-            if [ -n "$FC_SUPABASE_URL" ]; then
-              echo "=== migrate external Supabase schema ==="
-              [ -n "$BELAYO_TEST_RDS_PRIVATE_HOST" ] || { echo "missing BELAYO_TEST_RDS_PRIVATE_HOST"; exit 1; }
-              [ -n "$BELAYO_TEST_RDS_USER" ] || { echo "missing BELAYO_TEST_RDS_USER"; exit 1; }
-              [ -n "$BELAYO_TEST_RDS_PASSWORD" ] || { echo "missing BELAYO_TEST_RDS_PASSWORD"; exit 1; }
-              docker run --rm --network host \
-                -e PGPASSWORD="$BELAYO_TEST_RDS_PASSWORD" \
-                -e PGHOST="$BELAYO_TEST_RDS_PRIVATE_HOST" \
-                -e PGPORT="${BELAYO_TEST_RDS_PORT:-5432}" \
-                -e PGUSER="$BELAYO_TEST_RDS_USER" \
-                -e PGDATABASE=supabase_db \
-                -v "$PWD/../../services/supabase/migrations:/migrations:ro" \
-                postgres:15-alpine sh -ceu '
-                  psql -v ON_ERROR_STOP=1 -c "
-                    create schema if not exists _selfhost;
-                    create table if not exists _selfhost.schema_migrations (
-                      filename text primary key,
-                      applied_at timestamptz not null default now()
-                    );
-                  "
-
-                  # This external database predates the deploy marker. The
-                  # onboarding RPC is only created by the already-applied
-                  # batch below, so record that batch once instead of replaying
-                  # non-idempotent historical functions on every deployment.
-                  if [ "$(psql -Atc "select count(*) from _selfhost.schema_migrations")" = "0" ] \
-                    && [ "$(psql -Atc "select to_regprocedure(\$\$amux.list_teams_for_picker(uuid)\$\$) is not null")" = "t" ]; then
-                    echo "adopt existing external onboarding migrations"
-                    for migration in \
-                      20260618010000_upgrade_account_to_org.sql \
-                      20260618020000_bind_phone_to_account.sql \
-                      20260630000000_add_team_default_agent.sql \
-                      20260706000000_org_default_team_onboarding.sql \
-                      20260715000000_invite_contact_pending.sql \
-                      20260723000000_sessions_source_cron_job_id.sql \
-                      20260723000000_team_visibility.sql \
-                      20260727000000_sessions_source_read_path.sql \
-                      20260727030000_detach_gateway_session.sql \
-                      20260728000000_gateway_session_switch.sql \
-                      20260801000000_prefer_org_named_team_on_onboarding.sql \
-                      20260801010000_team_bootstrap_and_discovery.sql
-                    do
-                      psql -v ON_ERROR_STOP=1 -c "insert into _selfhost.schema_migrations (filename) values (\$\$${migration}\$\$) on conflict do nothing"
-                    done
-                  fi
-
-                  # Scan the directory instead of listing files by hand. The
-                  # hand-maintained list this replaces was a trap: a migration
-                  # that was not added to it never ran against this database and
-                  # the deploy still reported success, which is exactly how
-                  # 20260804000000 and 20260804010000 went missing. The bundled
-                  # Supabase has always scanned (deploy/self-host/init/apply-migrations.sh);
-                  # this loop keeps the same _selfhost.schema_migrations ledger,
-                  # so it can scan too.
-                  #
-                  # Two exclusion lists, for two different reasons. They are the
-                  # only thing worth stating by hand, because they are decisions
-                  # rather than omissions — and unlike the old list, forgetting
-                  # to touch them fails safe (a new migration simply applies).
-                  #
-                  # NEVER: the squashed baseline. It is for brand-new databases
-                  # only — its own header says so — and this database predates
-                  # it. Applying it here would replay the entire schema over a
-                  # live one.
-                  NEVER="20260601000000_baseline.sql"
-                  #
-                  # WITHHELD: correct for this database, but not yet. Empty
-                  # right now — 20260804020000 sat here until its FC was
-                  # redeployed, and both landed on 2026-08-04. Anything added
-                  # back must say why, and who clears it.
-                  WITHHELD=""
-
-                  for migration in $(ls /migrations/*.sql | xargs -n1 basename | sort)
-                  do
-                    case " $NEVER " in
-                      *" $migration "*)
-                        echo "never applied to the external database: $migration"
-                        continue
-                        ;;
-                    esac
-                    case " $WITHHELD " in
-                      *" $migration "*)
-                        echo "withheld (see comment above): $migration"
-                        continue
-                        ;;
-                    esac
-                    if [ "$(psql -Atc "select exists (select 1 from _selfhost.schema_migrations where filename = \$\$${migration}\$\$)")" = "t" ]; then
-                      echo "skip external migration: $migration"
-                      continue
-                    fi
-                    echo "apply external migration: $migration"
-                    psql -v ON_ERROR_STOP=1 -f "/migrations/$migration"
-                    psql -v ON_ERROR_STOP=1 -c "insert into _selfhost.schema_migrations (filename) values (\$\$${migration}\$\$)"
-                  done
-                '
-            fi
             # FC -> gateway, for the credits/quota routes. The client-facing
             # URL is per-team (team_workspace_config.llm_base_url), not an env var.
             upsert_env AI_GATEWAY_INTERNAL_URL "http://ai-gateway:4001"
@@ -381,19 +270,8 @@ jobs:
             sh /opt/teamclaw/deploy/self-host/smoke/ai-gateway-smoke.sh
 
             echo "=== e2e verification ==="
-            if [ -n "$FC_SUPABASE_URL" ]; then
-              curl --fail --silent --show-error --max-time 15 \
-                -H "apikey: $FC_SUPABASE_SERVICE_ROLE_KEY" \
-                -H "Authorization: Bearer $FC_SUPABASE_SERVICE_ROLE_KEY" \
-                -H "Content-Profile: amux" \
-                -H "Content-Type: application/json" \
-                --data '{"p_default_org_id":null}' \
-                "$FC_SUPABASE_URL/rest/v1/rpc/list_teams_for_picker" >/dev/null
-              echo "external Supabase RPC smoke: OK"
-            else
-              cd /opt/teamclaw/services/fc
-              npm ci --prefer-offline --silent
-              sh /opt/teamclaw/deploy/self-host/smoke/run-e2e.sh
-            fi
+            cd /opt/teamclaw/services/fc
+            npm ci --prefer-offline --silent
+            sh /opt/teamclaw/deploy/self-host/smoke/run-e2e.sh
 
             echo "=== deploy complete ==="

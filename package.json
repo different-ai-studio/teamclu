@@ -1,6 +1,6 @@
 {
   "name": "teamclu",
-  "version": "0.4.1-beta.116",
+  "version": "0.4.1-beta.126",
   "private": true,
   "description": "TeamClu - AI Agent Desktop Platform",
   "scripts": {
@@ -9,7 +9,7 @@
     "expo:dev": "pnpm --filter @teamclu/expo dev",
     "expo:ios": "pnpm --filter @teamclu/expo ios",
     "expo:android": "pnpm --filter @teamclu/expo android",
-    "expo:test": "pnpm --filter @teamclu/expo test",
+    "expo:test": "pnpm test:expo",
     "build": "pnpm --filter @teamclu/app build",
     "preview": "pnpm --filter @teamclu/app preview",
     "tauri": "node scripts/tauri-cli.js",
@@ -53,8 +53,8 @@
     "typecheck:expo": "pnpm --filter @teamclu/expo typecheck",
     "test:extension": "pnpm --filter @teamclu/extension test",
     "typecheck:extension": "pnpm --filter @teamclu/extension typecheck",
-    "test:scripts": "node --test scripts/lib/*.test.js apps/desktop/capabilities/*.test.js scripts/kb-maintainer/*.test.js",
-    "test:smoke": "vitest run --config vitest.config.v2-e2e.ts tests/v2-e2e/pr",
+    "test:scripts": "node --test scripts/lib/*.test.js scripts/*.test.mjs apps/desktop/capabilities/*.test.js scripts/kb-maintainer/*.test.js",
+    "test:smoke": "pnpm test:e2e:v2:pr",
     "test:e2e": "pnpm test:e2e:v2:pr",
     "test:e2e:v2:pr": "vitest run --config vitest.config.v2-e2e.ts tests/v2-e2e/pr",
     "test:e2e:v2:nightly": "vitest run --config vitest.config.v2-e2e.ts tests/v2-e2e/nightly",
@@ -75,8 +75,8 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.0",
-    "shadcn": "^4.18.0",
-    "vitest": "^5.0.0"
+    "shadcn": "^4.23.0",
+    "vitest": "^5.1.0"
   },
   "packageManager": "pnpm@11.22.0",
   "engines": {

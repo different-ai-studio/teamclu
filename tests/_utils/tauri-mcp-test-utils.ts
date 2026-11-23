@@ -194,20 +194,36 @@ async function isSocketAlive(): Promise<boolean> {
   }
 }
 
+/**
+ * PID of the app serving the MCP socket: `TEAMCLU_APP_PID` when set, else the
+ * `<socket>.pid` file a debug build writes beside its socket. Null when
+ * neither says — the harness then simply does not raise any window.
+ */
+function socketOwnerPid(): number | null {
+  const fromEnv = Number.parseInt(process.env.TEAMCLU_APP_PID ?? '', 10);
+  if (Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv;
+  try {
+    const pid = Number.parseInt(readFileSync(`${TAURI_MCP_SOCKET}.pid`, 'utf8').trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function launchTeamCluApp(): Promise<string> {
   // If the socket is already alive, reuse the running app (e.g. pnpm tauri dev)
   if (existsSync(TAURI_MCP_SOCKET) && await isSocketAlive()) {
     console.log('[test-utils] Existing app detected via socket, reusing it');
-    // Find the PID of the running teamclu process
-    try {
-      const pid = exec('pgrep -f "target/debug/teamclu" | head -1');
-      if (pid) {
-        _osPid = parseInt(pid);
-        _processId = String(_osPid);
-        _ownedProcess = false;
-        return _processId;
-      }
-    } catch { /* fall through to spawn */ }
+    // The app behind THIS socket, not the first `teamclu` on the machine: with
+    // a second checkout's app running, a name match picks theirs, and
+    // focusWindow() would then raise someone else's window.
+    // A live socket is reused even when its pid is unknown (an older build
+    // writes no pid file): spawning a second app would fight it for the socket.
+    const pid = socketOwnerPid();
+    _osPid = pid;
+    _processId = pid ? String(pid) : 'existing';
+    _ownedProcess = false;
+    return _processId;
   }
 
   if (!existsSync(TEAMCLU_APP_PATH)) {
@@ -216,9 +232,9 @@ export async function launchTeamCluApp(): Promise<string> {
     );
   }
 
-  // Kill any existing teamclu processes (only when we need to spawn our own)
-  try { exec('pkill -f "target/debug/teamclu" 2>/dev/null || true'); } catch { /* ok */ }
-  await sleep(1000);
+  // No `pkill -f target/debug/teamclu` here: that pattern matches every dev
+  // build on the machine, including another checkout's app someone is using.
+  // A live socket was reused above, so all that can be left is a stale file.
 
   // Clean up stale socket file
   try { exec(`rm -f ${TAURI_MCP_SOCKET}`); } catch { /* ok */ }
@@ -263,7 +279,6 @@ export async function stopApp(): Promise<void> {
     }
     if (_osPid) {
       try { exec(`kill ${_osPid} 2>/dev/null || true`); } catch { /* ok */ }
-      try { exec('pkill -f "target/debug/teamclu" 2>/dev/null || true'); } catch { /* ok */ }
     }
   } else {
     console.log('[test-utils] Skipping app shutdown (reusing existing app)');

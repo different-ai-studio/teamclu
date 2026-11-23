@@ -1,7 +1,7 @@
 //! Push a message (optionally with a file) through amuxd's running channel
 //! gateway over the control socket (`channel-send`).
 //!
-//! Used by the introspect API's WeCom send. This lived in
+//! Used by the introspect API's WeCom and SeaTalk sends. This lived in
 //! `commands/cron/amuxd_client.rs` alongside the cron scheduler's
 //! `prompt-await` client; cron moved into amuxd (ADR-0010) and took that
 //! client's other half with it.
@@ -51,6 +51,45 @@ pub async fn channel_send_media_at(
         payload["media_filename"] = serde_json::Value::String(m.filename.to_string());
     }
     amuxd_json_roundtrip(sock_path, &payload).await
+}
+
+/// Map a SeaTalk target as people write it (`single:` / `group:` / raw, with
+/// an optional `bot:<app_id>/` prefix) to amuxd's dispatch form. The daemon's
+/// cron delivery has its own copy (`apps/daemon/src/cron/delivery.rs`); the
+/// desktop and the daemon are separate crates.
+pub fn seatalk_target_to_dispatch(target: &str) -> Result<String, String> {
+    let (prefix, body) = match target.strip_prefix("bot:") {
+        Some(rest) => {
+            let (app, rest) = rest.split_once('/').ok_or_else(|| {
+                "SeaTalk target must be bot:<app_id>/single:<id> or bot:<app_id>/group:<id>"
+                    .to_string()
+            })?;
+            if app.trim().is_empty() {
+                return Err("SeaTalk app id is empty".into());
+            }
+            (Some(app), rest)
+        }
+        None => (None, target),
+    };
+    let mapped = if let Some(id) = body.strip_prefix("single:") {
+        if id.trim().is_empty() {
+            return Err("SeaTalk employee_code is empty".into());
+        }
+        format!("user:{id}")
+    } else if let Some(id) = body.strip_prefix("group:") {
+        if id.trim().is_empty() {
+            return Err("SeaTalk group_id is empty".into());
+        }
+        format!("chat:{id}")
+    } else if body.trim().is_empty() {
+        return Err("SeaTalk target is empty".into());
+    } else {
+        format!("user:{body}")
+    };
+    Ok(match prefix {
+        Some(app) => format!("bot:{app}/{mapped}"),
+        None => mapped,
+    })
 }
 
 async fn amuxd_json_roundtrip(sock_path: &Path, payload: &serde_json::Value) -> Result<(), String> {
@@ -164,5 +203,29 @@ mod tests {
         channel_send_media_at(&sock_path, "wecom", "user:alice", "hello", None)
             .await
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod seatalk_target_tests {
+    use super::seatalk_target_to_dispatch;
+
+    #[test]
+    fn maps_seatalk_single_and_group_targets() {
+        assert_eq!(
+            seatalk_target_to_dispatch("single:E001").unwrap(),
+            "user:E001"
+        );
+        assert_eq!(
+            seatalk_target_to_dispatch("group:g-abc").unwrap(),
+            "chat:g-abc"
+        );
+        assert_eq!(seatalk_target_to_dispatch("E002").unwrap(), "user:E002");
+        assert!(seatalk_target_to_dispatch("group:").is_err());
+        assert!(seatalk_target_to_dispatch("").is_err());
+        assert_eq!(
+            seatalk_target_to_dispatch("bot:app-1/single:E001").unwrap(),
+            "bot:app-1/user:E001"
+        );
     }
 }

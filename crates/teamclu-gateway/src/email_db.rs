@@ -10,16 +10,6 @@ pub struct EmailDb {
     conn: Arc<Mutex<Connection>>,
 }
 
-/// Account state including UID watermark
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct EmailAccountState {
-    pub account_key: String,
-    pub uid_watermark: u32,
-    pub last_check_at: Option<String>,
-    pub updated_at: String,
-}
-
 /// Message thread mapping
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
@@ -353,29 +343,6 @@ impl EmailDb {
         Ok(())
     }
 
-    /// Update session ID for a Message-ID
-    #[allow(dead_code)]
-    pub async fn update_thread_session(
-        &self,
-        account_key: &str,
-        message_id: &str,
-        session_id: &str,
-    ) -> Result<(), String> {
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "UPDATE message_threads SET session_id = ?3 
-             WHERE account_key = ?1 AND message_id = ?2",
-            params![
-                account_key.to_string(),
-                message_id.to_string(),
-                session_id.to_string()
-            ],
-        )
-        .await
-        .map_err(|e| format!("Failed to update thread session: {}", e))?;
-        Ok(())
-    }
-
     /// Subject-based fallback when In-Reply-To / References are missing.
     /// Returns `(session_id, binding)` for the most recent thread that
     /// matches the normalised subject. `binding` is `None` for rows
@@ -410,98 +377,7 @@ impl EmailDb {
         Ok(None)
     }
 
-    /// Get all message threads for an account (for debugging)
-    #[allow(dead_code)]
-    pub async fn get_all_threads(
-        &self,
-        account_key: &str,
-        limit: i64,
-    ) -> Result<Vec<MessageThread>, String> {
-        let conn = self.conn.lock().await;
-        let mut rows = conn
-            .query(
-                "SELECT id, account_key, message_id, subject, session_id, created_at
-                 FROM message_threads 
-                 WHERE account_key = ?1 
-                 ORDER BY created_at DESC LIMIT ?2",
-                params![account_key.to_string(), limit],
-            )
-            .await
-            .map_err(|e| format!("Failed to query message threads: {}", e))?;
-
-        let mut threads = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| format!("Failed to read message thread row: {}", e))?
-        {
-            threads.push(MessageThread {
-                id: row.get::<i64>(0).unwrap_or(0),
-                account_key: row.get::<String>(1).unwrap_or_default(),
-                message_id: row.get::<String>(2).unwrap_or_default(),
-                subject: row.get::<String>(3).ok(),
-                session_id: row.get::<String>(4).ok(),
-                created_at: row.get::<String>(5).unwrap_or_default(),
-            });
-        }
-        Ok(threads)
-    }
-
     // ──────────────────────────────────────────────────────────────────────
     // Utilities
     // ──────────────────────────────────────────────────────────────────────
-
-    /// Get all account keys
-    #[allow(dead_code)]
-    pub async fn get_all_account_keys(&self) -> Result<Vec<String>, String> {
-        let conn = self.conn.lock().await;
-        let mut rows = conn
-            .query(
-                "SELECT account_key FROM email_accounts ORDER BY account_key",
-                (),
-            )
-            .await
-            .map_err(|e| format!("Failed to query account keys: {}", e))?;
-
-        let mut keys = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| format!("Failed to read account key row: {}", e))?
-        {
-            if let Ok(key) = row.get::<String>(0) {
-                keys.push(key);
-            }
-        }
-        Ok(keys)
-    }
-
-    /// Delete all data for an account (cleanup)
-    #[allow(dead_code)]
-    pub async fn delete_account(&self, account_key: &str) -> Result<(), String> {
-        let conn = self.conn.lock().await;
-
-        conn.execute(
-            "DELETE FROM email_accounts WHERE account_key = ?1",
-            params![account_key.to_string()],
-        )
-        .await
-        .ok();
-
-        conn.execute(
-            "DELETE FROM processed_uids WHERE account_key = ?1",
-            params![account_key.to_string()],
-        )
-        .await
-        .ok();
-
-        conn.execute(
-            "DELETE FROM message_threads WHERE account_key = ?1",
-            params![account_key.to_string()],
-        )
-        .await
-        .ok();
-
-        Ok(())
-    }
 }

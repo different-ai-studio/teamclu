@@ -23,7 +23,6 @@ const workspaceStoreMocks = vi.hoisted(() => ({
 
 const teamModeStoreMocks = vi.hoisted(() => ({
   teamModeType: null as string | null,
-  loadTeamGitFileSyncStatus: vi.fn(),
 }))
 
 const authStoreMocks = vi.hoisted(() => ({
@@ -100,7 +99,6 @@ vi.mock('@/lib/utils', () => ({
 }))
 
 vi.mock('@/lib/ui/date-format', () => ({
-  formatSessionDate: (d: Date) => d.toISOString(),
   formatRelativeTime: (d: Date) => d.toISOString(),
 }))
 
@@ -128,9 +126,10 @@ vi.mock('@/stores/workspace', () => ({
 
 vi.mock('@/stores/tabs', () => ({
   useTabsStore: Object.assign(
-    (sel: (s: Record<string, unknown>) => unknown) => sel({}),
+    (sel: (s: Record<string, unknown>) => unknown) => sel({ activeTabId: null }),
     { getState: () => ({ hideAll: vi.fn() }) },
   ),
+  selectActiveTab: () => null,
 }))
 
 vi.mock('@/stores/team-mode', () => ({
@@ -205,6 +204,14 @@ vi.mock('@/components/sidebar/NavRail', () => ({
 
 vi.mock('@/components/sidebar/LocalDaemonCard', () => ({
   LocalDaemonCard: () => null,
+  useLocalDaemonAgent: () => ({
+    absent: false,
+    actor: null,
+    runtimeStatus: 'checking',
+    teamId: null,
+    refetch: () => {},
+    defaultAgentId: null,
+  }),
 }))
 
 vi.mock('@/components/sidebar/SessionListColumn', () => ({
@@ -277,13 +284,13 @@ describe('AppSidebar', () => {
 
   it('renders settings entry with english fallback text', () => {
     render(<AppSidebar />)
-    expect(screen.getByText('Settings')).toBeDefined()
-    expect(screen.queryByText('设置')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeDefined()
+    expect(screen.queryByRole('button', { name: '设置' })).toBeNull()
   })
 
   it('preserves the settings footer row', () => {
     render(<AppSidebar />)
-    expect(screen.getByText('Settings')).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeDefined()
   })
 
   it('does not render a footer workspace selector', () => {

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 
 import { NoTeamScreen } from "../src/features/onboarding/screens/NoTeamScreen";
-import { supabase } from "../src/lib/supabase/client";
+import { cloudAuth } from "../src/lib/auth/cloud-auth";
 
 import { routeToHref, useOnboarding } from "./_layout";
 
@@ -32,7 +32,7 @@ export default function NoTeamRoute() {
     if (!isNoTeam) return;
     let cancelled = false;
     void controller.refreshPendingInvites();
-    void supabase.auth.getUser().then(({ data }) => {
+    void cloudAuth.auth.getUser().then(({ data }) => {
       if (!cancelled) setEmail(data.user?.email ?? null);
     });
     // Back from the mail app / a chat with the invite: check again.

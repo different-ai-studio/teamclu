@@ -41,8 +41,6 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   logs="$(docker compose logs --tail=80 amuxd 2>&1 || true)"
   case "$logs" in
     *"no persisted identity and AMUXD_JOIN_TOKEN is empty"*) break ;;
-    *"OPENCODE_MODEL must be set when OPENCODE_API_KEY is set"*) break ;;
-    *"OPENCODE_BASE_URL must be set when OPENCODE_API_KEY is set"*) break ;;
     *"starting daemon"*|*"amuxd: starting daemon"*) break ;;
   esac
   sleep 5
@@ -51,12 +49,6 @@ printf '%s\n' "$logs" | tail -20
 case "$logs" in
   *"no persisted identity and AMUXD_JOIN_TOKEN is empty"*)
     bad "missing AMUXD_JOIN_TOKEN on first boot"
-    ;;
-  *"OPENCODE_MODEL must be set when OPENCODE_API_KEY is set"*)
-    bad "OPENCODE_MODEL missing while OPENCODE_API_KEY is set"
-    ;;
-  *"OPENCODE_BASE_URL must be set when OPENCODE_API_KEY is set"*)
-    bad "OPENCODE_BASE_URL missing while OPENCODE_API_KEY is set"
     ;;
 esac
 case "$logs" in

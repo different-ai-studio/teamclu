@@ -2,7 +2,11 @@ import { create } from "zustand";
 
 export interface Tab {
   id: string;
-  type: "file" | "webview" | "native";
+  /**
+   * `preview` is a read-only rendering of a chat file (markdown / html) whose
+   * body lives in `lib/tabs/preview-tabs.ts`, keyed by `target`.
+   */
+  type: "file" | "webview" | "native" | "preview";
   target: string;
   label: string;
   dirty: boolean;

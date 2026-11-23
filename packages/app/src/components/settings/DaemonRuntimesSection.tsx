@@ -8,19 +8,7 @@ import { cn } from '@/lib/utils'
 import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
 import { useLocalAgentSectionGate } from '@/hooks/use-local-agent-install'
 import { SectionHeader, SettingCard } from './shared'
-
-function formatRelative(value: string | null): string {
-  if (!value) return '-'
-  const time = new Date(value).getTime()
-  if (!Number.isFinite(time)) return value
-  const diff = Date.now() - time
-  if (diff < 60_000) return 'just now'
-  const minutes = Math.floor(diff / 60_000)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
-}
+import { formatRelative } from './format-relative'
 
 function statusClass(status: string): string {
   switch (status) {

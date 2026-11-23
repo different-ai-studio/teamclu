@@ -8,8 +8,7 @@ name = "teamclu-introspect"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
-serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time"] }
 serde_json = "1"
 # default-features off, rustls only: release-oss builds this sidecar in the
 # same cargo invocation as amuxd, and reqwest's `default` (native-tls) would
@@ -21,6 +20,14 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 teamclu-runtime-env = { path = "../../../../crates/teamclu-runtime-env" }
 uuid = { version = "1", features = ["v4"] }
+
+# Link the MSVC VC runtime statically (UCRT stays dynamic, it ships with
+# Windows). Without it this sidecar imports VCRUNTIME140.dll, which a clean
+# Windows install does not have, and fails to start with "找不到
+# VCRUNTIME140.dll". The desktop exe gets the same treatment from the Tauri CLI
+# (STATIC_VCRUNTIME); sidecars built with plain cargo do not. No-op off MSVC.
+[build-dependencies]
+static_vcruntime = "3.0"
 
 [dev-dependencies]
 tempfile = "3"

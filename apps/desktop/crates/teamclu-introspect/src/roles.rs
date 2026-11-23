@@ -37,7 +37,7 @@ pub async fn handle(workspace: &str, arguments: &Value) -> Result<Value, String>
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            let role_dir = role_dir(workspace, &slug);
+            let role_dir = role_dir(workspace, &slug)?;
             if role_dir.exists() {
                 return Err(format!("Role '{}' already exists", slug));
             }
@@ -58,7 +58,7 @@ pub async fn handle(workspace: &str, arguments: &Value) -> Result<Value, String>
                 .and_then(|v| v.as_str())
                 .ok_or("Missing field: slug")?;
 
-            let role_md_path = role_dir(workspace, slug).join("ROLE.md");
+            let role_md_path = role_dir(workspace, slug)?.join("ROLE.md");
             if !role_md_path.exists() {
                 return Err(format!("Role '{}' not found", slug));
             }
@@ -90,7 +90,7 @@ pub async fn handle(workspace: &str, arguments: &Value) -> Result<Value, String>
                 .and_then(|v| v.as_str())
                 .ok_or("Missing field: slug")?;
 
-            let dir = role_dir(workspace, slug);
+            let dir = role_dir(workspace, slug)?;
             if !dir.exists() {
                 return Err(format!("Role '{}' not found", slug));
             }
@@ -110,16 +110,30 @@ pub async fn handle(workspace: &str, arguments: &Value) -> Result<Value, String>
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-fn role_dir(workspace: &str, slug: &str) -> std::path::PathBuf {
-    Path::new(workspace)
-        .join(config::TEAMCLU_DIR)
-        .join("roles")
-        .join(slug)
+/// The directory of one role, or an error when `slug` is not a plain name.
+///
+/// The slug comes from the model. Joined unchecked, an empty slug is the roles
+/// directory itself — so `delete` removed every role at once — and `../..` or
+/// an absolute path reaches anywhere `remove_dir_all` can.
+fn role_dir(workspace: &str, slug: &str) -> Result<std::path::PathBuf, String> {
+    let mut components = Path::new(slug).components();
+    let plain = matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    );
+    // `components()` reads `a/` and `a/.` as the single name `a`, and a
+    // backslash is an ordinary character on unix but a separator on Windows.
+    if !plain || slug.contains(['/', '\\']) {
+        return Err(format!(
+            "Invalid role slug '{slug}': use a single directory name"
+        ));
+    }
+    Ok(config::roles_dir(workspace).join(slug))
 }
 
 /// Like `read_roles` but includes the slug (directory name) in each entry.
 fn roles_with_slugs(workspace: &str) -> Vec<Value> {
-    let roles_dir = Path::new(workspace).join(config::TEAMCLU_DIR).join("roles");
+    let roles_dir = config::roles_dir(workspace);
 
     if !roles_dir.exists() {
         return vec![];
@@ -253,6 +267,31 @@ mod tests {
         assert_eq!(name, "Dev");
         assert_eq!(desc, "coding");
         assert_eq!(ws, "fast");
+    }
+
+    #[test]
+    fn role_dir_accepts_only_a_plain_name() {
+        assert!(role_dir("/w", "dev-assistant").is_ok());
+        for bad in [
+            "", ".", "..", "../x", "a/b", "a/", "/etc", "a\\b", "../../..",
+        ] {
+            assert!(role_dir("/w", bad).is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_with_an_empty_slug_keeps_the_other_roles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_str().unwrap();
+        let kept = config::roles_dir(ws).join("dev");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::write(kept.join("ROLE.md"), "---\nname: \"Dev\"\n---\n").unwrap();
+
+        for slug in ["", "..", "../.."] {
+            let args = serde_json::json!({ "action": "delete", "slug": slug });
+            assert!(handle(ws, &args).await.is_err(), "deleted with {slug:?}");
+        }
+        assert!(kept.join("ROLE.md").exists());
     }
 
     #[tokio::test]

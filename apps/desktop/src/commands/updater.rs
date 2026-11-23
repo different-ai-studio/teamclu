@@ -946,8 +946,12 @@ pub async fn download_and_install_update<R: Runtime>(
     let pubkey = get_updater_pubkey();
     verify_signature(&bytes, &signature, pubkey)?;
 
-    // 3. Install (extract tar.gz and replace .app bundle)
-    install_update(&bytes, &signature)?;
+    // 3. Install (extract tar.gz and replace .app bundle). Unpacking a whole
+    // app bundle and swapping it on disk is seconds of blocking I/O; inline
+    // here it held a runtime worker for the duration.
+    tokio::task::spawn_blocking(move || install_update(&bytes, &signature))
+        .await
+        .map_err(|e| format!("Update install did not finish: {e}"))??;
 
     Ok(())
 }

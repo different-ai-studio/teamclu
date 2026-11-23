@@ -844,14 +844,11 @@ public final class SessionDetailViewModel {
     }
 
     /// `Amux_AgentType` raw value → the backend spelling the loader's display
-    /// helper expects.
+    /// helper expects. pi is the only runtime (ADR-0014); the legacy values
+    /// (1 claude, 2 opencode, 3 codex, 5 cursor) run pi too.
     private static func backendType(forAgentTypeRaw raw: Int) -> String? {
         switch raw {
-        case 1: return "claude"
-        case 2: return "opencode"
-        case 3: return "codex"
-        case 4: return "pi"
-        case 5: return "cursor"
+        case 1...5: return "pi"
         default: return nil
         }
     }
@@ -1211,17 +1208,11 @@ public final class SessionDetailViewModel {
     }
 
     /// Maps the backend-type spelling to the proto enum
-    /// `runtimeStartRpc` expects. Mirrors the AMUXUI-side
-    /// `AgentConfigSheet.AgentType.asAmuxAgentType` mapping; we duplicate it
-    /// here because that helper lives in the UI package and can't be
-    /// imported from AMUXCore.
+    /// `runtimeStartRpc` expects. pi is the only runtime (ADR-0014), so every
+    /// spelling — legacy ones included — starts pi. Mirrors the AMUXUI-side
+    /// `AgentConfigSheet.AgentType.asAmuxAgentType`.
     private static func amuxAgentType(forBackendType backendType: String?) -> Amux_AgentType {
-        switch backendType {
-        case "claude": return .claudeCode
-        case "opencode": return .opencode
-        case "codex": return .codex
-        default: return .pi
-        }
+        .pi
     }
 
     /// Best-effort lookup of the worktree filesystem path for a workspace UUID.
@@ -1597,7 +1588,7 @@ public final class SessionDetailViewModel {
         }
 
         // Inbox red-dot clear: local first for instant UI, then the
-        // server upsert so other devices' next fetchUnreadFlags() reflects
+        // server upsert so other devices' next session-list refresh reflects
         // the read. Building the repo on demand avoids plumbing it through
         // every SessionDetailView call site; the SupabaseClient is cheap.
         if let session, session.hasUnread {
@@ -1607,13 +1598,10 @@ public final class SessionDetailViewModel {
         if let sessionId = session?.sessionId {
             Task.detached {
                 guard let config = CloudAPIConfigurationStore.configuration() else { return }
-                let storage = KeychainSessionStorage()
-                let repo = CloudAPIRepositoryFactory.sessionsRepository(configuration: config) {
-                    guard let s = try storage.load(), s.expiresAt.timeIntervalSinceNow > 0 else {
-                        throw CloudAPIError.missingAccessToken
-                    }
-                    return s.accessToken
-                }
+                let repo = CloudAPIRepositoryFactory.sessionsRepository(
+                    configuration: config,
+                    accessToken: CloudAccessToken.provider()
+                )
                 try? await repo.markSessionViewed(sessionId: sessionId, lastReadMessageId: nil)
             }
         }

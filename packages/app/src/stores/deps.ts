@@ -21,9 +21,8 @@ export interface DependencyInfo {
 /**
  * Installed vs available version of one dependency.
  *
- * "Available" differs per dependency — opencode's comes off the mirror
- * manifest, pi's is the minimum `pi.lock.json` pins — but the question the UI
- * asks is the same either way: is there something to update to.
+ * For pi, "available" is the minimum `pi.lock.json` pins; the question the UI
+ * asks is: is there something to update to.
  */
 interface DependencyVersions {
   installed: string | null
@@ -66,7 +65,6 @@ interface DepsState {
   installOutput: Record<string, string[]>
   /** Which operation produced the current results — drives the UI wording. */
   lastOperation: 'install' | 'update' | null
-  /** Newest opencode available, or null until/unless the check succeeds. */
   /** Keyed by dependency name; absent means "not checked / unknown". */
   versions: Record<string, DependencyVersions>
 
@@ -88,7 +86,7 @@ interface DepsState {
   /** Reset install state for retry */
   resetInstallState: () => void
 
-  /** Ask amuxd what the newest opencode is (network; safe to fail). */
+  /** Ask amuxd what the newest pi is (network; safe to fail). */
   checkVersions: () => Promise<void>
 }
 

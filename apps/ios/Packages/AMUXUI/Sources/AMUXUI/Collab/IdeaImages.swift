@@ -164,13 +164,7 @@ extension IdeaThumbnailLoader {
     /// Built the way `AttachmentUploadManager.fromMainBundle` builds one.
     private static func client() -> CloudAPIClient? {
         guard let configuration = CloudAPIConfigurationStore.configuration() else { return nil }
-        let storage = KeychainSessionStorage()
-        return CloudAPIClient(configuration: configuration, accessToken: {
-            guard let session = try storage.load(), session.expiresAt.timeIntervalSinceNow > 0 else {
-                throw CloudAPIError.missingAccessToken
-            }
-            return session.accessToken
-        })
+        return CloudAPIClient(configuration: configuration, accessToken: CloudAccessToken.provider())
     }
 }
 

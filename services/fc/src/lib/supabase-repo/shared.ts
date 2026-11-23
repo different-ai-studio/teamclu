@@ -6,6 +6,13 @@ import WebSocket from "ws";
 import { ApiError } from "../http-utils.js";
 import { appPublicUrl, normalizeAppCode } from "../apps-public-host.js";
 import { typeChangeNeedsRedeploy } from "../validation/app-type.js";
+import {
+  GITEA_AUTH_KIND,
+  giteaHttpUrlFromRemote,
+  isTeamCluOrgOwner,
+  repoOwnerFromRemote,
+} from "../provisioning/gitea.js";
+import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
 
 // FC runtime is Node 20 which lacks native WebSocket. supabase-js v2.45+ tries
 // to construct a RealtimeClient at createClient() time and throws without a
@@ -120,7 +127,7 @@ export function mapSetTeamMemberRoleError(error: any) {
 // the client contract. Selecting it keeps finalizeDeploy and the data browser
 // from needing a second round trip.
 export const APP_COLUMNS =
-  "id, team_id, org_id, created_by_actor_id, name, slug, app_code, function_naming_mode, uses_app_code_domain, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, start_spec, artifact_verification, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, undeploy_operation, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, deploy_token, deploy_attempt_id, deploy_started_at, created_at, updated_at";
+  "id, team_id, org_id, created_by_actor_id, name, slug, app_code, function_naming_mode, uses_app_code_domain, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, start_spec, artifact_verification, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, undeploy_operation, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, deploy_token, deploy_attempt_id, deploy_started_at, custom_domain, custom_domain_verified_at, created_at, updated_at";
 
 export function slugify(name: string): string {
   return (
@@ -161,6 +168,17 @@ export function appRelationshipFor(
   return { relationship: "invited", invitedByActorId: null };
 }
 
+export function appGitAccountFields(r: any): { gitAccountAuth: boolean; gitHttpUrl: string | null } {
+  const accountAuth =
+    r.git_auth_kind === GITEA_AUTH_KIND &&
+    giteaAccountAuthEnabled() &&
+    isTeamCluOrgOwner(repoOwnerFromRemote(r.git_remote_url));
+  return {
+    gitAccountAuth: accountAuth,
+    gitHttpUrl: accountAuth ? giteaHttpUrlFromRemote(r.git_remote_url, process.env.GITEA_PUBLIC_URL) : null,
+  };
+}
+
 // Exposes EXACTLY the canonical app fields. Reads snake_case DB columns
 // (PostgREST returns the table's native column names).
 export function mapApp(r: any) {
@@ -187,6 +205,11 @@ export function mapApp(r: any) {
     // no access to. The client needs the distinction to know whether deploy can
     // go through Gitea at all.
     gitAuthKind: r.git_auth_kind ?? null,
+    // Per-account Gitea auth (GITEA_ACCOUNT_AUTH): a new client points the
+    // checkout at this HTTPS address and authenticates with its own account.
+    // The stored remote and auth kind stay as they were so older daemons keep
+    // working over SSH + deploy keys.
+    ...appGitAccountFields(r),
     gitCommitSha: r.git_commit_sha ?? null,
     runtime: r.runtime ?? "node",
     startSpec: r.start_spec ?? null,
@@ -257,6 +280,17 @@ export function mapApp(r: any) {
     publicUrl: appPublicUrl(r.slug, r.id, process.env, r.uses_app_code_domain === true ? appCode : null),
     fcFunctionName: r.fc_function_name ?? null,
     fcRegion: r.fc_region ?? null,
+    // Only when the row was read with the columns. A query that selected a
+    // narrower set must not report "no domain": the client merges this row
+    // over the one it holds, and a null here would blank a bound domain.
+    // `custom_domain_token` never leaves the server; the DNS records that
+    // embed it come from GET /v1/apps/:id/custom-domain, for admins only.
+    ...("custom_domain" in r
+      ? {
+          customDomain: r.custom_domain ?? null,
+          customDomainVerifiedAt: appIso(r.custom_domain_verified_at),
+        }
+      : {}),
     createdAt: appIso(r.created_at)!,
     updatedAt: appIso(r.updated_at)!,
   };
@@ -445,47 +479,6 @@ export function mapWorkspace(row) {
 
 export function mapShortcut(row) {
   return mapShortcutRow(row);
-}
-
-export function mapTeamRole(row) {
-  return {
-    id: requiredString(row?.id, "roles.mapTeamRole", "id"),
-    teamId: requiredString(row?.team_id, "roles.mapTeamRole", "team_id"),
-    code: requiredString(row?.code, "roles.mapTeamRole", "code"),
-    name: requiredString(row?.name, "roles.mapTeamRole", "name"),
-  };
-}
-
-export function mapPermission(row) {
-  return {
-    resourceId: requiredString(row?.resource_id, "permissions.mapPermission", "resource_id"),
-    roleIds: (row?.permission_roles ?? []).map((x) => requiredString(x?.role_id, "permissions.mapPermission", "role_id")),
-  };
-}
-
-export function mapActor(row) {
-  return {
-    id: requiredString(row?.id, "actors.mapActor", "id"),
-    teamId: requiredString(row?.team_id, "actors.mapActor", "team_id"),
-    kind: row?.kind ?? "user",
-    displayName: row?.display_name ?? "",
-    avatarUrl: row?.avatar_url ?? null,
-    userId: row?.user_id ?? null,
-    metadata: row?.metadata ?? null,
-    roles: row?.roles ?? [],
-    teamRole: row?.team_role ?? null,
-  };
-}
-
-export function mapTeamMember(row) {
-  return {
-    actorId: requiredString(row?.actor_id, "teamMembers.mapTeamMember", "actor_id"),
-    teamId: requiredString(row?.team_id, "teamMembers.mapTeamMember", "team_id"),
-    // Derived from roles_users after enrich; legacy team_members.role is unused.
-    roles: row?.roles ?? [],
-    role: row?.role ?? null,
-    joinedAt: row?.joined_at ?? null,
-  };
 }
 
 export function mapIdeaRow(row) {

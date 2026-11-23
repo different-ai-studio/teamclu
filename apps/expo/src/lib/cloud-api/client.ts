@@ -49,9 +49,9 @@ export function cloudApiBaseUrl(): string {
   return baseUrl;
 }
 
-/** Build a getAccessToken closure from a Supabase client's auth session.
- * Transitional bridge until the auth layer itself moves off the SDK. */
-export function supabaseAccessToken(
+/** Build a getAccessToken closure from an auth client's session — in the app
+ * that is the `cloudAuth` facade (`lib/auth/cloud-auth`). */
+export function cloudAccessToken(
   client: { auth: { getSession: () => Promise<{ data: { session: { access_token: string } | null } }> } },
 ): () => Promise<string | null> {
   return async () => {

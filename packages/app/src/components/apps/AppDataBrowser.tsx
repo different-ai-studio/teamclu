@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Database, Loader2, Pencil, RotateCcw, Trash2 } from 'lucide-react'
+import { Database, Loader2, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -23,7 +23,7 @@ import type { AppDataRowsPage, AppDataTable, AppRow } from '@/lib/backend/types'
 interface AppDataBrowserProps {
   app: AppRow
   tables: AppDataTable[]
-  /** From the control panel: `admin` may edit and delete, `prompt` may not. */
+  /** From the control panel: `admin` may add, edit and delete, `prompt` may not. */
   canEdit: boolean
   initialTable?: string | null
 }
@@ -50,6 +50,9 @@ export function AppDataBrowser({ app, tables, canEdit, initialTable }: AppDataBr
   const [saving, setSaving] = React.useState(false)
   const [pendingDelete, setPendingDelete] = React.useState<string | null>(null)
   const [deleting, setDeleting] = React.useState(false)
+  /** The new-row form's text per column; null while the form is closed. */
+  const [insertDraft, setInsertDraft] = React.useState<Record<string, string> | null>(null)
+  const [inserting, setInserting] = React.useState(false)
 
   React.useEffect(() => {
     setSelected(initialTable ?? tables[0]?.name ?? null)
@@ -65,6 +68,7 @@ export function AppDataBrowser({ app, tables, canEdit, initialTable }: AppDataBr
     setLoading(true)
     setError(null)
     setEdit(null)
+    setInsertDraft(null)
     try {
       const first = await getBackend().apps.readAppDataRows(app.id, selected)
       setPage(first)
@@ -157,6 +161,42 @@ export function AppDataBrowser({ app, tables, canEdit, initialTable }: AppDataBr
     }
   }
 
+  const openInsert = () => {
+    if (!table) return
+    const draft: Record<string, string> = {}
+    for (const column of table.columns) draft[column.name] = ''
+    setEdit(null)
+    setInsertDraft(draft)
+  }
+
+  /**
+   * An empty field is left out, so the column takes its default — a serial key
+   * or `now()` fills itself in. That differs from editing, where an empty field
+   * means NULL: there the column already has a value and emptying it is a
+   * choice, while here nothing has been chosen yet.
+   */
+  const handleInsert = async () => {
+    if (!insertDraft || !selected) return
+    const values: Record<string, unknown> = {}
+    for (const [column, text] of Object.entries(insertDraft)) {
+      if (text === '') continue
+      values[column] = parseCellInput(text)
+    }
+    setInserting(true)
+    try {
+      const stored = await getBackend().apps.insertAppDataRow(app.id, selected, values)
+      setRows((prev) => [stored, ...prev])
+      setInsertDraft(null)
+      toast.success(t('apps.data.rowInserted', '已新增'))
+    } catch (e) {
+      toast.error(t('apps.data.insertFailed', '新增失败'), {
+        description: e instanceof Error ? e.message : String(e),
+      })
+    } finally {
+      setInserting(false)
+    }
+  }
+
   const rowActionsDisabled = !canEdit || !table?.editable
 
   return (
@@ -209,18 +249,94 @@ export function AppDataBrowser({ app, tables, canEdit, initialTable }: AppDataBr
                     )
                   : t('apps.data.rowsShown', '已加载 {{count}} 行', { count: rows.length })}
               </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 gap-1 rounded-[7px] text-[12px]"
-                disabled={loading}
-                onClick={() => void loadFirstPage()}
-              >
-                <RotateCcw className="h-3 w-3" />
-                {t('common.refresh', '刷新')}
-              </Button>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 rounded-[7px] text-[12px]"
+                  disabled={!canEdit || !table || loading || insertDraft !== null}
+                  title={
+                    !canEdit
+                      ? t('apps.data.editNeedsAdmin', '需要 admin 权限才能修改')
+                      : t('apps.data.insertRow', '新增一行')
+                  }
+                  onClick={openInsert}
+                  data-testid="app-data-insert"
+                >
+                  <Plus className="h-3 w-3" />
+                  {t('apps.data.insertRow', '新增一行')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 rounded-[7px] text-[12px]"
+                  disabled={loading}
+                  onClick={() => void loadFirstPage()}
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  {t('common.refresh', '刷新')}
+                </Button>
+              </div>
             </div>
+
+            {insertDraft && table && (
+              <div
+                className="shrink-0 border-b border-border-soft bg-paper/50 px-3 py-2.5"
+                data-testid="app-data-insert-form"
+              >
+                <p className="mb-2 text-[11.5px] text-muted-foreground">
+                  {t(
+                    'apps.data.insertHint',
+                    '留空的列使用默认值（例如自增主键、当前时间）。保存后立即写入线上数据库。',
+                  )}
+                </p>
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2">
+                  {table.columns.map((column) => (
+                    <label key={column.name} className="flex min-w-0 flex-col gap-0.5">
+                      <span className="truncate font-mono text-[11px] text-faint">
+                        {column.name}
+                        <span className="ml-1 text-[10px]">{column.dataType}</span>
+                      </span>
+                      <Input
+                        value={insertDraft[column.name] ?? ''}
+                        placeholder={t('apps.data.insertDefault', '默认值')}
+                        onChange={(e) =>
+                          setInsertDraft((prev) =>
+                            prev ? { ...prev, [column.name]: e.target.value } : prev,
+                          )
+                        }
+                        className="h-7 rounded-[6px] font-mono text-[11.5px]"
+                        data-testid={`app-data-insert-${column.name}`}
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-2 flex justify-end gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 rounded-[7px] px-2.5 text-[12px]"
+                    disabled={inserting}
+                    onClick={() => setInsertDraft(null)}
+                  >
+                    {t('common.cancel', 'Cancel')}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 rounded-[7px] px-2.5 text-[12px]"
+                    disabled={inserting}
+                    onClick={() => void handleInsert()}
+                    data-testid="app-data-insert-save"
+                  >
+                    {inserting ? <Loader2 className="h-3 w-3 animate-spin" /> : t('common.save', 'Save')}
+                  </Button>
+                </div>
+              </div>
+            )}
 
             <div className="min-h-0 flex-1 overflow-auto">
               {loading ? (

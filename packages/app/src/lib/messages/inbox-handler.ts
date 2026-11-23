@@ -4,6 +4,9 @@
 // after each message INSERT or mark-viewed). The payload shape:
 //   { type?: "message" | "read", session_id, kind?, mentioned?, ts }
 // `type` is optional for backward compatibility — absent means "message".
+// Two hints carry no message: `session.participants` (a roster changed) and
+// `app.access` (`{ team_id, app_id }`, no session_id — this user was granted or
+// lost access to an app, so re-read the app list).
 // Attention badges need `kind`; without it (pre-attention FC) fall back to the
 // legacy unread patch + current-list refresh so a client-only ship stays silent.
 
@@ -19,7 +22,8 @@ import { useCurrentTeamStore } from "@/stores/current-team";
 interface InboxPing {
   session_id: string;
   team_id?: string;
-  type?: "message" | "read" | "session.participants";
+  app_id?: string;
+  type?: "message" | "read" | "session.participants" | "app.access";
   kind?: string;
   mentioned?: boolean;
   ts?: number;
@@ -199,6 +203,8 @@ interface HandleInboxEnvelopeOptions {
   onMessagePing?: (sessionId: string) => void;
   /** A roster hint. The handler returns before unread and message side effects. */
   onParticipantsChanged?: (sessionId: string, teamId: string) => void;
+  /** This user's access to an app changed. Carries no session. */
+  onAppAccessChanged?: (teamId: string, appId: string | null) => void;
 }
 
 /**
@@ -238,6 +244,14 @@ export function handleInboxEnvelope(
     logger.warn("[inbox] failed to parse payload", e);
     return;
   }
+  if (payload && payload.type === "app.access") {
+    if (typeof payload.team_id === "string" && payload.team_id.length > 0) {
+      const appId = typeof payload.app_id === "string" && payload.app_id ? payload.app_id : null;
+      options?.onAppAccessChanged?.(payload.team_id, appId);
+    }
+    return;
+  }
+
   if (!payload || typeof payload.session_id !== "string") {
     logger.warn("[inbox] missing session_id", payload);
     return;

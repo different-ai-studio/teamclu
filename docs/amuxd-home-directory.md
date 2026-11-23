@@ -64,7 +64,6 @@
 | `amuxd.sock` | 本机控制通道（Windows 用命名管道，不落盘） |
 | `amuxd.http.port` | 本机 HTTP 控制面的实际端口 |
 | `amuxd.http.token` | 桌面端敲本机 API 的通行证（`0600`） |
-| `opencode.serve.pgid` | 受管 `opencode serve` 的进程组，供 `amuxd stop` 收尾 |
 
 daemon 停着的时候整个目录都可以安全删除，下次启动会重建。
 

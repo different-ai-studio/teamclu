@@ -5,6 +5,32 @@ import { parseLimit, requireString } from "../routing-utils.js";
 import { runDueAppCronJobs } from "../app-cron-runner.js";
 import { createServiceRoleClient } from "../supabase.js";
 import { parseGitHttpsCredentialInput } from "../app-git-credential.js";
+import { makeGiteaClient, readGiteaConfig } from "../provisioning/gitea.js";
+import { reconcileGiteaApps } from "../provisioning/gitea-sync.js";
+import { makeDeployKeyExpirySweep } from "../provisioning/deploy-key-expiry.js";
+import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
+
+/**
+ * The Gitea repair pass for the heartbeat, or null when there is nothing to
+ * repair: GITEA_ACCOUNT_AUTH off, or no Gitea configured.
+ */
+function defaultGiteaReconcile(): ((client: any, deadline: number) => Promise<unknown>) | null {
+  if (!giteaAccountAuthEnabled()) return null;
+  const resolved = readGiteaConfig();
+  if (resolved.error) return null;
+  const gitea = makeGiteaClient(resolved.config);
+  return (admin, deadline) => reconcileGiteaApps({ gitea, admin, log: (m) => console.warn(m) }, { deadline });
+}
+
+function defaultDeployKeySweep() {
+  const resolved = readGiteaConfig();
+  return resolved.error ? null : makeDeployKeyExpirySweep({ gitea: makeGiteaClient(resolved.config) });
+}
+
+/** Every tenth minute: often enough that a failed request-path sync heals quickly, rarely enough to stay cheap. */
+export function isGiteaReconcileMinute(now: Date): boolean {
+  return now.getUTCMinutes() % 10 === 0;
+}
 
 /**
  * Object paths travel as base64url, the same trick the data browser plays with
@@ -94,7 +120,11 @@ function normalizeGitRemoteUrl(raw: unknown): string | null {
   return stripUrlCredentials(url);
 }
 
-export function registerApps(router, tickDeps = { createServiceRoleClient, makeAppUndeployDeps }) {
+export function registerApps(
+  router,
+  tickDeps: any = { createServiceRoleClient, makeAppUndeployDeps, giteaReconcile: defaultGiteaReconcile, deployKeySweep: defaultDeployKeySweep, now: () => new Date() },
+) {
+  const deployKeySweep = tickDeps.deployKeySweep?.();
   router.get("/v1/apps", async (ctx) => {
     const teamId = ctx.query.get("teamId");
     requireString(teamId, "teamId");
@@ -108,6 +138,10 @@ export function registerApps(router, tickDeps = { createServiceRoleClient, makeA
     requireString(body.teamId, "teamId");
     requireString(body.name, "name");
     requireString(body.type, "type");
+    if (body.grantActorIds !== undefined
+        && (!Array.isArray(body.grantActorIds) || body.grantActorIds.some((id) => typeof id !== "string"))) {
+      throw new ApiError(400, "validation_failed", "grantActorIds must be an array of actor ids");
+    }
     const out = await ctx.repository.createApp({
       ...body,
       gitRemoteUrl: normalizeGitRemoteUrl(body.gitRemoteUrl),
@@ -292,6 +326,14 @@ export function registerApps(router, tickDeps = { createServiceRoleClient, makeA
     return { body: out };
   });
 
+  router.post("/v1/apps/:appId/data/tables/:table/rows", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const table = decodeURIComponent(ctx.params.table);
+    const out = await ctx.repository.insertAppDataRow(appId, table, ctx.json ?? {});
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { statusCode: 201, body: out };
+  });
+
   router.patch("/v1/apps/:appId/data/tables/:table/rows/:rowKey", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const table = decodeURIComponent(ctx.params.table);
@@ -313,6 +355,15 @@ export function registerApps(router, tickDeps = { createServiceRoleClient, makeA
   router.get("/v1/apps/:appId/membership", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const out = await ctx.repository.getAppMembership(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.get("/v1/apps/:appId/custom-domain", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.getAppCustomDomain(appId);
+    // Admin only: the DNS records carry the verification token. Everyone else
+    // reads the domain and its state off the app row.
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });
@@ -403,7 +454,7 @@ export function registerApps(router, tickDeps = { createServiceRoleClient, makeA
     return { body: out };
   });
 
-  // Deleting a folder is deleting every key under a prefix. `prompt`, like a
+  // Deleting a folder is deleting every key under a prefix. `write`, like a
   // single file — a folder is not a different kind of object, and emptying the
   // WHOLE app is the separate admin-only purge below.
   router.delete("/v1/apps/:appId/storage/folder", async (ctx) => {
@@ -569,11 +620,32 @@ export function registerApps(router, tickDeps = { createServiceRoleClient, makeA
   router.post("/v1/internal/app-cron/tick", { auth: "cron-tick" }, async () => {
     // Same heartbeat in both deploy targets; raw service client by design.
     const client = tickDeps.createServiceRoleClient();
-    // Both jobs share the existing 55-second heartbeat request window.
+    // Background jobs share the existing 55-second heartbeat request window.
     const started = Date.now();
+    let deployKeys: unknown;
+    if (deployKeySweep) {
+      try {
+        const result = await deployKeySweep(client, started + 8_000);
+        deployKeys = result;
+        if (result.failed) console.warn("[gitea] deploy key sweep failures:", result.failed);
+      } catch {
+        deployKeys = { error: "deploy key sweep failed" };
+        console.warn("[gitea] deploy key sweep failed");
+      }
+    }
     const cleanup = await runAppUndeployTick({ store: makeUndeployStore(client), deps: tickDeps.makeAppUndeployDeps(), maxTickMs: 25_000 });
     const out = await runDueAppCronJobs({ client, maxTickMs: Math.max(0, 45_000 - (Date.now() - started)) });
-    return { body: { ...out, cleanup } };
+    // Gitea repair rides the same heartbeat, in whatever is left of the window.
+    let gitea: unknown = null;
+    const reconcile = tickDeps.giteaReconcile?.() ?? null;
+    if (reconcile && isGiteaReconcileMinute(tickDeps.now?.() ?? new Date())) {
+      try {
+        gitea = await reconcile(client, started + 50_000);
+      } catch (e) {
+        gitea = { error: String((e as Error)?.message ?? e) };
+      }
+    }
+    return { body: { ...out, cleanup, ...(deployKeys ? { deployKeys } : {}), ...(gitea ? { gitea } : {}) } };
   });
 
   // The deployed app asking for its own credentials. `auth: "app-token"` gets a

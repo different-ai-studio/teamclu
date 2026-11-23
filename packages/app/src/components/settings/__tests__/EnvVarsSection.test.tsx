@@ -71,11 +71,11 @@ vi.mock('@/stores/current-team', () => ({
     selector({ team: { id: 'team-1' } }),
 }))
 
-vi.mock('@/stores/team-members', () => ({
-  useTeamMembersStore: (selector: (s: Record<string, unknown>) => unknown) =>
+vi.mock('@/stores/device-identity', () => ({
+  useDeviceIdentityStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
-      currentNodeId: null,
-      loadCurrentNodeId: vi.fn(),
+      currentActorId: null,
+      loadCurrentActorId: vi.fn(),
     }),
 }))
 

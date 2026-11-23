@@ -117,11 +117,9 @@ public final class AgentAttachment {
 
     public var agentTypeLabel: String {
         switch agentType {
-        case 1: "Claude Code"
-        case 2: "OpenCode"
-        case 3: "Codex"
-        case 4: "pi"
-        case 5: "Cursor"
+        // pi is the only runtime (ADR-0014); legacy values 1/2/3/5
+        // (claude / opencode / codex / cursor) run pi too.
+        case 1...5: "pi"
         default: String(localized: "Unknown")
         }
     }

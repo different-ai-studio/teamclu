@@ -27,7 +27,7 @@ import {
 } from "../../src/features/apps/team-app-types";
 import { createConfiguredTeamAppsApi } from "../../src/features/apps/team-apps-api";
 import { rememberTeamApps } from "../../src/features/apps/team-apps-memory";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { Hairline } from "../../src/ui/atoms/Hairline";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
 import { colors, hai, radii, spacing, typography } from "../../src/ui/theme";
@@ -59,7 +59,7 @@ export default function TeamAppsRoute() {
     }
     inFlight.current = true;
     try {
-      const rows = await createConfiguredTeamAppsApi(supabase).listApps(teamId);
+      const rows = await createConfiguredTeamAppsApi(cloudAuth).listApps(teamId);
       rememberTeamApps(rows);
       setApps(rows);
       setError(null);

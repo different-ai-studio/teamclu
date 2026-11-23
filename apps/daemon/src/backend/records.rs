@@ -1,15 +1,3 @@
-/// Returned by `claim_team_invite` — both member and agent branches.
-/// `refresh_token` is `None` for member claims.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
-pub struct ClaimResult {
-    pub actor_id: String,
-    pub team_id: String,
-    pub actor_type: String,
-    pub display_name: String,
-    pub refresh_token: Option<String>,
-}
-
 #[derive(Debug, serde::Serialize)]
 pub struct WorkspaceUpsert<'a> {
     pub team_id: &'a str,
@@ -344,18 +332,6 @@ mod tests {
         }
         .thread_fork_from()
         .is_none());
-    }
-
-    #[test]
-    fn claim_result_optional_refresh_token() {
-        let json = r#"{
-            "actor_id": "a1",
-            "team_id": "t1",
-            "actor_type": "agent",
-            "display_name": "Bot"
-        }"#;
-        let r: ClaimResult = serde_json::from_str(json).unwrap();
-        assert!(r.refresh_token.is_none());
     }
 
     #[test]

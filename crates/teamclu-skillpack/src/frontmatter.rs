@@ -146,6 +146,23 @@ mod tests {
     }
 
     #[test]
+    fn chinese_slug_is_the_skill_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("整车成本智能表格");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: old\n---\n# body\n").unwrap();
+        let mut fields = fields();
+        fields.slug = "整车成本智能表格";
+        assert!(write_registry_frontmatter(&dir, &fields).unwrap());
+        let parsed = parse_frontmatter(&std::fs::read_to_string(dir.join("SKILL.md")).unwrap());
+        assert_eq!(parsed.string("name"), Some("整车成本智能表格"));
+        assert_eq!(
+            dir.file_name().and_then(|s| s.to_str()),
+            Some("整车成本智能表格")
+        );
+    }
+
+    #[test]
     fn a_package_without_skill_md_reports_rather_than_fails() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("empty");

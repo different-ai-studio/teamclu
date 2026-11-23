@@ -9,11 +9,14 @@ import { hasStructuredMentionLines } from "@/lib/actor/outgoing-mention-content"
 import { parseSentPageChip } from "@/lib/embed/expand-page-link-tokens";
 import { pageLinkChipLabel, parsePageLinkBody } from "@/lib/embed/page-link-token";
 import type { PageContext } from "@/lib/embed/embed-page-context";
-import { openOrDownloadRemoteAttachment } from "@/lib/attachments/download-remote-attachment";
-import { getCachedAttachmentPath, normalizeAttachmentUrlKey } from "@/lib/attachments/attachment-download-index";
-import { isTauri } from "@/lib/utils";
-import { revealInFileManagerLabel } from "@/lib/platform-labels";
-import { linkifyHttpUrls } from "@/lib/messages/linkify-http";
+import { parseAttachmentTokenAt } from "@/lib/messages/attachment-message-token";
+import { parseChatTarget } from "@/lib/messages/chat-open-target";
+import { linkifyChatTargets } from "@/lib/messages/linkify-http";
+import {
+  MessageCloudAttachmentChip,
+  MessageLocalAttachmentChip,
+} from "@/components/chat/message-attachment-chip";
+import { parseSlashToken } from "@/lib/messages/slash-token";
 
 /** Max pixel height before the message is collapsed */
 const COLLAPSED_HEIGHT = 200;
@@ -26,7 +29,7 @@ const CHAT_LINK_CLASS =
   "rounded-[2px] text-foreground underline decoration-foreground/30 underline-offset-2 hover:bg-foreground/[0.06] dark:decoration-white/30 dark:hover:bg-white/[0.08]";
 
 function LinkifiedText({ text }: { text: string }) {
-  const segments = linkifyHttpUrls(text);
+  const segments = linkifyChatTargets(text);
   return (
     <>
       {segments.map((segment, index) =>
@@ -34,8 +37,9 @@ function LinkifiedText({ text }: { text: string }) {
           <a
             key={index}
             href={segment.href}
-            target="_blank"
-            rel="noopener noreferrer"
+            {...(parseChatTarget(segment.href).kind === "web"
+              ? { target: "_blank", rel: "noopener noreferrer" }
+              : {})}
             className={CHAT_LINK_CLASS}
           >
             {segment.text}
@@ -155,34 +159,59 @@ function isUserMessageImagePart(part: UserMessagePart): boolean {
 
 type UserMessageRenderSegment =
   | { kind: "single"; part: UserMessagePart; index: number }
-  | { kind: "imageRow"; parts: UserMessagePart[]; index: number };
+  | { kind: "imageRow"; parts: UserMessagePart[]; index: number }
+  | { kind: "attachmentRow"; parts: UserMessagePart[]; index: number };
 
-/** Collapse consecutive image parts (ignoring whitespace-only text between) into one row. */
+function isAttachmentChipPart(part: UserMessagePart): boolean {
+  return part.type === "attachment" && !isUserMessageImagePart(part);
+}
+
+/** Collapse consecutive image / file-chip parts (ignoring whitespace-only text between). */
 function groupUserMessageParts(parts: UserMessagePart[]): UserMessageRenderSegment[] {
   const segments: UserMessageRenderSegment[] = [];
   let imageRun: UserMessagePart[] = [];
-  let runStartIndex = -1;
+  let attachmentRun: UserMessagePart[] = [];
+  let imageStartIndex = -1;
+  let attachmentStartIndex = -1;
 
   const flushImages = () => {
     if (imageRun.length === 0) return;
-    segments.push({ kind: "imageRow", parts: imageRun, index: runStartIndex });
+    segments.push({ kind: "imageRow", parts: imageRun, index: imageStartIndex });
     imageRun = [];
-    runStartIndex = -1;
+    imageStartIndex = -1;
+  };
+
+  const flushAttachments = () => {
+    if (attachmentRun.length === 0) return;
+    segments.push({ kind: "attachmentRow", parts: attachmentRun, index: attachmentStartIndex });
+    attachmentRun = [];
+    attachmentStartIndex = -1;
   };
 
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]!;
     if (isUserMessageImagePart(part)) {
-      if (imageRun.length === 0) runStartIndex = i;
+      flushAttachments();
+      if (imageRun.length === 0) imageStartIndex = i;
       imageRun.push(part);
-    } else if (part.type === "text" && !part.content.trim() && imageRun.length > 0) {
+    } else if (isAttachmentChipPart(part)) {
+      flushImages();
+      if (attachmentRun.length === 0) attachmentStartIndex = i;
+      attachmentRun.push(part);
+    } else if (
+      part.type === "text" &&
+      !part.content.trim() &&
+      (imageRun.length > 0 || attachmentRun.length > 0)
+    ) {
       continue;
     } else {
       flushImages();
+      flushAttachments();
       segments.push({ kind: "single", part, index: i });
     }
   }
   flushImages();
+  flushAttachments();
   return segments;
 }
 
@@ -215,13 +244,6 @@ function renderUserMessageImage(
       alt={part.content}
     />
   );
-}
-
-function parseSlashToken(body: string): { type: "role" | "skill" | "command"; name: string } {
-  if (body.startsWith("role:")) return { type: "role", name: body.slice("role:".length) };
-  if (body.startsWith("skill:")) return { type: "skill", name: body.slice("skill:".length) };
-  if (body.startsWith("command:")) return { type: "command", name: body.slice("command:".length) };
-  return { type: "skill", name: body };
 }
 
 function stripChipMetadata(content: string): string {
@@ -325,61 +347,6 @@ function MentionDeliveryMetaItem({
   return <div>{label}</div>;
 }
 
-function RemoteAttachmentChip({
-  filename,
-  remoteUrl,
-  parentDir,
-  size,
-}: {
-  filename: string;
-  remoteUrl: string;
-  parentDir?: string;
-  size?: string;
-}) {
-  const { t } = useTranslation();
-  const [busy, setBusy] = React.useState(false);
-  const urlKey = React.useMemo(() => normalizeAttachmentUrlKey(remoteUrl), [remoteUrl]);
-  const hasSavedCopy = isTauri() && Boolean(getCachedAttachmentPath(urlKey));
-  const actionTitle = hasSavedCopy
-    ? revealInFileManagerLabel(t)
-    : t("chat.attachment.download", "Download attachment");
-
-  const handleClick = React.useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await openOrDownloadRemoteAttachment(remoteUrl, filename);
-    } catch (error) {
-      console.error("[UserMessage] attachment open/download failed:", error);
-      const { toast } = await import("sonner");
-      toast.error(t("chat.attachment.downloadFailed", "Download failed"));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, filename, remoteUrl, t]);
-
-  return (
-    <button
-      type="button"
-      onClick={() => void handleClick()}
-      disabled={busy}
-      title={actionTitle}
-      className="inline-flex items-center gap-1.5 px-2 py-1.5 mx-0.5 rounded-md text-xs bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300 min-w-0 max-w-[280px] cursor-pointer hover:bg-orange-200/80 dark:hover:bg-orange-900/60 disabled:opacity-60"
-    >
-      <Paperclip className="h-3 w-3 flex-shrink-0" />
-      <span className="flex flex-col min-w-0 text-left">
-        <span className="truncate font-medium leading-tight">{filename}</span>
-        {parentDir && (
-          <span className="truncate text-[10px] opacity-60 leading-tight">{parentDir}</span>
-        )}
-      </span>
-      {size && (
-        <span className="text-orange-500 dark:text-orange-400 flex-shrink-0 ml-0.5">{size}</span>
-      )}
-    </button>
-  );
-}
-
 export function UserMessageWithMentions({
   content,
   basePath,
@@ -453,7 +420,7 @@ export function UserMessageWithMentions({
     let lastIndex = 0;
     // Match @{filepath}, unified /{type:name}, legacy /<role> and /[command], [Role: ...], [File: ...], [Skill: ...], [Command: ...], [Attachment: ...], and other formats
     const combinedRegex =
-      /@\{([^}]+)\}|\/\{([^}]+)\}|\/<([a-z0-9]+(?:-[a-z0-9]+)*)>|\/\[([^\]]+)\]|\[Mentioned: ([^\]]+)\]|\[Role: ([^\]]+)\]|\[File: ([^\]]+)\](?:\n```[\s\S]*?```)?|\[Skill: ([^\]]+)\]|\[Page: ([^\]]+)\]|\[Command: ([^\]]+)\]|\[Directory: ([^\]]+)\]\s*|\[Image: ([^\]]+)\](?:\n([^\n]*)|\s*\(url:\s*([^)]*)\))?|\[Attachment: ([^\]]+)\]\s*\(([^)]*)\)/g;
+      /@\{([^}]+)\}|\/\{([^}]+)\}|\/<([a-z0-9]+(?:-[a-z0-9]+)*)>|\/\[([^\]]+)\]|\[Mentioned: ([^\]]+)\]|\[Role: ([^\]]+)\]|\[File: ([^\]]+)\](?:\n```[\s\S]*?```)?|\[Skill: ([^\]]+)\]|\[Page: ([^\]]+)\]|\[Command: ([^\]]+)\]|\[Directory: ([^\]]+)\]\s*|\[Image: ([^\]]+)\](?:\n([^\n]*)|\s*\(url:\s*([^)]*)\))?|\[Attachment: ([^\]]+)\]\s*\(/g;
 
     let match;
     while ((match = combinedRegex.exec(bodyForTokens)) !== null) {
@@ -529,21 +496,22 @@ export function UserMessageWithMentions({
           dataUrl: inlineDataUrl ?? remoteImageUrl,
         });
       } else if (match[15]) {
-        // Parse the parenthesised info: may contain path:..., url:..., size:...
-        const info = match[16] ?? "";
-        const pathMatch = info.match(/path:\s*([^,)]+)/);
-        const urlMatch = info.match(/url:\s*([^,)]+)/);
-        const sizeMatch = info.match(/size:\s*([^,)]+)/);
-        const fullPath = pathMatch ? pathMatch[1].trim() : undefined;
-        const remoteUrlRaw = urlMatch ? urlMatch[1].trim() : undefined;
-        const remoteUrl =
-          remoteUrlRaw &&
-          remoteUrlRaw !== "undefined" &&
-          (remoteUrlRaw.startsWith("http://") || remoteUrlRaw.startsWith("https://"))
-            ? remoteUrlRaw
-            : undefined;
-        const size = sizeMatch ? sizeMatch[1].trim() : (!pathMatch && !urlMatch && info.trim() ? info.trim() : undefined);
-        result.push({ type: "attachment", content: match[15], size, fullPath, remoteUrl });
+        const attachment = parseAttachmentTokenAt(bodyForTokens, match.index);
+        if (attachment) {
+          const { name, info } = attachment;
+          result.push({
+            type: "attachment",
+            content: name,
+            size: info.size,
+            fullPath: info.fullPath,
+            remoteUrl: info.remoteUrl,
+          });
+          lastIndex = attachment.end;
+          continue;
+        }
+        result.push({ type: "text", content: match[0] });
+        lastIndex = match.index + match[0].length;
+        continue;
       }
 
       lastIndex = match.index + match[0].length;
@@ -566,6 +534,8 @@ export function UserMessageWithMentions({
     leadingMentionActorIds.length === 0 &&
     (parts.length === 0 || (parts.length === 1 && parts[0].type === "text"));
 
+  const attachmentSurface = userBubble === "self" ? "self" : "other";
+
   const renderBodyParts = () =>
     groupUserMessageParts(parts as UserMessagePart[]).map((segment) => {
       if (segment.kind === "imageRow") {
@@ -580,6 +550,51 @@ export function UserMessageWithMentions({
                 {renderUserMessageImage(part, basePath)}
               </span>
             ))}
+          </div>
+        );
+      }
+
+      if (segment.kind === "attachmentRow") {
+        return (
+          <div
+            key={`att-row-${segment.index}`}
+            className="flex flex-wrap gap-1.5 w-full my-0.5"
+            data-testid="user-message-attachment-row"
+          >
+            {segment.parts.map((part, attIndex) => {
+              if (part.type !== "attachment") return null;
+              const key = `${segment.index}-${attIndex}`;
+              if (part.remoteUrl) {
+                return (
+                  <MessageCloudAttachmentChip
+                    key={key}
+                    filename={part.content}
+                    remoteUrl={part.remoteUrl}
+                    surface={attachmentSurface}
+                  />
+                );
+              }
+              if (part.fullPath) {
+                return (
+                  <MessageLocalAttachmentChip
+                    key={key}
+                    filename={part.content}
+                    path={part.fullPath}
+                    surface={attachmentSurface}
+                  />
+                );
+              }
+              return (
+                <span
+                  key={key}
+                  className="inline-flex items-center gap-1.5 w-[172px] max-w-full shrink-0 px-2 py-1 rounded-[7px] text-xs border border-border bg-panel/80"
+                  title={part.content}
+                >
+                  <Paperclip className="h-3 w-3 flex-shrink-0 opacity-60" />
+                  <span className="truncate font-medium">{part.content}</span>
+                </span>
+              );
+            })}
           </div>
         );
       }
@@ -649,46 +664,6 @@ export function UserMessageWithMentions({
           >
             <Link2 className="h-3 w-3" />
             <span className="truncate max-w-[320px]">{label}</span>
-          </span>
-        );
-      }
-
-      if (part.type === "attachment") {
-        const parentDir = part.fullPath
-          ? part.fullPath.replace(/\\/g, "/").split("/").slice(-2, -1)[0]
-          : undefined;
-        const chip = (
-          <>
-            <Paperclip className="h-3 w-3 flex-shrink-0" />
-            <span className="flex flex-col min-w-0">
-              <span className="truncate font-medium leading-tight">{part.content}</span>
-              {parentDir && (
-                <span className="truncate text-[10px] opacity-60 leading-tight">{parentDir}</span>
-              )}
-            </span>
-            {part.size && (
-              <span className="text-orange-500 dark:text-orange-400 flex-shrink-0 ml-0.5">{part.size}</span>
-            )}
-          </>
-        );
-        if (part.remoteUrl) {
-          return (
-            <RemoteAttachmentChip
-              key={index}
-              filename={part.content}
-              remoteUrl={part.remoteUrl}
-              parentDir={parentDir}
-              size={part.size}
-            />
-          );
-        }
-        return (
-          <span
-            key={index}
-            title={part.fullPath ?? part.content}
-            className="inline-flex items-center gap-1.5 px-2 py-1.5 mx-0.5 rounded-md text-xs bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300 min-w-0 max-w-[280px]"
-          >
-            {chip}
           </span>
         );
       }

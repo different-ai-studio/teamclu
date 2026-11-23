@@ -1,8 +1,7 @@
 /**
- * session-sync.ts — Sync sessions from Supabase into local libsql cache.
+ * session-sync.ts — Sync sessions from the Cloud API into the local libsql cache.
  *
- * updated_at: ✓ present on sessions (confirmed via information_schema)
- * Watermark key: "sessions" namespaced by teamId.
+ * Delta-pulled by `updated_at`. Watermark key: "sessions" namespaced by teamId.
  */
 
 import { getBackend } from "@/lib/backend";
@@ -11,7 +10,7 @@ import * as cache from "@/lib/cache/local-cache";
 import { seedSessionCreatedByFromRows } from "@/lib/session/session-created-by-cache";
 import { isTauri } from "@/lib/utils";
 
-// Supabase `sessions` columns: id, team_id, created_by_actor_id, primary_agent_id,
+// Cloud API session rows (snake_case, mirroring the `sessions` columns): id, team_id, created_by_actor_id, primary_agent_id,
 // mode, title, summary, last_message_preview, last_message_at, created_at,
 // updated_at, idea_id. (No `created_by`, no `metadata_json`.)
 function mapRow(r: SessionSyncRow): cache.SessionRow {
@@ -31,13 +30,16 @@ function mapRow(r: SessionSyncRow): cache.SessionRow {
     cronJobId: r.cron_job_id ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
-    deletedAt: null,
+    // An archive is this cache's soft delete. Carrying it on the upsert (rather
+    // than dropping the row) is what lets a session archived on another device
+    // leave the local list, and a later unarchive bring it back as null.
+    deletedAt: r.archived_at ?? null,
     syncedAt: new Date().toISOString(),
   };
 }
 
 /**
- * Pull sessions for a team from Supabase (delta or full),
+ * Pull sessions for a team from the Cloud API (delta or full),
  * upsert into local cache, bump watermark.
  *
  * @returns number of rows synced
@@ -61,9 +63,14 @@ export async function syncSessionsForTeam(
     console.warn("[session-sync] pull failed:", error);
     return 0;
   }
-  const rows = data.filter((row) => row.archived_at == null).map(mapRow);
+  // Archived rows used to be filtered out before both the upsert and the
+  // watermark. A session archived elsewhere then stayed live in the cache and
+  // came back in the cold-start paint, and a delta holding only archived rows
+  // never moved the watermark, so every sync pulled it again.
+  const rows = data.map(mapRow);
+  const live = rows.filter((row) => row.deletedAt == null);
   if (rows.length > 0) {
-    seedSessionCreatedByFromRows(rows);
+    seedSessionCreatedByFromRows(live);
     await cache.upsertSessionsBatch(rows);
     const maxUpdated = rows.reduce(
       (acc, row) => (row.updatedAt > acc ? row.updatedAt : acc),
@@ -73,5 +80,5 @@ export async function syncSessionsForTeam(
       await cache.setWatermark("sessions", teamId, maxUpdated);
     }
   }
-  return rows.length;
+  return live.length;
 }

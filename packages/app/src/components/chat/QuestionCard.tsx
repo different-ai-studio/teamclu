@@ -44,7 +44,7 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
       ? ((pendingQuestion.questions ?? []) as Question[])
       : ((answeredSnapshot?.questions ?? []) as Question[])
   const answerQuestion = useSessionStore(s => s.answerQuestion)
-  const [answers, setAnswers] = React.useState<Record<string, string>>({})
+  const [answers, setAnswers] = React.useState<Record<string, string[]>>({})
   const [customInputs, setCustomInputs] = React.useState<Record<string, string>>({})
   const [isSubmitting, setIsSubmitting] = React.useState(false)
   const [hasSubmitted, setHasSubmitted] = React.useState(false)
@@ -56,8 +56,19 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
   const isWaitingForCompletion = hasSubmitted && !isCompleted
 
   const handleOptionSelect = (questionIndex: number, option: string) => {
-    const questionId = questionList[questionIndex]?.id || String(questionIndex)
-    setAnswers(prev => ({ ...prev, [questionId]: option }))
+    const question = questionList[questionIndex]
+    const questionId = question?.id || String(questionIndex)
+    const multiple = question?.multiple === true
+    setAnswers(prev => {
+      const current = prev[questionId] ?? []
+      const next = multiple
+        ? current.includes(option)
+          ? current.filter(item => item !== option)
+          : [...current, option]
+        : [option]
+      return { ...prev, [questionId]: next }
+    })
+    setCustomInputs(prev => ({ ...prev, [questionId]: '' }))
   }
 
   const handleCustomInput = (questionIndex: number, value: string) => {
@@ -67,14 +78,17 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
 
   const handleSubmit = async () => {
     // Merge selected options with custom inputs (custom input takes precedence if filled)
-    const finalAnswers: Record<string, string> = {}
+    const finalAnswers: Record<string, string | string[]> = {}
     questionList.forEach((q, idx) => {
       const questionId = q.id || String(idx)
       const customInput = customInputs[questionId]?.trim()
+      const selected = answers[questionId] ?? []
       if (customInput) {
         finalAnswers[questionId] = customInput
-      } else if (answers[questionId]) {
-        finalAnswers[questionId] = answers[questionId]
+      } else if (q.multiple) {
+        if (selected.length > 0) finalAnswers[questionId] = selected
+      } else if (selected[0]) {
+        finalAnswers[questionId] = selected[0]
       }
     })
 
@@ -93,7 +107,7 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
     questionList.length > 0 &&
     questionList.every((q, idx) => {
       const questionId = q.id || String(idx)
-      return answers[questionId] || customInputs[questionId]?.trim()
+      return (answers[questionId]?.length ?? 0) > 0 || customInputs[questionId]?.trim()
     })
   
   const fromResultAnswers = fromResult
@@ -143,10 +157,13 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
       <div className="space-y-4 px-3 py-3">
         {questionList.map((question, qIndex) => {
           const questionId = question.id || String(qIndex)
-          const selectedOption = answers[questionId] ?? savedAnswers[questionId] ?? savedAnswers[String(qIndex)]
+          const selectedOptions = answers[questionId] ?? []
           const customInput = customInputs[questionId] || ''
           const savedAnswer = savedAnswers[questionId] ?? savedAnswers[String(qIndex)]
-          const displayAnswer = customInput || selectedOption || savedAnswer
+          const displayAnswer =
+            customInput ||
+            (selectedOptions.length > 0 ? selectedOptions.join(', ') : '') ||
+            savedAnswer
 
           return (
             <div key={questionId} className="space-y-1.5">
@@ -159,16 +176,23 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
               <div className="text-sm text-muted-foreground mb-2">
                 {question.question}
               </div>
+              {showInteractiveUI && question.multiple ? (
+                <div className="mb-2 text-[11px] text-faint">
+                  {t('chat.toolCall.question.selectMultiple', 'Select all that apply')}
+                </div>
+              ) : null}
 
               {/* Options */}
               {showInteractiveUI && question.options && question.options.length > 0 &&
                 question.options.map((option: any, optIndex: number) => {
                   const optionValue = option.value || option.label
-                  const isSelected = selectedOption === optionValue
+                  const isSelected = !customInput.trim() && selectedOptions.includes(optionValue)
 
                   return (
                     <button
                       key={optIndex}
+                      type="button"
+                      aria-pressed={isSelected}
                       onClick={() => handleOptionSelect(qIndex, optionValue)}
                       className={cn(
                         'w-full flex items-center gap-2.5 px-3 py-1.5 rounded-md border text-left transition-colors',
@@ -180,7 +204,8 @@ export const QuestionCard = React.memo(function QuestionCard({ toolCallId, quest
                     >
                       <div
                         className={cn(
-                          'flex-shrink-0 w-4 h-4 rounded-full border-2 flex items-center justify-center transition-colors',
+                          'flex-shrink-0 w-4 h-4 border-2 flex items-center justify-center transition-colors',
+                          question.multiple ? 'rounded-[3px]' : 'rounded-full',
                           isSelected
                             ? 'border-foreground/60 bg-foreground/10'
                             : 'border-muted-foreground/50'

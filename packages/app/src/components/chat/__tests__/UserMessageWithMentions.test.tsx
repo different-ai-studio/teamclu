@@ -8,8 +8,9 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
-vi.mock('@/lib/attachments/download-remote-attachment', () => ({
-  openOrDownloadRemoteAttachment: vi.fn(async () => 'downloaded' as const),
+vi.mock('@/lib/messages/open-chat-file', () => ({
+  openChatAttachment: vi.fn(async () => undefined),
+  openChatHref: vi.fn(async () => undefined),
 }))
 
 vi.mock('@/lib/attachments/attachment-download-index', () => ({
@@ -112,9 +113,49 @@ describe('UserMessageWithMentions', () => {
     )
 
     const button = screen.getByRole('button')
-    expect(button).toHaveAttribute('title', 'Download attachment')
+    expect(button.getAttribute('title')).toContain('report.pdf')
+    expect(button.getAttribute('title')).toContain('打开')
     expect(screen.getByText('report.pdf')).toBeTruthy()
+    expect(screen.queryByText('云端')).toBeNull()
     expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByTestId('user-message-attachment-row')).toBeTruthy()
+  })
+
+  it('renders own local path attachments with a 本地 badge and opens on click', () => {
+    render(
+      <UserMessageWithMentions
+        userBubble="self"
+        content='[Attachment: big.zip] (path: C:\\Users\\me\\big.zip)'
+      />,
+    )
+
+    expect(screen.getByText('本地')).toBeTruthy()
+    expect(screen.getByText('big.zip').closest('button')).toBeTruthy()
+  })
+
+  it('parses attachment paths with parentheses without leaking suffix text', () => {
+    render(
+      <UserMessageWithMentions
+        userBubble="self"
+        content='[Attachment: CursorUserSetup (1).exe] (path: D:\\Downloads\\CursorUserSetup (1).exe)'
+      />,
+    )
+
+    expect(screen.getByText('CursorUserSetup (1).exe')).toBeTruthy()
+    expect(screen.queryByText('.exe)')).toBeNull()
+    expect(screen.queryByText('(1).exe)')).toBeNull()
+  })
+
+  it('renders peer local path attachments as non-interactive 对方本地 chips', () => {
+    render(
+      <UserMessageWithMentions
+        userBubble="other"
+        content='[Attachment: big.zip] (path: C:\\Users\\peer\\big.zip)'
+      />,
+    )
+
+    expect(screen.getByText('对方本地')).toBeTruthy()
+    expect(screen.getByText('big.zip').closest('button')).toBeNull()
   })
 
   it('renders agent mentions as a header instead of inline chips', () => {
@@ -164,11 +205,19 @@ describe('UserMessageWithMentions', () => {
     expect(screen.queryByRole('link', { name: /docs\./ })).toBeNull()
   })
 
-  it('does not turn javascript or file urls into links', () => {
+  it('does not turn javascript into a link, and does link file paths', () => {
     render(<UserMessageWithMentions content="javascript:alert(1) file:///tmp/x" />)
 
+    expect(screen.queryByRole('link', { name: /javascript/ })).toBeNull()
+    const fileLink = screen.getByRole('link', { name: 'file:///tmp/x' })
+    expect(fileLink).toHaveAttribute('href', 'file:///tmp/x')
+    expect(fileLink).not.toHaveAttribute('target', '_blank')
+  })
+
+  it('does not link an in-app route written in the message', () => {
+    render(<UserMessageWithMentions content="打开 /settings 看设置" />)
+
     expect(screen.queryByRole('link')).toBeNull()
-    expect(screen.getByText('javascript:alert(1) file:///tmp/x')).toBeTruthy()
   })
 
   it('linkifies only the text around a role chip', () => {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createSessionsCache } from "../features/sessions/session-cache";
+import { createSessionsCache, loadTeamSessionsPreferCache } from "../features/sessions/session-cache";
 import type { SessionSummary } from "../features/sessions/session-types";
 import { createMemoryCacheDb } from "./helpers/memory-db";
 
@@ -94,5 +94,30 @@ describe("sessions cache", () => {
   it("ignores a blank team id", async () => {
     await cache.save("", [summary({})]);
     expect(await cache.load("")).toBeNull();
+  });
+});
+
+describe("loadTeamSessionsPreferCache", () => {
+  it("reads the cached rows without touching the network", async () => {
+    await cache.save("t1", [summary({ sessionId: "s1" })]);
+    const listSessions = async () => {
+      throw new Error("network should not be called");
+    };
+    const rows = await loadTeamSessionsPreferCache("t1", listSessions, cache);
+    expect(rows.map((row) => row.sessionId)).toEqual(["s1"]);
+  });
+
+  it("falls back to one network walk when nothing is cached", async () => {
+    const calls: string[] = [];
+    const rows = await loadTeamSessionsPreferCache(
+      "t1",
+      async (teamId) => {
+        calls.push(teamId);
+        return [summary({ sessionId: "fresh" })];
+      },
+      cache,
+    );
+    expect(calls).toEqual(["t1"]);
+    expect(rows.map((row) => row.sessionId)).toEqual(["fresh"]);
   });
 });

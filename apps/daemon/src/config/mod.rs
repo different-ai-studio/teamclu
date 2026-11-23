@@ -1,3 +1,4 @@
+mod atomic_file;
 mod daemon_config;
 pub mod device_mcp;
 pub mod edit;
@@ -5,7 +6,6 @@ pub mod global_team_store;
 pub mod knowledge_templates;
 pub mod layout;
 mod managed_skill_writer;
-mod member_store;
 mod model_catalog;
 mod model_resolution;
 pub mod provider_auth;
@@ -22,19 +22,17 @@ pub mod workspace_path;
 mod workspace_resolver;
 
 pub use daemon_config::{
-    daemon_host_label, daemon_machine_hostname, ChannelsConfig, ClaudeAgentConfig,
-    CursorAgentConfig, DaemonConfig, DiscordChannel, EmailChannel, FeishuChannel, HttpConfig,
-    KookChannel, SeaTalkBot, SeaTalkChannel, TeamShareConfig, TransportKind, WeChatChannel,
-    WeChatPadChannel, WeComChannel, BOOTSTRAP_ACTOR_NAME,
+    daemon_host_label, daemon_machine_hostname, ChannelsConfig, DaemonConfig, DiscordChannel,
+    EmailChannel, FeishuChannel, HttpConfig, KookChannel, SeaTalkBot, SeaTalkChannel,
+    TeamShareConfig, WeChatChannel, WeChatPadChannel, WeComChannel, BOOTSTRAP_ACTOR_NAME,
 };
 // Only test fixtures build a `DaemonConfig` field by field.
 #[cfg(test)]
-pub use daemon_config::{ActorConfig, AgentBackendConfig, AgentsConfig, MqttConfig};
+pub use daemon_config::{ActorConfig, AgentsConfig, MqttConfig};
 pub use managed_skill_writer::{
     create_pack, get_pack, pack_digest, update_pack, ClaimedTeamContext, CreatePackRequest,
     ManageSkillResponse, ManagedSkillError, ManagedSkillErrorCode, UpdatePackRequest,
 };
-pub use member_store::{MemberStore, PendingInvite, StoredMember};
 pub use model_catalog::DeviceModelCatalog;
 pub use model_resolution::first_available;
 pub use roles_skills::{

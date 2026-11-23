@@ -111,12 +111,26 @@ fn caller_headers(env: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, St
     }
 }
 
+/// The client for every call to the desktop API. Shared, so a tool call does
+/// not build one each time, and `no_proxy` because the target is always
+/// loopback: a system proxy that intercepts 127.0.0.1 turns every tool into
+/// "Is the TeamClu app running?".
+fn client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_default()
+    })
+}
+
 /// POST `body` to `path` on the desktop API and hand back the raw response.
 /// For callers that word their own error around the status code.
 pub async fn send(api_port: u16, path: &str, body: &Value) -> Result<reqwest::Response, String> {
     let token = read_token()?;
     let url = format!("http://127.0.0.1:{}{path}", resolve_port(api_port));
-    let mut request = reqwest::Client::new().post(&url).bearer_auth(token);
+    let mut request = client().post(&url).bearer_auth(token);
     for (header, value) in caller_headers(|var| std::env::var(var).ok()) {
         request = request.header(header, value);
     }

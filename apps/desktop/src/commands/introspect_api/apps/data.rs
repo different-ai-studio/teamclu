@@ -9,7 +9,7 @@ use super::{
 };
 use crate::commands::introspect_api::{items_of, str_body_field};
 
-const DATA_ACTIONS: [&str; 4] = ["tables", "rows", "update_row", "delete_row"];
+const DATA_ACTIONS: [&str; 5] = ["tables", "rows", "insert_row", "update_row", "delete_row"];
 
 /// Opaque row key: unpadded base64url of the JSON array of primary-key values,
 /// in the order the table's catalog reports them.
@@ -85,8 +85,9 @@ async fn app_data_primary_key(
 /// `manage_app_data` — read and edit the rows in a deployed app's own database.
 ///
 /// Reads need `prompt` on the app and writes need `admin`; both are the Cloud
-/// API's call, not this handler's. Writes address exactly one row by primary
-/// key — there is no bulk path on purpose, this is production data.
+/// API's call, not this handler's. Writes touch exactly one row — an insert
+/// adds one, an update or delete addresses one by primary key. There is no
+/// bulk path on purpose, this is production data.
 pub(crate) async fn handle_app_data(app: &AppHandle, body: &[u8]) -> Result<String, String> {
     let v = parse_body(body)?;
     let action = require_action(&v, &DATA_ACTIONS)?;
@@ -158,6 +159,29 @@ pub(crate) async fn handle_app_data(app: &AppHandle, body: &[u8]) -> Result<Stri
                 "editable": out.get("editable").cloned().unwrap_or(json!(false)),
                 "rows": out.get("rows").cloned().unwrap_or(json!([])),
                 "next_cursor": out.get("nextCursor").cloned().unwrap_or(Value::Null),
+            })
+            .to_string())
+        }
+        "insert_row" => {
+            // `{}` is a real request — a row of defaults — so only a missing or
+            // non-object `values` is refused.
+            let values = v.get("values").filter(|p| p.is_object()).ok_or(
+                "Missing field: values (an object of column → value; {} inserts defaults)",
+            )?;
+            let out = api
+                .post(
+                    &rows_path,
+                    &json!({ "values": values }),
+                    "Inserting the row (needs admin on the app)",
+                )
+                .await?;
+            Ok(json!({
+                "ok": true,
+                "action": "insert_row",
+                "app_id": app_id,
+                "table": table,
+                // The row as the database stored it, generated key included.
+                "row": out.get("row").cloned().unwrap_or(Value::Null),
             })
             .to_string())
         }

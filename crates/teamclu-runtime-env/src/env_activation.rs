@@ -53,9 +53,9 @@ pub struct EnvActivationInput<'a> {
     pub activation_status: &'a str,
     pub active_runtime_count: usize,
     pub active_snapshot: Option<&'a ResolvedEnvSnapshot>,
-    /// Key names queued on the global OpenCode serve host.
+    /// Key names a live host reports as served. Empty = nothing to compare
+    /// against, so no key is classified `not_served`.
     pub served_env_keys: &'a [String],
-    pub opencode_serve_running: bool,
 }
 
 pub fn analyze_env_activation(input: &EnvActivationInput<'_>) -> EnvActivationAnalysis {
@@ -105,7 +105,6 @@ pub fn analyze_env_activation(input: &EnvActivationInput<'_>) -> EnvActivationAn
         &effective_env_keys,
         &served_env_keys,
         input.host_shadowed_keys,
-        input.opencode_serve_running,
     );
 
     EnvActivationAnalysis {
@@ -137,9 +136,8 @@ fn compute_missing_served_env_keys(
     effective_env_keys: &[String],
     served_env_keys: &[String],
     host_shadowed_keys: &[String],
-    opencode_serve_running: bool,
 ) -> Vec<String> {
-    if !opencode_serve_running && served_env_keys.is_empty() {
+    if served_env_keys.is_empty() {
         return Vec::new();
     }
     effective_env_keys
@@ -155,7 +153,7 @@ fn compute_missing_served_env_keys(
 }
 
 fn should_probe_serve(input: &EnvActivationInput<'_>) -> bool {
-    input.opencode_serve_running || !input.served_env_keys.is_empty()
+    !input.served_env_keys.is_empty()
 }
 
 fn key_in_list(keys: &[String], key: &str) -> bool {
@@ -375,7 +373,6 @@ mod tests {
                 active_runtime_count,
                 active_snapshot: None,
                 served_env_keys: &[],
-                opencode_serve_running: false,
             })
         }
     }
@@ -396,6 +393,7 @@ mod tests {
         let personal = HashMap::from([("openai_api_key".to_string(), "sk-test".to_string())]);
         let team = HashMap::new();
         let fixture = TestActivation::new(&personal, &team, "active", 0);
+        let served = vec!["other_key".to_string()];
         let analysis = analyze_env_activation(&EnvActivationInput {
             personal_env: &personal,
             team_env: &team,
@@ -406,8 +404,7 @@ mod tests {
             activation_status: "active",
             active_runtime_count: 0,
             active_snapshot: None,
-            served_env_keys: &[],
-            opencode_serve_running: true,
+            served_env_keys: &served,
         });
         assert_eq!(analysis.key_statuses[0].status, "not_served");
         assert_eq!(
@@ -433,7 +430,6 @@ mod tests {
             active_runtime_count: 0,
             active_snapshot: None,
             served_env_keys: &served,
-            opencode_serve_running: true,
         });
         assert_eq!(analysis.key_statuses[0].status, "active");
         assert!(analysis.missing_served_env_keys.is_empty());

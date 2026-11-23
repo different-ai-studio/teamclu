@@ -105,7 +105,6 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-is-focused",
     "core:window:allow-is-visible",
-    "process:allow-restart",
     "log:default",
     "window-state:default",
     "mcp:default",

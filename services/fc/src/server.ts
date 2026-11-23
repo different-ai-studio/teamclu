@@ -15,11 +15,10 @@ import {
 const app = createApp({
   createRepository: makeBusinessRepoFactory(),
   createAuthRepository: makeAuthRepoFactory(),
-  // Marketplace admin (shared-secret) — same wiring as the Aliyun FC handler
-  // in index.ts. Without this, POST /v1/admin/marketplace/* returns 503.
+  // Marketplace admin (shared-secret). Without this, POST
+  // /v1/admin/marketplace/* returns 503.
   createSystemRepository: makeSystemRepoFactory(),
-  // This entry — not the FC handler — is what serves apps on their own
-  // hostnames, because the reverse proxy in front of it is the self-host one.
+  // Serves apps on their own hostnames.
   lookupVanityApp: vanityLookup(),
   lookupLoginApp: loginAppLookup(),
   resolveTenantIdentity: tenantIdentityLookup(),

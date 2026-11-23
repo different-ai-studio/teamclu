@@ -27,7 +27,7 @@ import {
   createConfiguredTeamAppsApi,
 } from "../../src/features/apps/team-apps-api";
 import { rememberTeamApps } from "../../src/features/apps/team-apps-memory";
-import { supabase } from "../../src/lib/supabase/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
 import { Hairline } from "../../src/ui/atoms/Hairline";
 import { SectionEyebrow } from "../../src/ui/atoms/SectionEyebrow";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../src/ui/GlassHeader";
@@ -60,7 +60,7 @@ export default function NewTeamAppRoute() {
     setIsBusy(true);
     setError(null);
     try {
-      const created = await createConfiguredTeamAppsApi(supabase).createApp(teamId, {
+      const created = await createConfiguredTeamAppsApi(cloudAuth).createApp(teamId, {
         name,
         type,
         visibility,

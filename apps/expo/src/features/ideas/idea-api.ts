@@ -68,8 +68,8 @@ function toIdea(row: CloudIdea, workspaceName: string | null): Idea {
   };
 }
 
-// FC mapIdeaActivityRow / mapActivity camelCase shape. `kind` is the pg-repo
-// spelling, `activityType` the Supabase one — both backends are in play.
+// FC mapIdeaActivityRow camelCase shape. FC sends the same value as both
+// `kind` and `activityType` (the latter for clients that key on it).
 type CloudIdeaActivity = {
   id: string;
   teamId?: string | null;

@@ -1,7 +1,7 @@
 //! Sync watermarks, and the per-team wipe that clears every cached table.
 
 use super::LocalCacheStore;
-use libsql::params;
+use libsql::{params, TransactionBehavior};
 
 impl LocalCacheStore {
     pub async fn watermark_get(
@@ -52,73 +52,55 @@ impl LocalCacheStore {
     // ─── clear_team ───────────────────────────────────────────────────────
 
     /// Wipe all cached data for a given team (used by global ↻ refresh in Settings).
+    ///
+    /// One transaction: the wipe either happens or it does not. As separate
+    /// autocommit statements a failure part-way left the cache half-cleared —
+    /// sessions gone, their watermark still in place — so the next sync pulled
+    /// only what changed since and the missing rows never came back.
     pub async fn clear_team(&self, team_id: &str) -> Result<(), String> {
+        // Leaf tables before the tables their subqueries read.
+        const STATEMENTS: &[(&str, &str)] = &[
+            (
+                "claim",
+                "DELETE FROM claim WHERE idea_id IN (SELECT id FROM idea WHERE team_id = ?1)",
+            ),
+            (
+                "submission",
+                "DELETE FROM submission WHERE idea_id IN (SELECT id FROM idea WHERE team_id = ?1)",
+            ),
+            (
+                "session_participant",
+                "DELETE FROM session_participant WHERE session_id IN (SELECT id FROM session WHERE team_id = ?1)",
+            ),
+            (
+                "agent_runtime_event",
+                "DELETE FROM agent_runtime_event WHERE session_id IN (SELECT id FROM session WHERE team_id = ?1)",
+            ),
+            (
+                "session_viewer_workspace",
+                "DELETE FROM session_viewer_workspace WHERE team_id = ?1",
+            ),
+            ("message", "DELETE FROM message WHERE team_id = ?1"),
+            ("outbox", "DELETE FROM outbox WHERE team_id = ?1"),
+            ("idea", "DELETE FROM idea WHERE team_id = ?1"),
+            ("session", "DELETE FROM session WHERE team_id = ?1"),
+            ("actor", "DELETE FROM actor WHERE team_id = ?1"),
+            ("sync_state", "DELETE FROM sync_state WHERE team_id = ?1"),
+        ];
+
         let conn = self.conn.lock().await;
-        // Cascade order: leaf tables before parent tables
-        conn.execute(
-            "DELETE FROM claim WHERE idea_id IN (SELECT id FROM idea WHERE team_id = ?1)",
-            params![team_id.to_string()],
-        )
-        .await
-        .map_err(|e| format!("clear_team claim: {}", e))?;
-
-        conn.execute(
-            "DELETE FROM submission WHERE idea_id IN (SELECT id FROM idea WHERE team_id = ?1)",
-            params![team_id.to_string()],
-        )
-        .await
-        .map_err(|e| format!("clear_team submission: {}", e))?;
-
-        conn.execute(
-            "DELETE FROM session_participant WHERE session_id IN (SELECT id FROM session WHERE team_id = ?1)",
-            params![team_id.to_string()],
-        )
-        .await
-        .map_err(|e| format!("clear_team session_participant: {}", e))?;
-
-        conn.execute(
-            "DELETE FROM message WHERE team_id = ?1",
-            params![team_id.to_string()],
-        )
-        .await
-        .map_err(|e| format!("clear_team message: {}", e))?;
-
-        conn.execute(
-            "DELETE FROM outbox WHERE team_id = ?1",
-            params![team_id.to_string()],
-        )
-        .await
-        .map_err(|e| format!("clear_team outbox: {}", e))?;
-
-        conn.execute(
-            "DELETE FROM idea WHERE team_id = ?1",
-            params![team_id.to_string()],
-        )
-        .await
-        .map_err(|e| format!("clear_team idea: {}", e))?;
-
-        conn.execute(
-            "DELETE FROM session WHERE team_id = ?1",
-            params![team_id.to_string()],
-        )
-        .await
-        .map_err(|e| format!("clear_team session: {}", e))?;
-
-        conn.execute(
-            "DELETE FROM actor WHERE team_id = ?1",
-            params![team_id.to_string()],
-        )
-        .await
-        .map_err(|e| format!("clear_team actor: {}", e))?;
-
-        conn.execute(
-            "DELETE FROM sync_state WHERE team_id = ?1",
-            params![team_id.to_string()],
-        )
-        .await
-        .map_err(|e| format!("clear_team sync_state: {}", e))?;
-
-        Ok(())
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await
+            .map_err(|e| format!("clear_team: begin: {e}"))?;
+        for (table, sql) in STATEMENTS {
+            tx.execute(sql, params![team_id.to_string()])
+                .await
+                .map_err(|e| format!("clear_team {table}: {e}"))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| format!("clear_team: commit: {e}"))
     }
 }
 
@@ -155,5 +137,40 @@ mod tests {
 
         assert_eq!(team_a.len(), 0, "teamA should be wiped");
         assert_eq!(team_b.len(), 1, "teamB should be untouched");
+    }
+
+    #[tokio::test]
+    async fn clear_team_also_wipes_viewer_workspace_bindings() {
+        let (store, _dir) = new_store().await;
+        {
+            let conn = store.conn().await;
+            for team in ["teamA", "teamB"] {
+                conn.execute(
+                    "INSERT INTO session_viewer_workspace
+                       (session_id, team_id, viewer_member_id, agent_id, updated_at)
+                     VALUES (?1, ?2, 'm', 'a', '2024-01-01T00:00:00Z')",
+                    libsql::params![format!("s_{team}"), team.to_string()],
+                )
+                .await
+                .unwrap();
+            }
+        }
+
+        store.clear_team("teamA").await.unwrap();
+
+        let conn = store.conn().await;
+        let mut rows = conn
+            .query(
+                "SELECT team_id FROM session_viewer_workspace ORDER BY team_id",
+                (),
+            )
+            .await
+            .unwrap();
+        let mut left = Vec::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            left.push(row.get::<String>(0).unwrap());
+        }
+        assert_eq!(left, vec!["teamB".to_string()]);
+        assert!(conn.is_autocommit(), "the wipe must not leave a tx open");
     }
 }

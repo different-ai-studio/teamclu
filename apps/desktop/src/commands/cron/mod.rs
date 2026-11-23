@@ -374,12 +374,6 @@ pub async fn cron_get_runs(job_id: String, limit: Option<usize>) -> Result<Value
     .await
 }
 
-/// Kept for the settings page; delivery reads its config on demand.
-#[tauri::command]
-pub async fn cron_refresh_delivery() -> Result<(), String> {
-    Ok(())
-}
-
 /// True when the daemon is mid-run. The desktop's auto-restart waits on it:
 /// restarting the app restarts its bundled daemon too.
 #[tauri::command]

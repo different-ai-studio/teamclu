@@ -515,6 +515,10 @@ export interface RuntimeStartArgs {
   forkFrom?: { parentSessionId: string; rootMessageId: string }
   /** `default` | `full_access` — empty lets daemon derive from session kind. */
   permissionMode?: string
+  /** Store permissionMode on this session. False applies it for this start only. */
+  rememberPermission?: boolean
+  /** Device-wide default. Sent only to this machine's daemon. Empty leaves the stored default alone. */
+  defaultPermissionMode?: string
   timeoutMs?: number
 }
 
@@ -536,6 +540,8 @@ export async function runtimeStart(args: RuntimeStartArgs): Promise<RuntimeStart
           }
         : undefined,
       permissionMode: args.permissionMode ?? '',
+      rememberPermission: args.rememberPermission ?? false,
+      defaultPermissionMode: args.defaultPermissionMode ?? '',
     })
     req.method = { case: 'runtimeStart', value: start }
   }, args.targetActorId, args.timeoutMs)
@@ -632,6 +638,10 @@ export interface SessionPermissionModeArgs {
   targetActorId: string
   sessionId: string
   permissionMode: string
+  /** Store this mode on the session. The composer dropdown sets this. */
+  remember?: boolean
+  /** permissionMode is also the device-wide default. An empty sessionId updates only that default. */
+  setDeviceDefault?: boolean
   timeoutMs?: number
 }
 
@@ -642,6 +652,8 @@ export async function sessionPermissionMode(
     const body = create(SessionPermissionModeRequestSchema, {
       sessionId: args.sessionId,
       permissionMode: args.permissionMode,
+      remember: args.remember ?? false,
+      setDeviceDefault: args.setDeviceDefault ?? false,
     })
     req.method = { case: 'sessionPermissionMode', value: body }
   }, args.targetActorId, args.timeoutMs)

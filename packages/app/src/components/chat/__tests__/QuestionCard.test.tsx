@@ -124,6 +124,47 @@ describe('QuestionCard', () => {
     });
   });
 
+  it('toggles every selected option when the question allows multiple', async () => {
+    const question = makeQuestion({ multiple: true });
+    const answerMock = vi.fn(() => Promise.resolve());
+    mockSessionState.pendingQuestions = [
+      {
+        questionId: 'event-1',
+        toolCallId: 'tc-1',
+        messageId: 'msg-1',
+        questions: [question],
+      },
+    ];
+    mockSessionState.answerQuestion = answerMock;
+
+    render(
+      <QuestionCard
+        toolCallId="tc-1"
+        questions={[question as never]}
+        isCompleted={false}
+      />
+    );
+
+    const card = screen.getByTestId('question-card');
+    expect(within(card).getByText('Select all that apply')).toBeTruthy();
+
+    const optionA = within(card).getByRole('button', { name: 'Option A' });
+    const optionB = within(card).getByRole('button', { name: 'Option B' });
+    fireEvent.click(optionA);
+    fireEvent.click(optionB);
+    expect(optionA).toHaveAttribute('aria-pressed', 'true');
+    expect(optionB).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(optionA);
+    expect(optionA).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(within(card).getByText('Submit Answer'));
+
+    await waitFor(() => {
+      expect(answerMock).toHaveBeenCalledWith({ 'q-1': ['option-b'] }, 'event-1');
+    });
+  });
+
   it('renders answered snapshot after completion when pending question is gone', () => {
     const question = makeQuestion();
     mockSessionState.answeredQuestionsByToolCallId = {

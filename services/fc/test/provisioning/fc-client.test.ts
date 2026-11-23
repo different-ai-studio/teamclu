@@ -276,6 +276,19 @@ test("fcEndpoint resolves explicit host, then account id, then ROLE_ARN", () => 
   }
 });
 
+test("fcEndpoint accepts the Hangzhou private service endpoint only for Hangzhou", () => {
+  const value = process.env.APPS_FC_ENDPOINT;
+  const endpoint = "1234567890123456.cn-hangzhou-internal.fc.aliyuncs.com";
+  process.env.APPS_FC_ENDPOINT = endpoint;
+  try {
+    assert.equal(fcEndpoint("cn-hangzhou"), endpoint);
+    assert.throws(() => fcEndpoint("cn-shanghai"), /does not match/);
+  } finally {
+    if (value === undefined) delete process.env.APPS_FC_ENDPOINT;
+    else process.env.APPS_FC_ENDPOINT = value;
+  }
+});
+
 test("fcEndpoint composes the host from the APPS region, not the default one", () => {
   // On self-host REGION labels the MinIO client; the function lives wherever
   // its code bucket is. Composing the host from REGION would aim every FC call
@@ -557,6 +570,30 @@ test("a container app runs its own image, with no layer and no code object", asy
   assert.equal(create.layers, undefined);
   assert.equal(create.code, undefined);
   assert.equal(create.customRuntimeConfig, undefined);
+});
+
+test("private registry pull options reach FC separately from runtime networking", async () => {
+  const { client, calls } = fakeClient();
+  const network = { vpcId: "vpc-pull", vSwitchId: "vsw-pull", securityGroupId: "sg-pull" };
+  const ops = makeFcOps(client as any, {
+    bucket: "b", role: "acs:ram::1:role/fc", region: "cn-hangzhou",
+    registryAuth: {
+      username: "pull-only", password: "test-pull-password", host: "registry.internal.example.com",
+      network, rootCaCertBase64: "dGVzdC1jYQ==",
+    },
+  });
+  await ops.ensureFunction("tc-app-1", {
+    declaration: CONTAINER, ossObjectName: "apps/1/code.zip", env: {},
+    image: "registry.example.com/apps/tc-app-1:sha",
+  });
+  const body = calls.find((c) => c[0] === "updateFunction")[2].body;
+  assert.equal(body.customContainerConfig.image, "registry.internal.example.com/apps/tc-app-1:sha");
+  assert.equal(body.vpcConfig, undefined);
+  assert.deepEqual(body.customContainerConfig.registryConfig.toMap(), {
+    authConfig: { userName: "pull-only", password: "test-pull-password" },
+    networkConfig: network,
+    certConfig: { insecure: false, rootCaCertBase64: "dGVzdC1jYQ==" },
+  });
 });
 
 test("a redeploy re-sends the image, not just the environment", async () => {
@@ -935,3 +972,43 @@ for (const value of ["private_key_material", "aB3dE5gH7jK9mN2pQ4sT6vX8zC1fG3hJ5k
     } finally { log.mock.restore(); }
   });
 }
+
+test("native private origin uses a JWT trigger and returns only its verified HTTPS URL", async () => {
+  const endpoint = "https://app-hash.cn-shenzhen-vpc.fcapp.run";
+  let triggerConfig: string;
+  const { client, calls } = fakeClient({
+    listTriggers: async () => {
+      if (!triggerConfig) throw Object.assign(new Error("FC list timed out on a function without a trigger"), { code: "RequestTimeoutError" });
+      return { body: { triggers: [protectedTrigger()] } };
+    },
+    listCustomDomains: async () => ({ body: { customDomains: [] } }),
+    createTrigger: async (_name: string, request: any) => { triggerConfig = request.body.triggerConfig; },
+    getTrigger: async () => ({ body: { triggerConfig, httpTrigger: { urlIntranet: endpoint } } }),
+  });
+  const ops = makeFcOps(client, OPS_CONFIG);
+  assert.equal(await ops.ensurePrivateOrigin("tc-app-1", TARGET), endpoint);
+  const config = JSON.parse(triggerConfig!);
+  assert.equal(config.authType, "jwt");
+  assert.equal(config.disableURLInternet, true);
+  assert.equal(config.authConfig.TokenLookup, "header:X-Teamclu-Origin-Authorization:Bearer ");
+  assert.deepEqual(config.authConfig.JWKS, originJwks(ORIGIN, TARGET.appId));
+  assert.ok(!calls.some(([operation]) => operation === "createCustomDomain" || operation === "getCustomDomain"));
+});
+
+test("native private origin refuses the public trigger endpoint or authentication drift", async () => {
+  let triggerConfig: string;
+  let endpoint = "https://app-hash.cn-shenzhen.fcapp.run";
+  const { client } = fakeClient({
+    listCustomDomains: async () => ({ body: { customDomains: [] } }),
+    createTrigger: async (_name: string, request: any) => { triggerConfig = request.body.triggerConfig; },
+    getTrigger: async () => ({ body: { triggerConfig, httpTrigger: { urlIntranet: endpoint } } }),
+  });
+  const ops = makeFcOps(client, OPS_CONFIG);
+  await assert.rejects(ops.ensurePrivateOrigin("tc-app-1", TARGET), /originEndpoint/);
+  endpoint = "https://app-hash.cn-shenzhen-vpc.fcapp.run";
+  await ops.ensurePrivateOrigin("tc-app-1", TARGET);
+  const config = JSON.parse(triggerConfig!);
+  config.authType = "anonymous";
+  triggerConfig = JSON.stringify(config);
+  await assert.rejects(ops.readPrivateOrigin("tc-app-1", TARGET), /authConfig.authType/);
+});

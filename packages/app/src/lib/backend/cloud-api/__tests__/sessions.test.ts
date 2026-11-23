@@ -74,6 +74,39 @@ describe("sessions module", () => {
     ).rejects.toThrow(/requires teamId/);
   });
 
+  it("manual rename sends titleLocked and a generated title does not", async () => {
+    const patches: unknown[] = [];
+    const client = {
+      async get() { throw new Error("unexpected"); },
+      async post() { throw new Error("unexpected"); },
+      async patch(_path: string, body: unknown) {
+        patches.push(body);
+        const title = (body as { title: string }).title;
+        return { title, titleApplied: true, titleLocked: (body as { titleLocked?: boolean }).titleLocked === true };
+      },
+      async put() { throw new Error("unexpected"); },
+      async delete() { throw new Error("unexpected"); },
+      async postRaw() { throw new Error("unexpected"); },
+      async getRaw() { throw new Error("unexpected"); },
+    } as unknown as CloudApiClient;
+    const mod = createSessionsModule(client);
+
+    await expect(mod.updateSessionTitle("session-1", "Standup (09:30)", { lock: true })).resolves.toBe(true);
+    await expect(mod.updateSessionTitle("session-1", "深圳美食推荐")).resolves.toBe(true);
+    const refused = {
+      ...client,
+      async patch() {
+        return { title: "Standup (09:30)", titleApplied: false, titleLocked: true };
+      },
+    } as unknown as CloudApiClient;
+    await expect(createSessionsModule(refused).updateSessionTitle("session-1", "另一条")).resolves.toBe(false);
+
+    expect(patches).toEqual([
+      { title: "Standup (09:30)", titleLocked: true },
+      { title: "深圳美食推荐" },
+    ]);
+  });
+
   it("markCurrentActorSessionViewed calls POST /v1/sessions/:id/mark-viewed", async () => {
     let called = false;
     const client = {

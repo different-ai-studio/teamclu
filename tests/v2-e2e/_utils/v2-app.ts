@@ -194,6 +194,30 @@ export async function waitForSelector(
   );
 }
 
+/**
+ * Open a streaming tool row so its result is in the DOM. Tool rows are
+ * collapsible and render their result only while open (Radix unmounts closed
+ * content), so a test that waits for a tool's summary must open it first.
+ * Idempotent: an open row is left alone, so a re-run of the script cannot
+ * toggle it shut again.
+ */
+export async function expandStreamingTool(toolId: string): Promise<void> {
+  const root = `[data-testid="v2-streaming-tool"][data-tool-id="${toolId}"]`;
+  await jsJson<{ state: string }>(`
+    (() => {
+      const root = document.querySelector(${JSON.stringify(root)});
+      if (!root) throw new Error("No streaming tool " + ${JSON.stringify(toolId)});
+      const box = root.querySelector('[data-slot="collapsible"]');
+      if (box && box.getAttribute("data-state") === "open") return JSON.stringify({ state: "open" });
+      // tool-row-* (most tools) and tool-card-* (bash) share the trigger shape.
+      const trigger = root.querySelector('[data-slot="collapsible"] [type="button"]');
+      if (!trigger) throw new Error("No expand trigger for tool " + ${JSON.stringify(toolId)});
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, view: window }));
+      return JSON.stringify({ state: box ? box.getAttribute("data-state") : "unknown" });
+    })()
+  `);
+}
+
 export async function clickSelector(selector: string): Promise<void> {
   await jsJson<{ clicked: true }>(`
     (() => {

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -111,6 +111,28 @@ pub struct PrepareRequest {
     known: Vec<KnownDocument>,
     #[serde(default)]
     vision_choice: Option<String>,
+    /// documents path → "profile" | "segment" | "skip", answered in the
+    /// large-file step. The runner re-checks each choice against the options
+    /// it offered, so an unknown value only asks again.
+    #[serde(default)]
+    large_source_choices: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LargeSource {
+    path: String,
+    chars: usize,
+    limit: usize,
+    kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    encoding: Option<String>,
+    parts: usize,
+    max_parts: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    options: Vec<String>,
+    default_choice: String,
 }
 
 fn default_config_version() -> u64 {
@@ -158,6 +180,10 @@ pub struct PrepareSummary {
     blockers: Vec<String>,
     #[serde(default)]
     needs_vision_acceptance: bool,
+    #[serde(default)]
+    large_sources: Vec<LargeSource>,
+    #[serde(default)]
+    needs_large_source_decision: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -711,28 +737,80 @@ fn load_team_gateway() -> Result<(String, String), String> {
     gateway_from_disk_team(&team)
 }
 
+/// Node 22+ `lstat`s a bare `D:` when any path it realpaths still has the
+/// `\\?\` prefix. Rewrite those strings in the maintainer input before the
+/// compiler process starts.
+fn rewrite_verbatim_node_paths(value: &mut Value) -> bool {
+    match value {
+        Value::String(text) => {
+            let plain = teamclu_runtime_env::path_for_node_str(text);
+            if plain != *text {
+                *text = plain;
+                true
+            } else {
+                false
+            }
+        }
+        Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                changed |= rewrite_verbatim_node_paths(item);
+            }
+            changed
+        }
+        Value::Object(map) => {
+            let mut changed = false;
+            for item in map.values_mut() {
+                changed |= rewrite_verbatim_node_paths(item);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn sanitize_node_input(path: &Path) -> Result<(), String> {
+    let bytes = fs::read(path).map_err(|e| format!("Cannot read Wiki input: {e}"))?;
+    let mut value: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("Invalid Wiki input: {e}"))?;
+    if rewrite_verbatim_node_paths(&mut value) {
+        write_json(path, &value)?;
+    }
+    Ok(())
+}
+
 async fn run_node(
     app: &tauri::AppHandle,
     command: &str,
     input_path: &Path,
     gateway: Option<&(String, String)>,
 ) -> Result<Value, String> {
-    let node = node_path()?;
-    let script = script_path(app)?;
+    // Tauri's executable path is `canonicalize`d, so a build installed on D:
+    // launches this script as `\\?\D:\...\desktop-runner.js`. Node's module
+    // loader then `lstat`s `D:` and Wiki maintenance dies before it reads a
+    // single document. The plain path is the same file.
+    let node = teamclu_runtime_env::path_for_node(&node_path()?);
+    let script = teamclu_runtime_env::path_for_node(&script_path(app)?);
     let command = command.to_string();
-    let input_path = input_path.to_path_buf();
-    let amuxd_home = super::amuxd_home_dir();
+    let input_path = teamclu_runtime_env::path_for_node(input_path);
+    let amuxd_home = teamclu_runtime_env::path_for_node(&super::amuxd_home_dir());
     let gateway = gateway.cloned();
     let app = app.clone();
 
     tokio::task::spawn_blocking(move || {
-        let mut cmd = StdCommand::new(node);
+        sanitize_node_input(&input_path)?;
+        let mut cmd = StdCommand::new(&node);
         cmd.arg(&script)
             .arg(&command)
             .arg(&input_path)
-            .env(teamclu_runtime_env::AMUXD_HOME_ENV, amuxd_home)
+            .env(teamclu_runtime_env::AMUXD_HOME_ENV, &amuxd_home)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(dir) = script.parent() {
+            if dir.is_dir() {
+                cmd.current_dir(dir);
+            }
+        }
         if let Some((payload, token)) = gateway.as_ref() {
             cmd.env("TEAMCLU_TEAM_PROVIDER", payload)
                 .env("tc_gateway_token", token);
@@ -1041,6 +1119,7 @@ pub async fn kb_maintainer_prepare(
             "path": item.path, "version": item.version, "size": item.size
         })).collect::<Vec<_>>(),
         "visionChoice": request.vision_choice.unwrap_or_else(|| "ask".to_string()),
+        "largeSourceChoices": request.large_source_choices.unwrap_or_default(),
     });
     if let Err(error) = write_json(&input_path, &input) {
         let _ = fs::remove_file(&lock_path);
@@ -1181,11 +1260,21 @@ pub async fn kb_maintainer_cancel(
     };
     let root = work_root(&run.team_id)?;
     let _ = fs::write(root.join("state/cancel-requested"), b"1");
-    stop_compiler(&root.join("state/compiler.pid"));
-    rollback_unfinished_wiki(&root.join("wiki"))?;
+    // `kill` and the two git commands block; keep them off the async runtime.
+    let rollback = tokio::task::spawn_blocking(move || {
+        stop_compiler(&root.join("state/compiler.pid"));
+        rollback_unfinished_wiki(&root.join("wiki"))
+    })
+    .await
+    .map_err(|error| format!("Cancelling the Wiki run did not finish: {error}"))
+    .and_then(|result| result);
+    // Release the run lock whether or not the rollback worked. The in-memory
+    // run is already gone, and the lock file names this process — which is
+    // alive — so a lock left behind here made every later run report "already
+    // active" until the app was restarted.
     let _ = fs::remove_file(run.lock_path);
     let _ = fs::remove_file(run.input_path);
-    Ok(())
+    rollback
 }
 
 fn stop_compiler(pid_path: &Path) {
@@ -1325,6 +1414,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn maintainer_input_drops_verbatim_drive_prefixes_before_node_sees_them() {
+        let mut input = json!({
+            "documentsRoot": r"\\?\D:\team\documents",
+            "knowledgeRoot": r"\\?\D:\team\knowledge",
+            "workRoot": "//?/D:/team/work",
+            "sources": ["documents/AI行业应用/"],
+            "compilerModel": "team/旗舰"
+        });
+        assert!(rewrite_verbatim_node_paths(&mut input));
+        assert_eq!(input["documentsRoot"], r"D:\team\documents");
+        assert_eq!(input["knowledgeRoot"], r"D:\team\knowledge");
+        assert_eq!(input["workRoot"], "D:/team/work");
+        assert_eq!(input["sources"][0], "documents/AI行业应用/");
+        assert_eq!(input["compilerModel"], "team/旗舰");
+        assert!(!rewrite_verbatim_node_paths(&mut input));
+    }
+
+    #[test]
     fn source_directories_are_normalized_under_documents() {
         assert_eq!(
             normalize_source_directory("documents/handbook/").unwrap(),
@@ -1361,6 +1468,63 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(parsed.compiler_model.as_deref(), Some("glm-4.6"));
+        assert!(parsed.large_source_choices.is_none());
+    }
+
+    #[test]
+    fn large_source_decision_round_trips_between_runner_and_frontend() {
+        let parsed: PrepareRequest = serde_json::from_value(json!({
+            "teamId": "team-1",
+            "sourceDirectories": ["documents/营运部/"],
+            "aclPrefixes": [],
+            "known": [],
+            "largeSourceChoices": { "documents/营运部/整车成本.csv": "profile" }
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed
+                .large_source_choices
+                .unwrap()
+                .get("documents/营运部/整车成本.csv")
+                .map(String::as_str),
+            Some("profile")
+        );
+
+        let summary: PrepareSummary = serde_json::from_value(json!({
+            "runId": "run-1",
+            "nodeId": "node-a",
+            "baseTreeHash": null,
+            "targetCommit": "",
+            "targetTreeHash": "",
+            "sourceCount": 2,
+            "added": 0,
+            "updated": 0,
+            "deleted": 0,
+            "failed": 0,
+            "visionPages": 0,
+            "estimatedCost": null,
+            "currency": "CNY",
+            "canPublish": false,
+            "blockers": [],
+            "largeSources": [{
+                "path": "documents/营运部/整车成本.csv",
+                "chars": 186000,
+                "limit": 50000,
+                "kind": "table",
+                "encoding": "gb18030",
+                "parts": 6,
+                "maxParts": 20,
+                "options": ["profile", "segment", "skip"],
+                "defaultChoice": "profile"
+            }],
+            "needsLargeSourceDecision": true
+        }))
+        .unwrap();
+        let back = serde_json::to_value(&summary).unwrap();
+        assert_eq!(back["needsLargeSourceDecision"], json!(true));
+        assert_eq!(back["largeSources"][0]["maxParts"], json!(20));
+        assert_eq!(back["largeSources"][0]["encoding"], json!("gb18030"));
+        assert!(back["largeSources"][0].get("reason").is_none());
     }
 
     #[test]

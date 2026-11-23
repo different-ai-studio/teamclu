@@ -247,7 +247,8 @@ export interface WeComQrAuthStart {
 }
 
 export interface WeComQrAuthPollResult {
-  status: 'waiting' | 'success' | 'expired'
+  /** `waiting` | `scanned` | `success` | `expired`, plus any legacy spelling the poll loop still treats as pending. */
+  status: string
   botId?: string
   secret?: string
 }
@@ -521,6 +522,7 @@ export interface ChannelsState {
   testWecomCredentials: (botId: string, secret: string) => Promise<boolean>
   clearWecomTestResult: () => void
   setWecomHasChanges: (hasChanges: boolean) => void
+  commitScannedWecomBot: (botId: string, secret: string) => Promise<{ appliedToStore: boolean }>
   startWecomQrAuth: () => Promise<WeComQrAuthStart>
   pollWecomQrAuth: (scode: string) => Promise<WeComQrAuthPollResult>
 

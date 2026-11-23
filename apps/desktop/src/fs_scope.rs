@@ -100,6 +100,24 @@ pub async fn allow_fs_scope_dirs(app: AppHandle, paths: Vec<String>) -> Result<(
     Ok(())
 }
 
+/// Whether `path` is a directory on this machine — without widening the scope.
+///
+/// The frontend asks this before adopting a session's bound folder as the
+/// window's workspace (`switchToSessionWorkspaceIfNeeded`). It used to ask the
+/// fs plugin's `exists`, which is scope-gated: a folder this run had not opened
+/// yet (the window started on an app checkout under the amuxd home, say) was
+/// rejected as out of scope, read as "not on this machine", and the switch was
+/// skipped — the files pane then sat on "Agent 尚未启动".
+///
+/// Widening the scope just to check would be wrong: the path comes from a cloud
+/// binding and may be another machine's. A yes/no on the directory reveals
+/// nothing a scope grant protects; `setWorkspace` grants it once it is adopted.
+#[tauri::command]
+pub fn path_is_directory(path: String) -> bool {
+    let trimmed = path.trim();
+    !trimmed.is_empty() && Path::new(trimmed).is_dir()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +148,24 @@ mod tests {
             !fixed_roots().contains(&downloads),
             "downloads are granted by the save dialog, not statically"
         );
+    }
+
+    #[test]
+    fn path_is_directory_answers_without_a_scope_grant() {
+        let dir = std::env::temp_dir();
+        assert!(path_is_directory(dir.to_string_lossy().into_owned()));
+        let file = dir.join(format!("fs-scope-probe-{}", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        assert!(
+            !path_is_directory(file.to_string_lossy().into_owned()),
+            "a file is not a workspace"
+        );
+        std::fs::remove_file(&file).unwrap();
+        assert!(!path_is_directory(
+            dir.join("definitely-missing-dir-xyz")
+                .to_string_lossy()
+                .into_owned()
+        ));
+        assert!(!path_is_directory("   ".into()));
     }
 }

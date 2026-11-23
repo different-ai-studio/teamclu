@@ -104,32 +104,9 @@ pub struct SkillListItem {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-struct ApiSkillListResponse {
-    items: Vec<SkillListItem>,
-    next_cursor: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct ApiSearchBrowseResponse {
     results: Vec<SearchResultEntry>,
     next_marker: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-struct ApiResolveResponse {
-    #[serde(rename = "match")]
-    matched: Option<VersionRef>,
-    latest_version: Option<VersionRef>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct VersionRef {
-    version: String,
 }
 
 // ─── Frontend-facing types ───────────────────────────────────────────────────
@@ -154,15 +131,6 @@ pub struct ClawHubSearchResults {
 pub struct ClawHubExploreResults {
     pub items: Vec<SkillListItem>,
     pub next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClawHubUpdateInfo {
-    pub slug: String,
-    pub current_version: Option<String>,
-    pub latest_version: Option<String>,
-    pub has_update: bool,
 }
 
 // ─── Lockfile ────────────────────────────────────────────────────────────────
@@ -276,14 +244,7 @@ fn agents_skills_dir() -> Result<PathBuf, String> {
 }
 
 pub(crate) fn validate_slug(slug: &str) -> Result<(), String> {
-    let trimmed = slug.trim();
-    if trimmed.is_empty() {
-        return Err("Slug is required".to_string());
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
-        return Err(format!("Invalid slug: {}", trimmed));
-    }
-    Ok(())
+    teamclu_skillpack::validate_skill_slug(slug.trim()).map_err(|err| err.to_string())
 }
 
 /// Safely sanitize a relative path from a zip entry.

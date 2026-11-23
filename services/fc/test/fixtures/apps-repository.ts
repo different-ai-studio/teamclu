@@ -19,6 +19,34 @@ function appsAuth(userId = "user-app-1") {
 // client: an `apps` UPDATE matches no row unless the caller (`actorRow`) created
 // it. `serviceRole()` is a second double over the same rows with no RLS, for
 // writes the repository escalates.
+/** `amux.app_inherited_agents` over the in-memory tables. */
+function inheritedAgents(state: any, appId: string) {
+  const app = (state.apps ?? []).find((a: any) => a.id === appId);
+  if (!app) return [];
+  const rank: Record<string, number> = { admin: 0, write: 1, read: 2 };
+  const owners = new Map<string, string>();
+  const offer = (actorId: string | null | undefined, level: string) => {
+    if (!actorId) return;
+    const prev = owners.get(actorId);
+    if (!prev || rank[level] < rank[prev]) owners.set(actorId, level);
+  };
+  offer(app.created_by_actor_id, "admin");
+  for (const g of state.app_member_access ?? []) if (g.app_id === appId) offer(g.member_id, g.permission_level);
+  const actor = (id: string) => (state.actors ?? []).find((a: any) => a.id === id);
+  const rows: any[] = [];
+  for (const [ownerId, level] of owners) {
+    const owner = actor(ownerId);
+    if (!owner || owner.actor_type !== "member" || owner.team_id !== app.team_id) continue;
+    for (const g of state.agents ?? []) {
+      if (g.owner_member_id !== ownerId || g.status !== "active") continue;
+      const ag = actor(g.id);
+      if (!ag || ag.actor_type !== "agent" || ag.team_id !== app.team_id) continue;
+      rows.push({ agent_id: g.id, owner_actor_id: ownerId, permission_level: level });
+    }
+  }
+  return rows;
+}
+
 export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [],
   projectSelects = false, appInsertDefaults = { app_code: "a-k7m2q9vx4n8p" }, appInsertId,
   creatorOnlyAppUpdates = false, sharedState,
@@ -40,6 +68,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
     agents: [...(seed.agents ?? [])],
     session_participants: [...(seed.session_participants ?? [])],
     agent_member_access: [...(seed.agent_member_access ?? [])],
+    session_read_markers: [...(seed.session_read_markers ?? [])],
   };
   return {
     auth: appsAuth(),
@@ -206,6 +235,13 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
             const matched = matchRows();
             state[table] = state[table].map((row: any) => matched.includes(row) ? { ...row, ...ctx.update } : row);
           }
+          if (ctx.op === "delete") {
+            // Removed from state (so a later read sees the delete) and returned,
+            // as PostgREST does for a delete followed by .select().
+            const matched = matchRows();
+            state[table] = (state[table] ?? []).filter((row: any) => !matched.includes(row));
+            return Promise.resolve({ data: matched.map(project), error: null }).then(resolve, reject);
+          }
           return Promise.resolve({ data: matchRows().map(project), error: null }).then(resolve, reject);
         },
       };
@@ -222,17 +258,94 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         state.app_lifecycle_operations.push(op);return {data:op,error:null};
       }
       if(name==='finish_app_lifecycle') {const op=state.app_lifecycle_operations.find(r=>r.id===args.p_operation_id);if(op)op.status='succeeded';return {data:null,error:null};}
+      // The agent-inheritance rule of 20261120120000, mirrored in memory
+      // (the SQL itself is covered by agent_inherits_owner_app_access.test.sql).
+      if (name === 'app_inherited_agents' || name === 'agent_inherited_app_level') {
+        const rows = inheritedAgents(state, args.p_app_id);
+        if (name === 'app_inherited_agents') return { data: rows, error: null };
+        return { data: rows.find((r) => r.agent_id === args.p_actor_id)?.permission_level ?? null, error: null };
+      }
       return { data: [], error: null };
     },
   };
 }
 
-export function fakeGitea(over: Record<string, unknown> = {}) {
-  return {
-    createAppRepo: async (appId: string) => ({
-      cloneUrl: `https://gitea.example/teamclaw-apps/tc-app-${appId}.git`,
-      sshUrl: `git@gitea.example:teamclaw-apps/tc-app-${appId}.git`,
-    }),
+/**
+ * An in-memory Gitea. `withOwner` returns a view bound to another owner that
+ * shares the same state, so a test can see which owner each call acted on;
+ * `ops` records every admin call in order.
+ */
+export function fakeGitea(over: Record<string, unknown> = {}, owner = "teamclaw-apps", shared?: any) {
+  const state = shared ?? {
+    ops: [] as any[],
+    users: new Map<string, string>(),
+    orgs: new Set<string>(),
+    teams: new Map<string, { id: number; members: Set<string>; repos: Set<string> }>(),
+    collaborators: new Map<string, Map<string, string>>(),
+    nextTeamId: 1,
+  };
+  const repoKey = (appId: string) => `${owner}/tc-app-${appId}`;
+  const self: any = {
+    owner,
+    ops: state.ops,
+    state,
+    withOwner: (o: string) => (o === owner ? self : fakeGitea(over, o, state)),
+    ensureUser: async (username: string, fullName: string) => {
+      state.ops.push(["ensureUser", username, fullName]);
+      state.users.set(username, fullName);
+    },
+    ensureOrg: async (org: string) => {
+      state.ops.push(["ensureOrg", org]);
+      state.orgs.add(org);
+    },
+    findTeamId: async (org: string, name: string) => state.teams.get(`${org}/${name}`)?.id ?? null,
+    ensureReadTeam: async (org: string, name: string) => {
+      const key = `${org}/${name}`;
+      if (!state.teams.has(key)) state.teams.set(key, { id: state.nextTeamId++, members: new Set(), repos: new Set() });
+      return state.teams.get(key)!.id;
+    },
+    listTeamMembers: async (teamId: number) =>
+      [...([...state.teams.values()].find((t: any) => t.id === teamId)?.members ?? [])],
+    addTeamMember: async (teamId: number, username: string) => {
+      state.ops.push(["addTeamMember", teamId, username]);
+      [...state.teams.values()].find((t: any) => t.id === teamId)?.members.add(username);
+    },
+    removeTeamMember: async (teamId: number, username: string) => {
+      state.ops.push(["removeTeamMember", teamId, username]);
+      [...state.teams.values()].find((t: any) => t.id === teamId)?.members.delete(username);
+    },
+    setTeamRepo: async (teamId: number, appId: string, present: boolean) => {
+      state.ops.push(["setTeamRepo", teamId, repoKey(appId), present]);
+      const team = [...state.teams.values()].find((t: any) => t.id === teamId);
+      if (present) team?.repos.add(repoKey(appId));
+      else team?.repos.delete(repoKey(appId));
+    },
+    listCollaborators: async (appId: string) =>
+      [...(state.collaborators.get(repoKey(appId)) ?? new Map()).entries()].map(([username, permission]) => ({ username, permission })),
+    setCollaborator: async (appId: string, username: string, permission: string) => {
+      state.ops.push(["setCollaborator", repoKey(appId), username, permission]);
+      if (!state.collaborators.has(repoKey(appId))) state.collaborators.set(repoKey(appId), new Map());
+      state.collaborators.get(repoKey(appId))!.set(username, permission);
+    },
+    removeAllAppAccess: async (appId: string) => {
+      state.ops.push(["removeAllAppAccess", repoKey(appId)]);
+      const collaborators = state.collaborators.get(repoKey(appId))?.size ?? 0;
+      state.collaborators.delete(repoKey(appId));
+      let teams = 0;
+      for (const team of state.teams.values()) if (team.repos.delete(repoKey(appId))) teams += 1;
+      return { collaborators, teams };
+    },
+    removeCollaborator: async (appId: string, username: string) => {
+      state.ops.push(["removeCollaborator", repoKey(appId), username]);
+      state.collaborators.get(repoKey(appId))?.delete(username);
+    },
+    createAppRepo: async (appId: string) => {
+      state.ops.push(["createAppRepo", owner, appId]);
+      return {
+        cloneUrl: `https://gitea.example/${owner}/tc-app-${appId}.git`,
+        sshUrl: `git@gitea.example:${owner}/tc-app-${appId}.git`,
+      };
+    },
     createDeployKey: async () => ({ id: 1 }),
     listDeployKeys: async () => [],
     deleteDeployKey: async () => {},
@@ -243,6 +356,7 @@ export function fakeGitea(over: Record<string, unknown> = {}) {
     compareCommits: async () => 4,
     ...over,
   };
+  return self;
 }
 
 export function appsRepo(supabase: any, extra: any = {}) {

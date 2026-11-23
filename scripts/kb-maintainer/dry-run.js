@@ -8,6 +8,7 @@ const { isRestrictedPath, restrictedDocumentPrefixes } = require("./acl-prefligh
 const { classifySource } = require("./whitelist");
 const { reconcile } = require("./reconcile");
 const { normalizeDocumentsPath } = require("./paths");
+const { plainPathForNode } = require("./win-path");
 
 function sha256File(filePath) {
   const hash = crypto.createHash("sha256");
@@ -58,6 +59,11 @@ function assertSchema(knowledgeRoot) {
 }
 
 function dryRun(opts) {
+  opts = {
+    ...opts,
+    documentsRoot: plainPathForNode(opts.documentsRoot),
+    knowledgeRoot: plainPathForNode(opts.knowledgeRoot),
+  };
   const config = loadConfig(opts.configPath);
   if (typeof opts.fetchDocuments === "function") {
     // Slice 1 must never fetch; presence of the hook is a tripwire for tests.

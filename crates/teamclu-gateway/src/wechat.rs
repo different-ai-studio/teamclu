@@ -8,8 +8,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{oneshot, RwLock};
 
-#[allow(dead_code)]
-const ILINK_BASE_URL: &str = "https://ilinkai.weixin.qq.com";
 const LONG_POLL_TIMEOUT_MS: u64 = 35_000;
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 const BACKOFF_DELAY_MS: u64 = 30_000;
@@ -569,12 +567,6 @@ impl WeChatGateway {
             account_id: cfg.account_id,
             context_tokens: Arc::clone(&self.context_tokens),
         }
-    }
-
-    /// Get cached context_token for a user (used by cron delivery)
-    #[allow(dead_code)]
-    pub async fn get_context_token(&self, user_id: &str) -> Option<String> {
-        self.context_tokens.read().await.get(user_id).cloned()
     }
 
     /// Send a message to a WeChat user (used by cron delivery and reply)
