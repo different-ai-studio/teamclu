@@ -4,6 +4,10 @@ import { cn } from "@/lib/utils";
 import { adaptTeamcluMessages } from "@/lib/messages/v2-message-adapter";
 import { MessageList, type MessageListHandle } from "./MessageList";
 import type { ComposerAttachment } from "@/lib/attachments/composer-attachment";
+import {
+  EMPTY_COMPOSER_FILES,
+  useComposerDraftStore,
+} from "@/stores/composer-draft-store";
 import { ChatInputArea } from "./ChatInputArea";
 import type { ActiveStreamingAgent } from "./ComposerStack";
 import { useSessionStreams } from "@/lib/stream/session-streams";
@@ -76,8 +80,6 @@ type SessionChatColumnProps = {
   ensureSessionBeforeSend?: () => Promise<string>;
   compact?: boolean;
   inputLayout?: "overlay" | "inline";
-  /** Isolated draft so dual composers (main + thread) do not clobber each other. */
-  isolateComposerDraft?: boolean;
   /** Suppress nested "+ Open thread" affordances (thread panel). */
   suppressThreadBadge?: boolean;
   /** Parent session when this column is a thread panel. */
@@ -92,7 +94,6 @@ export function SessionChatColumn({
   ensureSessionBeforeSend,
   compact = true,
   inputLayout = "overlay",
-  isolateComposerDraft = false,
   suppressThreadBadge = false,
   parentSessionId = null,
   className,
@@ -100,8 +101,9 @@ export function SessionChatColumn({
   const { t } = useTranslation();
   const mentionSessionId = mentionSessionIdProp ?? composerSessionId;
   const messageListRef = React.useRef<MessageListHandle>(null);
-  const [pendingFiles, setPendingFiles] = React.useState<ComposerAttachment[]>([]);
-  const [composerDraft, setComposerDraft] = React.useState("");
+  const pendingFiles = useComposerDraftStore(
+    (s) => s.filesByKey[composerSessionId] ?? EMPTY_COMPOSER_FILES,
+  );
   const noop = React.useCallback(() => {}, []);
   const noopSetBool = React.useCallback((_value: React.SetStateAction<boolean>) => {}, []);
 
@@ -501,28 +503,25 @@ export function SessionChatColumn({
     setSessionFadeOpacity: noop,
     draftPreselectedActor: null,
     clearSessionError,
-    pendingFiles,
-    setPendingFiles,
     engagedAgents,
     engagedUiEntries,
     sheetTeamId,
     welcomeQuickChatAgent: null,
     setWelcomeSessionStarting: noopSetBool,
     messageListRef,
-    clearGlobalDraft: !isolateComposerDraft,
   });
 
   const handleSubmit = React.useCallback(
     async (message: PromptInputMessage) => {
+      const sourceKey = composerSessionId;
       let sid = sessionId;
       if (!sid) {
         if (!ensureSessionBeforeSend) return;
         sid = await ensureSessionBeforeSend();
       }
-      await sendIntoSession(sid, message);
-      if (isolateComposerDraft) setComposerDraft("");
+      await sendIntoSession(sid, message, [], undefined, sourceKey);
     },
-    [sessionId, ensureSessionBeforeSend, sendIntoSession, isolateComposerDraft],
+    [composerSessionId, sessionId, ensureSessionBeforeSend, sendIntoSession],
   );
 
   const handleVoiceSegment = React.useCallback(
@@ -551,11 +550,14 @@ export function SessionChatColumn({
   }, []);
 
   const appendPendingFiles = React.useCallback((files: ComposerAttachment[]) => {
-    setPendingFiles((prev) => [...prev, ...files]);
-  }, []);
+    useComposerDraftStore.getState().updateFiles(composerSessionId, (prev) => [...prev, ...files]);
+  }, [composerSessionId]);
   const removePendingFile = React.useCallback((index: number) => {
-    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
-  }, []);
+    useComposerDraftStore.getState().updateFiles(
+      composerSessionId,
+      (prev) => prev.filter((_, i) => i !== index),
+    );
+  }, [composerSessionId]);
 
   const visibleSessionError =
     sessionError?.sessionId && sessionError.sessionId === sessionId ? sessionError : null;
@@ -615,11 +617,7 @@ export function SessionChatColumn({
         stackTodos={hasComposerPlanData ? combinedTodos : []}
         stackQueue={hasComposerPlanData ? messageQueue : []}
         planSlotHidden={hasComposerPlanData && !showInlineTodo}
-        draftOverride={
-          isolateComposerDraft
-            ? { value: composerDraft, onChange: setComposerDraft }
-            : undefined
-        }
+        captureGlobalInserts={false}
         inputLayout={inputLayout}
       />
     </div>

@@ -12,6 +12,7 @@ import type {
 import { useSessionMessageStore } from "./session-message-store";
 import { useSessionListStore, type SessionListEntry } from "./session-list-store";
 import { useSessionSelectionStore } from "./session-selection-store";
+import { useComposerDraftStore } from "./composer-draft-store";
 import { useCurrentTeamStore } from "./current-team";
 import { answersRecordFromOrdered } from "@/lib/teamclu/question-settlement";
 
@@ -22,7 +23,8 @@ import { answersRecordFromOrdered } from "@/lib/teamclu/question-settlement";
 // (useSessionSelectionStore) and the message log (useSessionMessageStore).
 // This store mirrors the slices of those that older chat consumers still read
 // through one hook, and hosts the small amount of chat state that has no v2
-// home yet: the composer draft, turn errors, and the `question` tool queue.
+// home yet: turn errors and the `question` tool queue. The composer draft
+// lives in useComposerDraftStore, one entry per session.
 //
 // Every field is typed. There is no index signature and no `any`: a consumer
 // that reads a field which does not exist here fails to compile instead of
@@ -73,8 +75,6 @@ export interface SessionState {
   errorSessionId: string | null;
   /** Structured agent-turn error rendered as a SessionErrorAlert bubble. */
   sessionError: SessionErrorEvent | null;
-  /** Composer draft, preserved when navigating away from the chat. */
-  draftInput: string;
   /** Open `question` tool prompts (question.asked), newest last. */
   pendingQuestions: PendingQuestionState[];
   answeredQuestionsByToolCallId: Record<string, AnsweredQuestionSnapshot>;
@@ -106,7 +106,6 @@ export interface SessionState {
   toggleSessionPinned: (sid: string) => void;
   /** Briefly mark a session as freshly created in the sidebar. Auto-clears after ttlMs. */
   addHighlightedSession: (sid: string, ttlMs?: number) => void;
-  setDraftInput: (text: string) => void;
   setError: (msg: string | null, sid?: string | null) => void;
   /** Show a structured error alert (SessionErrorAlert) in a session's thread. */
   setSessionErrorEvent: (event: SessionErrorEvent) => void;
@@ -189,7 +188,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   error: null,
   errorSessionId: null,
   sessionError: null,
-  draftInput: "",
   pendingQuestions: [],
   answeredQuestionsByToolCallId: {},
   pendingPermissions: [],
@@ -229,6 +227,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (wasActiveSession) {
         await useSessionSelectionStore.getState().setActiveSession(null);
       }
+      useComposerDraftStore.getState().clear(id);
       set((state) => ({
         pendingQuestions: state.pendingQuestions.filter((q) => q.sessionId !== id),
         pendingPermissions: state.pendingPermissions.filter(
@@ -254,7 +253,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   // ── hosted state actions ───────────────────────────────────────────
-  setDraftInput: (text) => set({ draftInput: text }),
   setError: (msg, sid) => set({ error: msg, errorSessionId: sid ?? null }),
   setSessionErrorEvent: (event) =>
     set({ sessionError: event, errorSessionId: event?.sessionId ?? null }),

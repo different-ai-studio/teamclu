@@ -35,6 +35,12 @@ import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
 import { createQuickSession, describeQuickSessionFailure, type QuickSessionFailureReason } from "@/lib/session/create-quick-session";
 import { isSoloAgentSession } from "@/lib/session/session-empty-thread-starters";
 import type { ComposerAttachment } from "@/lib/attachments/composer-attachment";
+import {
+  composerDraftKey,
+  EMPTY_COMPOSER_FILES,
+  hydrateComposerDraftFiles,
+  useComposerDraftStore,
+} from "@/stores/composer-draft-store";
 import { ChatInputArea } from "./ChatInputArea";
 import type { ActiveStreamingAgent } from "./ComposerStack";
 import { useSessionStreams } from "@/lib/stream/session-streams";
@@ -110,6 +116,10 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   // `null` locality is "the daemon has not said" and leaves the composer alone.
   const { app: activeSessionApp, local: activeSessionAppLocal } =
     useSessionApp(activeSessionId);
+
+  React.useEffect(() => {
+    void hydrateComposerDraftFiles();
+  }, []);
 
   React.useEffect(() => {
     if (!activeSessionId) return;
@@ -276,9 +286,12 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   const workspaceBootstrapped = !!workspacePath;
   const workspaceReady = !!workspacePath;
   // ── Local state ───────────────────────────────────────────────────────
-  // draftInput lives in ChatInputArea (store subscription) so typing does not
-  // re-render this panel / MessageList.
-  const [pendingFiles, setPendingFiles] = React.useState<ComposerAttachment[]>([]);
+  // Draft text is subscribed in ChatInputArea so typing does not re-render
+  // this panel / MessageList. Attachments follow the same per-session key.
+  const draftKey = composerDraftKey(activeSessionId);
+  const pendingFiles = useComposerDraftStore(
+    (s) => s.filesByKey[draftKey] ?? EMPTY_COMPOSER_FILES,
+  );
   // engagedAgents is per-session: each @-mentioned agent shows as a pill in
   // the prompt-input toolbar. Switching away from a session and back
   // restores its engaged set rather than carrying one across sessions.
@@ -909,12 +922,12 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   // ── File handling ─────────────────────────────────────────────────────
 
   const appendPendingFiles = React.useCallback((files: ComposerAttachment[]) => {
-    setPendingFiles((prev) => [...prev, ...files]);
-  }, []);
+    useComposerDraftStore.getState().updateFiles(draftKey, (prev) => [...prev, ...files]);
+  }, [draftKey]);
 
   const removePendingFile = React.useCallback((index: number) => {
-    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
-  }, []);
+    useComposerDraftStore.getState().updateFiles(draftKey, (prev) => prev.filter((_, i) => i !== index));
+  }, [draftKey]);
 
   // ── Submit handler ────────────────────────────────────────────────────
 
@@ -926,8 +939,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     setSessionFadeOpacity,
     draftPreselectedActor,
     clearSessionError,
-    pendingFiles,
-    setPendingFiles,
     engagedAgents,
     engagedUiEntries,
     sheetTeamId,

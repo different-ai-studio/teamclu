@@ -30,6 +30,13 @@ interface ReadDesktopFilesResult {
   failed: string[];
 }
 
+const pathByFile = new WeakMap<File, string>();
+
+/** Path captured when a desktop pick was read into a File. Paste and browser picks have none. */
+export function desktopPathForFile(file: File): string | undefined {
+  return pathByFile.get(file);
+}
+
 /** Read absolute filesystem paths (Tauri desktop) into File objects. */
 export async function readDesktopPathsAsFiles(
   paths: string[],
@@ -50,6 +57,7 @@ export async function readDesktopPathsAsFiles(
       const bytes = await readFile(path);
       const ext = name.includes(".") ? name.split(".").pop() ?? "" : "";
       const file = new File([bytes], name, { type: mimeFromExt(ext) });
+      pathByFile.set(file, path);
       files.push(file);
     } catch (error) {
       console.error("[readDesktopPathsAsFiles] failed:", path, error);

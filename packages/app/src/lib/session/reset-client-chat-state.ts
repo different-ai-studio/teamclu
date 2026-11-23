@@ -9,6 +9,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { useEngagedAgentStore } from "@/stores/engaged-agent-store";
 import { useAgentModelPickStore } from "@/stores/agent-model-pick-store";
+import { useComposerDraftStore } from "@/stores/composer-draft-store";
 
 /** Drop in-memory chat UI state when auth identity or active team changes. */
 export function resetClientChatState(): void {
@@ -51,7 +52,6 @@ export function resetClientChatState(): void {
   });
   useSessionStore.setState({
     sessions: [],
-    draftInput: "",
     messageQueue: [],
     pendingPermissions: [],
     pendingQuestions: [],
@@ -72,4 +72,5 @@ export function resetClientChatState(): void {
     bySession: {},
   });
   useAgentModelPickStore.setState({ bySessionAgent: {} });
+  useComposerDraftStore.getState().clearAll();
 }

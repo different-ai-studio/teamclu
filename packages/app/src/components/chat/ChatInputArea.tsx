@@ -40,11 +40,15 @@ import { FileInputButton } from "./FileInputButton";
 import { ContextUsageBadge } from "./ContextUsageBadge";
 import { PermissionApprovalModeSelect } from "./PermissionApprovalModeSelect";
 import { type QueuedMessage } from "@/stores/session-types";
-import { useSessionStore } from "@/stores/session-store";
+import {
+  composerDraftKey,
+  useComposerDraftStore,
+} from "@/stores/composer-draft-store";
 import { useComposerInsertStore } from "@/stores/composer-insert";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
 import { exceedsNonImageLimit, isImageFile } from "@/lib/attachments/attachment-constants";
+import { desktopPathForFile } from "@/lib/workspace/read-desktop-files";
 import type { ComposerAttachment, LocalPathAttachment } from "@/lib/attachments/composer-attachment";
 import {
   ComposerCloudFileChip,
@@ -189,7 +193,6 @@ interface ChatInputAreaProps {
   /** Session for @-mention participant roster (defaults to activeSessionId). */
   mentionSessionId?: string | null;
   compact: boolean;
-  /** Draft text is owned by the session store so typing does not re-render ChatPanel. */
   pendingFiles: ComposerAttachment[];
   onAppendPendingFiles: (files: ComposerAttachment[]) => void;
   onRemovePendingFile: (index: number) => void;
@@ -228,11 +231,8 @@ interface ChatInputAreaProps {
   sessionModelId?: string;
   activeStreamingAgents?: ReadonlyArray<ActiveStreamingAgent>;
   onInterruptAgent?: (agentId: string) => void;
-  /** When set, do not share the global session-store draft (dual composer). */
-  draftOverride?: {
-    value: string;
-    onChange: (value: string) => void;
-  };
+  /** Main composer owns voice and file-drop inserts. The thread composer does not. */
+  captureGlobalInserts?: boolean;
   /** overlay = float over MessageList (main chat); inline = flex footer (thread panel). */
   inputLayout?: "overlay" | "inline";
 }
@@ -308,7 +308,7 @@ export function ChatInputArea({
   sessionModelId,
   activeStreamingAgents = [],
   onInterruptAgent,
-  draftOverride,
+  captureGlobalInserts = true,
   inputLayout = "overlay",
 }: ChatInputAreaProps) {
   const { t, i18n } = useTranslation();
@@ -340,77 +340,32 @@ export function ChatInputArea({
   }, []);
   const permissionSessionId = permissionSessionIdProp ?? activeSessionId;
 
-  // Subscribe here — not in ChatPanel — so keystrokes do not re-render MessageList.
-  const storeDraft = useSessionStore((s) => s.draftInput);
-  const setDraftInput = useSessionStore.getState().setDraftInput;
-  const inputValue = draftOverride?.value ?? storeDraft;
+  // Subscribe to this session's draft only, so keystrokes do not re-render MessageList.
+  const draftKey = composerDraftKey(activeSessionId);
+  const inputValue = useComposerDraftStore((s) => s.textByKey[draftKey] ?? "");
 
   const handleInputChange = React.useCallback(
     (nextValue: string) => {
-      if (draftOverride) {
-        draftOverride.onChange(nextValue);
-        return;
-      }
-      setDraftInput(nextValue);
+      useComposerDraftStore.getState().setText(draftKey, nextValue);
     },
-    [draftOverride, setDraftInput],
+    [draftKey],
   );
 
-  // Per-actor draft persistence (Actors tab → navigate away → restore).
-  const draftStorageKey =
-    draftOverride || !draftPreselectedActor
-      ? null
-      : `teamclu-actor-draft:${draftPreselectedActor.id}`;
-  const justRestoredDraftRef = React.useRef(false);
-
+  // Voice input / "Add to Agent": append transcript or file mention to input.
+  // The thread composer leaves this to the main one, or both would fight.
   React.useEffect(() => {
-    if (!draftStorageKey) return;
-    let saved: string | null = null;
-    try {
-      saved = localStorage.getItem(draftStorageKey);
-    } catch {
-      /* localStorage disabled */
-    }
-    if (saved != null && saved !== useSessionStore.getState().draftInput) {
-      justRestoredDraftRef.current = true;
-      setDraftInput(saved);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftStorageKey]);
-
-  React.useEffect(() => {
-    if (!draftStorageKey) return;
-    if (justRestoredDraftRef.current) {
-      justRestoredDraftRef.current = false;
-      return;
-    }
-    const handle = setTimeout(() => {
-      try {
-        if (inputValue) {
-          localStorage.setItem(draftStorageKey, inputValue);
-        } else {
-          localStorage.removeItem(draftStorageKey);
-        }
-      } catch {
-        /* localStorage disabled */
-      }
-    }, 300);
-    return () => clearTimeout(handle);
-  }, [draftStorageKey, inputValue]);
-
-  // Voice input / "Add to Agent": append transcript or file mention to input
-  React.useEffect(() => {
-    if (draftOverride) return;
+    if (!captureGlobalInserts) return;
     const unregister = useComposerInsertStore.getState().registerInsertToChatHandler(
       (transcript) => {
-        const prev = useSessionStore.getState().draftInput;
+        const store = useComposerDraftStore.getState();
+        const prev = store.text(draftKey);
         const mentionMatch = transcript.match(/@\{([^}]+)\}/);
         if (mentionMatch && prev.includes(mentionMatch[0])) return;
-        setDraftInput(prev + (prev ? " " : "") + transcript);
+        store.setText(draftKey, prev + (prev ? " " : "") + transcript);
       },
     );
     return unregister;
-  }, [draftOverride, setDraftInput]);
+  }, [captureGlobalInserts, draftKey]);
 
   // # file reference states
   const [filePopoverOpen, setFilePopoverOpen] = React.useState(false);
@@ -434,13 +389,13 @@ export function ChatInputArea({
       if (wsPath && path.startsWith(wsPath)) {
         displayPath = path.slice(wsPath.length + 1);
       }
-      // Read current text inside loop — draftInput updates after each insertToChat
-      const currentText = useSessionStore.getState().draftInput;
+      // Read current text inside the loop — each insert updates this session's draft.
+      const currentText = useComposerDraftStore.getState().text(draftKey);
       if (currentText.includes(`@{${displayPath}}`)) continue;
       const mention = `@{${displayPath}} `;
       useComposerInsertStore.getState().insertToChat(mention);
     }
-  }, []);
+  }, [draftKey]);
 
   const handleIncomingFiles = React.useCallback((files: File[]) => {
     const accepted = files.filter((f) => !exceedsNonImageLimit(f));
@@ -455,7 +410,10 @@ export function ChatInputArea({
       });
     }
     if (accepted.length > 0) {
-      onAppendPendingFiles(accepted.map((file) => ({ kind: "cloud", file })));
+      onAppendPendingFiles(accepted.map((file) => {
+        const path = desktopPathForFile(file);
+        return path ? { kind: "cloud" as const, file, path } : { kind: "cloud" as const, file };
+      }));
     }
   }, [onAppendPendingFiles, t]);
 

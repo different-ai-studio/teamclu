@@ -10,6 +10,7 @@ import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useAgentModelPickStore } from "@/stores/agent-model-pick-store";
+import { useComposerDraftStore } from "@/stores/composer-draft-store";
 
 describe("resetClientChatState", () => {
   beforeEach(() => {
@@ -49,9 +50,12 @@ describe("resetClientChatState", () => {
       },
     });
     useSessionStore.setState({
-      draftInput: "draft",
       pendingPermissions: [{ id: "perm-1" }],
     });
+    useComposerDraftStore.getState().setText("session-a", "draft");
+    useComposerDraftStore.getState().setFiles("session-a", [
+      { kind: "local", name: "a.txt", size: 1, path: "/tmp/a.txt" },
+    ]);
     useAgentModelPickStore.setState({
       bySessionAgent: { "session-a": { "agent-1": "model-a" } },
     });
@@ -67,7 +71,8 @@ describe("resetClientChatState", () => {
     expect(useSessionListStore.getState().loading).toBe(true);
     expect(useSessionListStore.getState().highlightedSessionIds).toEqual([]);
     expect(useSessionParticipantStore.getState().participantsBySession).toEqual({});
-    expect(useSessionStore.getState().draftInput).toBe("");
+    expect(useComposerDraftStore.getState().text("session-a")).toBe("");
+    expect(useComposerDraftStore.getState().files("session-a")).toEqual([]);
     expect(useSessionStore.getState().pendingPermissions).toEqual([]);
     expect(Object.keys(useV2StreamingStore.getState().byKey)).toHaveLength(0);
     expect(useV2StreamingStore.getState().archived).toHaveLength(0);

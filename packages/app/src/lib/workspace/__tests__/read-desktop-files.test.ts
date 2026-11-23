@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { readDesktopPathsAsFiles } from "@/lib/workspace/read-desktop-files";
+import { desktopPathForFile, readDesktopPathsAsFiles } from "@/lib/workspace/read-desktop-files";
 
 vi.mock("@tauri-apps/plugin-fs", () => ({
   stat: vi.fn(async (path: string) => ({
@@ -22,6 +22,7 @@ describe("readDesktopPathsAsFiles", () => {
     ]);
     expect(result.files).toHaveLength(1);
     expect(result.files[0]?.name).toBe("note.txt");
+    expect(desktopPathForFile(result.files[0]!)).toBe("/tmp/note.txt");
     expect(stat).toHaveBeenCalledTimes(2);
     expect(readFile).toHaveBeenCalledTimes(1);
     expect(readFile).toHaveBeenCalledWith("/tmp/note.txt");

@@ -50,10 +50,12 @@ import { toMentionDeliverySnapshot } from "@/lib/session/session-agent-ui-state"
 import { type MessageListHandle } from "./MessageList";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { attachmentUploadFailureDetail, uploadAttachment } from "@/lib/attachments/attachment-upload";
+import { localAttachmentToken } from "@/lib/attachments/composer-attachment";
 import {
-  localAttachmentToken,
-  type ComposerAttachment,
-} from "@/lib/attachments/composer-attachment";
+  UNBOUND_COMPOSER_KEY,
+  hydrateComposerDraftFiles,
+  useComposerDraftStore,
+} from "@/stores/composer-draft-store";
 import {
   collectSessionAttachmentUrlsFromText,
   expandSessionAttachmentTokensInText,
@@ -92,16 +94,12 @@ interface ChatSendDeps {
   setSessionFadeOpacity: React.Dispatch<React.SetStateAction<number>>;
   draftPreselectedActor: DraftActor | null;
   clearSessionError: () => void;
-  pendingFiles: ComposerAttachment[];
-  setPendingFiles: React.Dispatch<React.SetStateAction<ComposerAttachment[]>>;
   engagedAgents: AttachedAgent[];
   engagedUiEntries: ReturnType<typeof useEngagedAgentUiStates>;
   sheetTeamId: string | null;
   welcomeQuickChatAgent: ReturnType<typeof quickChatWelcomeAgent>["agent"];
   setWelcomeSessionStarting: React.Dispatch<React.SetStateAction<boolean>>;
   messageListRef: React.RefObject<MessageListHandle | null>;
-  /** When false, sendIntoSession does not touch the global session-store draft. */
-  clearGlobalDraft?: boolean;
 }
 
 export function useChatSend({
@@ -112,15 +110,12 @@ export function useChatSend({
   setSessionFadeOpacity,
   draftPreselectedActor,
   clearSessionError,
-  pendingFiles,
-  setPendingFiles,
   engagedAgents,
   engagedUiEntries,
   sheetTeamId,
   welcomeQuickChatAgent,
   setWelcomeSessionStarting,
   messageListRef,
-  clearGlobalDraft = true,
 }: ChatSendDeps) {
 
   /**
@@ -133,13 +128,18 @@ export function useChatSend({
     message: PromptInputMessage,
     extraMentionAgents: AttachedAgent[] = [],
     voiceIntent?: VoiceSendIntent,
+    sourceDraftKey?: string,
   ) => {
     // v2: workspace-ready gate removed — the legacy sidecar flag is gone.
     // Single-window scope sends via MQTT + Supabase regardless.
+    await hydrateComposerDraftFiles();
     const text = message.text?.trim() || "";
     // Dictation is an independent send source. It must not consume a typed
     // draft or attachments that happen to be waiting in the composer.
-    const composerPayload = composerPayloadForSend(pendingFiles, voiceIntent);
+    // Files are read from this session's draft. Callers that just created the
+    // session copy the previous key onto `sid` first.
+    const liveFiles = useComposerDraftStore.getState().files(sid);
+    const composerPayload = composerPayloadForSend(liveFiles, voiceIntent);
     const filesForSend = composerPayload.files;
     const humanMentions = parseMemberMentionsFromText(text);
     const mentions = humanMentions.length > 0 ? humanMentions : (message.mentions || []);
@@ -182,24 +182,13 @@ export function useChatSend({
     // async work. This prevents stale images from leaking into later sends
     // if the user types and submits again while the upload is in flight.
     const currentPendingFiles = filesForSend;
-    const shouldClearComposer = clearGlobalDraft && composerPayload.clearComposer;
-    const draftSnapshot = shouldClearComposer
-      ? useSessionStore.getState().draftInput
+    const draftSnapshot = composerPayload.clearComposer
+      ? useComposerDraftStore.getState().takeForSend(sid, sourceDraftKey).text
       : "";
-    if (composerPayload.clearComposer) {
-      setPendingFiles([]);
-    }
-    if (shouldClearComposer) {
-      useSessionStore.getState().setDraftInput("");
-    }
 
     const restoreComposer = () => {
-      if (composerPayload.clearComposer) {
-        setPendingFiles(currentPendingFiles);
-      }
-      if (shouldClearComposer) {
-        useSessionStore.getState().setDraftInput(draftSnapshot);
-      }
+      if (!composerPayload.clearComposer) return;
+      useComposerDraftStore.getState().restore(sid, draftSnapshot, currentPendingFiles);
     };
 
     // WYSIWYG: pill in footer, typed @, or explicit extra on first send.
@@ -819,19 +808,30 @@ export function useChatSend({
         useUIStore.getState().clearDraftIdeaId();
       }
 
+      // Keep the unbound composer painted while the new session becomes
+      // active, then send clears both keys. Re-read cloud files from their
+      // saved paths first so the copy includes them.
+      await hydrateComposerDraftFiles();
+      useComposerDraftStore.getState().copyOnto(UNBOUND_COMPOSER_KEY, sessionId);
+
       // Optimistic list row + switch — do not await a full session-list
       // refetch before the user can see the new chat / send completes.
       sessionFlowLog("session_create.promote.begin", {
         teamId: teamIdForSend,
         sessionId,
       });
-      await promoteCreatedSessionToUi({
-        sessionId,
-        teamId: teamIdForSend,
-        title: titleSource,
-        ideaId: draftIdeaId,
-        lastMessagePreview: (firstMessage.text ?? '').trim().slice(0, 120) || null,
-      });
+      try {
+        await promoteCreatedSessionToUi({
+          sessionId,
+          teamId: teamIdForSend,
+          title: titleSource,
+          ideaId: draftIdeaId,
+          lastMessagePreview: (firstMessage.text ?? '').trim().slice(0, 120) || null,
+        });
+      } catch (error) {
+        useComposerDraftStore.getState().clear(sessionId);
+        throw error;
+      }
       sessionFlowLog("session_create.promote.ok", {
         teamId: teamIdForSend,
         sessionId,
@@ -850,7 +850,13 @@ export function useChatSend({
       if (soleAgent) {
         useEngagedAgentStore.getState().setAgents(sessionId, [soleAgent]);
       }
-      await sendIntoSession(sessionId, firstMessage);
+      await sendIntoSession(
+        sessionId,
+        firstMessage,
+        [],
+        undefined,
+        UNBOUND_COMPOSER_KEY,
+      );
 
       const autoMentioned = soleAgent ? new Set([soleAgent.id]) : new Set<string>();
       const agentsNeedingCreateEnsure = agentIds.filter((id) => !autoMentioned.has(id));

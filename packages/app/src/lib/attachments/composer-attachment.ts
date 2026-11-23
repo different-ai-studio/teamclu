@@ -7,7 +7,7 @@ export interface LocalPathAttachment {
 }
 
 export type ComposerAttachment =
-  | { kind: "cloud"; file: File }
+  | { kind: "cloud"; file: File; /** Desktop path, when this file was picked on this machine. */ path?: string }
   | ({ kind: "local" } & LocalPathAttachment);
 
 export function composerAttachmentName(item: ComposerAttachment): string {
