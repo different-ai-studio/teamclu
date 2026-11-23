@@ -32,11 +32,10 @@ export function ContactsNavEntry() {
         <button
           type="button"
           onClick={() => setFilter({ kind: 'actors' })}
-          title={mode === 'rail-collapsed' ? label : undefined}
+          title={mode === 'rail' ? label : undefined}
           className={cn(
             'flex min-w-0 flex-1 items-center gap-2.5 text-left text-[13px] transition-colors duration-150',
-            mode === 'rail-collapsed' && 'w-full flex-col justify-center gap-1 text-center',
-            mode === 'rail-expanded' && 'gap-3',
+            mode === 'rail' && 'justify-center gap-0',
             active ? 'font-semibold text-foreground' : 'font-normal text-ink-2',
           )}
         >
@@ -47,7 +46,7 @@ export function ContactsNavEntry() {
         </button>
         {/* No room for the invite control on the collapsed rail; it is back
             the moment the rail widens. */}
-        {mode !== 'rail-collapsed' && (
+        {mode !== 'rail' && (
         <button
           type="button"
           onClick={() => setInviteOpen(true)}

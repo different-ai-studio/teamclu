@@ -40,9 +40,6 @@ import { recoverMqttConnection } from "@/stores/mqtt-reconnect"
 import {
   NavRailModeContext,
   isRailMode,
-  navRowBox,
-  navRowIcon,
-  navRowLabel,
   useNavRailMode,
   type NavRailMode,
 } from "@/components/sidebar/nav-rail-mode"
@@ -259,9 +256,7 @@ function SidebarUserAccountMenu() {
   const appMqttDown = appMqttConnected === false
   const { actors: directoryActors } = useActorDirectory()
   const [failedAvatarUrls, setFailedAvatarUrls] = React.useState<string[]>([])
-  const railMode = useNavRailMode()
-  const rail = isRailMode(railMode)
-  const railCollapsed = railMode === "rail-collapsed"
+  const rail = isRailMode(useNavRailMode())
 
   if (!authSession) return null
 
@@ -303,13 +298,13 @@ function SidebarUserAccountMenu() {
           className={cn(
             "min-w-0 rounded-lg text-ink-2 hover:bg-black/[0.04] hover:text-foreground",
             rail
-              ? cn("w-full justify-start gap-2.5 text-[13px] font-normal", navRowBox(railMode), railCollapsed && "justify-center")
+              ? "h-8 w-full justify-center px-0"
               : "h-8 shrink max-w-full gap-1.5 px-2 text-[12px]",
           )}
-          title={railCollapsed ? userName : undefined}
+          title={rail ? userName : undefined}
           data-testid="sidebar-user-menu-trigger"
         >
-          <span className={cn("relative flex shrink-0", rail ? "h-5 w-5" : "h-4 w-4")}>
+          <span className="relative flex h-4 w-4 shrink-0">
             {avatarUrl ? (
               <img
                 src={avatarUrl}
@@ -331,8 +326,8 @@ function SidebarUserAccountMenu() {
               />
             ) : null}
           </span>
-          <span className={rail ? navRowLabel(railMode) : "min-w-0 truncate"}>{userName}</span>
-          {railCollapsed ? null : <ChevronUp className="h-3.5 w-3.5 shrink-0" />}
+          <span className={rail ? "sr-only" : "min-w-0 truncate"}>{userName}</span>
+          {rail ? null : <ChevronUp className="h-3.5 w-3.5 shrink-0" />}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side="top" className="w-72 p-2">
@@ -446,8 +441,9 @@ const RAIL_EXPAND_DELAY_MS = 200
 const RAIL_COLLAPSE_DELAY_MS = 250
 
 /**
- * Hover state for the icon rail. Widening is purely visual — the same rows,
- * in the same places, with their labels — so it can afford to be eager.
+ * Hover state for the icon rail. Widened, the rail is the pinned sidebar
+ * floated over column two; the rows keep their lines, so it can afford to be
+ * eager.
  *
  * It closes on navigation (picking a section, opening a session, opening
  * settings): the user has gone where they meant to go. It does not re-open
@@ -537,21 +533,22 @@ export function AppSidebar({
   // Pinning open is a wide-window affordance: on a medium window the full list
   // would leave the chat too little room, so it stays a rail there.
   const canPin = useLayoutBreakpoint() === "wide"
-  // Unpinned on a desktop window, the first column is a fixed rail of tiles —
-  // icon over label — so every destination is readable without hovering.
+  // Unpinned on a desktop window, the first column is a fixed rail of icons
+  // that widens into the full sidebar while the pointer rests on it.
   const rail = !isMobile && !open
   // A web tab in a full-width column four sits right against the rail, and a
   // native webview always draws above the page: the widened rail would open
-  // *underneath* it, unreachable. The rail stays narrow then; its tiles still
+  // *underneath* it, unreachable. The rail stays narrow then; its icons still
   // work, and pinning still gives the full list.
   const contentColumnVisible = useContentColumnVisible()
   const contentColumnMode = useEffectiveContentColumnMode()
   const contentColumnFull = contentColumnVisible && contentColumnMode === "full"
   const activeTabIsWebview = useTabsStore((s) => selectActiveTab(s)?.type === "webview")
   const hover = useRailHover(rail && !(contentColumnFull && activeTabIsWebview))
-  const mode: NavRailMode = rail ? (hover.expanded ? "rail-expanded" : "rail-collapsed") : "list"
-  const railCollapsed = mode === "rail-collapsed"
-  const railExpanded = mode === "rail-expanded"
+  const railExpanded = rail && hover.expanded
+  const railCollapsed = rail && !hover.expanded
+  // Widened, the rail draws exactly what the pinned sidebar does.
+  const mode: NavRailMode = railCollapsed ? "rail" : "list"
 
   const [detailSessionId, setDetailSessionId] = React.useState<string | null>(null)
   const [detailHints, setDetailHints] = React.useState<SessionDetailListHints | null>(null)
@@ -578,7 +575,7 @@ export function AppSidebar({
       )}
       onMouseEnter={hover.onMouseEnter}
       onMouseLeave={hover.onMouseLeave}
-      data-nav-mode={mode}
+      data-nav-mode={railExpanded ? "rail-expanded" : mode}
       {...props}
     >
       <SessionDetailDialog
@@ -614,32 +611,22 @@ export function AppSidebar({
           <NavRail />
         </SidebarContent>
 
-        {rail ? (
-          <SidebarFooter className="gap-0.5 px-1.5 pb-3 pt-1">
-            {/* The team card has no tile form worth the room; it comes with
-                the widened rail. The footer grows upward, so the rows above it
-                and the two below it stay where they were. */}
-            {railExpanded ? (
-              <div className="mb-1.5 whitespace-nowrap">
-                <LocalDaemonCard />
-              </div>
-            ) : null}
-            <button
-              type="button"
+        {railCollapsed ? (
+          <SidebarFooter className="items-center gap-1 px-1.5 pb-2 pt-1">
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => openSettings()}
-              title={railCollapsed ? settingsLabel : undefined}
-              className={cn(
-                "flex w-full items-center gap-2.5 rounded-lg text-left text-[13px] text-ink-2 transition-colors duration-150 hover:bg-black/[0.04] hover:text-foreground",
-                navRowBox(mode),
-              )}
+              title={settingsLabel}
+              aria-label={settingsLabel}
+              className="h-8 w-full justify-center rounded-lg px-0 text-ink-2 hover:bg-black/[0.04] hover:text-foreground"
             >
-              <Settings className={cn(navRowIcon(mode), "text-muted-foreground")} />
-              <span className={navRowLabel(mode)}>{settingsLabel}</span>
-            </button>
+              <Settings className="h-3.5 w-3.5 shrink-0" />
+            </Button>
             <SidebarUserAccountMenu />
           </SidebarFooter>
         ) : (
-        <SidebarFooter className="gap-2 px-2.5 pb-2 pt-1">
+        <SidebarFooter className={cn("gap-2 px-2.5 pb-2 pt-1", railExpanded && "whitespace-nowrap")}>
           <LocalDaemonCard />
 
             <div className="flex min-w-0 items-center justify-between gap-1 overflow-hidden">

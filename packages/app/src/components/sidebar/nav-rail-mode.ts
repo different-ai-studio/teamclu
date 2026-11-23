@@ -3,21 +3,17 @@ import * as React from 'react'
 /**
  * How the first-column nav is being drawn.
  *
- * - `list` — the full-width list: pinned open on a wide window, or the drawer
- *   on a narrow one. Rows show icon then label, and the 更多 fold.
- * - `rail-collapsed` — the fixed rail. Each row is a tile, a larger icon over
- *   a short label, so the rail reads without hovering; attention signals sit
- *   on the icon's corner.
- * - `rail-expanded` — the same rail, widened over column two while the pointer
- *   is on it: icon then label, plus the trailing controls.
+ * - `list` — the full sidebar: pinned open on a wide window, the drawer on a
+ *   narrow one, and the rail while it is widened under the pointer. Widening
+ *   does not have a look of its own; it is the pinned sidebar, floated over
+ *   column two.
+ * - `rail` — the fixed rail: each row is only its icon (the label becomes the
+ *   tooltip), and attention signals sit on the icon's corner.
  *
- * The two rail modes are one element changing width, not a rail plus a
- * separate flyout. Rows are the same height in both and the icon keeps its
- * horizontal place, so the row a user is reaching for is still under the
- * pointer when it widens, and a click lands on the row they aimed at whichever
- * state it hits.
+ * Rail rows are as tall as list rows, so an icon is on the same line as its
+ * row when the rail widens.
  */
-export type NavRailMode = 'list' | 'rail-collapsed' | 'rail-expanded'
+export type NavRailMode = 'list' | 'rail'
 
 export const NavRailModeContext = React.createContext<NavRailMode>('list')
 
@@ -26,41 +22,33 @@ export function useNavRailMode(): NavRailMode {
 }
 
 export function isRailMode(mode: NavRailMode): boolean {
-  return mode !== 'list'
+  return mode === 'rail'
 }
 
 /**
- * Row box for a nav entry.
- *
- * On the collapsed rail a row is a tile: a 20px icon with its label in small
- * type underneath, so the rail is readable without hovering — many of our
- * users do not recognise an icon on its own. Widened, the row keeps the tile's
- * height and puts the icon on the same vertical line (6px rail inset + 24px +
- * half the 20px icon = the 80px rail's centre), with the label beside it.
- * The list is the usual compact icon-then-label row.
+ * Row box for a nav entry. On the rail the icon is centred and the label
+ * shrinks to nothing but stays in the line, so the row keeps the list row's
+ * height and rows line up across the two.
  */
 export function navRowBox(mode: NavRailMode): string {
-  if (mode === 'rail-collapsed') return 'relative h-14 flex-col justify-center gap-1 px-0.5 text-center'
-  if (mode === 'rail-expanded') return 'relative h-14 gap-3 pl-6 pr-3'
-  return 'px-[9px] py-[7px]'
+  return mode === 'rail' ? 'relative justify-center gap-0 px-0 py-[7px]' : 'px-[9px] py-[7px]'
 }
 
-/** Icon size: larger on the rail, where it carries the row, in both widths. */
-export function navRowIcon(mode: NavRailMode): string {
-  return isRailMode(mode) ? 'h-5 w-5 shrink-0' : 'h-[15px] w-[15px] shrink-0'
+/** Icon size: the list's in both, so the rail is the list with labels hidden. */
+export function navRowIcon(_mode: NavRailMode): string {
+  return 'h-[15px] w-[15px] shrink-0'
 }
 
-/** Label span: under the icon on the tile, beside it everywhere else. */
+/** Label span: zero-width on the rail, still read by screen readers and
+ * still holding the row's line height. */
 export function navRowLabel(mode: NavRailMode): string {
-  return mode === 'rail-collapsed'
-    ? 'w-full truncate whitespace-nowrap text-[12px] leading-[15px]'
-    : 'min-w-0 flex-1 truncate whitespace-nowrap'
+  return mode === 'rail' ? 'w-0 overflow-hidden whitespace-nowrap' : 'min-w-0 flex-1 truncate whitespace-nowrap'
 }
 
 /**
- * Where a row's attention signal goes. On the tile it moves onto the icon's
+ * Where a row's attention signal goes. On the rail it moves onto the icon's
  * top-right corner, since there is no trailing slot to hold it.
  */
 export function navRowSignal(mode: NavRailMode): string {
-  return mode === 'rail-collapsed' ? 'absolute right-3 top-1' : ''
+  return mode === 'rail' ? 'absolute left-1/2 top-0' : ''
 }

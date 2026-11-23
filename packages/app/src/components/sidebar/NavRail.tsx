@@ -53,7 +53,7 @@ function TopEntry({ label, icon: Icon, active, signal, onClick }: TopEntryProps)
     <button
       type="button"
       onClick={onClick}
-      title={mode === 'rail-collapsed' ? label : undefined}
+      title={mode === 'rail' ? label : undefined}
       className={cn(
         'flex w-full items-center gap-2.5 rounded-lg text-left text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]',
         navRowBox(mode),
@@ -171,7 +171,7 @@ export function NavRail() {
       {/*
         One list, no fold. Grouping knowledge + ideas into 知识 and skills + MCP
         + secrets into 能力 keeps it to six entries, few enough that every one
-        shows with its label on the rail and in the list alike. Scrolls rather
+        fits on the rail as an icon and in the list with its label. Scrolls rather
         than clips, for a short window.
       */}
       <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto overflow-x-hidden">
