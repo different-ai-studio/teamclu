@@ -34,6 +34,17 @@ pub fn assemble_spawn_runtime_env(
     )
 }
 
+/// The personal-variable layer for an agent spawned now: the machine owner's
+/// encrypted store, or nothing while the active team runs in support mode
+/// (`config::layout::support_file`). There the agent acts in a customer org,
+/// and the operator's own API keys and credentials must not travel with it.
+pub fn personal_env_for_spawn() -> anyhow::Result<std::collections::HashMap<String, String>> {
+    if crate::config::layout::active_support_owner().is_some() {
+        return Ok(std::collections::HashMap::new());
+    }
+    teamclu_runtime_env::personal_secrets::load_personal_env()
+}
+
 /// Assemble environment sources from the registered parent workspace. Team LLM
 /// materialization uses the active-team global config; execution-directory
 /// `opencode.json` placeholders are not written on spawn.
@@ -54,8 +65,9 @@ pub fn assemble_spawn_runtime_env_for_execution(
     let managed_llm =
         teamclu_runtime_env::stabilize_managed_llm_for_spawn(managed_llm, disk_team.as_ref());
     let team_env = team_shared_env::load_team_env_for_workspace_detailed(workspace_root, team_id);
-    let mut bundle = teamclu_runtime_env::assemble_runtime_env(
+    let mut bundle = teamclu_runtime_env::assemble_runtime_env_with_personal(
         execution_directory,
+        personal_env_for_spawn()?,
         team_env.values,
         teamclu_runtime_env::SystemEnvContext {
             actor_id: actor_id.to_string(),

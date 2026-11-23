@@ -62,6 +62,7 @@ import {
   resolveLocalAgentInstall,
   shouldSkipLocalAgentInstall,
 } from '@/lib/daemon/local-agent-install'
+import { resetSupportSessionForTests, useSupportSessionStore } from '@/lib/admin/support-session'
 import { useActorDirectoryStore } from '@/stores/actor-directory-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
@@ -202,6 +203,31 @@ describe('local agent install classification', () => {
     expect(useDaemonOnboardingStore.getState().loaded).toBe(true)
     expect(useDaemonOnboardingStore.getState().status).toBe('unknown')
     expect(useLocalAgentInstallStore.getState().gateSkippedTeamId).toBe('team-1')
+  })
+
+  it('refreshes the daemon in support mode even where the install gate would be skipped', async () => {
+    h.teamDefault = 'agent-team'
+    useAuthStore.setState({ session: sessionFor('support-user') as never })
+    useSupportSessionStore.setState({
+      record: {
+        supportUserId: 'support-user',
+        orgId: 'org-c',
+        orgName: null,
+        team: { id: 'team-1', name: 'Team', slug: 'team' },
+        expiresAt: '2099-01-01T00:00:00Z',
+        operator: { userId: 'operator', refreshToken: 'rt', team: null },
+      } as never,
+    })
+    const refresh = vi.fn(async () => {})
+    useDaemonOnboardingStore.setState({ refresh })
+    try {
+      await refreshDaemonUnlessSkipped()
+      expect(refresh).toHaveBeenCalled()
+      expect(useLocalAgentInstallStore.getState().gateSkippedTeamId).toBeNull()
+      expect(h.findCalls).toBe(0)
+    } finally {
+      resetSupportSessionForTests()
+    }
   })
 
   it('reloads the actor directory after install before marking the agent installed', async () => {

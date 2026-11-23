@@ -128,8 +128,21 @@ pub fn assemble_runtime_env(
     system: SystemEnvContext,
     managed_llm: &ManagedLlmState,
 ) -> anyhow::Result<RuntimeEnvBundle> {
-    let ai_proxy_base = system.ai_proxy_base.clone();
     let personal = personal_secrets::load_personal_env()?;
+    assemble_runtime_env_with_personal(workspace, personal, team_env, system, managed_llm)
+}
+
+/// [`assemble_runtime_env`] with the personal layer supplied by the caller —
+/// the daemon passes an empty one for a team it runs in support mode, where
+/// the machine owner's own variables must not reach the agent.
+pub fn assemble_runtime_env_with_personal(
+    workspace: &Path,
+    personal: HashMap<String, String>,
+    team_env: HashMap<String, String>,
+    system: SystemEnvContext,
+    managed_llm: &ManagedLlmState,
+) -> anyhow::Result<RuntimeEnvBundle> {
+    let ai_proxy_base = system.ai_proxy_base.clone();
     let resolved_env = resolved_env::resolve_runtime_env(personal, team_env, system);
     sync_global_team_provider(managed_llm, &resolved_env.bindings, ai_proxy_base.as_deref())?;
     let _sync = resolve_workspace_runtime_config(workspace)?;

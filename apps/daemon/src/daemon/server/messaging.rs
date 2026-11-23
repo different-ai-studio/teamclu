@@ -1086,7 +1086,20 @@ impl DaemonServer {
         // is the 8-char runtime key (per CLAUDE.md glossary), NOT the actor
         // id that mention_actor_ids encodes — matching against it would
         // never hit and every message would fall through to silent queue.
-        let mentioned_actor = mention_actor_ids.iter().any(|m| m == &self.actor_id);
+        let mut mentioned_actor = mention_actor_ids.iter().any(|m| m == &self.actor_id);
+        // Support mode: only the support account itself may start a turn.
+        // Anyone else's message still reaches the agent, as silent context.
+        let support_owner = crate::config::layout::active_support_owner();
+        if mentioned_actor
+            && !support_mode_allows_prompt(support_owner.as_deref(), &message.sender_actor_id)
+        {
+            info!(
+                message_id = %message.message_id,
+                sender_actor_id = %message.sender_actor_id,
+                "route_session_message: support mode; only the support account may start a turn, silent-queued"
+            );
+            mentioned_actor = false;
+        }
         if mention_actor_ids.is_empty() {
             warn!(
                 message_id = %message.message_id,
@@ -1535,6 +1548,21 @@ impl DaemonServer {
 /// A title a person typed is not detectable from the string: the first-message
 /// summary looks the same. The cloud row's `title_locked` flag is what stops
 /// the write. This function only decides whether to attempt it.
+/// Whether `sender_actor_id` may start a turn on this daemon. Always, outside
+/// support mode; in support mode (`config::layout::support_file`), only the
+/// support account the machine was bound as — customer members cannot drive a
+/// platform operator's machine. An empty owner (a support file that did not
+/// parse) matches nobody.
+pub(crate) fn support_mode_allows_prompt(
+    support_owner: Option<&str>,
+    sender_actor_id: &str,
+) -> bool {
+    match support_owner {
+        None => true,
+        Some(owner) => !owner.is_empty() && owner == sender_actor_id,
+    }
+}
+
 pub(crate) fn should_adopt_generated_session_title(current: &str, new_title: &str) -> bool {
     let current = current.trim();
     let new_title = new_title.trim();
@@ -1587,6 +1615,24 @@ pub(crate) fn is_default_session_title(title: &str) -> bool {
 #[cfg(test)]
 mod default_title_tests {
     use super::is_default_session_title;
+
+    #[test]
+    fn support_mode_lets_only_the_support_account_start_a_turn() {
+        assert!(super::support_mode_allows_prompt(None, "anyone"));
+        assert!(super::support_mode_allows_prompt(
+            Some("support-actor"),
+            "support-actor"
+        ));
+        assert!(!super::support_mode_allows_prompt(
+            Some("support-actor"),
+            "customer-actor"
+        ));
+        assert!(!super::support_mode_allows_prompt(
+            Some("support-actor"),
+            ""
+        ));
+        assert!(!super::support_mode_allows_prompt(Some(""), ""));
+    }
 
     #[test]
     fn detects_desktop_default_titles() {

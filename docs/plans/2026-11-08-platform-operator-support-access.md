@@ -105,7 +105,8 @@ create table amux.support_grants (
 - **进入前把运营自己的会话存在本地**，然后 `adoptSession` 换成支持会话，再走
   `enterTeam(teamId)`（`stores/current-team.ts`）。
 - 顶部常驻横幅：「支持模式 · <org 名> · 剩余 hh:mm · 退出」。
-- 支持模式下不绑定 daemon、不注册设备（运营本机的 amuxd 不能成为客户 org 的设备）。
+- ~~支持模式下不绑定 daemon、不注册设备~~（2026-11-23 改为按普通切团队绑定，见下文
+  「支持模式下的本机 Agent」）。
 
 ### 退出
 
@@ -154,7 +155,8 @@ create table amux.support_grants (
 - **客户端**（`packages/app/src/lib/admin/support-session.ts`）：
   - 进入前把运营自己的 refresh token 存进 localStorage，并把「上次使用的团队」缓存
     指向目标团队。adopt 支持会话之后，AuthGate 按正常流程自动进入该团队。
-  - 支持模式下 `enterTeam` 不调用 activate，`refreshDaemonUnlessSkipped` 不碰 daemon。
+  - 支持模式下 `enterTeam` 不调用 activate。daemon 按普通切团队处理（2026-11-23 起，
+    见「支持模式下的本机 Agent」）。
   - 支持模式下的「退出登录」等于退出支持模式。GoTrue 登出共用账号可能会结束其他
     运营的会话。
   - `SupportSessionGuard` 挂在 AuthGate 外面：如果支持会话在应用关闭期间失效，
@@ -198,6 +200,34 @@ create table amux.support_grants (
 | S5 | 桌面端：「所有组织」入口、保存/恢复运营会话、支持模式横幅、支持模式下不绑定 daemon | S4 |
 | S6 | 配置：self-host 与 belayo 写 `platform_org_id`；确认 belayo 上运营身份为 4 | S1 |
 | S7 | iOS（可选，后续） | S4 |
+
+## 支持模式下的本机 Agent（2026-11-23）
+
+原设计是支持模式下不碰 daemon，但有两条路径漏了：侧栏本机 Agent 的「重试连接」和
+设置页 daemon 的云端会话自愈都直接调 daemon store，没走支持模式判断。结果是以支持
+账号身份建出了「TeamClu 支持Bot」，并把 daemon 切进了客户团队，之后又一直离线。
+
+现在改为把支持模式当普通切团队处理。daemon 本来就按团队隔离（ADR-0006，
+`teams/<id>/state/`），客户团队只是另一个 team id：
+
+- **切换**：进入支持模式后，`refreshDaemonUnlessSkipped` 不再跳过，daemon 切到客户
+  团队，作为支持账号在本机的 Agent（不弹命名框，名字是「<支持账号名>Bot」）。退出时
+  按设备 id 切回运营自己的团队。
+- **Agent 跟着 grant 走**（迁移 `20261123120000`）：`ensure_agent_for_device` 由支持
+  账号调用时，把 Agent 记进 `amux.support_agents`，绑定到本次会话的 grant；每次重新
+  进入都会换绑到新 grant。grant 撤销或过期后，PostgREST pre-request hook 和 FC
+  （`assertSupportSessionLive`，按 `@amuxd.run` 账号查询，缓存 15 秒，查询失败时放行）
+  都拒绝这个 Bot 的请求。
+- **只有支持账号本人能触发**：桌面端在 invite URL 上带 `support_owner=<支持账号
+  actor id>`，`amuxd init` 写入 `teams/<id>/state/support.toml`（其他 init 会删掉它）。
+  daemon 在这个团队里只让支持账号的消息开启回合，别人的消息只作为静默上下文；同时
+  拒绝一切从 MQTT 来的 RPC（requester 是未鉴权字段），运营本机桌面端走带 token 的
+  本地 HTTP `/v1/rpc`。
+- **不注入个人变量**：有 `support.toml` 时，daemon spawn agent 不加载个人密钥库
+  （`~/.teamclu/secrets`）。设备级 `~/.amuxd/mcp.json`、`cache/`、本机工作区路径
+  仍然共用，这一版没有处理。
+- **残留**：Bot 的 refresh 走 GoTrue，不经过 hook，grant 结束后仍能续签 JWT，只是
+  所有数据请求都会被拒绝。belayo 的 hook 尚未注册，在那边只靠 FC 检查。
 
 ## 风险与注意
 

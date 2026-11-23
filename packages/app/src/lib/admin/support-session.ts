@@ -19,8 +19,10 @@ import { useCurrentTeamStore, writeCachedCurrentTeam, type CurrentTeam } from "@
  * While in support mode:
  * - teams are entered without activation (the support JWT already carries the
  *   org, and the server refuses to mint the support account other sessions);
- * - the local daemon is left alone — this machine must not become a device of
- *   the customer's org;
+ * - the local daemon switches to the customer team like any team switch, as
+ *   the support account's machine agent. It runs there owner-only and without
+ *   the operator's personal variables, and the agent is refused once this
+ *   grant ends (20261123120000_support_agents_follow_grant.sql);
  * - signing out leaves support mode instead. A real sign-out of the shared
  *   account could end every operator's session in that org.
  *

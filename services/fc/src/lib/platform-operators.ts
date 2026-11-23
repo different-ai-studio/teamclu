@@ -147,9 +147,14 @@ export function supportTokenClaims(
 export async function assertSupportSessionLive(
   token: string | null | undefined,
   isLive: (userId: string, sessionId: string) => Promise<boolean>,
+  agentAccessLive?: (userId: string) => Promise<boolean>,
 ): Promise<void> {
   const support = supportTokenClaims(token);
-  if (!support) return;
+  if (!support) {
+    const agentUserId = agentTokenUserId(token);
+    if (agentUserId && agentAccessLive) await assertSupportAgentLive(agentUserId, agentAccessLive);
+    return;
+  }
   let live = false;
   if (support.sessionId) {
     try {
@@ -162,6 +167,74 @@ export async function assertSupportSessionLive(
   if (!live) {
     throw new ApiError(401, "support_session_ended", "this support session has ended");
   }
+}
+
+/** The synthetic email domain of agent (daemon) accounts (claim_team_invite). */
+export const AGENT_EMAIL_DOMAIN = "amuxd.run";
+
+/**
+ * The user id of an agent account's token, read unverified like
+ * {@link supportTokenClaims}: it only decides whether to look further. Null
+ * for every other token.
+ */
+export function agentTokenUserId(token: string | null | undefined): string | null {
+  const part = String(token ?? "").split(".")[1];
+  if (!part) return null;
+  let json: any;
+  try {
+    json = JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+  const email = typeof json?.email === "string" ? json.email.toLowerCase() : "";
+  const sub = typeof json?.sub === "string" ? json.sub.toLowerCase() : "";
+  if (!email.endsWith(`@${AGENT_EMAIL_DOMAIN}`) || !UUID.test(sub)) return null;
+  return sub;
+}
+
+/**
+ * Refuses an agent set up in a support session once that session's grant has
+ * ended (amux.support_agents, 20261123120000). The bot's credentials are its
+ * own account's, so ending the grant does not end them; this and the database's
+ * pre-request hook are what stop it.
+ *
+ * Unlike the support account itself this fails open when the lookup fails:
+ * every daemon's every request passes through here, and a blip must not take
+ * all agents offline. The database hook, where registered, still refuses.
+ */
+async function assertSupportAgentLive(
+  userId: string,
+  agentAccessLive: (userId: string) => Promise<boolean>,
+): Promise<void> {
+  let live = true;
+  try {
+    live = await agentAccessLive(userId);
+  } catch (err) {
+    console.warn(`[support] support agent lookup failed: ${(err as Error)?.message ?? err}`);
+  }
+  if (!live) {
+    throw new ApiError(401, "support_session_ended", "this agent was set up in a support session that has ended");
+  }
+}
+
+/**
+ * Wraps an agent-access lookup with a short per-account cache, because it runs
+ * on every request a daemon makes. A failed lookup is not cached.
+ */
+export function cachedAgentAccessCheck(
+  lookup: (userId: string) => Promise<boolean>,
+  ttlMs = 15_000,
+  now: () => number = Date.now,
+): (userId: string) => Promise<boolean> {
+  const cache = new Map<string, { live: boolean; at: number }>();
+  return async (userId) => {
+    const hit = cache.get(userId);
+    if (hit && now() - hit.at < ttlMs) return hit.live;
+    const live = await lookup(userId);
+    if (cache.size > 5000) cache.clear();
+    cache.set(userId, { live, at: now() });
+    return live;
+  };
 }
 
 /**

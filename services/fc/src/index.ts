@@ -8,7 +8,7 @@ import {
 import { fanoutMessage } from "./lib/push-dispatch.js";
 import { pushDeps } from "./lib/admin-handlers.js";
 import { ApiError } from "./lib/http-utils.js";
-import { assertSupportSessionLive } from "./lib/platform-operators.js";
+import { assertSupportSessionLive, cachedAgentAccessCheck } from "./lib/platform-operators.js";
 import {
   getFcClient,
   makeFcOps,
@@ -525,11 +525,38 @@ async function supportGrantIsLive(userId: string, sessionId: string): Promise<bo
   return Array.isArray(rows) && rows.length > 0;
 }
 
+/**
+ * Whether an agent account may act (amux.support_agent_access_live): false only
+ * for a bot set up in a support session whose grant has ended. No service-role
+ * key means no support session could have been opened here: answer "live".
+ */
+async function supportAgentAccessIsLive(userId: string): Promise<boolean> {
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+  const base = SUPABASE_URL_FN();
+  if (!serviceKey || !base) return true;
+  const res = await fetch(`${base.replace(/\/+$/, "")}/rest/v1/rpc/support_agent_access_live`, {
+    method: "POST",
+    headers: {
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      "Content-Type": "application/json",
+      "Content-Profile": "amux",
+    },
+    body: JSON.stringify({ p_user_id: userId }),
+  });
+  // Older database without the function: nothing is a support agent yet.
+  if (res.status === 404) return true;
+  if (!res.ok) throw new Error(`support_agent_access_live ${res.status}`);
+  return (await res.json()) !== false;
+}
+
+const supportAgentAccessCheck = cachedAgentAccessCheck(supportAgentAccessIsLive);
+
 export function makeBusinessRepoFactory() {
   return async ({ accessToken }: { accessToken: string }) => {
-    // A support account whose grant ended is refused here, before any route
-    // runs — see assertSupportSessionLive.
-    await assertSupportSessionLive(accessToken, supportGrantIsLive);
+    // A support account whose grant ended, or a bot set up under such a grant,
+    // is refused here, before any route runs — see assertSupportSessionLive.
+    await assertSupportSessionLive(accessToken, supportGrantIsLive, supportAgentAccessCheck);
     return createSupabaseBusinessRepository({
       supabaseUrl: SUPABASE_URL_FN(),
       supabasePublicUrl: SUPABASE_PUBLIC_URL_FN(),

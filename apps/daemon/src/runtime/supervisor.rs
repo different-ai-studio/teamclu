@@ -1795,7 +1795,7 @@ impl RuntimeSupervisor {
         let Some((previous, team_id)) = previous else {
             return false;
         };
-        let Ok(personal) = teamclu_runtime_env::personal_secrets::load_personal_env() else {
+        let Ok(personal) = super::env_assembly::personal_env_for_spawn() else {
             return false;
         };
         let team =

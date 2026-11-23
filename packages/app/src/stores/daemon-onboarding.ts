@@ -543,6 +543,13 @@ async function bindDeviceAgent(
   if (cloudApiUrl) {
     inviteUrl += `&cloud_api_url=${encodeURIComponent(cloudApiUrl)}`
   }
+  // Support mode: tell the daemon this team is a customer's, entered as its
+  // support account. It then takes turns only from that account and leaves
+  // this machine owner's personal variables out (amuxd `support.toml`).
+  const supportOwner = await supportOwnerActorId(teamId)
+  if (supportOwner) {
+    inviteUrl += `&support_owner=${encodeURIComponent(supportOwner)}`
+  }
   const result = await runStep('init-daemon', () =>
     invoke<{ actorId: string; teamId: string }>('daemon_init', { inviteUrl }),
   )
@@ -568,6 +575,22 @@ async function bindDeviceAgent(
     )
   }
   return { agentId: invite.agentId, created: invite.created }
+}
+
+/**
+ * The support account's actor id in `teamId` while in support mode, else null.
+ * Throws when in support mode but the id cannot be found: binding without it
+ * would run a customer team on this machine with no restriction at all.
+ */
+async function supportOwnerActorId(teamId: string): Promise<string | null> {
+  const { isInSupportSession } = await import('@/lib/admin/support-session')
+  if (!isInSupportSession()) return null
+  const state = useCurrentTeamStore.getState()
+  if (state.team?.id === teamId && state.currentMember?.id) return state.currentMember.id
+  const userId = currentAuthUserId()
+  const member = userId ? await getBackend().directory.getCurrentTeamMember(teamId, userId) : null
+  if (!member?.id) throw new Error('support account is not a member of this team')
+  return member.id
 }
 
 /**
@@ -810,6 +833,13 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
   const bindOrPromptOnce = async (teamId: string): Promise<'bound' | 'prompting'> => {
     const deviceId = await requireDeviceId()
     const existing = await getBackend().actors.findAgentForDevice({ teamId, deviceId })
+    // Support mode binds without asking: the support account's machine agent is
+    // named after the account, and there is nobody to name it for.
+    const { isInSupportSession } = await import('@/lib/admin/support-session')
+    if (!existing.agentId && isInSupportSession()) {
+      await bindDeviceAgent(teamId, deviceId, await deviceDisplayName())
+      return 'bound'
+    }
     if (!existing.agentId) {
       set({
         pendingName: { teamId, deviceId, suggested: await deviceDisplayName() },
