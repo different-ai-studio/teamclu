@@ -5,11 +5,18 @@ import { useState } from 'react'
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (k: string, d?: unknown) => {
-      if (typeof d === 'string') return d
-      if (d && typeof d === 'object' && 'defaultValue' in (d as Record<string, unknown>)) {
-        return String((d as Record<string, unknown>).defaultValue)
+      let text = k
+      if (typeof d === 'string') text = d
+      else if (d && typeof d === 'object' && 'defaultValue' in (d as Record<string, unknown>)) {
+        text = String((d as Record<string, unknown>).defaultValue)
       }
-      return k
+      if (d && typeof d === 'object') {
+        for (const [name, value] of Object.entries(d as Record<string, unknown>)) {
+          if (name === 'defaultValue') continue
+          text = text.replaceAll(`{{${name}}}`, String(value ?? ''))
+        }
+      }
+      return text
     },
     i18n: { language: 'en', changeLanguage: vi.fn() },
   }),
@@ -83,9 +90,22 @@ import { WeComSetupWizard } from '../Wecom'
 
 const SECRET = 'qr-test-secret-value'
 
-function Host({ onSave }: { onSave: (botId: string, secret: string) => Promise<void> }) {
+function Host({
+  onSave,
+  knownBotIds,
+}: {
+  onSave: (botId: string, secret: string) => Promise<void>
+  knownBotIds?: string[]
+}) {
   const [open, setOpen] = useState(true)
-  return <WeComSetupWizard open={open} onOpenChange={setOpen} onCredentialsSave={onSave} />
+  return (
+    <WeComSetupWizard
+      open={open}
+      onOpenChange={setOpen}
+      onCredentialsSave={onSave}
+      knownBotIds={knownBotIds}
+    />
+  )
 }
 
 function chooseQr() {
@@ -164,6 +184,41 @@ describe('WeComSetupWizard credential save', () => {
     })
     expect(onSave).not.toHaveBeenCalled()
     expect(screen.queryByText('bot-123')).toBeNull()
+  })
+
+  it('says a second bot was added and does not show its secret', async () => {
+    pollWecomQrAuth.mockResolvedValue({ status: 'success', botId: 'bot-2', secret: SECRET })
+    const onSave = vi.fn(async () => {})
+    const { container } = render(<Host onSave={onSave} knownBotIds={['b1']} />)
+    chooseQr()
+
+    expect(await screen.findByTestId('wecom-scan-outcome')).toHaveTextContent(
+      'Added bot-2 to this WeCom channel',
+    )
+    expect(screen.getByTestId('wecom-scan-outcome').textContent).toMatch(/keep their id, secret, and on\/off switch/)
+    expect(container.textContent).not.toContain(SECRET)
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('bot-2', SECRET))
+  })
+
+  it('says a repeated bot id only replaces that secret', async () => {
+    pollWecomQrAuth.mockResolvedValue({ status: 'success', botId: 'b1', secret: SECRET })
+    const onSave = vi.fn(async () => {})
+    render(<Host onSave={onSave} knownBotIds={['b1', 'b2']} />)
+    chooseQr()
+
+    expect(await screen.findByTestId('wecom-scan-outcome')).toHaveTextContent(
+      'b1 is already on this WeCom channel',
+    )
+    expect(screen.getByTestId('wecom-scan-outcome').textContent).toMatch(/other bots stay/)
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('b1', SECRET))
+  })
+
+  it('cancel before a scan does not save', async () => {
+    const onSave = vi.fn(async () => {})
+    render(<Host onSave={onSave} knownBotIds={['b1']} />)
+    fireEvent.click(screen.getByText('Cancel'))
+    expect(onSave).not.toHaveBeenCalled()
+    expect(startWecomQrAuth).not.toHaveBeenCalled()
   })
 
   it('clears the QR and offers retry when the code expires', async () => {

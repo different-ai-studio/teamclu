@@ -87,12 +87,16 @@ export function WeComSetupWizard({
   onCredentialsSave,
   existingBotId,
   existingSecret,
+  knownBotIds,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onCredentialsSave: (botId: string, secret: string) => Promise<void>
   existingBotId?: string
   existingSecret?: string
+  /** Bot ids already saved on this channel. A scan of one of them refreshes
+   * that bot; any other id is appended. Empty means this is the first bot. */
+  knownBotIds?: string[]
 }) {
   const { t } = useTranslation()
   const [step, setStep] = React.useState(0)
@@ -287,6 +291,13 @@ export function WeComSetupWizard({
     })()
   }
 
+  const savedBotIds = React.useMemo(
+    () => (knownBotIds ?? []).map((id) => id.trim()).filter(Boolean),
+    [knownBotIds],
+  )
+  const addingAnother = savedBotIds.length > 0
+  const scannedId = botId.trim()
+  const refreshesExisting = scannedId !== '' && savedBotIds.includes(scannedId)
   const currentStep = WECOM_WIZARD_STEPS[step]
 
   const renderStepContent = () => {
@@ -306,9 +317,15 @@ export function WeComSetupWizard({
             </div>
 
             <div className="text-center space-y-2">
-              <h3 className="text-lg font-semibold">{t('settings.channels.wecom.connectTitle', { defaultValue: 'Connect WeCom to {{appName}}', appName: appDisplayName })}</h3>
+              <h3 className="text-lg font-semibold">
+                {addingAnother
+                  ? t('settings.channels.wecom.addAnotherTitle', 'Add another WeCom bot')
+                  : t('settings.channels.wecom.connectTitle', { defaultValue: 'Connect WeCom to {{appName}}', appName: appDisplayName })}
+              </h3>
               <p className="text-[13px] text-muted-foreground">
-                {t('settings.channels.wecom.connectDesc', { defaultValue: "This wizard will guide you through creating a WeCom AI bot and connecting it to {{appName}}. You'll be able to interact with AI directly from WeCom chats.", appName: appDisplayName })}
+                {addingAnother
+                  ? t('settings.channels.wecom.addAnotherDesc', 'Scan a QR code the same way as the first bot. Canceling, or a scan that fails, leaves the bots already saved unchanged.')
+                  : t('settings.channels.wecom.connectDesc', { defaultValue: "This wizard will guide you through creating a WeCom AI bot and connecting it to {{appName}}. You'll be able to interact with AI directly from WeCom chats.", appName: appDisplayName })}
               </p>
             </div>
 
@@ -520,8 +537,12 @@ export function WeComSetupWizard({
 
             <div className="space-y-2">
               <h3 className="text-lg font-semibold">{t('settings.channels.allSet', "You're all set!")}</h3>
-              <p className="text-[13px] text-muted-foreground">
-                {t('settings.channels.wecom.completeMessage', 'The bot credential is saved on this device. Turn the gateway on if it is off. You do not need to save again.')}
+              <p className="text-[13px] text-muted-foreground" data-testid="wecom-scan-outcome">
+                {addingAnother
+                  ? refreshesExisting
+                    ? t('settings.channels.wecom.updatedBotOutcome', { id: scannedId, defaultValue: '{{id}} is already on this WeCom channel. Only its secret is replaced. Its other settings and the other bots stay as they are.' })
+                    : t('settings.channels.wecom.addedBotOutcome', { id: scannedId, defaultValue: 'Added {{id}} to this WeCom channel. Bots already saved here keep their id, secret, and on/off switch. The channel switch is left as it is.' })
+                  : t('settings.channels.wecom.completeMessage', 'The bot credential is saved on this device. Turn the gateway on if it is off. You do not need to save again.')}
               </p>
             </div>
 
@@ -574,10 +595,14 @@ export function WeComSetupWizard({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-blue-500" />
-            {t(currentStep.titleKey, currentStep.title)}
+            {addingAnother && currentStep.id === 'intro'
+              ? t('settings.channels.wecom.addAnotherTitle', 'Add another WeCom bot')
+              : t(currentStep.titleKey, currentStep.title)}
           </DialogTitle>
           <DialogDescription>
-            {t(currentStep.descKey, { defaultValue: currentStep.description, appName: appDisplayName })}
+            {addingAnother && currentStep.id === 'intro'
+              ? t('settings.channels.wecom.addAnotherDesc', 'Scan a QR code the same way as the first bot. Canceling, or a scan that fails, leaves the bots already saved unchanged.')
+              : t(currentStep.descKey, { defaultValue: currentStep.description, appName: appDisplayName })}
           </DialogDescription>
         </DialogHeader>
 
@@ -731,8 +756,9 @@ export function WeComChannel() {
     setWecomHasChanges(true)
   }
   const addBot = () => {
-    updateLocalConfig({ bots: [...bots, { enabled: true, botId: '', secret: '' }] })
-    setWecomHasChanges(true)
+    // Same wizard as the first bot. The scan is merged onto the saved
+    // document, so this does not insert a blank row or rewrite the others.
+    setWizardOpen(true)
   }
   const removeBot = (i: number) => {
     updateLocalConfig({ bots: bots.filter((_, j) => j !== i) })
@@ -1056,6 +1082,7 @@ export function WeComChannel() {
         open={wizardOpen}
         onOpenChange={setWizardOpen}
         onCredentialsSave={handleWizardSave}
+        knownBotIds={(wecom?.bots ?? []).map((bot) => bot.botId)}
       />
     </>
   )

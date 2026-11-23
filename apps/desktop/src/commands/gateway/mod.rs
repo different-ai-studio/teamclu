@@ -14,6 +14,7 @@
 
 pub use teamclu_gateway::*;
 
+pub mod agent_channel;
 pub mod qr;
 
 use std::path::PathBuf;
@@ -33,7 +34,7 @@ pub struct ChannelStatus {
 
 /// The active team's `team.toml`, resolved through daemon.toml's
 /// `active_team` pointer. `None` when the daemon has no team yet.
-fn team_config_path() -> Option<PathBuf> {
+pub(crate) fn team_config_path() -> Option<PathBuf> {
     let team = crate::commands::amuxd_active_team()?;
     Some(crate::commands::amuxd_team_state_dir(&team).join("team.toml"))
 }
@@ -161,7 +162,9 @@ pub async fn load_channel_config(platform: String) -> Result<Option<serde_json::
         .map_err(|e| format!("load_channel_config task failed: {e}"))?
 }
 
-fn load_channel_config_blocking(platform: String) -> Result<Option<serde_json::Value>, String> {
+pub(crate) fn load_channel_config_blocking(
+    platform: String,
+) -> Result<Option<serde_json::Value>, String> {
     if !matches!(
         platform.as_str(),
         "discord" | "wecom" | "feishu" | "kook" | "wechat" | "wechatpad" | "email" | "seatalk"
@@ -193,15 +196,41 @@ fn load_channel_config_blocking(platform: String) -> Result<Option<serde_json::V
         .map_err(|e| format!("serialize channel config: {e}"))
 }
 
-/// Replace `daemon.toml`'s `[channels.<platform>]` section with the JSON in
+/// Replace the active team's `[channels.<platform>]` section with the JSON in
 /// `config_json` (one of the daemon's per-platform config structs). amuxd
-/// auto-reloads the channel manager so the change takes effect immediately.
+/// parses it, persists team.toml, and reloads the channel manager.
+///
+/// The daemon replies `{ok:true}` or `{ok:false,error}`. A document it cannot
+/// parse is not saved; the error is the reply, not a log line the settings
+/// page never sees.
 #[tauri::command]
 pub async fn save_channel_config(platform: String, config_json: String) -> Result<(), String> {
     // Single-line JSON keeps the framing simple — the daemon reads exactly
     // three newline-terminated tokens off the control channel.
     let single_line = config_json.replace('\n', " ");
-    amuxd_control::send(&format!("channel-save\n{platform}\n{single_line}\n")).await
+    apply_saved_channel(&platform, &single_line).await
+}
+
+#[derive(Debug, Deserialize)]
+struct ChannelSaveAck {
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+pub(crate) async fn apply_saved_channel(platform: &str, config_json: &str) -> Result<(), String> {
+    let single_line = config_json.replace('\n', " ");
+    let ack: ChannelSaveAck =
+        amuxd_control::request_json_async(&format!("channel-save\n{platform}\n{single_line}\n"))
+            .await?;
+    if ack.ok {
+        Ok(())
+    } else {
+        Err(ack
+            .error
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| "channel save was rejected".to_string()))
+    }
 }
 
 /// Read `channels.model` — the model every gateway session starts on when the

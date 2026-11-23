@@ -247,7 +247,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_channels",
-            "description": "View or update message channel configuration (WeCom, Discord, Feishu, Email, KOOK, WeChat). Use 'get' to check what's configured (sensitive values are redacted). Use 'set' to configure a channel with the provided fields.",
+            "description": "View or update the active team's gateway channel config (WeCom, Discord, Feishu, Email, KOOK, WeChat, SeaTalk). get reads the config the gateway runs, not a workspace file; secrets come back as [configured]. secretPresence \"unknown\" means the daemon could not be asked, so a missing secret is not proof it is unset. set merges the fields you pass, asks the user to approve, then reloads the gateway. Omit enabled to leave it as it is. [configured] and blank secrets are not written. WeCom and SeaTalk: with one bot, botId/appId may be omitted; with several, pass the id; an unknown id adds a bot. Unknown fields are rejected.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -263,7 +263,7 @@ fn tool_definitions() -> Value {
                     },
                     "config": {
                         "type": "object",
-                        "description": "Channel config fields to set. Required for set. Fields vary by channel:\n- wecom: botId, secret, encodingAesKey, ownerId\n- discord: token, dm, guilds\n- feishu: appId, appSecret, chats\n- email: provider, gmailEmail, gmailClientId, gmailClientSecret (or imapServer, smtpServer, username, password for custom)\n- kook: token, dm, guilds\n- wechat: botToken, accountId, baseUrl"
+                        "description": "Fields to merge. Required for set. Camel case, not the daemon's names.\n- wecom: enabled, botId, secret, encodingAesKey, botName, apiKey, systemPrompt, workspaceId, model\n- discord: enabled, token, defaultUsername, workspaceId, model\n- feishu: enabled, appId, appSecret, workspaceId, model\n- email: enabled, imapServer, imapPort, smtpServer, smtpPort, username, password, allowedSenders, workspaceId, model\n- kook: enabled, token, workspaceId, model\n- wechat: enabled, accountId, botToken, workspaceId, model\n- seatalk: enabled, appId, appSecret, systemPrompt, mode (websocket|webhook), dmPolicy, allowFrom, groupPolicy, groupAllowFrom, workspaceId, model\nDo not send bots, ownerId, dm, guilds, chats, or Gmail fields."
                     }
                 },
                 "required": ["action"]

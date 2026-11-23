@@ -197,6 +197,29 @@ describe('createWecomActions', () => {
     expect(state.wecomHasChanges).toBe(true)
   })
 
+  it('commitScannedWecomBot leaves the saved bots untouched when the write fails', async () => {
+    vi.mocked(saveChannelConfig).mockRejectedValueOnce(new Error('disk full'))
+    const stored = {
+      enabled: true,
+      bots: [{ enabled: false, botId: 'b1', secret: '', systemPrompt: 'keep' }],
+    }
+    let state = { wecom: stored, wecomHasChanges: false, error: null as string | null, wecomIsLoading: false }
+    const set = vi.fn((update: unknown) => {
+      const patch = typeof update === 'function' ? (update as (s: typeof state) => Partial<typeof state>)(state) : update as Partial<typeof state>
+      state = { ...state, ...patch }
+    })
+
+    const { createWecomActions } = await import('../wecom')
+    const actions = createWecomActions(set as never)
+    await expect(actions.commitScannedWecomBot('b2', 'new-secret')).rejects.toThrow(/disk full/)
+
+    expect(reloadChannels).not.toHaveBeenCalled()
+    expect(state.wecom).toBe(stored)
+    expect(state.wecom.bots.map((bot) => bot.botId)).toEqual(['b1'])
+    expect(state.wecom.bots[0].enabled).toBe(false)
+    expect(state.wecom.bots[0].systemPrompt).toBe('keep')
+  })
+
   it('commitScannedWecomBot does not save an empty secret', async () => {
     const { createWecomActions } = await import('../wecom')
     const actions = createWecomActions(vi.fn() as never)
@@ -213,6 +236,21 @@ describe('createWecomActions', () => {
     )).toEqual([
       { enabled: false, botId: 'b1', secret: '', systemPrompt: 'keep' },
       { enabled: true, botId: 'b2', secret: 'sec' },
+    ])
+  })
+
+  it('mergeScannedWecomBot refreshes a repeated bot id without adding a second row', async () => {
+    const { mergeScannedWecomBot } = await import('../wecom')
+    expect(mergeScannedWecomBot(
+      [
+        { enabled: false, botId: 'b1', secret: '', systemPrompt: 'keep', botName: 'One' },
+        { enabled: true, botId: 'b2', secret: '', encodingAesKey: 'aes' },
+      ],
+      'b1',
+      'rotated',
+    )).toEqual([
+      { enabled: false, botId: 'b1', secret: 'rotated', systemPrompt: 'keep', botName: 'One' },
+      { enabled: true, botId: 'b2', secret: '', encodingAesKey: 'aes' },
     ])
   })
 

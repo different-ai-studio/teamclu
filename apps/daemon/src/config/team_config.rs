@@ -150,6 +150,7 @@ pub fn save_value(team_id: &str, mut root: Value) -> anyhow::Result<()> {
         }
     }
     migrate_seatalk_app_secret(&previous_doc, &root, &mut merged);
+    migrate_wecom_legacy_secrets(&previous_doc, &root, &mut merged);
     store_secret_map(team_id, merged)?;
 
     let path = path_for(team_id);
@@ -330,6 +331,90 @@ fn migrate_seatalk_app_secret(
     let new_key = format!("channels.seatalk.bots[{app_id}].app_secret");
     secrets.entry(new_key).or_insert(legacy);
     secrets.remove("channels.seatalk.app_secret");
+}
+
+/// Same move as [`migrate_seatalk_app_secret`] for a WeCom config that still
+/// keeps its credential on the channel (`channels.wecom.secret`) when the
+/// document gains a `bots` array. Without it the first save that writes
+/// `bots` leaves the running bot with an empty secret.
+fn migrate_wecom_legacy_secrets(
+    previous: &Value,
+    root: &Value,
+    secrets: &mut BTreeMap<String, String>,
+) {
+    migrate_legacy_bot_secret(
+        previous,
+        root,
+        secrets,
+        "wecom",
+        "bot_id",
+        "channels.wecom.secret",
+        "secret",
+    );
+    migrate_legacy_bot_secret(
+        previous,
+        root,
+        secrets,
+        "wecom",
+        "bot_id",
+        "channels.wecom.encoding_aes_key",
+        "encoding_aes_key",
+    );
+}
+
+fn migrate_legacy_bot_secret(
+    previous: &Value,
+    root: &Value,
+    secrets: &mut BTreeMap<String, String>,
+    channel: &str,
+    id_key: &str,
+    legacy_key: &str,
+    leaf: &str,
+) {
+    let Some(legacy) = secrets.get(legacy_key).cloned() else {
+        return;
+    };
+    let Some(bots) = root
+        .get("channels")
+        .and_then(|c| c.get(channel))
+        .and_then(|s| s.get("bots"))
+        .and_then(|b| b.as_array())
+    else {
+        return;
+    };
+    if bots.is_empty() {
+        return;
+    }
+    let previous_id = previous
+        .get("channels")
+        .and_then(|c| c.get(channel))
+        .and_then(|s| s.get(id_key))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let matched = if previous_id.is_empty() {
+        None
+    } else {
+        bots.iter().find_map(|bot| {
+            let id = bot.get(id_key)?.as_str()?;
+            (id == previous_id).then_some(id.to_string())
+        })
+    };
+    let target_id = matched.or_else(|| {
+        if bots.len() != 1 {
+            return None;
+        }
+        bots.first()
+            .and_then(|bot| bot.get(id_key))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    });
+    let Some(bot_id) = target_id else {
+        return;
+    };
+    let new_key = format!("channels.{channel}.bots[{bot_id}].{leaf}");
+    secrets.entry(new_key).or_insert(legacy);
+    secrets.remove(legacy_key);
 }
 
 /// Split `channels.wecom.bots[b-1].secret` into segments; brackets bind to the
@@ -836,6 +921,77 @@ app_secret = "sec-new"
         assert_eq!(bots[0].app_secret, "sec-old");
         assert_eq!(bots[0].system_prompt.as_deref(), Some("只用中文"));
         assert_eq!(bots[1].app_secret, "sec-new");
+    }
+
+    #[test]
+    fn a_legacy_wecom_secret_moves_onto_the_bot_when_bots_appear() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::write(
+            home.path().join("daemon.toml"),
+            "active_team = \"team-1\"\n",
+        )
+        .unwrap();
+
+        save_value(
+            "team-1",
+            doc(r#"
+[channels.wecom]
+enabled = true
+bot_id = "legacy"
+secret = "sec-old"
+encoding_aes_key = "aes-old"
+"#),
+        )
+        .unwrap();
+        assert_eq!(
+            load_secret_map("team-1")
+                .unwrap()
+                .get("channels.wecom.secret")
+                .map(String::as_str),
+            Some("sec-old")
+        );
+
+        // The shape an agent patch produces when it has to store a bot-only
+        // field: the inline secret is gone, the bot id moved into bots[].
+        save_value(
+            "team-1",
+            doc(r#"
+[channels.wecom]
+enabled = true
+
+[[channels.wecom.bots]]
+enabled = true
+bot_id = "legacy"
+bot_name = "Named"
+"#),
+        )
+        .unwrap();
+
+        let map = load_secret_map("team-1").unwrap();
+        assert_eq!(
+            map.get("channels.wecom.bots[legacy].secret")
+                .map(String::as_str),
+            Some("sec-old")
+        );
+        assert_eq!(
+            map.get("channels.wecom.bots[legacy].encoding_aes_key")
+                .map(String::as_str),
+            Some("aes-old")
+        );
+        assert!(
+            !map.contains_key("channels.wecom.secret"),
+            "the legacy key must not linger once bots[] exists"
+        );
+        assert!(!map.contains_key("channels.wecom.encoding_aes_key"));
+        let bots = load_typed("team-1")
+            .unwrap()
+            .channels
+            .wecom
+            .unwrap()
+            .resolved_bots();
+        assert_eq!(bots[0].secret, "sec-old");
+        assert_eq!(bots[0].bot_name.as_deref(), Some("Named"));
     }
 
     #[test]

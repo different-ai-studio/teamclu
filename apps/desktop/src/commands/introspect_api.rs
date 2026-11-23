@@ -324,6 +324,7 @@ fn router(app: AppHandle, token: Arc<str>, verifier: caller::CallerVerifier) -> 
         .route("/send-wecom", post_route!(handle_send_wecom))
         .route("/send-seatalk", post_route!(handle_send_seatalk))
         .route("/channel-state", post_route!(handle_channel_state))
+        .route("/channel-get", post_route!(handle_channel_get))
         .route("/cron-manage", post_route!(handle_cron_manage))
         .route("/team-sync-all", post_route!(handle_team_sync_all))
         .route("/env-var-set", post_route!(handle_env_var_set))
@@ -738,64 +739,143 @@ async fn handle_channel_state(_app: &AppHandle, _body: &[u8]) -> Result<String, 
 
 // ─── Channel Handler ─────────────────────────────────────────────────────────
 
+/// The team's channel config, as the gateway will run it. `channel` selects
+/// one platform; omit it for every platform the tool can configure.
+async fn handle_channel_get(_app: &AppHandle, body: &[u8]) -> Result<String, String> {
+    let v: serde_json::Value = if body.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {e}"))?
+    };
+    let requested = v
+        .get("channel")
+        .and_then(|c| c.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
+    if let Some(name) = requested.as_deref() {
+        if !super::gateway::agent_channel::PLATFORMS.contains(&name) {
+            return Err(format!("Unknown channel: {name}"));
+        }
+    }
+    require_active_team()?;
+    let (secret_keys, secrets_known) = match super::gateway::list_channel_secret_keys().await {
+        Ok(keys) => (keys.into_iter().collect(), true),
+        Err(error) => {
+            log::warn!("[IntrospectAPI] channel secret presence unavailable: {error}");
+            (std::collections::HashSet::new(), false)
+        }
+    };
+    let names: Vec<String> = match requested.as_deref() {
+        Some(name) => vec![name.to_string()],
+        None => super::gateway::agent_channel::PLATFORMS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect(),
+    };
+    let loaded = tokio::task::spawn_blocking(move || {
+        names
+            .into_iter()
+            .map(|name| {
+                let section = super::gateway::load_channel_config_blocking(name.clone())?;
+                Ok::<_, String>((name, section))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|e| format!("channel-get: {e}"))??;
+    let presence = if secrets_known { "known" } else { "unknown" };
+    if requested.is_some() {
+        let (name, section) = loaded
+            .into_iter()
+            .next()
+            .expect("one platform was requested");
+        return Ok(serde_json::json!({
+            "channel": name,
+            "bound": super::gateway::agent_channel::is_enabled(section.as_ref()),
+            "secretPresence": presence,
+            "config": super::gateway::agent_channel::agent_view(
+                &name,
+                section.as_ref(),
+                &secret_keys,
+                secrets_known,
+            ),
+        })
+        .to_string());
+    }
+    let mut out = serde_json::Map::new();
+    for (name, section) in loaded {
+        out.insert(
+            name.clone(),
+            serde_json::json!({
+                "bound": super::gateway::agent_channel::is_enabled(section.as_ref()),
+                "secretPresence": presence,
+                "config": super::gateway::agent_channel::agent_view(
+                    &name,
+                    section.as_ref(),
+                    &secret_keys,
+                    secrets_known,
+                ),
+            }),
+        );
+    }
+    Ok(serde_json::Value::Object(out).to_string())
+}
+
+/// Merge an agent patch onto the active team's channel config and save it
+/// through the same `channel-save` the settings page uses.
 async fn handle_channel_set(app: &AppHandle, body: &[u8]) -> Result<String, String> {
     let v: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
-
+        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {e}"))?;
     let channel = v
         .get("channel")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing field: channel")?;
-    let patch = v.get("config").ok_or("Missing field: config")?;
-
-    let valid_channels = [
-        "wecom", "discord", "feishu", "email", "kook", "wechat", "seatalk",
-    ];
-    if !valid_channels.contains(&channel) {
-        return Err(format!(
-            "Unknown channel: '{}'. Valid: {}",
-            channel,
-            valid_channels.join(", ")
-        ));
+        .and_then(|c| c.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or("Missing 'channel' field")?;
+    let patch = v.get("config").ok_or("Missing 'config' field")?;
+    if !super::gateway::agent_channel::PLATFORMS.contains(&channel) {
+        return Err(format!("Unknown channel: {channel}"));
     }
-
-    let workspace = {
-        let registry = app.state::<super::window::WindowRegistry>();
-        registry
-            .current_workspace
-            .lock()
-            .ok()
-            .and_then(|cw| cw.clone())
-            .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())?
-    };
-
-    let mut json = super::env_vars::read_teamclu_json(&workspace)?;
-
-    // Ensure channels object exists
-    if json.get("channels").is_none() {
-        json["channels"] = serde_json::json!({});
+    require_active_team()?;
+    let channel_owned = channel.to_string();
+    let current = tokio::task::spawn_blocking(move || {
+        super::gateway::load_channel_config_blocking(channel_owned)
+    })
+    .await
+    .map_err(|e| format!("channel-set: {e}"))??;
+    let plan = super::gateway::agent_channel::plan_update(channel, current.as_ref(), patch)?;
+    if plan.changes.is_empty() {
+        return Ok(serde_json::json!({
+            "ok": true,
+            "channel": channel,
+            "unchanged": true,
+        })
+        .to_string());
     }
+    let zh = super::prefers_zh_locale();
+    let summary: Vec<String> = plan
+        .changes
+        .iter()
+        .map(|change| change.format(zh))
+        .collect();
+    confirm::confirm_with_user(app, confirm::channel_config_update(zh, channel, &summary)).await?;
+    let document = serde_json::to_string(&plan.document)
+        .map_err(|e| format!("channel-set: encode config: {e}"))?;
+    super::gateway::apply_saved_channel(channel, &document).await?;
+    log::info!("[IntrospectAPI] channel-set {channel} saved to the team gateway config");
+    Ok(serde_json::json!({"ok": true, "channel": channel}).to_string())
+}
 
-    let channels = json["channels"]
-        .as_object_mut()
-        .ok_or("channels is not an object")?;
-
-    // Merge patch fields into channel config (shallow merge)
-    let ch_entry = channels
-        .entry(channel.to_string())
-        .or_insert_with(|| serde_json::json!({}));
-
-    if let (Some(obj), Some(patch_obj)) = (ch_entry.as_object_mut(), patch.as_object()) {
-        for (k, val) in patch_obj {
-            obj.insert(k.clone(), val.clone());
-        }
+fn require_active_team() -> Result<(), String> {
+    if super::gateway::team_config_path().is_none() {
+        Err(
+            "No active team. Channel settings belong to the team, and none is selected."
+                .to_string(),
+        )
     } else {
-        return Err("config must be a JSON object".to_string());
+        Ok(())
     }
-
-    super::env_vars::write_teamclu_json(&workspace, &json)?;
-
-    Ok(format!(r#"{{"ok":true,"channel":"{}"}}"#, channel))
 }
 
 fn resolve_workspace_path(app: &AppHandle, body: &serde_json::Value) -> Result<String, String> {
