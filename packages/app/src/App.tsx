@@ -403,8 +403,15 @@ function AppContent() {
   // signOut resets before unmount; this effect owns team-switch / adoptSession.
   const chatIdentityKey =
     userId && currentTeamId ? `${userId}::${currentTeamId}` : null;
+  // Adopting another account's session (support mode, both ways) swaps the
+  // user first and the team a moment later. In between, the team still
+  // belongs to the account being left; reloading then asks for a team the new
+  // account is not in. Wait for the team to catch up.
+  const currentTeamUserId = useCurrentTeamStore((s) => s.teamUserId);
+  const teamLagsUser = Boolean(userId && currentTeamUserId && currentTeamUserId !== userId);
   const prevChatIdentityRef = useRef<string | null>(null);
   useEffect(() => {
+    if (teamLagsUser) return;
     if (!chatIdentityKey) {
       prevChatIdentityRef.current = null;
       return;
@@ -419,7 +426,7 @@ function AppContent() {
       }
     }
     prevChatIdentityRef.current = chatIdentityKey;
-  }, [chatIdentityKey]);
+  }, [chatIdentityKey, teamLagsUser]);
 
   // Resume a cross-team session deeplink after enterTeam() clears chat state.
   useEffect(() => {

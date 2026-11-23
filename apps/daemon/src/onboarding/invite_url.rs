@@ -29,6 +29,12 @@ pub struct ParsedInvite {
     /// with the wrong `teamclu://` scheme. The inviter generates the invite with
     /// its own registered scheme, so this always matches the desktop's handler.
     pub scheme: String,
+    /// Optional `?support_owner=<actor id>`: the desktop binds this machine
+    /// into a customer team in support mode, as the org's support account. The
+    /// daemon then runs that team owner-only and without the operator's
+    /// personal variables (see `config::layout::support_mode`). It can only
+    /// restrict a daemon, never widen one, so it needs no authentication.
+    pub support_owner: Option<String>,
 }
 
 fn is_custom_app_scheme(scheme: &str) -> bool {
@@ -84,11 +90,18 @@ pub fn parse(raw: &str) -> Result<ParsedInvite> {
         .map(|(_, v)| v.into_owned())
         .filter(|v| !v.is_empty());
 
+    let support_owner = url
+        .query_pairs()
+        .find(|(k, _)| k == "support_owner")
+        .map(|(_, v)| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
     Ok(ParsedInvite {
         token,
         broker_url,
         cloud_api_url,
         scheme: url.scheme().to_string(),
+        support_owner,
     })
 }
 
@@ -141,6 +154,16 @@ mod tests {
             p.cloud_api_url.as_deref(),
             Some("https://legacy-test-api.example.test")
         );
+    }
+
+    #[test]
+    fn parses_support_owner() {
+        let p = parse("teamclu://invite?token=tok-123&support_owner=actor-9").unwrap();
+        assert_eq!(p.support_owner.as_deref(), Some("actor-9"));
+        let p = parse("teamclu://invite?token=tok-123").unwrap();
+        assert_eq!(p.support_owner, None);
+        let p = parse("teamclu://invite?token=tok-123&support_owner=").unwrap();
+        assert_eq!(p.support_owner, None);
     }
 
     #[test]

@@ -361,6 +361,30 @@ impl DaemonServer {
         // namespace `amux/{team}/{actor}/rpc/res`.
         let res_topic = self.topics.rpc_res_for(&request.requester_actor_id);
 
+        // Support mode: this machine is a platform operator's, bound into a
+        // customer team. Over MQTT the requester is an unauthenticated payload
+        // field, so "only the support account" cannot be checked here; take
+        // no RPCs from the broker at all. The operator's own desktop reaches
+        // this daemon over the token-guarded local HTTP `/v1/rpc` instead.
+        if crate::config::layout::active_support_owner().is_some() {
+            warn!(
+                %topic,
+                requester_actor_id = %request.requester_actor_id,
+                "support mode: refusing an RPC from the broker"
+            );
+            let response = crate::proto::teamclu::RpcResponse {
+                request_id: request.request_id.clone(),
+                success: false,
+                error: "support_mode: this agent only takes requests from its own machine"
+                    .to_string(),
+                requester_client_id: request.requester_client_id.clone(),
+                requester_actor_id: request.requester_actor_id.clone(),
+                result: None,
+            };
+            publish_rpc_response(self.publisher_handle.as_ref(), &res_topic, &response).await;
+            return;
+        }
+
         // Capability management runs a full reconcile — an install downloads
         // every drifted team skill pack — and this is the daemon's ONE message
         // pump: awaiting it inline stalls runtime commands, live-session events

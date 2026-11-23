@@ -221,12 +221,15 @@ export async function refreshDaemonUnlessSkipped(opts?: {
 }): Promise<void> {
   const teamId = useCurrentTeamStore.getState().team?.id?.trim() || ''
   const userId = signedInUserId()
-  // Support mode: this machine belongs to the operator, not to the customer org
-  // the operator is helping. Leave the daemon bound where it is, and open the
-  // gate the same way a skipped install does.
+  // Support mode is an ordinary team switch: the daemon moves to the customer
+  // team's own state directory, as the support account's machine agent, and
+  // back again on exit. The install gate is never skipped there — the support
+  // account has no other way to get an agent running for the operator. The
+  // daemon runs that team owner-only and without personal variables, and the
+  // agent stops working when the support grant ends (20261123120000).
   const { isInSupportSession } = await import('@/lib/admin/support-session')
   const supportMode = isInSupportSession()
-  if (supportMode || (teamId && (await shouldSkipLocalAgentInstall(teamId)))) {
+  if (!supportMode && teamId && (await shouldSkipLocalAgentInstall(teamId))) {
     // The account changed while this lookup was in flight. The new user's own
     // call decides the gate; this one must not skip daemon rebind for them.
     if (signedInUserId() !== userId) return

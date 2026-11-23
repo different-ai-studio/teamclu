@@ -39,6 +39,13 @@ const h = vi.hoisted(() => ({
   // Held open to keep a cloud-auth read in flight across a later refresh.
   cloudAuthGate: null as Promise<void> | null,
   cloudAuthStatus: 'unknown' as 'ok' | 'expired' | 'unknown',
+  // Support mode (lib/admin/support-session) and the invite URL daemon_init got.
+  support: false,
+  initInviteUrl: null as string | null,
+}))
+
+vi.mock('@/lib/admin/support-session', () => ({
+  isInSupportSession: () => h.support,
 }))
 
 const runtimeRows = (present: boolean) => [
@@ -168,6 +175,7 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (cmd === 'get_daemon_team_id') return h.daemonTeam
     if (cmd === 'get_device_hostname') return 'test-host'
     if (cmd === 'daemon_init') {
+      h.initInviteUrl = (args as { inviteUrl?: string })?.inviteUrl ?? null
       h.daemonTeam = h.currentTeam?.id ?? null
       return { actorId: 'actor-1', teamId: h.daemonTeam }
     }
@@ -208,6 +216,8 @@ const reset = () =>
     daemonOutdated: false,
     runtimeInstallFailures: 0,
     runStartedAt: null,
+    pendingName: null,
+    completedAgent: null,
   })
 
 beforeEach(() => {
@@ -232,6 +242,8 @@ beforeEach(() => {
   h.installLeavesRuntimeMissing = false
   h.cloudAuthGate = null
   h.cloudAuthStatus = 'unknown'
+  h.support = false
+  h.initInviteUrl = null
   localStorage.clear()
   useSetupStore.setState({ requirements: [], loaded: false, installing: null, errors: {}, progress: {}, installRoute: null, probeError: null })
   resetDaemonOnboardingPostReadyForTests()
@@ -295,6 +307,34 @@ describe('daemon-onboarding refresh() orchestration', () => {
     // leave a half-named agent behind.
     expect(h.ensureCalls).toHaveLength(0)
     expect(h.invokeCalls).not.toContain('daemon_init')
+  })
+
+  it('support mode binds without asking and marks the invite with the support account', async () => {
+    h.support = true
+    h.currentTeam = { id: 't1' }
+    h.currentMemberName = 'TeamClu 支持'
+    h.daemonTeam = 'operator-team'
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+
+    await useDaemonOnboardingStore.getState().refresh()
+
+    const s = useDaemonOnboardingStore.getState()
+    expect(s.pendingName).toBeNull()
+    expect(s.status).toBe('ready')
+    expect(h.ensureCalls[0]).toMatchObject({ teamId: 't1', displayName: 'TeamClu 支持Bot' })
+    expect(h.initInviteUrl).toContain('support_owner=member-1')
+  })
+
+  it('an ordinary bind carries no support marker', async () => {
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 'other-team'
+    h.deviceAgents.set('t1:device-1', 'agent-existing')
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+
+    await useDaemonOnboardingStore.getState().refresh()
+
+    expect(h.initInviteUrl).toBeTruthy()
+    expect(h.initInviteUrl).not.toContain('support_owner')
   })
 
   it('naming the agent creates it under that name and finishes binding', async () => {

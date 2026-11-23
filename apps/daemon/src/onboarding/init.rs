@@ -58,6 +58,11 @@ pub async fn run(raw_url: &str, config_path: Option<&Path>) -> Result<InitOutcom
         None => ProviderConfig::path_for_team(&claim.team_id),
     };
     save_backend_toml(&path, &cfg).with_context(|| format!("write {}", path.display()))?;
+    // Support mode follows the credentials just written: set for a support
+    // bind, cleared for any other. Failing to record it would run a customer
+    // team unrestricted, so it fails the init.
+    crate::config::layout::write_support_owner(&claim.team_id, invite.support_owner.as_deref())
+        .with_context(|| "write support.toml")?;
 
     let daemon_path = DaemonConfig::default_path();
     let existing_daemon_cfg = DaemonConfig::load(&daemon_path).ok();
@@ -281,6 +286,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: None,
                 cloud_api_url: None,
+                support_owner: None,
                 scheme: "teamclu".into(),
             },
         );
@@ -331,6 +337,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: None,
                 cloud_api_url: None,
+                support_owner: None,
                 scheme: "teamclu".into(),
             },
         );
@@ -354,6 +361,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: Some("mqtts://broker.example.com:8883".into()),
                 cloud_api_url: None,
+                support_owner: None,
                 scheme: "teamclu".into(),
             },
         );
@@ -377,6 +385,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: None,
                 cloud_api_url: None,
+                support_owner: None,
                 scheme: "acme".into(),
             },
         );
@@ -396,6 +405,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: None,
                 cloud_api_url: None,
+                support_owner: None,
                 scheme: "teamclu".into(),
             },
         );
@@ -434,6 +444,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: Some("mqtts://broker.example.com:8883".into()),
                 cloud_api_url: None,
+                support_owner: None,
                 scheme: "teamclu".into(),
             },
         );
@@ -457,6 +468,7 @@ mod tests {
                 token: "tok".into(),
                 broker_url: None,
                 cloud_api_url: None,
+                support_owner: None,
                 scheme: "teamclu".into(),
             },
         );

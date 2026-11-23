@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { handleBusinessApiRequest } from "../src/lib/business-api.js";
 import { createSupabaseBusinessRepository } from "../src/lib/supabase-repo.js";
 import {
+  agentTokenUserId,
   assertSupportSessionLive,
+  cachedAgentAccessCheck,
   jwtSessionId,
   resolvePlatformOperator,
   supportTokenClaims,
@@ -305,4 +307,48 @@ test("assertSupportSessionLive refuses an ended grant, a missing session, and a 
     assertSupportSessionLive(support({ session_id: SESSION }), async () => { throw new Error("db down"); }),
     ended,
   );
+});
+
+const BOT = "b0b0b0b0-1111-4222-8333-444444444444";
+
+test("agentTokenUserId recognizes only agent accounts", () => {
+  assert.equal(agentTokenUserId(tokenWith({ sub: BOT, email: `daemon.${BOT}@amuxd.run` })), BOT);
+  assert.equal(agentTokenUserId(tokenWith({ sub: OPERATOR, email: "a@b.test" })), null);
+  assert.equal(agentTokenUserId(tokenWith({ sub: "nope", email: "daemon.x@amuxd.run" })), null);
+  assert.equal(agentTokenUserId("not-a-jwt"), null);
+});
+
+test("assertSupportSessionLive refuses a bot whose support grant ended, and only asks about bots", async () => {
+  const asked: string[] = [];
+  const bot = tokenWith({ sub: BOT, email: `daemon.${BOT}@amuxd.run` });
+  const never = async () => { throw new Error("support session lookup must not run"); };
+  await assertSupportSessionLive(bot, never, async (u) => { asked.push(u); return true; });
+  await assertSupportSessionLive(tokenWith({ sub: OPERATOR, email: "a@b.test" }), never, async (u) => { asked.push(u); return false; });
+  assert.deepEqual(asked, [BOT]);
+  await assert.rejects(
+    assertSupportSessionLive(bot, never, async () => false),
+    (err: any) => err.statusCode === 401 && err.code === "support_session_ended",
+  );
+});
+
+test("assertSupportSessionLive lets a bot through when its lookup fails", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const bot = tokenWith({ sub: BOT, email: `daemon.${BOT}@amuxd.run` });
+  await assertSupportSessionLive(bot, async () => false, async () => { throw new Error("db down"); });
+});
+
+test("cachedAgentAccessCheck caches answers per account for the ttl, never failures", async () => {
+  let clock = 0;
+  let calls = 0;
+  let fail = false;
+  const check = cachedAgentAccessCheck(async () => { calls++; if (fail) throw new Error("x"); return false; }, 1000, () => clock);
+  assert.equal(await check(BOT), false);
+  assert.equal(await check(BOT), false);
+  assert.equal(calls, 1);
+  clock = 1500;
+  fail = true;
+  await assert.rejects(check(BOT));
+  fail = false;
+  assert.equal(await check(BOT), false);
+  assert.equal(calls, 3);
 });

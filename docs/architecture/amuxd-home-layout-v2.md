@@ -117,6 +117,7 @@ daemon.toml  device-id  mcp.json  teams/  run/  logs/  cache/  bin/
         │
         └── state/                     # daemon 私有，永不同步
             ├── backend.toml           # 云端凭证（§4.2）
+            ├── support.toml           # 仅支持模式：owner_actor_id（amuxd init 写入/删除）
             ├── team.toml              # 团队级配置（§4.3）
             ├── secret.key             # 本团队主密钥，0600
             ├── secrets.enc            # 团队密钥 + channels 凭证

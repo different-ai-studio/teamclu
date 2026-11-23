@@ -102,6 +102,7 @@ describe("session-list-store", () => {
     });
     useCurrentTeamStore.setState({
       team: { id: "team-1", name: "Team", slug: "team" },
+      teamUserId: null,
     } as never);
     useAuthStore.setState({
       session: { user: { id: "user-1" } },
@@ -109,6 +110,25 @@ describe("session-list-store", () => {
       errorMessage: null,
       otpEmail: null,
     } as never);
+  });
+
+  it("does not load a team that still belongs to the account just swapped out", async () => {
+    // adoptSession (support mode) swaps the user before the team catches up.
+    useCurrentTeamStore.setState({ teamUserId: "previous-user" } as never);
+    const { useSessionListStore } = await import("./session-list-store");
+
+    await useSessionListStore.getState().loadFirstPage();
+    expect(mocks.listCurrentActorSessionsV2).not.toHaveBeenCalled();
+    expect(useSessionListStore.getState().loading).toBe(false);
+
+    mocks.listCurrentActorSessionsV2.mockResolvedValueOnce({ rows: [] });
+    useCurrentTeamStore.setState({
+      team: { id: "team-2", name: "Customer", slug: "customer" },
+      teamUserId: "user-1",
+    } as never);
+    await useSessionListStore.getState().loadFirstPage();
+    expect(mocks.listCurrentActorSessionsV2).toHaveBeenCalled();
+    expect(JSON.stringify(mocks.listCurrentActorSessionsV2.mock.calls[0])).toContain("team-2");
   });
 
   it("sorts rows by last_message_at desc with nulls first after load", async () => {

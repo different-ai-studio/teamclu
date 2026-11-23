@@ -104,6 +104,64 @@ pub fn team_state_dir(team_id: &str) -> PathBuf {
     team_dir(team_id).join("state")
 }
 
+/// `teams/<id>/state/support.toml` — present only while this machine is bound
+/// into the team in support mode (a platform operator acting as a customer
+/// org's support account). `amuxd init` writes it from the invite's
+/// `?support_owner=` and removes it on any other init, so it always describes
+/// the credentials next to it in `backend.toml`.
+pub fn support_file(team_id: &str) -> PathBuf {
+    team_state_dir(team_id).join("support.toml")
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SupportFile {
+    owner_actor_id: String,
+}
+
+/// Record (Some) or clear (None) support mode for `team_id`.
+pub fn write_support_owner(team_id: &str, owner_actor_id: Option<&str>) -> std::io::Result<()> {
+    let path = support_file(team_id);
+    match owner_actor_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(owner) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let text = toml::to_string(&SupportFile {
+                owner_actor_id: owner.to_string(),
+            })
+            .map_err(std::io::Error::other)?;
+            std::fs::write(path, text)
+        }
+        None => match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        },
+    }
+}
+
+/// The support account's actor id when `team_id` is bound in support mode.
+///
+/// A file that exists but cannot be read or parsed counts as support mode with
+/// no owner anyone can match: support mode only takes things away, so a broken
+/// file must not hand them back.
+pub fn support_owner(team_id: &str) -> Option<String> {
+    let path = support_file(team_id);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Some(
+            toml::from_str::<SupportFile>(&text)
+                .map(|f| f.owner_actor_id.trim().to_string())
+                .unwrap_or_default(),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => Some(String::new()),
+    }
+}
+
+/// [`support_owner`] for the team this daemon currently runs.
+pub fn active_support_owner() -> Option<String> {
+    support_owner(&active_team())
+}
+
 /// `teams/<id>/state/app-workdir-overrides.json` — per-app checkout path
 /// overrides for this machine. The daemon resolves workdirs here before the
 /// derived `teams/<id>/apps/<appId>` path; see `sync::app_workdir`.
@@ -418,6 +476,37 @@ mod tests {
         // with it — an unclaimed daemon still has to boot and serve setup.
         std::fs::write(home.path().join("daemon.toml"), "active_team = [").unwrap();
         assert_eq!(active_team(), UNCLAIMED_TEAM);
+    }
+
+    #[test]
+    fn support_owner_round_trips_and_clears() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = BrandEnvGuard::set_amuxd_home(home.path());
+
+        assert_eq!(support_owner("team-a"), None);
+        write_support_owner("team-a", Some("actor-support")).unwrap();
+        assert_eq!(support_owner("team-a").as_deref(), Some("actor-support"));
+        assert_eq!(support_owner("team-b"), None, "per team");
+
+        std::fs::write(
+            home.path().join("daemon.toml"),
+            "active_team = \"team-a\"\n",
+        )
+        .unwrap();
+        assert_eq!(active_support_owner().as_deref(), Some("actor-support"));
+
+        write_support_owner("team-a", None).unwrap();
+        assert_eq!(support_owner("team-a"), None);
+        write_support_owner("team-a", None).unwrap(); // clearing twice is fine
+    }
+
+    #[test]
+    fn a_broken_support_file_still_means_support_mode() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::create_dir_all(team_state_dir("team-a")).unwrap();
+        std::fs::write(support_file("team-a"), "owner_actor_id = [").unwrap();
+        assert_eq!(support_owner("team-a").as_deref(), Some(""));
     }
 
     #[test]
