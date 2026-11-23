@@ -40,7 +40,10 @@ import { FileInputButton } from "./FileInputButton";
 import { ContextUsageBadge } from "./ContextUsageBadge";
 import { PermissionApprovalModeSelect } from "./PermissionApprovalModeSelect";
 import { type QueuedMessage } from "@/stores/session-types";
-import { useSessionStore } from "@/stores/session-store";
+import {
+  composerDraftKey,
+  useComposerDraftStore,
+} from "@/stores/composer-draft-store";
 import { useComposerInsertStore } from "@/stores/composer-insert";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
@@ -189,7 +192,6 @@ interface ChatInputAreaProps {
   /** Session for @-mention participant roster (defaults to activeSessionId). */
   mentionSessionId?: string | null;
   compact: boolean;
-  /** Draft text is owned by the session store so typing does not re-render ChatPanel. */
   pendingFiles: ComposerAttachment[];
   onAppendPendingFiles: (files: ComposerAttachment[]) => void;
   onRemovePendingFile: (index: number) => void;
@@ -228,11 +230,8 @@ interface ChatInputAreaProps {
   sessionModelId?: string;
   activeStreamingAgents?: ReadonlyArray<ActiveStreamingAgent>;
   onInterruptAgent?: (agentId: string) => void;
-  /** When set, do not share the global session-store draft (dual composer). */
-  draftOverride?: {
-    value: string;
-    onChange: (value: string) => void;
-  };
+  /** Main composer owns voice and file-drop inserts. The thread composer does not. */
+  captureGlobalInserts?: boolean;
   /** overlay = float over MessageList (main chat); inline = flex footer (thread panel). */
   inputLayout?: "overlay" | "inline";
 }
@@ -308,7 +307,7 @@ export function ChatInputArea({
   sessionModelId,
   activeStreamingAgents = [],
   onInterruptAgent,
-  draftOverride,
+  captureGlobalInserts = true,
   inputLayout = "overlay",
 }: ChatInputAreaProps) {
   const { t, i18n } = useTranslation();
@@ -340,25 +339,21 @@ export function ChatInputArea({
   }, []);
   const permissionSessionId = permissionSessionIdProp ?? activeSessionId;
 
-  // Subscribe here — not in ChatPanel — so keystrokes do not re-render MessageList.
-  const storeDraft = useSessionStore((s) => s.draftInput);
-  const setDraftInput = useSessionStore.getState().setDraftInput;
-  const inputValue = draftOverride?.value ?? storeDraft;
+  // Subscribe to this session's draft only, so keystrokes do not re-render MessageList.
+  const draftKey = composerDraftKey(activeSessionId);
+  const inputValue = useComposerDraftStore((s) => s.textByKey[draftKey] ?? "");
 
   const handleInputChange = React.useCallback(
     (nextValue: string) => {
-      if (draftOverride) {
-        draftOverride.onChange(nextValue);
-        return;
-      }
-      setDraftInput(nextValue);
+      useComposerDraftStore.getState().setText(draftKey, nextValue);
     },
-    [draftOverride, setDraftInput],
+    [draftKey],
   );
 
   // Per-actor draft persistence (Actors tab → navigate away → restore).
+  // Only the no-session composer. A real session keeps its own draft.
   const draftStorageKey =
-    draftOverride || !draftPreselectedActor
+    activeSessionId || !draftPreselectedActor
       ? null
       : `teamclu-actor-draft:${draftPreselectedActor.id}`;
   const justRestoredDraftRef = React.useRef(false);
@@ -371,12 +366,11 @@ export function ChatInputArea({
     } catch {
       /* localStorage disabled */
     }
-    if (saved != null && saved !== useSessionStore.getState().draftInput) {
+    if (saved != null && saved !== useComposerDraftStore.getState().text(draftKey)) {
       justRestoredDraftRef.current = true;
-      setDraftInput(saved);
+      useComposerDraftStore.getState().setText(draftKey, saved);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftStorageKey]);
+  }, [draftKey, draftStorageKey]);
 
   React.useEffect(() => {
     if (!draftStorageKey) return;
@@ -398,19 +392,21 @@ export function ChatInputArea({
     return () => clearTimeout(handle);
   }, [draftStorageKey, inputValue]);
 
-  // Voice input / "Add to Agent": append transcript or file mention to input
+  // Voice input / "Add to Agent": append transcript or file mention to input.
+  // The thread composer leaves this to the main one, or both would fight.
   React.useEffect(() => {
-    if (draftOverride) return;
+    if (!captureGlobalInserts) return;
     const unregister = useComposerInsertStore.getState().registerInsertToChatHandler(
       (transcript) => {
-        const prev = useSessionStore.getState().draftInput;
+        const store = useComposerDraftStore.getState();
+        const prev = store.text(draftKey);
         const mentionMatch = transcript.match(/@\{([^}]+)\}/);
         if (mentionMatch && prev.includes(mentionMatch[0])) return;
-        setDraftInput(prev + (prev ? " " : "") + transcript);
+        store.setText(draftKey, prev + (prev ? " " : "") + transcript);
       },
     );
     return unregister;
-  }, [draftOverride, setDraftInput]);
+  }, [captureGlobalInserts, draftKey]);
 
   // # file reference states
   const [filePopoverOpen, setFilePopoverOpen] = React.useState(false);
@@ -434,13 +430,13 @@ export function ChatInputArea({
       if (wsPath && path.startsWith(wsPath)) {
         displayPath = path.slice(wsPath.length + 1);
       }
-      // Read current text inside loop — draftInput updates after each insertToChat
-      const currentText = useSessionStore.getState().draftInput;
+      // Read current text inside the loop — each insert updates this session's draft.
+      const currentText = useComposerDraftStore.getState().text(draftKey);
       if (currentText.includes(`@{${displayPath}}`)) continue;
       const mention = `@{${displayPath}} `;
       useComposerInsertStore.getState().insertToChat(mention);
     }
-  }, []);
+  }, [draftKey]);
 
   const handleIncomingFiles = React.useCallback((files: File[]) => {
     const accepted = files.filter((f) => !exceedsNonImageLimit(f));
