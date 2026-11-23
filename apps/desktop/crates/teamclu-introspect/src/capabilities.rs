@@ -44,19 +44,19 @@ pub async fn handle(workspace: &str, arguments: &Value) -> Result<Value, String>
     let category = arguments.get("category").and_then(|v| v.as_str());
 
     match category {
-        None => build_overview(workspace),
+        None => build_overview(workspace).await,
         Some("channels") => build_channels(workspace),
         Some("role") => build_role(workspace),
         Some("env_vars") => build_env_vars(workspace),
         Some("team_info") => build_team_info(workspace),
-        Some("cron_jobs") => build_cron_jobs(workspace),
+        Some("cron_jobs") => build_cron_jobs(workspace).await,
         Some(other) => Err(format!("Unknown category: {other}")),
     }
 }
 
 // ─── Overview ────────────────────────────────────────────────────────────────
 
-fn build_overview(workspace: &str) -> Result<Value, String> {
+async fn build_overview(workspace: &str) -> Result<Value, String> {
     let config = crate::config::read_teamclu_config(workspace)?;
 
     let channels_val = config.get("channels").cloned().unwrap_or(json!({}));
@@ -89,12 +89,17 @@ fn build_overview(workspace: &str) -> Result<Value, String> {
     let roles = crate::config::read_roles(workspace).unwrap_or_default();
     let role_count = roles.len();
 
-    let cron_jobs = crate::config::cron_jobs_from_value(&crate::config::read_cron_jobs(workspace)?);
-    let cron_total = cron_jobs.len();
-    let cron_enabled = cron_jobs
-        .iter()
-        .filter(|j| j.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false))
-        .count();
+    // Cron lives in amuxd; an overview should still answer when it does not.
+    let cron_summary = match crate::cron::list_visible_jobs(workspace).await {
+        Ok(jobs) => json!({
+            "total": jobs.len(),
+            "enabled": jobs
+                .iter()
+                .filter(|j| j.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false))
+                .count(),
+        }),
+        Err(e) => json!({ "error": e }),
+    };
 
     Ok(json!({
         "channels": {
@@ -111,10 +116,7 @@ fn build_overview(workspace: &str) -> Result<Value, String> {
             "enabled": team_enabled,
             "mode": team_mode
         },
-        "cron_jobs": {
-            "total": cron_total,
-            "enabled": cron_enabled
-        }
+        "cron_jobs": cron_summary
     }))
 }
 
@@ -278,9 +280,8 @@ fn build_team_info(workspace: &str) -> Result<Value, String> {
 
 // ─── Cron jobs ───────────────────────────────────────────────────────────────
 
-fn build_cron_jobs(workspace: &str) -> Result<Value, String> {
-    let raw = crate::config::read_cron_jobs(workspace)?;
-    let jobs = crate::config::cron_jobs_from_value(&raw);
+async fn build_cron_jobs(workspace: &str) -> Result<Value, String> {
+    let jobs = crate::cron::list_visible_jobs(workspace).await?;
 
     let safe: Vec<Value> = jobs
         .iter()
@@ -292,6 +293,7 @@ fn build_cron_jobs(workspace: &str) -> Result<Value, String> {
                 "description",
                 "enabled",
                 "schedule",
+                "workspacePath",
                 "lastRunAt",
                 "nextRunAt",
                 "last_run_at",
@@ -302,6 +304,7 @@ fn build_cron_jobs(workspace: &str) -> Result<Value, String> {
                     let key = match *field {
                         "lastRunAt" => "last_run_at",
                         "nextRunAt" => "next_run_at",
+                        "workspacePath" => "workspace_path",
                         other => other,
                     };
                     out.insert(key.to_string(), v.clone());

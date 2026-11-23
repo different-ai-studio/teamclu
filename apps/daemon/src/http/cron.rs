@@ -1,8 +1,9 @@
 //! `/v1/cron/*` — the daemon-owned scheduler's API (ADR-0010).
 //!
 //! The desktop settings page proxies its `cron_*` Tauri commands here, and the
-//! desktop's introspect `/cron-run` + `/cron-manage` forward here too, so there
-//! is one store and one scheduler however a job is made.
+//! `teamclu-introspect` sidecar calls `/v1/cron/manage` and `/v1/cron/jobs`
+//! directly (no desktop needed), so there is one store and one scheduler
+//! however a job is made.
 //!
 //! | Method | Path                          | Scope             |
 //! |--------|-------------------------------|-------------------|

@@ -13,6 +13,15 @@
 //! The daemon is the only writer, so unlike the desktop store this never
 //! reloads from disk behind a caller's back — except when the root itself
 //! moves (an unclaimed daemon claims a team), which re-reads the new root.
+//!
+//! **Jobs made before the daemon had a team.** They land in
+//! `teams/_unclaimed/cron/`. Claiming a team usually renames that whole
+//! directory into place (`layout::promote_unclaimed`), but when the team
+//! already has a directory the rename is skipped and `_unclaimed` is left
+//! alone. So on loading a team's root this store also adopts whatever cron
+//! `_unclaimed` still holds: jobs merged by id, their run files moved, and the
+//! old `jobs.json` renamed `jobs.json.migrated`. Otherwise those jobs would
+//! sit in a directory nothing reads, and never run.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,6 +43,9 @@ struct Loaded {
 #[derive(Clone)]
 pub struct CronStorage {
     root: RootFn,
+    /// Directory whose leftover jobs are folded into any other root on load
+    /// (the unclaimed team's cron dir). `None` in tests that do not need it.
+    adopt_from: Option<RootFn>,
     /// Jobs in memory plus the root they were read from. One lock for both,
     /// held across mutate-then-persist, so no write can interleave with
     /// another or with a root switch.
@@ -54,6 +66,7 @@ impl CronStorage {
     pub fn new(root: impl Fn() -> PathBuf + Send + Sync + 'static) -> Self {
         Self {
             root: Arc::new(root),
+            adopt_from: None,
             state: Arc::new(Mutex::new(None)),
             runs_lock: Arc::new(Mutex::new(())),
         }
@@ -64,11 +77,66 @@ impl CronStorage {
         Self::new(move || root.clone())
     }
 
-    /// The active team's cron directory.
+    /// The active team's cron directory, adopting jobs left in the unclaimed
+    /// team's (see the module docs).
     pub fn for_active_team() -> Self {
         Self::new(|| {
             crate::config::layout::team_dir(&crate::config::layout::active_team()).join("cron")
         })
+        .adopting(|| {
+            crate::config::layout::team_dir(crate::config::layout::UNCLAIMED_TEAM).join("cron")
+        })
+    }
+
+    /// Fold jobs found under `from` into whichever other root gets loaded.
+    pub fn adopting(mut self, from: impl Fn() -> PathBuf + Send + Sync + 'static) -> Self {
+        self.adopt_from = Some(Arc::new(from));
+        self
+    }
+
+    /// Merge `from`'s jobs into `data` (by id; `data` wins) and move their run
+    /// files under `root`. Renames `from`'s jobs file afterwards so this runs
+    /// once. Returns how many jobs were added.
+    fn adopt_leftovers(from: &Path, root: &Path, data: &mut CronJobsData) -> usize {
+        let jobs_file = Self::jobs_path(from);
+        if !jobs_file.is_file() {
+            return 0;
+        }
+        let leftover = Self::read_jobs(from);
+        let mut added = 0;
+        for job in leftover.jobs {
+            if data.jobs.iter().any(|j| j.id == job.id) {
+                continue;
+            }
+            let src = Self::run_file(from, &job.id);
+            let dst = Self::run_file(root, &job.id);
+            if src.is_file() && !dst.exists() {
+                let _ = std::fs::create_dir_all(Self::runs_dir(root));
+                if let Err(e) = std::fs::rename(&src, &dst) {
+                    tracing::warn!(src = %src.display(), "cron: move adopted run file failed: {e}");
+                }
+            }
+            data.jobs.push(job);
+            added += 1;
+        }
+        if added > 0 {
+            // Persist before retiring the source, so a failed write cannot
+            // lose the jobs: the source stays and the next load retries.
+            if !Self::write_jobs(root, data) {
+                return 0;
+            }
+        }
+        let retired = jobs_file.with_extension("json.migrated");
+        if let Err(e) = std::fs::rename(&jobs_file, &retired) {
+            tracing::warn!(path = %jobs_file.display(), "cron: retire adopted jobs file failed: {e}");
+        }
+        tracing::info!(
+            added,
+            from = %from.display(),
+            to = %root.display(),
+            "cron: adopted jobs made before this daemon had a team"
+        );
+        added
     }
 
     pub fn root(&self) -> PathBuf {
@@ -116,16 +184,17 @@ impl CronStorage {
         }
     }
 
-    fn write_jobs(root: &Path, data: &CronJobsData) {
+    /// Write-then-rename. Returns whether the file was written.
+    fn write_jobs(root: &Path, data: &CronJobsData) -> bool {
         if let Err(e) = std::fs::create_dir_all(root) {
             tracing::error!(root = %root.display(), "cron: create dir failed: {e}");
-            return;
+            return false;
         }
         let content = match serde_json::to_string_pretty(data) {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("cron: serialize jobs failed: {e}");
-                return;
+                return false;
             }
         };
         // Write-then-rename: a crash mid-write must not leave a truncated
@@ -134,7 +203,9 @@ impl CronStorage {
         let tmp = path.with_extension("json.tmp");
         if let Err(e) = std::fs::write(&tmp, content).and_then(|_| std::fs::rename(&tmp, &path)) {
             tracing::error!(path = %path.display(), "cron: save jobs failed: {e}");
+            return false;
         }
+        true
     }
 
     /// Run `f` against the in-memory jobs for the current root, loading them
@@ -143,7 +214,12 @@ impl CronStorage {
         let root = self.root();
         let mut guard = self.state.lock().await;
         if guard.as_ref().map(|l| &l.root) != Some(&root) {
-            let data = Self::read_jobs(&root);
+            let mut data = Self::read_jobs(&root);
+            if let Some(from) = self.adopt_from.as_ref().map(|f| f()) {
+                if from != root {
+                    Self::adopt_leftovers(&from, &root, &mut data);
+                }
+            }
             *guard = Some(Loaded {
                 root: root.clone(),
                 data,
@@ -515,6 +591,57 @@ pub(crate) mod tests {
         // And on disk: a fresh store over the same root reads all 50.
         let reread = CronStorage::at(dir.path().to_path_buf());
         assert_eq!(reread.list_jobs().await.len(), 50);
+    }
+
+    #[tokio::test]
+    async fn loading_a_team_root_adopts_jobs_left_in_unclaimed() {
+        let dir = tempfile::tempdir().unwrap();
+        let unclaimed = dir.path().join("_unclaimed/cron");
+        let team = dir.path().join("team-a/cron");
+
+        // Made while unclaimed, with a run on record.
+        let before = CronStorage::at(unclaimed.clone());
+        before.add_job(make_job("early")).await;
+        let mut early_run = make_run("run-e", RunStatus::Success);
+        early_run.job_id = "early".into();
+        before.append_run(&early_run).await;
+
+        // The team already had its own store, so the rename was skipped.
+        CronStorage::at(team.clone())
+            .add_job(make_job("mine"))
+            .await;
+
+        let u = unclaimed.clone();
+        let storage = CronStorage::at(team.clone()).adopting(move || u.clone());
+        let mut ids: Vec<_> = storage
+            .list_jobs()
+            .await
+            .into_iter()
+            .map(|j| j.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["early".to_string(), "mine".to_string()]);
+        assert_eq!(storage.get_runs("early", None).await.len(), 1);
+        assert!(!unclaimed.join("jobs.json").exists());
+        assert!(unclaimed.join("jobs.json.migrated").is_file());
+
+        // Persisted: a fresh store over the team root sees both.
+        assert_eq!(CronStorage::at(team).list_jobs().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_unclaimed_root_does_not_adopt_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let unclaimed = dir.path().join("_unclaimed/cron");
+        let u = unclaimed.clone();
+        let storage = CronStorage::at(unclaimed.clone()).adopting(move || u.clone());
+        storage.add_job(make_job("early")).await;
+        let fresh = {
+            let u = unclaimed.clone();
+            CronStorage::at(unclaimed.clone()).adopting(move || u.clone())
+        };
+        assert_eq!(fresh.list_jobs().await.len(), 1);
+        assert!(unclaimed.join("jobs.json").is_file());
     }
 
     #[tokio::test]

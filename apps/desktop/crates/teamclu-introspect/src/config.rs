@@ -16,10 +16,6 @@ fn config_path(workspace: &str) -> PathBuf {
     teamclu_dir(workspace).join(CONFIG_FILE_NAME)
 }
 
-fn cron_jobs_path(workspace: &str) -> PathBuf {
-    teamclu_dir(workspace).join("cron-jobs.json")
-}
-
 fn roles_dir(workspace: &str) -> PathBuf {
     teamclu_dir(workspace).join("roles")
 }
@@ -44,24 +40,6 @@ fn read_json_file_or_default(path: &Path, default: Value) -> Result<Value, Strin
 /// Read `{workspace}/.teamclu/teamclu.json`. Returns `{}` if missing.
 pub fn read_teamclu_config(workspace: &str) -> Result<Value, String> {
     read_json_file_or_default(&config_path(workspace), Value::Object(Default::default()))
-}
-
-/// Read `{workspace}/.teamclu/cron-jobs.json`. Returns `{ "jobs": [] }` if missing.
-pub fn read_cron_jobs(workspace: &str) -> Result<Value, String> {
-    read_json_file_or_default(
-        &cron_jobs_path(workspace),
-        serde_json::json!({ "jobs": [] }),
-    )
-}
-
-/// Extract cron jobs from the native `{ jobs: [...] }` shape, while accepting the
-/// legacy bare-array shape written by older introspect versions.
-pub fn cron_jobs_from_value(data: &Value) -> Vec<Value> {
-    data.get("jobs")
-        .and_then(|v| v.as_array())
-        .or_else(|| data.as_array())
-        .cloned()
-        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------

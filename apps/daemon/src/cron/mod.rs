@@ -375,8 +375,8 @@ impl CronService {
 
     // ---------- MCP ----------
 
-    /// The agent-facing surface (`teamclu-introspect`'s `manage_cron` tool,
-    /// via the desktop's `/cron-manage`). Same store as the settings page, so
+    /// The agent-facing surface (`teamclu-introspect`'s `manage_cron_job`
+    /// tool, which calls `/v1/cron/manage` itself). Same store as the settings page, so
     /// a job an agent creates shows up there.
     pub async fn mcp_manage(&self, body: &serde_json::Value) -> Result<serde_json::Value, String> {
         let action = body

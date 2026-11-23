@@ -2,8 +2,6 @@
 //
 // Listens on 127.0.0.1:13144 and handles:
 //   POST /send-wecom        — send a proactive WeCom message
-//   POST /cron-run          — manually trigger a cron job
-//   POST /cron-manage       — create/list/pause/resume/delete/run/get_runs (MCP)
 //   POST /team-sync-all     — trigger team sync
 //   POST /env-var-set       — create or update an env var (`scope`: personal | team)
 //   POST /env-var-delete    — delete an env var (`scope`: personal | team)
@@ -323,8 +321,6 @@ async fn not_found(method: axum::http::Method, uri: axum::http::Uri) -> impl Int
 fn router(app: AppHandle, token: Arc<str>, verifier: caller::CallerVerifier) -> Router {
     Router::new()
         .route("/send-wecom", post_route!(handle_send_wecom))
-        .route("/cron-run", post_route!(handle_cron_run))
-        .route("/cron-manage", post_route!(handle_cron_manage))
         .route("/team-sync-all", post_route!(handle_team_sync_all))
         .route("/env-var-set", post_route!(handle_env_var_set))
         .route("/env-var-delete", post_route!(handle_env_var_delete))
@@ -499,28 +495,6 @@ async fn handle_team_sync_all(app: &AppHandle, _body: &[u8]) -> Result<String, S
         .and_then(|cw| cw.clone());
     let result =
         super::team_sync_proxy::daemon_team_sync(workspace.as_deref(), true, false).await?;
-    serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
-}
-
-/// Fire a job now. Forwarded to the daemon, which owns cron (ADR-0010); a
-/// job of any scope can be run, since the daemon keeps them in one store.
-async fn handle_cron_run(_app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
-    let job_id = v
-        .get("job_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or("Missing field: job_id")?;
-    super::cron::run_job(job_id).await?;
-    Ok(serde_json::json!({ "ok": true, "job_id": job_id }).to_string())
-}
-
-/// The `manage_cron` MCP tool. Forwarded to the daemon's `/v1/cron/manage`.
-async fn handle_cron_manage(_app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {e}"))?;
-    let result = super::cron::mcp_manage(&v).await?;
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }
 

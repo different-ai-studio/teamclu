@@ -410,25 +410,6 @@ pub async fn cron_set_restart_imminent(imminent: bool) -> Result<(), String> {
     Ok(())
 }
 
-// ==================== introspect ====================
-
-/// `/cron-manage` body, forwarded as-is (`action`, `scope`, …).
-pub(crate) async fn mcp_manage(body: &Value) -> Result<Value, String> {
-    call(
-        reqwest::Method::POST,
-        "/v1/cron/manage",
-        "",
-        WRITE,
-        Some(body),
-    )
-    .await
-}
-
-/// `/cron-run`: fire a job now, whatever scope it belongs to.
-pub(crate) async fn run_job(job_id: &str) -> Result<(), String> {
-    cron_run_job(job_id.to_string()).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

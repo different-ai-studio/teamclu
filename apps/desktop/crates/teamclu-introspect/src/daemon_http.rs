@@ -51,15 +51,23 @@ pub async fn request(
         .await
         .map_err(|e| format!("amuxd request failed: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!(
-            "amuxd request failed: {}",
-            response.text().await.unwrap_or_default()
-        ));
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("amuxd request failed: {}", problem_detail(&text)));
     }
     response
         .json::<Value>()
         .await
         .map_err(|e| format!("amuxd response is invalid: {e}"))
+}
+
+/// The `detail` of an RFC 7807 problem body, which is the message meant for
+/// a reader (an agent, here); the raw body when it is not one.
+fn problem_detail(body: &str) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("detail").and_then(Value::as_str).map(str::to_string))
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| body.to_string())
 }
 
 pub fn urlencode(value: &str) -> String {
@@ -81,6 +89,13 @@ pub fn urlencode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn problem_detail_prefers_the_detail_field() {
+        let body = r#"{"type":"x","title":"Validation failed","status":422,"detail":"Job not found: j1"}"#;
+        assert_eq!(problem_detail(body), "Job not found: j1");
+        assert_eq!(problem_detail("plain text"), "plain text");
+    }
 
     #[test]
     fn urlencode_leaves_uuid_alone() {
