@@ -41,7 +41,15 @@ export function AppsNavSection() {
     // from here at all.
     selectApp(null)
     setFilter({ kind: 'apps' })
-  }, [selectApp, setFilter])
+    // Forced: the list is otherwise loaded once per team, and an app someone
+    // shared with this user (or took away) would not show until a restart.
+    // The inbox `app.access` hint covers the live case; this covers an older
+    // server that sends none and a hint lost on the way (MQTT QoS0).
+    if (teamId) {
+      void load(teamId, { force: true })
+      void refreshLocalApps(teamId)
+    }
+  }, [selectApp, setFilter, teamId, load, refreshLocalApps])
 
   return (
     <button

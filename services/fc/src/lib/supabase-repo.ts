@@ -27,6 +27,11 @@ import {
   publishSessionParticipantsChanged,
   removedMemberUserId,
 } from "./session-participant-notify.js";
+import {
+  appAccessRecipientUserId,
+  publishAppAccessChanged,
+  type AppAccessGrantee,
+} from "./app-access-notify.js";
 import { buildSessionReadInboxPayload } from "./push-dispatch.js";
 import { ADMIN_LIST_CAP, clampPage, IN_FILTER_BATCH, jwtSessionId, resolvePlatformOperator, safeSearch } from "./platform-operators.js";
 import {
@@ -754,7 +759,8 @@ export function createSupabaseBusinessRepository(options) {
     fanoutMessage,
     // Optional inbox publish for a roster change. Absent in tests and in
     // processes that have no MQTT publisher. Failures are logged and do not
-    // change the HTTP result of the seat write.
+    // change the HTTP result of the seat write. Despite the name it is a plain
+    // `inbox/<user_id>` publisher, and app access hints ride it too.
     publishSessionParticipantInbox,
   } = options;
 
@@ -988,6 +994,21 @@ export function createSupabaseBusinessRepository(options) {
       publish: publishSessionParticipantInbox,
     }).catch((err: unknown) => {
       console.error("[session-participants] notify failed (swallowed):", err);
+    });
+  }
+
+  /** Best-effort: a grant or revoke succeeds whether or not the hint lands. */
+  function scheduleAppAccessChanged(teamId: string, appId: string, grantee: AppAccessGrantee | null | undefined) {
+    if (!publishSessionParticipantInbox) return;
+    const userId = appAccessRecipientUserId(grantee);
+    if (!userId) return;
+    void publishAppAccessChanged({
+      teamId,
+      appId,
+      userId,
+      publish: publishSessionParticipantInbox,
+    }).catch((err: unknown) => {
+      console.error("[app-access] notify failed (swallowed):", err);
     });
   }
 
@@ -6865,6 +6886,7 @@ export function createSupabaseBusinessRepository(options) {
         await revokeAppMemberDeployKeysIfGitea(appId, memberId);
       }
       await giteaSync.app(appId);
+      scheduleAppAccessChanged(manager.teamId, appId, grantee);
       return mapAppAccessRow(data);
     },
 
@@ -6872,6 +6894,14 @@ export function createSupabaseBusinessRepository(options) {
       const manager = await this.resolveAppAccessManager(appId);
       if (!manager) return null;
       const admin = await serviceRoleClient("manage app member access");
+      // Who to tell, read before the row goes. A failed lookup only costs the
+      // hint; the revoke itself must not depend on it.
+      const { data: grantee, error: granteeErr } = await admin
+        .from("actors")
+        .select("actor_type, user_id")
+        .eq("id", memberId)
+        .maybeSingle();
+      if (granteeErr) console.warn(`[app-access] grantee lookup for ${memberId} failed: ${granteeErr.message}`);
       const { error } = await admin
         .from("app_member_access")
         .delete()
@@ -6880,6 +6910,7 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
       await revokeAppMemberDeployKeysIfGitea(appId, memberId);
       await giteaSync.app(appId);
+      scheduleAppAccessChanged(manager.teamId, appId, granteeErr ? null : grantee);
       return true;
     },
 
