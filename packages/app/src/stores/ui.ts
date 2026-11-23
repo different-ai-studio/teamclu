@@ -7,7 +7,6 @@ import { scheduleReleaseStuckModalLayers } from '@/lib/ui/modal-layer-cleanup'
 import type { PageContext } from '@/lib/embed/embed-page-context'
 import { loadFromStorage, saveToStorage } from '@/lib/config/storage'
 import { appStoragePrefix } from '@/lib/config/build-config'
-import { navGroupMemberOf, type NavGroupId, type NavGroupMemberId } from '@/lib/layout/nav-groups'
 
 const NAV_PINNED_STORAGE_KEY = `${appStoragePrefix}-nav-pinned`
 const SESSION_DRAWER_PINNED_STORAGE_KEY = `${appStoragePrefix}-session-drawer-pinned`
@@ -93,9 +92,8 @@ interface UIState {
   draftPreselectedActor: DraftActor | null
   sidebarFilter: SidebarFilter
   ideasSectionCollapsed: boolean
-  /** Member last open in each grouped rail entry (知识, 能力), so the tile
-   *  returns to it. Not persisted: a fresh launch starts at the first. */
-  navGroupLast: Partial<Record<NavGroupId, NavGroupMemberId>>
+  /** 更多 nav group (想法 / 应用 / 快捷方式 / MCP / 环境变量) is expanded. */
+  moreNavExpanded: boolean
   /**
    * First column pinned open as the full list. Off (the default) it is the
    * icon rail that widens on hover. Wide windows only — App ignores it below
@@ -132,6 +130,8 @@ interface UIState {
   setSidebarFilter: (filter: SidebarFilter) => void
   setNarrowListSheetOpen: (open: boolean) => void
   toggleIdeasSection: () => void
+  toggleMoreNav: () => void
+  setMoreNavExpanded: (expanded: boolean) => void
   setNavPinned: (pinned: boolean) => void
   setSessionDrawerPinned: (pinned: boolean) => void
   toggleLocalDaemon: () => void
@@ -198,7 +198,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   draftPreselectedActor: null,
   sidebarFilter: { kind: 'all' },
   ideasSectionCollapsed: false,
-  navGroupLast: {},
+  moreNavExpanded: false,
   navPinned: loadFromStorage<boolean>(NAV_PINNED_STORAGE_KEY, false),
   sessionDrawerPinned: loadFromStorage<boolean>(SESSION_DRAWER_PINNED_STORAGE_KEY, false),
   localDaemonExpanded: false,
@@ -447,14 +447,10 @@ export const useUIStore = create<UIState>((set, get) => ({
   setNarrowListSheetOpen: (open) => set({ narrowListSheetOpen: open }),
   // Leaving a section needs no tab cleanup here: sections have their own tab
   // scope (hooks/use-session-scoped-tabs), so their tabs park themselves.
-  setSidebarFilter: (filter) =>
-    set((s) => {
-      const inGroup = navGroupMemberOf(filter)
-      return inGroup
-        ? { sidebarFilter: filter, navGroupLast: { ...s.navGroupLast, [inGroup.group]: inGroup.member } }
-        : { sidebarFilter: filter }
-    }),
+  setSidebarFilter: (filter) => set({ sidebarFilter: filter }),
   toggleIdeasSection: () => set((s) => ({ ideasSectionCollapsed: !s.ideasSectionCollapsed })),
+  toggleMoreNav: () => set((s) => ({ moreNavExpanded: !s.moreNavExpanded })),
+  setMoreNavExpanded: (expanded) => set({ moreNavExpanded: expanded }),
   setNavPinned: (pinned) => {
     saveToStorage(NAV_PINNED_STORAGE_KEY, pinned)
     set({ navPinned: pinned })

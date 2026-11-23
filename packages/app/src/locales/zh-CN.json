@@ -1299,8 +1299,6 @@
     }
   },
   "sidebar": {
-    "groupKnowledge": "知识",
-    "groupAbilities": "能力",
     "apps": "应用",
     "searchSessions": "搜索会话",
     "searchDescription": "搜索并导航到会话",
@@ -1335,6 +1333,7 @@
     "sessionKindMenu": "列表类型",
     "pinned": "已置顶",
     "contacts": "联系人",
+    "more": "更多",
     "participantCount": "{{count}} 位",
     "unread": "未读",
     "mentioned": "有人 @了你",

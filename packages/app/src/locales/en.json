@@ -1299,8 +1299,6 @@
     }
   },
   "sidebar": {
-    "groupKnowledge": "Knowledge",
-    "groupAbilities": "Abilities",
     "apps": "Apps",
     "searchSessions": "Search Sessions",
     "searchDescription": "Search and navigate to a session",
@@ -1335,6 +1333,7 @@
     "sessionKindMenu": "List kind",
     "pinned": "Pinned",
     "contacts": "Contacts",
+    "more": "More",
     "participantCount": "{{count}} participants",
     "unread": "Unread",
     "mentioned": "You were mentioned",
