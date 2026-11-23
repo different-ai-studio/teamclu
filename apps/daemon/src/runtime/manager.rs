@@ -47,6 +47,35 @@ pub fn is_gateway_workspace_id(workspace_id: &str) -> bool {
     workspace_id.starts_with(GATEWAY_WORKSPACE_ID_PREFIX)
 }
 
+/// The spawn env carries the team gateway Pi registers models from.
+///
+/// Both bindings are required. `TEAMCLU_TEAM_PROVIDER` alone registers the
+/// provider and then hides every model on it, because the credential env it
+/// names (`tc_gateway_token`) is missing.
+pub fn team_catalog_requested(extra_env: &HashMap<String, String>) -> bool {
+    extra_env.contains_key("TEAMCLU_TEAM_PROVIDER")
+        && extra_env
+            .get("tc_gateway_token")
+            .is_some_and(|token| !token.is_empty())
+}
+
+/// Whether a live catalog answer is safe to show and to persist.
+///
+/// A non-empty list is enough when the probe did not ask for team models.
+/// When it did, a list that only has this device's own providers (the
+/// empty-env `pi-catalog` child) must not replace the device catalog.
+pub fn catalog_probe_is_usable(team_requested: bool, models: &[amux::ModelInfo]) -> bool {
+    if models.is_empty() {
+        return false;
+    }
+    if !team_requested {
+        return true;
+    }
+    models
+        .iter()
+        .any(|model| model.provider_name == "team" || model.id.starts_with("team/"))
+}
+
 /// Restore the unattended shape onto an env assembled for a *resume*.
 ///
 /// The env builders produce a desktop-shaped runtime (`is_gateway: false`,
@@ -1030,6 +1059,7 @@ impl RuntimeManager {
     ) -> crate::error::Result<Vec<amux::ModelInfo>> {
         let workspace_path = context.working_directory;
         let revision = ProcessEnvRevision::from_bindings(&context.spawn_env.extra_env);
+        let team_requested = team_catalog_requested(&context.spawn_env.extra_env);
         let models = self
             .agent_backend
             .lock()
@@ -1041,7 +1071,19 @@ impl RuntimeManager {
                 context.spawn_env.extra_env,
             )
             .await?;
-        self.record_catalog(&workspace_path.to_string_lossy(), &models);
+        // A probe that was handed the team gateway and came back without `team`
+        // models asked the wrong host (or a host that failed to register it).
+        // Persisting that list is what kept the new-session picker on
+        // openai-codex until a later retain overwrote it.
+        if catalog_probe_is_usable(team_requested, &models) {
+            self.record_catalog(&workspace_path.to_string_lossy(), &models);
+        } else if team_requested {
+            tracing::warn!(
+                worktree = %workspace_path.display(),
+                model_count = models.len(),
+                "catalog probe omitted team models; leaving the persisted catalog unchanged"
+            );
+        }
         Ok(models)
     }
 

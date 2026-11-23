@@ -57,8 +57,9 @@ pub use local_agent::{
     local_agent_type_name, resolve_local_agent_type, LOCAL_AGENT, LOCAL_AGENT_NAME,
 };
 pub use manager::{
-    is_gateway_workspace_id, restore_gateway_shape_for_resume, AgentLaunchConfig, CheckedOutTurn,
-    RuntimeManager, SpawnRuntimeEnv, WorkspaceOccupancy,
+    catalog_probe_is_usable, is_gateway_workspace_id, restore_gateway_shape_for_resume,
+    team_catalog_requested, AgentLaunchConfig, CheckedOutTurn, RuntimeManager, SpawnRuntimeEnv,
+    WorkspaceOccupancy,
 };
 pub use permission_policy::PermissionPolicy;
 pub use session_prompt::{SessionPromptResponse, SessionPromptService};
