@@ -30,9 +30,9 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use self::translate::status_change;
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
-use self::translate::status_change;
 use crate::runtime::backend::{AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 use crate::runtime::manager::AgentLaunchConfig;

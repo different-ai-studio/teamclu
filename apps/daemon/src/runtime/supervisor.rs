@@ -1177,6 +1177,29 @@ impl RuntimeSupervisor {
             .map_err(|e| e.to_string())
     }
 
+    /// Same probe as [`Self::probe_catalog_models`], but the child is spawned
+    /// with the caller's env. The new-session catalog has to carry
+    /// `TEAMCLU_TEAM_PROVIDER` and `tc_gateway_token`; an empty-env child only
+    /// answers with this device's own providers.
+    pub async fn probe_catalog_models_with_context(
+        &self,
+        context: crate::runtime::execution_context::ExecutionContext,
+    ) -> Result<Vec<amux::ModelInfo>, String> {
+        let mut manager = self.agents.lock().await;
+        let agent_type = manager.default_agent_type();
+        let launch = manager.launch_config_for(agent_type);
+        if !backend_launchable(agent_type, &launch) {
+            return Err(format!(
+                "{} binary not available",
+                backend_label(agent_type)
+            ));
+        }
+        manager
+            .probe_catalog_models_with_context(context)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     /// Forward one pi `auth_*` command (see `pi_rpc::auth`).
     ///
     /// Gated on the configured local agent actually being pi, and on its binary

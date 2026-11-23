@@ -569,6 +569,205 @@ pub fn build_model_catalog(
     }
 }
 
+/// How a catalog GET should ask Pi.
+enum CatalogProbeRoute {
+    /// No team to inject. The historical no-context probe still persists a
+    /// non-empty personal list.
+    Device,
+    /// This daemon has a team, but the spawn env could not be built. Do not
+    /// fall through to the no-context probe: that probe persists whatever Pi
+    /// returns, including a personal-only list.
+    CacheOnly,
+    /// Probe with the same env a real session would get.
+    Ready(crate::runtime::execution_context::ExecutionContext),
+}
+
+/// Which list the picker shows after a probe.
+///
+/// A team-credentialed answer that has models but no `team/*` must not replace
+/// a persisted catalog. When that catalog is empty, the live personal models
+/// are still shown — dropping them is what turned a working picker into
+/// "No model configured".
+pub(crate) enum CatalogLists<'a> {
+    Live(&'a [amux::ModelInfo]),
+    Persisted(&'a [amux::ModelInfo]),
+}
+
+pub(crate) fn catalog_lists_for_response<'a>(
+    team_requested: bool,
+    live: Option<&'a [amux::ModelInfo]>,
+    persisted: &'a [amux::ModelInfo],
+) -> CatalogLists<'a> {
+    match live {
+        Some(models) if crate::runtime::catalog_probe_is_usable(team_requested, models) => {
+            CatalogLists::Live(models)
+        }
+        Some(models) if team_requested && !models.is_empty() && persisted.is_empty() => {
+            CatalogLists::Live(models)
+        }
+        _ => CatalogLists::Persisted(persisted),
+    }
+}
+
+/// Spawn env for a catalog probe, matching the env a real session would get.
+///
+/// Pi only lists `team/*` models when the child was started with
+/// `TEAMCLU_TEAM_PROVIDER` and `tc_gateway_token`. The no-context probe spawns
+/// (or reuses) a child without those, so a new session's picker shows only
+/// this device's own providers until the first message's retain arrives.
+///
+/// [`CatalogProbeRoute::Device`] when this daemon has no team to ask about —
+/// the caller then keeps the no-context probe, which is the right answer for
+/// a fresh install.
+async fn catalog_probe_context(
+    state: &HttpState,
+    workspace_id: &str,
+    workspace_path: &StdPath,
+) -> CatalogProbeRoute {
+    let (Some(backend), Some(managed_llm)) = (state.backend.as_ref(), state.managed_llm.as_ref())
+    else {
+        return CatalogProbeRoute::Device;
+    };
+    let actor_name = catalog_actor_name(state, backend.actor_id());
+    if let Some(refresh) = state.runtime_refresh.as_ref() {
+        crate::runtime::refresh::refresh_watch::suppress_for_workspace_path(
+            refresh,
+            workspace_path,
+            &crate::runtime::refresh::INTERNAL_OPENCODE_KINDS,
+            crate::runtime::refresh::INTERNAL_WRITE_SUPPRESS,
+        );
+    }
+    assemble_catalog_probe_context(
+        workspace_id,
+        workspace_path,
+        backend.as_ref(),
+        managed_llm,
+        &actor_name,
+    )
+    .await
+}
+
+fn catalog_actor_name(state: &HttpState, actor_id: &str) -> String {
+    state
+        .config_path
+        .as_ref()
+        .and_then(|path| crate::config::DaemonConfig::load(path).ok())
+        .map(|cfg| cfg.actor.name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| actor_id.to_string())
+}
+
+pub(crate) async fn assemble_catalog_probe_context(
+    workspace_id: &str,
+    workspace_path: &StdPath,
+    backend: &dyn crate::backend::Backend,
+    managed_llm: &crate::runtime::managed_llm::ManagedLlmResolver,
+    actor_name: &str,
+) -> CatalogProbeRoute {
+    let team_id = backend.team_id().trim();
+    if team_id.is_empty() {
+        return CatalogProbeRoute::Device;
+    }
+    let actor_id = backend.actor_id();
+    let resolved = managed_llm.resolve(team_id).await;
+    let gateway_token = managed_llm.gateway_token();
+    let ai_proxy_base = managed_llm.ai_proxy_base(team_id);
+    let spawn_env = match crate::runtime::env_assembly::assemble_spawn_runtime_env(
+        workspace_path,
+        Some(team_id),
+        actor_id,
+        actor_name,
+        &resolved,
+        gateway_token.as_deref(),
+        ai_proxy_base.as_deref(),
+    ) {
+        Ok(spawn_env) => spawn_env,
+        Err(error) => {
+            tracing::warn!(
+                workspace_id,
+                error = %error,
+                "catalog probe could not assemble the team spawn env"
+            );
+            return CatalogProbeRoute::CacheOnly;
+        }
+    };
+    CatalogProbeRoute::Ready(crate::runtime::execution_context::ExecutionContext {
+        isolation_domain: crate::runtime::execution_context::IsolationDomainKey::Workspace(
+            workspace_id.to_string(),
+        ),
+        workspace: None,
+        working_directory: workspace_path.to_path_buf(),
+        spawn_env,
+    })
+}
+
+async fn persisted_catalog_unless_usable(
+    supervisor: &crate::runtime::RuntimeSupervisor,
+    workspace_path: &StdPath,
+    team_requested: bool,
+    probed: &Result<Vec<amux::ModelInfo>, String>,
+) -> Vec<amux::ModelInfo> {
+    let usable = matches!(
+        probed,
+        Ok(models) if crate::runtime::catalog_probe_is_usable(team_requested, models)
+    );
+    if usable {
+        Vec::new()
+    } else {
+        supervisor.cached_catalog_models(workspace_path).await
+    }
+}
+
+fn finish_catalog_probe(
+    workspace_id: &str,
+    team_requested: bool,
+    probed_result: Result<Vec<amux::ModelInfo>, String>,
+    persisted: Vec<amux::ModelInfo>,
+    probe_error: &mut Option<String>,
+) -> (Option<Vec<amux::ModelInfo>>, Vec<amux::ModelInfo>) {
+    match &probed_result {
+        Ok(models)
+            if team_requested
+                && !models.is_empty()
+                && !crate::runtime::catalog_probe_is_usable(team_requested, models) =>
+        {
+            if persisted.is_empty() {
+                tracing::warn!(
+                    workspace_id,
+                    model_count = models.len(),
+                    "catalog probe omitted team models; showing the live personal list"
+                );
+            } else {
+                tracing::warn!(
+                    workspace_id,
+                    model_count = models.len(),
+                    "catalog probe omitted team models; falling back to the persisted catalog"
+                );
+            }
+        }
+        Ok(models) if !crate::runtime::catalog_probe_is_usable(team_requested, models) => {
+            tracing::debug!(
+                workspace_id,
+                "catalog probe returned no models; falling back to the persisted catalog"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                workspace_id,
+                error = %error,
+                "catalog probe failed; falling back to the persisted catalog"
+            );
+            *probe_error = Some(error.clone());
+        }
+        _ => {}
+    }
+    let live = probed_result.ok();
+    match catalog_lists_for_response(team_requested, live.as_deref(), &persisted) {
+        CatalogLists::Live(models) => (Some(models.to_vec()), Vec::new()),
+        CatalogLists::Persisted(models) => (None, models.to_vec()),
+    }
+}
+
 /// `GET /v1/workspaces/:id/model-catalog`
 pub async fn get_model_catalog(
     principal: Principal,
@@ -587,6 +786,10 @@ pub async fn get_model_catalog(
     // sessions created, which is what makes this endpoint usable as the
     // new-session fast path instead of waiting on an MQTT retain.
     //
+    // The probe uses the same team spawn env a session attach would, so Pi
+    // registers `team` before the first message. Without that, the child
+    // answers with only this device's own providers.
+    //
     // Deliberately not gated on the backend name: it used to run only for
     // `opencode` or `pi`, so a cursor daemon always fell through with `None`
     // and, having no provider-file fallback, served an empty catalog.
@@ -594,37 +797,56 @@ pub async fn get_model_catalog(
     // an empty one fall back to the persisted catalog, but only the first one
     // means "could not ask". Collapsing them is what let a rejected cursor API
     // key reach the user as "No model configured".
+    //
+    // Refresh `provider.team` first, the same way a provider read does, so the
+    // env assembled below matches the team's current gateway.
+    reconcile_team_provider(&state).await;
     let mut probe_error: Option<String> = None;
     let (probed_models, cached_models) = match workspace_path_or_404(&workspace_id).await {
         Ok(wpath) => match state.runtime_supervisor.as_ref() {
-            Some(supervisor) => {
-                let probed = match supervisor.probe_catalog_models(&wpath).await {
-                    Ok(models) if !models.is_empty() => Some(models),
-                    Ok(_) => {
-                        tracing::debug!(
-                            workspace_id,
-                            "catalog probe returned no models; falling back to the persisted catalog"
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            workspace_id,
-                            error = %e,
-                            "catalog probe failed; falling back to the persisted catalog"
-                        );
-                        probe_error = Some(e.to_string());
-                        None
-                    }
-                };
-                // Only pay for the cached read when the probe came back empty.
-                let cached = if probed.is_some() {
-                    Vec::new()
-                } else {
-                    supervisor.cached_catalog_models(&wpath).await
-                };
-                (probed, cached)
-            }
+            Some(supervisor) => match catalog_probe_context(&state, &workspace_id, &wpath).await {
+                // Assembly failed. Reading the cache is the whole answer; the
+                // no-context probe would persist a personal-only list.
+                CatalogProbeRoute::CacheOnly => {
+                    tracing::warn!(
+                        workspace_id,
+                        "catalog probe could not assemble the team spawn env; reading the persisted catalog"
+                    );
+                    probe_error =
+                        Some("catalog probe could not assemble the team spawn env".to_string());
+                    (None, supervisor.cached_catalog_models(&wpath).await)
+                }
+                CatalogProbeRoute::Device => {
+                    let probed = supervisor.probe_catalog_models(&wpath).await;
+                    let persisted = persisted_catalog_unless_usable(
+                        supervisor.as_ref(),
+                        &wpath,
+                        false,
+                        &probed,
+                    )
+                    .await;
+                    finish_catalog_probe(&workspace_id, false, probed, persisted, &mut probe_error)
+                }
+                CatalogProbeRoute::Ready(context) => {
+                    let team_requested =
+                        crate::runtime::team_catalog_requested(&context.spawn_env.extra_env);
+                    let probed = supervisor.probe_catalog_models_with_context(context).await;
+                    let persisted = persisted_catalog_unless_usable(
+                        supervisor.as_ref(),
+                        &wpath,
+                        team_requested,
+                        &probed,
+                    )
+                    .await;
+                    finish_catalog_probe(
+                        &workspace_id,
+                        team_requested,
+                        probed,
+                        persisted,
+                        &mut probe_error,
+                    )
+                }
+            },
             None => (None, Vec::new()),
         },
         Err(_) => (None, Vec::new()),
@@ -1396,5 +1618,204 @@ mod tests {
         let catalog = build_model_catalog(&[], None, &[], &[]);
         assert!(catalog.automation_default_backend.is_none());
         assert!(catalog.backends.is_empty());
+    }
+
+    fn model(id: &str, provider: &str) -> amux::ModelInfo {
+        amux::ModelInfo {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            provider_name: provider.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_team_credentialed_probe_without_team_models_is_not_usable() {
+        let codex = vec![model("openai-codex/gpt-5.1-codex", "openai-codex")];
+        assert!(!crate::runtime::catalog_probe_is_usable(true, &codex));
+        assert!(crate::runtime::catalog_probe_is_usable(false, &codex));
+        assert!(crate::runtime::catalog_probe_is_usable(
+            true,
+            &[
+                model("openai-codex/gpt-5.1-codex", "openai-codex"),
+                model("team/default", "team"),
+            ],
+        ));
+        assert!(!crate::runtime::catalog_probe_is_usable(true, &[]));
+    }
+
+    #[tokio::test]
+    async fn catalog_probe_context_carries_the_team_gateway() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home_with_home(
+            home.path(),
+            home.path(),
+        );
+        std::fs::write(
+            home.path().join("daemon.toml"),
+            "active_team = \"team-a\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.path().join("teams/team-a/state")).unwrap();
+
+        let backend = std::sync::Arc::new(crate::backend::mock::MockBackend::with_identity(
+            "team-a", "actor-a",
+        ));
+        backend.state().managed_llm_configs.insert(
+            "team-a".into(),
+            crate::backend::ManagedLlmConfig {
+                enabled: true,
+                base_url: Some("https://gateway.example/v1".into()),
+                name: Some("Team".into()),
+                models: vec![
+                    crate::backend::ManagedLlmModelInfo {
+                        id: "default".into(),
+                        name: "标准".into(),
+                    },
+                    crate::backend::ManagedLlmModelInfo {
+                        id: "pro".into(),
+                        name: "高级".into(),
+                    },
+                    crate::backend::ManagedLlmModelInfo {
+                        id: "max".into(),
+                        name: "旗舰".into(),
+                    },
+                ],
+            },
+        );
+        let tokens =
+            crate::http::tokens::TokenStore::load_or_init(&home.path().join("tokens")).unwrap();
+        let managed = crate::runtime::managed_llm::ManagedLlmResolver::new(backend.clone())
+            .with_tokens(Some(
+                crate::runtime::gateway_token::GatewayTokenSource::new(tokens),
+            ));
+        managed.set_local_http_base("http://127.0.0.1:9".into());
+
+        let workspace = tempfile::tempdir().unwrap();
+        let CatalogProbeRoute::Ready(context) = assemble_catalog_probe_context(
+            "ws-a",
+            workspace.path(),
+            backend.as_ref(),
+            &managed,
+            "Agent A",
+        )
+        .await
+        else {
+            panic!("team gateway env");
+        };
+
+        assert!(matches!(
+            context.isolation_domain,
+            crate::runtime::execution_context::IsolationDomainKey::Workspace(ref id) if id == "ws-a"
+        ));
+        assert!(crate::runtime::team_catalog_requested(
+            &context.spawn_env.extra_env
+        ));
+        let payload = context
+            .spawn_env
+            .extra_env
+            .get("TEAMCLU_TEAM_PROVIDER")
+            .expect("team provider payload");
+        assert!(payload.contains("default"));
+        assert!(payload.contains("pro"));
+        assert!(payload.contains("max"));
+        assert!(!context
+            .spawn_env
+            .extra_env
+            .get("tc_gateway_token")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn catalog_probe_context_is_absent_without_a_team() {
+        let backend = crate::backend::mock::MockBackend::with_identity("", "actor-a");
+        let managed = crate::runtime::managed_llm::ManagedLlmResolver::new(std::sync::Arc::new(
+            backend.clone(),
+        ));
+        let workspace = tempfile::tempdir().unwrap();
+        let context =
+            assemble_catalog_probe_context("ws-a", workspace.path(), &backend, &managed, "Agent A")
+                .await;
+        assert!(matches!(context, CatalogProbeRoute::Device));
+    }
+
+    #[test]
+    fn an_empty_cache_still_shows_personal_models_when_the_team_probe_misses() {
+        let live = vec![model("openai-codex/gpt-5.1-codex", "openai-codex")];
+        let shown = catalog_lists_for_response(true, Some(&live), &[]);
+        let CatalogLists::Live(models) = shown else {
+            panic!("personal models must stay visible");
+        };
+        assert_eq!(models[0].id, "openai-codex/gpt-5.1-codex");
+    }
+
+    #[test]
+    fn a_persisted_catalog_wins_when_the_team_probe_misses() {
+        let live = vec![model("openai-codex/gpt-5.1-codex", "openai-codex")];
+        let persisted = vec![model("team/default", "team")];
+        let shown = catalog_lists_for_response(true, Some(&live), &persisted);
+        let CatalogLists::Persisted(models) = shown else {
+            panic!("persisted team models must win");
+        };
+        assert_eq!(models[0].id, "team/default");
+    }
+
+    #[test]
+    fn an_empty_team_probe_does_not_invent_a_personal_list() {
+        let shown = catalog_lists_for_response(true, Some(&[]), &[]);
+        assert!(matches!(shown, CatalogLists::Persisted(models) if models.is_empty()));
+    }
+
+    #[test]
+    fn a_device_probe_still_shows_personal_models() {
+        let live = vec![model("openai-codex/gpt-5.1-codex", "openai-codex")];
+        let shown = catalog_lists_for_response(false, Some(&live), &[]);
+        assert!(matches!(shown, CatalogLists::Live(_)));
+    }
+
+    #[tokio::test]
+    async fn catalog_probe_context_does_not_probe_when_assembly_fails() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home_with_home(
+            home.path(),
+            home.path(),
+        );
+        std::fs::write(
+            home.path().join("daemon.toml"),
+            "active_team = \"team-a\"\n",
+        )
+        .unwrap();
+        // `state` has to be a directory. A file makes the team-provider write
+        // fail, which is the assembly error that must not fall through to a
+        // persisting probe.
+        std::fs::create_dir_all(home.path().join("teams/team-a")).unwrap();
+        std::fs::write(home.path().join("teams/team-a/state"), "not-a-directory").unwrap();
+
+        let backend = std::sync::Arc::new(crate::backend::mock::MockBackend::with_identity(
+            "team-a", "actor-a",
+        ));
+        backend.state().managed_llm_configs.insert(
+            "team-a".into(),
+            crate::backend::ManagedLlmConfig {
+                enabled: true,
+                base_url: Some("https://gateway.example/v1".into()),
+                name: Some("Team".into()),
+                models: vec![crate::backend::ManagedLlmModelInfo {
+                    id: "default".into(),
+                    name: "标准".into(),
+                }],
+            },
+        );
+        let managed = crate::runtime::managed_llm::ManagedLlmResolver::new(backend.clone());
+        let workspace = tempfile::tempdir().unwrap();
+        let route = assemble_catalog_probe_context(
+            "ws-a",
+            workspace.path(),
+            backend.as_ref(),
+            &managed,
+            "Agent A",
+        )
+        .await;
+        assert!(matches!(route, CatalogProbeRoute::CacheOnly));
     }
 }
