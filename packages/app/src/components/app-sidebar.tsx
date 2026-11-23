@@ -325,7 +325,14 @@ function SidebarUserAccountMenu() {
           {rail ? null : <ChevronUp className="h-3.5 w-3.5 shrink-0" />}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" side="top" className="w-72 p-2">
+      {/* On the rail the trigger is a lone icon at the window's foot: the menu
+          opens beside the rail, bottom-aligned with it, rather than over it. */}
+      <DropdownMenuContent
+        align="end"
+        side={rail ? "right" : "top"}
+        sideOffset={rail ? 8 : 4}
+        className="w-72 p-2"
+      >
         <DropdownMenuLabel className="px-2 py-1">
           <div className="truncate text-[13px] font-semibold text-foreground">{userName}</div>
           {currentMember?.role && (
