@@ -22,6 +22,7 @@ import { isTauri } from '@/lib/utils'
 import { resolveAppType } from '@/lib/apps/app-types'
 import { recordAppSessionSetup, runAppSessionSetupOnce } from '@/lib/apps/app-session-setup'
 import type { AppRow, AppSessionRow } from '@/lib/backend/types'
+import { upsertAppSessionsIntoList } from '@/lib/apps/app-session-list-rows'
 
 /**
  * The local daemon's per-app workdir.
@@ -443,11 +444,20 @@ export async function ensureAppSession(app: AppRow): Promise<string | null> {
   const workdir = await ensureAppCheckout(app)
 
   const sessions = await getBackend().apps.listAppSessions(app.id)
+  upsertAppSessionsIntoList(app.id, sessions)
   const recent = pickMostRecentSession(sessions)
   if (!recent) return null
 
   await seatDaemonAndBind(recent.id, ctx, await resolveAppCheckout(app, ctx, workdir))
   return recent.id
+}
+
+/** A session just created for `app`, into the session-list cache before anything opens it. */
+function rememberNewAppSession(app: AppRow, teamId: string, sessionId: string): void {
+  const now = new Date().toISOString()
+  upsertAppSessionsIntoList(app.id, [
+    { id: sessionId, teamId, title: app.name, mode: 'collab', lastMessageAt: null, createdAt: now, updatedAt: now },
+  ])
 }
 
 /**
@@ -474,6 +484,7 @@ export async function createAppSessionShell(app: AppRow): Promise<string | null>
     appId: app.id,
     localWorkspace,
   })
+  rememberNewAppSession(app, ctx.teamId, sessionId)
   // Recorded here so the first switch to the new session does not repeat it.
   if (await seatDaemonAndBind(sessionId, ctx, checkout, localWorkspace !== null)) {
     recordAppSessionSetup(app.id, sessionId)
@@ -515,6 +526,7 @@ export async function startAppFirstSession(app: AppRow): Promise<string | null> 
     mentionActorIds: agentIds,
     localWorkspace,
   })
+  rememberNewAppSession(app, ctx.teamId, sessionId)
 
   // Before starting the runtime, which the outbox fast path does from the
   // local binding this writes.
