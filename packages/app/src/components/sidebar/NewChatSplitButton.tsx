@@ -45,36 +45,49 @@ export function NewChatSplitButton({
   const mode = useNavRailMode()
 
   if (mode === 'rail') {
-    // The split cannot fit on the rail: it is the primary action as a tile,
-    // icon over label like every other rail row. The advanced half comes back
-    // with the widened rail.
+    // The split cannot fit on the rail. The tile is the primary action with
+    // its label under the icon, like every other rail row; the advanced half
+    // shrinks to a badge on the tile's corner. It must stay reachable here —
+    // with no default agent it is the only way to start a chat at all.
     const label = `${t('chat.newChat', 'New Chat')} (${formatShortcut('mod+N')})`
     return (
-      <button
-        type="button"
-        onClick={onPrimaryClick}
-        disabled={primaryDisabled}
-        title={primaryTitle ?? label}
-        aria-label={label}
-        className={cn(
-          'flex h-14 w-full flex-col items-center justify-center gap-1 rounded-[10px] bg-coral px-1 text-coral-foreground shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)] transition-[filter] duration-150',
-          'hover:brightness-[1.04] disabled:cursor-not-allowed disabled:opacity-40',
-        )}
-      >
-        {creating ? (
-          <Loader2 className="h-5 w-5 animate-spin" />
-        ) : (
-          <SquarePen className="h-5 w-5" />
-        )}
-        <span className="w-full truncate whitespace-nowrap text-[12px] font-semibold leading-[15px]">
-          {t('chat.newChat', 'New Chat')}
-        </span>
-      </button>
+      <div className="relative w-full px-1 pt-1.5">
+        <button
+          type="button"
+          onClick={onPrimaryClick}
+          disabled={primaryDisabled}
+          title={primaryTitle ?? label}
+          aria-label={label}
+          className={cn(
+            'flex h-14 w-full flex-col items-center justify-center gap-1 rounded-[10px] bg-coral px-1 text-coral-foreground shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)] transition-[filter] duration-150',
+            'hover:brightness-[1.04] disabled:cursor-not-allowed disabled:opacity-40',
+          )}
+        >
+          {creating ? (
+            <Loader2 className="h-5 w-5 animate-spin" />
+          ) : (
+            <SquarePen className="h-5 w-5" />
+          )}
+          <span className="w-full truncate whitespace-nowrap text-[12px] font-semibold leading-[15px]">
+            {t('chat.newChat', 'New Chat')}
+          </span>
+        </button>
+        <button
+          type="button"
+          aria-label={advancedLabel}
+          title={advancedLabel}
+          data-testid="new-chat-advanced"
+          onClick={() => useUIStore.getState().openNewSessionDialog()}
+          className="absolute right-0 top-0 flex h-5 w-5 items-center justify-center rounded-full bg-paper text-ink-2 shadow-[0_1px_3px_rgba(28,27,25,0.18)] ring-1 ring-black/[0.06] transition-colors duration-150 hover:text-foreground"
+        >
+          <SlidersHorizontal className="h-3 w-3" />
+        </button>
+      </div>
     )
   }
 
   return (
-    <div className="flex w-full flex-col gap-1.5 whitespace-nowrap">
+    <div className="flex w-full flex-col gap-1.5">
       <div className="flex w-full overflow-hidden rounded-[10px] bg-coral shadow-[0_4px_14px_color-mix(in_srgb,var(--coral)_22%,transparent)]">
         <button
           type="button"

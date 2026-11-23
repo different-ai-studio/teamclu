@@ -3,13 +3,15 @@ import * as React from 'react'
 /**
  * How the first-column nav is being drawn.
  *
- * - `list` — the full sidebar: pinned open on a wide window, the drawer on a
- *   narrow one, and the rail while it is widened under the pointer. Widening
- *   does not have a look of its own; it is the pinned sidebar, floated over
- *   column two.
+ * - `list` — the full sidebar: pinned open on a wide window, or the drawer on
+ *   a narrow one.
  * - `rail` — the fixed rail: each row is a square tile, the icon with its label
  *   in small type underneath, so the rail reads without hovering; attention
  *   signals sit on the icon's corner.
+ *
+ * The rail does not widen on hover. Its tiles are taller than list rows, so a
+ * rail that turned into the list under the pointer put a different row under
+ * it; with labels on the tiles there is nothing a hover would add.
  */
 export type NavRailMode = 'list' | 'rail'
 

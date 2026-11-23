@@ -47,11 +47,6 @@ import {
   type NavRailMode,
 } from "@/components/sidebar/nav-rail-mode"
 import { useLayoutBreakpoint } from "@/hooks/use-layout-breakpoint"
-import { useTabsStore, selectActiveTab } from "@/stores/tabs"
-import {
-  useContentColumnVisible,
-  useEffectiveContentColumnMode,
-} from "@/components/content-column/content-column-state"
 
 /** Sidebar collapse / expand control (sidebar header, and second-column headers while the sidebar is collapsed or a drawer). */
 export function SidebarCollapseToggle({ className }: { className?: string }) {
@@ -436,88 +431,6 @@ function useCloseDrawerOnNavigate(onPickSection?: () => void) {
   }, [sidebarFilter, currentView, activeSessionId, isMobile, openMobile, setOpenMobile, onPickSection])
 }
 
-/** How long the pointer has to rest on the rail before it widens, and how long
- * it may wander off before it narrows again. The open delay keeps a pointer
- * that only crosses the rail on its way to column two from flashing the
- * labels; the close delay forgives overshooting the edge. */
-const RAIL_EXPAND_DELAY_MS = 200
-const RAIL_COLLAPSE_DELAY_MS = 250
-
-/**
- * Hover state for the icon rail. Widened, the rail is the pinned sidebar
- * floated over column two; the rows keep their lines, so it can afford to be
- * eager.
- *
- * It closes on navigation (picking a section, opening a session, opening
- * settings): the user has gone where they meant to go. It does not re-open
- * until the pointer leaves and comes back, which is what mouseenter gives.
- */
-function useRailHover(enabled: boolean) {
-  const [expanded, setExpanded] = React.useState(false)
-  const openTimer = React.useRef<number | null>(null)
-  const closeTimer = React.useRef<number | null>(null)
-
-  const clearTimers = React.useCallback(() => {
-    if (openTimer.current !== null) window.clearTimeout(openTimer.current)
-    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
-    openTimer.current = null
-    closeTimer.current = null
-  }, [])
-
-  const collapse = React.useCallback(() => {
-    clearTimers()
-    setExpanded(false)
-  }, [clearTimers])
-
-  React.useEffect(() => {
-    if (!enabled) collapse()
-  }, [enabled, collapse])
-  React.useEffect(() => clearTimers, [clearTimers])
-
-  const sidebarFilter = useUIStore((s) => s.sidebarFilter)
-  const currentView = useUIStore((s) => s.currentView)
-  const activeSessionId = useSessionStore((s) => s.activeSessionId)
-  React.useEffect(() => {
-    collapse()
-  }, [sidebarFilter, currentView, activeSessionId, collapse])
-
-  React.useEffect(() => {
-    if (!expanded) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") collapse()
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [expanded, collapse])
-
-  const onMouseEnter = React.useCallback(() => {
-    if (!enabled) return
-    if (closeTimer.current !== null) {
-      window.clearTimeout(closeTimer.current)
-      closeTimer.current = null
-    }
-    if (expanded || openTimer.current !== null) return
-    openTimer.current = window.setTimeout(() => {
-      openTimer.current = null
-      setExpanded(true)
-    }, RAIL_EXPAND_DELAY_MS)
-  }, [enabled, expanded])
-
-  const onMouseLeave = React.useCallback(() => {
-    if (openTimer.current !== null) {
-      window.clearTimeout(openTimer.current)
-      openTimer.current = null
-    }
-    if (!expanded || closeTimer.current !== null) return
-    closeTimer.current = window.setTimeout(() => {
-      closeTimer.current = null
-      setExpanded(false)
-    }, RAIL_COLLAPSE_DELAY_MS)
-  }, [expanded])
-
-  return { expanded: enabled && expanded, onMouseEnter, onMouseLeave }
-}
-
 export function AppSidebar({
   className,
   onPickSection,
@@ -532,26 +445,15 @@ export function AppSidebar({
   useCloseDrawerOnNavigate(onPickSection)
   const sessionActivityMap = useSessionListActivityMap(activeSessionId)
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
-  const { open, isMobile } = useSidebar()
+  const { open, isMobile, toggleSidebar } = useSidebar()
   // Pinning open is a wide-window affordance: on a medium window the full list
   // would leave the chat too little room, so it stays a rail there.
   const canPin = useLayoutBreakpoint() === "wide"
-  // Unpinned on a desktop window, the first column is a fixed rail of icons
-  // that widens into the full sidebar while the pointer rests on it.
+  // Unpinned on a desktop window, the first column is a fixed rail of tiles —
+  // icon over label — so every destination is readable without hovering.
   const rail = !isMobile && !open
-  // A web tab in a full-width column four sits right against the rail, and a
-  // native webview always draws above the page: the widened rail would open
-  // *underneath* it, unreachable. The rail stays narrow then; its icons still
-  // work, and pinning still gives the full list.
-  const contentColumnVisible = useContentColumnVisible()
-  const contentColumnMode = useEffectiveContentColumnMode()
-  const contentColumnFull = contentColumnVisible && contentColumnMode === "full"
-  const activeTabIsWebview = useTabsStore((s) => selectActiveTab(s)?.type === "webview")
-  const hover = useRailHover(rail && !(contentColumnFull && activeTabIsWebview))
-  const railExpanded = rail && hover.expanded
-  const railCollapsed = rail && !hover.expanded
-  // Widened, the rail draws exactly what the pinned sidebar does.
-  const mode: NavRailMode = railCollapsed ? "rail" : "list"
+  const mode: NavRailMode = rail ? "rail" : "list"
+  const pinLabel = t("navigation.pinSidebar", "Keep sidebar open")
 
   const [detailSessionId, setDetailSessionId] = React.useState<string | null>(null)
   const [detailHints, setDetailHints] = React.useState<SessionDetailListHints | null>(null)
@@ -570,15 +472,9 @@ export function AppSidebar({
       collapsible="icon"
       className={cn(
         SIDEBAR_INTERACTIVE_CURSOR,
-        // Widened over column two rather than pushing it: the rail's own gap
-        // stays 92px, only the fixed container grows.
-        railExpanded &&
-          "z-40 w-(--sidebar-width)! shadow-[8px_0_24px_-12px_rgba(28,27,25,0.18)]",
         className,
       )}
-      onMouseEnter={hover.onMouseEnter}
-      onMouseLeave={hover.onMouseLeave}
-      data-nav-mode={railExpanded ? "rail-expanded" : mode}
+      data-nav-mode={mode}
       {...props}
     >
       <SessionDetailDialog
@@ -607,15 +503,28 @@ export function AppSidebar({
           <div className="flex-1" data-tauri-drag-region />
           {/* The traffic lights fill the collapsed rail's header, so the pin
               control only shows once the rail has widened. */}
-          {!railCollapsed && (canPin || isMobile) ? <SidebarCollapseToggle /> : null}
+          {!rail && (canPin || isMobile) ? <SidebarCollapseToggle /> : null}
         </SidebarHeader>
 
         <SidebarContent className="overflow-hidden">
           <NavRail />
         </SidebarContent>
 
-        {railCollapsed ? (
+        {rail ? (
           <SidebarFooter className="gap-0.5 px-1.5 pb-3 pt-1">
+            {/* The traffic lights fill the rail's header, so the control that
+                pins the full sidebar open lives down here instead. */}
+            {canPin ? (
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                title={pinLabel}
+                aria-label={pinLabel}
+                className="flex h-8 w-full items-center justify-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-black/[0.04] hover:text-foreground"
+              >
+                <PanelLeftIcon className="h-4 w-4" />
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => openSettings()}
@@ -631,7 +540,7 @@ export function AppSidebar({
             <SidebarUserAccountMenu />
           </SidebarFooter>
         ) : (
-        <SidebarFooter className={cn("gap-2 px-2.5 pb-2 pt-1", railExpanded && "whitespace-nowrap")}>
+        <SidebarFooter className="gap-2 px-2.5 pb-2 pt-1">
           <LocalDaemonCard />
 
             <div className="flex min-w-0 items-center justify-between gap-1 overflow-hidden">
