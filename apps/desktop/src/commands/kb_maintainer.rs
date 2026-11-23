@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -111,6 +111,28 @@ pub struct PrepareRequest {
     known: Vec<KnownDocument>,
     #[serde(default)]
     vision_choice: Option<String>,
+    /// documents path → "profile" | "segment" | "skip", answered in the
+    /// large-file step. The runner re-checks each choice against the options
+    /// it offered, so an unknown value only asks again.
+    #[serde(default)]
+    large_source_choices: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LargeSource {
+    path: String,
+    chars: usize,
+    limit: usize,
+    kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    encoding: Option<String>,
+    parts: usize,
+    max_parts: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    options: Vec<String>,
+    default_choice: String,
 }
 
 fn default_config_version() -> u64 {
@@ -158,6 +180,10 @@ pub struct PrepareSummary {
     blockers: Vec<String>,
     #[serde(default)]
     needs_vision_acceptance: bool,
+    #[serde(default)]
+    large_sources: Vec<LargeSource>,
+    #[serde(default)]
+    needs_large_source_decision: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1093,6 +1119,7 @@ pub async fn kb_maintainer_prepare(
             "path": item.path, "version": item.version, "size": item.size
         })).collect::<Vec<_>>(),
         "visionChoice": request.vision_choice.unwrap_or_else(|| "ask".to_string()),
+        "largeSourceChoices": request.large_source_choices.unwrap_or_default(),
     });
     if let Err(error) = write_json(&input_path, &input) {
         let _ = fs::remove_file(&lock_path);
@@ -1441,6 +1468,63 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(parsed.compiler_model.as_deref(), Some("glm-4.6"));
+        assert!(parsed.large_source_choices.is_none());
+    }
+
+    #[test]
+    fn large_source_decision_round_trips_between_runner_and_frontend() {
+        let parsed: PrepareRequest = serde_json::from_value(json!({
+            "teamId": "team-1",
+            "sourceDirectories": ["documents/营运部/"],
+            "aclPrefixes": [],
+            "known": [],
+            "largeSourceChoices": { "documents/营运部/整车成本.csv": "profile" }
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed
+                .large_source_choices
+                .unwrap()
+                .get("documents/营运部/整车成本.csv")
+                .map(String::as_str),
+            Some("profile")
+        );
+
+        let summary: PrepareSummary = serde_json::from_value(json!({
+            "runId": "run-1",
+            "nodeId": "node-a",
+            "baseTreeHash": null,
+            "targetCommit": "",
+            "targetTreeHash": "",
+            "sourceCount": 2,
+            "added": 0,
+            "updated": 0,
+            "deleted": 0,
+            "failed": 0,
+            "visionPages": 0,
+            "estimatedCost": null,
+            "currency": "CNY",
+            "canPublish": false,
+            "blockers": [],
+            "largeSources": [{
+                "path": "documents/营运部/整车成本.csv",
+                "chars": 186000,
+                "limit": 50000,
+                "kind": "table",
+                "encoding": "gb18030",
+                "parts": 6,
+                "maxParts": 20,
+                "options": ["profile", "segment", "skip"],
+                "defaultChoice": "profile"
+            }],
+            "needsLargeSourceDecision": true
+        }))
+        .unwrap();
+        let back = serde_json::to_value(&summary).unwrap();
+        assert_eq!(back["needsLargeSourceDecision"], json!(true));
+        assert_eq!(back["largeSources"][0]["maxParts"], json!(20));
+        assert_eq!(back["largeSources"][0]["encoding"], json!("gb18030"));
+        assert!(back["largeSources"][0].get("reason").is_none());
     }
 
     #[test]

@@ -1,31 +1,3 @@
-// ─── Git Command Result Types ──────────────────────────────────────────────
-
-// ─── Repository Types ──────────────────────────────────────────────────────
-
-// ─── Configuration Types ───────────────────────────────────────────────────
-
-/** A team member in the allowlist */
-export interface TeamMember {
-  /** Iroh NodeId (Ed25519 public key) */
-  nodeId: string
-  /** Human-readable display name (e.g. "Alice", "Bob") */
-  name: string
-  /** Member role: owner, manager, editor, or viewer */
-  role?: 'owner' | 'manager' | 'editor' | 'viewer'
-  /** Shortcut visibility roles used to filter team shortcuts */
-  shortcutsRole?: string[]
-  /** Human-readable label */
-  label: string
-  /** OS name */
-  platform: string
-  /** CPU architecture */
-  arch: string
-  /** Device hostname */
-  hostname: string
-  /** ISO timestamp when added */
-  addedAt: string
-}
-
 // ─── Skill Source Types ────────────────────────────────────────────────────
 
 /** Source badge for a loaded skill */

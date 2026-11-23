@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { Suspense, lazy } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import { Sparkles, Save, Loader2, Download, Share2, Trash2, Archive, AlertTriangle, Copy } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -27,8 +28,39 @@ import { VersionHistory } from './skill-detail/VersionHistory'
 import { TeamSkillAdminActions } from './TeamSkillAdminActions'
 import { DeleteTeamSkillDialog } from '@/components/sidebar/TeamShareListColumn'
 import { useTeamPermissions } from '@/lib/team/team-permissions'
+import { SkillSlugInvalidError, skillSlugIssueFromServerMessage } from '@/lib/skills/team-skill-slug'
 
 type SkillConfirmAction = 'delete' | 'uninstall'
+
+function shareFailureText(e: unknown, t: TFunction): string {
+  if (e instanceof SkillSlugTakenError) {
+    return t(
+      'teamShare.skillShareSlugTaken',
+      'The team already has a skill called {{slug}}. Pick another name and share again.',
+      { slug: e.slug },
+    )
+  }
+  const reason =
+    e instanceof SkillSlugInvalidError
+      ? e.reason
+      : skillSlugIssueFromServerMessage(e instanceof Error ? e.message : String(e))
+  if (reason === 'empty') return t('teamShare.skillShareSlugEmpty', 'Enter an id')
+  if (reason === 'invalid') {
+    return t(
+      'teamShare.skillShareSlugInvalid',
+      'Use 2-64 letters or digits — Chinese is fine — with hyphens only in the middle. This id is the install folder and the skill name.',
+    )
+  }
+  if (reason === 'reserved') {
+    return t(
+      'teamShare.skillShareSlugReserved',
+      'This id is reserved on Windows and cannot be a skill folder. Pick another.',
+    )
+  }
+  return t('teamShare.skillShareFailed', 'Share failed: {{msg}}', {
+    msg: e instanceof Error ? e.message : String(e),
+  })
+}
 
 const CodeEditor = lazy(() => import('@/components/editors/CodeEditor'))
 
@@ -275,6 +307,7 @@ export function SkillDetail({ slug }: { slug: string }) {
   const runShare = React.useCallback(
     async (input: {
       slug: string
+      displayName?: string
       summary: string
       category: TeamSkillCategory
       whenToUse: string
@@ -334,17 +367,7 @@ export function SkillDetail({ slug }: { slug: string }) {
           )
           return
         }
-        toast.error(
-          e instanceof SkillSlugTakenError
-            ? t(
-                'teamShare.skillShareSlugTaken',
-                'The team already has a skill called {{slug}}. Pick another name and share again.',
-                { slug: e.slug },
-              )
-            : t('teamShare.skillShareFailed', 'Share failed: {{msg}}', {
-                msg: e instanceof Error ? e.message : String(e),
-              }),
-        )
+        toast.error(shareFailureText(e, t))
       } finally {
         setBusy(false)
       }

@@ -282,47 +282,23 @@ public final class SessionListViewModel {
         // type == "message" or nil (legacy) — a new message arrived.
         if let session = try? modelContext.fetch(descriptor).first {
             // Optimistic local update — server already knows the truth, the
-            // next applyUnreadFlags() will confirm it. Skipping the no-op
+            // next list refresh will confirm it. Skipping the no-op
             // avoids an unnecessary SwiftData save and UI churn.
             if !session.hasUnread {
                 session.hasUnread = true
                 try? modelContext.save()
                 reloadSessions(modelContext: modelContext)
             }
-        } else if let repo = sessionsRepo, !teamID.isEmpty {
-            // Unknown session id — likely a brand-new session for this user.
-            // Pull the authoritative set so the row appears with the right flag.
-            if let flags = try? await repo.fetchUnreadFlags(teamID: teamID, limit: 100) {
-                applyUnreadFlags(flags, modelContext: modelContext)
-            }
         }
-    }
-
-    /// Overlays the server-side `(session_id, has_unread)` map onto local
-    /// Session rows. Sessions absent from the map keep their current local
-    /// state — the map represents the user's current session set, but the
-    /// caller may have a broader local cache (e.g., archived sessions).
-    @MainActor
-    public func applyUnreadFlags(_ flags: [String: Bool], modelContext: ModelContext) {
-        let existing = (try? modelContext.fetch(FetchDescriptor<Session>())) ?? []
-        var changed = false
-        for session in existing {
-            guard let serverUnread = flags[session.sessionId] else { continue }
-            if session.hasUnread != serverUnread {
-                session.hasUnread = serverUnread
-                changed = true
-            }
-        }
-        if changed {
-            try? modelContext.save()
-            reloadSessions(modelContext: modelContext)
-        }
+        // An unknown session id (a brand-new session) gets its row, flag
+        // included, from the next `listSessions` refresh. Fetching unread
+        // flags here could not help: they only update rows that exist.
     }
 
     /// Clears the unread flag locally for immediate UI feedback and tells
     /// the server via `mark_current_actor_session_viewed`. Fire-and-forget:
     /// the server call's success is not awaited — the next inbox ping or
-    /// applyUnreadFlags() will reconcile if the write was lost.
+    /// list refresh will reconcile if the write was lost.
     @MainActor
     public func markSessionViewed(
         sessionId: String,
@@ -348,7 +324,7 @@ public final class SessionListViewModel {
     /// row feedback, then the server rewind so other devices agree. Unlike
     /// `markSessionViewed` the remote write is awaited: a failed rewind
     /// must roll the local flag back, otherwise the red dot would silently
-    /// vanish on the next `applyUnreadFlags` reconcile anyway.
+    /// vanish on the next list refresh anyway.
     @MainActor
     public func markSessionUnread(
         sessionId: String,
@@ -751,6 +727,7 @@ public final class SessionListViewModel {
             }
             session.primaryAgentId = record.primaryAgentID
             if let source = record.source { session.source = source }
+            if let hasUnread = record.hasUnread { session.hasUnread = hasUnread }
             let appID = record.appID ?? ""
             if session.appId != appID {
                 session.appId = appID

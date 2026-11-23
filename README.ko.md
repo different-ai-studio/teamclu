@@ -50,11 +50,11 @@ TeamClu 는 클라이언트 계층, 에이전트 호스트, 클라우드 백엔�
                              │
                     ┌────────┴────────┐
                     │   amux daemon   │  agent host + channel gateways
-                    │    (amuxd)      │  + team sync (git / OSS)
+                    │    (amuxd)      │  + team sync (OSS)
                     └────────┬────────┘
                              │ HTTP / RPC
                     ┌────────┴────────┐
-                    │ local agents    │  opencode (default), …
+                    │ local agents    │  pi
                     └─────────────────┘
 ```
 
@@ -174,7 +174,7 @@ Cloud API 구현은 `services/fc/` (Node.js 20)에 있으며, Supabase 를 백�
 ## 기술 스택
 
 - **데스크톱**: Tauri 2.0 (Rust)
-- **데몬**: Rust (`amuxd`), 로컬 에이전트 백엔드(opencode HTTP 등)
+- **데몬**: Rust (`amuxd`), 로컬 에이전트 런타임(pi, stdio JSONL)
 - **프론트엔드**: React 19 + TypeScript, Tailwind CSS 4, Zustand
 - **iOS**: SwiftUI + SwiftPM (`AMUXCore`)
 - **에디터**: Tiptap (Markdown / HTML), CodeMirror 6 (코드), Shiki (구문 강조)

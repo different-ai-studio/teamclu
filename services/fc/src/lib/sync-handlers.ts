@@ -1,8 +1,8 @@
 // services/fc/src/lib/sync-handlers.ts
 //
 // FC /sync/* endpoint handlers — OSS Sync v3 (spec §3).
-// Each export is a standalone async function; the router in index.mjs
-// dispatches here after JWT/actor auth.
+// Each export is a standalone async function; `legacy-sync.ts`
+// (`handleSyncRequest`, mounted by app.ts) dispatches here after JWT/actor auth.
 //
 // Sync metadata lives in Supabase (createServiceRoleClient + .from() / .rpc());
 // blob bytes live in Supabase Storage (see team-blob-storage.ts).
@@ -51,7 +51,7 @@ export interface SyncHandlerDeps {
   sumLiveBytes?: (teamId: string) => Promise<number | null>;
   /**
    * MQTT publisher for knowledge sync hints. `undefined` → resolve from
-   * push-deps (null when MQTT_BROKER_URL is unset). Explicit `null` skips.
+   * push-deps (null when both publisher URLs are unset). Explicit `null` skips.
    */
   mqtt?: SyncMqttPublisher | null;
   /** Clock override for hint `at` (tests). */

@@ -55,4 +55,14 @@ final class OutboxWakeTests: XCTestCase {
         await outbox.stop()
         withExtendedLifetime(container) {}
     }
+
+    /// The idle loop no longer polls every second: with nothing backed off it
+    /// naps for the ceiling, otherwise until the earliest retry is due.
+    func testIdleDelayWaitsForTheEarliestRetry() {
+        let now = Date()
+        XCTAssertEqual(OutboxSender.idleDelay(until: nil, now: now), OutboxSender.idleCeiling)
+        XCTAssertEqual(OutboxSender.idleDelay(until: now.addingTimeInterval(4), now: now), 4, accuracy: 0.001)
+        XCTAssertEqual(OutboxSender.idleDelay(until: now.addingTimeInterval(600), now: now), OutboxSender.idleCeiling)
+        XCTAssertEqual(OutboxSender.idleDelay(until: now.addingTimeInterval(-1), now: now), 0.05, accuracy: 0.001)
+    }
 }

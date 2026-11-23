@@ -62,8 +62,8 @@ before(async () => {
 
   cfg = {
     port: 0, databaseUrl: DB, catalogPath: "", serviceToken: SERVICE_TOKEN, platformToken: PLATFORM_TOKEN,
-    backendKind: "supabase", supabaseUrl: "", supabaseAnonKey: "",
-    authBaseUrl: "", tokenCacheTtlMs: 60_000,
+    supabaseUrl: "", supabaseAnonKey: "",
+    tokenCacheTtlMs: 60_000,
   } as Config;
 
   // Stubbed verifier: "token-<sub>" resolves to that subject, anything else is

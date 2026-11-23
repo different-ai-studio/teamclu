@@ -114,29 +114,6 @@ export interface BuildConfig {
   }
 }
 
-const allChannelsEnabled: ChannelsFeatureConfig = {
-  discord: true,
-  feishu: true,
-  email: true,
-  kook: true,
-  wecom: true,
-  wechat: true,
-  wechatpad: true,
-  seatalk: true,
-}
-
-/**
- * Normalize channels config: `true` → all enabled, `false` → all disabled, object → as-is.
- */
-export function resolveChannelsConfig(channels: boolean | ChannelsFeatureConfig): ChannelsFeatureConfig {
-  if (typeof channels === 'boolean') {
-    return channels
-      ? { ...allChannelsEnabled }
-      : { discord: false, feishu: false, email: false, kook: false, wecom: false, wechat: false, wechatpad: false, seatalk: false }
-  }
-  return channels
-}
-
 /** Whether at least one channel is enabled. */
 export function hasAnyChannel(channels: boolean | ChannelsFeatureConfig): boolean {
   if (typeof channels === 'boolean') return channels

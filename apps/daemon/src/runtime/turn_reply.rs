@@ -211,9 +211,7 @@ pub fn final_agent_reply_emitted(
         turn_id: meta.map(|m| m.turn_id.clone()).unwrap_or_default(),
         cloud_persist: true,
         attachments: meta.map(|m| m.attachments.clone()).unwrap_or_default(),
-        attachment_urls: meta
-            .map(|m| m.attachment_urls.clone())
-            .unwrap_or_default(),
+        attachment_urls: meta.map(|m| m.attachment_urls.clone()).unwrap_or_default(),
     }
 }
 

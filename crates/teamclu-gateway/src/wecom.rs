@@ -104,44 +104,6 @@ async fn download_and_decrypt_wecom_media(
     Ok((plaintext, mime))
 }
 
-/// Compress an image to fit within max_bytes by resizing and re-encoding as JPEG.
-#[allow(dead_code)]
-fn compress_image(bytes: &[u8], max_bytes: usize) -> Result<Vec<u8>, String> {
-    use image::ImageReader;
-    use std::io::Cursor;
-
-    let img = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| format!("Failed to guess image format: {}", e))?
-        .decode()
-        .map_err(|e| format!("Failed to decode image: {}", e))?;
-
-    // Try progressively smaller sizes until it fits
-    let (orig_w, orig_h) = (img.width(), img.height());
-    for scale_pct in &[100u32, 75, 50, 35, 25] {
-        let w = orig_w * scale_pct / 100;
-        let h = orig_h * scale_pct / 100;
-        let resized = if *scale_pct < 100 {
-            img.resize(w, h, image::imageops::FilterType::Lanczos3)
-        } else {
-            img.clone()
-        };
-
-        // Encode as JPEG with quality 80
-        let mut buf = Cursor::new(Vec::new());
-        resized
-            .write_to(&mut buf, image::ImageFormat::Jpeg)
-            .map_err(|e| format!("JPEG encode failed: {}", e))?;
-
-        let result = buf.into_inner();
-        if result.len() <= max_bytes {
-            return Ok(result);
-        }
-    }
-
-    Err("Could not compress image small enough".into())
-}
-
 /// Detect MIME type from file magic bytes.
 ///
 /// For ZIP-based files, attempts to distinguish OOXML subtypes (xlsx/docx/pptx)
@@ -441,39 +403,46 @@ fn get_plat_code() -> u8 {
 const WECOM_QR_GENERATE_URL: &str = "https://work.weixin.qq.com/ai/qc/generate";
 const WECOM_QR_POLL_URL: &str = "https://work.weixin.qq.com/ai/qc/query_result";
 
+/// Category only. `reqwest`'s `Display` includes the request URL, and the poll
+/// URL carries the scode.
+fn qr_transport_class(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        "timeout"
+    } else if err.is_connect() {
+        "connect"
+    } else if err.is_decode() {
+        "decode"
+    } else {
+        "transport"
+    }
+}
+
 /// Fetch a QR code for WeCom bot authorization
 pub async fn fetch_wecom_qr_code() -> Result<super::wecom_config::WeComQrAuthStart, String> {
-    use crate::wecom_config::{WeComQrAuthStart, WeComQrGenerateResponse};
+    use crate::wecom_config::interpret_wecom_qr_generate;
 
-    let url = format!(
-        "{}?source=teamclu&plat={}",
-        WECOM_QR_GENERATE_URL,
-        get_plat_code()
-    );
+    let plat = get_plat_code();
+    let url = format!("{WECOM_QR_GENERATE_URL}?source=teamclu&plat={plat}");
     let client = crate::http_client_secs(30);
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("QR generate request failed: {}", e))?;
+    let resp = client.get(&url).send().await.map_err(|err| {
+        let class = qr_transport_class(&err);
+        tracing::warn!(class, plat, "wecom qr generate request failed");
+        format!("QR generate request failed: {class}")
+    })?;
 
-    if !resp.status().is_success() {
-        return Err(format!("QR generate failed: HTTP {}", resp.status()));
+    let http_status = resp.status();
+    if !http_status.is_success() {
+        tracing::warn!(http_status = %http_status, plat, "wecom qr generate http error");
+        return Err(format!("QR generate failed: HTTP {http_status}"));
     }
 
-    let body: WeComQrGenerateResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("QR generate parse failed: {}", e))?;
-
-    let data = body.data.ok_or("QR generate response missing data")?;
-    if data.scode.is_empty() || data.auth_url.is_empty() {
-        return Err("QR generate response missing scode or auth_url".into());
-    }
-
-    Ok(WeComQrAuthStart {
-        scode: data.scode,
-        auth_url: data.auth_url,
+    let bytes = resp.bytes().await.map_err(|_| {
+        tracing::warn!(class = "read", plat, "wecom qr generate read failed");
+        "QR generate read failed".to_string()
+    })?;
+    interpret_wecom_qr_generate(&bytes).map_err(|class| {
+        tracing::warn!(class, plat, "wecom qr generate parse failed");
+        format!("QR generate parse failed: {class}")
     })
 }
 
@@ -481,53 +450,45 @@ pub async fn fetch_wecom_qr_code() -> Result<super::wecom_config::WeComQrAuthSta
 pub async fn poll_wecom_qr_result(
     scode: &str,
 ) -> Result<super::wecom_config::WeComQrAuthPollResult, String> {
-    use crate::wecom_config::{WeComQrAuthPollResult, WeComQrPollResponse};
+    use crate::wecom_config::interpret_wecom_qr_poll;
 
-    let url = format!("{}?scode={}", WECOM_QR_POLL_URL, urlencoding::encode(scode));
-    let client = crate::try_http_client_secs(10).map_err(|e| e.to_string())?;
+    if scode.is_empty() {
+        return Err("QR poll rejected: empty scode".to_string());
+    }
+    let url = format!("{WECOM_QR_POLL_URL}?scode={}", urlencoding::encode(scode));
+    let client = crate::try_http_client_secs(10).map_err(|_| {
+        tracing::warn!(class = "client", "wecom qr poll client unavailable");
+        "QR poll client unavailable".to_string()
+    })?;
 
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("QR poll request failed: {}", e))?;
+    let resp = client.get(&url).send().await.map_err(|err| {
+        let class = qr_transport_class(&err);
+        tracing::warn!(class, "wecom qr poll request failed");
+        format!("QR poll request failed: {class}")
+    })?;
 
-    if !resp.status().is_success() {
-        return Err(format!("QR poll failed: HTTP {}", resp.status()));
+    let http_status = resp.status();
+    if !http_status.is_success() {
+        tracing::warn!(http_status = %http_status, "wecom qr poll http error");
+        return Err(format!("QR poll failed: HTTP {http_status}"));
     }
 
-    let body: WeComQrPollResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("QR poll parse failed: {}", e))?;
-
-    let data = match body.data {
-        Some(d) => d,
-        None => {
-            return Ok(WeComQrAuthPollResult {
-                status: "waiting".into(),
-                bot_id: None,
-                secret: None,
-            });
-        }
-    };
-
-    if data.status == "success" {
-        let bot_info = data
-            .bot_info
-            .ok_or("QR poll success but missing bot_info")?;
-        Ok(WeComQrAuthPollResult {
-            status: "success".into(),
-            bot_id: Some(bot_info.botid),
-            secret: Some(bot_info.secret),
-        })
-    } else {
-        Ok(WeComQrAuthPollResult {
-            status: data.status,
-            bot_id: None,
-            secret: None,
-        })
-    }
+    let bytes = resp.bytes().await.map_err(|_| {
+        tracing::warn!(class = "read", "wecom qr poll read failed");
+        "QR poll read failed".to_string()
+    })?;
+    let (result, trace) = interpret_wecom_qr_poll(&bytes).map_err(|class| {
+        tracing::warn!(class, "wecom qr poll parse failed");
+        format!("QR poll parse failed: {class}")
+    })?;
+    tracing::info!(
+        phase = trace.phase,
+        has_bot_info = trace.has_bot_info,
+        has_bot_id = trace.has_bot_id,
+        has_secret = trace.has_secret,
+        "wecom qr poll"
+    );
+    Ok(result)
 }
 
 type WsSink = Arc<
@@ -2463,84 +2424,6 @@ impl WeComGateway {
         }
     }
 
-    /// Send a template card with buttons for a question that has options.
-    /// Currently unused: WeCom doesn't render template_card after a stream
-    /// response on the same req_id, and aibot_send_msg with template_card
-    /// also fails to deliver. Kept for future investigation.
-    #[allow(dead_code)]
-    async fn send_question_card(
-        &self,
-        question_id: &str,
-        question_text: &str,
-        options: &[super::pending_question::QuestionOption],
-        ws_sink: &WsSink,
-        chatid: &str,
-        chat_type: u32,
-    ) -> Result<(), String> {
-        use futures_util::SinkExt;
-
-        let button_list: Vec<serde_json::Value> = options
-            .iter()
-            .enumerate()
-            .map(|(i, opt)| {
-                let value = opt.value.as_deref().unwrap_or(&opt.label);
-                serde_json::json!({
-                    "text": opt.label,
-                    "style": 1,
-                    "key": format!("q:{}:{}:{}", question_id, i, value)
-                })
-            })
-            .collect();
-
-        let task_id = format!("q:{}", question_id);
-
-        let card_msg = serde_json::json!({
-            "cmd": "aibot_send_msg",
-            "headers": { "req_id": uuid::Uuid::new_v4().to_string() },
-            "body": {
-                "chatid": chatid,
-                "chat_type": chat_type,
-                "msgtype": "template_card",
-                "template_card": {
-                    "card_type": "button_interaction",
-                    "main_title": { "title": "AI Question" },
-                    "sub_title_text": question_text,
-                    "button_list": button_list,
-                    "task_id": task_id
-                }
-            }
-        });
-
-        println!(
-            "[WeCom] Sending question card via aibot_send_msg: chatid={}, chat_type={}, task_id={}, payload={}",
-            chatid, chat_type, task_id, card_msg
-        );
-
-        ws_sink
-            .lock()
-            .await
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                card_msg.to_string().into(),
-            ))
-            .await
-            .map_err(|e| format!("Failed to send question card: {}", e))?;
-
-        // Store metadata for card update when button is clicked
-        self.card_metadata.write().await.insert(
-            question_id.to_string(),
-            CardMetadata {
-                question_text: question_text.to_string(),
-                options: options.to_vec(),
-            },
-        );
-
-        println!(
-            "[WeCom] Question card sent successfully: task_id={}",
-            task_id
-        );
-        Ok(())
-    }
-
     /// Send one stream frame and wait for the WS ack (same callback req_id,
     /// serialized by the pacer so waiters do not collide).
     async fn send_stream_chunk_acked(
@@ -3073,23 +2956,6 @@ impl WeComGateway {
             .map_err(|e| format!("Failed to send {} reply: {}", media_type, e))
     }
 
-    /// Upload file bytes and send as a reply. Convenience wrapper.
-    #[allow(dead_code)]
-    async fn upload_and_send_media_reply(
-        &self,
-        req_id: &str,
-        data: &[u8],
-        filename: &str,
-        media_type: &str,
-        ws_sink: &WsSink,
-    ) -> Result<(), String> {
-        let media_id = self
-            .upload_media(data, filename, media_type, ws_sink)
-            .await?;
-        self.send_media_reply(req_id, &media_id, media_type, ws_sink)
-            .await
-    }
-
     /// Proactive send wrapper for the `amuxd mcp-server` MCP `send` tool.
     /// `user_id` is a WeCom internal/external userid; chat_type is fixed at
     /// 1 (single chat). Optionally uploads + sends a file before the text.
@@ -3200,59 +3066,6 @@ fn detect_media_type(filename: &str) -> &'static str {
         "mp4" | "mov" | "avi" | "mkv" | "wmv" => "video",
         _ => "file",
     }
-}
-
-/// Send a proactive message to a WeCom conversation.
-/// Called by cron delivery and other modules that don't have direct gateway access.
-/// Requires the WeCom gateway to be running and connected.
-pub async fn send_proactive_message(
-    chatid: &str,
-    chat_type: u32,
-    text: &str,
-) -> Result<(), String> {
-    let gateway = get_active_gateway_holder()
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| {
-            "WeCom gateway is not running. Start the WeCom gateway before sending proactive messages.".to_string()
-        })?;
-
-    gateway.send_chat_message(chatid, chat_type, text).await
-}
-
-/// Upload media and send it to a WeCom conversation.
-/// `media_type` is one of: "image", "voice", "video", "file".
-/// Called by the introspect API for MCP media sending.
-pub async fn upload_and_send_media(
-    chatid: &str,
-    chat_type: u32,
-    data: &[u8],
-    filename: &str,
-    media_type: &str,
-) -> Result<(), String> {
-    let gateway = get_active_gateway_holder()
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| {
-            "WeCom gateway is not running. Start the WeCom gateway before sending media."
-                .to_string()
-        })?;
-
-    let ws_sink = gateway
-        .shared_ws_sink
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| "WeCom gateway is not connected.".to_string())?;
-
-    let media_id = gateway
-        .upload_media(data, filename, media_type, &ws_sink)
-        .await?;
-    gateway
-        .send_media_to_chat(chatid, chat_type, &media_id, media_type)
-        .await
 }
 
 #[cfg(test)]

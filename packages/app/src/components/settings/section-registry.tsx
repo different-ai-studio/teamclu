@@ -7,7 +7,7 @@ import type { SettingsSection } from '@/stores/ui'
  * Settings sections are code-split, one chunk per section.
  *
  * They are only ever mounted from inside the Settings dialog, which most
- * sessions never open — statically importing all 26 of them dragged the whole
+ * sessions never open — statically importing all of them dragged the whole
  * subtree (channels, cron, skills, LLM, …) into the startup chunk. `React.lazy`
  * keeps the section list itself cheap and pays for a section only when the user
  * actually navigates to it.
@@ -26,12 +26,6 @@ const SETTINGS_SECTION_COMPONENTS: Record<SettingsSection, React.ComponentType> 
   daemonWorkspaces: lazySection(() => import('./DaemonWorkspacesSection'), 'DaemonWorkspacesSection'),
   daemonRuntimes: lazySection(() => import('./DaemonRuntimesSection'), 'DaemonRuntimesSection'),
   envVars: lazySection(() => import('./EnvVarsSection'), 'EnvVarsSection'),
-  // Standalone Skills settings page removed — team/personal skills live in the
-  // Team Share browser. Keep the registry key so deep links to `skills` land
-  // on Role Skills (which still embeds SkillsSection for role attachment).
-  skills: lazySection(() => import('./RolesSkillsSection'), 'RolesSkillsSection'),
-  roles: lazySection(() => import('./RolesSection'), 'RolesSection'),
-  rolesSkills: lazySection(() => import('./RolesSkillsSection'), 'RolesSkillsSection'),
   deps: lazySection(() => import('./DependenciesSection'), 'DependenciesSection'),
   billing: lazySection(() => import('./BillingSection'), 'BillingSection'),
   tokenUsage: lazySection(() => import('./TokenUsageSection'), 'TokenUsageSection'),

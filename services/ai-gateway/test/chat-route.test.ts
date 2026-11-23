@@ -35,7 +35,7 @@ function fakeSql() {
 
 const cfg = {
   port: 0, databaseUrl: "", catalogPath: "", serviceToken: "svc",
-  backendKind: "supabase", supabaseUrl: "", supabaseAnonKey: "", authBaseUrl: "",
+  supabaseUrl: "", supabaseAnonKey: "",
   tokenCacheTtlMs: 60_000, creditsEnforced: false, imageTimeoutMs: 5_000,
 } as Config;
 const tokens = new TokenCache(60_000, async (t) => t.replace("token-", ""));
@@ -200,6 +200,148 @@ test("an upstream 429 on a single-route tier still passes through verbatim", asy
   const r = await chat(build(upstream(THROTTLED).impl).app, "default");
   assert.equal(r.status, 429);
   assert.deepEqual(await r.json(), (THROTTLED as any).body);
+});
+
+// ── empty 200 completions ───────────────────────────────────────────────────
+// Usage tokens and finish_reason=stop are not a reply. Pi stores content:[]
+// and the daemon writes no_final_reply unless the gateway fails the attempt
+// over before any byte reaches the caller.
+
+const enc = new TextEncoder();
+const sse = (...events: string[]) =>
+  events.map((event) => `data: ${event}\n\n`).join("") + "data: [DONE]\n\n";
+const EMPTY_STOP = sse(JSON.stringify({
+  choices: [{ index: 0, delta: { content: null }, finish_reason: "stop" }],
+  usage: { prompt_tokens: 19633, completion_tokens: 133 },
+}));
+const TEXT_STOP = sse(
+  JSON.stringify({ choices: [{ index: 0, delta: { content: "hello" } }] }),
+  JSON.stringify({
+    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+    usage: { prompt_tokens: 10, completion_tokens: 2 },
+  }),
+);
+const TOOL_STOP = sse(JSON.stringify({
+  choices: [{
+    index: 0,
+    delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "bash", arguments: "{}" } }] },
+    finish_reason: "tool_calls",
+  }],
+  usage: { prompt_tokens: 10, completion_tokens: 4 },
+}));
+
+function sseFetch(bodies: string[]) {
+  const calls: { model: string }[] = [];
+  const impl = (async (_url: string, init: RequestInit) => {
+    calls.push({ model: JSON.parse(String(init.body)).model });
+    const raw = bodies[calls.length - 1];
+    if (raw === undefined) throw new Error(`unexpected upstream call #${calls.length}`);
+    return new Response(enc.encode(raw), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }) as unknown as typeof fetch;
+  return { impl, calls, models: () => calls.map((c) => c.model) };
+}
+
+const chatStream = (app: any, model: string) =>
+  app.fetch(new Request(`http://gw/v1/teams/${TEAM}/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: "Bearer token-44444444-4444-4444-8444-444444444444", "Content-Type": "application/json" },
+    body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: "hi" }] }),
+  }));
+
+test("max fails over when the primary 200 has usage but no usable content", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const up = sseFetch([EMPTY_STOP, TEXT_STOP]);
+  const { app, sql } = build(up.impl);
+  const r = await chatStream(app, "max");
+  assert.equal(r.status, 200);
+  const text = await r.text();
+  assert.match(text, /"content":"hello"/);
+  assert.equal(text.includes("19633"), false);
+  assert.deepEqual(up.models(), ["gpt-5.6-terra", "deepseek-v4-pro"]);
+  assert.ok(sql.usageValues.includes("ds-v4-pro"));
+  assert.equal(sql.usageValues.includes("mx5-gpt-5.6-terra"), false);
+});
+
+test("max does not fail over a 200 that streams text", async () => {
+  const up = sseFetch([TEXT_STOP, EMPTY_STOP]);
+  const r = await chatStream(build(up.impl).app, "max");
+  assert.equal(r.status, 200);
+  assert.match(await r.text(), /"content":"hello"/);
+  assert.deepEqual(up.models(), ["gpt-5.6-terra"]);
+});
+
+test("max does not fail over a 200 that streams a tool call", async () => {
+  const up = sseFetch([TOOL_STOP]);
+  const r = await chatStream(build(up.impl).app, "max");
+  assert.equal(r.status, 200);
+  assert.match(await r.text(), /"name":"bash"/);
+  assert.deepEqual(up.models(), ["gpt-5.6-terra"]);
+});
+
+test("max does not fail over a 200 that streams reasoning text", async () => {
+  const reasoning = sse(JSON.stringify({
+    choices: [{ index: 0, delta: { reasoning_content: "planning" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 5, completion_tokens: 3 },
+  }));
+  const up = sseFetch([reasoning]);
+  const r = await chatStream(build(up.impl).app, "max");
+  assert.equal(r.status, 200);
+  assert.match(await r.text(), /planning/);
+  assert.deepEqual(up.models(), ["gpt-5.6-terra"]);
+});
+
+test("an unrecognized reasoning object is not usable and fails over", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const hidden = sse(JSON.stringify({
+    choices: [{ index: 0, delta: { reasoning: { text: "hidden" } }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 5, completion_tokens: 9 },
+  }));
+  const up = sseFetch([hidden, TEXT_STOP]);
+  const r = await chatStream(build(up.impl).app, "max");
+  assert.equal(r.status, 200);
+  assert.match(await r.text(), /"content":"hello"/);
+  assert.deepEqual(up.models(), ["gpt-5.6-terra", "deepseek-v4-pro"]);
+});
+
+test("a non-streaming empty 200 fails over the same way", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const empty = {
+    status: 200,
+    body: {
+      choices: [{ message: { role: "assistant", content: "" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 4, completion_tokens: 8 },
+    },
+  };
+  const up = upstream(empty, OK);
+  const r = await chat(build(up.impl).app, "max");
+  assert.equal(r.status, 200);
+  assert.equal((await r.json() as any).choices[0].message.content, "hi");
+  assert.deepEqual(up.models(), ["gpt-5.6-terra", "deepseek-v4-pro"]);
+});
+
+test("with no fallback left an empty 200 is a terminal error, not an empty stop", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const up = sseFetch([EMPTY_STOP, EMPTY_STOP]);
+  const r = await chatStream(build(up.impl).app, "max");
+  assert.equal(r.status, 422);
+  const j = await r.json() as any;
+  assert.equal(j.error.code, "upstream_empty_completion");
+  assert.match(j.error.message, /without text, reasoning, or tool calls/);
+  // pi-ai retries errors that mention 502/503. This status and wording must not.
+  assert.equal(/\b50[234]\b/.test(j.error.message), false);
+  assert.equal(up.calls.length, 2);
+});
+
+test("a single-route tier also refuses an empty 200 instead of returning it", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const up = sseFetch([EMPTY_STOP]);
+  const r = await chatStream(build(up.impl).app, "default");
+  assert.equal(r.status, 422);
+  assert.equal((await r.json() as any).error.code, "upstream_empty_completion");
+  assert.deepEqual(up.models(), ["deepseek-v4-flash"]);
 });
 
 // ── key pools (P1) ──────────────────────────────────────────────────────────

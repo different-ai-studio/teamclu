@@ -1,4 +1,5 @@
-//! Open a local folder in another developer tool (VS Code, Cursor, Claude Code…).
+//! Open a local folder in another developer tool (VS Code, Cursor, Claude Code,
+//! ChatGPT Codex…).
 //!
 //! The set of tools is a closed list on purpose: the frontend names a target by
 //! id and this module decides what runs. Nothing the caller sends becomes a
@@ -15,6 +16,14 @@ pub enum OpenWithTarget {
     Cursor,
     WorkBuddy,
     Qoder,
+    Codex,
+}
+
+/// Launch Services resolves bundle identity even when the installed app is renamed.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+enum MacApp {
+    Name(&'static str),
+    BundleId(&'static str),
 }
 
 impl OpenWithTarget {
@@ -25,6 +34,7 @@ impl OpenWithTarget {
             "cursor" => Some(Self::Cursor),
             "workbuddy" => Some(Self::WorkBuddy),
             "qoder" => Some(Self::Qoder),
+            "codex" => Some(Self::Codex),
             _ => None,
         }
     }
@@ -37,24 +47,33 @@ impl OpenWithTarget {
             Self::Cursor => "Cursor",
             Self::WorkBuddy => "WorkBuddy",
             Self::Qoder => "Qoder",
+            Self::Codex => "ChatGPT Codex",
         }
     }
 
-    /// The `.app` bundle name `open -a` looks up. None for Claude Code, which
-    /// is a CLI and runs inside a terminal instead.
+    /// The Launch Services identity to open. None for Claude Code, which
+    /// is a CLI and runs inside a terminal instead. Codex has both: the desktop
+    /// app first, the `codex` CLI in Terminal when the app is not installed.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn mac_app_name(self) -> Option<&'static str> {
+    fn mac_app(self) -> Option<MacApp> {
         match self {
-            Self::VsCode => Some("Visual Studio Code"),
-            Self::Cursor => Some("Cursor"),
-            Self::WorkBuddy => Some("WorkBuddy"),
-            Self::Qoder => Some("Qoder"),
+            Self::VsCode => Some(MacApp::Name("Visual Studio Code")),
+            Self::Cursor => Some(MacApp::Name("Cursor")),
+            Self::WorkBuddy => Some(MacApp::Name("WorkBuddy")),
+            Self::Qoder => Some(MacApp::Name("Qoder")),
+            // Codex can ship as ChatGPT.app; names are not stable identifiers.
+            Self::Codex => Some(MacApp::BundleId("com.openai.codex")),
             Self::Claude => None,
         }
     }
 
+    /// Whether the tool is (or, for Codex, falls back to) a terminal CLI that
+    /// must run inside a console window rather than open as a GUI app.
+    fn runs_in_terminal(self) -> bool {
+        matches!(self, Self::Claude | Self::Codex)
+    }
+
     /// The launcher each tool puts on PATH.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn cli_name(self) -> &'static str {
         match self {
             Self::VsCode => "code",
@@ -62,6 +81,7 @@ impl OpenWithTarget {
             Self::Cursor => "cursor",
             Self::WorkBuddy => "workbuddy",
             Self::Qoder => "qoder",
+            Self::Codex => "codex",
         }
     }
 }
@@ -104,45 +124,16 @@ fn open_blocking(path: &str, target: OpenWithTarget) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        let output = match target.mac_app_name() {
-            Some(app) => std::process::Command::new("open")
-                .arg("-a")
-                .arg(app)
-                .arg(dir)
-                .output(),
-            // `quoted form of` does the shell quoting inside AppleScript, and
-            // the folder arrives as argv rather than spliced into the script.
-            None => std::process::Command::new("osascript")
-                .args([
-                    "-e",
-                    "on run argv",
-                    "-e",
-                    "tell application \"Terminal\"",
-                    "-e",
-                    "do script \"cd \" & quoted form of (item 1 of argv) & \" && claude\"",
-                    "-e",
-                    "activate",
-                    "-e",
-                    "end tell",
-                    "-e",
-                    "end run",
-                ])
-                .arg(dir)
-                .output(),
+        match target.mac_app() {
+            Some(app) => match mac::open_app(app, dir) {
+                // Codex without the desktop app: the CLI still works.
+                Err(MacOpenError::NotInstalled) if target.runs_in_terminal() => {
+                    mac::run_in_terminal(dir, target).map_err(|e| e.message(target))
+                }
+                other => other.map_err(|e| e.message(target)),
+            },
+            None => mac::run_in_terminal(dir, target).map_err(|e| e.message(target)),
         }
-        .map_err(|e| format!("Failed to open {}: {e}", target.display_name()))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("Unable to find application") {
-                return Err(not_installed(target));
-            }
-            return Err(format!(
-                "Failed to open {}: {}",
-                target.display_name(),
-                stderr.trim()
-            ));
-        }
-        Ok(())
     }
 
     #[cfg(target_os = "windows")]
@@ -152,12 +143,12 @@ fn open_blocking(path: &str, target: OpenWithTarget) -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     {
-        let spawned = if target == OpenWithTarget::Claude {
+        let spawned = if target.runs_in_terminal() {
             ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"]
                 .iter()
                 .any(|term| {
                     std::process::Command::new(term)
-                        .args(["-e", "claude"])
+                        .args(["-e", target.cli_name()])
                         .current_dir(dir)
                         .spawn()
                         .is_ok()
@@ -172,6 +163,84 @@ fn open_blocking(path: &str, target: OpenWithTarget) -> Result<(), String> {
             return Err(not_installed(target));
         }
         Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+enum MacOpenError {
+    NotInstalled,
+    Failed(String),
+}
+
+#[cfg(target_os = "macos")]
+impl MacOpenError {
+    fn message(self, target: OpenWithTarget) -> String {
+        match self {
+            Self::NotInstalled => not_installed(target),
+            Self::Failed(detail) => format!("Failed to open {}: {detail}", target.display_name()),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::{MacApp, MacOpenError, OpenWithTarget};
+    use std::path::Path;
+    use std::process::{Command, Output};
+
+    fn check(output: std::io::Result<Output>) -> Result<(), MacOpenError> {
+        let output = output.map_err(|e| MacOpenError::Failed(e.to_string()))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("Unable to find application") {
+            return Err(MacOpenError::NotInstalled);
+        }
+        Err(MacOpenError::Failed(stderr.trim().to_string()))
+    }
+
+    pub(super) fn app_command(app: MacApp, dir: &Path) -> Command {
+        let mut command = Command::new("open");
+        match app {
+            MacApp::Name(name) => command.arg("-a").arg(name),
+            MacApp::BundleId(id) => command.arg("-b").arg(id),
+        };
+        command.arg(dir);
+        command
+    }
+
+    pub(super) fn open_app(app: MacApp, dir: &Path) -> Result<(), MacOpenError> {
+        check(app_command(app, dir).output())
+    }
+
+    /// Terminal.app running the tool's CLI in `dir`. `quoted form of` does the
+    /// shell quoting inside AppleScript, and the folder arrives as argv rather
+    /// than spliced into the script. The CLI name is a fixed constant.
+    pub(super) fn run_in_terminal(dir: &Path, target: OpenWithTarget) -> Result<(), MacOpenError> {
+        let script_line = format!(
+            "do script \"cd \" & quoted form of (item 1 of argv) & \" && {}\"",
+            target.cli_name()
+        );
+        check(
+            Command::new("osascript")
+                .args([
+                    "-e",
+                    "on run argv",
+                    "-e",
+                    "tell application \"Terminal\"",
+                    "-e",
+                    &script_line,
+                    "-e",
+                    "activate",
+                    "-e",
+                    "end tell",
+                    "-e",
+                    "end run",
+                ])
+                .arg(dir)
+                .output(),
+        )
     }
 }
 
@@ -197,7 +266,7 @@ mod windows {
             OpenWithTarget::Cursor => &[("cursor", "Cursor.exe"), ("Cursor", "Cursor.exe")],
             OpenWithTarget::Qoder => &[("Qoder", "Qoder.exe")],
             OpenWithTarget::WorkBuddy => &[("WorkBuddy", "WorkBuddy.exe")],
-            OpenWithTarget::Claude => &[],
+            OpenWithTarget::Claude | OpenWithTarget::Codex => &[],
         }
     }
 
@@ -235,9 +304,10 @@ mod windows {
         })
     }
 
-    /// PATH for the child, with the places the Claude Code installers use
-    /// appended in case this process started before they were added.
-    fn path_with_claude_dirs() -> OsString {
+    /// PATH for the child, with the places the Claude Code / Codex CLI
+    /// installers use appended in case this process started before they were
+    /// added.
+    fn path_with_cli_dirs() -> OsString {
         let mut dirs: Vec<PathBuf> =
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
         if let Some(home) = env_dir("USERPROFILE") {
@@ -252,12 +322,12 @@ mod windows {
     pub(super) fn open(dir: &Path, target: OpenWithTarget) -> Result<(), String> {
         let fail = |e: std::io::Error| format!("Failed to open {}: {e}", target.display_name());
 
-        if target == OpenWithTarget::Claude {
-            let path = path_with_claude_dirs();
+        if target.runs_in_terminal() {
+            let path = path_with_cli_dirs();
             if find_on_path(target.cli_name(), &path).is_none() {
                 return Err(not_installed(target));
             }
-            // A visible console that stays open (`/K`) with claude running in
+            // A visible console that stays open (`/K`) with the CLI running in
             // the folder. The folder is the working directory, never part of
             // the command line cmd parses.
             Command::new("cmd")
@@ -306,12 +376,31 @@ mod tests {
 
     #[test]
     fn only_known_targets_parse() {
-        for id in ["vscode", "claude", "cursor", "workbuddy", "qoder"] {
+        for id in ["vscode", "claude", "cursor", "workbuddy", "qoder", "codex"] {
             assert!(OpenWithTarget::parse(id).is_some(), "{id}");
         }
         for id in ["", "code", "bash", "/bin/sh", "VSCODE"] {
             assert!(OpenWithTarget::parse(id).is_none(), "{id}");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn codex_uses_bundle_identity_and_preserves_workspace_argument() {
+        let dir = Path::new("/tmp/财务 app's $(echo test)");
+        let command = mac::app_command(OpenWithTarget::Codex.mac_app().unwrap(), dir);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(command.get_program(), "open");
+        assert_eq!(args, ["-b", "com.openai.codex", dir.to_str().unwrap()]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn other_editors_keep_opening_by_name() {
+        let command =
+            mac::app_command(OpenWithTarget::VsCode.mac_app().unwrap(), Path::new("/tmp"));
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["-a", "Visual Studio Code", "/tmp"]);
     }
 
     #[test]

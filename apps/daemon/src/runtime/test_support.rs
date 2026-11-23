@@ -36,7 +36,6 @@ impl AgentBackend for CapturingBackend {
         _force_env_override: bool,
         worktree: String,
         resume_acp_session_id: Option<String>,
-        _mcp_config_path: Option<PathBuf>,
         _initial_model_override: Option<String>,
         _model_mru: Vec<String>,
         _initial_prompt: String,

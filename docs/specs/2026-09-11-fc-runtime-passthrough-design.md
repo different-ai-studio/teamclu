@@ -100,6 +100,7 @@ Product fields (`title`, `auth`, …) stay. Top-level `runtime` / `entry` are re
 | `port` | `customRuntimeConfig.port` or container port. Integer 1–65535. |
 | `layers` | Function `layers`. **Omitted** → platform default layers for `build.kind` (if any). **Explicit `[]`** → no layers. Non-empty → those ARNs only (must look like FC layer ARNs). |
 | `healthCheckPath` | Optional; path must start with `/` → `healthCheckConfig.httpGetUrl` (with platform defaults for delay/period/thresholds, same spirit as today’s container health check). |
+| `alwaysOn` | Optional boolean, default off (2026-11-21, issue #1975) → FC scaling config `minInstances` 1 or 0 on `LATEST`, converged on every finalize; a failure to set it is logged and does not fail the deploy |
 
 ### 4.3 Hard-cut validation
 

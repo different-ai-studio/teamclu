@@ -1,8 +1,8 @@
 import * as ImagePicker from "expo-image-picker";
 import { useCallback, useState } from "react";
 
-import { supabaseAccessToken } from "../../lib/cloud-api/client";
-import { supabase } from "../../lib/supabase/client";
+import { cloudAccessToken } from "../../lib/cloud-api/client";
+import { cloudAuth } from "../../lib/auth/cloud-auth";
 import { uuidV4 } from "../../lib/uuid";
 import { uploadAttachment } from "../sessions/attachment-upload";
 import type { ComposerAttachment } from "./components/IdeaImageAttachmentStrip";
@@ -95,7 +95,7 @@ export function useIdeaImageAttachments(args: {
         ]);
         try {
           const uploaded = await uploadAttachment({
-            getAccessToken: supabaseAccessToken(supabase),
+            getAccessToken: cloudAccessToken(cloudAuth),
             teamId,
             sessionId: `ideas/${contextId}`,
             localUri: asset.uri,

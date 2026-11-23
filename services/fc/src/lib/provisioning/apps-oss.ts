@@ -1,3 +1,4 @@
+import Credential, { OIDCRoleArnCredentialsProvider } from "@alicloud/credentials";
 import { S3Client } from "@aws-sdk/client-s3";
 import {
   ACCESS_KEY_ID,
@@ -21,15 +22,24 @@ import {
  * OSS profile alongside the MinIO one. On the Alibaba FC target both are the
  * same account and no new configuration is needed at all.
  */
-export interface AppsOssProfile {
+interface AppsOssLocation {
   bucket: string;
   region: string;
   endpoint: string;
-  accessKeyId: string;
-  accessKeySecret: string;
   /** Only MinIO needs path-style addressing; Alibaba OSS is virtual-host. */
   forcePathStyle: boolean;
 }
+
+type AppsRrsa = {
+  provider: OIDCRoleArnCredentialsProvider;
+  client: InstanceType<typeof Credential.default>;
+  stsEndpoint: string;
+};
+
+export type AppsOssProfile = AppsOssLocation & (
+  { accessKeyId: string; accessKeySecret: string; rrsa?: never }
+  | { accessKeyId?: never; accessKeySecret?: never; rrsa: AppsRrsa }
+);
 
 export type AppsOssResolution =
   | { profile: AppsOssProfile; error?: undefined }
@@ -48,6 +58,70 @@ export function appsRegion(env: Env = process.env): string {
   return trimmed(env.APPS_REGION) || OSS_REGION(env);
 }
 
+let cachedRrsa: { key: string; rrsa: AppsRrsa } | undefined;
+
+function resolveAppsRrsa(env: Env): AppsOssResolution {
+  const role = trimmed(env.ALIBABA_CLOUD_ROLE_ARN);
+  const issuer = trimmed(env.ALIBABA_CLOUD_OIDC_PROVIDER_ARN);
+  const token = trimmed(env.ALIBABA_CLOUD_OIDC_TOKEN_FILE);
+  if (!role || !issuer || !token) {
+    return { error: "App RRSA requires ALIBABA_CLOUD_ROLE_ARN, ALIBABA_CLOUD_OIDC_PROVIDER_ARN, and ALIBABA_CLOUD_OIDC_TOKEN_FILE" };
+  }
+  const bucket = trimmed(env.APPS_OSS_BUCKET);
+  if (!bucket) return { error: "App RRSA requires APPS_OSS_BUCKET" };
+
+  const region = appsRegion(env);
+  const stsEndpoint = `sts-vpc.${region}.aliyuncs.com`;
+  const key = JSON.stringify([role, issuer, token, stsEndpoint]);
+  if (cachedRrsa?.key !== key) {
+    const provider = OIDCRoleArnCredentialsProvider.builder()
+      .withRoleArn(role)
+      .withOIDCProviderArn(issuer)
+      .withOIDCTokenFilePath(token)
+      .withStsEndpoint(stsEndpoint)
+      .build();
+    cachedRrsa = {
+      key,
+      rrsa: { provider, client: new Credential.default(null, provider), stsEndpoint },
+    };
+  }
+  return {
+    profile: {
+      bucket,
+      region,
+      endpoint: trimmed(env.APPS_OSS_ENDPOINT) || `https://oss-${region}.aliyuncs.com`,
+      forcePathStyle: false,
+      rrsa: cachedRrsa.rrsa,
+    },
+  };
+}
+
+export function appsOpenApiCredentials(profile?: AppsOssProfile) {
+  if (profile?.rrsa) return { credential: profile.rrsa.client };
+  return {
+    accessKeyId: profile?.accessKeyId ?? process.env.ACCESS_KEY_ID,
+    accessKeySecret: profile?.accessKeySecret ?? process.env.ACCESS_KEY_SECRET,
+  };
+}
+
+export async function appsRequestCredentials(profile: AppsOssProfile) {
+  if (profile.rrsa) {
+    const session = await profile.rrsa.provider.getSession();
+    return {
+      accessKeyId: session.accessKeyId,
+      accessKeySecret: session.accessKeySecret,
+      securityToken: session.securityToken,
+      expiration: new Date(session.expiration),
+    };
+  }
+  return {
+    accessKeyId: profile.accessKeyId,
+    accessKeySecret: profile.accessKeySecret,
+    securityToken: undefined,
+    expiration: undefined,
+  };
+}
+
 /**
  * Resolve the apps artifact profile, or explain what is missing.
  *
@@ -56,6 +130,9 @@ export function appsRegion(env: Env = process.env): string {
  * named no variable and cost an SSH session to diagnose.
  */
 export function resolveAppsOss(env: Env = process.env): AppsOssResolution {
+  const credentialMode = trimmed(env.APPS_ALIYUN_CREDENTIAL_MODE);
+  if (credentialMode === "rrsa") return resolveAppsRrsa(env);
+  if (credentialMode) return { error: "Unsupported APPS_ALIYUN_CREDENTIAL_MODE" };
   const dedicatedKey = trimmed(env.APPS_ACCESS_KEY_ID);
 
   // --- Dedicated profile: apps live in a different account than the default
@@ -119,9 +196,14 @@ export function getAppsS3Client(profile: AppsOssProfile): S3Client {
   return new S3Client({
     region: profile.region,
     endpoint: profile.endpoint,
-    credentials: {
-      accessKeyId: profile.accessKeyId,
-      secretAccessKey: profile.accessKeySecret,
+    credentials: async () => {
+      const credentials = await appsRequestCredentials(profile);
+      return {
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.accessKeySecret,
+        sessionToken: credentials.securityToken,
+        expiration: credentials.expiration,
+      };
     },
     forcePathStyle: profile.forcePathStyle,
     // Alibaba OSS does not implement AWS's flexible-checksum extension, and

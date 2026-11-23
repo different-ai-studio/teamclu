@@ -2,16 +2,39 @@
 //!
 //! Pure, per-session stateful translation of pi `--mode rpc` events
 //! (`message_update` with `assistantMessageEvent` deltas, tool execution
-//! lifecycle, turn stop reasons, extension errors) into the same `AcpEvent`
-//! vocabulary the opencode HTTP backend emits
-//! (`runtime/opencode_http/translate.rs`), so gateway / MQTT / frontend / iOS
-//! consumers see no difference.
+//! lifecycle, turn stop reasons, extension errors) into the `AcpEvent`
+//! vocabulary that gateway / MQTT / frontend / iOS consumers render.
 
 use std::collections::HashMap;
 
 use crate::proto::amux;
 
-use crate::runtime::acp_translate::truncate_tool_summary;
+/// Max chars carried in a `ToolResult.summary`.
+const TOOL_SUMMARY_LIMIT: usize = 20_000;
+
+pub fn truncate_tool_summary(summary: String) -> String {
+    if summary.chars().count() > TOOL_SUMMARY_LIMIT {
+        format!(
+            "{}...",
+            summary.chars().take(TOOL_SUMMARY_LIMIT).collect::<String>()
+        )
+    } else {
+        summary
+    }
+}
+
+/// StatusChange event helper (turn open/close markers the aggregator keys on).
+pub fn status_change(old: amux::AgentStatus, new: amux::AgentStatus) -> amux::AcpEvent {
+    amux::AcpEvent {
+        event: Some(amux::acp_event::Event::StatusChange(
+            amux::AcpStatusChange {
+                old_status: old as i32,
+                new_status: new as i32,
+            },
+        )),
+        model: String::new(),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BlockKind {

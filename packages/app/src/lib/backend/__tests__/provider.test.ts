@@ -48,14 +48,13 @@ describe("backend provider facade", () => {
   it("returns a singleton Cloud API backend", async () => {
     vi.stubEnv("VITE_CLOUD_API_URL", "https://cloud.ucar.cc");
 
-    const { getBackend, getBackendKind } = await import("@/lib/backend/provider");
+    const { getBackend } = await import("@/lib/backend/provider");
 
     const first = getBackend();
     const second = getBackend();
 
     expect(first).toBe(second);
     expect(first.kind).toBe("cloud_api");
-    expect(getBackendKind()).toBe("cloud_api");
   });
 
   it("hasBackendConfig reflects whether a cloudApiUrl resolves", async () => {

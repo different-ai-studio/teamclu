@@ -194,13 +194,7 @@ export function handleLiveMessage(
             }
 
             // Write ALL incoming messages into the unified `message` table
-            // (origin="mqtt-live"). This replaces the old agent_runtime_event
-            // writes for tool-call/result/thinking kinds.
-            // The insertAgentRuntimeEvent table stays alive for backwards compat
-            // but is no longer the primary read path.
-            // TODO(cleanup): remove insertAgentRuntimeEvent writes once all
-            //   clients have upgraded past this version and the old read path
-            //   in history loader above is cleaned up.
+            // (origin="mqtt-live").
             if (!parkedAgentReply) {
               const m = decoded.message;
               const kindStr =

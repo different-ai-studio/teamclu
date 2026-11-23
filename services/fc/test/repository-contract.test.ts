@@ -1,4 +1,5 @@
 import { buildAppAuthInfo } from "../src/lib/apps-auth-info.js";
+import { applySessionTitlePatch } from "../src/lib/session-title-lock.js";
 import { ApiError } from "../src/lib/http-utils.js";
 /** Contract gate — supabase-repo behaviour against a stub client. */
 import { test } from "node:test";
@@ -65,20 +66,13 @@ function contractRepo() {
   const shortcutStore: any[] = [
     { id: "shortcut-1", scope: "team", label: "Home", owner_member_id: null, team_id: "team-1", parent_id: null, icon: null, order: 0, node_type: "link", target: "", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-01T00:00:00Z" },
   ];
-  const roleStore = [
-    { id: "role-1", teamId: "team-1", code: "admin", name: "Admin" },
-  ];
   // (team, device, owner) → agent actor, mirroring agents_team_device_uk.
   const deviceAgentStore = new Map<string, string>();
   let inviteSeq = 0;
-  const permissionStore = [
-    { resourceId: "resource-1", roleIds: ["role-1"] },
-  ];
   const workspaceStore = [
     { id: "workspace-1", teamId: "team-1", name: "Alpha", slug: null, archived: false, metadata: null, createdAt: "2026-05-01T00:00:00Z", updatedAt: "2026-05-01T00:00:00Z" },
   ];
   const ideaStore = fixture("ideas-list.json").items.slice();
-  const configStore: Record<string, any> = {};
   const wikiMaintainerStore: Record<string, any> = {};
   const messageStore: any[] = fixture("message-list.json").items.slice();
   const sessionStore: any[] = fixture("session-list.json").items.slice().map((s: any) => ({ ...s, participants: [{ sessionId: s.id, actorId: "actor-1", role: "owner", joinedAt: s.createdAt }] }));
@@ -201,8 +195,11 @@ function contractRepo() {
     async patchSession(sessionId, patch) {
       const s = sessionStore.find(s => s.id === sessionId);
       if (!s) return null;
-      if (patch.title !== undefined) s.title = patch.title;
-      return s;
+      if (patch.title === undefined) return s;
+      const next = applySessionTitlePatch(s, patch);
+      s.title = next.title;
+      s.titleLocked = next.titleLocked;
+      return { ...s, titleLocked: next.titleLocked, titleApplied: next.titleApplied };
     },
     async createSession(input) {
       const id = input.id ?? "session-new";
@@ -348,55 +345,6 @@ function contractRepo() {
       if (patch.archived !== undefined) w.archived = patch.archived;
       if (patch.metadata !== undefined) w.metadata = patch.metadata;
       return w;
-    },
-    async getTeamWorkspaceConfig(teamId) {
-      return configStore[teamId] ?? null;
-    },
-    async putTeamWorkspaceConfig(teamId, input) {
-      configStore[teamId] = {
-        teamId,
-        defaultWorkspaceId: input.defaultWorkspaceId ?? null,
-        pinnedWorkspaceIds: input.pinnedWorkspaceIds ?? [],
-        updatedAt: "2026-05-27T01:00:00Z",
-      };
-      return configStore[teamId];
-    },
-    async getTeamDirectory(teamId) {
-      assert.equal(teamId, "team-1");
-      return {
-        actors: [
-          {
-            id: "actor-1",
-            teamId: "team-1",
-            kind: "user",
-            displayName: "Alice",
-            avatarUrl: null,
-            metadata: null,
-          },
-          {
-            id: "actor-2",
-            teamId: "team-1",
-            kind: "agent",
-            displayName: "Bot",
-            avatarUrl: "https://example.com/avatar.png",
-            metadata: { type: "assistant" },
-          },
-        ],
-        members: [
-          {
-            actorId: "actor-1",
-            teamId: "team-1",
-            role: "member",
-            joinedAt: "2026-05-27T01:00:00Z",
-          },
-          {
-            actorId: "actor-2",
-            teamId: "team-1",
-            role: "admin",
-            joinedAt: "2026-05-27T02:00:00Z",
-          },
-        ],
-      };
     },
     async listTeamActors(teamId, { kind, limit }) {
       assert.equal(teamId, "team-1");
@@ -656,13 +604,6 @@ function contractRepo() {
       if (idx >= 0) shortcutStore.splice(idx, 1);
     },
     async batchMoveShortcuts({ moves }) {},
-    async setShortcutVisibleRoles(shortcutId, { roleIds }) {},
-    async listTeamRoles(teamId) {
-      return roleStore.filter(r => r.teamId === teamId);
-    },
-    async listTeamPermissions(teamId) {
-      return permissionStore;
-    },
     async uploadAttachment({ path, mime, bytes, bucket }) {
       const targetBucket = bucket || "attachments";
       attachmentStore[`${targetBucket}/${path}`] = { mime, bytes };

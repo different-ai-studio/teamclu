@@ -142,7 +142,7 @@ export interface CronSchedule {
 export interface CronPayload {
   message: string
   model?: string // "provider/model"
-  /** Backend the job runs on: "opencode" | "claude" | "codex". Absent/empty
+  /** Backend the job runs on: "pi" (the only runtime). Absent/empty
    *  means "auto" — the daemon uses its default_agent_type. Pairs with `model`,
    *  whose `provider/model` ref is selected from this backend's catalog group. */
   backend?: string
@@ -255,7 +255,6 @@ interface CronState {
   toggleEnabled: (jobId: string, enabled: boolean) => Promise<void>
   runJob: (jobId: string) => Promise<void>
   loadRuns: (jobId: string, limit?: number) => Promise<void>
-  refreshDelivery: () => Promise<void>
   clearError: () => void
   setSelectedJobId: (jobId: string | null) => void
   setShowCronSessions: (show: boolean) => void
@@ -498,14 +497,6 @@ export const useCronStore = create<CronState>((set, get) => ({
     } catch (error) {
       console.error('[Cron] Failed to load runs:', error)
       set({ runs: [], runsLoading: false })
-    }
-  },
-
-  refreshDelivery: async () => {
-    try {
-      await invoke('cron_refresh_delivery')
-    } catch (error) {
-      console.error('[Cron] Failed to refresh delivery:', error)
     }
   },
 

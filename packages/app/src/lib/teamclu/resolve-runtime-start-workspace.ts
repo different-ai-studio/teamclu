@@ -183,24 +183,6 @@ export async function resolveCloudWorkspaceIdForLocalPath(
 }
 
 /**
- * Create-time only: exact path match, or create. An explicit window path must
- * never fall through to the agent's first owned workspace (`bound[0]`).
- */
-export async function ensureWorkspaceForNewSessionContext(args: {
-  teamId: string
-  agentActorId: string
-  localWorkspacePath: string
-  createdByMemberId?: string | null
-}): Promise<string> {
-  return ensureCloudWorkspaceIdForAgentRuntime({
-    teamId: args.teamId,
-    agentActorId: args.agentActorId,
-    localWorkspacePath: args.localWorkspacePath,
-    createdByMemberId: args.createdByMemberId,
-  })
-}
-
-/**
  * Existing-session only: `session_participants.workspace_id`. Never creates,
  * never reads the window path, never uses the device default cache.
  */

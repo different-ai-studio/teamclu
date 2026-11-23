@@ -1557,7 +1557,7 @@ mod tests {
 
         let resumed = fixture
             .server
-            .resume_historical_runtimes_for_session("cron-session", Some("human-actor"))
+            .resume_historical_runtimes_for_session("cron-session")
             .await;
 
         assert!(
@@ -1598,9 +1598,10 @@ mod tests {
                 "cron-session",
                 "",
                 None,
-                "human-actor",
                 false,
                 None,
+                "",
+                false,
                 "",
             )
             .await

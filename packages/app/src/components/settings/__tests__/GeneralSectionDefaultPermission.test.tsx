@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
 const mockInvoke = vi.fn()
-const mockSyncDefaultPermissionMode = vi.fn()
+const mockReportDevicePermissionDefault = vi.fn()
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: mockInvoke,
@@ -103,7 +103,7 @@ vi.mock('../TeamDefaultAgentCard', () => ({
 }))
 
 vi.mock('@/lib/teamclu/sync-session-permission-mode', () => ({
-  syncDefaultPermissionModeToLiveSessions: mockSyncDefaultPermissionMode,
+  reportDevicePermissionDefault: mockReportDevicePermissionDefault,
 }))
 
 const findSelectByValue = (value: string) =>
@@ -116,8 +116,8 @@ describe('GeneralSection default permission setting', () => {
     vi.resetModules()
     mockInvoke.mockReset()
     mockInvoke.mockResolvedValue(null)
-    mockSyncDefaultPermissionMode.mockReset()
-    mockSyncDefaultPermissionMode.mockResolvedValue(undefined)
+    mockReportDevicePermissionDefault.mockReset()
+    mockReportDevicePermissionDefault.mockResolvedValue(undefined)
     window.localStorage.clear()
 
     Object.defineProperty(window, 'matchMedia', {
@@ -138,7 +138,7 @@ describe('GeneralSection default permission setting', () => {
     expect(screen.getByText('默认权限')).toBeInTheDocument()
     expect(
       screen.getByText(
-        '新会话默认使用的权限模式。修改后会同步应用到未单独设置的进行中会话；已单独设置的会话不受影响。',
+        '之后新开的会话用这个权限。已经启动过的会话保持自己的权限，改这里不会动它们。',
       ),
     ).toBeInTheDocument()
     expect(screen.getAllByText('询问').length).toBeGreaterThan(0)
@@ -148,7 +148,7 @@ describe('GeneralSection default permission setting', () => {
     expect(select).toBeTruthy()
   })
 
-  it('persists the choice and pushes it to live sessions', async () => {
+  it('persists the choice and reports it as the device default', async () => {
     const { GeneralSection } = await import('../GeneralSection')
 
     render(<GeneralSection />)
@@ -160,7 +160,8 @@ describe('GeneralSection default permission setting', () => {
     expect(window.localStorage.getItem('teamclu-default-session-permission-mode')).toBe(
       'fullAccess',
     )
-    expect(mockSyncDefaultPermissionMode).toHaveBeenCalledTimes(1)
+    expect(mockReportDevicePermissionDefault).toHaveBeenCalledTimes(1)
+    expect(mockReportDevicePermissionDefault).toHaveBeenCalledWith('fullAccess')
     expect(findSelectByValue('fullAccess')).toBeTruthy()
   })
 })

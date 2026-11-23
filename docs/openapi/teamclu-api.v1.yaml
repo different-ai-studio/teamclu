@@ -1067,6 +1067,14 @@ paths:
               properties:
                 title:
                   type: string
+                titleLocked:
+                  type: boolean
+                  description: |
+                    Set true when a person renames the session. The server
+                    stores the title and sets `sessions.title_locked`. A
+                    generated title omits this field and is applied only
+                    while the row is unlocked (`UPDATE ... WHERE id = $1 AND
+                    title_locked = false`). The lock is not cleared.
                 mode:
                   type: string
                   enum: [solo, collab, control]
@@ -1133,52 +1141,6 @@ paths:
       responses:
         "204":
           description: OK
-        "401":
-          $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/agent-runtimes:
-    get:
-      operationId: listTeamAgentRuntimes
-      summary: List all agent runtimes for a team
-      description: |
-        Returns every row in `agent_runtimes` for the team that the caller
-        can see. Used by iOS to merge backend runtime state into the local
-        session list.
-      tags: [Agents]
-      parameters:
-        - in: path
-          name: teamId
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: Agent runtimes for team.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      required: [id, teamId, agentId, backendType, status, createdAt, updatedAt]
-                      properties:
-                        id: { type: string }
-                        teamId: { type: string }
-                        agentId: { type: string }
-                        sessionId: { type: [string, "null"] }
-                        workspaceId: { type: [string, "null"] }
-                        backendType: { type: string }
-                        status: { type: string }
-                        backendSessionId: { type: [string, "null"] }
-                        runtimeId: { type: [string, "null"] }
-                        currentModel: { type: [string, "null"] }
-                        lastSeenAt: { type: [string, "null"], format: date-time }
-                        createdAt: { type: string, format: date-time }
-                        updatedAt: { type: string, format: date-time }
         "401":
           $ref: "#/components/responses/Error"
   /v1/sessions/{sessionId}/participants:
@@ -1292,6 +1254,77 @@ paths:
         "204":
           description: OK
         "401":
+          $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/join:
+    post:
+      operationId: joinSession
+      summary: Join a session as the calling member
+      description: |
+        Adds the caller's actor in the session's team as a `member`
+        participant (`amux.join_session`, SECURITY DEFINER so the
+        participant-only RLS does not hide the session first). Idempotent: a
+        repeat join changes nothing, and only a first join emits the
+        participants-changed signal. 404 when the session does not exist, 403
+        when the caller has no actor in its team.
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: The session, now readable by the caller.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionWithParticipants"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/participants/{actorId}/cursor:
+    patch:
+      operationId: updateParticipantCursor
+      summary: Advance an agent's processed-message cursor in a session
+      description: |
+        Writes `last_processed_message_id` on the (session, actor) participant
+        row (ADR-0005). `session_participants` has no UPDATE policy, so the
+        write goes through the service role after the checks a policy would
+        make: the caller must be a member of the session's team and must be
+        the agent itself, its owner, or one of its admins. 404 when the
+        session does not exist or the actor has no seat in it.
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: actorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lastProcessedMessageId]
+              properties:
+                lastProcessedMessageId:
+                  type: string
+      responses:
+        "204":
+          description: Cursor written.
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
   /v1/sessions/{sessionId}/participants/{actorId}/workspace:
     put:
@@ -1558,6 +1591,52 @@ paths:
                             - string
                             - "null"
                           format: date-time
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/sessions/gateway/detach:
+    post:
+      operationId: detachGatewaySession
+      summary: Detach a gateway chat from its current session
+      description: |
+        Releases the binding of the session whose ACP session id is
+        `acpSessionId` (`amux.detach_gateway_session`), so the next inbound
+        message in that chat opens a fresh session. Nothing is deleted: the old
+        row keeps its messages and gets the detach time appended to its title.
+
+        Fails soft: an unknown ACP id, or a session that was never bound to a
+        gateway chat, returns `detached: false` (with `sessionId` null for an
+        unknown id) instead of an error. The RPC is SECURITY DEFINER and does
+        not itself check the caller against the session's team.
+      tags: [Sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [acpSessionId]
+              properties:
+                acpSessionId:
+                  type: string
+      responses:
+        "200":
+          description: Detach result.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionId, detached]
+                properties:
+                  sessionId:
+                    type: [string, "null"]
+                    format: uuid
+                  detached:
+                    type: boolean
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -2401,30 +2480,48 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/workspace-defaults:
-    get:
-      operationId: getTeamWorkspaceDefaults
-      summary: Get team workspace defaults (legacy default + pinned workspace list)
+  /v1/teams/{teamId}/activate:
+    post:
+      operationId: activateTeam
+      summary: Switch the caller's active team
       description: |
-        Returns the legacy team workspace defaults shape:
-        `{ defaultWorkspaceId, pinnedWorkspaceIds, updatedAt }`.
-        Distinct from `GET /v1/teams/{teamId}/workspace-config`, which returns
-        the merged sync + llm shape introduced in the team-share onboarding
-        refactor.
+        Makes `teamId` the caller's active team (`amux.switch_active_team`):
+        checks the caller has an actor in the team, points the caller's active
+        org at the team's org, and mints a fresh refresh token carrying the new
+        claims. The client adopts it through `POST /v1/auth/refresh`.
+
+        Registered with router auth `none` and routed to the auth repository,
+        but the bearer token is still required: it is forwarded to the RPC,
+        which resolves the caller from `auth.uid()`. A missing or invalid
+        token, or a team the caller has no actor in, is a 403; other RPC
+        failures are a 400.
       tags: [Teams]
       parameters:
         - $ref: "#/components/parameters/TeamId"
       responses:
         "200":
-          description: Team workspace defaults.
+          description: Switched.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TeamWorkspaceConfig"
-        "404":
+                type: object
+                required: [teamId, refreshToken]
+                properties:
+                  actorId:
+                    type: [string, "null"]
+                    format: uuid
+                    description: The caller's actor in the activated team.
+                  teamId:
+                    type: string
+                    format: uuid
+                  refreshToken:
+                    type: string
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
           $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/workspace-config:
     get:
@@ -2433,8 +2530,7 @@ paths:
       description: |
         Returns the merged team workspace config introduced in the team-share
         onboarding refactor: share mode, git remote/auth (when applicable),
-        sync mode, and the team's AI gateway config. The legacy default
-        workspace shape now lives at `GET /v1/teams/{teamId}/workspace-defaults`.
+        sync mode, and the team's AI gateway config.
       tags: [Teams]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -2452,13 +2548,21 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/llm-config:
     put:
-      operationId: putTeamWorkspaceConfig
-      summary: Put team workspace config (legacy defaults shape)
+      operationId: putTeamLlmConfig
+      summary: Set the team's AI gateway config
       description: |
-        Upserts the legacy team workspace defaults shape
-        (`defaultWorkspaceId`, `pinnedWorkspaceIds`). Does not modify the
-        llm fields — those are managed via `PUT /v1/teams/{teamId}/llm-config`.
+        Upserts the team's AI gateway config onto `team_workspace_config`
+        (`llm_enabled`, `llm_base_url`, `llm_models`) and echoes what was
+        stored. `baseUrl` is trimmed; blank becomes null. A stored `baseUrl`
+        always wins over the deployment default that
+        `GET /v1/teams/{teamId}/workspace-config` serves, and `enabled: false`
+        with a `baseUrl` is how a team opts out of it.
+
+        Authorization is RLS on the caller's bearer: the table's insert and
+        update policies admit any team member, so there is no owner/admin
+        check on this route.
       tags: [Teams]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -2467,18 +2571,22 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TeamWorkspaceConfig"
+              $ref: "#/components/schemas/TeamLlmConfig"
       responses:
         "200":
-          description: Upserted team workspace config.
+          description: The config as stored.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TeamWorkspaceConfig"
+                $ref: "#/components/schemas/TeamLlmConfig"
         "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
           $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/default-agent:
     get:
@@ -2534,6 +2642,81 @@ paths:
       responses:
         "200":
           description: Updated team default agent.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  defaultAgentId:
+                    type: [string, "null"]
+                    format: uuid
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/members/me/default-agent:
+    get:
+      operationId: getMyDefaultAgent
+      summary: Get calling member's own default agent
+      description: |
+        The calling member's own default agent in this team, without the team
+        fallback (see `effective-default-agent` for that). The member is
+        resolved from the bearer token; the route never takes a member id.
+        `defaultAgentId` is null when the member has not set one.
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: The member's default agent (null when unset).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  defaultAgentId:
+                    type: [string, "null"]
+                    format: uuid
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: putMyDefaultAgent
+      summary: Set or clear calling member's own default agent
+      description: |
+        Sets the calling member's own default agent in this team; `agentId`
+        null or omitted clears it. The member is resolved from the bearer
+        token. 409 `invalid_agent` when the database rejects the agent as a
+        default for this member (Postgres `23514`), 404 when it does not exist.
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: [string, "null"]
+                  format: uuid
+      responses:
+        "200":
+          description: The member's default agent after the write.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -4401,6 +4584,44 @@ paths:
         "204": { description: Deleted. }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/stripe/return:
+    get:
+      operationId: stripeCheckoutReturn
+      summary: Browser landing page after Stripe Checkout
+      description: |
+        Where Stripe sends the browser after checkout. A static, bilingual
+        HTML page: `status=cancel` renders the cancelled message, anything
+        else (including no `status`) the completed one. It reads and writes
+        nothing; the app does not wait on this redirect and picks up the new
+        balance on its own.
+      tags: [teams]
+      security: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            description: "`cancel` for the cancelled page; any other value means completed."
+      responses:
+        "200":
+          description: The HTML page.
+          content:
+            text/html:
+              schema:
+                type: string
+        "400":
+          description: |
+            Only when a request body is sent and is not valid JSON
+            (`invalid_json`), as on every non-raw route; the handler itself
+            never fails.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
   /v1/teams/{teamId}/credits:
     get:
       operationId: getTeamCredits
@@ -4702,6 +4923,108 @@ paths:
         "404":
           $ref: "#/components/responses/Error"
         "401":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteActor
+      summary: Remove an actor from its team
+      description: |
+        Removes a member, agent or external actor from the team it belongs to
+        (`amux.remove_team_actor`). The caller cannot remove their own actor.
+        Removing a member or a team agent requires the owner or admin role;
+        removing a personal agent requires its owner. The last owner of a team
+        cannot be removed (400). After removal the team's app (Gitea) access is
+        re-synced.
+
+        An actor id that does not exist raises Postgres `23503`, which the
+        error mapper does not classify, so it currently surfaces as a 500
+        rather than a 404.
+      tags: [Actors]
+      parameters:
+        - name: actorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /v1/actors/{actorId}/profile:
+    patch:
+      operationId: updateCurrentActorProfile
+      summary: Update the caller's own member profile
+      description: |
+        Sets the display name and avatar of a member actor that belongs to the
+        calling user (`amux.update_current_actor_profile`). Any other actor —
+        another user's, an agent, an external actor — is refused with 403.
+        `displayName` is trimmed and must not be blank; `avatarUrl` omitted,
+        null or blank clears the avatar.
+      tags: [Actors]
+      parameters:
+        - name: actorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName]
+              properties:
+                displayName:
+                  type: string
+                  minLength: 1
+                avatarUrl:
+                  type: [string, "null"]
+      responses:
+        "200":
+          description: |
+            The updated actor as an actor-directory entry. Only the fields
+            listed are populated from the update; the rest of the directory
+            shape (roles, contact, source) comes back empty or null.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                additionalProperties: true
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  teamId:
+                    type: [string, "null"]
+                    format: uuid
+                  kind:
+                    type: [string, "null"]
+                  displayName:
+                    type: [string, "null"]
+                  avatarUrl:
+                    type: [string, "null"]
+                  userId:
+                    type: [string, "null"]
+                    format: uuid
+                  updatedAt:
+                    type: [string, "null"]
+                    format: date-time
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
           $ref: "#/components/responses/Error"
   /v1/actors/external:
     post:
@@ -5143,6 +5466,52 @@ paths:
           description: OK
         "401":
           $ref: "#/components/responses/Error"
+  /v1/agents/{agentActorId}/share-to-team:
+    post:
+      operationId: shareAgentToTeam
+      summary: Make an agent team-visible
+      description: |
+        Sets the agent's visibility to `team` (`amux.share_agent_to_team`).
+        Only the agent's owner may call this; anyone else gets 403.
+      tags: [Actors]
+      parameters:
+        - name: agentActorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Shared.
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /v1/agents/{agentActorId}/make-personal:
+    post:
+      operationId: makeAgentPersonal
+      summary: Make an agent personal
+      description: |
+        Sets the agent's visibility to `personal` (`amux.make_agent_personal`),
+        deletes every other member's access grant on it, and leaves the owner
+        with an `admin` grant. Only the agent's owner may call this; anyone
+        else (or an agent with no owner) gets 403.
+      tags: [Actors]
+      parameters:
+        - name: agentActorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Made personal.
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
   /v1/agents/{agentActorId}/admin-members:
     get:
       operationId: listAgentAdminMembers
@@ -5278,98 +5647,59 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
-  /v1/agents/runtimes:
+  /v1/runtime/agent-defaults:
     get:
-      operationId: getAgentRuntime
-      summary: Get agent runtime by session/runtime/backendSession
+      operationId: listAgentDefaults
+      summary: Read agents' runtime defaults
+      description: |
+        For each `agentId` (repeat the parameter for several) returns the
+        agent's supported runtime types, default type and default workspace.
+        The amuxd daemon reads `defaultWorkspaceId` to resolve the gateway
+        runtime's working directory. Rows come from `agents` under the
+        caller's RLS, so ids the caller cannot see are simply absent. No
+        `agentId` returns an empty list.
       tags: [Agents]
       parameters:
-        - { in: query, name: agentId, schema: { type: string, format: uuid } }
-        - { in: query, name: sessionId, required: true, schema: { type: string, format: uuid } }
-        - { in: query, name: runtimeId, schema: { type: string } }
-        - { in: query, name: backendSessionId, schema: { type: string } }
+        - name: agentId
+          in: query
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+              format: uuid
       responses:
         "200":
-          description: Agent runtime.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AgentRuntime"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "401":
-          $ref: "#/components/responses/Error"
-    post:
-      operationId: upsertAgentRuntime
-      summary: Upsert agent runtime
-      tags: [Agents]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AgentRuntimeUpsert"
-      responses:
-        "200":
-          description: Upserted runtime id.
+          description: Defaults per visible agent.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
                 type: object
-                required: [id]
+                required: [items]
                 properties:
-                  id:
-                    type:
-                      - string
-                      - "null"
-                    format: uuid
-        "401":
-          $ref: "#/components/responses/Error"
-  /v1/agents/runtimes/latest:
-    get:
-      operationId: getLatestAgentRuntime
-      summary: Get latest agent runtime for agent+session
-      tags: [Agents]
-      parameters:
-        - { in: query, name: agentId, required: true, schema: { type: string, format: uuid } }
-        - { in: query, name: sessionId, required: true, schema: { type: string, format: uuid } }
-      responses:
-        "200":
-          description: Latest agent runtime.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AgentRuntime"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "401":
-          $ref: "#/components/responses/Error"
-  /v1/agents/runtimes/{runtimeRowId}/cursor:
-    patch:
-      operationId: updateRuntimeCursor
-      summary: Update runtime cursor (last processed message)
-      tags: [Agents]
-      parameters:
-        - in: path
-          name: runtimeRowId
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [lastProcessedMessageId]
-              properties:
-                lastProcessedMessageId:
-                  type: string
-                  format: uuid
-      responses:
-        "204":
-          description: OK
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        agentTypes:
+                          type: [array, "null"]
+                          items:
+                            type: string
+                        defaultAgentType:
+                          type: [string, "null"]
+                        defaultWorkspaceId:
+                          type: [string, "null"]
+                          format: uuid
         "401":
           $ref: "#/components/responses/Error"
   /v1/agents/types/ensure:
@@ -5544,25 +5874,6 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/NotFound"
-  /v1/teams/{teamId}/directory:
-    get:
-      operationId: getTeamDirectory
-      summary: Get team directory (actors + members)
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: Team directory.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TeamDirectory"
-        "401":
-          $ref: "#/components/responses/Error"
   /v1/notifications/prefs:
     get:
       operationId: getNotificationPrefs
@@ -5600,6 +5911,106 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NotificationPrefs"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: postNotificationPrefs
+      summary: Update notification preferences (POST alias of PUT)
+      description: |
+        Same handler as `PUT /v1/notifications/prefs`, kept because the web /
+        desktop client saves with POST. Upserts the caller's row keyed by
+        `user_id`: `enabled` defaults to true, `dnd_tz` to `Asia/Shanghai`,
+        and the quiet-hours minutes to null when omitted. Returns the stored
+        row.
+
+        `user_id` defaults to the bearer token's user, but a `user_id` in the
+        body is used as given; only RLS on `notification_prefs` stands between
+        it and another user's row.
+      tags: [Notifications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationPrefs"
+      responses:
+        "200":
+          description: Updated notification preferences.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPrefs"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/notifications/muted-sessions:
+    get:
+      operationId: listMutedSessionIds
+      summary: List the caller's muted session ids
+      description: |
+        Session ids from `session_mutes` visible to the caller (RLS scopes the
+        rows to the caller). The mute's `until` is not returned, so an expired
+        mute is still listed. Same repository call as `GET /v1/sessions/muted`;
+        query parameters (the web client sends `userId`) are ignored.
+      tags: [Notifications]
+      responses:
+        "200":
+          description: Muted session ids.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/devices/push-token:
+    post:
+      operationId: registerDevicePushToken
+      summary: Register or refresh a device push token
+      description: |
+        Upserts the caller's push token for one device into
+        `device_push_tokens`, keyed by (user, `deviceId`, `provider`), and
+        stamps `last_seen_at`. The user comes from the bearer token, never the
+        body.
+      tags: [Notifications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, token]
+              properties:
+                deviceId:
+                  type: string
+                token:
+                  type: string
+                platform:
+                  type: string
+                  default: ios
+                provider:
+                  type: string
+                  default: apns
+                appVersion:
+                  type: [string, "null"]
+      responses:
+        "204":
+          description: Stored.
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -5662,244 +6073,6 @@ paths:
                       format: uuid
         "401":
           $ref: "#/components/responses/Error"
-  /v1/inbox:
-    get:
-      operationId: listInboxItems
-      summary: List inbox items for the current user
-      description: >-
-        The inbox holds only work that is blocked on this person — an agent
-        waiting for a permission decision, a turn that failed without
-        producing anything, a mention, a delegated task waiting to be
-        accepted, an idea waiting for review. Ordinary messages and status
-        changes never appear here.
-      tags: [Inbox]
-      parameters:
-        - name: teamId
-          in: query
-          description: >-
-            Narrow to one team. Omit to return items across every team the
-            caller belongs to, which is what the mobile client does — the
-            inbox is a personal surface and spans teams.
-          schema:
-            type: string
-            format: uuid
-        - name: state
-          in: query
-          description: >-
-            Which items to return. `unread` is the badge surface and the
-            default; `open` adds read-but-unresolved items; `all` includes
-            resolved ones.
-          schema:
-            type: string
-            enum: [unread, open, all]
-            default: unread
-        - name: kind
-          in: query
-          description: Narrow to a single item kind.
-          schema:
-            $ref: "#/components/schemas/InboxItemKind"
-        - name: maxPriority
-          in: query
-          description: >-
-            Return only items at or above this urgency, where 0 is most
-            urgent. Clients pass 1 so merely-informational items stay out of
-            the default surface.
-          schema:
-            type: integer
-            minimum: 0
-            maximum: 2
-        - name: cursor
-          in: query
-          schema:
-            type: string
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 50
-      responses:
-        "200":
-          description: Inbox page for the current user.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items, nextCursor, unreadCount]
-                properties:
-                  items:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/InboxItem"
-                  nextCursor:
-                    type:
-                      - string
-                      - "null"
-                  unreadCount:
-                    type: integer
-                    description: >-
-                      Unread items matching the same filters, ignoring the
-                      page window. Drives the tab badge so clients need no
-                      second call.
-        "401":
-          $ref: "#/components/responses/Error"
-    post:
-      operationId: ingestInboxItem
-      summary: Report an event the server cannot observe on its own
-      description: >-
-        Called by a daemon for the two kinds that never reach the Cloud API
-        by any other route. A permission request lives only on the session
-        live topic, and a completed delegated task is indistinguishable from
-        an ordinary reply once it lands in `messages`. Every other kind is
-        derived server-side and is rejected here, so a compromised daemon
-        cannot forge a mention or an idea review.
-
-
-        Authorization deliberately departs from the usual facade rule of
-        forwarding the caller token to Supabase and letting RLS decide. The
-        row belongs to the *recipient*, not the caller, so RLS would refuse
-        it. Instead the caller is authenticated normally, this endpoint
-        checks that some actor owned by the caller and the target actor are
-        both participants of `sessionId`, and only then writes with the
-        service role. Do not "fix" this back to a token passthrough.
-
-
-        The membership check must not use `current_actor_id()` — it returns
-        the caller's oldest actor, which silently diverges from the actor a
-        daemon reports as if that account ever gains a second one. Match on
-        any actor owned by the caller instead.
-
-
-        Idempotent on `dedupKey`. Retried cron turns and redelivered MQTT
-        frames converge on one row rather than one per attempt.
-      tags: [Inbox]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/InboxIngestRequest"
-      responses:
-        "201":
-          description: Item created.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InboxItem"
-        "200":
-          description: >-
-            An item with this `dedupKey` already existed and is returned
-            unchanged. Not an error — this is the retry path.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InboxItem"
-        "400":
-          description: >-
-            Malformed body, or a `kind` this endpoint refuses because the
-            server derives it itself.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          $ref: "#/components/responses/Error"
-        "403":
-          description: >-
-            The caller or the target actor is not a participant of
-            `sessionId`.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /v1/inbox/read:
-    post:
-      operationId: markInboxItemsRead
-      summary: Mark inbox items read
-      description: >-
-        Clears the badge without claiming the work is done. Pass `itemIds`
-        for an explicit set, or `before` to clear everything older than a
-        moment, which is what a pull-to-refresh "mark all read" does. Reading
-        is not resolving — see the resolve operation.
-      tags: [Inbox]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                itemIds:
-                  type: array
-                  items:
-                    type: string
-                    format: uuid
-                before:
-                  type: string
-                  format: date-time
-                  description: Mark every item created at or before this instant.
-                teamId:
-                  type: string
-                  format: uuid
-                  description: Restrict a `before` sweep to one team.
-      responses:
-        "200":
-          description: Number of items whose read state changed.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [updated]
-                properties:
-                  updated:
-                    type: integer
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-  /v1/inbox/{itemId}/resolve:
-    post:
-      operationId: resolveInboxItem
-      summary: Mark one inbox item handled
-      description: >-
-        The item leaves the `open` surface. Distinct from marking it read —
-        a person can read a permission request and still not have decided.
-        Resolving also marks it read.
-      tags: [Inbox]
-      parameters:
-        - name: itemId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: The resolved item.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InboxItem"
-        "401":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/NotFound"
   /v1/teams/{teamId}/shortcuts:
     get:
       operationId: listShortcuts
@@ -5953,6 +6126,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Shortcut"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+    get:
+      operationId: listShortcutsByScope
+      summary: List shortcuts by scope
+      description: |
+        `scope=personal` lists the caller's personal shortcuts (RLS limits them
+        to the caller's own member rows); `scope=team` lists one team's
+        shortcuts and requires `teamId`. `parentId` narrows to one folder
+        level; the literal string `null` selects the root level. Ordered by
+        `order` ascending.
+      tags: [Shortcuts]
+      parameters:
+        - name: scope
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [personal, team]
+        - name: teamId
+          in: query
+          required: false
+          description: Required when `scope=team`; ignored otherwise.
+          schema:
+            type: string
+            format: uuid
+        - name: parentId
+          in: query
+          required: false
+          description: Folder id, or the literal `null` for the root level.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Shortcuts.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Shortcut"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -6047,66 +6270,6 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
-  /v1/shortcuts/{shortcutId}/visible-roles:
-    put:
-      operationId: setShortcutVisibleRoles
-      summary: Set shortcut visible roles
-      tags: [Shortcuts]
-      parameters:
-        - name: shortcutId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [roleIds]
-              properties:
-                roleIds:
-                  type: array
-                  items:
-                    type: string
-                    format: uuid
-      responses:
-        "204":
-          description: Visible roles set.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/permissions:
-    get:
-      operationId: listTeamPermissions
-      summary: List team permissions
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: Team permissions.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/Permission"
-        "401":
-          $ref: "#/components/responses/Error"
   /v1/ideas:
     get:
       operationId: listIdeas
@@ -6168,6 +6331,43 @@ paths:
               schema:
                 $ref: "#/components/schemas/Idea"
         "401":
+          $ref: "#/components/responses/Error"
+  /v1/ideas/reorder:
+    post:
+      operationId: reorderIdeas
+      summary: Reorder a team's ideas
+      description: |
+        Sets `sort_order` of each listed idea to its 1-based position times
+        1000 (`amux.reorder_ideas`). The caller must be a member of `teamId`
+        (403). Every id must be a non-archived idea of that team; otherwise
+        the RPC raises Postgres `23503`, which the error mapper does not
+        classify, so it currently surfaces as a 500.
+      tags: [Ideas]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [teamId, ideaIds]
+              properties:
+                teamId:
+                  type: string
+                  format: uuid
+                ideaIds:
+                  type: array
+                  description: Idea ids in the desired order.
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        "204":
+          description: Reordered.
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
           $ref: "#/components/responses/Error"
   /v1/ideas/{ideaId}:
     get:
@@ -6345,6 +6545,89 @@ paths:
               schema:
                 $ref: "#/components/schemas/IdeaActivity"
         "401":
+          $ref: "#/components/responses/Error"
+    get:
+      operationId: listIdeaActivities
+      summary: List an idea's activities
+      description: |
+        Every activity (comments, status changes and other kinds) on the
+        idea, newest first, unpaginated. Visibility is RLS on
+        `idea_activities` under the caller's bearer; an idea the caller cannot
+        see yields an empty list rather than a 404.
+      tags: [Ideas]
+      parameters:
+        - in: path
+          name: ideaId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Activities, newest first.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/IdeaActivity"
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/client-version:
+    post:
+      operationId: reportClientVersion
+      summary: Report the calling client's version
+      description: |
+        Records which build the caller runs on one device
+        (`amux.report_client_version`), upserted per (caller's actor in the
+        team, `clientType`, `deviceId`) with `last_reported_at` set to now.
+        403 when the caller has no actor in the team.
+      tags: [Telemetry]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientType, version, deviceId]
+              properties:
+                clientType:
+                  type: string
+                  enum: [tauri, ios, expo, daemon]
+                version:
+                  type: string
+                deviceId:
+                  type: string
+                build:
+                  type: [string, "null"]
+      responses:
+        "200":
+          description: Recorded.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
           $ref: "#/components/responses/Error"
   /v1/feedback:
     post:
@@ -6983,68 +7266,6 @@ paths:
                         archived: { type: boolean }
         "400":
           $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/shortcut-roles:
-    get:
-      operationId: listTeamRoles
-      summary: List shortcuts RBAC roles for a team
-      description: |
-        Returns `amux.team_roles` rows used by shortcuts visibility RBAC.
-        Relocated from `GET /v1/teams/{teamId}/roles`, which now lists org roles
-        (`listOrgRoles`).
-      tags: [Shortcuts]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: Shortcuts team roles.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/TeamRole"
-        "401":
-          $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/shortcut-role-bindings:
-    get:
-      operationId: listShortcutRoleBindings
-      summary: List shortcut resource → role bindings for a team
-      tags: [Shortcuts]
-      parameters:
-        - name: teamId
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Role bindings
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        resource_id: { type: string }
-                        permission_roles:
-                          type: array
-                          items:
-                            type: object
-                            properties:
-                              role_id: { type: string }
-        "400":
-          $ref: "#/components/responses/Error"
   /v1/actors/by-ids:
     post:
       operationId: listActorDirectoryByIds
@@ -7114,6 +7335,249 @@ paths:
         "403":
           $ref: "#/components/responses/Error"
         "409":
+          $ref: "#/components/responses/Error"
+  /v1/auth/phone/send-code:
+    post:
+      operationId: phoneSendCode
+      summary: Send a phone login verification code
+      description: |
+        Step one of phone login (replaces GoTrue native phone OTP, which
+        `/v1/auth/signin-otp` now refuses). Normalizes `phone`, requires a
+        non-empty `captchaVerify` token, enforces one code per phone per 60
+        seconds (429), stores a 6-digit code and sends it by SMS (502 when the
+        SMS provider fails). When the deployment runs in SMS debug mode the
+        captcha and resend checks are skipped, no SMS is sent, and the code is
+        returned as `debugCode`.
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone:
+                  type: string
+                  description: Mobile number; normalized and validated server-side.
+                captchaVerify:
+                  type: string
+                  description: Captcha token. Required except in SMS debug mode.
+      responses:
+        "200":
+          description: Code issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success]
+                properties:
+                  success:
+                    type: boolean
+                  debugCode:
+                    type: string
+                    description: Present only in SMS debug mode.
+        "400":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+  /v1/auth/phone/login:
+    post:
+      operationId: phoneLogin
+      summary: Log in with a phone verification code
+      description: |
+        Step two of phone login. Verifies the unexpired, unused 6-digit `code`
+        for `phone` (400 when wrong or expired), then resolves the identity by
+        mobile number:
+
+        - More than one candidate identity and no `userId` picked: returns
+          `{ multiUser: true, users }` for an account picker. The code is not
+          consumed, so the client calls again with `userId`.
+        - One identity (or the picked `userId`): returns
+          `{ session, user }` with `user` the identity row.
+        - No identity at all: creates a TeamClu phone account with no
+          identity row yet and returns `{ session, user: null, created: true }`;
+          the client then creates a team.
+
+        403 for an identity that may not sign in here (for example a member
+        account, or one without phone login enabled). `user_id` is accepted as
+        an alias of `userId`.
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code]
+              properties:
+                phone:
+                  type: string
+                code:
+                  type: string
+                  description: The 6-digit code from send-code.
+                userId:
+                  type: string
+                  format: uuid
+                  description: Identity picked from a previous `multiUser` answer.
+                user_id:
+                  type: string
+                  format: uuid
+                  description: Alias of `userId`; `userId` wins when both are sent.
+      responses:
+        "200":
+          description: Either an account picker or a session.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [multiUser, users]
+                    properties:
+                      multiUser:
+                        type: boolean
+                        const: true
+                      users:
+                        type: array
+                        items:
+                          type: object
+                          required: [id]
+                          properties:
+                            id:
+                              type: string
+                              format: uuid
+                            org_id:
+                              type: [string, "null"]
+                            org_name:
+                              type: [string, "null"]
+                            org_logo:
+                              type: [string, "null"]
+                            admin_type:
+                              type: integer
+                              description: "1 = member, >= 2 = staff."
+                            nickname:
+                              type: string
+                            email:
+                              type: string
+                  - type: object
+                    required: [session]
+                    properties:
+                      session:
+                        type: object
+                        required: [access_token, refresh_token]
+                        properties:
+                          access_token:
+                            type: string
+                          refresh_token:
+                            type: string
+                          expires_in:
+                            type: integer
+                          expires_at:
+                            type: integer
+                          user:
+                            type: [object, "null"]
+                            additionalProperties: true
+                            description: The GoTrue auth user.
+                      user:
+                        type: [object, "null"]
+                        additionalProperties: true
+                        description: The resolved identity row, or null for a newly created phone account.
+                      created:
+                        type: boolean
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /v1/auth/signin-anonymous:
+    post:
+      operationId: signInAnonymous
+      summary: Removed - anonymous sign-in
+      description: |
+        Anonymous / quick-trial sign-in has been removed. The route is kept so
+        already-installed clients get a legible answer: it always returns 410
+        `anonymous_signin_removed`.
+      deprecated: true
+      tags: [Auth]
+      security: []
+      responses:
+        "410":
+          $ref: "#/components/responses/Error"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/account/upgrade:
+    post:
+      operationId: upgradeAccount
+      summary: Move the caller's team out of the default org into its own org
+      description: |
+        Creates an org named `orgName` (with optional `contact`), and reparents
+        and renames the caller's team `teamId` into it
+        (`amux.upgrade_account_to_org`, with the deployment's
+        `DEFAULT_ORG_ID`). Only the team owner may call this (403); a blank
+        org name, or a team that already belongs to its own org, is a 400.
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [teamId, orgName]
+              properties:
+                teamId:
+                  type: string
+                  format: uuid
+                orgName:
+                  type: string
+                  minLength: 1
+                contact:
+                  type: [string, "null"]
+      responses:
+        "200":
+          description: The new org and the moved team.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [orgId, teamId, teamName]
+                properties:
+                  orgId:
+                    type: string
+                    format: uuid
+                  teamId:
+                    type: string
+                    format: uuid
+                  teamName:
+                    type: string
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /v1/account/bind-phone:
+    post:
+      operationId: bindPhone
+      summary: Removed - bind a phone number to the account
+      description: |
+        Phone binding belonged to the removed anonymous-account upgrade. No
+        client calls it; it always returns 410 `phone_binding_removed`. The
+        route still sits behind bearer auth, so an unauthenticated call gets
+        401 first.
+      deprecated: true
+      tags: [Auth]
+      responses:
+        "401":
+          $ref: "#/components/responses/Error"
+        "410":
+          $ref: "#/components/responses/Error"
+        default:
           $ref: "#/components/responses/Error"
   /v1/auth/signin-otp:
     post:
@@ -7615,6 +8079,12 @@ paths:
                 required: [ok]
                 properties:
                   ok: { type: boolean, enum: [true] }
+        "403":
+          $ref: "#/components/responses/Error"
+          description: >-
+            `inherited_access_not_allowed`: the caller is an agent that reaches
+            the app only through its owner, and an inherited level never changes
+            who has access or deletes the app.
         "409":
           $ref: "#/components/responses/Error"
         "404":
@@ -8987,6 +9457,12 @@ paths:
                       $ref: "#/components/schemas/AppMemberAccessRow"
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+          description: >-
+            `inherited_access_not_allowed`: the caller is an agent that reaches
+            the app only through its owner, and an inherited level never changes
+            who has access or deletes the app.
         "404":
           $ref: "#/components/responses/Error"
   /v1/apps/{appId}/access/{memberId}:
@@ -9026,6 +9502,12 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+          description: >-
+            `inherited_access_not_allowed`: the caller is an agent that reaches
+            the app only through its owner, and an inherited level never changes
+            who has access or deletes the app.
         "404":
           $ref: "#/components/responses/Error"
         "422":
@@ -9055,6 +9537,12 @@ paths:
                     enum: [true]
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+          description: >-
+            `inherited_access_not_allowed`: the caller is an agent that reaches
+            the app only through its owner, and an inherited level never changes
+            who has access or deletes the app.
         "404":
           $ref: "#/components/responses/Error"
   /v1/apps/{appId}/data/tables:
@@ -10002,150 +10490,18 @@ components:
         status: { type: integer, description: "The upstream HTTP status that benched it." }
         error: { type: string, description: "The start of the upstream error body." }
         at: { type: string, format: date-time }
-    InboxItemKind:
-      type: string
-      description: >-
-        Why an item is in the inbox. The vocabulary is deliberately closed
-        and every member satisfies one test — nothing happens next until
-        this person acts.
-
-
-        `permission_request` an agent is stopped, waiting for a decision.
-        `task_failed` a turn ended with no answer at all.
-        `mention` the person was named in a session.
-        `task_completed` a delegated task finished and wants acceptance.
-        `idea_review` an idea was claimed or submitted and needs review.
-      enum:
-        - permission_request
-        - task_failed
-        - mention
-        - task_completed
-        - idea_review
-    InboxItemSource:
-      type: object
-      description: Where the item came from, so a client can navigate to it.
-      required: [sessionId]
-      properties:
-        sessionId:
-          type:
-            - string
-            - "null"
-          format: uuid
-        messageId:
-          type:
-            - string
-            - "null"
-          format: uuid
-        ideaId:
-          type:
-            - string
-            - "null"
-          format: uuid
-        actorId:
-          type:
-            - string
-            - "null"
-          format: uuid
-          description: The agent or person whose action produced the item.
-        turnId:
-          type:
-            - string
-            - "null"
-    InboxItem:
-      type: object
-      required:
-        [id, teamId, kind, priority, title, source, createdAt, readAt, resolvedAt]
-      properties:
-        id:
-          type: string
-          format: uuid
-        teamId:
-          type: string
-          format: uuid
-        kind:
-          $ref: "#/components/schemas/InboxItemKind"
-        priority:
-          type: integer
-          minimum: 0
-          maximum: 2
-          description: >-
-            0 is blocked on a decision, 1 is waiting for acceptance, 2 is
-            informational. Computed server-side so every client ranks the
-            same way.
-        title:
-          type: string
-          description: >-
-            One line, already localized by the producer. Clients render it
-            verbatim and never re-summarize.
-        body:
-          type:
-            - string
-            - "null"
-          description: Optional second line. Clients truncate rather than wrap far.
-        source:
-          $ref: "#/components/schemas/InboxItemSource"
-        createdAt:
-          type: string
-          format: date-time
-        readAt:
-          type:
-            - string
-            - "null"
-          format: date-time
-        resolvedAt:
-          type:
-            - string
-            - "null"
-          format: date-time
-    InboxIngestRequest:
-      type: object
-      required: [kind, sessionId, targetActorId, title, dedupKey]
-      properties:
-        kind:
-          type: string
-          description: >-
-            Only the kinds no server-side signal can reconstruct. A turn
-            that failed is already visible in `messages.metadata.turn_status`
-            and is derived there, not reported here.
-          enum:
-            - permission_request
-            - task_completed
-        sessionId:
-          type: string
-          format: uuid
-        targetActorId:
-          type: string
-          format: uuid
-          description: >-
-            Who the item is for. The server resolves this to the owning user
-            and refuses an actor that is not a participant of `sessionId`.
-        title:
-          type: string
-          maxLength: 200
-        body:
-          type:
-            - string
-            - "null"
-          maxLength: 2000
-        turnId:
-          type:
-            - string
-            - "null"
-        dedupKey:
-          type: string
-          maxLength: 200
-          description: >-
-            Producer-supplied idempotency key, stable across retries of the
-            same logical event. A permission request keys on its request id,
-            not on a timestamp.
     TeamSkillSlug:
       type: string
-      pattern: "^[a-z0-9][a-z0-9-]{1,63}$"
+      minLength: 2
+      maxLength: 64
       description: >-
-        Skill identifier inside a team registry. Mirrors
-        `TEAM_SKILL_SLUG_RE` in the FC repository layer — lowercase
-        alphanumerics and hyphens, never leading with a hyphen, 2 to 64
-        characters.
+        Skill identifier inside a team registry. This is also the install
+        folder and the SKILL.md name. Unicode letters and digits are allowed,
+        including Chinese (整车成本智能表格 is a legal id). ASCII letters are
+        stored lowercase. The value is NFC, 2 to 64 code points, at most 255
+        UTF-8 bytes, with hyphens only in the middle. Path separators, controls,
+        Windows-forbidden characters, and Windows device names are rejected.
+        Older ASCII ids remain valid.
     TeamSkillCategory:
       type: string
       description: >
@@ -10200,6 +10556,12 @@ components:
         id: { type: string, format: uuid }
         teamId: { type: string, format: uuid }
         slug: { type: string }
+        displayName:
+          type: string
+          maxLength: 120
+          description: >
+            Optional title. The slug itself may be Chinese and is what gets
+            installed. Older rows omit this and clients fall back to the slug.
         ownerActorId:
           type: string
           format: uuid
@@ -10283,6 +10645,12 @@ components:
       required: [slug, summary, category, changelog, contentHash]
       properties:
         slug: { $ref: "#/components/schemas/TeamSkillSlug" }
+        displayName:
+          type: string
+          maxLength: 120
+          description: >
+            Optional title shown in the team. Defaults to the slug. The slug
+            can already be the Chinese name.
         summary: { type: string, maxLength: 200 }
         category: { $ref: "#/components/schemas/TeamSkillCategory" }
         whenToUse: { type: string }
@@ -10595,6 +10963,16 @@ components:
         healthCheckPath:
           type: string
           pattern: "^/"
+        alwaysOn:
+          type: boolean
+          default: false
+          description: |
+            保持在线. When true, finalize sets the function's minimum instance
+            count to 1 so a visitor never waits for a cold start; otherwise to
+            0. Written on every deploy, so the declaration wins over a value
+            changed in the provider console. Undeploy deletes the function and
+            with it the standing instance. Ignored where the deploy target has
+            no scaling control. Stored back in `startSpec` only when true.
     AppAuthMode:
       type: string
       description: |
@@ -11288,8 +11666,11 @@ components:
           format: uuid
           description: Actor (member or agent) who last wrote this grant.
         createdAt:
-          type: string
+          type: [string, "null"]
           format: date-time
+          description: >-
+            When the grant was made. Null on an inherited row, which has no
+            grant of its own.
         actorType:
           type: [string, "null"]
           enum: [member, agent, null]
@@ -11302,6 +11683,29 @@ components:
             False for an agent whose daemon has not claimed an account yet —
             it holds the grant but cannot act on it. Always true for a member.
             Present on `listAppAccess`.
+        displayName:
+          type: [string, "null"]
+          description: >-
+            The grantee's name, read by the server. Present on
+            `listAppAccess`: the caller's own actor directory hides agents it
+            may not talk to, so a client cannot always name a grantee itself.
+        inherited:
+          type: boolean
+          description: >-
+            Present on `listAppAccess`. True for an active agent that reaches
+            the app through its owner (a member who created the app or holds a
+            grant) rather than a grant of its own; `permissionLevel` is the
+            owner's level. Read-only — it follows the owner's access. An
+            inherited caller may deploy and manage settings at its owner's
+            level, but cannot change who has access or delete the app (403
+            `inherited_access_not_allowed`).
+        inheritedFrom:
+          type: [object, "null"]
+          description: The owner an inherited row follows; null otherwise.
+          required: [actorId, displayName]
+          properties:
+            actorId: { type: string, format: uuid }
+            displayName: { type: [string, "null"] }
     AppDataColumn:
       type: object
       required: [name, dataType, nullable]
@@ -11629,6 +12033,17 @@ components:
           type: string
         title:
           type: string
+        titleLocked:
+          type: boolean
+          description: |
+            True after a person has renamed the session. Present on the
+            PATCH response when the request carried a title.
+        titleApplied:
+          type: boolean
+          description: |
+            Present on PATCH when `title` was sent. False when a generated
+            title was refused because `title_locked` is already true. The
+            response `title` is the title still stored.
         mode:
           type: string
           enum: [solo, collab, control]
@@ -11947,24 +12362,6 @@ components:
             - "null"
           enum: [email, phone, null]
           description: Which of the caller's verified contacts this invite matched on.
-    TeamWorkspaceConfig:
-      type: object
-      required: [teamId, defaultWorkspaceId]
-      properties:
-        teamId:
-          type: string
-        defaultWorkspaceId:
-          type:
-            - string
-            - "null"
-        pinnedWorkspaceIds:
-          type: array
-          items:
-            type: string
-        updatedAt:
-          type:
-            - string
-            - "null"
     MergedWorkspaceConfig:
       type: object
       # `litellmTeamId` left the required set when the team gateway replaced
@@ -12010,6 +12407,27 @@ components:
                 properties:
                   id: { type: string }
                   name: { type: string }
+    TeamLlmConfig:
+      type: object
+      description: |
+        A team's AI gateway config as written by
+        `PUT /v1/teams/{teamId}/llm-config`.
+      required: [enabled, baseUrl, models]
+      properties:
+        enabled: { type: boolean }
+        baseUrl:
+          type:
+            - string
+            - "null"
+          description: Gateway base URL. Optional on input (omitted means null).
+        models:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: string }
+              name: { type: string }
     UsageSummary:
       type: object
       required: [credits, inputTokens, outputTokens, requests]
@@ -12709,44 +13127,6 @@ components:
         actorId: { type: string, format: uuid }
         displayName: { type: string }
         alreadyMember: { type: boolean }
-    TeamMember:
-      type: object
-      required: [actorId, teamId, role]
-      properties:
-        actorId:
-          type: string
-          format: uuid
-        teamId:
-          type: string
-          format: uuid
-        roles:
-          type: array
-          items:
-            $ref: "#/components/schemas/MemberRoleRef"
-          description: Member's org role assignments. Source of truth for permission UI.
-        role:
-          type: string
-          description: >-
-            Transitional derived highest privilege among `roles`
-            (`owner > admin > finance > member`). Legacy callers may read this;
-            new UI must use `roles`.
-        joinedAt:
-          type:
-            - string
-            - "null"
-          format: date-time
-    TeamDirectory:
-      type: object
-      required: [actors, members]
-      properties:
-        actors:
-          type: array
-          items:
-            $ref: "#/components/schemas/Actor"
-        members:
-          type: array
-          items:
-            $ref: "#/components/schemas/TeamMember"
     NotificationPrefs:
       type: object
       # Returned as the raw snake_case row; clients consume it directly (no
@@ -12783,8 +13163,7 @@ components:
     Shortcut:
       type: object
       # Returned as the raw snake_case row; the desktop client consumes it
-      # directly (no mapper). Role visibility is exposed separately via
-      # GET /v1/teams/{teamId}/shortcut-role-bindings.
+      # directly (no mapper).
       required: [id, team_id, node_type, label, order]
       properties:
         id:
@@ -12924,31 +13303,6 @@ components:
         roleIds:
           type: array
           items: { type: string, format: uuid }
-    TeamRole:
-      type: object
-      required: [id, teamId, code, name]
-      properties:
-        id:
-          type: string
-          format: uuid
-        teamId:
-          type: string
-          format: uuid
-        code:
-          type: string
-        name:
-          type: string
-    Permission:
-      type: object
-      required: [resourceId, roleIds]
-      properties:
-        resourceId:
-          type: string
-        roleIds:
-          type: array
-          items:
-            type: string
-            format: uuid
     Idea:
       type: object
       required: [id, teamId, title, archived, createdAt]
@@ -13001,65 +13355,6 @@ components:
         likedByMe:
           type: boolean
           description: Whether the calling member has liked the idea. List only, as above.
-    AgentRuntime:
-      type: object
-      required: [id, agentActorId, sessionId, runtimeId, backendSessionId]
-      properties:
-        id:
-          type: string
-          format: uuid
-        agentActorId:
-          type: string
-          format: uuid
-        sessionId:
-          type: string
-          format: uuid
-        runtimeId:
-          type: string
-        backendSessionId:
-          type: string
-        lastProcessedMessageId:
-          type:
-            - string
-            - "null"
-          format: uuid
-        metadata:
-          type:
-            - object
-            - "null"
-          additionalProperties: true
-        createdAt:
-          type:
-            - string
-            - "null"
-          format: date-time
-        updatedAt:
-          type:
-            - string
-            - "null"
-          format: date-time
-    AgentRuntimeUpsert:
-      type: object
-      required: [agentActorId, sessionId, runtimeId, backendSessionId]
-      properties:
-        id:
-          type: string
-          format: uuid
-        agentActorId:
-          type: string
-          format: uuid
-        sessionId:
-          type: string
-          format: uuid
-        runtimeId:
-          type: string
-        backendSessionId:
-          type: string
-        metadata:
-          type:
-            - object
-            - "null"
-          additionalProperties: true
     IdeaCreate:
       type: object
       required: [teamId, title, authorActorId]

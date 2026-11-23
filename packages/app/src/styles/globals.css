@@ -212,7 +212,6 @@
     --radius-xl: calc(var(--radius) + 4px);
     --radius-2xl: calc(var(--radius) + 8px);
     --radius-3xl: calc(var(--radius) + 12px);
-    --radius-4xl: calc(var(--radius) + 16px);
     --color-background: var(--background);
     --color-foreground: var(--foreground);
     --color-card: var(--card);
@@ -231,15 +230,8 @@
     --color-border: var(--border);
     --color-input: var(--input);
     --color-ring: var(--ring);
-    --color-chart-1: var(--chart-1);
-    --color-chart-2: var(--chart-2);
-    --color-chart-3: var(--chart-3);
-    --color-chart-4: var(--chart-4);
-    --color-chart-5: var(--chart-5);
     --color-sidebar: var(--sidebar);
     --color-sidebar-foreground: var(--sidebar-foreground);
-    --color-sidebar-primary: var(--sidebar-primary);
-    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
     --color-sidebar-accent: var(--sidebar-accent);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
     --color-sidebar-border: var(--sidebar-border);
@@ -269,9 +261,7 @@
     }
     /* Default cursor on chrome controls — native AppKit / Win32 don't switch
        to the pointer hand on buttons, rows, or menu items. The pointer cursor
-       on hoverable UI is the single strongest "this is a web app" tell. We
-       keep it on content links (.tiptap a, .tiptap .wiki-link below) where
-       NSAttributedString hyperlinks actually do show it. */
+       on hoverable UI is the single strongest "this is a web app" tell. */
     button,
     a,
     [role="button"],
@@ -312,9 +302,6 @@ body {
 }
 
 /* Allow text selection in specific content areas */
-.selectable-text,
-.markdown-preview,
-.tiptap,
 [data-chat-messages],
 [data-chat-messages] *,
 pre,
@@ -355,217 +342,8 @@ input,
 [data-tauri-drag-region] button,
 [data-tauri-drag-region] a,
 [data-tauri-drag-region] input,
-[data-tauri-drag-region] [role="button"],
-[data-tauri-drag-region] .no-drag {
+[data-tauri-drag-region] [role="button"] {
     -webkit-app-region: no-drag;
-}
-
-/* Tiptap WYSIWYG editor styles */
-.tiptap {
-    line-height: 1.7;
-    color: var(--foreground);
-    outline: none;
-}
-
-.tiptap > *:first-child {
-    margin-top: 0;
-}
-
-.tiptap h1 {
-    font-size: 2em;
-    font-weight: 700;
-    margin-top: 1.5em;
-    margin-bottom: 0.5em;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 0.3em;
-}
-
-.tiptap h2 {
-    font-size: 1.5em;
-    font-weight: 600;
-    margin-top: 1.5em;
-    margin-bottom: 0.5em;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 0.3em;
-}
-
-.tiptap h3 {
-    font-size: 1.25em;
-    font-weight: 600;
-    margin-top: 1.25em;
-    margin-bottom: 0.5em;
-}
-
-.tiptap h4,
-.tiptap h5,
-.tiptap h6 {
-    font-size: 1em;
-    font-weight: 600;
-    margin-top: 1em;
-    margin-bottom: 0.5em;
-}
-
-.tiptap p {
-    margin-top: 0.75em;
-    margin-bottom: 0.75em;
-}
-
-.tiptap ul,
-.tiptap ol {
-    margin-top: 0.75em;
-    margin-bottom: 0.75em;
-    padding-left: 1.5em;
-}
-
-.tiptap ul {
-    list-style-type: disc;
-}
-
-.tiptap ol {
-    list-style-type: decimal;
-}
-
-.tiptap li {
-    margin-top: 0.25em;
-    margin-bottom: 0.25em;
-}
-
-.tiptap li > ul,
-.tiptap li > ol {
-    margin-top: 0.25em;
-    margin-bottom: 0.25em;
-}
-
-.tiptap strong {
-    font-weight: 600;
-}
-
-.tiptap em {
-    font-style: italic;
-}
-
-.tiptap s {
-    text-decoration: line-through;
-    color: var(--muted-foreground);
-}
-
-.tiptap u {
-    text-decoration: underline;
-}
-
-.tiptap code {
-    font-family:
-        "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Monaco, "Courier New",
-        monospace;
-    font-size: 0.875em;
-    background-color: var(--muted);
-    padding: 0.2em 0.4em;
-    border-radius: 0.25rem;
-}
-
-.tiptap pre {
-    margin-top: 1em;
-    margin-bottom: 1em;
-    padding: 1em;
-    background-color: var(--muted);
-    border-radius: 0.5rem;
-    overflow-x: auto;
-}
-
-.tiptap pre code {
-    background-color: transparent;
-    padding: 0;
-    font-size: 0.875em;
-    line-height: 1.5;
-}
-
-.tiptap blockquote {
-    margin-top: 1em;
-    margin-bottom: 1em;
-    padding-left: 1em;
-    border-left: 4px solid var(--border);
-    color: var(--muted-foreground);
-    font-style: italic;
-}
-
-.tiptap a {
-    color: oklch(0.546 0.245 262.881);
-    text-decoration: underline;
-    cursor: pointer;
-}
-
-.tiptap a:hover {
-    color: oklch(0.488 0.243 264.376);
-}
-
-/* Wiki links */
-.tiptap .wiki-link {
-    color: var(--primary);
-    text-decoration: underline;
-    text-decoration-style: dotted;
-    cursor: pointer;
-    border-radius: 2px;
-    padding: 0 1px;
-}
-.tiptap .wiki-link:hover {
-    text-decoration-style: solid;
-    background-color: var(--primary-foreground);
-}
-.tiptap .wiki-link--unresolved {
-    color: var(--muted-foreground);
-    text-decoration-style: dashed;
-    opacity: 0.6;
-}
-
-.tiptap hr {
-    margin-top: 2em;
-    margin-bottom: 2em;
-    border: 0;
-    border-top: 1px solid var(--border);
-}
-
-.tiptap img {
-    max-width: 100%;
-    height: auto;
-    margin-top: 1em;
-    margin-bottom: 1em;
-    border-radius: 0.5rem;
-    transition: box-shadow 0.15s ease;
-}
-
-.tiptap img.ProseMirror-selectednode {
-    outline: 3px solid oklch(0.546 0.245 262.881);
-    outline-offset: 2px;
-    border-radius: 0.5rem;
-}
-
-/* Task list styles */
-.tiptap ul[data-type="taskList"] {
-    list-style-type: none;
-    padding-left: 0;
-}
-
-.tiptap ul[data-type="taskList"] li {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.5em;
-}
-
-.tiptap ul[data-type="taskList"] li > label {
-    flex-shrink: 0;
-    margin-top: 0.25em;
-}
-
-.tiptap ul[data-type="taskList"] li > div {
-    flex: 1;
-}
-
-.tiptap p.is-editor-empty:first-child::before {
-    content: attr(data-placeholder);
-    float: left;
-    color: var(--muted-foreground);
-    pointer-events: none;
-    height: 0;
 }
 
 /* Composer input chips — remove button expands in on hover */
@@ -664,80 +442,7 @@ input,
     background-color: rgba(74, 222, 128, 0.2);
 }
 
-.agent-highlight-fading {
-    background-color: rgba(74, 222, 128, 0.1);
-}
-
-.dark .agent-highlight-fading {
-    background-color: rgba(74, 222, 128, 0.05);
-}
-
-/* Tiptap search & replace highlight styles */
-.tiptap-search-match {
-    background-color: color-mix(in oklch, var(--primary) 25%, transparent);
-    border-radius: 2px;
-}
-
-.tiptap-search-active {
-    background-color: color-mix(in oklch, var(--primary) 55%, transparent);
-    border-radius: 2px;
-    outline: 1.5px solid var(--primary);
-}
-
-/* Tiptap table styles */
-.tiptap-table {
-    border-collapse: collapse;
-    width: 100%;
-    margin: 1em 0;
-    overflow: hidden;
-}
-
-.tiptap-table td,
-.tiptap-table th {
-    border: 1px solid var(--border);
-    padding: 0.5em 0.75em;
-    vertical-align: top;
-    position: relative;
-    min-width: 80px;
-}
-
-.tiptap-table th {
-    font-weight: 600;
-    background-color: hsl(var(--muted));
-    text-align: left;
-}
-
-.tiptap-table tr:hover td {
-    background-color: hsl(var(--muted) / 0.4);
-}
-
-.dark .tiptap-table td,
-.dark .tiptap-table th {
-    border-color: hsl(var(--border));
-}
-
-/* Table cell selection (ProseMirror adds .selectedCell) */
-.tiptap-table .selectedCell {
-    background-color: hsl(var(--primary) / 0.12);
-}
-
-.dark .tiptap-table .selectedCell {
-    background-color: hsl(var(--primary) / 0.18);
-}
-
-/* Column/row resize handle */
-.tiptap-table .column-resize-handle {
-    position: absolute;
-    right: -2px;
-    top: 0;
-    bottom: -2px;
-    width: 4px;
-    background-color: hsl(var(--primary));
-    pointer-events: none;
-}
-
 /* Markdown preview + chat Notion-inspired styles */
-.markdown-preview,
 .chat-md {
     line-height: 1.5;
     color: var(--foreground);
@@ -747,7 +452,6 @@ input,
     font-size: 13.5px;
 }
 
-.markdown-preview h1,
 .chat-md h1 {
     font-size: 1.5em;
     font-weight: 700;
@@ -758,7 +462,6 @@ input,
     padding-bottom: 0;
 }
 
-.markdown-preview h2,
 .chat-md h2 {
     font-size: 1.25em;
     font-weight: 600;
@@ -769,7 +472,6 @@ input,
     padding-bottom: 0;
 }
 
-.markdown-preview h3,
 .chat-md h3 {
     font-size: 1.1em;
     font-weight: 600;
@@ -777,9 +479,6 @@ input,
     margin-bottom: 0.2em;
 }
 
-.markdown-preview h4,
-.markdown-preview h5,
-.markdown-preview h6,
 .chat-md h4,
 .chat-md h5,
 .chat-md h6 {
@@ -789,165 +488,8 @@ input,
     margin-bottom: 0.2em;
 }
 
-.markdown-preview > :first-child,
 .chat-md > :first-child {
     margin-top: 0 !important;
-}
-
-.markdown-preview p {
-    margin-top: 0.4em;
-    margin-bottom: 0.75em;
-}
-
-.markdown-preview ul,
-.markdown-preview ol {
-    margin-top: 0.5em;
-    margin-bottom: 0.75em;
-    padding-left: 1.6em;
-}
-
-.markdown-preview ul {
-    list-style-type: disc;
-}
-
-.markdown-preview ol {
-    list-style-type: decimal;
-}
-
-.markdown-preview li {
-    margin-top: 0.15em;
-    margin-bottom: 0.15em;
-}
-
-.markdown-preview li > ul,
-.markdown-preview li > ol {
-    margin-top: 0.15em;
-    margin-bottom: 0.15em;
-}
-
-.markdown-preview code {
-    font-family:
-        "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Monaco, "Courier New",
-        monospace;
-    font-size: 0.86em;
-    background-color: var(--panel);
-    color: var(--ink-2);
-    box-shadow: inset 0 0 0 1px var(--border-soft);
-    border: none;
-    padding: 0.08em 0.3em;
-    border-radius: 3px;
-}
-
-.dark .markdown-preview code {
-    background-color: var(--panel);
-    color: var(--ink-2);
-    box-shadow: inset 0 0 0 1px var(--border-soft);
-}
-
-.markdown-preview pre {
-    margin-top: 0.65em;
-    margin-bottom: 0.9em;
-    padding: 0;
-    background-color: #f7f6f3;
-    border-radius: 6px;
-    overflow-x: auto;
-}
-
-.dark .markdown-preview pre {
-    background-color: #202020;
-}
-
-.markdown-preview pre code {
-    background-color: transparent;
-    color: inherit;
-    border: none;
-    box-shadow: none;
-    padding: 14px 16px;
-    display: block;
-    font-size: 0.9em;
-    line-height: 1.5;
-}
-
-.markdown-preview blockquote {
-    margin-top: 0.6em;
-    margin-bottom: 0.6em;
-    padding-left: 14px;
-    border-left: 3px solid currentColor;
-    color: var(--muted-foreground);
-    font-style: normal;
-}
-
-.markdown-preview a {
-    color: var(--foreground);
-    text-decoration: underline;
-    text-decoration-color: color-mix(in srgb, var(--foreground) 30%, transparent);
-    text-underline-offset: 2px;
-}
-
-.markdown-preview a:hover {
-    background: color-mix(in srgb, var(--foreground) 6%, transparent);
-    border-radius: 2px;
-}
-
-.markdown-preview hr {
-    margin-top: 1.25em;
-    margin-bottom: 1.25em;
-    border: 0;
-    border-top: 1px solid color-mix(in srgb, var(--foreground) 9%, transparent);
-}
-
-.markdown-preview table {
-    width: 100%;
-    margin-top: 0.7em;
-    margin-bottom: 1em;
-    border-collapse: collapse;
-    font-size: 0.92em;
-}
-
-.markdown-preview th,
-.markdown-preview td {
-    padding: 7px 10px;
-    border: 1px solid color-mix(in srgb, var(--foreground) 9%, transparent);
-    text-align: left;
-}
-
-.dark .markdown-preview th,
-.dark .markdown-preview td {
-    border-color: color-mix(in srgb, white 12%, transparent);
-}
-
-.markdown-preview th {
-    background-color: transparent;
-    font-weight: 600;
-}
-
-.markdown-preview tr:nth-child(even) {
-    background-color: transparent;
-}
-
-.markdown-preview tr:hover td {
-    background-color: color-mix(in srgb, var(--foreground) 3%, transparent);
-}
-
-.markdown-preview img {
-    max-width: 100%;
-    height: auto;
-    margin-top: 0.7em;
-    margin-bottom: 0.7em;
-    border-radius: 4px;
-}
-
-.markdown-preview strong {
-    font-weight: 600;
-}
-
-.markdown-preview em {
-    font-style: italic;
-}
-
-.markdown-preview del {
-    text-decoration: line-through;
-    color: var(--muted-foreground);
 }
 
 /* Chat Notion code block surface — matches chat-markdown-notion.html */
@@ -989,21 +531,18 @@ input,
 }
 
 /* GFM task list — Notion blue checkbox */
-.chat-md .contains-task-list,
-.markdown-preview .contains-task-list {
+.chat-md .contains-task-list {
     list-style: none;
     padding-left: 0;
 }
 
 .chat-md .task-list-item,
-.markdown-preview .task-list-item,
 .chat-md-task {
     list-style: none;
 }
 
 .chat-md-checkbox,
-.chat-md input[type="checkbox"],
-.markdown-preview input[type="checkbox"] {
+.chat-md input[type="checkbox"] {
     appearance: none;
     -webkit-appearance: none;
     width: 16px;
@@ -1018,15 +557,13 @@ input,
 }
 
 .chat-md-checkbox:checked,
-.chat-md input[type="checkbox"]:checked,
-.markdown-preview input[type="checkbox"]:checked {
+.chat-md input[type="checkbox"]:checked {
     background: #2eaadc;
     border-color: #2eaadc;
 }
 
 .chat-md-checkbox:checked::after,
-.chat-md input[type="checkbox"]:checked::after,
-.markdown-preview input[type="checkbox"]:checked::after {
+.chat-md input[type="checkbox"]:checked::after {
     content: "";
     position: absolute;
     left: 4px;
@@ -1036,102 +573,6 @@ input,
     border: solid white;
     border-width: 0 1.6px 1.6px 0;
     transform: rotate(45deg);
-}
-
-/* Git gutter decorations for Monaco Editor */
-/* Monaco Editor applies glyphMarginClassName to elements in the glyph margin */
-/* The element is created in the .glyph-margin-widgets container (not .monaco-glyph-margin) */
-
-/* Target the glyph margin element directly - Monaco uses .glyph-margin-widgets */
-/* These elements are positioned absolutely within the glyph margin, so we need to ensure they have height */
-.monaco-editor .glyph-margin-widgets .git-gutter-added,
-.monaco-editor .glyph-margin-widgets .git-gutter-deleted,
-.monaco-editor .glyph-margin-widgets .git-gutter-modified {
-    position: absolute !important;
-    left: 0 !important;
-    width: 3px !important;
-    height: 100% !important;
-    min-height: 1em !important;
-    background-color: transparent !important;
-    pointer-events: none !important;
-}
-
-/* Use the element itself as the colored bar (simpler than ::before) */
-.monaco-editor .glyph-margin-widgets .git-gutter-added {
-    background-color: #22c55e !important;
-}
-
-.monaco-editor .glyph-margin-widgets .git-gutter-deleted {
-    background-color: #ef4444 !important;
-}
-
-.monaco-editor .glyph-margin-widgets .git-gutter-modified {
-    background-color: #eab308 !important;
-}
-
-/* Fallback: also style elements without the glyph-margin-widgets parent */
-.monaco-editor .git-gutter-added,
-.monaco-editor .git-gutter-deleted,
-.monaco-editor .git-gutter-modified {
-    position: absolute !important;
-    left: 0 !important;
-    width: 3px !important;
-    height: 100% !important;
-    min-height: 1em !important;
-    display: block !important;
-    pointer-events: none !important;
-}
-
-.monaco-editor .git-gutter-added {
-    background-color: #22c55e !important;
-}
-
-.monaco-editor .git-gutter-deleted {
-    background-color: #ef4444 !important;
-}
-
-.monaco-editor .git-gutter-modified {
-    background-color: #eab308 !important;
-}
-
-/* Dark mode adjustments */
-.dark .monaco-editor .glyph-margin-widgets .git-gutter-added,
-.dark .monaco-editor .git-gutter-added {
-    background-color: #16a34a !important;
-}
-
-.dark .monaco-editor .glyph-margin-widgets .git-gutter-deleted,
-.dark .monaco-editor .git-gutter-deleted {
-    background-color: #dc2626 !important;
-}
-
-.dark .monaco-editor .glyph-margin-widgets .git-gutter-modified,
-.dark .monaco-editor .git-gutter-modified {
-    background-color: #ca8a04 !important;
-}
-
-/* Lobster splash — body breathes, claws wave outward in sync (ported from iOS LobsterSplashView).
-   Anchor points 39%/61% × 70% match the wrists in the 1024×1024 source art. */
-@keyframes lobster-body-breathe {
-    from { transform: scale(1); }
-    to { transform: scale(1.035); }
-}
-@keyframes lobster-left-claw {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(-8deg); }
-}
-@keyframes lobster-right-claw {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(8deg); }
-}
-.lobster-body { animation: lobster-body-breathe 0.95s ease-in-out infinite alternate; }
-.lobster-left-claw {
-    transform-origin: 39% 70%;
-    animation: lobster-left-claw 0.95s ease-in-out infinite alternate;
-}
-.lobster-right-claw {
-    transform-origin: 61% 70%;
-    animation: lobster-right-claw 0.95s ease-in-out infinite alternate;
 }
 
 /* Shimmer text animation - Cursor-style light sweep effect */

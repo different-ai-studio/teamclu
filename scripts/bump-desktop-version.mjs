@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Bump the desktop release version in all four canonical sources.
+ * Bump the desktop release version in the four manifest sources and keep the
+ * `teamclu` / `amuxd` entries of Cargo.lock in step (five places in all).
  * Usage: node scripts/bump-desktop-version.mjs <version> [--allow-noop]
  * Example: node scripts/bump-desktop-version.mjs 0.2.1
  *

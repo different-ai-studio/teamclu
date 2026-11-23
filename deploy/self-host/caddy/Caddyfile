@@ -152,8 +152,16 @@
 #      answer into X-WEBAUTH-USER only when FC says 200;
 #   4. strips Authorization before Gitea sees it — a valid Gitea password or
 #      token would otherwise win over the header.
-# The web UI and /api/* answer 404: an admin collaborator could use the API to
-# change collaborators or add deploy keys behind TeamClu's back.
+# The pull-request API gets the same treatment (@prapi, any method), plus the
+# few read-only GETs a client such as Codex makes around it (@prread): repo,
+# branches, commits, compare, the current user. That is how a person or agent
+# opens, reviews and merges a PR as themselves; it needs Gitea's
+# ENABLE_REVERSE_PROXY_AUTHENTICATION_API=true. A request carrying a Gitea
+# `token …` header is left out of both: that is a bot, and it belongs on the
+# internal :8081 door below.
+# The web UI and the rest of /api/* answer 404: an admin collaborator could use
+# the API to change collaborators, add deploy keys or hooks, or delete the repo
+# behind TeamClu's back.
 # Verified end to end with Caddy 2.10 + Gitea 1.22.6 (spec §9.8).
 {$CADDY_SITE_SCHEME}{$GITEA_DOMAIN} {
 	{$CADDY_SITE_TLS}
@@ -169,6 +177,36 @@
 			header_up -Authorization
 		}
 	}
+
+	@prapi {
+		path_regexp prapi ^/api/v1/repos/[^/]+/[^/]+/pulls(/.*)?$
+		not header_regexp Authorization `(?i)^token\s`
+	}
+	handle @prapi {
+		forward_auth fc:9000 {
+			uri /v1/git/authz
+			copy_headers X-WEBAUTH-USER
+		}
+		reverse_proxy gitea:3000 {
+			header_up -Authorization
+		}
+	}
+
+	@prread {
+		method GET
+		path_regexp prread ^/api/v1/(user|version|repos/[^/]+/[^/]+(/(branches|commits|compare)(/.*)?)?)$
+		not header_regexp Authorization `(?i)^token\s`
+	}
+	handle @prread {
+		forward_auth fc:9000 {
+			uri /v1/git/authz
+			copy_headers X-WEBAUTH-USER
+		}
+		reverse_proxy gitea:3000 {
+			header_up -Authorization
+		}
+	}
+
 	handle {
 		respond 404
 	}

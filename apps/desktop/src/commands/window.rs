@@ -144,31 +144,9 @@ pub async fn register_window_workspace(
     {
         log::warn!("[FsScope] {e}");
     }
-    // Identity == daemon actor_id (empty until the daemon is onboarded or
-    // reachable; a generator that needs it then yields None and seeds nothing).
-    // Steady state this is the cached answer of `GET /v1/setup/status`; on a
-    // cold cache we ask the daemon once instead of reading its private
-    // backend.toml.
-    let actor_id = match crate::daemon_client::cached_actor_id() {
-        Some(id) => id,
-        None => match crate::daemon_client::discover() {
-            Ok(endpoint) => crate::daemon_client::refresh_actor_id(&endpoint)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_default(),
-            Err(_) => String::new(),
-        },
-    };
     // Everything below touches disk (env index, personal secret blob) and used
     // to run inline on the main thread (PERF-3).
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = super::env_vars::ensure_system_env_vars(&workspace_path, &actor_id) {
-            log::error!(
-                "[EnvVars] Warning: failed to ensure system env vars on workspace bind: {}",
-                e
-            );
-        }
         // Personal values are machine-global; backfill this workspace's envVars
         // cache so settings/diagnostics stay aligned after switching projects.
         if let Err(e) = super::env_vars::derive_personal_env_index_from_blob(&workspace_path) {

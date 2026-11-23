@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import type { ImageURISource } from "react-native";
 
-import { cloudApiBaseUrl, supabaseAccessToken } from "../../../lib/cloud-api/client";
-import { supabase } from "../../../lib/supabase/client";
+import { cloudApiBaseUrl, cloudAccessToken } from "../../../lib/cloud-api/client";
+import { cloudAuth } from "../../../lib/auth/cloud-auth";
 
-const getAccessToken = supabaseAccessToken(supabase);
+const getAccessToken = cloudAccessToken(cloudAuth);
 
 /** `GET /v1/attachments/:path` is caller-scoped: it answers 401 without the bearer. */
 export function needsCloudAuth(url: string): boolean {

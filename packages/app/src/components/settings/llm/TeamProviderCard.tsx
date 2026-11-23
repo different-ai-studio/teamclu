@@ -19,9 +19,7 @@ import { SettingCard } from '../shared'
  * The three tiers are hardcoded (`TEAM_MODEL_TIERS`) rather than read from the
  * cloud team config, for the reason spelled out on that constant.
  *
- * Only rendered for the opencode and pi runtimes. cursor and claude-code drive
- * their own vendor accounts and have no hook for pointing a session at our
- * gateway, so pinning a card they cannot honour would just be a broken promise.
+ * Rendered by the pi LLM settings (`PiLLMSection`); pi is the only runtime.
  */
 export function TeamProviderCard({ className }: { className?: string }) {
   const { t } = useTranslation()

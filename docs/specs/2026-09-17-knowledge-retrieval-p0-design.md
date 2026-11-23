@@ -5,7 +5,7 @@
 - **Scope**: Desktop 会话 Agent。`teamclu-introspect` 两个只读工具、daemon `cmd: knowledge` 的 search/read、pi 文件工具拦截 `team-knowledge/` 与 `team-documents/`、会话 `knowledgeMode`、消息来源 metadata、Agent note 下来源卡片。
 - **Non-scope**: FC 检索授权端点、多人会话使用受限知识、加人时的历史来源闸门、heading 切块与混合检索、向量索引、跨团队 catalog、Confluence/Drive 连接器、iOS / Expo 检索与点开原文、Cron / 网关无人值守检索、把资料库 `documents/` 纳入检索。
 - **Extends**: `docs/specs/2026-09-11-session-knowledge-review-design.md` 切片 4（文件工具不得写 vault）——本设计把读也拦住，同一条边界。
-- **Related**: `docs/specs/2026-08-31-knowledge-path-acl-design.md`（D2 本机一棵树、D7 不泄露受限前缀名）、`docs/plans/2026-08-31-team-knowledge-base-program.md` 附录 D、`apps/daemon/src/daemon/server/knowledge.rs`、`apps/daemon/src/daemon/server/knowledge/search.rs`、ADR-0012、ADR-0016、`docs/adr/0008-knowledge-sync-p0-p1-scope.md`
+- **Related**: `docs/specs/2026-08-31-knowledge-path-acl-design.md`（D2 本机一棵树、D7 不泄露受限前缀名）、`docs/plans/2026-08-31-team-knowledge-base-program.md` 附录 D、`apps/daemon/src/daemon/server/knowledge.rs`、`apps/daemon/src/daemon/server/knowledge/search.rs`、ADR-0012、`docs/adr/0008-knowledge-sync-p0-p1-scope.md`
 
 ---
 
@@ -213,7 +213,7 @@ ALTER TABLE amux.sessions
   CHECK (knowledge_mode IN ('auto', 'off'));
 ```
 
-只加列、带默认值、可重入。旧 daemon 不读这个列，行为不变（它们也没有知识工具）。符合 ADR-0016。
+只加列、带默认值、可重入。旧 daemon 不读这个列，行为不变（它们也没有知识工具）。即「只增不改、对已发布的 daemon 向后兼容」的做法。（本文写作时引用的 ADR-0016 只在一个未合并的分支上起草过，`docs/adr/` 里没有这份 ADR。）
 
 `GET` 会话返回 `knowledgeMode`。`PATCH /v1/sessions/{sessionId}` **只增**可选字段 `knowledgeMode`：`auto | off`。不接受其它 metadata 袋。
 

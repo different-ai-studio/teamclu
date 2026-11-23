@@ -152,6 +152,14 @@ jobs:
       - name: Install protoc (for prost_build)
         run: brew install protobuf
 
+      # Same gate as release-oss.yml, before any cargo build: reqwest must
+      # resolve rustls-only across amuxd + teamclu-introspect (the beta.63
+      # native-tls breakage). The gate checks the union of both packages, which
+      # is a superset of each separate build below, so passing it covers them.
+      # See scripts/verify-reqwest-rustls.sh.
+      - name: "Gate: sidecar reqwest features (rustls only)"
+        run: ./scripts/verify-reqwest-rustls.sh
+
       # Apply OS-level white-label branding BEFORE the frontend build.
       # tauri-action runs `tauri build` directly and never invokes the
       # `pnpm tauri:build` npm script, so scripts/update-tauri-config.js (which
@@ -343,6 +351,10 @@ jobs:
     permissions:
       contents: write
     runs-on: windows-latest
+    outputs:
+      # The installer tauri-action just attached to the release, for
+      # windows-install-smoke below.
+      installer_url: ${{ steps.installer.outputs.url }}
     # See release-macos: hoisted off the tauri-action step so the introspect and
     # amuxd sidecar builds get sccache too.
     env:
@@ -419,6 +431,11 @@ jobs:
       - name: Install protoc (for prost_build)
         shell: bash
         run: choco install protoc -y
+
+      # See release-macos: same reqwest rustls-only gate as release-oss.yml.
+      - name: "Gate: sidecar reqwest features (rustls only)"
+        shell: bash
+        run: ./scripts/verify-reqwest-rustls.sh
 
       - name: Install dependencies
         run: pnpm install
@@ -522,3 +539,26 @@ jobs:
           prerelease: false
           # Windows: NSIS installer, no p2p feature (avoids wmi/windows-core conflicts)
           args: "--bundles nsis -- --no-default-features"
+
+      # Best effort: an empty URL just skips the smoke job.
+      - name: Resolve the published installer URL
+        id: installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          url="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '[.assets[] | select(.name | endswith("-setup.exe"))][0].url // ""' || true)"
+          echo "Installer: ${url:-<none found>}"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+
+  # Install the Windows build on a fresh runner, as release-oss.yml does for the
+  # OSS brands. Not a gate: the release is already published when this runs, so
+  # a failure shows up as a red job on the release run, not a held release.
+  windows-install-smoke:
+    needs: release-windows
+    if: needs.release-windows.outputs.installer_url != ''
+    uses: ./.github/workflows/windows-install-smoke.yml
+    secrets: inherit
+    with:
+      installer_url: ${{ needs.release-windows.outputs.installer_url }}

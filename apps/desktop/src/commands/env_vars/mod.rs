@@ -7,14 +7,12 @@
 //! | `blob`        | the encrypted personal secret store and its migration   |
 //! | `index`       | `teamclu.json` and the key/scope index (never values)   |
 //! | `catalog`     | the Tauri commands the settings UI calls                |
-//! | `system`      | product-defined variables and the ensure pass           |
 //! | `diagnostics` | what the diagnostics panel reports about env storage    |
 
 mod blob;
 mod catalog;
 mod diagnostics;
 mod index;
-mod system;
 
 #[cfg(test)]
 mod tests;
@@ -26,4 +24,3 @@ pub(crate) use blob::*;
 pub use catalog::*;
 pub use diagnostics::*;
 pub use index::*;
-pub(crate) use system::*;

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  acceptChatCompletion, assistantPayloadUsable, completionChunkUsable,
   computeCredits, estimateTokens, filterBody, generatedBytes, readUsage, teeSseUsage,
   type StreamEnd,
 } from "../src/proxy.js";
@@ -181,4 +182,84 @@ test("the token estimate rounds up", () => {
   assert.equal(estimateTokens(1), 1);
   assert.equal(estimateTokens(6), 2);
   assert.equal(estimateTokens(7), 3);
+});
+
+test("usable content is text, reasoning text, or a tool call", () => {
+  assert.equal(assistantPayloadUsable({ content: "hello" }), true);
+  assert.equal(assistantPayloadUsable({ content: "  \n" }), false);
+  assert.equal(assistantPayloadUsable({ reasoning_content: "planning" }), true);
+  assert.equal(assistantPayloadUsable({ reasoning: "planning" }), true);
+  assert.equal(assistantPayloadUsable({ reasoning_text: "planning" }), true);
+  assert.equal(assistantPayloadUsable({ reasoning: { text: "hidden" } }), false);
+  assert.equal(assistantPayloadUsable({
+    reasoning_details: [{ type: "reasoning.text", text: "planning" }],
+  }), true);
+  assert.equal(assistantPayloadUsable({
+    reasoning_details: [{ type: "reasoning.encrypted", data: "opaque" }],
+  }), false);
+  assert.equal(assistantPayloadUsable({
+    tool_calls: [{ id: "call_1", function: { name: "bash", arguments: "" } }],
+  }), true);
+  assert.equal(assistantPayloadUsable({ content: null }), false);
+  assert.equal(completionChunkUsable({
+    choices: [{ delta: {}, finish_reason: "stop" }],
+    usage: { prompt_tokens: 10, completion_tokens: 133 },
+  }), false);
+  assert.equal(completionChunkUsable({
+    choices: [{ message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+  }), true);
+});
+
+test("a stream is released at the first usable event and keeps its tail", async () => {
+  let releaseTail: (() => void) | undefined;
+  const tail = new Promise<void>((resolve) => { releaseTail = resolve; });
+  const enc = new TextEncoder();
+  let pulls = 0;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      pulls += 1;
+      if (pulls === 1) {
+        controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'));
+        return;
+      }
+      await tail;
+      controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"!"},"finish_reason":"stop"}]}\n\n'));
+      controller.close();
+    },
+  });
+  const accepted = await Promise.race([
+    acceptChatCompletion(new Response(body, { status: 200 }), true),
+    new Promise<Response | null>((_, reject) => {
+      setTimeout(() => reject(new Error("buffered past the first usable event")), 200);
+    }),
+  ]);
+  assert.ok(accepted);
+  releaseTail!();
+  const text = await accepted.text();
+  assert.match(text, /"content":"Hi"/);
+  assert.match(text, /"content":"!"/);
+});
+
+test("a finished stream with usage and no usable content is refused", async () => {
+  const enc = new TextEncoder();
+  const raw = [
+    'data: {"choices":[{"delta":{"content":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":133}}\n\n',
+    "data: [DONE]\n\n",
+  ].join("");
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(enc.encode(raw));
+      controller.close();
+    },
+  });
+  assert.equal(await acceptChatCompletion(new Response(body, { status: 200 }), true), null);
+});
+
+test("a json completion with no assistant content is refused", async () => {
+  const body = {
+    choices: [{ message: { role: "assistant", content: "" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 4, completion_tokens: 8 },
+  };
+  const accepted = await acceptChatCompletion(Response.json(body), false);
+  assert.equal(accepted, null);
 });

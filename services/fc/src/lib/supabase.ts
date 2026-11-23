@@ -1,7 +1,7 @@
-// services/fc/lib/supabase.mjs
+// services/fc/src/lib/supabase.ts
 //
 // Thin wrapper so every module can get a service-role Supabase client without
-// importing index.mjs (which would create a circular dep).
+// importing the app entry (which would create a circular dep).
 
 import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
@@ -11,7 +11,7 @@ import WebSocket from 'ws';
 // is never used) and throws without a WebSocket transport. We never subscribe
 // to channels here, but the constructor still runs — so pass `ws` to let it
 // succeed (the socket is only opened lazily on an actual subscribe). Same
-// workaround supabase-repo.mjs already applies for the /v1 client; without it
+// workaround supabase-repo.ts already applies for the /v1 client; without it
 // the /sync/* handlers (which use this service-role client) failed with
 // "Node.js 20 detected without native WebSocket support".
 const REALTIME_TRANSPORT_OPTS: any = { transport: WebSocket };

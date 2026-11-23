@@ -43,9 +43,9 @@ import {
   loadPendingInviteToken,
   savePendingInviteToken,
 } from "../src/features/onboarding/pending-invite";
-import { createOnboardingApi } from "../src/lib/supabase/onboarding-api";
-import { supabaseAccessToken } from "../src/lib/cloud-api/client";
-import { supabase } from "../src/lib/supabase/client";
+import { createOnboardingApi } from "../src/lib/auth/onboarding-api";
+import { cloudAccessToken } from "../src/lib/cloud-api/client";
+import { cloudAuth } from "../src/lib/auth/cloud-auth";
 import { colors } from "../src/ui/theme";
 import { appStatusBarProps } from "../src/ui/status-bar";
 import { createTeamMqttClient, type TeamMqttClient } from "../src/lib/mqtt/team-mqtt";
@@ -95,7 +95,7 @@ import { useOfflineLaunchRevalidation } from "../src/features/onboarding/use-off
 // list marks the end). The native process start before JS is not counted.
 startChatMetric("app.cold_start", "", { startedAt: Date.now() });
 
-const onboardingApi = createOnboardingApi(supabase);
+const onboardingApi = createOnboardingApi(cloudAuth);
 const introFlagStore = createIntroFlagStore();
 
 function isSignedInRoute(route: OnboardingRoute): boolean {
@@ -202,7 +202,7 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
-    const { data } = supabase.auth.onAuthStateChange(() => {
+    const { data } = cloudAuth.auth.onAuthStateChange(() => {
       void controller.bootstrap().catch(() => {
         // Keep the controller state as the source of truth for auth/bootstrap failures.
       });
@@ -286,7 +286,7 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
         return;
       }
       try {
-        const result = await createConfiguredInviteApi(supabase).claim(token);
+        const result = await createConfiguredInviteApi(cloudAuth).claim(token);
         if (cancelled) return;
         showToast(
           "success",
@@ -334,9 +334,9 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
       const key = `${notificationResponseDedupeKey(response) ?? reply.sessionId}:${reply.text}`;
       if (handledReplies.has(key)) return true;
       handledReplies.add(key);
-      const api = createConfiguredSessionsApi(supabase);
+      const api = createConfiguredSessionsApi(cloudAuth);
       void sendNotificationReply(reply, {
-        getUserId: async () => (await supabase.auth.getSession()).data?.session?.user.id ?? null,
+        getUserId: async () => (await cloudAuth.auth.getSession()).data?.session?.user.id ?? null,
         resolveMemberActorId: (teamId, userId) => api.resolveMemberActorId(teamId, userId),
         insertOutgoingMessage: (input) => api.insertOutgoingMessage(input),
         saveDraft: saveComposerDraft,
@@ -386,14 +386,14 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
 
     void (async () => {
       const [{ data }, deviceId] = await Promise.all([
-        supabase.auth.getSession(),
+        cloudAuth.auth.getSession(),
         getExpoDeviceId(),
       ]);
       if (cancelled) return;
       const userId = data.session?.user.id ?? null;
       await registerNativePushToken({
         notifications: Notifications,
-        api: createPushTokenApi({ getAccessToken: supabaseAccessToken(supabase) }),
+        api: createPushTokenApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
         userId,
         deviceId,
         platform: Platform.OS,
@@ -424,12 +424,12 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
       if (version && teamId) {
         const cloudClient = createCloudApiClient({
           baseUrl: cloudApiBaseUrl(),
-          getAccessToken: supabaseAccessToken(supabase),
+          getAccessToken: cloudAccessToken(cloudAuth),
         });
         void reportExpoClientVersion(cloudClient, teamId, { version, deviceId });
       }
 
-      const presence = createPresenceApi({ getAccessToken: supabaseAccessToken(supabase) });
+      const presence = createPresenceApi({ getAccessToken: cloudAccessToken(cloudAuth) });
       heartbeat = createForegroundPresenceHeartbeat({
         deviceId,
         writeForeground: presence.writeForeground,
@@ -517,14 +517,14 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
     });
 
     void (async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
+      const { data: sessionData } = await cloudAuth.auth.getSession();
       const accessToken = sessionData?.session?.access_token ?? null;
       if (!accessToken || disposed) return;
 
       // Broker address comes from the Cloud API (cached across launches), so a
       // moved broker doesn't need an app release. No address → don't connect.
       const mqttUrl = await resolveMqttUrl({
-        getAccessToken: supabaseAccessToken(supabase),
+        getAccessToken: cloudAccessToken(cloudAuth),
       });
       if (!mqttUrl || disposed) return;
 
@@ -539,7 +539,7 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
           .toString(16)
           .slice(2, 10)}`,
         refreshPassword: async () =>
-          (await supabase.auth.getSession()).data?.session?.access_token ?? null,
+          (await cloudAuth.auth.getSession()).data?.session?.access_token ?? null,
       });
       try {
         await mqtt.start();
@@ -566,7 +566,7 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
       });
       const store = createConnectedAgentsStore({
         teamId: state.currentTeam!.id,
-        api: createAgentAccessApi({ getAccessToken: supabaseAccessToken(supabase) }),
+        api: createAgentAccessApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
         subscriber,
         cache,
       });

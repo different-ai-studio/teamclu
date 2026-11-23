@@ -25,6 +25,8 @@ import {
 import { cn } from '@/lib/utils'
 import { getBackend } from '@/lib/backend'
 import type { AppFile, AppRow, AppStorageUsage } from '@/lib/backend/types'
+import { formatBytes } from '@/lib/ui/format-bytes'
+import type { TranslateWithFallback } from '@/lib/translate-fn'
 
 interface AppFilesSectionProps {
   app: AppRow
@@ -49,19 +51,6 @@ interface AppFilesSectionProps {
  */
 
 /** Bytes for humans. Deliberately not a dependency; three lines. */
-function formatBytes(n: number | null | undefined): string {
-  if (n == null) return '—'
-  if (n < 1024) return `${n} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let v = n / 1024
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i += 1
-  }
-  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`
-}
-
 function formatWhen(iso: string | null): string {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -85,7 +74,7 @@ const IMAGE_RE = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i
  * WITHOUT claiming to know which it was: a rejection here really can be the
  * network.
  */
-function describeUploadFailure(e: unknown, t: (k: string, d: string, o?: Record<string, string>) => string): string {
+function describeUploadFailure(e: unknown, t: TranslateWithFallback): string {
   if (e instanceof TypeError) {
     return t(
       'apps.files.uploadBlocked',
@@ -308,8 +297,8 @@ export function AppFilesSection({ app, canManage }: AppFilesSectionProps) {
           {usage?.bytes == null
             ? t('apps.files.neverMeasured', '用量未统计')
             : t('apps.files.usage', '已用 {{used}}{{quota}}', {
-                used: formatBytes(usage.bytes),
-                quota: usage.quotaBytes ? ` / ${formatBytes(usage.quotaBytes)}` : '',
+                used: formatBytes(usage.bytes) ?? '—',
+                quota: usage.quotaBytes ? ` / ${formatBytes(usage.quotaBytes) ?? '—'}` : '',
               })}
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -481,7 +470,7 @@ export function AppFilesSection({ app, canManage }: AppFilesSectionProps) {
                     {formatWhen(f.lastModified)}
                   </span>
                   <span className="w-[80px] shrink-0 text-right text-[11.5px] tabular-nums text-faint">
-                    {formatBytes(f.size)}
+                    {formatBytes(f.size) ?? '—'}
                   </span>
                   <span className="flex w-[64px] shrink-0 justify-end gap-0.5">
                     <Button

@@ -37,11 +37,7 @@ impl PermissionPolicy {
     /// (unattended). Interactive sessions default to [`Ask`]. An explicit
     /// client value always wins via [`from_wire`].
     pub fn resolve_for_session(is_gateway: bool, client_mode: &str) -> Self {
-        let fallback = if is_gateway {
-            Self::Full
-        } else {
-            Self::Ask
-        };
+        let fallback = if is_gateway { Self::Full } else { Self::Ask };
         let wire = client_mode.trim();
         Self::from_wire((!wire.is_empty()).then_some(wire), fallback)
     }

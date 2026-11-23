@@ -1,12 +1,9 @@
 import { isMacPlatform, isWindowsPlatform } from '@/lib/platform'
 
 import { formatShortcut } from '@/lib/platform-shortcuts'
+import type { TranslateWithFallback } from '@/lib/translate-fn'
 
-type LabelT = (
-  key: string,
-  fallback: string,
-  opts?: Record<string, string>,
-) => string
+type LabelT = TranslateWithFallback
 
 /** Native file-manager action: Finder / Explorer / generic. */
 export function revealInFileManagerLabel(t: LabelT): string {

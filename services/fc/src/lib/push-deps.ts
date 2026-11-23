@@ -19,9 +19,23 @@ const APNS_TEAM_ID          = () => process.env.APNS_TEAM_ID || '';
 const APNS_TOPIC            = () => process.env.APNS_TOPIC || '';
 const APNS_ENV              = () => (process.env.APNS_ENV || 'production').toLowerCase();
 
-const MQTT_BROKER_URL       = () => process.env.MQTT_BROKER_URL || '';
 const MQTT_USERNAME         = () => process.env.MQTT_USERNAME || '';
 const MQTT_PASSWORD         = () => process.env.MQTT_PASSWORD || '';
+
+// Address FC itself dials. Clients never see it: /v1/config/bootstrap reads
+// MQTT_BROKER_URL only (routes/config.ts). MQTT_INTERNAL_URL lets the FC
+// container reach EMQX at mqtt://emqx:1883 while clients still receive a host
+// they can resolve (127.0.0.1 on a laptop, the public listener in production).
+//
+// Blank counts as unset. Compose and Dokploy inject an allowlisted-but-empty
+// var as `""`, and `""` is not nullish — a `??` fallback would dial an empty
+// URL and drop every publish. That is the #634 failure mode, on the publisher
+// this time. Do not fold this back into the client-facing var.
+export function mqttPublisherUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const internal = env.MQTT_INTERNAL_URL?.trim();
+  if (internal) return internal;
+  return env.MQTT_BROKER_URL?.trim() || '';
+}
 
 function buildApns() {
   const apnsHost = APNS_ENV() === 'sandbox' ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
@@ -37,9 +51,10 @@ function buildApns() {
 }
 
 function buildMqtt() {
-  return MQTT_BROKER_URL()
+  const url = mqttPublisherUrl();
+  return url
     ? createMqttPublisher({
-        url: MQTT_BROKER_URL(),
+        url,
         username: MQTT_USERNAME(),
         password: MQTT_PASSWORD(),
       })

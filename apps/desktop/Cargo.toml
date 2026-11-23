@@ -1,6 +1,6 @@
 [package]
 name = "teamclu"
-version = "0.4.1-beta.119"
+version = "0.4.1-beta.126"
 description = "TeamClu - AI Agent Desktop Platform"
 authors = ["TeamClu Team"]
 edition = "2021"
@@ -46,7 +46,6 @@ tauri-plugin-dialog = "2"
 # on Linux CI. Stay featureless here so dialog's gtk3 wins via unification.
 rfd = { version = "0.16", default-features = false }
 tauri-plugin-notification = "2"
-tauri-plugin-process = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-window-state = "2"
 # System pasteboard file lists (Finder copy/paste). The official
@@ -57,14 +56,12 @@ tauri-plugin-clipboard = "2.1"
 sys-locale = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-teamclu-proto = { path = "../../crates/teamclu-proto" }
 teamclu-types = { path = "../../crates/teamclu-types" }
 teamclu-apps = { path = "../../crates/teamclu-apps" }
 async-trait = "0.1"
 teamclu-skillpack = { path = "../../crates/teamclu-skillpack" }
 teamclu-runtime-env = { path = "../../crates/teamclu-runtime-env" }
 teamclu-transport = { path = "../../crates/teamclu-transport" }
-indexmap = { version = "2", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "process", "io-util", "signal"] }
 # `default-tls`, `charset`, `http2` and `system-proxy` are reqwest's defaults.
 # tauri-plugin-aptabase used to switch them on for the whole crate through
@@ -127,7 +124,6 @@ teamclu-binpath = { path = "../../crates/teamclu-binpath" }
 toml = "0.8"
 
 md5 = "0.7"
-rayon = "1.10"  # Parallel iterator for recursive skill search
 
 # MCP plugin for AI agent integration (registered in debug builds only, see
 # lib.rs). Do NOT enable its `devtools` feature here: Cargo features are
@@ -189,6 +185,8 @@ windows = "0.61"
 # elevated NSIS installer needs (updater.rs).
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_Controls",
@@ -206,4 +204,3 @@ tokio = { version = "1", features = ["test-util"] }
 # unit test without binding a port (STR-5/STR-10).
 tower = { version = "0.5", features = ["util"] }
 wiremock = "0.5"
-loro = "1"

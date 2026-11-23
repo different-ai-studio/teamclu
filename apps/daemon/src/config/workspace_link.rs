@@ -110,11 +110,12 @@ fn create_link(link: &Path, target: &Path) -> LinkStatus {
         if std::os::windows::fs::symlink_dir(target, link).is_ok() {
             return LinkStatus::Linked(LinkKind::Symlink);
         }
-        if junction_create(link, target).is_ok() {
-            return LinkStatus::Linked(LinkKind::Junction);
-        }
+        let junction_err = match junction_create(link, target) {
+            Ok(()) => return LinkStatus::Linked(LinkKind::Junction),
+            Err(e) => e,
+        };
         tracing::warn!(
-            "symlink/junction {} failed; falling back to direct global read",
+            "symlink/junction {} failed ({junction_err}); falling back to direct global read",
             link.display()
         );
         LinkStatus::Fallback
@@ -124,22 +125,50 @@ fn create_link(link: &Path, target: &Path) -> LinkStatus {
 #[cfg(windows)]
 fn junction_create(link: &Path, target: &Path) -> std::io::Result<()> {
     use crate::process_util::CommandNoWindow;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
+    // `cmd`'s `mklink` reads `/` as a switch prefix even inside a path: handed
+    // `C:/Users/me/ws\team-documents` (workspace paths are stored with forward
+    // slashes) it printed `无效开关 - "Users"` / `Invalid switch - "Users"` and
+    // made nothing, so every such workspace fell back to direct global reads.
+    let arg = |p: &Path| std::ffi::OsString::from_wide(&backslashed(p.as_os_str().encode_wide()));
     // `mklink /J` creates a junction without admin rights.
-    let status = std::process::Command::new("cmd")
+    //
+    // `output()`, not `status()`: the child used to inherit amuxd's stdio, so its
+    // chatter (in the console's OEM code page) landed in `amuxd.managed.log`
+    // between UTF-8 lines. Keep it, and put it in the error instead.
+    let output = std::process::Command::new("cmd")
         .no_window()
         .args(["/C", "mklink", "/J"])
-        .arg(link)
-        .arg(target)
-        .status()?;
-    if status.success() {
+        .arg(arg(link))
+        .arg(arg(target))
+        .output()?;
+    if output.status.success() {
         Ok(())
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "mklink /J failed",
-        ))
+        let said = String::from_utf8_lossy(&output.stderr);
+        let said = if said.trim().is_empty() {
+            String::from_utf8_lossy(&output.stdout)
+        } else {
+            said
+        };
+        Err(std::io::Error::other(format!(
+            "mklink /J failed ({}): {}",
+            output.status,
+            said.trim()
+        )))
     }
+}
+
+/// UTF-16 path units with every `/` turned into `\`. Generic over the units
+/// (not `Path`) so it is tested on every platform, though only Windows calls it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn backslashed(units: impl Iterator<Item = u16>) -> Vec<u16> {
+    const SLASH: u16 = b'/' as u16;
+    const BACKSLASH: u16 = b'\\' as u16;
+    units
+        .map(|u| if u == SLASH { BACKSLASH } else { u })
+        .collect()
 }
 
 /// Workspace link name surfacing the team's synced knowledge dir
@@ -294,6 +323,25 @@ fn sync_root_from_workspace_links(workspace_root: &Path) -> Option<std::path::Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `mklink` took `/Users` and `/桌面文件夹` out of forward-slash workspace
+    /// paths as switches. Non-ASCII units must pass through untouched.
+    #[test]
+    fn backslashed_turns_every_forward_slash_and_keeps_the_rest() {
+        let wide = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        assert_eq!(
+            backslashed(wide("C:/Users/lyty_/TeamClu\\team-documents").into_iter()),
+            wide("C:\\Users\\lyty_\\TeamClu\\team-documents")
+        );
+        assert_eq!(
+            backslashed(wide("D:/桌面文件夹/群策AI/百路驰/Teamclu").into_iter()),
+            wide("D:\\桌面文件夹\\群策AI\\百路驰\\Teamclu")
+        );
+        assert_eq!(
+            backslashed(wide("\\\\?\\C:\\already\\fine").into_iter()),
+            wide("\\\\?\\C:\\already\\fine")
+        );
+    }
 
     /// Sets an isolated `HOME` and holds the shared HOME lock for the test's
     /// duration so path assertions don't race other HOME-mutating tests.
@@ -512,8 +560,11 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         global_team_store::ensure_initialized("team-k2").unwrap();
         let sync_root = global_team_store::sync_content_root("team-k2");
-        std::os::unix::fs::symlink(sync_root.join("knowledge"), ws.path().join(TEAM_KNOWLEDGE_LINK_NAME))
-            .unwrap();
+        std::os::unix::fs::symlink(
+            sync_root.join("knowledge"),
+            ws.path().join(TEAM_KNOWLEDGE_LINK_NAME),
+        )
+        .unwrap();
 
         assert_eq!(
             ensure_team_knowledge_link_from_workspace(ws.path()),
@@ -533,7 +584,10 @@ mod tests {
         // no sync engine owns.
         let (_home, _guard) = temp_home();
         let ws = tempfile::tempdir().unwrap();
-        let odd = crate::config::layout::teams_dir().join("team-x").join("elsewhere").join("knowledge");
+        let odd = crate::config::layout::teams_dir()
+            .join("team-x")
+            .join("elsewhere")
+            .join("knowledge");
         std::fs::create_dir_all(&odd).unwrap();
         std::os::unix::fs::symlink(&odd, ws.path().join(TEAM_KNOWLEDGE_LINK_NAME)).unwrap();
 

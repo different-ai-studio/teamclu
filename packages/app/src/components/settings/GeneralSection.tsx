@@ -45,7 +45,7 @@ import {
   setSessionDefaultPermissionMode,
   useSessionDefaultPermissionMode,
 } from '@/lib/session/session-permission-mode'
-import { syncDefaultPermissionModeToLiveSessions } from '@/lib/teamclu/sync-session-permission-mode'
+import { reportDevicePermissionDefault } from '@/lib/teamclu/sync-session-permission-mode'
 import { NOTIFICATION_LEVEL_KEY } from '@/lib/ui/notification-service'
 import { LanguageSettingCard } from './LanguageSettingCard'
 import { getEffectiveServerConfig, type ServerConfig } from '@/lib/config/server-config'
@@ -207,9 +207,9 @@ export const GeneralSection = React.memo(function GeneralSection() {
   const handleDefaultPermissionChange = React.useCallback((value: string) => {
     const next = value === 'fullAccess' ? 'fullAccess' : 'default'
     setSessionDefaultPermissionMode(next)
-    // Keep running sessions without an explicit per-session pick in step with
-    // the new default; per-session picks are untouched.
-    void syncDefaultPermissionModeToLiveSessions()
+    // One device-wide value for sessions that have not started yet.
+    // Sessions that already started keep the mode they started with.
+    void reportDevicePermissionDefault(next)
   }, [])
 
   return (
@@ -342,7 +342,7 @@ export const GeneralSection = React.memo(function GeneralSection() {
             <p className="text-xs text-muted-foreground">
               {t(
                 'settings.general.defaultPermissionDesc',
-                '新会话默认使用的权限模式。修改后会同步应用到未单独设置的进行中会话；已单独设置的会话不受影响。',
+                '之后新开的会话用这个权限。已经启动过的会话保持自己的权限，改这里不会动它们。',
               )}
             </p>
             <Select

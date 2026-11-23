@@ -9,7 +9,9 @@ import * as admin from "./lib/admin-handlers.js";
 import { httpsRedirect, isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
 import { appsFcRouteDomain, parseAppPublicHost } from "./lib/apps-public-host.js";
 import { handleLoginRequest, isLoginHost, type LookupLoginApp, type LoginServiceDeps } from "./lib/apps-login-service.js";
-import { classifyOriginEndpoint, readAppsOriginAuthConfig, type OriginAuthConfig } from "./lib/apps-origin-auth.js";
+import { privateFcTriggerUrl, usesPrivateFcOrigin, classifyOriginEndpoint, readAppsOriginAuthConfig, type OriginAuthConfig } from "./lib/apps-origin-auth.js";
+import { verifyAppPrivateOrigin } from "./lib/provisioning/app-runtime-info.js";
+import { appsRegion } from "./lib/provisioning/apps-oss.js";
 import { applyAuthGate, type GateDeps } from "./lib/apps-auth-gate.js";
 import { makeTraefikDynamicEndpoint, type ListTraefikCustomDomains } from "./lib/apps-traefik-provider.js";
 import { renderJoinLinkPage } from "./lib/join-link-page.js";
@@ -213,9 +215,15 @@ export function createApp(deps: AppDeps): Hono {
       if (gate.response) return gate.response;
 
       const originTarget = { appId: target.id, slug: target.slug, appCode: target.appCode, functionNamingMode: target.functionNamingMode };
-      let origin: { target: typeof originTarget; config: OriginAuthConfig } | undefined;
+      let origin: { target: typeof originTarget; config: OriginAuthConfig; verifiedPrivateRegion?: string } | undefined;
       try {
-        if (classifyOriginEndpoint(target.fcEndpoint, originTarget, appsFcRouteDomain()) === "protected") {
+        const region = appsRegion();
+        const privateEndpoint = usesPrivateFcOrigin() && privateFcTriggerUrl(target.fcEndpoint, region);
+        if (privateEndpoint) {
+          const config = readAppsOriginAuthConfig(process.env);
+          await verifyAppPrivateOrigin(privateEndpoint, { ...originTarget, fcFunctionName: target.fcFunctionName }, config, region);
+          origin = { target: originTarget, config, verifiedPrivateRegion: region };
+        } else if (classifyOriginEndpoint(target.fcEndpoint, originTarget, appsFcRouteDomain()) === "protected") {
           // Loaded only after authorization and only for managed HTTP/HTTPS origins.
           // Missing keys fail closed for these origins without blocking API startup.
           origin = { target: originTarget, config: readAppsOriginAuthConfig(process.env) };
@@ -230,30 +238,19 @@ export function createApp(deps: AppDeps): Hono {
     });
   }
 
-  // CORS — two modes depending on deployment:
-  //
-  // FC with custom domain (CORS_HANDLED_BY_PROXY=true): the FC gateway layer
-  // injects CORS headers on every response. Hono must stay silent to avoid
-  // duplicate Access-Control-Allow-Origin. We still return 204 for OPTIONS
-  // so the gateway can attach its CORS headers to the preflight response.
-  //
-  // Docker self-host + direct FC (CORS_HANDLED_BY_PROXY unset): Hono owns
-  // CORS entirely via middleware. Caddy is a transparent proxy that does NOT
-  // add CORS headers (see deploy/self-host/caddy/Caddyfile).
-  if (process.env.CORS_HANDLED_BY_PROXY) {
-    app.options("*", (c) => c.body(null, 204));
-  } else {
-    app.use("*", cors({
-      // Policy lives in lib/cors-origin.ts (Tauri, localhost dev servers,
-      // chrome-extension, plus CORS_ORIGINS). Returning null makes hono omit
-      // Access-Control-Allow-Origin, which is how a browser origin is refused.
-      // CORS_ORIGINS is read per request so tests and hot reconfiguration work.
-      origin: (origin) => resolveCorsAllowOrigin(origin, parseCorsOrigins(process.env.CORS_ORIGINS)),
-      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowHeaders: ["Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key", "X-Webhook-Secret"],
-      maxAge: 86400,
-    }));
-  }
+  // CORS: Hono owns it entirely via middleware. Caddy (self-host) and Traefik
+  // (belayo) are transparent proxies that do NOT add CORS headers (see
+  // deploy/self-host/caddy/Caddyfile).
+  app.use("*", cors({
+    // Policy lives in lib/cors-origin.ts (Tauri, localhost dev servers,
+    // chrome-extension, plus CORS_ORIGINS). Returning null makes hono omit
+    // Access-Control-Allow-Origin, which is how a browser origin is refused.
+    // CORS_ORIGINS is read per request so tests and hot reconfiguration work.
+    origin: (origin) => resolveCorsAllowOrigin(origin, parseCorsOrigins(process.env.CORS_ORIGINS)),
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key", "X-Webhook-Secret"],
+    maxAge: 86400,
+  }));
 
   // Container liveness/readiness probe — no DB access.
   app.get("/healthz", (c) => c.json({ ok: true }));
@@ -303,8 +300,7 @@ export function createApp(deps: AppDeps): Hono {
       !(url.pathname.startsWith("/v1/") ||
         url.pathname === "/v1" ||
         url.pathname.startsWith("/join/") ||
-        url.pathname.startsWith("/sync/") ||
-        url.pathname.startsWith("/api/auth/"))
+        url.pathname.startsWith("/sync/"))
     ) {
       const { ip, source } = resolveClientIp((n) => c.req.header(n));
       // The FC gateway forwards NO client-IP header at all (verified on the

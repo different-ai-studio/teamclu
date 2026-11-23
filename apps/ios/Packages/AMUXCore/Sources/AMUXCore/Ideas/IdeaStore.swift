@@ -162,6 +162,11 @@ public final class IdeaStore {
         workspaceID: String
     ) async -> Bool {
         guard let repository = connectedRepository() else { return false }
+        // What this edit started from. A `status_change` row is written only
+        // when the caller asked for a different status: diffing the server's
+        // answer against the local cache instead would credit this user with
+        // a change someone else made since the cache was filled.
+        let previous = idea(id: ideaID)
         do {
             let updated = try await repository.updateIdea(
                 ideaID: ideaID,
@@ -176,6 +181,17 @@ public final class IdeaStore {
             IdeaCacheSynchronizer.upsert(updated, modelContext: modelContext)
             try? modelContext.save()
             errorMessage = nil
+            if let previous, previous.status != status, updated.status == status {
+                await createActivity(
+                    ideaID: updated.id,
+                    activityType: "status_change",
+                    content: "Changed status from \(previous.statusLabel) to \(updated.statusLabel)",
+                    metadata: [
+                        "from_status": previous.status,
+                        "to_status": updated.status,
+                    ]
+                )
+            }
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -302,24 +318,9 @@ public final class IdeaStore {
     }
 
     private func merge(_ record: IdeaRecord) {
-        let previous = idea(id: record.id)
         var all = Dictionary(uniqueKeysWithValues: (ideas + archivedIdeas).map { ($0.id, $0) })
         all[record.id] = record
         apply(Array(all.values))
-
-        if let previous, previous.status != record.status {
-            Task {
-                await createActivity(
-                    ideaID: record.id,
-                    activityType: "status_change",
-                    content: "Changed status from \(previous.statusLabel) to \(record.statusLabel)",
-                    metadata: [
-                        "from_status": previous.status,
-                        "to_status": record.status,
-                    ]
-                )
-            }
-        }
     }
 
     private func sort(_ records: [IdeaRecord]) -> [IdeaRecord] {

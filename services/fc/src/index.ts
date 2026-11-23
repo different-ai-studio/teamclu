@@ -1,13 +1,10 @@
 import { readAppsOriginAuthConfig } from "./lib/apps-origin-auth.js";
 import { readAppOriginSecurity } from "./lib/provisioning/app-runtime-info.js";
-import { handle } from "hono/aws-lambda";
-import { createApp } from "./app.js";
 import {
   createSupabaseAuthRepository,
   createSupabaseBusinessRepository,
   publishableKeyFromEnv,
 } from "./lib/supabase-repo.js";
-import { queryParams } from "./lib/routing-utils.js";
 import { fanoutMessage } from "./lib/push-dispatch.js";
 import { pushDeps } from "./lib/admin-handlers.js";
 import { ApiError } from "./lib/http-utils.js";
@@ -63,22 +60,6 @@ const SUPABASE_URL_FN = () =>
 const SUPABASE_PUBLIC_URL_FN = () =>
   process.env.SUPABASE_PUBLIC_URL || process.env.SUPABASE_URL || "";
 const SUPABASE_PUBLISHABLE_KEY = () => publishableKeyFromEnv(process.env);
-
-// Build a body-like object from a GET event's query string (used by the only
-// GET endpoint on the legacy /sync/* API, /sync/versions). Delegates to
-// queryParams() so it reads event.queryStringParameters / event.queryParameters
-// — the fields the FC HTTP trigger actually populates — with rawQueryString /
-// rawPath fallbacks. Reading rawQueryString alone drops teamId & path and 400s
-// the request ("teamId is required").
-//
-// Retained as an exported pure helper because sync-versions-query.test.ts pins
-// its query-parsing contract. The /sync GET path itself is now handled inside
-// createApp (which mirrors this same parsing).
-export function syncGetQueryToBody(event: any) {
-  const body: Record<string, string> = {};
-  for (const [k, v] of queryParams(event)) body[k] = v;
-  return body;
-}
 
 // Deploy provisioning deps (FC function + optionally a Postgres schema).
 // Returns a bare `deployUnavailableReason` when FC is unconfigured so
@@ -204,7 +185,12 @@ function makeDeployDeps() {
     // rather than per-deploy: it is a property of where images live, and the
     // function keeps it after the deploy that set it is long over.
     registryAuth: registry.config
-      ? { ...registry.config.pull, host: registry.config.pullHost }
+      ? {
+          ...registry.config.pull,
+          host: registry.config.pullHost,
+          network: registry.config.pullNetwork,
+          rootCaCertBase64: registry.config.pullCaCertBase64,
+        }
       : undefined,
     // Region of the function, which is also where its Node layer must come
     // from — a layer ARN is region-scoped.
@@ -251,8 +237,10 @@ function makeDeployDeps() {
           appsAppUrl,
           fcOps: {
             ensureFunction: (name, args) => secureFcOps().ensureFunction(name, args),
+            ensurePrivateOrigin: (name, target) => secureFcOps().ensurePrivateOrigin(name, target),
             ensureHttpTrigger: name => secureFcOps().ensureHttpTrigger(name),
             ensureCustomDomain: (name, domain, target) => secureFcOps().ensureCustomDomain(name, domain, target),
+            setMinInstances: (name, min) => secureFcOps().setMinInstances(name, min),
           },
           ensureLogStore: () => appLogsProvisioner().ensure(),
           // Bound to this deployment's registry, so finalize can tell an image
@@ -353,11 +341,7 @@ export { makeGiteaDeps };
 /**
  * Vanity-host lookup, wired for whichever backend this deployment runs.
  *
- * Exported so the container entry (server.ts) and the FC handler below share
- * ONE wiring. They are two separate `createApp()` calls, and the first version
- * of this feature configured only the handler — so the self-host container,
- * the only deployment that actually serves vanity hosts, registered neither
- * the proxy nor the `ask` endpoint and answered a plain 404.
+ * Exported for the container entry (server.ts), the only `createApp()` call.
  */
 export function vanityLookup() {
   return makeVanityLookup({ getServiceRoleClient: createServiceRoleClient });
@@ -592,114 +576,4 @@ export function makeSystemRepoFactory() {
       ...makeGotrueOAuthDeps(),
     });
   };
-}
-
-// The single Hono app owns ALL routing (OPTIONS, /v1, /sync, admin, 404, 500,
-// rate-limiting). The repository deps build lazily per-request.
-const app = createApp({
-  createRepository: makeBusinessRepoFactory(),
-  createAuthRepository: makeAuthRepoFactory(),
-  createSystemRepository: makeSystemRepoFactory(),
-  lookupVanityApp: vanityLookup(),
-  lookupLoginApp: loginAppLookup(),
-  resolveTenantIdentity: tenantIdentityLookup(),
-  listTraefikCustomDomains: traefikCustomDomainsLookup(),
-  resolveRoleIdentities: appOrgRoleIdentitiesLookup(),
-  resolveVisitorRoles: visitorRolesLookup(),
-});
-
-const honoHandler = handle(app);
-
-// FC 3.0 HTTP trigger may populate queryParameters (or queryStringParameters)
-// but leave rawQueryString empty/absent. hono/aws-lambda's v2 processor (used
-// when event.rawPath exists) reads ONLY rawQueryString for the query string —
-// it does NOT fall back to structured params. Backfill rawQueryString via
-// queryParams() so GET query params (e.g. /v1/sync/actor-directory?teamId=…)
-// are not silently dropped.
-export function normalizeFcEvent(event: any): any {
-  if (!event.rawQueryString || event.rawQueryString === "") {
-    const s = queryParams(event).toString();
-    if (s) event.rawQueryString = s;
-  }
-  return event;
-}
-
-// A timer trigger does not deliver an HTTP request at all.
-//
-// FC hands the function `{ triggerTime, triggerName, payload }`, where `payload`
-// is the opaque string configured on the trigger — no rawPath, no method, no
-// headers. hono/aws-lambda cannot route that: `getProcessor` falls through to
-// the v1 processor, which reads `event.path` and `event.httpMethod` off an
-// object that has neither, and the request it builds 404s. Nothing throws, so
-// the invocation is recorded as a clean success.
-//
-// That is exactly what belayo did on 2026-09-10: the `app-cron` timer fired
-// every minute (`t-…` request ids, `hasFunctionError: false`) and not one cron
-// job ran, while the same tick over HTTP worked.
-//
-// So the trigger payload names the request to make, and this turns it into the
-// event shape the adapter already understands:
-//
-//   {"path": "/v1/internal/app-cron/tick", "method": "POST", "body": {…}}
-//
-// Returns null for anything that is not a timer event carrying such a payload,
-// so an HTTP event — and a malformed timer payload — is left to the code below.
-export function timerEventToHttpEvent(event: any): any | null {
-  if (!event || typeof event !== "object" || Array.isArray(event)) return null;
-  // An HTTP event never carries these, and a timer event never carries a path.
-  if (typeof event.triggerName !== "string" && typeof event.triggerTime !== "string") return null;
-  if (typeof event.rawPath === "string" || typeof event.path === "string") return null;
-
-  let payload: any = event.payload;
-  if (typeof payload === "string") {
-    try {
-      payload = JSON.parse(payload);
-    } catch {
-      return null;
-    }
-  }
-  const path = payload?.path;
-  if (typeof path !== "string" || !path.startsWith("/")) return null;
-
-  const method = typeof payload?.method === "string" ? payload.method.toUpperCase() : "POST";
-  const body =
-    payload?.body === undefined || payload?.body === null
-      ? undefined
-      : typeof payload.body === "string"
-        ? payload.body
-        : JSON.stringify(payload.body);
-
-  const [rawPath, rawQueryString = ""] = path.split("?", 2);
-  return {
-    version: "2.0",
-    rawPath,
-    rawQueryString,
-    // `localhost` on purpose: the timer has no hostname, and every host-routed
-    // surface (deployed apps, the login service) must NOT match, so the request
-    // reaches the API's own routes.
-    headers: {
-      host: "localhost",
-      "content-type": "application/json",
-      "x-forwarded-proto": "https",
-      "user-agent": `fc-timer/${event.triggerName ?? "unknown"}`,
-    },
-    requestContext: { http: { method, path: rawPath, sourceIp: "127.0.0.1" } },
-    body,
-    isBase64Encoded: false,
-  };
-}
-
-// ---------------------------------------------------------------------------
-export async function handler(event: any, context: any) {
-  // FC 3.0 HTTP trigger passes a Buffer; FC 2.0 may pass a JSON string.
-  if (Buffer.isBuffer(event)) {
-    event = JSON.parse(event.toString());
-  } else if (typeof event === "string") {
-    event = JSON.parse(event);
-  }
-
-  event = timerEventToHttpEvent(event) ?? event;
-
-  normalizeFcEvent(event);
-  return honoHandler(event, context);
 }

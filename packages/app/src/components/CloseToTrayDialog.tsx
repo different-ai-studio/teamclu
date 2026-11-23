@@ -106,7 +106,7 @@ export function CloseToTrayHost() {
             title={t('closeToTray.quitTitle', '退出并停止 Agent')}
             desc={t(
               'closeToTray.quitDesc',
-              '关闭窗口并停止 amuxd / opencode。适合彻底下班。',
+              '关闭窗口并停止 amuxd。适合彻底下班。',
             )}
             testId="close-choice-quit"
           />

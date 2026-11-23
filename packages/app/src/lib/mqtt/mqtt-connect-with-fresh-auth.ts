@@ -1,4 +1,5 @@
 import { getFreshAccessToken } from '@/lib/auth/session-store'
+import { base64UrlToText } from '@/lib/base64'
 import { mqttConnect } from '@/lib/mqtt/mqtt-bridge'
 
 type MqttConnectWithFreshAuthArgs = {
@@ -16,9 +17,7 @@ function decodeJwtExp(token: string): number | null {
   try {
     const payload = token.split('.')[1]
     if (!payload) return null
-    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
-    const decoded = JSON.parse(atob(padded)) as { exp?: unknown }
+    const decoded = JSON.parse(base64UrlToText(payload)) as { exp?: unknown }
     return typeof decoded.exp === 'number' ? decoded.exp : null
   } catch {
     return null

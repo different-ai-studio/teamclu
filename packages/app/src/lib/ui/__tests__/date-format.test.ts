@@ -9,7 +9,7 @@ vi.stubGlobal('localStorage', {
   clear: () => { Object.keys(store).forEach(k => delete store[k]) },
 })
 
-import { formatDate, formatTime, formatDateTime, formatRelativeDate, formatSessionDate, formatRelativeTime, formatMessageBubbleTime } from '@/lib/ui/date-format'
+import { formatDate, formatTime, formatDateTime, formatRelativeTime, formatMessageBubbleTime } from '@/lib/ui/date-format'
 import { appShortName } from '@/lib/config/build-config'
 
 beforeEach(() => {
@@ -30,16 +30,6 @@ describe('date-format', () => {
 
   it('formatDateTime returns combined date and time', () => {
     const result = formatDateTime(new Date('2025-06-15T14:30:00'))
-    expect(result).toBeTruthy()
-  })
-
-  it('formatRelativeDate returns relative string', () => {
-    const result = formatRelativeDate(new Date())
-    expect(result).toBeTruthy()
-  })
-
-  it('formatSessionDate formats a session date', () => {
-    const result = formatSessionDate(new Date('2025-06-15'))
     expect(result).toBeTruthy()
   })
 

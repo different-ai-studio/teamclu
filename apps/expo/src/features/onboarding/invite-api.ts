@@ -1,7 +1,7 @@
 import {
   cloudApiBaseUrl,
   createCloudApiClient,
-  supabaseAccessToken,
+  cloudAccessToken,
 } from "../../lib/cloud-api/client";
 
 export type InviteClaimResult = {
@@ -138,9 +138,9 @@ export function createInviteApi(args: {
  * the cloud-only claimer until the auth layer itself moves off the SDK.
  */
 export function createConfiguredInviteApi(
-  client: Parameters<typeof supabaseAccessToken>[0],
+  client: Parameters<typeof cloudAccessToken>[0],
 ): InviteApi {
-  return createInviteApi({ getAccessToken: supabaseAccessToken(client) });
+  return createInviteApi({ getAccessToken: cloudAccessToken(client) });
 }
 
 /**

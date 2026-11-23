@@ -64,13 +64,6 @@ impl TeamcluSessionStore {
             .find(|s| s.session_id == session_id)
     }
 
-    #[allow(dead_code)]
-    pub fn remove(&mut self, session_id: &str) -> bool {
-        let len = self.sessions.len();
-        self.sessions.retain(|s| s.session_id != session_id);
-        self.sessions.len() < len
-    }
-
     pub fn to_proto_session_info(&self, session_id: &str) -> Option<teamclu::SessionInfo> {
         self.find_by_id(session_id).map(|s| {
             let participants = s
@@ -166,16 +159,6 @@ mod tests {
         store.upsert(make_session("s2", "control"));
         assert!(store.find_by_id("s1").is_some());
         assert!(store.find_by_id("s3").is_none());
-    }
-
-    #[test]
-    fn test_remove() {
-        let mut store = TeamcluSessionStore::default();
-        store.upsert(make_session("s1", "collab"));
-        store.upsert(make_session("s2", "control"));
-        assert!(store.remove("s1"));
-        assert_eq!(store.sessions.len(), 1);
-        assert!(!store.remove("s1")); // already removed
     }
 
     #[test]

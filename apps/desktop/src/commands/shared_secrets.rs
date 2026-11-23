@@ -255,12 +255,6 @@ pub fn load_all_secrets(state: &SharedSecretsState) -> Result<(), String> {
     Ok(())
 }
 
-/// Look up a secret value from the in-memory HashMap (internal use only).
-pub fn get_secret_value(state: &SharedSecretsState, key_id: &str) -> Option<String> {
-    let secrets = state.secrets.lock().ok()?;
-    secrets.get(key_id).map(|e| e.key.clone())
-}
-
 /// Try to initialize shared_secrets from the workspace's team config.
 /// Supports configured shared Git directories.
 /// Fast-path returns Ok() immediately when already initialized.

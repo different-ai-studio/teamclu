@@ -3,7 +3,6 @@ import { toast } from 'sonner'
 import { invoke } from '@tauri-apps/api/core'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useRuntimeStateStore } from '@/stores/runtime-state-store'
-import { AgentType } from '@/lib/proto/amux_pb'
 import {
   encodeWorkspaceId,
   putDaemonProviderAuth,
@@ -24,7 +23,7 @@ import {
   type CustomProviderConfig,
   customProviderIdFromName,
   providerApiKeyName,
-} from '@/lib/opencode/config'
+} from '@/lib/agent/provider-ids'
 import { TEAM_SHARED_PROVIDER_ID } from '@/lib/agent/team-provider'
 import { effectiveWorkspacePath } from '@/lib/workspace/effective-workspace'
 
@@ -97,12 +96,6 @@ function providerDisplayName(providerId: string): string {
       return 'OpenAI'
     case 'opencode':
       return 'OpenCode'
-    case 'claude-code':
-      return 'Claude Code'
-    case 'pi':
-      return 'Pi'
-    case 'cursor':
-      return 'Cursor'
     default:
       return providerId
         .split(/[-_\s]+/)
@@ -112,24 +105,14 @@ function providerDisplayName(providerId: string): string {
   }
 }
 
-function splitRuntimeModelId(agentType: AgentType, runtimeModelId: string): [string, string] {
+function splitRuntimeModelId(runtimeModelId: string): [string, string] {
   const trimmed = runtimeModelId.trim()
   const slash = trimmed.indexOf('/')
   if (slash > 0) {
     return [trimmed.slice(0, slash), trimmed.slice(slash + 1)]
   }
-  switch (agentType) {
-    case AgentType.OPENCODE:
-      return ['opencode', trimmed]
-    case AgentType.PI:
-      return ['pi', trimmed]
-    case AgentType.CURSOR:
-      return ['cursor', trimmed]
-    case AgentType.CLAUDE_CODE:
-      return ['claude-code', trimmed]
-    default:
-      return ['pi', trimmed]
-  }
+  // pi is the only runtime (ADR-0014); a bare model id is a pi model.
+  return ['pi', trimmed]
 }
 
 function runtimeModelsToConfigured(disconnectedIds: Set<string>): ConfiguredProvider[] {
@@ -137,13 +120,11 @@ function runtimeModelsToConfigured(disconnectedIds: Set<string>): ConfiguredProv
   const entries = Object.values(useRuntimeStateStore.getState().byRuntimeId)
 
   for (const entry of entries) {
-    const agentType = entry.info.agentType
-
     for (const runtimeModel of entry.info.availableModels) {
       const modelRef = runtimeModel.id?.trim()
       if (!modelRef) continue
 
-      const [providerId, modelId] = splitRuntimeModelId(agentType, modelRef)
+      const [providerId, modelId] = splitRuntimeModelId(modelRef)
       if (!providerId || !modelId || disconnectedIds.has(providerId)) continue
 
       let provider = byProvider.get(providerId)

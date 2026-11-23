@@ -102,6 +102,10 @@ const MAX_PAGE_SIZE = 100;
  * counted participants with a query that put every session id in the URL,
  * which crossed the gateway's request-line limit and surfaced as an opaque
  * 500. The replacement is paginated, so a caller that wants everything pages.
+ *
+ * `kind=regular` leaves out cron runs on the server. Expo has no cron view
+ * (iOS keeps them behind a toggle), and a scheduled job can add a session per
+ * run, so downloading them only to never show them was most of the walk.
  */
 async function listAllTeamSessions(
   client: { get: <T>(path: string) => Promise<T> },
@@ -114,7 +118,7 @@ async function listAllTeamSessions(
   let pages = 0;
 
   do {
-    const params = new URLSearchParams({ teamId, limit: String(MAX_PAGE_SIZE) });
+    const params = new URLSearchParams({ teamId, kind: "regular", limit: String(MAX_PAGE_SIZE) });
     if (cursor) params.set("cursor", cursor);
     const response = await client.get<{ items?: CloudSessionFull[]; nextCursor?: string | null }>(
       `/v1/sessions?${params.toString()}`,
@@ -360,7 +364,10 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
     },
 
     async renameSession(sessionId: string, title: string): Promise<void> {
-      await client.patch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { title });
+      await client.patch(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
+        title,
+        titleLocked: true,
+      });
     },
 
     async setSessionArchived(sessionId: string, archivedAt: string | null): Promise<void> {

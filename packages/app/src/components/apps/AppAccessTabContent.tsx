@@ -67,8 +67,10 @@ function AccessBody({ app }: { app: AppRow }) {
   const [memberPickerOpen, setMemberPickerOpen] = React.useState(false)
   const invalidateAppSummary = useAppsStore((s) => s.invalidateAppSummary)
 
-  const load = React.useCallback(async () => {
-    setLoading(true)
+  // `quiet`: a refresh after a change — no spinner, and a failure keeps what
+  // is on screen rather than blanking it.
+  const load = React.useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true)
     try {
       const [teamMembers, grants] = await Promise.all([
         getBackend().actors.listTeamActorsForAppAccess(app.teamId),
@@ -81,11 +83,12 @@ function AccessBody({ app }: { app: AppRow }) {
       setCanManage(grants !== null)
     } catch (e) {
       console.error('[AppAccessTab] failed to load access', e)
+      if (quiet) return
       setMembers([])
       setRows([])
       setCanManage(false)
     } finally {
-      setLoading(false)
+      if (!quiet) setLoading(false)
     }
   }, [app.id, app.teamId])
 
@@ -93,10 +96,15 @@ function AccessBody({ app }: { app: AppRow }) {
     void load()
   }, [load])
 
+  // The server's name first: the caller's directory hides agents it may not
+  // talk to, and those rows used to show as a bare id.
   const memberName = React.useCallback(
-    (memberId: string) => members.find((m) => m.id === memberId)?.displayName ?? memberId,
+    (row: AppMemberAccessRow) =>
+      row.displayName ?? members.find((m) => m.id === row.memberId)?.displayName ?? row.memberId,
     [members],
   )
+  const grantedRows = React.useMemo(() => (rows ?? []).filter((r) => !r.inherited), [rows])
+  const inheritedRows = React.useMemo(() => (rows ?? []).filter((r) => r.inherited), [rows])
   const isAgent = React.useCallback(
     (row: AppMemberAccessRow) =>
       row.actorType === 'agent' || members.find((m) => m.id === row.memberId)?.actorType === 'agent',
@@ -148,6 +156,8 @@ function AccessBody({ app }: { app: AppRow }) {
         })
         toast.success(t('apps.controlPanel.accessGranted', '已授权'))
         invalidateAppSummary()
+        // A person's level moves their agents' inherited rows with it.
+        void load(true)
       }
     } catch (e) {
       failed(e)
@@ -160,7 +170,10 @@ function AccessBody({ app }: { app: AppRow }) {
     setSaving(true)
     try {
       const row = await getBackend().apps.setAppAccess(app.id, memberId, level)
-      if (row) setRows((prev) => (prev ?? []).map((r) => (r.memberId === memberId ? row : r)))
+      if (row) {
+        setRows((prev) => (prev ?? []).map((r) => (r.memberId === memberId ? row : r)))
+        void load(true)
+      }
     } catch (e) {
       failed(e)
     } finally {
@@ -176,6 +189,7 @@ function AccessBody({ app }: { app: AppRow }) {
         setRows((prev) => (prev ?? []).filter((r) => r.memberId !== memberId))
         toast.success(t('apps.controlPanel.accessRevoked', '已撤销'))
         invalidateAppSummary()
+        void load(true)
       }
     } catch (e) {
       failed(e)
@@ -208,17 +222,17 @@ function AccessBody({ app }: { app: AppRow }) {
         <span>
           {t(
             'apps.controlPanel.permissionsHint',
-            'read 可查看和下载代码；write 可改代码；admin 可部署和授权。权限会同步到 Git 仓库，agent 和成员一样需要单独授权。',
+            'read 可查看和下载代码；write 可改代码；admin 可部署和授权。权限会同步到 Git 仓库。agent 自动继承主人对应用的权限（但不能授权、不能删除应用），只有主人没有权限时才需要单独授权。',
           )}
         </span>
       </div>
 
-      {rows && rows.length > 0 ? (
+      {grantedRows.length > 0 ? (
         <ul className="divide-y divide-border-soft rounded-lg border border-border-soft">
-          {rows.map((row) => (
+          {grantedRows.map((row) => (
             <li key={row.memberId} className="flex items-center justify-between gap-3 px-3 py-2.5">
               <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] text-foreground">
-                <span className="truncate">{memberName(row.memberId)}</span>
+                <span className="truncate">{memberName(row)}</span>
                 {isAgent(row) && <AgentBadge />}
               </span>
               <Select
@@ -255,6 +269,44 @@ function AccessBody({ app }: { app: AppRow }) {
         <p className="text-[13px] text-muted-foreground" data-testid="app-access-empty">
           {t('apps.controlPanel.noAccessRows', '尚未授权其他成员')}
         </p>
+      )}
+
+      {inheritedRows.length > 0 && (
+        <div className="space-y-2" data-testid="app-access-inherited">
+          <p className="text-[12.5px] font-medium text-foreground">
+            {t('apps.controlPanel.inheritedAgents', '经主人继承的 agent')}
+          </p>
+          <p className="text-[12px] text-muted-foreground">
+            {t(
+              'apps.controlPanel.inheritedAgentsHint',
+              '这些 agent 的主人有本应用的权限，agent 跟随主人的级别；要收回，请调整主人的权限。',
+            )}
+          </p>
+          <ul className="divide-y divide-border-soft rounded-lg border border-border-soft">
+            {inheritedRows.map((row) => (
+              <li
+                key={row.memberId}
+                className="flex items-center justify-between gap-3 px-3 py-2"
+                data-testid={`app-access-inherited-${row.memberId}`}
+              >
+                <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] text-foreground">
+                  <span className="truncate">{memberName(row)}</span>
+                  <AgentBadge />
+                  {row.inheritedFrom && (
+                    <span className="truncate text-[12px] text-muted-foreground">
+                      {t('apps.controlPanel.inheritedFrom', '经 {{owner}} 继承', {
+                        owner: row.inheritedFrom.displayName ?? row.inheritedFrom.actorId,
+                      })}
+                    </span>
+                  )}
+                </span>
+                <span className="shrink-0 font-mono text-[11.5px] text-muted-foreground">
+                  {t(`apps.controlPanel.permission.${row.permissionLevel}`, row.permissionLevel)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {agentsToGrant.length > 0 && (

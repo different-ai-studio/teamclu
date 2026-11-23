@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { createIdeaActivity, updateIdea, updateIdeaStatus, renameIdea } from '@/lib/team/idea-mutations'
+import { createIdeaActivity, updateIdea, updateIdeaStatus } from '@/lib/team/idea-mutations'
 
 const getIdeaDetailMock = vi.fn()
 const updateIdeaMock = vi.fn()
@@ -63,27 +63,6 @@ describe('updateIdeaStatus', () => {
     getIdeaDetailMock.mockResolvedValue({ workspace_id: null, title: 'T', description: null, status: null })
     updateIdeaMock.mockRejectedValue(new Error('rpc failed'))
     await expect(updateIdeaStatus('idea-1', 'done')).rejects.toThrow('rpc failed')
-  })
-})
-
-describe('renameIdea', () => {
-  it('trims and writes new title with existing status fallback to open', async () => {
-    getIdeaDetailMock.mockResolvedValue({ workspace_id: 'ws-1', title: 'old', description: 'D', status: null })
-
-    await renameIdea('idea-1', '  new title  ')
-
-    expect(updateIdeaMock).toHaveBeenCalledWith({
-      ideaId: 'idea-1',
-      workspaceId: 'ws-1',
-      title: 'new title',
-      description: 'D',
-      status: 'open',
-    })
-  })
-
-  it('rejects empty / whitespace title', async () => {
-    await expect(renameIdea('idea-1', '   ')).rejects.toThrow('title is required')
-    expect(getIdeaDetailMock).not.toHaveBeenCalled()
   })
 })
 

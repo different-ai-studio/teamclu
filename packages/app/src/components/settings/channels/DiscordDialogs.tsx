@@ -31,9 +31,10 @@ import {
 } from '@/components/ui/dialog'
 import { type GuildConfig, type ChannelRule } from '@/stores/channels-types'
 import { ToggleSwitch } from './shared'
+import type { TranslateWithOptions } from '@/lib/translate-fn'
 
 // Setup Wizard Component - steps built with t() inside component
-const getDiscordWizardSteps = (t: (key: string, options?: Record<string, unknown>) => string) => [
+const getDiscordWizardSteps = (t: TranslateWithOptions) => [
   { id: 'intro', title: t('settings.channels.discord.welcome', { defaultValue: 'Welcome to Discord Setup' }), description: t('settings.channels.discord.welcomeDesc', { defaultValue: "Let's connect your Discord bot to {{appName}} in a few simple steps.", appName: appDisplayName }) },
   { id: 'create-app', title: t('settings.channels.discord.createApp', { defaultValue: 'Create Discord Application' }), description: t('settings.channels.discord.createAppDesc', { defaultValue: 'First, we need to create a Discord application and bot.' }) },
   { id: 'get-token', title: t('settings.channels.discord.getToken', { defaultValue: 'Get Your Bot Token' }), description: t('settings.channels.discord.getTokenDesc', { defaultValue: "Copy your bot's secret token to authenticate." }) },

@@ -1,31 +1,14 @@
-import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Config } from "./config.js";
 
 /**
- * Token verification, copied in behaviour from services/fc/src/auth/verify.ts
- * and the supabase repo's `auth.getUser` path.
+ * Token verification, copied in behaviour from the FC supabase repo's
+ * `auth.getUser` path: ask GoTrue who the token belongs to.
  *
- * The gateway holds NO signing key. Both of FC's paths avoid one:
- *   supabase (the deployed default) — ask GoTrue who the token belongs to
- *   postgres                        — verify against a public JWKS
- *
- * ⚠️ Kept in step with services/fc/src/auth/verify.ts by hand. If that file
- * changes how identity is established, this one has to follow.
+ * The gateway holds NO signing key.
  */
 export type Verifier = (token: string) => Promise<string>;
 
 export function makeVerifier(cfg: Config): Verifier {
-  if (cfg.backendKind === "postgres") {
-    const jwks = createRemoteJWKSet(new URL(`${cfg.authBaseUrl}/api/auth/jwks`));
-    return async (token) => {
-      const { payload } = await jwtVerify(token, jwks, {
-        issuer: cfg.authBaseUrl,
-        audience: cfg.authBaseUrl,
-      });
-      if (!payload.sub) throw new Error("jwt_missing_sub");
-      return payload.sub;
-    };
-  }
   return async (token) => {
     const res = await fetch(`${cfg.supabaseUrl.replace(/\/+$/, "")}/auth/v1/user`, {
       headers: { Authorization: `Bearer ${token}`, apikey: cfg.supabaseAnonKey },

@@ -233,3 +233,28 @@ test("removeAllAppAccess takes every collaborator and team off the repo, but not
   assert.ok(deletes.includes("DELETE /api/v1/repos/o1/tc-app-a1/teams/t1"));
   assert.ok(!deletes.some((c) => c.endsWith("/teams/Owners")));
 });
+
+test("background expiration inventories deploy keys after the first Gitea page", async () => {
+  const seen: number[] = [];
+  const signal = AbortSignal.timeout(5000);
+  const client = makeGiteaClient({
+    url: "https://gitea.example",
+    token: "test-token",
+    owner: "teamclaw-apps",
+    fetch: async (input, init) => {
+      assert.equal(init?.signal, signal);
+      const url = new URL(String(input));
+      assert.equal(url.pathname, "/api/v1/repos/teamclaw-apps/tc-app-uuid/keys");
+      const page = Number(url.searchParams.get("page"));
+      seen.push(page);
+      const count = page === 1 ? 50 : 1;
+      return json(200, Array.from({ length: count }, (_, index) => ({
+        id: (page - 1) * 50 + index + 1,
+        title: "key",
+      })));
+    },
+  });
+  const keys = await client.listAllDeployKeys("uuid", signal);
+  assert.deepEqual(seen, [1, 2]);
+  assert.equal(keys.at(-1)?.id, 51);
+});

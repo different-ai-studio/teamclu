@@ -51,11 +51,6 @@ services:
       - db
       - analytics
 
-  realtime:
-    depends_on:
-      - db
-      - analytics
-
   storage:
     depends_on:
       - db
@@ -65,10 +60,6 @@ services:
   meta:
     depends_on:
       - db
-      - analytics
-
-  functions:
-    depends_on:
       - analytics
 
   supavisor:

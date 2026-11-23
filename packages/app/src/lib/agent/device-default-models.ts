@@ -16,11 +16,9 @@ import { isTauri } from '@/lib/utils'
  * That loader answers a narrower question: which models can *this job's*
  * runtime offer. To do it, it picks ONE backend slice out of the catalog —
  * preferring the live runtime's `agentType`, falling back to
- * `automation_default_backend`, and finally to the literal string
- * `'opencode'`. On a device whose catalog only publishes a `pi` slice, any of
- * those falling to `'opencode'` yields "no configured models" while twenty pi
- * models sit in the same response — the picker is empty and the reason is
- * invisible.
+ * `automation_default_backend`, and finally to the literal string `'pi'`.
+ * When the preferred slice is missing from the catalog, the picker comes up
+ * empty even though other models sit in the same response.
  *
  * A device-wide default has no job and no runtime to key off, so it should not
  * be asking that question at all. This unions every slice the catalog

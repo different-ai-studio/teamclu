@@ -437,9 +437,10 @@ fn bind_managed_llm_to_listener(
     resolver.set_local_http_base(local_http_base);
 }
 
-/// Background reaper: prunes expired session tokens every minute.
-/// Idle-session eviction is the runtime adapter's responsibility (the
-/// adapter owns the session table); this only handles the auth side.
+/// Background reaper: prunes expired session tokens and idle rate-limit
+/// buckets every minute. Idle-session eviction is the runtime adapter's
+/// responsibility (the adapter owns the session table); this only handles the
+/// auth side.
 fn spawn_reapers(state: HttpState) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -450,6 +451,9 @@ fn spawn_reapers(state: HttpState) {
             if pruned > 0 {
                 tracing::debug!(pruned, "expired session tokens swept");
             }
+            // Buckets are keyed per token / source IP; without this sweep the
+            // map grows by one entry for every key ever seen.
+            state.limiter.vacuum();
         }
     });
 }

@@ -1551,8 +1551,17 @@ public nonisolated struct Teamclu_RuntimeStartRequest: Sendable {
 
   /// Optional. Wire values match cron payloads: "default" | "full_access"
   /// (also accepts "fullAccess" / "full"). Empty = daemon derives from
-  /// gateway/cron binding (full access) or interactive default (ask).
+  /// the session's own record, then a channel binding, then the device default.
   public var permissionMode: String = String()
+
+  /// True when permission_mode is this session's own choice and should be
+  /// stored on the session. False applies the mode for this start only.
+  public var rememberPermission: Bool = false
+
+  /// Device-wide default ("default" | "full_access"). Empty means this caller
+  /// did not report one. The daemon keeps the last reported value and uses it
+  /// for sessions that have no choice of their own.
+  public var defaultPermissionMode: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -1569,11 +1578,18 @@ public nonisolated struct Teamclu_SessionPermissionModeRequest: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// TeamClu cloud session id
+  /// TeamClu cloud session id. Empty + set_device_default updates only the device default.
   public var sessionID: String = String()
 
   /// "default" | "full_access" (+ aliases)
   public var permissionMode: String = String()
+
+  /// True: store this mode on the session (the composer dropdown).
+  /// False: apply it to a live runtime without writing a session record.
+  public var remember: Bool = false
+
+  /// True: permission_mode is also the device-wide default.
+  public var setDeviceDefault: Bool = false
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -4439,7 +4455,7 @@ nonisolated extension Teamclu_RuntimeForkFrom: SwiftProtobuf.Message, SwiftProto
 
 nonisolated extension Teamclu_RuntimeStartRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RuntimeStartRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}agent_type\0\u{3}initial_prompt\0\u{3}model_id\0\u{3}workspace_id\0\u{1}worktree\0\u{3}session_id\0\u{3}remote_tool_capabilities\0\u{3}reset_backend_binding\0\u{3}fork_from\0\u{3}permission_mode\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}agent_type\0\u{3}initial_prompt\0\u{3}model_id\0\u{3}workspace_id\0\u{1}worktree\0\u{3}session_id\0\u{3}remote_tool_capabilities\0\u{3}reset_backend_binding\0\u{3}fork_from\0\u{3}permission_mode\0\u{3}remember_permission\0\u{3}default_permission_mode\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4457,6 +4473,8 @@ nonisolated extension Teamclu_RuntimeStartRequest: SwiftProtobuf.Message, SwiftP
       case 8: try { try decoder.decodeSingularBoolField(value: &self.resetBackendBinding) }()
       case 9: try { try decoder.decodeSingularMessageField(value: &self._forkFrom) }()
       case 10: try { try decoder.decodeSingularStringField(value: &self.permissionMode) }()
+      case 11: try { try decoder.decodeSingularBoolField(value: &self.rememberPermission) }()
+      case 12: try { try decoder.decodeSingularStringField(value: &self.defaultPermissionMode) }()
       default: break
       }
     }
@@ -4497,6 +4515,12 @@ nonisolated extension Teamclu_RuntimeStartRequest: SwiftProtobuf.Message, SwiftP
     if !self.permissionMode.isEmpty {
       try visitor.visitSingularStringField(value: self.permissionMode, fieldNumber: 10)
     }
+    if self.rememberPermission != false {
+      try visitor.visitSingularBoolField(value: self.rememberPermission, fieldNumber: 11)
+    }
+    if !self.defaultPermissionMode.isEmpty {
+      try visitor.visitSingularStringField(value: self.defaultPermissionMode, fieldNumber: 12)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -4511,6 +4535,8 @@ nonisolated extension Teamclu_RuntimeStartRequest: SwiftProtobuf.Message, SwiftP
     if lhs.resetBackendBinding != rhs.resetBackendBinding {return false}
     if lhs._forkFrom != rhs._forkFrom {return false}
     if lhs.permissionMode != rhs.permissionMode {return false}
+    if lhs.rememberPermission != rhs.rememberPermission {return false}
+    if lhs.defaultPermissionMode != rhs.defaultPermissionMode {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -4518,7 +4544,7 @@ nonisolated extension Teamclu_RuntimeStartRequest: SwiftProtobuf.Message, SwiftP
 
 nonisolated extension Teamclu_SessionPermissionModeRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".SessionPermissionModeRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}session_id\0\u{3}permission_mode\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}session_id\0\u{3}permission_mode\0\u{1}remember\0\u{3}set_device_default\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4528,6 +4554,8 @@ nonisolated extension Teamclu_SessionPermissionModeRequest: SwiftProtobuf.Messag
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.sessionID) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.permissionMode) }()
+      case 3: try { try decoder.decodeSingularBoolField(value: &self.remember) }()
+      case 4: try { try decoder.decodeSingularBoolField(value: &self.setDeviceDefault) }()
       default: break
       }
     }
@@ -4540,12 +4568,20 @@ nonisolated extension Teamclu_SessionPermissionModeRequest: SwiftProtobuf.Messag
     if !self.permissionMode.isEmpty {
       try visitor.visitSingularStringField(value: self.permissionMode, fieldNumber: 2)
     }
+    if self.remember != false {
+      try visitor.visitSingularBoolField(value: self.remember, fieldNumber: 3)
+    }
+    if self.setDeviceDefault != false {
+      try visitor.visitSingularBoolField(value: self.setDeviceDefault, fieldNumber: 4)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Teamclu_SessionPermissionModeRequest, rhs: Teamclu_SessionPermissionModeRequest) -> Bool {
     if lhs.sessionID != rhs.sessionID {return false}
     if lhs.permissionMode != rhs.permissionMode {return false}
+    if lhs.remember != rhs.remember {return false}
+    if lhs.setDeviceDefault != rhs.setDeviceDefault {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

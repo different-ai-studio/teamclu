@@ -62,10 +62,8 @@ for f in $(find "$MIGRATIONS_DIR" -maxdepth 1 -name '*.sql' | sort); do
   apply_file "$f" "$(basename "$f")"
 done
 # seed last — OPT-IN only. seed.sql is dev/demo fixture data (sample users,
-# "Core Team", a Builder agent) written against the pre-amux schema
-# (public.teams etc.), so it neither belongs in a real self-host instance nor
-# applies cleanly after move_teamclu_to_amux. Enable for local dev with
-# APPLY_SEED=true (the seed itself may still need updating for the amux schema).
+# "Core Team", a Builder agent) with fixed ids, so it does not belong in a real
+# self-host instance. Enable for a local dev stack with APPLY_SEED=true.
 if [ "${APPLY_SEED:-false}" = "true" ]; then
   [ -f "$SEED_FILE" ] && apply_file "$SEED_FILE" "__seed__"
 else

@@ -9,7 +9,6 @@ pub mod git_credential;
 pub mod git_ssh;
 pub mod manage;
 pub mod process;
-pub mod remote_tools_mcp;
 pub mod service;
 pub mod setup;
 pub mod sock;
@@ -116,9 +115,6 @@ pub enum Commands {
         #[arg(long)]
         no_restart: bool,
     },
-    /// Run the remote-tools MCP server on stdio. Proxies browser/client tools
-    /// to the bound TeamClu client over MQTT RPC.
-    RemoteToolsMcp(RemoteToolsMcpArgs),
     /// The `ssh` git runs inside an app checkout. Set as `core.sshCommand` by
     /// seed/clone; fetches a JIT Gitea deploy key from the daemon per
     /// connection so an agent's plain `git push` works with nothing persisted.
@@ -203,19 +199,6 @@ pub enum TeamSecretsAction {
         #[arg(long)]
         force: bool,
     },
-}
-
-#[derive(Args, Debug)]
-pub struct RemoteToolsMcpArgs {
-    #[arg(long, default_value = "")]
-    pub session_id: String,
-    #[arg(long, default_value = "")]
-    pub team_id: String,
-    /// Member actor that owns the RPC topic (`amux/{team}/{id}/rpc/req`).
-    #[arg(long, alias = "client-actor-id", default_value = "")]
-    pub member_actor_id: String,
-    #[arg(long)]
-    pub sock: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]

@@ -17,14 +17,12 @@ mod knowledge;
 mod logging;
 mod mcp_probe;
 mod mqtt;
-mod nats;
 mod node_install;
 mod onboarding;
 mod pi_install;
 mod process_util;
 mod proto;
 mod provider_config;
-mod remote_tools;
 mod route_probe;
 mod runtime;
 mod self_update;
@@ -124,8 +122,7 @@ fn main() -> anyhow::Result<()> {
                             // of why a runtime child died: a pi host that fails to
                             // boot writes its stack to stderr and nothing at all to
                             // stdout.
-                            .add_directive("pi_rpc=info".parse().unwrap())
-                            .add_directive("opencode_serve=info".parse().unwrap()),
+                            .add_directive("pi_rpc=info".parse().unwrap()),
                     )
                     .with(
                         tracing_subscriber::fmt::layer()
@@ -159,9 +156,10 @@ fn main() -> anyhow::Result<()> {
                         tracing::warn!(error = %format!("{e:#}"), "start the restored amuxd");
                     }
                 }
-                anyhow::bail!("amuxd {failed} never stayed up after an update; restored {restored}");
+                anyhow::bail!(
+                    "amuxd {failed} never stayed up after an update; restored {restored}"
+                );
             }
-            cli::process::prepare_daemon_start()?;
             config::layout::purge_v1_layout();
             config::layout::ensure();
             config::layout::scrub_team_state_credentials();
@@ -246,14 +244,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Config(args) => {
             let path = config::DaemonConfig::default_path();
             cli::config_cmd::run(args, &path)?;
-        }
-        Commands::RemoteToolsMcp(args) => {
-            let sock = args
-                .sock
-                .clone()
-                .unwrap_or_else(config::DaemonConfig::sock_path);
-            let _ = (&args.session_id, &args.team_id, &args.member_actor_id);
-            cli::remote_tools_mcp::run(&sock)?;
         }
         Commands::GitSsh(args) => {
             let sock = args

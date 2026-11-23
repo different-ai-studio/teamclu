@@ -1,27 +1,13 @@
 //! Shared `provider.team` materialization + secret resolution for spawn and reconcile.
 //!
-//! Both paths must stay aligned: write the cloud-sourced team provider, then resolve
-//! apiKey placeholders. Reconcile uses [`SecretResolveScope::ProviderApiKeysOnly`] so
-//! frequent provider reads do not substitute MCP env vars into plaintext on disk.
+//! Both paths must stay aligned: write the cloud-sourced team provider into the
+//! global config. Workspace secrets are never resolved onto disk: pi reads env
+//! bindings, not the workspace config file.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::mcp_resolve;
 use crate::team_provider::{self, ManagedLlmState};
-
-/// How much of workspace `opencode.json` secret resolution should run after
-/// `provider.team` is materialized into global config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecretResolveScope {
-    /// Reconcile-style: only resolve `provider.*.options.apiKey` on workspace
-    /// disk — leave MCP placeholders untouched.
-    ProviderApiKeysOnly,
-    /// Pi-only spawn: strip legacy workspace `provider.team` only. Do not write
-    /// resolved secrets into workspace `opencode.json` — pi reads env bindings,
-    /// not that file, and there is no restore path after snapshot removal.
-    SkipWorkspaceResolve,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct TeamProviderSyncResult {
@@ -70,20 +56,13 @@ pub fn sync_global_team_provider(
     Ok(changed || resolved)
 }
 
-/// Resolve workspace-owned secrets and install the runtime overlay. Team LLM
-/// materialization is intentionally absent: it belongs to the active-team config.
+/// Strip the legacy workspace `provider.team` section before a spawn. Secrets
+/// are not written into the workspace config (pi reads env bindings), and team
+/// LLM materialization belongs to the active-team config.
 pub fn resolve_workspace_runtime_config(
     workspace: &Path,
-    secrets: &HashMap<String, String>,
-    scope: SecretResolveScope,
 ) -> anyhow::Result<TeamProviderSyncResult> {
     team_provider::remove_legacy_workspace_team_provider(workspace)?;
-    match scope {
-        SecretResolveScope::ProviderApiKeysOnly => {
-            mcp_resolve::resolve_provider_api_keys_on_disk(workspace, secrets)?;
-        }
-        SecretResolveScope::SkipWorkspaceResolve => {}
-    }
     Ok(TeamProviderSyncResult {
         provider_section_changed: false,
     })
@@ -134,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_only_scope_resolves_team_api_key_leaves_mcp_placeholder() {
+    fn workspace_resolve_strips_team_provider_and_leaves_mcp_placeholder() {
         let (_lock, global_dir, _home) = global_config_dir();
         let dir = TempDir::new().unwrap();
         fs::write(
@@ -157,12 +136,7 @@ mod tests {
 
         let secrets = secrets_for_team_provider("tok_actor_123");
         sync_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), &secrets, None).unwrap();
-        resolve_workspace_runtime_config(
-            dir.path(),
-            &secrets,
-            SecretResolveScope::ProviderApiKeysOnly,
-        )
-        .unwrap();
+        resolve_workspace_runtime_config(dir.path()).unwrap();
 
         let on_disk = read_opencode(dir.path());
         let global = fs::read_to_string(global_config_path(&global_dir)).unwrap();
@@ -170,11 +144,11 @@ mod tests {
         assert!(!on_disk.contains("provider.team"));
         assert!(
             on_disk.contains("${GITHUB_TOKEN}"),
-            "reconcile scope must not resolve MCP placeholders"
+            "workspace resolve must not resolve MCP placeholders"
         );
         assert!(
             !dir.path().join(".teamclu/opencode.runtime.json").exists(),
-            "provider-only resolve must not install spawn overlay"
+            "workspace resolve must not install spawn overlay"
         );
     }
 

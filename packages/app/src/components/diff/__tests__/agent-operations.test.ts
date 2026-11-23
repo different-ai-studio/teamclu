@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateAgentPrompt, agentOperationLabels } from '../agent-operations';
+import { generateAgentPrompt } from '../agent-operations';
 import type { AgentOperation } from '../agent-operations';
 
 describe('generateAgentPrompt', () => {
@@ -65,17 +65,6 @@ describe('generateAgentPrompt', () => {
       const prompt = generateAgentPrompt(op, defaultOptions);
       expect(prompt).toContain('```diff');
       expect(prompt).toContain('```');
-    }
-  });
-});
-
-describe('agentOperationLabels', () => {
-  it('should have labels for all operations', () => {
-    const operations: AgentOperation[] = ['explain', 'refactor', 'generatePatch', 'review'];
-    for (const op of operations) {
-      expect(agentOperationLabels[op]).toBeDefined();
-      expect(agentOperationLabels[op].label).toBeTruthy();
-      expect(agentOperationLabels[op].icon).toBeTruthy();
     }
   });
 });

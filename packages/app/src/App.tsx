@@ -20,11 +20,10 @@ import { SaveToKnowledgeButton } from "@/components/chat/SaveToKnowledgeButton";
 import { RefreshSkillsHeaderButton } from "@/components/chat/RefreshSkillsHeaderButton";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
-import { useGitReposInit } from "@/hooks/use-git-repos-init";
+import { useTeamBootstrapInit } from "@/hooks/use-team-bootstrap-init";
 import { useCronInit } from "@/hooks/use-cron-init";
 import { useAgentAppChanges } from "@/hooks/use-agent-app-changes";
 import { useWorkspaceRuntimeRefreshPoll } from "@/hooks/use-workspace-runtime-refresh-poll";
-import { useOpenCodePreload } from "@/hooks/use-opencode-preload";
 import { useExternalLinkHandler } from "@/hooks/use-external-link-handler";
 import { ChatFileMenuHost } from "@/components/chat/ChatFileMenuHost";
 import {
@@ -203,9 +202,6 @@ function AppContent() {
   // linger with nothing to clear it.
   const authLoading = useAuthStore((s) => s.loading);
   const loadCurrentTeam = useCurrentTeamStore((s) => s.load);
-  // Team-share state drives the top-right "team shared files" tab visibility.
-  // Refresh it centrally (below) so the tab reflects the true share mode even
-  // before the user ever opens the panel or Settings → Team.
   // Column four covers columns two and three in full mode; the conversation
   // stays mounted underneath, only out of sight.
   const contentColumnVisible = useContentColumnVisible();
@@ -275,7 +271,7 @@ function AppContent() {
   // Resolved by the MQTT-connect effect; used for presence + live wiring.
   const [myActorId, setMyActorId] = useState<string | null>(null);
   // Extracted hooks — initialization, panel state, keyboard shortcuts
-  const { initialWorkspaceResolved, openCodeError } = useWorkspaceInit();
+  const { initialWorkspaceResolved, daemonConnectionError } = useWorkspaceInit();
   const daemonHttpReady = useWorkspaceStore((s) => s.daemonHttpReady);
   const installTeamId = useCurrentTeamStore((s) => s.team?.id ?? null);
   const localAgentInstallStatus = useLocalAgentInstallStore((s) =>
@@ -289,8 +285,8 @@ function AppContent() {
     const DAEMON_TOAST_ID = "amuxd-daemon-unavailable";
     const suppressDaemonToast =
       localAgentInstallStatus === "absent" || localAgentInstallStatus === "pending";
-    if (isTauri() && workspacePath && !daemonHttpReady && openCodeError && !suppressDaemonToast) {
-      toast.error(openCodeError, {
+    if (isTauri() && workspacePath && !daemonHttpReady && daemonConnectionError && !suppressDaemonToast) {
+      toast.error(daemonConnectionError, {
         id: DAEMON_TOAST_ID,
         duration: Infinity,
         description: t("workspace.daemonUnavailableHint", {
@@ -306,10 +302,10 @@ function AppContent() {
     } else {
       toast.dismiss(DAEMON_TOAST_ID);
     }
-  }, [workspacePath, daemonHttpReady, openCodeError, localAgentInstallStatus, t]);
+  }, [workspacePath, daemonHttpReady, daemonConnectionError, localAgentInstallStatus, t]);
 
   useChannelGatewayInit();
-  useGitReposInit();
+  useTeamBootstrapInit();
   useCronInit();
   useAgentAppChanges();
   useWorkspaceRuntimeRefreshPoll();
@@ -844,7 +840,6 @@ function App() {
 
   // Extracted hooks — initialization
   useTauriBodyClass();
-  useOpenCodePreload();
 
   // First-run onboarding (welcome, dependency setup, role, model) all lives in
   // AuthGate now, ahead of this component — see #881. By the time App renders,

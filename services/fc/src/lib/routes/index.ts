@@ -46,7 +46,7 @@ export function registerAllRoutes(router) {
   registerInvites(router);
   // team-share routes must be registered BEFORE workspaces so the new merged
   // GET /v1/teams/:teamId/workspace-config wins over
-  // the legacy default/pinned-workspace GET in workspaces.mjs. The legacy
+  // the legacy default/pinned-workspace GET in workspaces.ts. The legacy
   // PUT remains reachable since it's a distinct verb.
   registerTeamShare(router);
   // Same ordering reason as team-share / team-skills: these own
@@ -75,9 +75,7 @@ export function registerAllRoutes(router) {
   // Owns /v1/teams/:teamId/wiki-maintainer* and must precede workspaces'
   // broader team route.
   registerWikiMaintainer(router);
-  // Org roles own /v1/teams/:teamId/roles* (OpenAPI listOrgRoles). Must register
-  // before shortcuts so the old shortcuts listTeamRoles path cannot collide —
-  // shortcuts now serve listTeamRoles at /shortcut-roles.
+  // Org roles own /v1/teams/:teamId/roles* (OpenAPI listOrgRoles).
   registerOrgRoles(router);
   registerWorkspaces(router);
   registerSystem(router);

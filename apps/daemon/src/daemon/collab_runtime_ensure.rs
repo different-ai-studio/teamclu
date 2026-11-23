@@ -74,8 +74,8 @@ impl DaemonServer {
         initial_prompt: &str,
         initial_model_override: Option<&str>,
         forbid_new_session_fallback: bool,
-        bind_member_actor_id: Option<&str>,
         client_permission_mode: &str,
+        remember_permission: bool,
         log_label: &'static str,
     ) -> Result<Option<String>, StartRuntimeError> {
         if cloud_session_id.is_empty() || workspace_id.is_empty() {
@@ -133,13 +133,12 @@ impl DaemonServer {
         // chat-bound session that had been idle-evicted used to resume as Ask
         // — whatever the client asked for — and the next chat turn, which
         // reuses the live attachment, waited on an approval nobody in the chat
-        // could give.
+        // could give. An empty client mode keeps the last mode this session
+        // ran with, which is what a daemon-only restart has.
         let is_gateway = context.spawn_env.is_gateway
             || self.session_has_gateway_binding(cloud_session_id).await;
-        let permission = crate::runtime::PermissionPolicy::resolve_for_session(
-            is_gateway,
-            client_permission_mode,
-        );
+        let permission =
+            self.permission_for_session_start(cloud_session_id, is_gateway, client_permission_mode);
         context.spawn_env.permission = Some(permission);
 
         info!(
@@ -170,7 +169,6 @@ impl DaemonServer {
                     workspace_id,
                     Some(workspace_id),
                     initial_prompt,
-                    None,
                     forbid_new_session_fallback,
                     context,
                 )
@@ -196,6 +194,12 @@ impl DaemonServer {
             }
         };
 
+        self.remember_client_permission(
+            cloud_session_id,
+            client_permission_mode,
+            permission,
+            remember_permission,
+        );
         self.finalize_binding_resume(
             cloud_session_id,
             workspace_id,
@@ -204,17 +208,6 @@ impl DaemonServer {
             initial_model_override,
         )
         .await;
-
-        if let Some(member) = bind_member_actor_id.filter(|s| !s.is_empty()) {
-            let team_id = self.config.team_id.clone().unwrap_or_default();
-            self.ensure_live_runtime_remote_tools(
-                cloud_session_id,
-                cloud_session_id,
-                member,
-                &team_id,
-            )
-            .await;
-        }
 
         Ok(Some(cloud_session_id.to_string()))
     }
@@ -227,8 +220,8 @@ impl DaemonServer {
         workspace_id: &str,
         initial_prompt: &str,
         initial_model_override: Option<&str>,
-        requester_actor_id: &str,
         client_permission_mode: &str,
+        remember_permission: bool,
     ) -> Result<Option<StartRuntimeOutcome>, StartRuntimeError> {
         if cloud_session_id.is_empty() || workspace_id.is_empty() {
             return Ok(None);
@@ -242,8 +235,8 @@ impl DaemonServer {
                 initial_prompt,
                 initial_model_override,
                 true,
-                (!requester_actor_id.is_empty()).then_some(requester_actor_id),
                 client_permission_mode,
+                remember_permission,
                 "runtime_start",
             )
             .await?;
@@ -258,7 +251,6 @@ impl DaemonServer {
     pub(super) async fn resume_historical_runtimes_for_session(
         &mut self,
         session_id: &str,
-        requester_actor_id: Option<&str>,
     ) -> bool {
         let bindings: Vec<SessionBinding> = self
             .sessions
@@ -300,8 +292,8 @@ impl DaemonServer {
                     "",
                     None,
                     false,
-                    requester_actor_id,
                     "",
+                    false,
                     "session_live",
                 )
                 .await
@@ -396,8 +388,8 @@ impl DaemonServer {
                         "",
                         None,
                         false,
-                        None,
                         "",
+                        false,
                         "gateway_cold_attach",
                     )
                     .await;
@@ -497,7 +489,7 @@ mod tests {
         assert!(
             fixture
                 .server
-                .resume_historical_runtimes_for_session("session-a", None)
+                .resume_historical_runtimes_for_session("session-a")
                 .await
         );
 
@@ -534,7 +526,7 @@ mod tests {
         assert!(
             !fixture
                 .server
-                .resume_historical_runtimes_for_session("session-gateway", None)
+                .resume_historical_runtimes_for_session("session-gateway")
                 .await,
             "workspace-scoped stored gateway must fail closed when identity lookup fails"
         );
@@ -610,6 +602,16 @@ mod tests {
         workspace: &tempfile::TempDir,
         permission_mode: &str,
     ) {
+        cold_runtime_start_with(fixture, workspace, permission_mode, false, "").await;
+    }
+
+    async fn cold_runtime_start_with(
+        fixture: &mut crate::daemon::server::tests::TestServer,
+        workspace: &tempfile::TempDir,
+        permission_mode: &str,
+        remember: bool,
+        device_default: &str,
+    ) {
         fixture
             .server
             .apply_start_runtime(
@@ -619,10 +621,11 @@ mod tests {
                 "chat-session",
                 "",
                 None,
-                "",
                 false,
                 None,
                 permission_mode,
+                remember,
+                device_default,
             )
             .await
             .unwrap_or_else(|e| panic!("start failed: {}", e.error_message));
@@ -664,7 +667,7 @@ mod tests {
         assert!(
             fixture
                 .server
-                .resume_historical_runtimes_for_session("chat-session", None)
+                .resume_historical_runtimes_for_session("chat-session")
                 .await
         );
         assert_eq!(only_permission(&captures), PermissionPolicy::Full);
@@ -773,9 +776,296 @@ mod tests {
         assert!(
             fixture
                 .server
-                .resume_historical_runtimes_for_session("chat-session", None)
+                .resume_historical_runtimes_for_session("chat-session")
                 .await
         );
         assert_eq!(only_permission(&captures), PermissionPolicy::Ask);
+    }
+
+    /// Offline restart and every other daemon-owned resume pass an empty
+    /// client mode. The mode the desktop last applied has to survive that.
+    #[tokio::test]
+    async fn empty_client_mode_keeps_a_persisted_full_access_choice() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) = stored_binding_fixture(None).await;
+        fixture
+            .server
+            .sessions
+            .set_permission_mode("chat-session", "full_access");
+
+        cold_runtime_start(&mut fixture, &workspace, "").await;
+
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+        assert_eq!(
+            fixture.server.sessions.permission_mode("chat-session"),
+            Some("full_access")
+        );
+    }
+
+    #[tokio::test]
+    async fn session_live_resume_keeps_a_persisted_full_access_choice() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, _workspace) = stored_binding_fixture(None).await;
+        fixture
+            .server
+            .sessions
+            .set_permission_mode("chat-session", "full_access");
+
+        assert!(
+            fixture
+                .server
+                .resume_historical_runtimes_for_session("chat-session")
+                .await
+        );
+
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+    }
+
+    /// A channel session defaults to Full, but an explicit Ask the user left
+    /// behind is the mode the next unattended resume runs with.
+    #[tokio::test]
+    async fn empty_client_mode_keeps_a_persisted_ask_on_a_chat_bound_session() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) =
+            stored_binding_fixture(Some("wecom://bot/chat")).await;
+        fixture
+            .server
+            .sessions
+            .set_permission_mode("chat-session", "default");
+
+        cold_runtime_start(&mut fixture, &workspace, "").await;
+
+        assert_eq!(only_permission(&captures), PermissionPolicy::Ask);
+    }
+
+    #[tokio::test]
+    async fn an_explicit_ask_replaces_a_persisted_full_access_choice() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) = stored_binding_fixture(None).await;
+        fixture
+            .server
+            .sessions
+            .set_permission_mode("chat-session", "full_access");
+
+        cold_runtime_start_with(&mut fixture, &workspace, "default", true, "").await;
+
+        assert_eq!(only_permission(&captures), PermissionPolicy::Ask);
+        assert_eq!(
+            fixture.server.sessions.permission_mode("chat-session"),
+            Some("default")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_full_access_start_is_what_the_next_restart_uses() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) = stored_binding_fixture(None).await;
+
+        cold_runtime_start_with(&mut fixture, &workspace, "full_access", true, "").await;
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+        assert_eq!(
+            fixture.server.sessions.permission_mode("chat-session"),
+            Some("full_access")
+        );
+
+        fixture
+            .server
+            .agents
+            .lock()
+            .await
+            .stop_runtime("chat-session")
+            .await;
+        captures.lock().unwrap().clear();
+
+        cold_runtime_start(&mut fixture, &workspace, "").await;
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+    }
+
+    #[tokio::test]
+    async fn toggling_full_access_is_kept_across_a_restart() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) = stored_binding_fixture(None).await;
+        cold_runtime_start(&mut fixture, &workspace, "").await;
+        assert_eq!(only_permission(&captures), PermissionPolicy::Ask);
+        assert_eq!(
+            fixture.server.sessions.permission_mode("chat-session"),
+            None
+        );
+
+        let request = crate::proto::teamclu::RpcRequest {
+            request_id: "perm-1".into(),
+            requester_client_id: String::new(),
+            requester_actor_id: "human-actor".into(),
+            method: None,
+        };
+        let response = fixture
+            .server
+            .handle_session_permission_mode(
+                &request,
+                &crate::proto::teamclu::SessionPermissionModeRequest {
+                    session_id: "chat-session".into(),
+                    permission_mode: "full_access".into(),
+                    remember: true,
+                    set_device_default: false,
+                },
+            )
+            .await;
+        assert!(response.success, "{}", response.error);
+        assert_eq!(
+            fixture.server.sessions.permission_mode("chat-session"),
+            Some("full_access")
+        );
+
+        fixture
+            .server
+            .agents
+            .lock()
+            .await
+            .stop_runtime("chat-session")
+            .await;
+        captures.lock().unwrap().clear();
+
+        cold_runtime_start(&mut fixture, &workspace, "").await;
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+    }
+
+    #[tokio::test]
+    async fn a_device_default_of_full_access_covers_a_session_with_no_record() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) = stored_binding_fixture(None).await;
+
+        cold_runtime_start_with(&mut fixture, &workspace, "", false, "full_access").await;
+
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+        assert_eq!(
+            fixture.server.sessions.permission_mode("chat-session"),
+            None
+        );
+        assert_eq!(
+            fixture.server.sessions.default_permission_mode(),
+            Some("full_access")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resolved_full_access_start_does_not_become_a_session_record() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) = stored_binding_fixture(None).await;
+
+        cold_runtime_start_with(
+            &mut fixture,
+            &workspace,
+            "full_access",
+            false,
+            "full_access",
+        )
+        .await;
+
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+        assert_eq!(
+            fixture.server.sessions.permission_mode("chat-session"),
+            None
+        );
+
+        fixture
+            .server
+            .agents
+            .lock()
+            .await
+            .stop_runtime("chat-session")
+            .await;
+        captures.lock().unwrap().clear();
+        fixture
+            .server
+            .sessions
+            .set_default_permission_mode("default");
+
+        cold_runtime_start(&mut fixture, &workspace, "").await;
+        assert_eq!(only_permission(&captures), PermissionPolicy::Ask);
+        assert_eq!(
+            fixture.server.sessions.default_permission_mode(),
+            Some("default")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_record_wins_over_the_device_default() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) = stored_binding_fixture(None).await;
+        fixture
+            .server
+            .sessions
+            .set_permission_mode("chat-session", "full_access");
+        fixture
+            .server
+            .sessions
+            .set_default_permission_mode("default");
+
+        cold_runtime_start(&mut fixture, &workspace, "").await;
+
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+    }
+
+    #[tokio::test]
+    async fn a_channel_session_stays_full_access_when_the_device_default_is_ask() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) =
+            stored_binding_fixture(Some("wecom://bot/chat")).await;
+        fixture
+            .server
+            .sessions
+            .set_default_permission_mode("default");
+
+        cold_runtime_start(&mut fixture, &workspace, "").await;
+
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+        assert_eq!(
+            fixture.server.sessions.permission_mode("chat-session"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn setting_the_device_default_does_not_need_a_live_session() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, _captures, _workspace) = stored_binding_fixture(None).await;
+        let request = crate::proto::teamclu::RpcRequest {
+            request_id: "default-1".into(),
+            requester_client_id: String::new(),
+            requester_actor_id: "human-actor".into(),
+            method: None,
+        };
+        let response = fixture
+            .server
+            .handle_session_permission_mode(
+                &request,
+                &crate::proto::teamclu::SessionPermissionModeRequest {
+                    session_id: String::new(),
+                    permission_mode: "full_access".into(),
+                    remember: false,
+                    set_device_default: true,
+                },
+            )
+            .await;
+        assert!(response.success, "{}", response.error);
+        assert_eq!(
+            fixture.server.sessions.default_permission_mode(),
+            Some("full_access")
+        );
+        assert_eq!(
+            fixture.server.sessions.permission_mode("chat-session"),
+            None
+        );
     }
 }

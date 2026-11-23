@@ -31,7 +31,7 @@ describe("resolution without any remote data", () => {
     expect(features.apps).toBe(false);
     expect(features.lockLlmConfig).toBe(false);
     expect(features.auth).toEqual({
-      google: false, wechat: false, phone: false, password: false, webSSO: false,
+      google: false, wechat: false, phone: false, webSSO: false,
     });
     expect(Object.values(features.channels).every((v) => v === false)).toBe(true);
   });

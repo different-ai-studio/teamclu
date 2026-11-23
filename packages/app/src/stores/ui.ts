@@ -74,7 +74,7 @@ export type SidebarFilter =
   | { kind: 'idea'; ideaId: string; title: string }
   | { kind: 'teamShare'; section: TeamShareSection }
 
-export type SettingsSection = 'llm' | 'general' | 'prompt' | 'channels' | 'automation' | 'daemonGeneral' | 'daemonWorkspaces' | 'daemonRuntimes' | 'envVars' | 'skills' | 'roles' | 'rolesSkills' | 'deps' | 'billing'
+export type SettingsSection = 'llm' | 'general' | 'prompt' | 'channels' | 'automation' | 'daemonGeneral' | 'daemonWorkspaces' | 'daemonRuntimes' | 'envVars' | 'deps' | 'billing'
   | 'tokenUsage' | 'leaderboard' | 'shortcuts' | 'cache' | 'diagnostics'
   | 'knowledgeAcl' | 'teamRoles' | 'providerKeys' | 'operatorOrgs' | 'operatorCredits'
 

@@ -2,7 +2,8 @@
 # 多阶段：builder 在容器内为 Linux 目标编 amuxd（Docker layer 缓存，仅 daemon 源码变更才重编）。
 FROM rust:1-bookworm AS build
 WORKDIR /src
-# 依赖系统库（iroh/tantivy/openssl 等可能需要）
+# Same build deps as deploy/self-host/amuxd/Dockerfile: protoc for teamclu-proto,
+# cmake + clang for the native crates amuxd's tree builds (bindgen, cmake-rs).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev cmake clang protobuf-compiler && rm -rf /var/lib/apt/lists/*
 COPY . .

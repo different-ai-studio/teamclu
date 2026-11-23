@@ -351,7 +351,7 @@ export interface JobFormState {
   cronTz: string
   message: string
   model: string
-  /** Backend the model belongs to: "opencode" | "claude" | "codex" | "" (auto). */
+  /** Backend the model belongs to: "pi" | "" (auto). */
   backend: string
   deliveryEnabled: boolean
   deliveryChannel: DeliveryChannel

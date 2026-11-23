@@ -2,32 +2,42 @@
 # Multi-stage build of the TeamClu daemon (amuxd) for the self-host stack.
 # Build context MUST be the repo root (needs the Cargo workspace: crates/ +
 # apps/daemon + Cargo.lock).
-FROM rust:1-bookworm AS build
+#
+# Dependencies are compiled in their own layer with cargo-chef, keyed only on
+# the workspace manifests + Cargo.lock (recipe.json). With `cache-to:
+# type=gha,mode=max` in daemon-deploy.yml, a push that touches only amuxd's
+# own sources reuses that layer instead of cold-building every crate (~11 min).
+FROM rust:1-bookworm AS chef
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev cmake clang protobuf-compiler && rm -rf /var/lib/apt/lists/*
-COPY . .
+# rustup honours rust-toolchain.toml, so copy it first: cargo-chef, the
+# dependency layer and the final build all then use the pinned compiler.
+COPY rust-toolchain.toml ./
+RUN cargo install cargo-chef --locked
 ENV CARGO_TARGET_DIR=/out
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS build
+COPY --from=planner /src/recipe.json recipe.json
+# [patch.crates-io] points at vendored crates (rumqttc, …); the recipe only
+# carries manifests, so the patched sources have to be present for cook.
+COPY vendor ./vendor
+RUN cargo chef cook --release -p amuxd --recipe-path recipe.json
+COPY . .
 RUN cargo build --release -p amuxd --bin amuxd
 
 FROM debian:bookworm-slim AS runtime
-# ca-certificates: TLS to cloud API / LLM provider. curl: fetch opencode.
-# git: team-shared-git sync.
+# ca-certificates: TLS to cloud API / LLM provider. curl: smoke health probe.
+# git: per-app Gitea checkouts (apps/daemon/src/sync/app_git.rs).
+# The agent runtime (pi on a managed Node) is installed by amuxd itself at
+# runtime into $HOME/.amuxd/cache (node_install / pi_install), so nothing
+# runtime-specific is baked into the image (ADR-0014, ADR-0015).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git && rm -rf /var/lib/apt/lists/*
-
-# opencode — the ACP agent the daemon spawns to actually run sessions.
-# Standalone release binary (no node needed), fetched straight from the GitHub
-# release tarball (glibc build). Override version with --build-arg OPENCODE_VERSION=.
-ARG OPENCODE_VERSION=1.17.9
-RUN set -eux; \
-    arch="$(dpkg --print-architecture)"; \
-    case "$arch" in amd64) oc=x64 ;; arm64) oc=arm64 ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac; \
-    curl -fsSL "https://github.com/sst/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${oc}.tar.gz" -o /tmp/oc.tgz; \
-    tar -xzf /tmp/oc.tgz -C /usr/local/bin; \
-    rm /tmp/oc.tgz; \
-    chmod +x /usr/local/bin/opencode; \
-    /usr/local/bin/opencode --version
 
 COPY --from=build /out/release/amuxd /usr/local/bin/amuxd
 # Daemon state (backend.toml / daemon.toml) lives under $HOME/.amuxd.

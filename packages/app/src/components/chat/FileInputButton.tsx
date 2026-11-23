@@ -5,13 +5,16 @@ import { Button } from "@/components/ui/button";
 import { capabilities } from "@/lib/config/platform";
 import { readDesktopPathsAsFiles } from "@/lib/workspace/read-desktop-files";
 import { exceedsNonImageLimit } from "@/lib/attachments/attachment-constants";
+import type { LocalPathAttachment } from "@/lib/attachments/composer-attachment";
 
 interface FileInputButtonProps {
   /** Selected or pasted files ready for cloud upload. */
   onFilesSelected: (files: File[]) => void;
+  /** Non-image files over 20MB. They stay on disk. */
+  onLocalPaths?: (items: LocalPathAttachment[]) => void;
 }
 
-export function FileInputButton({ onFilesSelected }: FileInputButtonProps) {
+export function FileInputButton({ onFilesSelected, onLocalPaths }: FileInputButtonProps) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const { t } = useTranslation();
 
@@ -35,20 +38,22 @@ export function FileInputButton({ onFilesSelected }: FileInputButtonProps) {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({
         multiple: true,
-        title: "Select Files",
+        title: t("chat.selectFiles", "Select files"),
       });
       if (!selected) return;
       const paths = Array.isArray(selected) ? selected : [selected];
       if (paths.length === 0) return;
 
-      const { files, oversize, failed } = await readDesktopPathsAsFiles(paths);
-      if (oversize.length > 0) void rejectOversize(oversize);
+      const { files, local, failed } = await readDesktopPathsAsFiles(paths);
+      if (local.length > 0) onLocalPaths?.(local);
       if (failed.length > 0) {
         const { toast } = await import("sonner");
         toast.error(
           failed.length === 1
-            ? `Could not read "${failed[0]}"`
-            : `Could not read ${failed.length} files`,
+            ? t("chat.attachmentReadFailed", 'Could not read "{{name}}"', { name: failed[0] })
+            : t("chat.attachmentsReadFailed", "Could not read {{count}} files", {
+                count: failed.length,
+              }),
         );
       }
       if (files.length > 0) onFilesSelected(files);

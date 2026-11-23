@@ -6,17 +6,13 @@ import {
   rpcShortcutUpdate,
   rpcShortcutDelete,
   rpcShortcutBatchMove,
-  rpcShortcutSetVisibleRoles,
-  selectTeamRoles,
-  selectShortcutRoleBindings,
   type ShortcutNode,
   type ShortcutScope,
   type ShortcutNodeType,
-  type TeamRole,
 } from '@/lib/daemon/shortcuts-rpc'
 import { useWorkspaceStore } from './workspace'
 
-export type { ShortcutNode, TeamRole } from '@/lib/daemon/shortcuts-rpc'
+export type { ShortcutNode } from '@/lib/daemon/shortcuts-rpc'
 
 interface NewShortcutInput {
   label: string
@@ -33,9 +29,6 @@ interface ShortcutsState {
   loading: boolean
   loadedAt: number | null
 
-  teamRoles: TeamRole[] | null
-  shortcutVisibility: Map<string, string[]> | null
-
   loadPersonal: (options?: { persist?: boolean }) => Promise<void>
   loadTeamForCurrentTeam: (teamId: string | null, options?: { persist?: boolean }) => Promise<void>
   hydrateFromCache: () => Promise<void>
@@ -44,9 +37,6 @@ interface ShortcutsState {
   updateNode: (id: string, patch: Partial<Pick<ShortcutNode,'label'|'icon'|'target'|'order'|'parentId'>>) => Promise<void>
   deleteNode: (id: string) => Promise<void>
   batchMove:  (moves: Array<{ id: string; parentId: string | null; order: number }>) => Promise<void>
-
-  loadTeamRoles:    (teamId: string) => Promise<void>
-  setVisibleRoles:  (shortcutId: string, roleIds: string[]) => Promise<void>
 
   getTree: () => ShortcutNode[]
   getChildren: (parentId: string | null) => ShortcutNode[]
@@ -148,8 +138,6 @@ export const useShortcutsStore = create<ShortcutsState>((set, get) => ({
   teamNodes: [],
   loading: false,
   loadedAt: null,
-  teamRoles: null,
-  shortcutVisibility: null,
 
   hydrateFromCache: async () => {
     const cached = await readCache()
@@ -223,20 +211,6 @@ export const useShortcutsStore = create<ShortcutsState>((set, get) => ({
     await get().loadPersonal({ persist: true })
     const teamId = get().teamNodes[0]?.teamId ?? null
     if (teamId) await get().loadTeamForCurrentTeam(teamId, { persist: true })
-  },
-
-  loadTeamRoles: async (teamId) => {
-    const [roles, bindings] = await Promise.all([
-      selectTeamRoles(teamId),
-      selectShortcutRoleBindings(teamId),
-    ])
-    set({ teamRoles: roles, shortcutVisibility: bindings })
-  },
-
-  setVisibleRoles: async (shortcutId, roleIds) => {
-    await rpcShortcutSetVisibleRoles(shortcutId, roleIds)
-    const teamId = get().teamNodes.find(n => n.id === shortcutId)?.teamId ?? null
-    if (teamId) await get().loadTeamRoles(teamId)
   },
 
   getTree: () => {

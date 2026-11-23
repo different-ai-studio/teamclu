@@ -1,4 +1,4 @@
-// services/fc/lib/apns.mjs
+// services/fc/src/lib/apns.ts
 // HTTP/2 APNs client. Transport is injectable for testability — production
 // transport is built from node:http2 once per process.
 import http2 from 'node:http2';

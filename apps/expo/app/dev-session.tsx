@@ -2,13 +2,13 @@ import { Redirect, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 
-import { supabase } from "../src/lib/supabase/client";
+import { cloudAuth } from "../src/lib/auth/cloud-auth";
 import { colors, spacing, typography } from "../src/ui/theme";
 
 /**
  * Dev-only route. Loads `.dev-session.json` (gitignored, written by
  * `scripts/dev-session.sh` or a Supabase admin generate_link + verify
- * round-trip) and calls `supabase.auth.setSession`. After the auth
+ * round-trip) and calls `cloudAuth.auth.setSession`. After the auth
  * state propagates, redirects to the sessions tab.
  *
  * If the file is missing or the bundle excludes it, the route bounces
@@ -35,7 +35,7 @@ export default function DevSessionRoute() {
           if (!cancelled) setStatus("missing");
           return;
         }
-        const { error } = await supabase.auth.setSession({
+        const { error } = await cloudAuth.auth.setSession({
           access_token,
           refresh_token,
         });

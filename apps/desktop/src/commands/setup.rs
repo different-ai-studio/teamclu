@@ -651,12 +651,6 @@ async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .map_err(|e| format!("pi was installed, but restarting amuxd failed: {e}"))
 }
 
-/// Restart the desktop-managed amuxd so it re-reads `daemon.toml`.
-#[tauri::command]
-pub async fn restart_local_daemon<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    crate::commands::amuxd_supervisor::AmuxdSupervisor::restart(&app).await
-}
-
 #[tauri::command]
 pub async fn setup_install<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
     let result = match id.as_str() {

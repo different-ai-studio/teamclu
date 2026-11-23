@@ -136,7 +136,3 @@ export function firstFailingTab(findings: DiagnosticFinding[]): SymptomTab {
     ?? order.find((tab) => findingsForSymptom(findings, tab).some((item) => item.status === 'warn'))
     ?? 'model'
 }
-
-export function authSyncFindings(findings: DiagnosticFinding[]): DiagnosticFinding[] {
-  return findings.filter((item) => item.symptom === 'auth_sync')
-}

@@ -48,4 +48,28 @@ final class SessionListAdoptCreatedTests: XCTestCase {
 
         XCTAssertTrue(try ctx.fetch(FetchDescriptor<Session>()).isEmpty)
     }
+
+    private func record(_ id: String, hasUnread: Bool?) -> SessionRecord {
+        SessionRecord(id: id, teamID: "t", ideaID: nil, createdByActorID: "me", primaryAgentID: nil,
+                      mode: "collab", title: id, summary: "", participantCount: 1,
+                      lastMessagePreview: "", lastMessageAt: nil, createdAt: .now, source: "user",
+                      hasUnread: hasUnread)
+    }
+
+    /// Unread state rides every list page, so a session past the first 100
+    /// still gets the server's flag (it used to come from a separate
+    /// first-page-only fetch).
+    func test_syncSessionRecords_appliesServerUnreadAndKeepsLocalWhenAbsent() throws {
+        let ctx = try makeContext()
+        let list = SessionListViewModel()
+        let records = (0..<150).map { record("s\($0)", hasUnread: $0 == 149) }
+        list.syncSessionRecords(records, modelContext: ctx)
+
+        let unread = try ctx.fetch(FetchDescriptor<Session>()).filter(\.hasUnread).map(\.sessionId)
+        XCTAssertEqual(unread, ["s149"])
+
+        // A source that does not report the flag leaves the local one alone.
+        list.syncSessionRecords([record("s149", hasUnread: nil)], modelContext: ctx)
+        XCTAssertEqual(try ctx.fetch(FetchDescriptor<Session>()).first?.hasUnread, true)
+    }
 }

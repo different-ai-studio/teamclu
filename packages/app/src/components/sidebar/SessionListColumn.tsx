@@ -672,7 +672,7 @@ export function SessionListColumn({
   const handleRenameConfirm = async (id: string, newTitle: string) => {
     const current = listRows.find((r) => r.id === id)?.title
     if (newTitle.trim() && newTitle !== current) {
-      try { await updateSessionTitle(id, newTitle.trim()) }
+      try { await updateSessionTitle(id, newTitle.trim(), { lock: true }) }
       catch (e) { console.error('[SessionListColumn] rename failed:', e) }
     }
     setRenamingSessionId(null)

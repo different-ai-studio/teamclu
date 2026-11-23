@@ -1,5 +1,7 @@
 # Cursor SDK 后端：Composer 模型接入设计
 
+> **已废弃（ADR-0014，2026-09）.** 本地 runtime 已迁移至 pi-only；opencode / cursor / claude 后端已删除。本文保留作历史参考，现行架构见 `docs/architecture/pi-agent-backend.md`。
+
 > 状态：设计稿（2026-07-28）。目标：在 `agents.local_agent` 新增 `"cursor"`
 > 选项，amuxd 通过 **Cursor SDK**（`@cursor/sdk`）驱动 Composer 2.5 等
 > Cursor 自有模型，事件出口仍走 `amux::AcpEvent`，gateway / MQTT / 前端 /

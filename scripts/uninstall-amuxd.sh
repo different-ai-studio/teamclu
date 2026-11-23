@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Uninstall the locally-installed amuxd daemon and/or the opencode runtime so the
-# first-run setup + daemon-onboarding flow can be tested again from a clean state.
+# Uninstall the locally-installed amuxd daemon and/or its managed pi runtime so
+# the first-run setup + daemon-onboarding flow can be tested again from a clean
+# state.
 #
 # Everything amuxd installs lives UNDER ~/.amuxd (per-user, NOT system-global):
 #   ~/.amuxd/bin/amuxd          - the daemon binary (copied by the setup wizard)
-#   ~/.amuxd/bin/opencode       - the opencode runtime (downloaded by `amuxd install-opencode`)
-#   ~/.amuxd/.opencode-version  - records the installed opencode version
-#   ~/.amuxd/daemon.toml | backend.toml | members.toml | sessions.toml | workspaces.toml
-#   ~/.amuxd/amuxd.http.{port,token} | amuxd.pid | amuxd.sock
+#   ~/.amuxd/cache/node/        - the amuxd-managed Node (node_install)
+#   ~/.amuxd/cache/pi/          - the amuxd-managed pi package (pi_install)
+#   ~/.amuxd/daemon.toml, teams/<id>/... - identity + team state
+#   ~/.amuxd/run/               - pid / sock / http port + token
 # The background SERVICE definition lives OUTSIDE ~/.amuxd:
 #   macOS:  ~/Library/LaunchAgents/cc.ucar.amuxd.plist  (+ launchctl registration)
 #   Linux:  ~/.config/systemd/user/amuxd.service        (+ systemctl --user)
 #
 # Usage:
-#   scripts/uninstall-amuxd.sh                 # full: stop service + remove ~/.amuxd (amuxd + opencode + config)
-#   scripts/uninstall-amuxd.sh --opencode-only # only remove the opencode runtime (keep amuxd + onboarding)
-#   scripts/uninstall-amuxd.sh --keep-config   # remove binaries + service + runtime files, KEEP team identity (daemon.toml/backend.toml)
+#   scripts/uninstall-amuxd.sh                 # full: stop service + remove ~/.amuxd (amuxd + pi + config)
+#   scripts/uninstall-amuxd.sh --runtime-only  # only remove the managed Node + pi (keep amuxd + onboarding)
+#   scripts/uninstall-amuxd.sh --keep-config   # remove binaries + service + runtime files, KEEP team identity (daemon.toml)
 #
 # Safe + idempotent: only touches amuxd-owned paths; missing items are skipped.
 
@@ -28,15 +29,15 @@ SYSTEMD_UNIT="$HOME/.config/systemd/user/amuxd.service"
 
 mode="full"
 case "${1:-}" in
-  --opencode-only) mode="opencode" ;;
+  --runtime-only)  mode="runtime" ;;
   --keep-config)   mode="keep-config" ;;
   "")              mode="full" ;;
-  *) echo "unknown option: $1" >&2; echo "usage: $0 [--opencode-only|--keep-config]" >&2; exit 2 ;;
+  *) echo "unknown option: $1" >&2; echo "usage: $0 [--runtime-only|--keep-config]" >&2; exit 2 ;;
 esac
 
-remove_opencode() {
-  rm -f "$AMUXD_DIR/bin/opencode" "$AMUXD_DIR/bin/opencode.exe" "$AMUXD_DIR/.opencode-version"
-  echo "  removed opencode runtime (~/.amuxd/bin/opencode + .opencode-version)"
+remove_runtime() {
+  rm -rf "$AMUXD_DIR/cache/node" "$AMUXD_DIR/cache/pi"
+  echo "  removed managed runtime (~/.amuxd/cache/node + ~/.amuxd/cache/pi)"
 }
 
 stop_service() {
@@ -63,28 +64,28 @@ stop_service() {
 }
 
 case "$mode" in
-  opencode)
-    echo "Uninstalling opencode runtime only..."
-    remove_opencode
+  runtime)
+    echo "Uninstalling managed Node + pi only..."
+    remove_runtime
     echo "Done. amuxd + onboarding state left intact."
     ;;
   keep-config)
-    echo "Uninstalling amuxd binaries + service + opencode (keeping team identity)..."
+    echo "Uninstalling amuxd binaries + service + pi runtime (keeping team identity)..."
     stop_service
-    remove_opencode
+    remove_runtime
     rm -f "$AMUXD_DIR/bin/amuxd" "$AMUXD_DIR/bin/amuxd.exe"
     rm -f "$AMUXD_DIR/amuxd.http.port" "$AMUXD_DIR/amuxd.http.token" \
           "$AMUXD_DIR/amuxd.pid" "$AMUXD_DIR/amuxd.sock"
     # v2 layout keeps the runtime files under run/.
     rm -rf "$AMUXD_DIR/run"
-    echo "  removed amuxd binary + runtime files (kept daemon.toml/backend.toml)"
+    echo "  removed amuxd binary + runtime files (kept daemon.toml + team state)"
     echo "Done."
     ;;
   full)
     echo "Full uninstall: stopping service and removing ~/.amuxd ..."
     stop_service
     rm -rf "$AMUXD_DIR"
-    echo "  removed $AMUXD_DIR (amuxd binary, opencode, all config + runtime state)"
+    echo "  removed $AMUXD_DIR (amuxd binary, pi runtime, all config + runtime state)"
     echo "Done. Next app launch starts from a clean daemon state."
     ;;
 esac

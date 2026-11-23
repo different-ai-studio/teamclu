@@ -51,13 +51,7 @@ public actor AttachmentContentLoader {
         guard let config = CloudAPIConfigurationStore.configuration() else {
             throw CloudAPIError.invalidResponse
         }
-        let storage = KeychainSessionStorage()
-        let client = CloudAPIClient(configuration: config, accessToken: {
-            guard let session = try storage.load(), session.expiresAt.timeIntervalSinceNow > 0 else {
-                throw CloudAPIError.missingAccessToken
-            }
-            return session.accessToken
-        })
+        let client = CloudAPIClient(configuration: config, accessToken: CloudAccessToken.provider())
         // The whole path is one route parameter, so every separator in it has
         // to survive as an escape — `urlPathAllowed` keeps `/` and the route
         // would then read only the first segment.

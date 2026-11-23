@@ -5,6 +5,7 @@ import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ModalShell } from '@/components/teamshare/skill-detail/ModalShell'
 import { groupModelsByProvider } from '@/lib/agent/selectable-models'
+import type { TranslateWithFallback } from '@/lib/translate-fn'
 
 export interface WikiSourceDirectory {
   path: string
@@ -38,6 +39,24 @@ export interface WikiPrepareSummary {
   canPublish: boolean
   blockers: string[]
   needsVisionAcceptance?: boolean
+  largeSources?: WikiLargeSource[]
+  needsLargeSourceDecision?: boolean
+}
+
+export type WikiLargeSourceChoice = 'profile' | 'segment' | 'skip'
+
+/** A source whose extracted text is over the compile limit, measured locally before compiling. */
+export interface WikiLargeSource {
+  path: string
+  chars: number
+  limit: number
+  kind: 'table' | 'document' | string
+  encoding?: string
+  parts: number
+  maxParts: number
+  reason?: 'no_breaks' | 'too_many_parts' | string
+  options: WikiLargeSourceChoice[]
+  defaultChoice: WikiLargeSourceChoice
 }
 
 export interface WikiPublishResult {
@@ -50,12 +69,15 @@ export type WikiCompileProgress = {
   action?: string
   current?: number
   total?: number
+  part?: number
+  parts?: number
 }
 
 type Phase =
   | 'select'
   | 'waiting_for_model'
   | 'vision'
+  | 'large'
   | 'preparing'
   | 'summary'
   | 'publishing'
@@ -94,7 +116,7 @@ function groupBlockers(blockers: string[]) {
   return { noPages, skipped, skippedCount, rest }
 }
 
-const STAGES = ['plan', 'estimate', 'ingest', 'lint', 'done'] as const
+const STAGES = ['plan', 'estimate', 'preflight', 'ingest', 'lint', 'done'] as const
 
 async function defaultSubscribeProgress(
   handler: (event: WikiCompileProgress) => void,
@@ -114,6 +136,8 @@ function stageLabel(
       return t('teamShare.wikiStepPlan', 'Checking source plan')
     case 'estimate':
       return t('teamShare.wikiStepEstimate', 'Estimating vision cost')
+    case 'preflight':
+      return t('teamShare.wikiStepPreflight', 'Checking large files')
     case 'ingest':
       return t('teamShare.wikiStepIngest', 'Compiling sources')
     case 'lint':
@@ -161,6 +185,7 @@ export function WikiMaintainerRunSheet({
     paths: string[],
     compilerModel: string,
     visionChoice?: 'accept' | 'decline',
+    largeSourceChoices?: Record<string, WikiLargeSourceChoice>,
   ) => Promise<WikiPrepareSummary>
   onPublish: (
     teamId: string,
@@ -188,6 +213,8 @@ export function WikiMaintainerRunSheet({
   const [publishResult, setPublishResult] = React.useState<WikiPublishResult | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [progress, setProgress] = React.useState<WikiCompileProgress | null>(null)
+  const [visionChoice, setVisionChoice] = React.useState<'accept' | 'decline' | undefined>()
+  const [largeChoices, setLargeChoices] = React.useState<Record<string, WikiLargeSourceChoice>>({})
 
   React.useEffect(() => {
     if (!open) return
@@ -198,6 +225,8 @@ export function WikiMaintainerRunSheet({
     setPublishResult(null)
     setError(null)
     setProgress(null)
+    setVisionChoice(undefined)
+    setLargeChoices({})
     // Persist a new selection while the sheet is open; do not reset on that
     // array identity change or the user would lose in-progress folder picks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -229,19 +258,45 @@ export function WikiMaintainerRunSheet({
       current.includes(path) ? current.filter((item) => item !== path) : [...current, path],
     )
   }
-  const prepare = async (visionChoice?: 'accept' | 'decline') => {
+  // Each answer re-runs prepare; an earlier answer (vision cost) is carried
+  // into the next one (large files) so the person is not asked twice.
+  const prepare = async (
+    nextVision?: 'accept' | 'decline',
+    nextLarge?: Record<string, WikiLargeSourceChoice>,
+  ) => {
     setError(null)
     setProgress({ stage: 'plan' })
     setPhase('preparing')
+    setVisionChoice(nextVision)
     try {
       onSaveSelection(teamId, selected)
       onSaveCompilerModel?.(teamId, compilerModel)
-      const next = visionChoice
-        ? await onPrepare(teamId, selected, compilerModel, visionChoice)
-        : await onPrepare(teamId, selected, compilerModel)
+      const next = nextLarge
+        ? await onPrepare(teamId, selected, compilerModel, nextVision, nextLarge)
+        : nextVision
+          ? await onPrepare(teamId, selected, compilerModel, nextVision)
+          : await onPrepare(teamId, selected, compilerModel)
       setSummary(next)
       setProgress(null)
-      setPhase(next.needsVisionAcceptance ? 'vision' : 'summary')
+      if (next.needsLargeSourceDecision) {
+        setLargeChoices(
+          Object.fromEntries(
+            (next.largeSources ?? []).map((source) => [
+              source.path,
+              nextLarge?.[source.path] && source.options.includes(nextLarge[source.path])
+                ? nextLarge[source.path]
+                : source.defaultChoice,
+            ]),
+          ),
+        )
+      }
+      setPhase(
+        next.needsVisionAcceptance
+          ? 'vision'
+          : next.needsLargeSourceDecision
+            ? 'large'
+            : 'summary',
+      )
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
       setProgress(null)
@@ -296,6 +351,11 @@ export function WikiMaintainerRunSheet({
               'teamShare.wikiVisionBeforeCompileHint',
               'Confirm the visual recognition cost, then compile. Nothing is compiled until you agree.',
             )
+          : phase === 'large'
+            ? t(
+                'teamShare.wikiLargeSourcesHint',
+                'Choose how to handle each large file, then compile. Nothing is compiled until you confirm.',
+              )
           : phase === 'summary' || phase === 'publishing' || phase === 'published'
           ? t(
               'teamShare.wikiMaintainSummaryHint',
@@ -337,6 +397,15 @@ export function WikiMaintainerRunSheet({
                 {t('teamShare.wikiCompileWithVision', 'Agree and compile')}
               </Button>
             </>
+          )}
+          {phase === 'large' && (
+            <Button
+              type="button"
+              onClick={() => void prepare(visionChoice, largeChoices)}
+              disabled={busy}
+            >
+              {t('teamShare.wikiLargeSourcesCompile', 'Compile as chosen')}
+            </Button>
           )}
           {(phase === 'summary' || phase === 'publishing') && (
             <Button
@@ -474,6 +543,16 @@ export function WikiMaintainerRunSheet({
         </div>
       )}
 
+      {phase === 'large' && summary && (
+        <LargeSourceChoices
+          sources={summary.largeSources ?? []}
+          choices={largeChoices}
+          onChoose={(path, choice) =>
+            setLargeChoices((current) => ({ ...current, [path]: choice }))
+          }
+        />
+      )}
+
       {phase === 'preparing' && (
         <div className="space-y-3">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-faint">
@@ -508,6 +587,12 @@ export function WikiMaintainerRunSheet({
                                 : t('teamShare.wikiActionCompile', 'compile')
                             } · ${progress.path}`
                           : progress.path}
+                        {progress.part && progress.parts
+                          ? ` · ${t('teamShare.wikiProgressPart', 'part {{part}}/{{parts}}', {
+                              part: progress.part,
+                              parts: progress.parts,
+                            })}`
+                          : ''}
                       </div>
                     )}
                   </div>
@@ -629,10 +714,52 @@ export function WikiMaintainerRunSheet({
   )
 }
 
-function displayBlocker(
-  blocker: string,
-  t: (key: string, fallback: string, vars?: Record<string, unknown>) => string,
-) {
+type Translate = TranslateWithFallback
+
+const PART_FAILED_RE =
+  /^([\s\S]*?)Part (\d+) of (\d+) failed: ([\s\S]*) The (\d+) parts before it were kept, and the whole source compiles again next time\.$/
+
+const LENGTH_MESSAGES: Array<[RegExp, string, string, (match: RegExpExecArray) => Record<string, unknown>]> = [
+  [
+    /This source is too long after extraction \((\d+) characters, limit (\d+)\)\. Split it into shorter files, then compile again\./,
+    'teamShare.wikiSourceTooLong',
+    'This source is too long after extraction ({{chars}} characters, limit {{limit}}). Split it into shorter files, then compile again.',
+    (match) => ({ chars: formatCount(match[1]), limit: formatCount(match[2]) }),
+  ],
+  [
+    /This source is too long after extraction \((\d+) characters, limit (\d+)\) and has no pages, rows, or headings to split at\. Split it into shorter files, then compile again\./,
+    'teamShare.wikiSourceTooLongUnsplittable',
+    'This source is too long after extraction ({{chars}} characters, limit {{limit}}) and has no pages, rows, or headings to split at. Split it into shorter files, then compile again.',
+    (match) => ({ chars: formatCount(match[1]), limit: formatCount(match[2]) }),
+  ],
+  [
+    /This source would need (\d+) parts, more than the (\d+)-part limit\. Split it into shorter files, then compile again\./,
+    'teamShare.wikiSourceTooManyParts',
+    'This source would need {{parts}} parts, more than the {{max}}-part limit. Split it into shorter files, then compile again.',
+    (match) => ({ parts: match[1], max: match[2] }),
+  ],
+]
+
+function formatCount(value: string | number) {
+  return Number(value).toLocaleString('en-US')
+}
+
+function displayBlocker(blocker: string, t: Translate): string {
+  const part = PART_FAILED_RE.exec(blocker)
+  if (part) {
+    const head = part[1].replace(/:\s*$/, '')
+    const message = t(
+      'teamShare.wikiSourcePartFailed',
+      'Part {{part}} of {{parts}} failed: {{detail}} The {{kept}} parts before it were kept, and the whole source compiles again next time.',
+      { part: part[2], parts: part[3], detail: displayBlocker(part[4], t), kept: part[5] },
+    )
+    return head ? `${head}: ${message}` : message
+  }
+  for (const [pattern, key, fallback, vars] of LENGTH_MESSAGES) {
+    const match = pattern.exec(blocker)
+    if (!match) continue
+    return blocker.replace(match[0], t(key, fallback, vars(match)))
+  }
   const retractBlocked = 'A deleted source is still cited. Compile again before publishing.'
   if (blocker.includes(retractBlocked)) {
     return t('teamShare.wikiRetractBlocked', retractBlocked)
@@ -655,6 +782,11 @@ function displayBlocker(
       'The file was read, but the compiler did not write a Wiki page.',
       'teamShare.wikiVisionNoPage',
     ],
+    ['This file is larger than 100 MiB, so it is not compiled.', 'teamShare.wikiSourceFileTooBig'],
+    [
+      'This source is too long. Split it into shorter files, then compile again.',
+      'teamShare.wikiSourceTooLongLegacy',
+    ],
   ]
   for (const [sentence, key] of visionSentences) {
     if (!blocker.includes(sentence)) continue
@@ -670,6 +802,137 @@ function displayBlocker(
     detail,
   })
   return head ? `${head}: ${message}` : message
+}
+
+function largeSourceName(path: string) {
+  return path.split('/').pop() || path
+}
+
+function LargeSourceChoices({
+  sources,
+  choices,
+  onChoose,
+}: {
+  sources: WikiLargeSource[]
+  choices: Record<string, WikiLargeSourceChoice>
+  onChoose: (path: string, choice: WikiLargeSourceChoice) => void
+}) {
+  const { t } = useTranslation()
+  const optionText = (source: WikiLargeSource, choice: WikiLargeSourceChoice) => {
+    if (choice === 'profile') {
+      return {
+        label: t('teamShare.wikiLargeChoiceProfile', 'Summarize the table structure only'),
+        detail: t(
+          'teamShare.wikiLargeChoiceProfileDetail',
+          'Columns, types, value ranges, and the first 5 rows. One model call.',
+        ),
+      }
+    }
+    if (choice === 'segment') {
+      if (!source.options.includes('segment')) {
+        return {
+          label: t('teamShare.wikiLargeChoiceSegment', 'Compile in parts'),
+          detail:
+            source.reason === 'too_many_parts'
+              ? t(
+                  'teamShare.wikiLargeChoiceSegmentTooMany',
+                  'Would need more than {{max}} parts.',
+                  { max: source.maxParts },
+                )
+              : t(
+                  'teamShare.wikiLargeChoiceSegmentNoBreaks',
+                  'No pages, rows, or headings to split at.',
+                ),
+        }
+      }
+      return {
+        label: t('teamShare.wikiLargeChoiceSegment', 'Compile in parts'),
+        detail: t(
+          'teamShare.wikiLargeChoiceSegmentDetail',
+          '{{parts}} parts, {{calls}} model calls.',
+          { parts: source.parts, calls: source.parts },
+        ),
+      }
+    }
+    return {
+      label: t('teamShare.wikiLargeChoiceSkip', 'Skip this run'),
+      detail: t('teamShare.wikiLargeChoiceSkipDetail', 'You will be asked again next time.'),
+    }
+  }
+  return (
+    <div className="space-y-3">
+      <p className="text-[13px] leading-relaxed text-ink-2">
+        {t(
+          'teamShare.wikiLargeSourcesIntro',
+          '{{count}} files are too long to compile at once. Detailed rows stay in Documents; the Wiki keeps definitions and summaries.',
+          { count: sources.length },
+        )}
+      </p>
+      {sources.map((source) => {
+        const shown: WikiLargeSourceChoice[] =
+          source.kind === 'table' ? ['profile', 'segment', 'skip'] : ['segment', 'skip']
+        return (
+          <fieldset
+            key={source.path}
+            className="rounded-[8px] border border-border-soft bg-paper px-3 py-2.5"
+          >
+            <legend className="sr-only">{source.path}</legend>
+            <div className="flex items-baseline gap-2">
+              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground">
+                {largeSourceName(source.path)}
+              </span>
+              <span className="shrink-0 font-mono text-[11px] text-faint">
+                {t('teamShare.wikiLargeSourceSize', '{{chars}} / {{limit}} chars', {
+                  chars: formatCount(source.chars),
+                  limit: formatCount(source.limit),
+                })}
+              </span>
+            </div>
+            <div className="mt-0.5 truncate font-mono text-[10.5px] text-faint">
+              {source.path}
+              {source.encoding && source.encoding !== 'utf-8'
+                ? ` · ${source.encoding.toUpperCase()}`
+                : ''}
+            </div>
+            <div className="mt-2 space-y-1">
+              {shown.map((choice) => {
+                const allowed = source.options.includes(choice)
+                const text = optionText(source, choice)
+                return (
+                  <label
+                    key={choice}
+                    className={`flex items-start gap-2 rounded-[7px] px-2 py-1.5 text-[12.5px] ${
+                      allowed ? 'cursor-pointer hover:bg-selected' : 'cursor-not-allowed opacity-50'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      className="mt-0.5"
+                      name={`large-${source.path}`}
+                      value={choice}
+                      checked={choices[source.path] === choice}
+                      disabled={!allowed}
+                      onChange={() => onChoose(source.path, choice)}
+                      aria-label={`${largeSourceName(source.path)}: ${text.label}`}
+                    />
+                    <span className="min-w-0">
+                      <span className="text-foreground">{text.label}</span>
+                      {choice === source.defaultChoice && allowed && (
+                        <span className="ml-1.5 text-[11px] text-faint">
+                          {t('teamShare.wikiLargeChoiceRecommended', 'Recommended')}
+                        </span>
+                      )}
+                      <span className="block text-[11.5px] text-muted-foreground">{text.detail}</span>
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+          </fieldset>
+        )
+      })}
+    </div>
+  )
 }
 
 function SummaryItem({ text }: { text: string }) {

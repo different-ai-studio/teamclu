@@ -14,13 +14,9 @@ mail-parser = "0.9"
 lettre = { version = "0.11", features = ["native-tls", "smtp-transport"] }
 yup-oauth2 = "12"
 webbrowser = "1"
-flate2 = "1"
 
 # WebSocket-based gateways (Kook, Feishu, WeChat, WeCom)
 tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
-
-# Image processing (WeChat/WeCom media)
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 
 # WeCom AES decryption + media upload
 aes = "0.8"
@@ -41,10 +37,6 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
-anyhow = "1"
-regex = "1"
-url = "2"
-nanoid = "0.4"
 # PERF-20 / STR-7: local SQLite files only. libsql's default features are
 # `core + replication + remote + sync + tls`, which drag in tonic, tonic-web,
 # tower-http, hyper 0.14 and hyper-rustls — a second HTTP stack and a second
@@ -54,10 +46,8 @@ nanoid = "0.4"
 # resolver 2 unifies features across the workspace, so one of them keeping
 # the defaults re-enables them for the other.
 libsql = { version = "0.9", default-features = false, features = ["core"] }
-indexmap = { version = "2", features = ["serde"] }
 urlencoding = "2"
 getrandom = "0.2"
-dirs = "6"
 
 [dev-dependencies]
 wiremock = "0.6"

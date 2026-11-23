@@ -109,7 +109,6 @@ export interface AuthBackend {
   verifyPhoneOtpResult(phone: string, code: string): Promise<import("@/lib/auth/auth-client").PhoneLoginResult>;
   /** Log in as a specific user when the phone is linked to multiple accounts. */
   loginWithPhoneUser(phone: string, code: string, userId: string): Promise<AuthSession | null>;
-  signInWithPassword(email: string, password: string): Promise<AuthSession | null>;
   signInWithOAuth(provider: OAuthProvider): Promise<AuthSession | null>;
   signOut(): Promise<void>;
   claimInvite(token: string): Promise<AuthClaimResult>;
@@ -265,7 +264,11 @@ export interface SessionsBackend {
     participantWorkspaces?: Record<string, { workspaceId: string; workspacePath: string | null }>;
   }>;
   addParticipants(sessionId: string, actorIds: string[]): Promise<void>;
-  updateSessionTitle(sessionId: string, title: string): Promise<void>;
+  updateSessionTitle(
+    sessionId: string,
+    title: string,
+    options?: { lock?: boolean },
+  ): Promise<boolean>;
   archiveSession(sessionId: string, archivedAt: string): Promise<void>;
   getSessionParticipants(sessionId: string): Promise<SessionParticipant[]>;
   getSession(sessionId: string, teamId?: string | null): Promise<SessionDetailRow | null>;
@@ -961,7 +964,6 @@ export interface ShortcutRow {
   created_at?: string | null;
   updated_at?: string | null;
   sort_order?: number | null;
-  visible_roles?: string[] | null;
 }
 
 export interface ShortcutCreateArgs {
@@ -975,27 +977,12 @@ export interface ShortcutCreateArgs {
   p_target?: string;
 }
 
-interface ShortcutTeamRoleRow {
-  id: string;
-  team_id: string;
-  code: string;
-  name: string;
-}
-
-interface ShortcutRoleBindingRow {
-  resource_id: string;
-  permission_roles: Array<{ role_id: string }>;
-}
-
 export interface ShortcutsBackend {
   listShortcuts(scope: string, teamId?: string): Promise<ShortcutRow[]>;
   createShortcut(input: ShortcutCreateArgs): Promise<{ id: string }>;
   updateShortcut(id: string, patch: Record<string, unknown>): Promise<void>;
   deleteShortcut(id: string): Promise<void>;
   batchMove(input: { ids?: string[]; targetScope?: string; moves?: Record<string, unknown>[]; [key: string]: unknown }): Promise<unknown>;
-  setVisibleRoles(input: { shortcutId?: string; roleIds?: string[]; roles?: string[]; [key: string]: unknown }): Promise<void>;
-  listTeamRoles(teamId: string): Promise<ShortcutTeamRoleRow[]>;
-  listShortcutRoleBindings(teamId: string): Promise<ShortcutRoleBindingRow[]>;
 }
 
 export interface NotificationPrefs {
@@ -1108,6 +1095,8 @@ export interface AppStartSpec {
   port?: number;
   layers?: string[];
   healthCheckPath?: string;
+  /** 保持在线: one instance kept running (FC minimum instances 1). Omitted = off. */
+  alwaysOn?: boolean;
 }
 
 /** The daemon's check of a build artifact, as the last successful deploy left it. */
@@ -1451,11 +1440,23 @@ export interface AppMemberAccessRow {
   memberId: string;
   permissionLevel: AppPermissionLevel;
   grantedByMemberId: string | null;
-  createdAt: string;
+  /** Null for an inherited row, which has no grant of its own. */
+  createdAt: string | null;
   /** Present on the list: what the grantee is. */
   actorType?: "member" | "agent" | null;
   /** Present on the list: false for an agent whose daemon has not claimed an account. */
   connected?: boolean | null;
+  /**
+   * Present on the list: the grantee's name, read by the server — the
+   * caller's own directory hides agents it may not talk to.
+   */
+  displayName?: string | null;
+  /**
+   * Present on the list: an agent that reaches the app through its owner
+   * rather than a grant of its own. Read-only; follows the owner's access.
+   */
+  inherited?: boolean;
+  inheritedFrom?: { actorId: string; displayName: string | null } | null;
 }
 
 /** `POST /v1/git/token`. */

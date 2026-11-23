@@ -300,6 +300,22 @@ catch {
 }
 finally {
   Restore-GitBash
+  # Process table while amuxd is still up: pid, parent, start time and command
+  # line of every node / npx / cmd / MCP server. Matched against the
+  # `host pid=` on the extension's MCP startup lines and amuxd's "retiring pi
+  # host" line, it shows whether a retired host's MCP servers outlived it (on
+  # Windows killing the host ends only node.exe). Diagnostic, best effort.
+  if ($IsWindows) {
+    try {
+      Get-CimInstance Win32_Process |
+        Where-Object { $_.Name -match '^(node|npx|cmd|amuxd|teamclu-introspect|ocu|open-computer-use.*|chrome.*)\.exe$' } |
+        Sort-Object CreationDate |
+        Format-Table -AutoSize -Wrap ProcessId, ParentProcessId, CreationDate, Name, CommandLine |
+        Out-String -Width 4096 |
+        Set-Content -Encoding utf8 (Join-Path $OutDir 'processes.txt')
+    }
+    catch { Write-Host "::warning::Could not snapshot processes: $_" }
+  }
   if ($daemon -and -not $daemon.HasExited) {
     & $Amuxd stop 2>&1 | Out-Null
     Start-Sleep -Seconds 3

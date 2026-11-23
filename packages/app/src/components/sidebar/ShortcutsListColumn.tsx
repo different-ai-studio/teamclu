@@ -3,14 +3,10 @@ import { useTranslation } from 'react-i18next'
 import {
   ChevronDown,
   ChevronRight,
-  ExternalLink,
-  FileText,
-  Folder,
   Keyboard,
   Plus,
   RefreshCw,
   Settings,
-  type LucideIcon,
 } from 'lucide-react'
 import { LucideIconByName } from '@/components/icons/LucideIconByName'
 import { Button } from '@/components/ui/button'
@@ -22,14 +18,9 @@ import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useSidebar } from '@/components/ui/sidebar'
 import { useUIStore } from '@/stores/ui'
+import { resolveFallbackIcon } from '@/components/shortcuts/shortcut-fallback-icon'
 
 // Icon shown when the node names no Lucide icon (and while the icon set loads).
-function resolveFallbackIcon(node: ShortcutNode): LucideIcon {
-  if (node.type === 'folder') return Folder
-  if (node.type === 'native') return FileText
-  return ExternalLink
-}
-
 function collectFolderIds(nodes: ShortcutNode[], out = new Set<string>()) {
   for (const node of nodes) {
     if (node.type === 'folder') out.add(node.id)

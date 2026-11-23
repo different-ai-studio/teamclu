@@ -1,13 +1,5 @@
-//! High-level retained-state publisher. Backend-agnostic: takes any
-//! `Arc<dyn MessagePublisher>` and a `Topics` ref, so it works over the
-//! MQTT path (rumqttc) or NATS path (async-nats + JetStream KV) the same
-//! way.
-//!
-//! For NATS, retained writes go through MessagePublisher::publish with
-//! `retain=true`, which on NatsClient is a core publish. The JetStream KV
-//! mirror lives in `crate::nats::RetainedKv` and is written separately by
-//! `NatsBackend::announce_online/offline`. This split means `Publisher`
-//! callers don't need to know which backend they're on.
+//! High-level retained-state publisher. Takes any `Arc<dyn MessagePublisher>`
+//! and a `Topics` ref, so callers never touch the MQTT client directly.
 
 use crate::proto::{amux, teamclu};
 use std::sync::Arc;

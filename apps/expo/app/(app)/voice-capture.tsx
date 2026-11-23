@@ -21,8 +21,8 @@ import {
   type VoiceCaptureError,
 } from "../../src/features/sessions/voice-session";
 import { createRuntimeRpcClient } from "../../src/lib/teamclu/runtime-rpc";
-import { supabase } from "../../src/lib/supabase/client";
-import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
+import { cloudAuth } from "../../src/lib/auth/cloud-auth";
+import { cloudAccessToken } from "../../src/lib/cloud-api/client";
 import { uuidV4 } from "../../src/lib/uuid";
 import { showToast } from "../../src/ui/Toast";
 
@@ -59,11 +59,11 @@ export default function VoiceCaptureRoute() {
   }, []);
 
   const actorsApi = useMemo(
-    () => createActorsApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createActorsApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
   const workspacesApi = useMemo(
-    () => createWorkspacesApi({ getAccessToken: supabaseAccessToken(supabase) }),
+    () => createWorkspacesApi({ getAccessToken: cloudAccessToken(cloudAuth) }),
     [],
   );
 
@@ -136,7 +136,7 @@ export default function VoiceCaptureRoute() {
       ];
       const sessionId = await startVoiceSession(
         {
-          sessionsApi: createConfiguredSessionsApi(supabase),
+          sessionsApi: createConfiguredSessionsApi(cloudAuth),
           runtimeRpc: teamMqtt
             ? createRuntimeRpcClient({ mqtt: teamMqtt, teamId, requesterActorId: memberActorId })
             : null,

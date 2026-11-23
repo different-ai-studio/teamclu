@@ -20,7 +20,7 @@
 | 3 | CLI | 以后做 **`amuxd app …` 子命令**；第一期只扩展 `amuxd git-credential` |
 | 4 | agent | agent 有**独立账号**（它自己的 daemon 账号），和真人地位相同：单独授权、单独出现在 push 记录里 |
 | 5 | 第一期范围 | **只做 TeamClu 界面 + git 命令，不开放 Gitea 网页** |
-| 6 | agent 的 app 权限 | **没有默认权限，和真人一样在 app 成员里手动授权。** 建 app 只给创建者 admin；不按 `amux.agents.owner_member_id` 自动给主人的 agent 授权 |
+| 6 | agent 的 app 权限 | ~~没有默认权限，和真人一样在 app 成员里手动授权；不按 `amux.agents.owner_member_id` 自动给主人的 agent 授权~~ **2026-11-20 修订：在用（`status='active'`）的 agent 继承主人对 app 的权限**（主人是创建者 → admin，否则是主人的授权级别），但不能管理授权、不能删除 app；主人没权限时仍可单独授权。见 §7 末尾 |
 | 7 | app 权限分级 | **改成 `read` / `write` / `admin`，和 Gitea 仓库协作者完全一致**（原 `view` → `read`，`prompt` → `write`）。只改 app 权限；agent 使用权限（`amux.agent_member_access`，「能不能和这个 agent 对话」）保留 `view` / `prompt` / `admin` |
 | 8 | 数据库和令牌 | **最小方案**：只改 `amux.app_member_access` 一张表；不建 `app_grants`、Gitea 映射表、refresh token 表。**真人的 git 密码是 FC 签发的 git 专用 token**（只能用于 git，30 天），不是完整的登录会话；agent 用 daemon 现有的登录 token（2026-11-16 评审后修订，原因见 §4） |
 | 9 | 落地节奏 | git 凭证存文件（不用钥匙串）；旧 deploy key 路径里 agent 的团队级权限第一期不动；老 app 第一期不动，完成后一次性迁移 |
@@ -238,12 +238,19 @@ http://:8081 {
 }
 ```
 
-- **只放行 git 协议路径**，`.git` 后缀可有可无。网页和 `/api/*` 对用户一律 404：Gitea 的 admin 协作者能通过 API
-  改协作者、加 deploy key、加 webhook，放开就能绕过 TeamClu 的权限管理。
+- **只放行 git 协议路径和 PR 接口**，`.git` 后缀可有可无。网页和其余 `/api/*` 对用户一律 404：Gitea 的 admin
+  协作者能通过 API 改协作者、加 deploy key、加 webhook、删仓库，放开就能绕过 TeamClu 的权限管理。
+- **PR 接口（2026-11-20 补）**：`/api/v1/repos/<owner>/<repo>/pulls…`（任意方法），加上客户端围绕它会发的几个只读
+  GET（仓库信息、`branches`、`commits`、`compare`、`/api/v1/user`、`/api/v1/version`），和 git 路径走同一个
+  forward_auth。这样 Codex 之类的客户端按默认做法调 Gitea API 建 PR、看 PR、合并 PR，都是本人身份。
+  起因：只放行 git 路径时，belayo 上 Codex 推分支成功，但调 `POST …/pulls` 返回 401——客户端带的是 TeamClu 的
+  git token，Gitea 不认，而 `/api/*` 只给 FC 的机器人 token 用。带 `Authorization: token …` 的请求（机器人）不进
+  这两条，落到原来的 token 通道。需要 Gitea 打开 `ENABLE_REVERSE_PROXY_AUTHENTICATION_API`，见下。
 - Git LFS 第一期不支持（它的路径不在放行范围内）。
 - 仓库级权限仍由 Gitea 判定（依据是同步过去的协作者和 team，§7），网关只负责「你是谁」。
 
-**Gitea 配置**：`ENABLE_REVERSE_PROXY_AUTHENTICATION=true`；`…_API` 不开；
+**Gitea 配置**：`ENABLE_REVERSE_PROXY_AUTHENTICATION=true`；`…_API=true`（2026-11-20 起，给上面的 PR 接口用。
+安全性不变：身份头只由 forward_auth 在放行的路径上写入，其余入口——包括 FC 用的内部入口——一律剥掉）；
 `…_AUTO_REGISTRATION=true` 只作兜底（FC 授权时会先建好用户）；关闭本地注册和密码登录。
 
 **网络隔离是唯一的防线。** `REVERSE_PROXY_TRUSTED_PROXIES` 不限制谁能发代理头（§9.1 第 10 行）。所以：
@@ -257,7 +264,8 @@ http://:8081 {
   就能冒充任何人。经过内部入口后，这条路上的身份头会被剥掉。
 - 加两道保险：`proxyToApp` 转发前删掉 `x-webauth-*`；`fc_endpoint` 能被客户端改写是现存问题，单独开 issue 修。
 
-**PR**：第一期顺带能用 AGit：`git push origin HEAD:refs/for/main -o topic=<x> -o title=<…>`（只需要 read）。
+**PR**：两条路都能用，作者都是本人。① AGit：`git push origin HEAD:refs/for/main -o topic=<x> -o title=<…>`
+（只需要 read）。② Gitea 的 PR API（经上面的 PR 接口放行），客户端用自己的 git 凭证调用；合并要 write。
 `amuxd app pr`、TeamClu 里的 PR 列表留到以后。
 
 ## 7. 同步到 Gitea 与权限对齐
@@ -305,6 +313,27 @@ http://:8081 {
 - OpenAPI：app 相关接口约 10 处。
 - 桌面端：`AppPermissionLevel`、`AppAccessTabContent.tsx` 的选项和文案、测试。iOS、Expo、daemon 不受影响。
 - 兼容旧客户端：过渡期 FC 写接口同时接受旧值并换成新值，读接口只返回新值。
+
+### 2026-11-20 修订：agent 继承主人的权限（推翻决策 6）
+
+**为什么改**：belayo 把一批老 app 迁到账号模式后，前一天还在 app 上干活的 agent 立刻推不了代码、拉不了代码
+（会话里 agent 用自己的身份跑 git，返回 404）。手工补授权要一个人、一个 bot、一个 app 地补：一个团队算下来要补
+上百条，新建的 agent 又会再断一次。
+
+**规则**（迁移 `20261120120000_agent_inherits_owner_app_access`，唯一来源是 SQL 函数 `amux.app_inherited_agents`）：
+
+- `status='active'` 的 agent，继承主人（`amux.agents.owner_member_id`，必须是同团队的 member）对 app 的级别：
+  主人是创建者 → admin；否则是主人的授权级别。主人没权限 → 不继承。主人的权限收回，agent 的也跟着没。
+- agent 自己有显式授权时取两者较高者；只有级别来自主人时才算「继承」。
+- **继承来的权限不能做两件事**：管理授权（列出/授予/撤销）和删除 app，Cloud API 返回 403
+  `inherited_access_not_allowed`。部署、撤下、改环境变量、定时任务等其他 admin 操作照常可以（产品决定，
+  让「在会话里让 AI 部署」可用）。
+- **RLS**：`actor_has_app_access` / `caller_has_app_grant` 加上继承，app 行、定时任务、环境变量名的可见性随之放开；
+  RLS 不区分级别，级别和上面两条禁止由 Cloud API 判断。
+- **Gitea**：同步把继承的 agent 也加成协作者，**admin 封顶为 write**（Gitea 的 admin 对 agent 没有额外用处，
+  合并 PR 只要 write）。`/v1/git/access` 按 Gitea 实际执行的级别回答。
+- **权限页**：服务端返回每个被授权者的显示名（调用者的目录可能看不到某些 agent，以前会显示成 ID）；继承来的 agent
+  单独列出，只读，标明「经 XX 继承」。
 
 ## 8. 落地顺序
 

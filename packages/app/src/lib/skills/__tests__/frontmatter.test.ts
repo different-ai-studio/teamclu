@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseFrontmatter, frontmatterString, writeFrontmatter } from '@/lib/skills/frontmatter'
+import { parseFrontmatter, frontmatterString } from '@/lib/skills/frontmatter'
 
 // These fixtures are duplicated in the Rust twin's test module
 // (apps/daemon/src/config/skill_frontmatter.rs). When you add a case here, add
@@ -106,43 +106,5 @@ when_not_to_use: |
 ---
 body`
     expect(frontmatterString(src, 'when_not_to_use')).toBe('第一行\n第二行')
-  })
-})
-
-describe('writeFrontmatter', () => {
-  it('roundtrips and preserves the body', () => {
-    const src = '---\nname: deploy-check\ndescription: old\n---\n# Body\n\ntext\n'
-    const out = writeFrontmatter(
-      src,
-      { whenNotToUse: 'line one\nline two', description: 'new' },
-      ['name', 'description', 'whenNotToUse'],
-    )
-    const p = parseFrontmatter(out)
-    expect(p.data.description).toBe('new')
-    expect(p.data.whenNotToUse).toBe('line one\nline two')
-    expect(p.body).toBe('# Body\n\ntext\n')
-  })
-
-  it('quotes values that would reparse wrong', () => {
-    const out = writeFrontmatter('---\nname: x\n---\nbody', { summary: 'key: value' }, ['name'])
-    expect(out).toContain('summary: "key: value"')
-    expect(parseFrontmatter(out).data.summary).toBe('key: value')
-  })
-
-  it('adds frontmatter to a bare document', () => {
-    const out = writeFrontmatter('# Heading\n', { name: 'x' }, ['name'])
-    expect(out.startsWith('---\nname: x\n---\n')).toBe(true)
-    expect(parseFrontmatter(out).body.trim()).toBe('# Heading')
-  })
-
-  it('drops a key when the update is undefined', () => {
-    const out = writeFrontmatter('---\nname: x\nstale: y\n---\nbody', { stale: undefined })
-    expect(parseFrontmatter(out).data.stale).toBeUndefined()
-    expect(parseFrontmatter(out).data.name).toBe('x')
-  })
-
-  it('serializes lists', () => {
-    const out = writeFrontmatter('---\nname: x\n---\nbody', { requires: ['macos', 'mcp'] })
-    expect(parseFrontmatter(out).data.requires).toEqual(['macos', 'mcp'])
   })
 })

@@ -169,8 +169,17 @@ export function createSessionsModule(client: CloudApiClient): SessionsBackend {
         }
       }
     },
-    async updateSessionTitle(sessionId, title) {
-      await client.patch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { title });
+    async updateSessionTitle(sessionId, title, options) {
+      const patched = await client.patch<{ title?: string; titleApplied?: boolean }>(
+        `/v1/sessions/${encodeURIComponent(sessionId)}`,
+        {
+          title,
+          ...(options?.lock ? { titleLocked: true } : {}),
+        },
+      );
+      // A generated title that loses to a lock comes back as titleApplied false.
+      // Older servers omit the flag; treat that as a write.
+      return patched?.titleApplied !== false;
     },
     async archiveSession(sessionId, archivedAt) {
       await client.patch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { archivedAt });

@@ -171,8 +171,6 @@ export function formatEnvActivationBlocker(
       })
     case 'turn_in_progress':
       return t('settings.envVars.diag.blockerTurnInProgress', 'A turn is currently running — wait for it to finish, then reload runtime')
-    case 'opencode_serve_no_cached_env':
-      return t('settings.envVars.diag.blockerOpencodeServeNoCachedEnv', 'opencode serve is running but has no cached session env — reload runtime so the next spawn merges personal vars')
     case 'host_env_shadowed':
       return t('settings.envVars.diag.blockerHostEnvShadowed', {
         keys: detail ?? '',
@@ -225,7 +223,7 @@ export function formatEnvActivationBlocker(
     case 'env_not_served':
       return t('settings.envVars.diag.blockerEnvNotServed', {
         keys: detail ?? '',
-        defaultValue: `Resolved keys are missing from the OpenCode serve host queue: ${detail ?? ''}`,
+        defaultValue: `Resolved keys are missing from the running agent host: ${detail ?? ''}`,
       })
     default:
       if (blocker.code === 'legacy_message' && detail) return detail

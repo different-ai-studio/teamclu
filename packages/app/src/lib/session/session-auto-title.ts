@@ -7,8 +7,9 @@ const PLACEHOLDER_EXACT = new Set(["New chat", "New Chat"]);
 
 /**
  * Quick-empty / solo-agent sessions are created as `DisplayName (HH:mm)`.
- * Only sessions explicitly marked at creation are eligible for auto-title, so a
- * user-renamed title like `Standup (09:30)` is never overwritten.
+ * Only sessions explicitly marked at creation are eligible for auto-title.
+ * A manual rename clears that mark, so a title like `Standup (09:30)` is not
+ * overwritten on the first message.
  */
 const SOLO_TIME_TITLE_RE = /^.+ \(\d{2}:\d{2}\)$/;
 
@@ -27,6 +28,12 @@ const pendingAutoTitleSessionIds = new Set<string>();
 export function markSessionNeedsAutoTitle(sessionId: string): void {
   const id = sessionId.trim();
   if (id) pendingAutoTitleSessionIds.add(id);
+}
+
+/** A person renamed this session, so the first message must not retitle it. */
+export function clearSessionAutoTitlePending(sessionId: string): void {
+  const id = sessionId.trim();
+  if (id) pendingAutoTitleSessionIds.delete(id);
 }
 
 /** Test helper — clears the pending set between cases. */

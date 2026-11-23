@@ -272,10 +272,6 @@ export default defineConfig({
       'src/**/__tests__/**/*.test.tsx',
     ],
     env: {
-      // Stub Supabase env vars so modules that still read them do not throw during test
-      // module evaluation. lib/supabase-client.ts itself no longer exists.
-      VITE_SUPABASE_URL: 'https://test.supabase.co',
-      VITE_SUPABASE_ANON_KEY: 'test-anon-key',
       // Match the production default locale (buildConfig.defaults.locale). The
       // `define` injection of import.meta.env.VITE_LOCALE does not apply under
       // vitest, so without this the i18n singleton falls back to English and
@@ -328,7 +324,6 @@ export default defineConfig({
               '@tauri-apps/plugin-shell',
               '@tauri-apps/plugin-dialog',
               '@tauri-apps/plugin-notification',
-              '@tauri-apps/plugin-process',
             ],
             i18n: ['i18next', 'react-i18next'],
           }

@@ -1084,8 +1084,14 @@ test('POST undeploy accepts an operation but never claims completion for 202',as
 test('authenticated heartbeat runs persistent cleanup with raw service client and no repository',async()=>{
  const {router,routes}=makeRouter();const tables:string[]=[];
  const client:any={rpc:async(name:string)=>{assert.equal(name,'report_expired_app_undeploy_calls');return {data:null,error:null}},from:(table:string)=>{tables.push(table);const q:any={then:(resolve:any)=>resolve({data:[],error:null})};for(const key of ['select','eq','in','order','limit','not','lte','delete','lt'])q[key]=()=>q;return q;}};
- registerApps(router,{createServiceRoleClient:()=>client,makeAppUndeployDeps:()=>({})});
+ const deployKeys = { scanned: 1, revoked: 1, failed: 0 };
+ registerApps(router,{
+   createServiceRoleClient:()=>client,
+   makeAppUndeployDeps:()=>({}),
+   deployKeySweep:()=>async (actual: unknown)=>{assert.equal(actual,client);return deployKeys;},
+ });
  const tick=findRoute(routes,'POST','/v1/internal/app-cron/tick');assert.equal(tick[3].auth,'cron-tick');
  const result=await tick[2]({repository:undefined});
  assert.equal(result.body.cleanup.processed,0);assert.ok(tables.includes('app_lifecycle_operations'));assert.ok(tables.includes('app_cron_jobs'));
+ assert.deepEqual(result.body.deployKeys, deployKeys);
 });

@@ -1,7 +1,7 @@
 use serenity::all::{
     async_trait, Client, Command, CommandOptionType, Context, CreateCommand, CreateCommandOption,
     CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse,
-    EventHandler, GatewayIntents, Http, Interaction, Message, Ready,
+    EventHandler, GatewayIntents, Interaction, Message, Ready,
 };
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -760,22 +760,6 @@ impl DiscordGateway {
     pub async fn shutdown(self) {
         if let Err(e) = self.stop().await {
             eprintln!("[Discord] shutdown: {e}");
-        }
-    }
-
-    /// Test if a token is valid
-    pub async fn test_token(token: &str) -> Result<String, String> {
-        let http = Http::new(token);
-
-        match http.get_current_user().await {
-            Ok(user) => {
-                // In newer Discord API, discriminator may be None (for users with new username system)
-                match user.discriminator {
-                    Some(d) => Ok(format!("{}#{:04}", user.name, d)),
-                    None => Ok(user.name.to_string()),
-                }
-            }
-            Err(e) => Err(format!("Invalid token: {}", e)),
         }
     }
 }

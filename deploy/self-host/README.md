@@ -437,7 +437,6 @@ docker volume rm teamclaw-self-host_caddy_config   # 保留 caddy_data 可留证
 | `db` | `supabase/postgres` | Postgres 15 (Supabase fork); data volume `db_data` |
 | `auth` | `supabase/gotrue` | GoTrue JWT auth service |
 | `rest` | `postgrest/postgrest` | PostgREST — REST layer over Postgres |
-| `realtime` | `supabase/realtime` | WebSocket broadcast + presence |
 | `storage` | `supabase/storage-api` | File storage API |
 | `imgproxy` | `darthsim/imgproxy` | On-the-fly image transforms for storage |
 | `meta` | `supabase/postgres-meta` | Postgres metadata REST API |
@@ -639,13 +638,13 @@ first start it **auto-joins a team** using a one-time invite token, persists its
 identity to the `amuxd_state` volume, connects to EMQX, and registers itself as
 an **agent actor** in the team. It then provides presence + MQTT connectivity.
 
-The image bundles **opencode** as the ACP agent. To actually run agent sessions,
-point it at an OpenAI-compatible LLM via `OPENCODE_*` in `.env` (base URL + key +
-model). If `OPENCODE_API_KEY` is left blank, the daemon stays **presence-only**
-(joins + MQTT, but agent discovery is disabled and it won't run sessions).
-
-> opencode caveat: `opencode acp` does not implement ACP `session/cancel`, so
-> interrupting a running turn has no effect (the turn runs to completion).
+Agent sessions run on **pi** (ADR-0014). The entrypoint runs `amuxd install-pi`
+on every start, which installs the pinned Node + pi into the `amuxd_state`
+volume the first time and is a no-op afterwards. The LLM is the **team AI
+gateway**: the daemon reads it from the Cloud API
+(`GET /v1/teams/:id/workspace-config` → `llm`), and a team with no stored base
+URL is served this stack's own gateway when FC has `AI_GATEWAY_INTERNAL_URL` /
+`AI_GATEWAY_SERVICE_TOKEN`. There are no per-daemon LLM variables.
 
 A team must exist before the daemon can join. Then:
 
@@ -654,11 +653,8 @@ A team must exist before the daemon can join. Then:
 #    Prints an AMUXD_JOIN_TOKEN=... line.
 ./amuxd/mint-invite.sh                 # or: ./amuxd/mint-invite.sh <TEAM_ID>
 
-# 2. In .env, set the join token and (to run agents) the LLM provider:
+# 2. In .env, set the join token:
 #    AMUXD_JOIN_TOKEN=<token from step 1>
-#    OPENCODE_BASE_URL=https://your-openai-compatible-endpoint/v1
-#    OPENCODE_API_KEY=<your key>
-#    OPENCODE_MODEL=<model id>
 
 # 3. Build + start the daemon.
 docker compose --profile daemon up -d --build amuxd
@@ -837,14 +833,9 @@ All variables live in `.env` (copied from `.env.example`).
 | `BUCKET` | no | OSS bucket name (default: `teamclu-team`) |
 | `REGION` | no | OSS region (default: `cn-shenzhen`) |
 | `ENDPOINT` | no | OSS endpoint URL |
-| `CODEUP_ORG_ID` / `CODEUP_PAT` / `CODEUP_BOT_USERNAME` | for apps | Managed-git org + PAT used to create each app's repo. Missing → `POST /v1/apps` fails at the repo step |
 | `APPS_DB_ADMIN_URL` | for apps | Superuser / CREATEDB URL on the compose Postgres (defaults to `postgres://postgres:$POSTGRES_PASSWORD@db:5432/postgres`). Used to create per-org DBs `tc_org_<orgId>` and per-app schemas. Blank with no compose default → data_app finalize fails naming this var |
 | `APPS_DB_APP_URL` | for data_app on FC | Postgres URL whose **host** is injected into each deployed app's `DATABASE_URL`. Required when `APPS_DB_ADMIN_URL` uses compose-internal `db` — deployed functions run on external Alibaba FC and cannot resolve that hostname. Use a VPC-reachable private IP, RDS URL, etc. |
 | `APPS_FC_VPC_ID` / `APPS_FC_VSWITCH_ID` / `APPS_FC_SECURITY_GROUP_ID` | for data_app on FC | VPC attachment for deployed app functions. Required when `APPS_DB_APP_URL` is set — without it the function cannot reach an internal RDS host. Use a dedicated security group (not the RDS-managed one) |
 | `APPS_FC_ENDPOINT` / `ALIYUN_ACCOUNT_ID` | for apps | Account-scoped FC 3.0 data-plane host (`<accountId>.<region>.fc.aliyuncs.com`). Not the OSS `ENDPOINT`; set one of the two |
 | `OPENAI_API_KEY` | no | 上游 provider key；供 `ai/catalog.yaml` 引用。可用逗号分隔填多个，网关在某个 key 没额度时自动换下一个 |
 | `ANTHROPIC_API_KEY` | no | 同上 |
-
-## Single-image platform mode
-
-If your platform allows only one Docker image and one exposed port, use the experimental all-in-one target in `deploy/self-host/all-in-one/`. It keeps the Compose deployment unchanged and routes Cloud API, auth, storage, realtime, and MQTT-over-WebSocket through one HTTP entrypoint.

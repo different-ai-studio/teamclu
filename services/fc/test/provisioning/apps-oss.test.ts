@@ -8,7 +8,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveAppsOss, appsRegion } from "../../src/lib/provisioning/apps-oss.js";
+import { appsOpenApiCredentials, appsRegion, getAppsS3Client, resolveAppsOss } from "../../src/lib/provisioning/apps-oss.js";
+import { assumeAppStorageRole } from "../../src/lib/provisioning/app-storage.js";
 
 /** The Alibaba FC target: one account, no APPS_* overrides. */
 const SHARED_ENV = {
@@ -126,4 +127,57 @@ test("appsRegion prefers APPS_REGION and falls back to REGION", () => {
     "cn-hangzhou",
   );
   assert.equal(appsRegion({} as NodeJS.ProcessEnv), "cn-hangzhou");
+});
+
+test("App RRSA does not fall back to static credentials when pod identity is missing", () => {
+  const result = resolveAppsOss({ ...SHARED_ENV, APPS_ALIYUN_CREDENTIAL_MODE: "rrsa" });
+  assert.equal(result.profile, undefined);
+  assert.match(result.error!, /ALIBABA_CLOUD_OIDC_TOKEN_FILE/);
+});
+
+test("App RRSA supplies expiring sessions to OSS and signs STS requests with the session token", async (t) => {
+  const { profile } = resolveAppsOss({
+    APPS_ALIYUN_CREDENTIAL_MODE: "rrsa",
+    APPS_REGION: "cn-hangzhou",
+    APPS_OSS_BUCKET: "teamclu-apps",
+    ALIBABA_CLOUD_ROLE_ARN: "acs:ram::1234567890123456:role/apps",
+    ALIBABA_CLOUD_OIDC_PROVIDER_ARN: "acs:ram::1234567890123456:oidc-provider/ack",
+    ALIBABA_CLOUD_OIDC_TOKEN_FILE: "/test/projected-token",
+  });
+  assert.ok(profile?.rrsa);
+  const expiration = "2030-01-01T00:00:00Z";
+  t.mock.method(profile.rrsa.provider, "getSession", async () => ({
+    accessKeyId: "STS.example",
+    accessKeySecret: "example-session-secret",
+    securityToken: "example-session-token",
+    expiration,
+  }));
+
+  const openApi = appsOpenApiCredentials(profile).credential;
+  assert.equal((await openApi?.getCredential())?.securityToken, "example-session-token");
+
+  const signing = await getAppsS3Client(profile).config.credentials();
+  assert.equal(signing.sessionToken, "example-session-token");
+  assert.equal(signing.expiration?.toISOString(), new Date(expiration).toISOString());
+
+  let requestChecked = false;
+  await assumeAppStorageRole(profile, {
+    appId: "4da89f3b-6a8b-40a8-a440-5bd3c951c6d3",
+    bucket: "teamclu-apps",
+    roleArn: "acs:ram::1234567890123456:role/storage",
+  }, {
+    fetchImpl: async (url, request) => {
+      assert.equal(url, "https://sts-vpc.cn-hangzhou.aliyuncs.com/");
+      const params = new URLSearchParams(String(request?.body));
+      assert.equal(params.get("SecurityToken"), "example-session-token");
+      assert.equal(params.get("AccessKeyId"), "STS.example");
+      assert.ok(params.get("Signature"));
+      requestChecked = true;
+      return Response.json({ Credentials: {
+        AccessKeyId: "STS.storage", AccessKeySecret: "example-storage-secret",
+        SecurityToken: "example-storage-token", Expiration: expiration,
+      } });
+    },
+  });
+  assert.ok(requestChecked);
 });

@@ -203,6 +203,26 @@ async function loadAttachmentBytes(target: ChatAttachmentTarget): Promise<Uint8A
   throw new Error("Attachment has no URL or storage path");
 }
 
+/** A file the sender picked on this machine. Not limited to the workspace root. */
+export async function openPickedLocalFile(path: string, filename: string): Promise<void> {
+  if (!isTauri()) {
+    notify("chat.fileOpen.desktopOnly", "在桌面端才能用系统程序打开");
+    return;
+  }
+  const parent = dirnameOf(path);
+  if (parent) await allowFsScopeDirs([parent]);
+  if (!(await pathExists(path))) {
+    notify("chat.fileOpen.notFound", "找不到这个文件");
+    return;
+  }
+  if (isExecutableChatFile(filename) || isExecutableChatFile(path)) {
+    await revealInFileManager(path);
+    notify("chat.fileOpen.executableBlocked", "程序文件不会直接运行，已在文件夹中显示");
+    return;
+  }
+  await openWithDefaultApp(path);
+}
+
 /** Left click, or a choice from the right-click menu, for a link or path. */
 export async function openChatHref(href: string, intent: ChatOpenIntent = "primary"): Promise<void> {
   const parsed = parseChatTarget(href);

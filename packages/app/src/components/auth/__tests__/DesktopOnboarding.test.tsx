@@ -87,7 +87,6 @@ vi.mock("@/lib/config/server-config", async (importOriginal) => ({
 
 vi.mock("@/lib/backend", () => ({
   hasBackendConfig: () => hasConfig.value,
-  getBackendKind: () => "cloud_api",
 }));
 
 vi.mock("@/lib/config/version", () => ({

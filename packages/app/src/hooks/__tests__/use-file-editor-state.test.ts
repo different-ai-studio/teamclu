@@ -32,14 +32,6 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
-describe('useLayoutModePanelSync', () => {
-  it('renders without error', async () => {
-    const { useLayoutModePanelSync } = await import('@/hooks/use-file-editor-state')
-    const { result } = renderHook(() => useLayoutModePanelSync())
-    expect(result.current).toBeUndefined()
-  })
-})
-
 describe('useResizablePanels', () => {
   it('returns initial rightPanelWidth of 400', async () => {
     const { useResizablePanels } = await import('@/hooks/use-file-editor-state')

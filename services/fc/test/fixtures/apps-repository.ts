@@ -19,6 +19,34 @@ function appsAuth(userId = "user-app-1") {
 // client: an `apps` UPDATE matches no row unless the caller (`actorRow`) created
 // it. `serviceRole()` is a second double over the same rows with no RLS, for
 // writes the repository escalates.
+/** `amux.app_inherited_agents` over the in-memory tables. */
+function inheritedAgents(state: any, appId: string) {
+  const app = (state.apps ?? []).find((a: any) => a.id === appId);
+  if (!app) return [];
+  const rank: Record<string, number> = { admin: 0, write: 1, read: 2 };
+  const owners = new Map<string, string>();
+  const offer = (actorId: string | null | undefined, level: string) => {
+    if (!actorId) return;
+    const prev = owners.get(actorId);
+    if (!prev || rank[level] < rank[prev]) owners.set(actorId, level);
+  };
+  offer(app.created_by_actor_id, "admin");
+  for (const g of state.app_member_access ?? []) if (g.app_id === appId) offer(g.member_id, g.permission_level);
+  const actor = (id: string) => (state.actors ?? []).find((a: any) => a.id === id);
+  const rows: any[] = [];
+  for (const [ownerId, level] of owners) {
+    const owner = actor(ownerId);
+    if (!owner || owner.actor_type !== "member" || owner.team_id !== app.team_id) continue;
+    for (const g of state.agents ?? []) {
+      if (g.owner_member_id !== ownerId || g.status !== "active") continue;
+      const ag = actor(g.id);
+      if (!ag || ag.actor_type !== "agent" || ag.team_id !== app.team_id) continue;
+      rows.push({ agent_id: g.id, owner_actor_id: ownerId, permission_level: level });
+    }
+  }
+  return rows;
+}
+
 export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [],
   projectSelects = false, appInsertDefaults = { app_code: "a-k7m2q9vx4n8p" }, appInsertId,
   creatorOnlyAppUpdates = false, sharedState,
@@ -230,6 +258,13 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         state.app_lifecycle_operations.push(op);return {data:op,error:null};
       }
       if(name==='finish_app_lifecycle') {const op=state.app_lifecycle_operations.find(r=>r.id===args.p_operation_id);if(op)op.status='succeeded';return {data:null,error:null};}
+      // The agent-inheritance rule of 20261120120000, mirrored in memory
+      // (the SQL itself is covered by agent_inherits_owner_app_access.test.sql).
+      if (name === 'app_inherited_agents' || name === 'agent_inherited_app_level') {
+        const rows = inheritedAgents(state, args.p_app_id);
+        if (name === 'app_inherited_agents') return { data: rows, error: null };
+        return { data: rows.find((r) => r.agent_id === args.p_actor_id)?.permission_level ?? null, error: null };
+      }
       return { data: [], error: null };
     },
   };

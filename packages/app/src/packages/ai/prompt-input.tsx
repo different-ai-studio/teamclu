@@ -1,6 +1,8 @@
 import * as React from "react"
 
 import { appShortName } from "@/lib/config/build-config"
+import i18n from "@/lib/i18n"
+import { stripAttachmentTokensFromText } from "@/lib/messages/attachment-message-token"
 import { isPointOverElement } from "@/lib/ui/chat-file-drop"
 import { cn, isTauri } from "@/lib/utils"
 import { encodeMemberMentionToken, parseMemberMentionsFromText } from "@/lib/actor/member-mention-token"
@@ -85,6 +87,7 @@ export function PromptInput({
   children,
   onSubmit,
   onFilesChange,
+  onLocalPathsChange,
   onFilePathsDrop,
   onMentionTrigger,
   onMentionClose,
@@ -100,6 +103,7 @@ export function PromptInput({
 }: React.ComponentProps<"form"> & {
   onSubmit?: (message: PromptInputMessage) => void
   onFilesChange?: (files: File[]) => void
+  onLocalPathsChange?: (items: { name: string; size: number; path: string }[]) => void
   onFilePathsDrop?: (paths: string[]) => void
   onMentionTrigger?: (query: string) => void
   onMentionClose?: () => void
@@ -183,8 +187,10 @@ export function PromptInput({
 
   const formRef = React.useRef<HTMLFormElement>(null)
   const onFilesChangeRef = React.useRef(onFilesChange)
+  const onLocalPathsChangeRef = React.useRef(onLocalPathsChange)
   const multipleRef = React.useRef(multiple)
   React.useEffect(() => { onFilesChangeRef.current = onFilesChange }, [onFilesChange])
+  React.useEffect(() => { onLocalPathsChangeRef.current = onLocalPathsChange }, [onLocalPathsChange])
   React.useEffect(() => { multipleRef.current = multiple }, [multiple])
 
   const dropHitTarget = React.useCallback(() => {
@@ -298,23 +304,19 @@ export function PromptInput({
             if (!isPointOverElement(position, dropHitTarget())) return
 
             const { readDesktopPathsAsFiles } = await import('@/lib/workspace/read-desktop-files')
-            const { files, oversize, failed } = await readDesktopPathsAsFiles(paths)
-            if (oversize.length > 0 || failed.length > 0) {
+            const { files, local, failed } = await readDesktopPathsAsFiles(paths)
+            if (local.length > 0) onLocalPathsChangeRef.current?.(local)
+            if (failed.length > 0) {
               const { toast } = await import('sonner')
-              if (oversize.length > 0) {
-                toast.error(
-                  oversize.length === 1
-                    ? `"${oversize[0]}" exceeds the 20MB limit`
-                    : `${oversize.length} files exceed the 20MB limit`,
-                )
-              }
-              if (failed.length > 0) {
-                toast.error(
-                  failed.length === 1
-                    ? `Could not read "${failed[0]}"`
-                    : `Could not read ${failed.length} files`,
-                )
-              }
+              toast.error(
+                failed.length === 1
+                  ? i18n.t("chat.attachmentReadFailed", 'Could not read "{{name}}"', {
+                      name: failed[0],
+                    })
+                  : i18n.t("chat.attachmentsReadFailed", "Could not read {{count}} files", {
+                      count: failed.length,
+                    }),
+              )
             }
             if (files.length === 0) return
 
@@ -593,8 +595,7 @@ export function PromptInputTextarea({
     // [Attachment: x.png] (path: /...)
     let textToInsert = pastedText
     if (pastedFiles.length > 0 && textToInsert) {
-      textToInsert = textToInsert
-        .replace(/\[Attachment:\s*[^\]]+\]\s*\([^)]*\)/gi, '')
+      textToInsert = stripAttachmentTokensFromText(textToInsert)
         .replace(/\n{3,}/g, '\n\n')
         .replace(/[ \t]+\n/g, '\n')
         .trimStart()

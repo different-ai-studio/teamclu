@@ -12,26 +12,9 @@
 //! are NOT persisted to `teamclu.json` — the single source of truth is the
 //! Cloud API current-team store.
 
-use serde::{Deserialize, Serialize};
-
 use crate::commands::team_secret_store;
 use crate::commands::team_sync_proxy;
 use tracing::info;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EnableShareResult {
-    pub team_id: String,
-    pub share_mode: String,
-    /// Non-fatal warning surfaced when the share-mode POST succeeded but the
-    /// subsequent secret-delivery / link to the daemon did not. The team is
-    /// enabled server-side; the daemon may not yet have the secrets it needs to
-    /// sync (e.g. it was momentarily unreachable). Frontend should surface this
-    /// so the user can retry. Named `clone_warning` for frontend compatibility,
-    /// but it now reflects daemon delivery/link rather than a local git clone.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clone_warning: Option<String>,
-}
 
 /// Deliver team secret material to the daemon and trigger the link, treating
 /// any daemon error as a non-fatal warning. The FC share-mode POST has already

@@ -1,18 +1,10 @@
 /**
- * cache-sync.ts — Generic helpers for pulling Supabase rows into the local
+ * cache-sync.ts — Generic helper for pulling Cloud API rows into the local
  * libsql cache with watermark-based delta fetching.
  *
- * Schema notes (verified 2026-05-13):
- *   actors               — has updated_at ✓  (no deleted_at on Supabase; use soft-delete local only)
- *   sessions             — has updated_at ✓
- *   session_participants — has updated_at ✓  (no team_id column; scoped by session_id)
- *   messages             — has updated_at ✓
- *   ideas                — has updated_at ✓
- *   claims               — NOT in information_schema results → FULL-PULL ONLY (TODO: confirm schema)
- *   submissions          — NOT in information_schema results → FULL-PULL ONLY (TODO: confirm schema)
- *   team_workspace_config     — has updated_at ✓
- *   actor_message_feedback    — created_at only; FULL-PULL per team
- *   actor_session_report      — created_at only; FULL-PULL per team
+ * The caller supplies `pullRows` (a Cloud API read that honours
+ * `updatedAfter`), `mapRow` and `upsertBatch`; today that is `lib/sync/idea-sync.ts`.
+ * Sessions, messages and actors have their own sync modules in `lib/sync/`.
  */
 
 import * as cache from "@/lib/cache/local-cache";
@@ -25,11 +17,11 @@ import * as cache from "@/lib/cache/local-cache";
  *
  * The watermark key is namespaced by `teamId`.
  */
-export async function syncTableForTeam<TSupabaseRow, TCacheRow>(args: {
+export async function syncTableForTeam<TRemoteRow, TCacheRow>(args: {
   watermarkKey: string;
   teamId: string;
-  pullRows: (updatedAfter: string | null) => Promise<TSupabaseRow[]>;
-  mapRow: (r: TSupabaseRow) => TCacheRow;
+  pullRows: (updatedAfter: string | null) => Promise<TRemoteRow[]>;
+  mapRow: (r: TRemoteRow) => TCacheRow;
   upsertBatch: (rows: TCacheRow[]) => Promise<void>;
   /** When true, ignore the watermark and pull all rows (forced full refresh). */
   full?: boolean;
@@ -38,7 +30,7 @@ export async function syncTableForTeam<TSupabaseRow, TCacheRow>(args: {
     ? null
     : await cache.getWatermark(args.watermarkKey, args.teamId);
 
-  let data: TSupabaseRow[];
+  let data: TRemoteRow[];
   try {
     data = await args.pullRows(watermark);
   } catch (error) {

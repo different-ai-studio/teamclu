@@ -10,11 +10,6 @@ pub struct DaemonConfig {
     #[serde(rename = "actor", alias = "device")]
     pub actor: ActorConfig,
     pub mqtt: MqttConfig,
-    /// Transport selector. Defaults to MQTT when omitted so existing
-    /// `daemon.toml` files keep working unchanged. Set
-    /// `[transport] kind = "nats"` + `url = "nats://..."` to use NATS.
-    #[serde(default)]
-    pub transport: Option<TransportConfig>,
     #[serde(default)]
     pub agents: AgentsConfig,
     /// Which `teams/<id>/` directory this daemon currently works out of.
@@ -357,48 +352,13 @@ pub struct MqttConfig {
     pub password: Option<String>,
 }
 
-/// Top-level transport switch. When present and `kind = "nats"`, the
-/// daemon connects to `url` instead of `mqtt.broker_url`. URL scheme
-/// (`nats://`, `tls://`, `ws://`, `wss://`) is forwarded verbatim to
-/// async-nats.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransportConfig {
-    #[serde(default = "default_transport_kind")]
-    pub kind: TransportKind,
-    pub url: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TransportKind {
-    Mqtt,
-    Nats,
-}
-
-fn default_transport_kind() -> TransportKind {
-    TransportKind::Mqtt
-}
-
 /// `[agents.*]` — machine-level runtime settings.
 ///
-/// pi is the only local agent runtime (#1247 / #1250): there is no
-/// `local_agent` selector any more, and `auto_discover` — which probed the host
-/// for an opencode binary — is gone with it. The legacy `claude_code` /
-/// `opencode` / `codex` / `cursor` / `claude` sections are still parsed so an
-/// existing daemon.toml loads, but nothing selects the backends they describe;
-/// they leave with those backends.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// pi is the only local agent runtime (#1247 / #1250, ADR-0014). Legacy
+/// `claude_code` / `opencode` / `codex` / `cursor` / `claude` sections in an
+/// old daemon.toml are ignored (serde skips unknown tables).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentsConfig {
-    #[serde(default)]
-    pub claude_code: Option<AgentBackendConfig>,
-    #[serde(default)]
-    pub opencode: Option<AgentBackendConfig>,
-    #[serde(default)]
-    pub codex: Option<AgentBackendConfig>,
-    #[serde(default)]
-    pub cursor: Option<CursorAgentConfig>,
-    #[serde(default)]
-    pub claude: Option<ClaudeAgentConfig>,
     #[serde(default)]
     pub pi: Option<PiAgentConfig>,
 }
@@ -446,64 +406,6 @@ pub struct PiAgentConfig {
     /// or deploy. That is intended; see the profile's README (#1571).
     #[serde(default)]
     pub sandbox: Option<String>,
-}
-
-/// Cursor SDK backend settings (`agents.local_agent = "cursor"`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaudeAgentConfig {
-    // The Anthropic API key used to live here. It is a *personal* credential,
-    // so it moved to the personal secret store (`~/.{brand}/secrets`, key
-    // `ANTHROPIC_API_KEY`); the pool loader resolves it from there. With
-    // neither set, the Agent SDK falls back to the host's own `claude` login.
-    /// Sidecar launch command (default: `node …/claude-bridge/src/main.mjs --mode rpc`).
-    #[serde(default)]
-    pub bridge_command: Option<Vec<String>>,
-    /// Preferred model (SDK id, e.g. `claude-opus-5`). Empty = SDK default.
-    #[serde(default)]
-    pub default_model: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct CursorAgentConfig {
-    // The Cursor API key used to live here. Personal credential → personal
-    // secret store (key `CURSOR_API_KEY`); the `CURSOR_API_KEY` env var still
-    // wins at spawn.
-    /// Sidecar launch command (default: `node …/cursor-bridge/src/main.mjs --mode rpc`).
-    #[serde(default)]
-    pub bridge_command: Option<Vec<String>>,
-    /// SDK model id (not the flat `cursor/…` id). Default: `composer-2.5`.
-    #[serde(default = "default_cursor_model")]
-    pub default_model: Option<String>,
-}
-
-fn default_cursor_model() -> Option<String> {
-    Some("composer-2.5".to_string())
-}
-
-impl Default for AgentsConfig {
-    fn default() -> Self {
-        Self {
-            claude_code: None,
-            opencode: None,
-            codex: None,
-            cursor: None,
-            claude: None,
-            pi: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentBackendConfig {
-    #[serde(default = "default_claude_binary")]
-    pub binary: String,
-    #[serde(default)]
-    pub default_flags: Vec<String>,
-}
-
-fn default_claude_binary() -> String {
-    "claude".into()
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -577,7 +479,8 @@ pub struct WeComBot {
     /// Workspace this bot's sessions run in (resolved against workspaces.toml).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
-    /// Backend: "claude-code" | "opencode" | "codex". None -> daemon default.
+    /// Legacy backend override; pi is the only runtime, so this is ignored
+    /// beyond parsing. None -> daemon default (pi).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
     /// Per-bot system prompt injected into the first turn + CLAUDE.local.md.
@@ -866,7 +769,7 @@ pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
 
 /// Ceiling on concurrent Attachments. The idle timeout alone bounds the set
 /// only by user behaviour — how many sessions someone can open inside 30
-/// minutes — so a hard cap backs it up. Each attachment holds an opencode
+/// minutes — so a hard cap backs it up. Each attachment holds a pi
 /// session and an event channel, which is the real resource being protected.
 pub const DEFAULT_MAX_ATTACHMENTS: usize = 16;
 
@@ -976,7 +879,6 @@ impl DaemonConfig {
                 username: None,
                 password: None,
             },
-            transport: None,
             agents: AgentsConfig::default(),
             team_id: None,
             channels: Default::default(),
@@ -1054,13 +956,6 @@ impl DaemonConfig {
     pub fn runtime_context_sock_path() -> PathBuf {
         super::layout::run_dir().join("runtime-context.sock")
     }
-
-    /// Process-group id of the managed `opencode serve` tree (Unix). Written
-    /// while serve is live so `amuxd stop` can reap the group even if the
-    /// daemon was hard-killed mid-shutdown.
-    pub fn opencode_serve_pgid_path() -> PathBuf {
-        super::layout::run_dir().join("opencode.serve.pgid")
-    }
 }
 
 #[cfg(test)]
@@ -1119,6 +1014,9 @@ broker_url = "tcp://localhost:1883"
 binary = "opencode"
 default_flags = ["acp"]
 
+[agents.pi]
+node = "/opt/node/bin/node"
+
 [channels.wecom]
 enabled = true
 bot_id = "b1"
@@ -1136,12 +1034,10 @@ encoding_aes_key = "k"
             cfg.channels.wecom.is_none(),
             "daemon.toml's [channels] must be ignored, not adopted"
         );
+        // A legacy `[agents.opencode]` table still parses (ignored) next to pi.
         assert_eq!(
-            cfg.agents
-                .opencode
-                .as_ref()
-                .map(|c| (c.binary.clone(), c.default_flags.clone())),
-            Some(("opencode".to_string(), vec!["acp".to_string()]))
+            cfg.agents.pi.as_ref().and_then(|p| p.node.as_deref()),
+            Some("/opt/node/bin/node")
         );
     }
 

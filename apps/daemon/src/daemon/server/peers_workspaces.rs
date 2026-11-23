@@ -10,7 +10,9 @@ impl DaemonServer {
     ) -> crate::proto::teamclu::RpcResponse {
         use crate::proto::teamclu::{rpc_response, FetchPeersResult, RpcResponse};
 
-        let peers = self.peers.to_proto_peer_list().peers;
+        // The members.toml peer handshake is gone, so no peer ever registers;
+        // iOS still asks, and gets the same empty list it always got.
+        let peers = Vec::new();
         RpcResponse {
             request_id: request.request_id.clone(),
             success: true,
@@ -38,118 +40,6 @@ impl DaemonServer {
             requester_actor_id: request.requester_actor_id.clone(),
             result: Some(rpc_response::Result::FetchWorkspacesResult(
                 FetchWorkspacesResult { workspaces },
-            )),
-        }
-    }
-
-    // ─── Peer mutation helpers (shared by legacy collab path + RPC handlers) ───
-
-    /// Authenticates and adds a peer. Returns (accepted, error_text, assigned_role).
-    /// Does NOT publish anything — the caller is responsible for any broadcasts
-    /// (legacy collab arm republishes peer_list + workspace_list; RPC handler
-    /// publishes Notify "peers.changed").
-    pub(crate) async fn apply_peer_announce(
-        &mut self,
-        announce: &amux::PeerAnnounce,
-    ) -> (bool, String, amux::MemberRole) {
-        match self.auth.authenticate(&announce.auth_token) {
-            AuthResult::Accepted { member } => {
-                let role = if member.is_owner() {
-                    amux::MemberRole::Owner
-                } else {
-                    amux::MemberRole::Member
-                };
-                let pi = announce.peer.as_ref();
-                let peer_id_str = pi.map(|p| p.peer_id.clone()).unwrap_or_default();
-                info!(peer_id = %peer_id_str, member_id = %member.member_id, "peer authenticated");
-                self.peers.add_peer(PeerState {
-                    peer_id: peer_id_str,
-                    member_id: member.member_id.clone(),
-                    display_name: member.display_name.clone(),
-                    device_type: pi.map(|p| p.device_type.clone()).unwrap_or_default(),
-                    role,
-                    connected_at: chrono::Utc::now().timestamp(),
-                });
-                (true, String::new(), role)
-            }
-            AuthResult::Rejected { reason } => {
-                warn!(%reason, "peer rejected");
-                (false, reason, amux::MemberRole::Member)
-            }
-        }
-    }
-
-    /// Removes a peer by peer_id. Returns (accepted, error_text).
-    /// Does NOT publish anything — the caller is responsible for any broadcasts.
-    pub(crate) async fn apply_peer_disconnect(&mut self, peer_id: &str) -> (bool, String) {
-        if self.peers.remove_peer(peer_id).is_some() {
-            info!(peer_id, "peer disconnected");
-            (true, String::new())
-        } else {
-            (false, format!("unknown peer_id: {}", peer_id))
-        }
-    }
-
-    // ─── AnnouncePeer / DisconnectPeer RPC handlers ───
-
-    pub(crate) async fn handle_announce_peer(
-        &mut self,
-        request: &crate::proto::teamclu::RpcRequest,
-        announce: &crate::proto::teamclu::AnnouncePeerRequest,
-    ) -> crate::proto::teamclu::RpcResponse {
-        use crate::proto::teamclu::{rpc_response, AnnouncePeerResult, RpcResponse};
-
-        // Construct amux::PeerAnnounce that apply_peer_announce expects.
-        let amux_announce = amux::PeerAnnounce {
-            peer: announce.peer.clone(),
-            auth_token: announce.auth_token.clone(),
-        };
-        let (accepted, error, assigned_role) = self.apply_peer_announce(&amux_announce).await;
-
-        // Hint subscribers to re-fetch peers.
-        if accepted {
-            let publisher = Publisher::new_from_handle(self.publisher_handle.clone(), &self.topics);
-            let _ = publisher.publish_notify("peers.changed", "").await;
-        }
-
-        RpcResponse {
-            request_id: request.request_id.clone(),
-            success: accepted,
-            error: error.clone(),
-            requester_client_id: request.requester_client_id.clone(),
-            requester_actor_id: request.requester_actor_id.clone(),
-            result: Some(rpc_response::Result::AnnouncePeerResult(
-                AnnouncePeerResult {
-                    accepted,
-                    error,
-                    assigned_role: assigned_role as i32,
-                },
-            )),
-        }
-    }
-
-    pub(crate) async fn handle_disconnect_peer(
-        &mut self,
-        request: &crate::proto::teamclu::RpcRequest,
-        disconnect: &crate::proto::teamclu::DisconnectPeerRequest,
-    ) -> crate::proto::teamclu::RpcResponse {
-        use crate::proto::teamclu::{rpc_response, DisconnectPeerResult, RpcResponse};
-
-        let (accepted, error) = self.apply_peer_disconnect(&disconnect.peer_id).await;
-
-        if accepted {
-            let publisher = Publisher::new_from_handle(self.publisher_handle.clone(), &self.topics);
-            let _ = publisher.publish_notify("peers.changed", "").await;
-        }
-
-        RpcResponse {
-            request_id: request.request_id.clone(),
-            success: accepted,
-            error: error.clone(),
-            requester_client_id: request.requester_client_id.clone(),
-            requester_actor_id: request.requester_actor_id.clone(),
-            result: Some(rpc_response::Result::DisconnectPeerResult(
-                DisconnectPeerResult { accepted, error },
             )),
         }
     }
@@ -464,65 +354,6 @@ impl DaemonServer {
             requester_actor_id: request.requester_actor_id.clone(),
             result: Some(rpc_response::Result::RemoveWorkspaceResult(
                 RemoveWorkspaceResult { accepted, error },
-            )),
-        }
-    }
-
-    /// Applies a member removal. Returns (success, error_text).
-    /// Caller passes `requester_is_owner` because the two callers have
-    /// different ways to establish it: legacy collab path looks up the
-    /// peer's role via PeerTracker; RPC path looks up the requester_actor_id
-    /// through AuthManager::is_owner.
-    pub(crate) async fn apply_remove_member(
-        &mut self,
-        remove: &amux::RemoveMember,
-        requester_is_owner: bool,
-    ) -> (bool, String) {
-        if !requester_is_owner {
-            warn!(member_id = %remove.member_id, "remove rejected: not owner");
-            return (false, "not owner".to_string());
-        }
-        match self.auth.remove_member(&remove.member_id) {
-            Ok(true) => {
-                let kicked = self.peers.remove_by_member_id(&remove.member_id);
-                for p in &kicked {
-                    info!(peer_id = %p.peer_id, "peer kicked");
-                }
-                (true, String::new())
-            }
-            Ok(false) => (false, format!("member not found: {}", remove.member_id)),
-            Err(e) => (false, e.to_string()),
-        }
-    }
-
-    pub(crate) async fn handle_remove_member(
-        &mut self,
-        request: &crate::proto::teamclu::RpcRequest,
-        remove: &crate::proto::teamclu::RemoveMemberRequest,
-    ) -> crate::proto::teamclu::RpcResponse {
-        use crate::proto::teamclu::{rpc_response, RemoveMemberResult, RpcResponse};
-
-        let amux_remove = amux::RemoveMember {
-            member_id: remove.member_id.clone(),
-        };
-        // RPC carries requester identity in payload; resolve is_owner via
-        // AuthManager, which is the source of truth for member roles.
-        let is_owner = self.auth.is_owner(&request.requester_actor_id);
-        let (accepted, error) = self.apply_remove_member(&amux_remove, is_owner).await;
-
-        if accepted {
-            let publisher = Publisher::new_from_handle(self.publisher_handle.clone(), &self.topics);
-            let _ = publisher.publish_notify("members.changed", "").await;
-        }
-
-        RpcResponse {
-            request_id: request.request_id.clone(),
-            success: accepted,
-            error: error.clone(),
-            requester_client_id: request.requester_client_id.clone(),
-            requester_actor_id: request.requester_actor_id.clone(),
-            result: Some(rpc_response::Result::RemoveMemberResult(
-                RemoveMemberResult { accepted, error },
             )),
         }
     }

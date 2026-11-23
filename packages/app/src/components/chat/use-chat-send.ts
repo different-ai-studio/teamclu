@@ -51,6 +51,10 @@ import { type MessageListHandle } from "./MessageList";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { attachmentUploadFailureDetail, uploadAttachment } from "@/lib/attachments/attachment-upload";
 import {
+  localAttachmentToken,
+  type ComposerAttachment,
+} from "@/lib/attachments/composer-attachment";
+import {
   collectSessionAttachmentUrlsFromText,
   expandSessionAttachmentTokensInText,
   textHasSessionAttachmentTokens,
@@ -78,12 +82,7 @@ import {
   resolveVoiceSendAgent,
   type VoiceSendIntent,
 } from "@/lib/messages/voice-send-intent";
-function parseSlashToken(body: string): { type: "role" | "skill" | "command"; name: string } {
-  if (body.startsWith("role:")) return { type: "role", name: body.slice("role:".length) };
-  if (body.startsWith("skill:")) return { type: "skill", name: body.slice("skill:".length) };
-  if (body.startsWith("command:")) return { type: "command", name: body.slice("command:".length) };
-  return { type: "skill", name: body };
-}
+import { parseSlashToken } from "@/lib/messages/slash-token";
 
 interface ChatSendDeps {
   t: ReturnType<typeof useTranslation>["t"];
@@ -93,8 +92,8 @@ interface ChatSendDeps {
   setSessionFadeOpacity: React.Dispatch<React.SetStateAction<number>>;
   draftPreselectedActor: DraftActor | null;
   clearSessionError: () => void;
-  pendingFiles: File[];
-  setPendingFiles: React.Dispatch<React.SetStateAction<File[]>>;
+  pendingFiles: ComposerAttachment[];
+  setPendingFiles: React.Dispatch<React.SetStateAction<ComposerAttachment[]>>;
   engagedAgents: AttachedAgent[];
   engagedUiEntries: ReturnType<typeof useEngagedAgentUiStates>;
   sheetTeamId: string | null;
@@ -317,7 +316,24 @@ export function useChatSend({
 
     const uploadPromise = (async (): Promise<string[]> => {
       const urls: string[] = collectSessionAttachmentUrlsFromText(text);
-      if (currentPendingFiles.length === 0) return urls;
+      const cloudFiles = currentPendingFiles.flatMap((item) =>
+        item.kind === "cloud" ? [item.file] : [],
+      );
+      const localFiles = currentPendingFiles.flatMap((item) =>
+        item.kind === "local" ? [item] : [],
+      );
+      const appendLocal = () => {
+        for (const item of localFiles) {
+          parts.push(localAttachmentToken(item.name, item.path));
+        }
+        if (cloudFiles.length > 0 || localFiles.length > 0) {
+          finalContent = parts.join("\n\n");
+        }
+      };
+      if (cloudFiles.length === 0) {
+        appendLocal();
+        return urls;
+      }
       try {
         // Sending the text and dropping the files would look like a successful
         // send that forgot the attachment. Keep the draft instead.
@@ -329,11 +345,11 @@ export function useChatSend({
         sessionFlowLog("send.attachments_upload.begin", {
           sessionId: sid,
           teamId: teamIdForSend,
-          pendingFileCount: currentPendingFiles.length,
-          pendingFileNames: currentPendingFiles.map((file) => file.name),
+          pendingFileCount: cloudFiles.length,
+          pendingFileNames: cloudFiles.map((file) => file.name),
         });
         const uploaded = await Promise.all(
-          currentPendingFiles.map((file) =>
+          cloudFiles.map((file) =>
             uploadAttachment(file, { teamId: teamIdForSend!, sessionId: sid }),
           ),
         );
@@ -348,7 +364,7 @@ export function useChatSend({
           }
           urls.push(att.signedUrl);
         }
-        finalContent = parts.join("\n\n");
+        appendLocal();
         sessionFlowLog("send.attachments_upload.ok", {
           sessionId: sid,
           teamId: teamIdForSend,

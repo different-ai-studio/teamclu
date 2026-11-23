@@ -186,12 +186,10 @@ services:
       CATALOG_PATH: /app/catalog.yaml
       AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN}"
       AI_GATEWAY_PLATFORM_TOKEN: "${AI_GATEWAY_PLATFORM_TOKEN:-}"
-      BACKEND_KIND: "${BACKEND_KIND:-supabase}"
-      # supabase path: identity is established by asking GoTrue, exactly as FC
-      # does. The gateway holds no signing key.
+      # Identity is established by asking GoTrue, exactly as FC does. The
+      # gateway holds no signing key.
       SUPABASE_URL: "${SUPABASE_URL:-http://kong:8000}"
       SUPABASE_ANON_KEY: "${ANON_KEY:-}"
-      AUTH_BASE_URL: "${AUTH_BASE_URL:-https://${FC_DOMAIN}}"
       # Reserve before the upstream call and settle after it (design 4.6).
       # OFF means metered-only: usage is still recorded, nothing is deducted,
       # and an exhausted team is never stopped.
@@ -275,11 +273,14 @@ services:
       GITEA__service__DISABLE_REGISTRATION: "true"
       # Per-account git over HTTPS: Caddy's forward_auth asks FC who a git
       # request is and passes the answer as X-WEBAUTH-USER (see the Caddyfile).
-      # Safe only because of `networks: [gitea-net]` above. The API never takes
-      # the header — FC calls it with the bot token — and an unknown user is
-      # created on first sight only as a fallback (FC creates them up front).
+      # Safe only because of `networks: [gitea-net]` above. The API takes the
+      # header too, so a person or agent can open, read and merge pull requests
+      # as themselves: Caddy sets it only on the pull-request API allowlist in
+      # the Caddyfile, and strips it everywhere else — including the internal
+      # :8081 door FC calls with the bot token. An unknown user is created on
+      # first sight only as a fallback (FC creates them up front).
       GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION: "true"
-      GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION_API: "false"
+      GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION_API: "true"
       GITEA__service__ENABLE_REVERSE_PROXY_AUTO_REGISTRATION: "true"
       GITEA__security__REVERSE_PROXY_AUTHENTICATION_USER: "X-WEBAUTH-USER"
     volumes:
@@ -330,11 +331,10 @@ services:
       # inside the single shared BUCKET.
       TEAM_BLOBS_STORAGE_BUCKET: "${TEAM_BLOBS_STORAGE_BUCKET:-team-blobs}"
       SKILLS_STORAGE_BUCKET: "${SKILLS_STORAGE_BUCKET:-team-skills}"
-      # The ONE broker address: FC's own inbox publisher dials it AND
-      # /v1/config/bootstrap hands it to clients. The separate
-      # MQTT_PUBLIC_BROKER_URL override is gone (it defaulted to "", `""` is not
-      # nullish, so the fallback never fired and bootstrap shipped no `mqtt`
-      # block at all — #634), which means this value can no longer be the
+      # Client-facing broker address. /v1/config/bootstrap hands it to clients.
+      # The separate MQTT_PUBLIC_BROKER_URL override is gone (it defaulted to "",
+      # `""` is not nullish, so the fallback never fired and bootstrap shipped no
+      # `mqtt` block at all — #634), which means this value can no longer be the
       # internal `mqtt://emqx:1883`: that address does not resolve for clients.
       #
       # Defaults to the published EMQX TCP listener on MQTT_DOMAIN — the address
@@ -346,6 +346,12 @@ services:
       # A broken value is caught by the deploy's own e2e (`run-e2e.sh` asserts
       # /v1/config/bootstrap returns an `mqtt` block), not by compose.
       MQTT_BROKER_URL: "${MQTT_BROKER_URL:-mqtt://${MQTT_DOMAIN}:1883}"
+      # Publisher-only. The FC container dials EMQX on the compose network, on
+      # the same 1883 listener and the same fc-service account as above. Clients
+      # never receive this value. `:-` still applies the default when .env sets
+      # it blank. Belayo leaves the var unset: its Cloud API is not on this
+      # network, and push-deps then dials MQTT_BROKER_URL.
+      MQTT_INTERNAL_URL: "${MQTT_INTERNAL_URL:-mqtt://emqx:1883}"
       # Raw-TCP address for clients whose MQTT stack can't do WebSocket (iOS
       # CocoaMQTT, Expo). Must be declared in BOTH this allowlist and
       # deploy/belayo/cloud-api.env.keys — a var missing from one target silently drops
@@ -374,14 +380,10 @@ services:
       # MinIO addresses buckets by path; virtual-host style would need per-bucket
       # DNS. Alibaba OSS works either way, so this stays blank there.
       S3_FORCE_PATH_STYLE: "${S3_FORCE_PATH_STYLE:-}"
-      # Apps module. These were historically absent from this allowlist, so the
-      # container saw none of them: creating an app failed at
-      # the managed-git repo step (CODEUP_*), and "deploy" 503'd with an opaque
-      # `deploy_unavailable` because makeDeployDeps() bails without
-      # APPS_DB_ADMIN_URL. Keep both targets in step when adding more.
-      CODEUP_ORG_ID: "${CODEUP_ORG_ID:-}"
-      CODEUP_PAT: "${CODEUP_PAT:-}"
-      CODEUP_BOT_USERNAME: "${CODEUP_BOT_USERNAME:-teamclu}"
+      # Apps module. These were historically absent from this allowlist, so
+      # "deploy" 503'd with an opaque `deploy_unavailable` because
+      # makeDeployDeps() bails without APPS_DB_ADMIN_URL. Keep both targets in
+      # step when adding more.
       # Superuser / CREATEDB URL for per-org databases (tc_org_<orgId>) +
       # per-app schemas. Self-host defaults to the compose Postgres maintenance
       # DB. Blank → data_app finalize fails naming APPS_DB_ADMIN_URL; static
@@ -599,9 +601,6 @@ services:
       # allowed; set this only for a browser-hosted web build
       # (services/fc/src/lib/cors-origin.ts).
       CORS_ORIGINS: "${CORS_ORIGINS:-}"
-      # NOTE: CORS_HANDLED_BY_PROXY is deliberately NOT here. Caddy is a
-      # transparent proxy that adds no CORS headers, so Hono must own CORS
-      # (see services/fc/src/app.ts). Setting it would strip CORS entirely.
 
   # ── The heartbeat that fires apps' scheduled tasks ──
   #
@@ -809,8 +808,8 @@ services:
   # Auto-joins a team on first start via AMUXD_JOIN_TOKEN (mint one with
   # ./amuxd/mint-invite.sh after a team exists), persists identity to the
   # amuxd_state volume, connects to EMQX, and registers as an agent actor.
-  # The image bundles opencode; set OPENCODE_* to run agent sessions. With no
-  # OPENCODE_API_KEY the entrypoint disables agent discovery (presence-only).
+  # Agent sessions run on pi, which amuxd installs into the amuxd_state volume
+  # on first use; the LLM is the team AI gateway, read from the Cloud API.
   amuxd:
     logging: *default-logging
     build:
@@ -830,14 +829,6 @@ services:
       TEAMCLU_CLOUD_API_URL: "http://fc:9000"
       AMUXD_JOIN_TOKEN: "${AMUXD_JOIN_TOKEN:-}"
       HOME: "/state"
-      # opencode LLM provider (OpenAI-compatible). Set these to let the daemon
-      # run agent sessions; leave OPENCODE_API_KEY blank for presence-only (the
-      # entrypoint then disables agent discovery). baseURL/model are yours to set.
-      OPENCODE_BASE_URL: "${OPENCODE_BASE_URL:-}"
-      OPENCODE_API_KEY: "${OPENCODE_API_KEY:-}"
-      OPENCODE_MODEL: "${OPENCODE_MODEL:-}"
-      OPENCODE_PROVIDER_ID: "${OPENCODE_PROVIDER_ID:-selfhost}"
-      OPENCODE_PROVIDER_NAME: "${OPENCODE_PROVIDER_NAME:-Self-host LLM}"
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     volumes:
       - amuxd_state:/state
@@ -905,13 +896,9 @@ services:
     logging: *default-logging
   rest:
     logging: *default-logging
-  realtime:
-    logging: *default-logging
   imgproxy:
     logging: *default-logging
   meta:
-    logging: *default-logging
-  functions:
     logging: *default-logging
   analytics:
     logging: *default-logging

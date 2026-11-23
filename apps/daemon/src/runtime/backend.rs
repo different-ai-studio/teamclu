@@ -6,7 +6,7 @@
 //! live here rather than inside a specific backend module.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
@@ -28,7 +28,6 @@ pub enum AcpCommand {
     AttachSession {
         worktree: String,
         resume_acp_session_id: Option<String>,
-        mcp_config_path: Option<PathBuf>,
         initial_model_override: Option<String>,
         /// Daemon MRU, newest first. Consulted only when nothing more
         /// specific resolves; every entry is availability-checked.
@@ -40,9 +39,6 @@ pub enum AcpCommand {
         permission: PermissionPolicy,
         /// When resuming, fail instead of falling back to a new session.
         forbid_new_session_fallback: bool,
-        /// TeamClu cloud session this attachment belongs to.
-        #[allow(dead_code)]
-        teamclu_session_id: String,
     },
     /// Drop routing state for a session; the backend process keeps running.
     DetachSession {
@@ -69,7 +65,7 @@ pub enum AcpCommand {
         /// "always" upgrades the grant; anything else (or None) means "once".
         option_id: Option<String>,
     },
-    /// Answer (or reject) an opencode `question` tool request (any session).
+    /// Answer (or reject) an agent `question` tool request (any session).
     AnswerQuestion {
         request_id: String,
         /// JSON `[[selected labels], ...]` — one array per question, in order.
@@ -91,9 +87,6 @@ pub enum AcpCommand {
         /// Pi-side pending permission ids auto-granted when switching to Full.
         cleared_tx: Option<oneshot::Sender<Vec<String>>>,
     },
-    /// Shut down the backend process (it respawns lazily on next use).
-    #[allow(dead_code)]
-    Shutdown,
 }
 
 #[derive(Debug)]
@@ -138,7 +131,6 @@ pub trait AgentBackend: Send {
         force_env_override: bool,
         worktree: String,
         resume_acp_session_id: Option<String>,
-        mcp_config_path: Option<PathBuf>,
         initial_model_override: Option<String>,
         model_mru: Vec<String>,
         initial_prompt: String,

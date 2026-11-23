@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAuthClient } from "@/lib/auth/auth-client";
 import {
   __resetSessionStoreForTests,
+  adoptRefreshToken,
   getSession,
   refreshSession,
   setSession,
@@ -36,22 +37,6 @@ afterEach(() => {
 });
 
 describe("auth-client", () => {
-
-  it("signInWithPassword POSTs credentials and stores the session", async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse(200, makeSession({ access_token: "password" })));
-    const client = createAuthClient({ baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
-
-    await client.signInWithPassword("person@example.com", "password123");
-
-    const [url, init] = fetchImpl.mock.calls[0];
-    expect(url).toBe(`${BASE}/v1/auth/signin-password`);
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      email: "person@example.com",
-      password: "password123",
-    });
-    expect(getSession()?.access_token).toBe("password");
-  });
-
   it("sendOtp POSTs email + options without storing a session", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(200, {}));
     const client = createAuthClient({ baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
@@ -131,6 +116,28 @@ describe("auth-client", () => {
       refresh_token: "new-rt",
       expires_at: expiresAt,
       user: { id: "u1", email: "u@example.com" },
+    });
+  });
+
+  it("an adopted token's user keeps a Chinese name intact (UTF-8, not atob)", async () => {
+    // A team switch adopts a token minted for another identity; the session's
+    // user is rebuilt from its claims. atob() alone turned 董闯 into
+    // "è\u0091£é\u0097¯", which then became the git author of app checkouts.
+    const claims = { sub: "u2", email: "dong@example.com", user_metadata: { name: "董闯", full_name: "董闯 (狸子)" } };
+    const b64url = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+    const accessToken = `${b64url({ alg: "HS256" })}.${b64url(claims)}.sig`;
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, { accessToken, refreshToken: "adopted-rt", expiresAt: Math.floor(Date.now() / 1000) + 3600 }),
+    );
+    createAuthClient({ baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    setSession(makeSession({ user: { id: "u1", email: "u@example.com" } }));
+
+    await adoptRefreshToken("adopted-rt");
+
+    expect(getSession()?.user).toMatchObject({
+      id: "u2",
+      email: "dong@example.com",
+      user_metadata: { name: "董闯", full_name: "董闯 (狸子)" },
     });
   });
 

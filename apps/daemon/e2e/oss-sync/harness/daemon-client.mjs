@@ -1,5 +1,5 @@
 import { exec, execSh, execDetached } from "./docker.mjs";
-import { postJson, getJson } from "./http.mjs";
+import { postJson, getJson, HttpCallError } from "./http.mjs";
 
 const DAEMON_TOML = "/root/.amuxd/daemon.toml";
 const TOKEN_FILE = "/root/.amuxd/amuxd.http.token";
@@ -163,22 +163,39 @@ const TRANSIENT_RE =
   /429|too many requests|503|temporarily|deferred|error sending request|provider error|connection|timed out|timeout|reset by peer|dns/i;
 
 /**
- * Trigger a sync. The daemon returns HTTP 200 even when its FC calls hit a
- * transient error (it surfaces them in status.lastError), so retry with backoff
- * while lastError looks transient.
+ * True when a failed `POST /v1/team/sync` is worth retrying. The daemon answers
+ * a sync whose FC calls failed with HTTP 500 and the error text in the body
+ * (`http/team_sync.rs`); older builds answered 200 with `status.lastError`, so
+ * both shapes are accepted.
+ */
+export function isTransientSyncFailure({ status, body, lastError } = {}) {
+  if (lastError) return TRANSIENT_RE.test(lastError);
+  return status === 500 && TRANSIENT_RE.test(String(body ?? ""));
+}
+
+/**
+ * Trigger a sync, retrying with backoff while the failure looks transient.
  *
  * Always sends `forceSync: true` so this still runs when the e2e harness has
  * disabled team_share.auto_sync (see disableAutoSync).
  */
 export async function sync(node, workspacePath = "/root/workspace", { retries = 6 } = {}) {
   for (let attempt = 0; ; attempt++) {
-    const st = await postJson(
-      `${node.baseUrl}/v1/team/sync`,
-      { workspacePath, forceSync: true },
-      node.session,
-    );
-    const err = st?.lastError ?? "";
-    if (err && TRANSIENT_RE.test(err) && attempt < retries) {
+    let st;
+    try {
+      st = await postJson(
+        `${node.baseUrl}/v1/team/sync`,
+        { workspacePath, forceSync: true },
+        node.session,
+      );
+    } catch (e) {
+      if (e instanceof HttpCallError && isTransientSyncFailure(e) && attempt < retries) {
+        await sleep(Math.min(3000 * 2 ** attempt, 24000));
+        continue;
+      }
+      throw e;
+    }
+    if (isTransientSyncFailure({ lastError: st?.lastError ?? "" }) && attempt < retries) {
       await sleep(Math.min(3000 * 2 ** attempt, 24000));
       continue;
     }

@@ -28,7 +28,7 @@ exception
 end;
 $$;
 
-select plan(69);
+select plan(68);
 
 select has_schema('amux', 'amux schema exists');
 
@@ -41,7 +41,7 @@ select has_table('amux', 'agents',              'agents exists');
 select has_table('amux', 'agent_member_access', 'agent_member_access exists');
 select has_table('amux', 'ideas',               'ideas exists');
 select has_table('amux', 'idea_activities',     'idea_activities exists');
-select has_table('amux', 'idea_external_refs',  'idea_external_refs exists');
+select hasnt_table('amux', 'idea_external_refs', 'idea_external_refs dropped (20261119000100)');
 select has_table('amux', 'sessions',            'sessions exists');
 select has_table('amux', 'session_participants','session_participants exists');
 select has_table('amux', 'messages',            'messages exists');
@@ -122,8 +122,6 @@ select has_trigger('amux', 'idea_activities', 'set_idea_activities_updated_at',
                    'idea_activities stamps updated_at');
 select has_trigger('amux', 'workspaces', 'enforce_workspaces_parent_integrity',
                    'workspaces enforces parent integrity');
-select has_trigger('amux', 'idea_external_refs', 'enforce_idea_external_refs_same_team',
-                   'idea_external_refs enforces same team');
 select has_trigger('amux', 'sessions', 'enforce_sessions_same_team',
                    'sessions enforces same team');
 select has_trigger('amux', 'ideas', 'enforce_ideas_parent_integrity',

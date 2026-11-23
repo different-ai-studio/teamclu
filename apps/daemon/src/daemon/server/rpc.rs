@@ -519,11 +519,16 @@ impl DaemonServer {
             // Phase 1b Ideas 3-9 replace these stubs with real handlers.
             Some(Method::FetchPeers(_)) => self.handle_fetch_peers(&request).await,
             Some(Method::FetchWorkspaces(_)) => self.handle_fetch_workspaces(&request).await,
-            Some(Method::AnnouncePeer(ann)) => self.handle_announce_peer(&request, ann).await,
-            Some(Method::DisconnectPeer(d)) => self.handle_disconnect_peer(&request, d).await,
+            // The members.toml peer handshake and member list are gone; the
+            // Cloud API owns membership. Kept as arms for wire compatibility.
+            Some(Method::AnnouncePeer(_))
+            | Some(Method::DisconnectPeer(_))
+            | Some(Method::RemoveMember(_)) => not_yet_implemented(
+                &request,
+                "peer handshake and member removal are not supported; membership lives in the Cloud API",
+            ),
             Some(Method::AddWorkspace(a)) => self.handle_add_workspace(&request, a).await,
             Some(Method::RemoveWorkspace(r)) => self.handle_remove_workspace(&request, r).await,
-            Some(Method::RemoveMember(r)) => self.handle_remove_member(&request, r).await,
             Some(Method::RuntimeStop(s)) => self.handle_stop_runtime(&request, s).await,
             Some(Method::RuntimeStart(s)) => self.handle_start_runtime(&request, s).await,
             Some(Method::SessionPermissionMode(s)) => {
@@ -1137,10 +1142,7 @@ impl DaemonServer {
     /// lookup keyed on (our own agent actor id, envelope's sender_actor_id).
     /// the cloud backend is the sole source of truth — on any failure (RPC error,
     /// missing sender_actor_id) the caller is denied (`Member` is the safe
-    /// no-op level). Previous versions fell back to a `peer_id` token-prefix
-    /// scrape against members.toml, which let anyone who guessed a 6-char
-    /// prefix masquerade as a member during a cloud backend outage; that path
-    /// is gone.
+    /// no-op level.
     pub(crate) async fn resolve_role(
         &mut self,
         sender_actor_id: &str,
@@ -1321,9 +1323,10 @@ impl DaemonServer {
                         &start.session_id,
                         &start.initial_prompt,
                         None,
-                        &sender_actor_id,
                         false,
                         None,
+                        "",
+                        false,
                         "",
                     )
                     .await;
@@ -1362,10 +1365,6 @@ impl DaemonServer {
                     .await
                     .is_some();
                 if stopped {
-                    self.remote_tool_turn_contexts
-                        .lock()
-                        .await
-                        .clear_runtime(agent_id);
                     self.publish_runtime_detached(agent_id).await;
                     info!(agent_id, peer_id, "agent stopped");
                 }
@@ -1398,8 +1397,8 @@ impl DaemonServer {
                                 "",
                                 None,
                                 true,
-                                Some(&sender_actor_id),
                                 "",
+                                false,
                                 "legacy_send_prompt",
                             )
                             .await
@@ -1485,15 +1484,6 @@ impl DaemonServer {
                 }
 
                 // Send prompt to agent (respawns if process exited)
-                let session_id = self
-                    .agents
-                    .lock()
-                    .await
-                    .get_handle(agent_id)
-                    .map(|h| h.session_id.clone())
-                    .unwrap_or_default();
-                self.prepare_remote_tool_context_for_turn(agent_id, &session_id, &sender_actor_id)
-                    .await;
                 let requester = (!sender_actor_id.is_empty()).then(|| sender_actor_id.clone());
                 let send_res = self
                     .agents

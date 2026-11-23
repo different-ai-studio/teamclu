@@ -108,9 +108,8 @@ describe('Settings navigation', () => {
       // LLM Model pane, not a section of its own.
       'Knowledge Access',
       'Prompt',
-      // 'Roles' and 'Role Skills' are temporarily hidden — see
-      // HIDDEN_LOCAL_AGENT_SECTIONS in Settings.tsx. 'Knowledge Base' is gone
-      // for good: it configured the RAG index, which no longer exists.
+      // 'Knowledge Base' is gone: it configured the RAG index, which no
+      // longer exists.
       'Dependencies',
     ])
   })

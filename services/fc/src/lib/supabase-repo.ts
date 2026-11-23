@@ -13,8 +13,11 @@ import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
+import { assertTeamSkillSlug, canonicalTeamSkillSlug, teamSkillDisplayName } from "./team-skill-slug.js";
 import {
   appLevelAtLeast,
+  callAgentInheritance,
+  higherAppLevel,
   parseAppPermissionLevel,
   storedAppPermissionLevel,
   type AppPermissionLevel,
@@ -247,8 +250,8 @@ import {
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, MESSAGE_ATTACHMENT_SCAN_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
   appFunctionTargetFromRow, APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
-  mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
-  mapActor, mapTeamMember, mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
+  mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut,
+  mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
   mapFeedbackRow, mapLeaderboardRow, chunkedIn,
   appGitAccountFields,
 } from "./supabase-repo/shared.js";
@@ -1375,20 +1378,6 @@ export function createSupabaseBusinessRepository(options) {
       }
     },
 
-    async listDiscoverableTeams() {
-      const { data, error } = await supabase.rpc("list_discoverable_teams");
-      if (error) throw error;
-      return (data ?? []).map((r: any) => ({
-        id: r.team_id,
-        name: r.team_name,
-        slug: r.team_slug ?? null,
-        orgId: r.org_id ?? null,
-        orgName: r.org_name ?? null,
-        visibility: r.visibility ?? "public",
-        isMember: r.is_member === true,
-      }));
-    },
-
     // Self-service join of a PUBLIC team. Invoked when
     // the user picks a public team they are not yet a member of. The RPC adds a
     // plain 'member' actor (idempotent if already joined) and rejects anything
@@ -1823,6 +1812,10 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async setLlmConfig(teamId, input) {
+      // Every agent in the team sends its prompts to this baseUrl, so only an
+      // owner or admin may change it. The table's write policies say the same
+      // (20261119130000); this check answers 403 instead of an RLS error.
+      await this.requireTeamAdmin(teamId);
       const { error } = await supabase
         .from("team_workspace_config")
         .upsert(
@@ -2403,46 +2396,6 @@ export function createSupabaseBusinessRepository(options) {
       return { items };
     },
 
-    async getTeamDirectory(teamId) {
-      // Column names here are PostgREST aliases, not a rename: `actor_directory`
-      // exposes the discriminator as `actor_type` and `team_members` keys the
-      // actor as `member_id`. Selecting the mapper-side names directly (`kind`,
-      // `actor_id`) made this endpoint a guaranteed 500 — "column
-      // actor_directory.kind does not exist" — at any team size. Aliasing keeps
-      // mapActor/mapTeamMember and the response shape untouched.
-      const [actorsRes, membersRes] = await Promise.all([
-        supabase
-          .from("actor_directory")
-          .select("id, team_id, kind:actor_type, display_name, avatar_url, user_id")
-          .eq("team_id", teamId)
-          .or(LISTABLE_AGENT_STATUS_OR_FILTER),
-        supabase
-          .from("team_members")
-          .select("actor_id:member_id, team_id, joined_at")
-          .eq("team_id", teamId),
-      ]);
-      if (actorsRes.error) throw actorsRes.error;
-      if (membersRes.error) throw membersRes.error;
-      const actors = await enrichActorsWithOrgRoles(
-        supabase,
-        teamId,
-        (actorsRes.data ?? []).map(mapActor),
-      );
-      const rolesByActorId = new Map(
-        actors.map((a) => [a.id, { roles: a.roles ?? [], teamRole: a.teamRole ?? null }]),
-      );
-      const members = (membersRes.data ?? []).map((row) => {
-        const base = mapTeamMember(row);
-        const enriched = rolesByActorId.get(base.actorId);
-        return {
-          ...base,
-          roles: enriched?.roles ?? [],
-          role: enriched?.teamRole ?? null,
-        };
-      });
-      return { actors, members };
-    },
-
     async listSessions({ limit = 50, cursor = null, teamId = null, ideaId = null, kind = "all" }: any = {}) {
       // p_team_id is what resolves the caller's actor as of 20260804020000,
       // since a user has one actor row per team. It is also load-bearing for
@@ -2815,43 +2768,6 @@ export function createSupabaseBusinessRepository(options) {
       return mapWorkspace(data);
     },
 
-    async getTeamWorkspaceConfig(teamId) {
-      const { data, error } = await supabase
-        .from("team_workspace_config")
-        .select("team_id, default_workspace_id, pinned_workspace_ids, updated_at")
-        .eq("team_id", teamId)
-        .limit(1);
-      if (error) throw error;
-      const row = Array.isArray(data) ? data[0] : data;
-      if (!row) return null;
-      return {
-        teamId: requiredString(row.team_id, "workspaces.getTeamWorkspaceConfig", "team_id"),
-        defaultWorkspaceId: row.default_workspace_id ?? null,
-        pinnedWorkspaceIds: row.pinned_workspace_ids ?? [],
-        updatedAt: row.updated_at ?? null,
-      };
-    },
-
-    async putTeamWorkspaceConfig(teamId, input) {
-      const row = {
-        team_id: teamId,
-        default_workspace_id: input.defaultWorkspaceId ?? null,
-        pinned_workspace_ids: input.pinnedWorkspaceIds ?? [],
-      };
-      const { data, error } = await supabase
-        .from("team_workspace_config")
-        .upsert(row, { onConflict: "team_id" })
-        .select("team_id, default_workspace_id, pinned_workspace_ids, updated_at")
-        .single();
-      if (error) throw error;
-      return {
-        teamId: requiredString(data.team_id, "workspaces.putTeamWorkspaceConfig", "team_id"),
-        defaultWorkspaceId: data.default_workspace_id ?? null,
-        pinnedWorkspaceIds: data.pinned_workspace_ids ?? [],
-        updatedAt: data.updated_at ?? null,
-      };
-    },
-
     async writeForegroundPresence({ deviceId, foregroundUntil }) {
       const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
@@ -3137,32 +3053,6 @@ export function createSupabaseBusinessRepository(options) {
         p_moves: moves.map((m) => ({ shortcut_id: m.shortcutId, parent_id: m.parentId, position: m.position })),
       });
       if (error) throw error;
-    },
-
-    async setShortcutVisibleRoles(shortcutId, { roleIds }) {
-      const { error } = await supabase.rpc("shortcut_set_visible_roles", {
-        p_shortcut_id: shortcutId,
-        p_role_ids: roleIds,
-      });
-      if (error) throw error;
-    },
-
-    async listTeamRoles(teamId) {
-      const { data, error } = await supabase
-        .from("team_roles")
-        .select("id, team_id, code, name")
-        .eq("team_id", teamId);
-      if (error) throw error;
-      return (data ?? []).map((r) => ({ id: r.id, teamId: r.team_id, code: r.code, name: r.name }));
-    },
-
-    async listTeamPermissions(teamId) {
-      const { data, error } = await supabase
-        .from("permissions")
-        .select("resource_id, permission_roles(role_id)")
-        .eq("team_id", teamId);
-      if (error) throw error;
-      return (data ?? []).map((r) => ({ resourceId: r.resource_id, roleIds: (r.permission_roles ?? []).map((x) => x.role_id) }));
     },
 
     async createIdeaActivity(ideaId, body) {
@@ -3901,16 +3791,6 @@ export function createSupabaseBusinessRepository(options) {
       }));
     },
 
-    async listShortcutRoleBindings(teamId) {
-      const { data, error } = await supabase
-        .from("permissions")
-        .select("resource_id, permission_roles(role_id)")
-        .eq("team_id", teamId)
-        .eq("resource_type", "shortcut");
-      if (error) throw error;
-      return data ?? [];
-    },
-
     // --- Sessions CRUD (single-session ops; list uses listSessions above) ---
 
     async getSession(sessionId, { teamId = null }: any = {}) {
@@ -4033,17 +3913,57 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async patchSession(sessionId, patch) {
-      const update: any = {};
-      if (patch.title !== undefined) update.title = patch.title;
-      if (patch.summary !== undefined) update.summary = patch.summary;
-      if (patch.archivedAt !== undefined) update.archived_at = patch.archivedAt;
-      if (patch.mode !== undefined) update.mode = patch.mode;
-      if (Object.keys(update).length === 0) {
+      const rest: any = {};
+      if (patch.summary !== undefined) rest.summary = patch.summary;
+      if (patch.archivedAt !== undefined) rest.archived_at = patch.archivedAt;
+      if (patch.mode !== undefined) rest.mode = patch.mode;
+      const lockTitle = patch.titleLocked === true && typeof patch.title === "string";
+      const generatedTitle = typeof patch.title === "string" && !lockTitle;
+
+      if (lockTitle) {
+        const { data, error } = await supabase
+          .from("sessions")
+          .update({ ...rest, title: patch.title, title_locked: true })
+          .eq("id", sessionId)
+          .select(SESSION_FULL_COLUMNS)
+          .maybeSingle();
+        if (error) throw error;
+        return data ? { ...mapSessionFull(data), titleLocked: true, titleApplied: true } : null;
+      }
+
+      if (generatedTitle) {
+        // One UPDATE ... WHERE id AND title_locked = false. A rename that
+        // commits first matches zero rows; the lock stays set.
+        const { data, error } = await supabase.rpc("apply_generated_session_title", {
+          p_session_id: sessionId,
+          p_title: patch.title,
+        });
+        if (error) throw error;
+        const written = Array.isArray(data) ? data[0] : data;
+        if (!written) return null;
+        if (Object.keys(rest).length > 0) {
+          const { error: restError } = await supabase
+            .from("sessions")
+            .update(rest)
+            .eq("id", sessionId);
+          if (restError) throw restError;
+        }
+        const current = await this.getSession(sessionId);
+        if (!current) return null;
+        return {
+          ...current,
+          title: written.title ?? current.title,
+          titleLocked: written.title_locked === true,
+          titleApplied: written.applied === true && (written.title ?? current.title) === patch.title,
+        };
+      }
+
+      if (Object.keys(rest).length === 0) {
         return this.getSession(sessionId);
       }
       const { data, error } = await supabase
         .from("sessions")
-        .update(update)
+        .update(rest)
         .eq("id", sessionId)
         .select(SESSION_FULL_COLUMNS)
         .maybeSingle();
@@ -6451,12 +6371,25 @@ export function createSupabaseBusinessRepository(options) {
      * an env var, who made a cron job) reference `amux.members`;
      * `callerActorId` is the caller either way, and is what a grant records as
      * its grantor.
+     *
+     * Since 20261120120000 an active agent also inherits its owner's level
+     * (`amux.agent_inherited_app_level`; the rule lives in the database). The
+     * higher of the agent's own grant and the inherited level wins.
+     * `inherited` is true when the level came from the owner — the callers
+     * that change who has access, or delete the app, refuse such a caller
+     * (`assertNotInheritedFor`): those are the two things a bot never does on
+     * its owner's behalf.
      */
     async resolveAppCallerPermissionForApp(app: {
       id: string;
       team_id: string;
       created_by_actor_id: string | null;
-    }): Promise<{ level: AppPermissionLevel; callerActorId: string; callerMemberId: string | null } | null> {
+    }): Promise<{
+      level: AppPermissionLevel;
+      callerActorId: string;
+      callerMemberId: string | null;
+      inherited: boolean;
+    } | null> {
       const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
@@ -6465,10 +6398,11 @@ export function createSupabaseBusinessRepository(options) {
       const resolved = await this.resolveCurrentActor(app.team_id, userId);
       if (!resolved?.id) return null;
       const callerActorId = resolved.id;
-      const callerMemberId = resolved.actorType === "agent" ? null : resolved.id;
+      const isAgent = resolved.actorType === "agent";
+      const callerMemberId = isAgent ? null : resolved.id;
 
       if (app.created_by_actor_id === callerActorId) {
-        return { level: "admin", callerActorId, callerMemberId };
+        return { level: "admin", callerActorId, callerMemberId, inherited: false };
       }
 
       const { data: access, error: accErr } = await supabase
@@ -6478,8 +6412,39 @@ export function createSupabaseBusinessRepository(options) {
         .eq("member_id", callerActorId)
         .maybeSingle();
       if (accErr) throw accErr;
-      const level = storedAppPermissionLevel(access?.permission_level);
-      return level ? { level, callerActorId, callerMemberId } : null;
+      const granted = storedAppPermissionLevel(access?.permission_level);
+
+      let inheritedLevel: AppPermissionLevel | null = null;
+      if (isAgent && granted !== "admin") {
+        const viaOwner = await callAgentInheritance(supabase, "agent_inherited_app_level", {
+          p_app_id: app.id,
+          p_actor_id: callerActorId,
+        });
+        inheritedLevel = storedAppPermissionLevel(viaOwner);
+      }
+
+      const level = higherAppLevel(granted, inheritedLevel);
+      if (!level) return null;
+      const inherited = level !== granted;
+      return { level, callerActorId, callerMemberId, inherited };
+    },
+
+    /**
+     * Refuse a caller whose level on the app came from its owner. Changing
+     * who has access and deleting the app stay with people and explicitly
+     * granted actors.
+     */
+    assertNotInheritedFor(
+      permission: { inherited?: boolean } | null,
+      action: "manage_access" | "delete_app",
+    ): void {
+      if (!permission?.inherited) return;
+      const what = action === "manage_access" ? "change who can access" : "delete";
+      throw new ApiError(
+        403,
+        "inherited_access_not_allowed",
+        `an agent cannot ${what} an app it reaches through its owner; ask a person with admin on the app`,
+      );
     },
 
     /**
@@ -6766,6 +6731,7 @@ export function createSupabaseBusinessRepository(options) {
 
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission || permission.level !== "admin") return null;
+      this.assertNotInheritedFor(permission, "manage_access");
       return {
         callerActorId: permission.callerActorId,
         callerMemberId: permission.callerMemberId,
@@ -6786,29 +6752,65 @@ export function createSupabaseBusinessRepository(options) {
         .order("created_at", { ascending: true });
       if (error) throw error;
       const rows = data ?? [];
+
+      // The agents that reach the app through their owner (20261120120000).
+      // Listed after the grants, read-only: the way to take one away is to
+      // take its owner's access away.
+      const inheritedRows = await callAgentInheritance(admin, "app_inherited_agents", { p_app_id: appId });
+      const granted = new Set(rows.map((r: any) => r.member_id));
+      const inherited = ((inheritedRows ?? []) as any[]).filter(
+        (r) => r.agent_id && !granted.has(r.agent_id) && storedAppPermissionLevel(r.permission_level),
+      );
+
       // Who each grantee is: the access tab shows agents apart from people,
-      // and greys out an agent whose daemon never claimed an account.
-      const ids = [...new Set(rows.map((r: any) => r.member_id).filter(Boolean))];
+      // greys out an agent whose daemon never claimed an account, and shows
+      // the NAME from here — the caller's own directory hides agents it may
+      // not talk to, which left those rows as bare ids.
+      const ids = [
+        ...new Set(
+          [
+            ...rows.map((r: any) => r.member_id),
+            ...inherited.flatMap((r) => [r.agent_id, r.owner_actor_id]),
+          ].filter(Boolean),
+        ),
+      ];
       const actors = new Map<string, any>();
       if (ids.length > 0) {
         const found = await chunkedIn(ids, async (chunk) => {
           const { data: actorRows, error: actorErr } = await admin
             .from("actors")
-            .select("id, actor_type, user_id")
+            .select("id, actor_type, user_id, display_name")
             .in("id", chunk);
           if (actorErr) throw actorErr;
           return actorRows ?? [];
         });
         for (const a of found) actors.set(a.id, a);
       }
-      return rows.map((r: any) => {
-        const actor = actors.get(r.member_id);
+      const describe = (actorId: string) => {
+        const actor = actors.get(actorId);
         return {
-          ...mapAppAccessRow(r),
           actorType: actor?.actor_type ?? null,
           connected: actor ? actor.actor_type !== "agent" || !!actor.user_id : null,
+          displayName: actor?.display_name ?? null,
         };
-      });
+      };
+      return [
+        ...rows.map((r: any) => ({
+          ...mapAppAccessRow(r),
+          ...describe(r.member_id),
+          inherited: false,
+          inheritedFrom: null,
+        })),
+        ...inherited.map((r) => ({
+          memberId: r.agent_id,
+          permissionLevel: storedAppPermissionLevel(r.permission_level)!,
+          grantedByMemberId: null,
+          createdAt: null,
+          ...describe(r.agent_id),
+          inherited: true,
+          inheritedFrom: { actorId: r.owner_actor_id, displayName: actors.get(r.owner_actor_id)?.display_name ?? null },
+        })),
+      ];
     },
 
     async setAppAccess(appId: string, memberId: string, permissionLevel: string) {
@@ -7505,6 +7507,7 @@ export function createSupabaseBusinessRepository(options) {
 
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return false;
+      this.assertNotInheritedFor(permission, "delete_app");
 
       const assertUninstalled = (app: any) => {
         const neverDeployed = (app.fc_status == null || app.fc_status === "not_deployed")
@@ -7666,14 +7669,12 @@ export function createSupabaseBusinessRepository(options) {
 
     async createTeamSkill(teamId, body: any = {}) {
       const fields = requireTeamSkillFields(body);
-      const slug = String(body.slug ?? "").trim();
-      if (!TEAM_SKILL_SLUG_RE.test(slug)) {
-        throw new ApiError(
-          400,
-          "validation_failed",
-          "slug must be 2-64 chars of [a-z0-9-] and start with a letter or digit",
-        );
-      }
+      // Lowercase here so `Deploy-Check` and `deploy-check` are one folder.
+      // macOS volumes are case-insensitive; Linux is not.
+      // NFC + ASCII lowercase. 整车成本智能表格 is stored unchanged.
+      const slug = canonicalTeamSkillSlug(body.slug);
+      assertTeamSkillSlug(slug);
+      const displayName = teamSkillDisplayName(body.displayName, slug);
       const changelog = String(body.changelog ?? "").trim();
       if (!changelog) throw new ApiError(400, "validation_failed", "changelog is required");
       const contentHash = String(body.contentHash ?? "").trim().toLowerCase();
@@ -7704,6 +7705,7 @@ export function createSupabaseBusinessRepository(options) {
         .insert({
           team_id: teamId,
           slug,
+          display_name: displayName,
           owner_actor_id: body.ownerActorId ?? callerActorId,
           summary: fields.summary,
           category: fields.category,
@@ -7918,6 +7920,9 @@ export function createSupabaseBusinessRepository(options) {
       if (fields.whenNotToUse !== undefined) update.when_not_to_use = fields.whenNotToUse;
       if (fields.requires !== undefined) update.requires = fields.requires;
       if (patch.ownerActorId !== undefined) update.owner_actor_id = patch.ownerActorId;
+      if (patch.displayName !== undefined) {
+        update.display_name = teamSkillDisplayName(patch.displayName, existing.slug);
+      }
       if (patch.status !== undefined) {
         if (!TEAM_SKILL_STATUSES.includes(patch.status)) {
           throw new ApiError(400, "validation_failed", `unknown status: ${patch.status}`);
@@ -8261,33 +8266,6 @@ export function createSupabaseBusinessRepository(options) {
           hasUpdate: (r.installed_version ?? 0) < (r.team_skills?.latest_version ?? 0),
         }))
         .sort((a: any, b: any) => String(a.slug).localeCompare(String(b.slug)));
-    },
-
-    /**
-     * Every actor carrying an install row for one skill.
-     *
-     * Only used to address the MQTT nudge after a publish — the reconcile is
-     * still what decides anything. Returns ids and nothing else, since the
-     * caller's entire job is to send "re-check now" to each of them.
-     */
-    async listTeamSkillInstallerActorIds(teamId, slug) {
-      const { data: skillRows, error: skillErr } = await supabase
-        .from("team_skills")
-        .select("id")
-        .eq("team_id", teamId)
-        .eq("slug", slug)
-        .limit(1);
-      if (skillErr) throw skillErr;
-      const skillId = skillRows?.[0]?.id;
-      if (!skillId) return [];
-
-      const { data, error } = await supabase
-        .from("team_skill_installs")
-        .select("actor_id")
-        .eq("team_id", teamId)
-        .eq("skill_id", skillId);
-      if (error) throw error;
-      return (data ?? []).map((r: any) => r.actor_id).filter(Boolean);
     },
 
     ...makeSupabaseMarketplaceMethods({
@@ -8675,7 +8653,6 @@ function mapTeamEnvSecretRow(row: any) {
 
 // ─── Team skills helpers ─────────────────────────────────────────────────────
 
-const TEAM_SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
 // How many marketplace-subscribed skills `listTeamSkills` aligns at once.
 const MARKETPLACE_ALIGN_CONCURRENCY = 4;
 
@@ -8755,6 +8732,10 @@ function mapTeamSkillRow(r: any, install?: any) {
     id: r.id,
     teamId: r.team_id,
     slug: r.slug,
+    displayName:
+      typeof r.display_name === "string" && r.display_name.trim()
+        ? r.display_name.trim()
+        : r.slug,
     ownerActorId: r.owner_actor_id,
     summary: r.summary,
     category: r.category,

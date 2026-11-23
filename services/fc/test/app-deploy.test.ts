@@ -127,3 +127,20 @@ for (const [operation, failingMethod, providerCode] of [
     });
   });
 }
+
+test("setMinInstances writes only when the provider's value differs", async () => {
+  for (const [current, wanted, writes] of [[0, 1, 1], [1, 1, 0], [undefined, 0, 0], [1, 0, 1]] as const) {
+    const puts: any[] = [];
+    const client = {
+      getScalingConfig: async (_fn: string, req: any) => {
+        assert.equal(req.qualifier, "LATEST");
+        return { body: current === undefined ? {} : { minInstances: current } };
+      },
+      putScalingConfig: async (fn: string, req: any) => { puts.push([fn, req.qualifier, req.body.minInstances]); return {}; },
+    };
+    const fcOps = makeFcOps(client, { bucket: "b", role: "r", region: "cn-shenzhen" } as any);
+    const r = await fcOps.setMinInstances("fn", wanted);
+    assert.equal(r.changed, writes === 1);
+    assert.deepEqual(puts, writes ? [["fn", "LATEST", wanted]] : []);
+  }
+});

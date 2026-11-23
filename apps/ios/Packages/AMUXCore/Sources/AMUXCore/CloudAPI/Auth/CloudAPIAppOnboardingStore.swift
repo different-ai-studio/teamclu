@@ -23,12 +23,17 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
 
     private var didStart = false
 
+    /// `sessionStore`: pass the process-wide one (`CloudAccessToken`) so the
+    /// app's other Cloud API callers refresh through the same store. When nil
+    /// a private store is built over `storage`.
     public init(
         configuration: CloudAPIConfiguration,
         storage: SessionStorage,
+        sessionStore: SessionStore? = nil,
         send: @escaping CloudAPISend = CloudAPIClient.urlSessionSend
     ) {
-        let sessionStore = SessionStore(baseURL: configuration.baseURL, storage: storage, send: send)
+        let sessionStore = sessionStore
+            ?? SessionStore(baseURL: configuration.baseURL, storage: storage, send: send)
         self.sessionStore = sessionStore
         self.auth = AuthHTTP(baseURL: configuration.baseURL, send: send)
         self.api = CloudAPIClient(
@@ -52,7 +57,7 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
     private func ensureStarted() async {
         guard !didStart else { return }
         didStart = true
-        await sessionStore.start()
+        await sessionStore.startIfNeeded()
     }
 
     // MARK: - Session presence
@@ -514,10 +519,6 @@ private struct PasswordCredentials: Encodable, Sendable {
     let password: String
 }
 
-private struct EmailUpdate: Encodable, Sendable {
-    let email: String
-}
-
 private struct OTPRequest: Encodable, Sendable {
     let email: String
     let options: Options
@@ -595,23 +596,6 @@ private struct IdTokenRequest: Encodable, Sendable {
 
 private struct RefreshRequest: Encodable, Sendable {
     let refreshToken: String
-}
-
-private struct RefreshResult: Decodable, Sendable {
-    let accessToken: String
-    let refreshToken: String
-    let expiresAt: Int
-}
-
-// partner-aligned phone identity upgrade (bind to current account, NOT phone_change).
-private struct BindPhoneRequest: Encodable, Sendable {
-    let phone: String
-    let code: String
-}
-
-private struct BindPhoneResponse: Decodable, Sendable {
-    let userId: String?
-    let bound: Bool?
 }
 
 // org→team login picker DTOs.

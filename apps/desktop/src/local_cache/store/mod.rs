@@ -13,8 +13,7 @@
 //! | `actors`      | `actor`                                                |
 //! | `sessions`    | `session`, `session_workspace`, `session_participant`  |
 //! | `messages`    | `message`                                              |
-//! | `ideas`       | `idea`, `claim`, `submission`                          |
-//! | `events`      | `agent_runtime_event`                                  |
+//! | `ideas`       | `idea`                                                 |
 //! | `outbox`      | `outbox`                                               |
 //! | `ownership`   | the team-lookup helpers behind the current-team gate   |
 //! | `sync_state`  | sync watermarks and the per-team wipe                  |
@@ -26,7 +25,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 mod actors;
-mod events;
 mod ideas;
 mod messages;
 mod opencode;
@@ -42,8 +40,8 @@ mod test_support;
 
 pub use opencode::enrich_parts_json_from_opencode;
 pub use rows::{
-    ActorRow, AgentRuntimeEventRow, ClaimRow, IdeaRow, MessageLoadOptions, MessageRow, OutboxRow,
-    SessionParticipantRow, SessionRow, SessionWorkspaceRow, SubmissionRow,
+    ActorRow, IdeaRow, MessageLoadOptions, MessageRow, OutboxRow, SessionParticipantRow,
+    SessionRow, SessionWorkspaceRow,
 };
 
 /// Convert an `Option<String>` to a libsql `Value`, producing `Value::Null` for `None`

@@ -26,7 +26,6 @@ const mocks = vi.hoisted(() => ({
   daemonAppManifest: vi.fn(),
   bindAppWorkdir: vi.fn(),
   bindDaemonAppWorkdir: vi.fn(),
-  getDaemonEnvActivationDiagnostics: vi.fn(),
   toastError: vi.fn(),
   workdirExists: vi.fn(),
   readDir: vi.fn(),
@@ -71,7 +70,6 @@ vi.mock("@/lib/daemon/daemon-local-client", () => ({
   buildDaemonApp: mocks.buildDaemonApp,
   daemonAppManifest: mocks.daemonAppManifest,
   bindDaemonAppWorkdir: mocks.bindDaemonAppWorkdir,
-  getDaemonEnvActivationDiagnostics: mocks.getDaemonEnvActivationDiagnostics,
 }));
 
 vi.mock("@tauri-apps/plugin-fs", () => ({
@@ -1137,7 +1135,6 @@ describe("apps-store: private repo credentials", () => {
     expect(JSON.stringify(mocks.toastError.mock.calls)).toContain("尚未就绪");
   });
 });
-
 
 describe('auth policy save outcomes', () => {
   it('keeps the original stored row after a rejected write', async () => {

@@ -16,6 +16,7 @@ vi.mock("@/stores/session-list-store", () => ({
 
 import {
   isPlaceholderSessionTitle,
+  clearSessionAutoTitlePending,
   markSessionNeedsAutoTitle,
   maybeAutoTitleSessionFromFirstMessage,
   resetSessionAutoTitlePendingForTests,
@@ -71,6 +72,17 @@ describe("session-auto-title", () => {
 
   it("skips unmarked sessions even when the title looks like HH:mm", async () => {
     mocks.rows = [{ id: "sess-1", title: "Standup (09:30)" }];
+
+    const renamed = await maybeAutoTitleSessionFromFirstMessage("sess-1", "今日议程");
+
+    expect(renamed).toBe(false);
+    expect(mocks.updateSessionTitle).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite a time-shaped title after a manual rename clears the mark", async () => {
+    mocks.rows = [{ id: "sess-1", title: "Standup (09:30)" }];
+    markSessionNeedsAutoTitle("sess-1");
+    clearSessionAutoTitlePending("sess-1");
 
     const renamed = await maybeAutoTitleSessionFromFirstMessage("sess-1", "今日议程");
 

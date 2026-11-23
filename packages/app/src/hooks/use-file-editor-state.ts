@@ -13,10 +13,6 @@ import { useTabsStore } from "@/stores/tabs";
 // Legacy no-op retained for callers/tests while file mode is removed.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function useLayoutModePanelSync() {
-  return;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Sync selectedFile -> TabsStore (task mode)
 // ─────────────────────────────────────────────────────────────────────────────

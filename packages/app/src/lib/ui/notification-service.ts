@@ -4,7 +4,6 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
-import { getPermissionPolicy } from "@/lib/agent/permission-policy";
 import { isTauri } from "@/lib/utils";
 import { appStoragePrefix } from "@/lib/config/build-config";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
@@ -156,11 +155,6 @@ class NotificationService {
       let granted = await isPermissionGranted();
       diag("send:permission-check", { granted });
       if (!granted) {
-        const policy = getPermissionPolicy();
-        if (policy === "bypass" || policy === "batch") {
-          diag("send:skipped", { reason: "permission_policy", policy });
-          return "skipped";
-        }
         const permission = await requestPermission();
         granted = permission === "granted";
         diag("send:permission-requested", { permission, granted });

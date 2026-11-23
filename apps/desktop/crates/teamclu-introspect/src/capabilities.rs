@@ -90,7 +90,8 @@ fn build_overview(workspace: &str, daemon: &[String]) -> Result<Value, String> {
         .get("enabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let team_mode = if team_enabled { "git" } else { "none" };
+    // Team sync is the daemon's OSS engine; git share was removed.
+    let team_mode = if team_enabled { "oss" } else { "none" };
 
     let roles = crate::config::read_roles(workspace).unwrap_or_default();
     let role_count = roles.len();

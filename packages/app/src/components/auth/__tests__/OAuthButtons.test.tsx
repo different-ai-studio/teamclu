@@ -11,7 +11,7 @@ vi.mock("@/lib/config/remote-features", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const features = {
     updater: true,
-    auth: { google: true, wechat: true, phone: false, password: false, webSSO: true },
+    auth: { google: true, wechat: true, phone: false, webSSO: true },
     channels: { discord: false, feishu: false, email: false, kook: false, wecom: false, wechat: false, seatalk: false },
     apps: false,
     lockLlmConfig: false,

@@ -1,6 +1,6 @@
 import { postJson, deleteJson } from "./http.mjs";
 
-/** 注册新账号，返回 owner access_token（signup 即时可用，email_verified=true，无需邮箱确认）。 */
+/** 注册新账号，返回 owner access_token。只有目标 GoTrue 开了 ENABLE_EMAIL_AUTOCONFIRM 时 signup 才直接带回 session。 */
 export async function signup(base, email, password) {
   const out = await postJson(`${base}/v1/auth/signup`, { email, password }, null);
   const token = out.access_token ?? out.session?.access_token;

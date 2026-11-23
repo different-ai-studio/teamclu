@@ -227,16 +227,6 @@ export function SidebarSecondarySessionActions({
   )
 }
 
-// Full header row: collapse + search + cron + new chat (default UI variant).
-export function SidebarIconGroup({ className }: { className?: string }) {
-  return (
-    <div className={cn("flex items-center gap-0.5", className)}>
-      <SidebarCollapseToggle />
-      <SidebarSecondarySessionActions />
-    </div>
-  )
-}
-
 function SidebarUserAccountMenu() {
   const { t, i18n } = useTranslation()
   const authSession = useAuthStore((s) => s.session)
