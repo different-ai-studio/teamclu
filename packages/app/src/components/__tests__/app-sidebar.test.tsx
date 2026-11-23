@@ -277,13 +277,13 @@ describe('AppSidebar', () => {
 
   it('renders settings entry with english fallback text', () => {
     render(<AppSidebar />)
-    expect(screen.getByText('Settings')).toBeDefined()
-    expect(screen.queryByText('设置')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeDefined()
+    expect(screen.queryByRole('button', { name: '设置' })).toBeNull()
   })
 
   it('preserves the settings footer row', () => {
     render(<AppSidebar />)
-    expect(screen.getByText('Settings')).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeDefined()
   })
 
   it('does not render a footer workspace selector', () => {

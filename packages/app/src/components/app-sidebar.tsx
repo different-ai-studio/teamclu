@@ -40,9 +40,6 @@ import { recoverMqttConnection } from "@/stores/mqtt-reconnect"
 import {
   NavRailModeContext,
   isRailMode,
-  navRowBox,
-  navRowIcon,
-  navRowLabel,
   useNavRailMode,
   type NavRailMode,
 } from "@/components/sidebar/nav-rail-mode"
@@ -296,7 +293,7 @@ function SidebarUserAccountMenu() {
           className={cn(
             "min-w-0 rounded-lg text-ink-2 hover:bg-black/[0.04] hover:text-foreground",
             rail
-              ? "h-14 w-full flex-col justify-center gap-1 px-0.5 font-normal"
+              ? "h-8 w-full justify-center px-0"
               : "h-8 shrink max-w-full gap-1.5 px-2 text-[12px]",
           )}
           title={rail ? userName : undefined}
@@ -324,7 +321,7 @@ function SidebarUserAccountMenu() {
               />
             ) : null}
           </span>
-          <span className={rail ? navRowLabel("rail") : "min-w-0 truncate"}>{userName}</span>
+          <span className={rail ? "sr-only" : "min-w-0 truncate"}>{userName}</span>
           {rail ? null : <ChevronUp className="h-3.5 w-3.5 shrink-0" />}
         </Button>
       </DropdownMenuTrigger>
@@ -512,8 +509,10 @@ export function AppSidebar({
 
         {rail ? (
           <SidebarFooter className="gap-0.5 px-1.5 pb-3 pt-1">
-            {/* The traffic lights fill the rail's header, so the control that
-                pins the full sidebar open lives down here instead. */}
+            {/* Icons only down here, stacked tight: settings and the account
+                are found by their glyphs, and the room goes to the
+                destinations above. The traffic lights fill the rail's header,
+                so the control that pins the full sidebar open lives here. */}
             {canPin ? (
               <button
                 type="button"
@@ -529,13 +528,10 @@ export function AppSidebar({
               type="button"
               onClick={() => openSettings()}
               title={settingsLabel}
-              className={cn(
-                "flex w-full items-center rounded-lg text-[13px] text-ink-2 transition-colors duration-150 hover:bg-black/[0.04] hover:text-foreground",
-                navRowBox("rail"),
-              )}
+              aria-label={settingsLabel}
+              className="flex h-8 w-full items-center justify-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-black/[0.04] hover:text-foreground"
             >
-              <Settings className={cn(navRowIcon("rail"), "text-muted-foreground")} />
-              <span className={navRowLabel("rail")}>{settingsLabel}</span>
+              <Settings className="h-4 w-4" />
             </button>
             <SidebarUserAccountMenu />
           </SidebarFooter>
