@@ -6,11 +6,10 @@ const uiStoreState = vi.hoisted(() => ({
   sidebarFilter: { kind: 'all' } as { kind: string; section?: string },
   closeSettings: vi.fn(),
   layoutMode: 'task',
-  mainContentLayout: 'stacked',
-  toggleMainContentLayout: vi.fn(() => {
-    uiStoreState.mainContentLayout =
-      uiStoreState.mainContentLayout === 'stacked' ? 'split' : 'stacked'
-  }),
+  contentColumnMode: 'half' as 'half' | 'full',
+  contentColumnRatio: 0.5,
+  setContentColumnMode: vi.fn(),
+  setContentColumnRatio: vi.fn(),
   fileModeRightTab: 'agent',
   setFileModeRightTab: vi.fn(),
   toggleLayoutMode: vi.fn(),
@@ -206,13 +205,15 @@ vi.mock('@/stores/tabs', () => ({
       closeTab: vi.fn(),
       hideAll: vi.fn(),
       restoreLastTab: vi.fn(),
+      switchScope: vi.fn(),
       tabs: tabsStoreState.tabs,
       activeTabId: tabsStoreState.activeTabId,
       getActiveTab: () => tabsStoreState.activeTab,
     }) }
   ),
   selectActiveTab: () => tabsStoreState.activeTab,
-  selectHasHiddenTabs: (_s: any) => false,
+  selectHasHiddenTabs: (_s: any) =>
+    tabsStoreState.tabs.length > 0 && tabsStoreState.activeTabId === null,
 }))
 vi.mock('@/stores/team-share-browser', () => ({
   useTeamShareBrowserStore: vi.fn((sel: (s: any) => any) => sel(teamShareBrowserState)),
@@ -283,7 +284,7 @@ describe('App', () => {
     uiStoreState.currentView = 'chat'
     uiStoreState.sidebarFilter = { kind: 'all' }
     uiStoreState.layoutMode = 'task'
-    uiStoreState.mainContentLayout = 'stacked'
+    uiStoreState.contentColumnMode = 'half'
     uiStoreState.fileModeRightTab = 'agent'
     workspaceStoreState.workspacePath = null
     workspaceStoreState.isPanelOpen = false
@@ -331,46 +332,92 @@ describe('App', () => {
     expect(screen.queryByText('DEV')).toBeNull()
   })
 
-  it('only shows the hide files button in stacked layout', () => {
+  it('keeps column four off screen while no tab is active', () => {
+    workspaceStoreState.workspacePath = '/workspace'
+
+    render(<App />)
+
+    expect(screen.queryByTestId('content-column')).toBeNull()
+    expect(screen.queryByTestId('content-column-restore')).toBeNull()
+  })
+
+  it('opens column four beside the conversation in half mode', () => {
     workspaceStoreState.workspacePath = '/workspace'
     tabsStoreState.activeTab = { id: 'tab-1', type: 'webview', target: 'https://example.com' }
     tabsStoreState.tabs = [tabsStoreState.activeTab]
     tabsStoreState.activeTabId = 'tab-1'
 
-    const { rerender } = render(<App />)
-    expect(screen.getByTitle('Hide files')).toBeTruthy()
+    render(<App />)
 
-    uiStoreState.mainContentLayout = 'split'
-    rerender(<App />)
-
-    expect(screen.queryByTitle('Hide files')).toBeNull()
-    expect(screen.queryByTitle('Show files')).toBeNull()
+    const column = screen.getByTestId('content-column')
+    expect(column).toHaveAttribute('data-content-mode', 'half')
+    expect(column).toContainElement(screen.getByTestId('tab-bar'))
+    expect(column).toContainElement(screen.getByTestId('tab-content-renderer'))
+    expect(screen.getByTestId('content-column-resize')).toBeInTheDocument()
+    // The conversation is still on screen next to it.
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).toBeNull()
   })
 
-  it('does not show the file empty-state prompt in stacked layout without active tabs', () => {
+  it('hides the conversation column while column four is full width', () => {
+    workspaceStoreState.workspacePath = '/workspace'
+    uiStoreState.contentColumnMode = 'full'
+    tabsStoreState.activeTab = { id: 'tab-1', type: 'file', target: '/workspace/notes.md' }
+    tabsStoreState.tabs = [tabsStoreState.activeTab]
+    tabsStoreState.activeTabId = 'tab-1'
+
+    render(<App />)
+
+    expect(screen.getByTestId('content-column')).toHaveAttribute('data-content-mode', 'full')
+    expect(screen.queryByTestId('content-column-resize')).toBeNull()
+    // Mounted (it keeps its state) but out of sight.
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
+  })
+
+  it('offers to bring column four back when its tabs are hidden', () => {
+    workspaceStoreState.workspacePath = '/workspace'
+    tabsStoreState.tabs = [{ id: 'tab-1', type: 'file', target: '/workspace/notes.md' }]
+    tabsStoreState.activeTabId = null
+
+    render(<App />)
+
+    expect(screen.queryByTestId('content-column')).toBeNull()
+    expect(screen.getByTitle('Show files')).toBeInTheDocument()
+  })
+
+  it.each(['skills', 'mcp', 'env', 'knowledge'])(
+    'hides the conversation while the %s section is selected',
+    (section) => {
+      workspaceStoreState.workspacePath = '/workspace'
+      uiStoreState.sidebarFilter = { kind: 'teamShare', section }
+
+      render(<App />)
+
+      // Still mounted (it keeps its state), but out of sight.
+      expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
+      expect(screen.getByTestId('section-detail')).toHaveAttribute('data-section', section)
+    },
+  )
+
+  it.each([['ideas'], ['actors']])('hides the conversation for the %s section', (kind) => {
+    workspaceStoreState.workspacePath = '/workspace'
+    uiStoreState.sidebarFilter = { kind }
+
+    render(<App />)
+
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
+    expect(screen.getByTestId('section-detail')).toHaveAttribute('data-section', kind)
+  })
+
+  it('keeps the conversation for the session list', () => {
     workspaceStoreState.workspacePath = '/workspace'
 
     render(<App />)
 
-    expect(screen.queryByText('Select a file or web tab')).toBeNull()
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).toBeNull()
+    expect(screen.queryByTestId('section-detail')).toBeNull()
   })
 
-  it.each([
-    ['skills', 'Skills'],
-    ['mcp', 'MCP'],
-    ['env', 'Environment Variables'],
-    ['knowledge', 'Knowledge'],
-  ])('shows the %s page title instead of New Chat', (section, title) => {
-    workspaceStoreState.workspacePath = '/workspace'
-    uiStoreState.sidebarFilter = { kind: 'teamShare', section }
-
-    render(<App />)
-
-    expect(screen.getByRole('button', { name: title })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'New Chat' })).toBeNull()
-  })
-
-  it('renders team-share item details directly without the tab bar', async () => {
+  it('shows a team-share item where the conversation was, with column four beside it', async () => {
     workspaceStoreState.workspacePath = '/workspace'
     uiStoreState.sidebarFilter = { kind: 'teamShare', section: 'mcp' }
     teamShareBrowserState.detailTarget = { kind: 'mcp', name: 'memory' }
@@ -381,12 +428,15 @@ describe('App', () => {
     render(<App />)
 
     // The team-share detail pane is lazy-loaded.
-    expect(await screen.findByTestId('team-share-detail')).toHaveTextContent('mcp')
-    expect(screen.queryByTestId('tab-bar')).toBeNull()
-    expect(screen.queryByTestId('tab-content-renderer')).toBeNull()
+    const detail = await screen.findByTestId('team-share-detail')
+    expect(detail).toHaveTextContent('mcp')
+    expect(screen.getByTestId('section-detail')).toContainElement(detail)
+    const column = screen.getByTestId('content-column')
+    expect(column).not.toContainElement(detail)
+    expect(column).toHaveAttribute('data-content-mode', 'half')
   })
 
-  it('keeps knowledge files in the existing tab layout', () => {
+  it('opens knowledge files in column four', () => {
     workspaceStoreState.workspacePath = '/workspace'
     uiStoreState.sidebarFilter = { kind: 'teamShare', section: 'knowledge' }
     tabsStoreState.activeTab = { id: 'tab-1', type: 'file', target: '/workspace/knowledge/spec.md' }
@@ -395,23 +445,47 @@ describe('App', () => {
 
     render(<App />)
 
-    expect(screen.getByTestId('tab-bar')).toBeInTheDocument()
-    expect(screen.getByTestId('file-content-viewer')).toBeInTheDocument()
-    expect(screen.queryByTestId('team-share-detail')).toBeNull()
+    const column = screen.getByTestId('content-column')
+    expect(column).toContainElement(screen.getByTestId('tab-bar'))
+    expect(column).toContainElement(screen.getByTestId('file-content-viewer'))
+    // A document takes the conversation's place: no empty-state prompt, no
+    // resize edge (there is nothing beside it to share the row with).
+    expect(screen.queryByTestId('section-detail')).toBeNull()
+    expect(screen.queryByTestId('content-column-resize')).toBeNull()
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
   })
 
-  it('renders split main content with file area on the left and chat on the right', () => {
+  it('prompts for a knowledge document until one is open', () => {
     workspaceStoreState.workspacePath = '/workspace'
-    uiStoreState.mainContentLayout = 'split'
-    tabsStoreState.activeTab = { id: 'tab-1', type: 'webview', target: 'https://example.com' }
+    uiStoreState.sidebarFilter = { kind: 'teamShare', section: 'knowledge' }
+
+    render(<App />)
+
+    expect(screen.getByTestId('knowledge-empty-state')).toBeInTheDocument()
+  })
+
+  it('opens a shortcut page in place of the conversation', () => {
+    workspaceStoreState.workspacePath = '/workspace'
+    uiStoreState.sidebarFilter = { kind: 'shortcuts' }
+    tabsStoreState.activeTab = { id: 'tab-1', type: 'file', target: '/workspace/notes.md' }
     tabsStoreState.tabs = [tabsStoreState.activeTab]
     tabsStoreState.activeTabId = 'tab-1'
 
     render(<App />)
 
-    expect(screen.getByTestId('main-content-split')).toBeTruthy()
-    expect(screen.getByTestId('main-content-split-resize-handle')).toBeTruthy()
-    expect(screen.getByTestId('tab-content-renderer')).toBeTruthy()
-    expect(screen.getByTestId('chat-panel')).toBeTruthy()
+    expect(screen.getByTestId('content-column')).toBeInTheDocument()
+    expect(screen.queryByTestId('section-detail')).toBeNull()
+    expect(screen.queryByTestId('content-column-resize')).toBeNull()
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
+  })
+
+  it('prompts for a shortcut until one is open, with the conversation hidden', () => {
+    workspaceStoreState.workspacePath = '/workspace'
+    uiStoreState.sidebarFilter = { kind: 'shortcuts' }
+
+    render(<App />)
+
+    expect(screen.getByTestId('shortcuts-empty-state')).toBeInTheDocument()
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
   })
 })

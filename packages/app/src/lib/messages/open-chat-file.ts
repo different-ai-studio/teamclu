@@ -2,7 +2,7 @@ import i18n from "@/lib/i18n";
 import { isTauri, openExternalUrl } from "@/lib/utils";
 import { toast } from "sonner";
 import { allowFsScopeDirs } from "@/lib/fs-scope";
-import { basenameOf, dirnameOf, joinPathLike } from "@/lib/fs-path";
+import { basenameOf, dirnameOf, isPathAtOrUnder, joinPathLike } from "@/lib/fs-path";
 import {
   isExecutableChatFile,
   parseChatTarget,
@@ -10,7 +10,8 @@ import {
   sidebarPreviewKind,
   supportsSidebarPreview,
 } from "@/lib/messages/chat-open-target";
-import { useChatFilePreviewStore } from "@/stores/chat-file-preview-store";
+import { openPreviewTab, previewTabSource } from "@/lib/tabs/preview-tabs";
+import { useTabsStore } from "@/stores/tabs";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useSessionStore } from "@/stores/session-store";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
@@ -58,10 +59,11 @@ async function pathExists(path: string): Promise<boolean> {
   return attachmentPathExists(path);
 }
 
+/** Show the file in the content column, as a tab beside the conversation. */
 function rememberPreview(id: string, name: string, path?: string, text?: string) {
   const kind = sidebarPreviewKind(name);
   if (!kind) return;
-  useChatFilePreviewStore.getState().openTab({ id, name, kind, path, text });
+  openPreviewTab(id, { name, kind, path, text });
 }
 
 async function openTrustedFile(path: string, name: string, intent: ChatOpenIntent, text?: string) {
@@ -99,6 +101,29 @@ async function openTrustedFile(path: string, name: string, intent: ChatOpenInten
   await openWithDefaultApp(path);
 }
 
+/**
+ * A real file on this machine that the file tree can open: under the
+ * workspace, or under an external root it shows (team knowledge). Those open
+ * in the same editor the file tree uses, so one file does not have two ways
+ * of opening. A downloaded attachment copy is never routed here, even though
+ * it sits in `{workspace}/output`: it is a copy, and edits would go nowhere.
+ */
+function openableInFileEditor(path: string): boolean {
+  const { workspacePath, externalTrees } = useWorkspaceStore.getState();
+  const roots = [workspacePath?.trim(), ...Object.keys(externalTrees)].filter(
+    (root): root is string => !!root,
+  );
+  return roots.some((root) => isPathAtOrUnder(path, root));
+}
+
+/** Opens `absolute` in the file editor when it qualifies; says whether it did. */
+function openInFileEditorIfLocal(absolute: string, name: string, intent: ChatOpenIntent): boolean {
+  if (intent !== "primary" && intent !== "sidebar") return false;
+  if (!supportsSidebarPreview(name) || !openableInFileEditor(absolute)) return false;
+  void useWorkspaceStore.getState().selectFile(absolute);
+  return true;
+}
+
 async function openLocalPath(input: string, intent: ChatOpenIntent) {
   if (!isTauri()) {
     notify("chat.fileOpen.desktopOnly", "在桌面端才能用系统程序打开");
@@ -113,7 +138,9 @@ async function openLocalPath(input: string, intent: ChatOpenIntent) {
     notify("chat.fileOpen.notFound", "找不到这个文件");
     return;
   }
-  await openTrustedFile(absolute, basenameOf(absolute) || absolute, intent);
+  const name = basenameOf(absolute) || absolute;
+  if (openInFileEditorIfLocal(absolute, name, intent)) return;
+  await openTrustedFile(absolute, name, intent);
 }
 
 function cacheFileName(filename: string, key: string): string {
@@ -334,6 +361,24 @@ export async function openChatAttachment(
     return;
   }
 
+  // The agent's own file, when it is on this machine: `local_path` is a path
+  // on the agent's host, so it only counts when it resolves inside this
+  // workspace and exists here. Then it opens in the editor like the file tree
+  // does, rather than as a read-only preview of the uploaded copy.
+  const local = target.localPath?.trim();
+  if (local && isTauri()) {
+    const absolute = resolveChatPath(local, currentChatRoots());
+    if (
+      absolute &&
+      supportsSidebarPreview(filename) &&
+      openableInFileEditor(absolute) &&
+      (await pathExists(absolute)) &&
+      openInFileEditorIfLocal(absolute, filename, intent)
+    ) {
+      return;
+    }
+  }
+
   const key = cacheKeyFor(target);
   const cached = await downloadedChatAttachmentPath(target);
   if (cached) {
@@ -366,9 +411,14 @@ export async function openPreviewTabFile(
   intent: ChatOpenIntent,
 ): Promise<void> {
   if (intent === "sidebar" || intent === "primary") {
-    const tab = useChatFilePreviewStore.getState().tabs.find((item) => item.path === path || item.name === name);
+    const tabs = useTabsStore.getState();
+    const tab = tabs.tabs.find((item) => {
+      if (item.type !== "preview") return false;
+      const source = previewTabSource(item.target);
+      return source ? source.path === path || source.name === name : false;
+    });
     if (tab) {
-      useChatFilePreviewStore.getState().setActive(tab.id);
+      tabs.setActiveTab(tab.id);
       return;
     }
   }

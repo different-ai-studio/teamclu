@@ -1,11 +1,31 @@
 import { create } from 'zustand'
 import { useDiagnosticsStore } from '@/stores/diagnostics-store'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { useTabsStore } from '@/stores/tabs'
 import { useTeamShareBrowserStore, type TeamShareSection } from '@/stores/team-share-browser'
 import { resolveEmbedMode } from '@/lib/embed/embed-mode'
 import { scheduleReleaseStuckModalLayers } from '@/lib/ui/modal-layer-cleanup'
 import type { PageContext } from '@/lib/embed/embed-page-context'
+import { loadFromStorage, saveToStorage } from '@/lib/config/storage'
+import { appStoragePrefix } from '@/lib/config/build-config'
+import {
+  loadUiLayoutPrefs,
+  persistUiLayoutPref,
+  reconcileUiLayoutPrefs,
+  type UiLayoutPrefKey,
+  type UiLayoutPrefs,
+} from '@/lib/config/ui-layout-prefs'
+
+const NAV_PINNED_STORAGE_KEY = `${appStoragePrefix}-nav-pinned`
+const SESSION_DRAWER_PINNED_STORAGE_KEY = `${appStoragePrefix}-session-drawer-pinned`
+
+const LAYOUT_PREF_STORAGE_KEYS: Record<UiLayoutPrefKey, string> = {
+  navPinned: NAV_PINNED_STORAGE_KEY,
+  sessionDrawerPinned: SESSION_DRAWER_PINNED_STORAGE_KEY,
+}
+
+/** Layout keys the user changed since launch: the startup restore leaves them
+ * alone, so a toggle made while the file is still being read is not undone. */
+const layoutPrefsTouched = new Set<UiLayoutPrefKey>()
 
 type View = 'chat' | 'settings'
 
@@ -21,7 +41,12 @@ function releaseStuckModalLayersAfterViewSwitch(): void {
 }
 
 type LayoutMode = 'task'
-type MainContentLayout = 'stacked' | 'split'
+/**
+ * How the content column (column four: file previews, editors, web tabs) sits
+ * next to the conversation while it has a tab showing. Hidden is not a mode:
+ * the column is hidden exactly when no tab is active (see stores/tabs).
+ */
+export type ContentColumnMode = 'half' | 'full'
 
 // Right panel tab in file mode
 type FileModeRightTab = 'shortcuts' | 'changes' | 'files' | 'agent'
@@ -61,7 +86,9 @@ interface UIState {
   embedMode: boolean
   currentView: View
   layoutMode: LayoutMode
-  mainContentLayout: MainContentLayout
+  contentColumnMode: ContentColumnMode
+  /** Share of the row the content column takes in `half` mode (0.3–0.7). */
+  contentColumnRatio: number
   fileModeRightTab: FileModeRightTab
   defaultNavTab: DefaultPrimaryTab
   defaultMoreOpen: boolean
@@ -83,6 +110,18 @@ interface UIState {
   ideasSectionCollapsed: boolean
   /** 更多 nav group (想法 / 应用 / 快捷方式 / MCP / 环境变量) is expanded. */
   moreNavExpanded: boolean
+  /**
+   * First column pinned open as the full list. Off (the default) it is the
+   * icon rail that widens on hover. Wide windows only — App ignores it below
+   * that. Persisted per install.
+   */
+  navPinned: boolean
+  /**
+   * The session drawer (files / actors / app settings) docked into column
+   * three, pushing the conversation, instead of floating over its right edge.
+   * Persisted per install.
+   */
+  sessionDrawerPinned: boolean
   /** Workspace list expanded (「管理 Workspace 列表」). */
   localDaemonExpanded: boolean
   /** Action sheet open (⋯ menu). */
@@ -109,6 +148,8 @@ interface UIState {
   toggleIdeasSection: () => void
   toggleMoreNav: () => void
   setMoreNavExpanded: (expanded: boolean) => void
+  setNavPinned: (pinned: boolean) => void
+  setSessionDrawerPinned: (pinned: boolean) => void
   toggleLocalDaemon: () => void
   toggleLocalDaemonSheet: () => void
   setLocalDaemonSheetOpen: (open: boolean) => void
@@ -134,7 +175,8 @@ interface UIState {
   closeSettings: () => void
   setLayoutMode: (mode: LayoutMode) => void
   toggleLayoutMode: () => void
-  toggleMainContentLayout: () => void
+  setContentColumnMode: (mode: ContentColumnMode) => void
+  setContentColumnRatio: (ratio: number) => void
   setFileModeRightTab: (tab: FileModeRightTab) => void
   startNewChat: () => void
   /** Incremented to request focus on the chat composer (e.g. after quick new session). */
@@ -160,7 +202,8 @@ export const useUIStore = create<UIState>((set, get) => ({
       : import.meta.env.VITE_FORCE_EMBED === 'chat',
   currentView: 'chat',
   layoutMode: 'task',
-  mainContentLayout: 'stacked',
+  contentColumnMode: 'half',
+  contentColumnRatio: 0.5,
   fileModeRightTab: 'agent',
   defaultNavTab: 'session',
   defaultMoreOpen: false,
@@ -172,6 +215,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   sidebarFilter: { kind: 'all' },
   ideasSectionCollapsed: false,
   moreNavExpanded: false,
+  navPinned: loadFromStorage<boolean>(NAV_PINNED_STORAGE_KEY, false),
+  sessionDrawerPinned: loadFromStorage<boolean>(SESSION_DRAWER_PINNED_STORAGE_KEY, false),
   localDaemonExpanded: false,
   localDaemonSheetOpen: false,
   narrowListSheetOpen: false,
@@ -290,7 +335,8 @@ export const useUIStore = create<UIState>((set, get) => ({
     })
     useWorkspaceStore.getState().clearSelection()
     useWorkspaceStore.getState().closePanel()
-    useTabsStore.getState().hideAll()
+    // No hideAll: column four's tabs are one set for the whole app, not tied
+    // to a session, so they stay open for the new chat.
     useTeamShareBrowserStore.getState().clearDetail()
 
     // Import session and other stores lazily to avoid circular dependencies
@@ -321,7 +367,6 @@ export const useUIStore = create<UIState>((set, get) => ({
     // Import stores lazily to avoid circular dependencies
     const { useSessionSelectionStore } = await import('@/stores/session-selection-store')
     const { useWorkspaceStore } = await import('@/stores/workspace')
-    const { useTabsStore } = await import('@/stores/tabs')
     const { useCurrentTeamStore } = await import('@/stores/current-team')
     const { switchToSessionWorkspaceIfNeeded } = await import('@/lib/session/session-by-workspace')
     
@@ -351,7 +396,6 @@ export const useUIStore = create<UIState>((set, get) => ({
       })
       releaseStuckModalLayersAfterViewSwitch()
       useWorkspaceStore.getState().clearSelection()
-      useTabsStore.getState().hideAll()
       resolveWorkspaceInBackground()
       return
     }
@@ -370,7 +414,6 @@ export const useUIStore = create<UIState>((set, get) => ({
     // a manual close. Run the same cleanup the Dialog's close path would.
     releaseStuckModalLayersAfterViewSwitch()
     useWorkspaceStore.getState().clearSelection()
-    useTabsStore.getState().hideAll()
 
     // Switch to the session. setActiveSession flips the selection state
     // synchronously; its read-marker network write runs in the background, so we
@@ -394,7 +437,6 @@ export const useUIStore = create<UIState>((set, get) => ({
       daemonGeneralPrompt: null,
       sidebarFilter: { kind: 'all' },
     })
-    useTabsStore.getState().hideAll()
     // Mirror startNewChat's clear-out so the chat view shows an empty
     // canvas with the preselected actor as the implicit recipient. We
     // dynamic-import to avoid a top-level cycle with session/workspace stores.
@@ -418,19 +460,24 @@ export const useUIStore = create<UIState>((set, get) => ({
   clearActorDraft: () => set({ draftPreselectedActor: null }),
 
   setNarrowListSheetOpen: (open) => set({ narrowListSheetOpen: open }),
-  setSidebarFilter: (filter) => {
-    const current = get().sidebarFilter
-    const isLeavingKnowledge =
-      current.kind === 'teamShare' &&
-      current.section === 'knowledge' &&
-      !(filter.kind === 'teamShare' && filter.section === 'knowledge')
-
-    if (isLeavingKnowledge) useTabsStore.getState().hideAll()
-    set({ sidebarFilter: filter })
-  },
+  // Leaving a section needs no tab cleanup here: column four's tabs are one
+  // set for the whole app, shown beside the chat and in every section alike.
+  setSidebarFilter: (filter) => set({ sidebarFilter: filter }),
   toggleIdeasSection: () => set((s) => ({ ideasSectionCollapsed: !s.ideasSectionCollapsed })),
   toggleMoreNav: () => set((s) => ({ moreNavExpanded: !s.moreNavExpanded })),
   setMoreNavExpanded: (expanded) => set({ moreNavExpanded: expanded }),
+  setNavPinned: (pinned) => {
+    layoutPrefsTouched.add('navPinned')
+    saveToStorage(NAV_PINNED_STORAGE_KEY, pinned)
+    persistUiLayoutPref('navPinned', pinned)
+    set({ navPinned: pinned })
+  },
+  setSessionDrawerPinned: (pinned) => {
+    layoutPrefsTouched.add('sessionDrawerPinned')
+    saveToStorage(SESSION_DRAWER_PINNED_STORAGE_KEY, pinned)
+    persistUiLayoutPref('sessionDrawerPinned', pinned)
+    set({ sessionDrawerPinned: pinned })
+  },
   toggleLocalDaemon: () => set((s) => ({ localDaemonExpanded: !s.localDaemonExpanded })),
   toggleLocalDaemonSheet: () => set((s) => ({ localDaemonSheetOpen: !s.localDaemonSheetOpen })),
   setLocalDaemonSheetOpen: (open) => set({ localDaemonSheetOpen: open }),
@@ -459,9 +506,32 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   toggleLayoutMode: () => set({ layoutMode: 'task' }),
 
-  toggleMainContentLayout: () => set((state) => ({
-    mainContentLayout: state.mainContentLayout === 'stacked' ? 'split' : 'stacked'
-  })),
+  setContentColumnMode: (mode) => set({ contentColumnMode: mode }),
+  setContentColumnRatio: (ratio) =>
+    set({ contentColumnRatio: Math.min(0.7, Math.max(0.3, ratio)) }),
 
   setFileModeRightTab: (tab) => set({ fileModeRightTab: tab }),
 }))
+
+/**
+ * Restores the layout switches from the desktop shell's file, which outlives
+ * localStorage across updates and reinstalls. Runs once at startup.
+ */
+export async function restoreUiLayoutPrefs(): Promise<void> {
+  const file = await loadUiLayoutPrefs()
+  if (!file) return
+  const { navPinned, sessionDrawerPinned } = useUIStore.getState()
+  const { apply, backfill } = reconcileUiLayoutPrefs(file, { navPinned, sessionDrawerPinned })
+  const patch: UiLayoutPrefs = {}
+  for (const [key, value] of Object.entries(apply) as [UiLayoutPrefKey, boolean][]) {
+    if (layoutPrefsTouched.has(key)) continue
+    saveToStorage(LAYOUT_PREF_STORAGE_KEYS[key], value)
+    patch[key] = value
+  }
+  if (Object.keys(patch).length > 0) useUIStore.setState(patch)
+  for (const [key, value] of Object.entries(backfill) as [UiLayoutPrefKey, boolean][]) {
+    if (!layoutPrefsTouched.has(key)) persistUiLayoutPref(key, value)
+  }
+}
+
+void restoreUiLayoutPrefs()

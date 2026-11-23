@@ -34,18 +34,32 @@ import { SessionSearchDialog } from "@/components/sidebar/session-search-dialog"
 import { SessionDetailDialog, type SessionDetailListHints } from "@/components/sidebar/SessionDetailDialog"
 import { NavRail } from "@/components/sidebar/NavRail"
 import { LocalDaemonCard } from "@/components/sidebar/LocalDaemonCard"
+import { RailLocalDaemonEntry } from "@/components/sidebar/RailLocalDaemonEntry"
 import { SIDEBAR_INTERACTIVE_CURSOR } from "@/components/sidebar/sidebar-interactive-cursor"
 import { useMqttConnected } from "@/hooks/use-mqtt-connected"
 import { recoverMqttConnection } from "@/stores/mqtt-reconnect"
+import {
+  NavRailModeContext,
+  isRailMode,
+  useNavRailMode,
+  type NavRailMode,
+} from "@/components/sidebar/nav-rail-mode"
+import { useLayoutBreakpoint } from "@/hooks/use-layout-breakpoint"
 
 /** Sidebar collapse / expand control (sidebar header, and second-column headers while the sidebar is collapsed or a drawer). */
 export function SidebarCollapseToggle({ className }: { className?: string }) {
   const { t } = useTranslation()
   const { toggleSidebar, isMobile, openMobile, open, hasSidebar } = useSidebar()
   const expanded = isMobile ? openMobile : open
-  const label = expanded
-    ? t("navigation.collapseSidebar", "Collapse sidebar")
-    : t("navigation.expandSidebar", "Expand sidebar")
+  // Inline, closing the sidebar narrows it to the icon rail rather than hiding
+  // it, so the two directions are "back to the rail" and "keep it open".
+  const label = isMobile
+    ? expanded
+      ? t("navigation.collapseSidebar", "Collapse sidebar")
+      : t("navigation.expandSidebar", "Expand sidebar")
+    : expanded
+      ? t("navigation.collapseToRail", "Collapse to icons")
+      : t("navigation.pinSidebar", "Keep sidebar open")
   if (!hasSidebar) return null
   return (
     <Button
@@ -228,7 +242,7 @@ function SidebarUserAccountMenu() {
   const appMqttDown = appMqttConnected === false
   const { actors: directoryActors } = useActorDirectory()
   const [failedAvatarUrls, setFailedAvatarUrls] = React.useState<string[]>([])
-
+  const rail = isRailMode(useNavRailMode())
 
   if (!authSession) return null
 
@@ -267,19 +281,25 @@ function SidebarUserAccountMenu() {
         <Button
           variant="ghost"
           size="sm"
-          className="h-8 min-w-0 shrink max-w-full gap-1.5 rounded-lg px-2 text-[12px] text-ink-2 hover:bg-black/[0.04] hover:text-foreground"
+          className={cn(
+            "min-w-0 rounded-lg text-ink-2 hover:bg-black/[0.04] hover:text-foreground",
+            rail
+              ? "h-8 w-full justify-center px-0"
+              : "h-8 shrink max-w-full gap-1.5 px-2 text-[12px]",
+          )}
+          title={rail ? userName : undefined}
           data-testid="sidebar-user-menu-trigger"
         >
-          <span className="relative flex h-4 w-4 shrink-0">
+          <span className={cn("relative flex shrink-0", rail ? "h-5 w-5" : "h-4 w-4")}>
             {avatarUrl ? (
               <img
                 src={avatarUrl}
                 alt=""
-                className="h-4 w-4 rounded-full object-cover"
+                className="h-full w-full rounded-full object-cover"
                 onError={() => setFailedAvatarUrls((urls) => [...urls, avatarUrl])}
               />
             ) : (
-              <div className="flex h-4 w-4 items-center justify-center rounded-full bg-muted text-[9px] font-medium text-foreground">
+              <div className="flex h-full w-full items-center justify-center rounded-full bg-muted text-[9px] font-medium text-foreground">
                 {(userName?.[0] || "?").toUpperCase()}
               </div>
             )}
@@ -292,11 +312,20 @@ function SidebarUserAccountMenu() {
               />
             ) : null}
           </span>
-          <span className="min-w-0 truncate">{userName}</span>
-          <ChevronUp className="h-3.5 w-3.5 shrink-0" />
+          <span className={rail ? "sr-only" : "min-w-0 truncate"}>{userName}</span>
+          {rail ? null : <ChevronUp className="h-3.5 w-3.5 shrink-0" />}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" side="top" className="w-72 p-2">
+      {/* Opens beside the sidebar, bottom-aligned with the trigger, rather
+          than over the sidebar — on the rail and in the full list alike. The
+          offset clears the footer's inset (6px on the rail, 10px in the list)
+          so the menu starts the same 6px past the sidebar's edge in both. */}
+      <DropdownMenuContent
+        align="end"
+        side="right"
+        sideOffset={rail ? 12 : 16}
+        className="w-72 p-2"
+      >
         <DropdownMenuLabel className="px-2 py-1">
           <div className="truncate text-[13px] font-semibold text-foreground">{userName}</div>
           {currentMember?.role && (
@@ -413,6 +442,15 @@ export function AppSidebar({
   useCloseDrawerOnNavigate(onPickSection)
   const sessionActivityMap = useSessionListActivityMap(activeSessionId)
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
+  const { open, isMobile, toggleSidebar } = useSidebar()
+  // Pinning open is a wide-window affordance: on a medium window the full list
+  // would leave the chat too little room, so it stays a rail there.
+  const canPin = useLayoutBreakpoint() === "wide"
+  // Unpinned on a desktop window, the first column is a fixed rail of tiles —
+  // icon over label — so every destination is readable without hovering.
+  const rail = !isMobile && !open
+  const mode: NavRailMode = rail ? "rail" : "list"
+  const pinLabel = t("navigation.pinSidebar", "Keep sidebar open")
 
   const [detailSessionId, setDetailSessionId] = React.useState<string | null>(null)
   const [detailHints, setDetailHints] = React.useState<SessionDetailListHints | null>(null)
@@ -423,8 +461,19 @@ export function AppSidebar({
     useUIStore.getState().switchToSession(id)
   }
 
+  const settingsLabel = t('common.settings', 'Settings')
+
   return (
-    <Sidebar variant="sidebar" className={cn(SIDEBAR_INTERACTIVE_CURSOR, className)} {...props}>
+    <Sidebar
+      variant="sidebar"
+      collapsible="icon"
+      className={cn(
+        SIDEBAR_INTERACTIVE_CURSOR,
+        className,
+      )}
+      data-nav-mode={mode}
+      {...props}
+    >
       <SessionDetailDialog
         sessionId={detailSessionId}
         teamId={teamId}
@@ -439,7 +488,8 @@ export function AppSidebar({
         }}
         onOpenSession={handleSelectSession}
       />
-      <div className="flex h-full flex-col">
+      <NavRailModeContext.Provider value={mode}>
+      <div className="flex h-full flex-col overflow-hidden">
         {/* Header: custom traffic lights (Tauri) or spacer + icon group */}
         <SidebarHeader
           className="flex-row items-center h-12 shrink-0 px-2 pt-0 pb-0"
@@ -448,13 +498,47 @@ export function AppSidebar({
           <TrafficLights />
           {/* Flexible drag region */}
           <div className="flex-1" data-tauri-drag-region />
-          <SidebarCollapseToggle />
+          {/* The traffic lights fill the collapsed rail's header, so the pin
+              control only shows once the rail has widened. */}
+          {!rail && (canPin || isMobile) ? <SidebarCollapseToggle /> : null}
         </SidebarHeader>
 
         <SidebarContent className="overflow-hidden">
           <NavRail />
         </SidebarContent>
 
+        {rail ? (
+          <SidebarFooter className="gap-0.5 px-1.5 pb-3 pt-1">
+            {/* Icons only down here, stacked tight: settings and the account
+                are found by their glyphs, and the room goes to the
+                destinations above. The traffic lights fill the rail's header,
+                so the control that pins the full sidebar open lives here. */}
+            {canPin ? (
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                title={pinLabel}
+                aria-label={pinLabel}
+                className="flex h-8 w-full items-center justify-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-black/[0.04] hover:text-foreground"
+              >
+                <PanelLeftIcon className="h-4 w-4" />
+              </button>
+            ) : null}
+            {/* The team card has no room on the rail; its agent sits here and
+                opens the card on click. */}
+            <RailLocalDaemonEntry />
+            <button
+              type="button"
+              onClick={() => openSettings()}
+              title={settingsLabel}
+              aria-label={settingsLabel}
+              className="flex h-8 w-full items-center justify-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-black/[0.04] hover:text-foreground"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+            <SidebarUserAccountMenu />
+          </SidebarFooter>
+        ) : (
         <SidebarFooter className="gap-2 px-2.5 pb-2 pt-1">
           <LocalDaemonCard />
 
@@ -466,7 +550,7 @@ export function AppSidebar({
                 onClick={() => openSettings()}
               >
                 <Settings className="h-3.5 w-3.5 shrink-0" />
-                {t('common.settings', 'Settings')}
+                {settingsLabel}
               </Button>
               <div className="min-w-0 overflow-hidden">
                 <SidebarUserAccountMenu />
@@ -474,7 +558,9 @@ export function AppSidebar({
             </div>
 
         </SidebarFooter>
+        )}
       </div>
+      </NavRailModeContext.Provider>
     </Sidebar>
   )
 }

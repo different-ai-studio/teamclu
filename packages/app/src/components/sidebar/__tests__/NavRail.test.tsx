@@ -5,6 +5,7 @@ import { useUIStore } from '@/stores/ui'
 import { useSessionStore } from '@/stores/session-store'
 import { useSessionListStore } from '@/stores/session-list-store'
 import { useCronStore } from '@/stores/cron'
+import { NavRailModeContext } from '@/components/sidebar/nav-rail-mode'
 
 const mkListRow = (id: string, title: string) => ({
   id,
@@ -150,5 +151,29 @@ describe('NavRail', () => {
     render(<NavRail />)
     expect(screen.getByTestId('apps-nav-section')).toBeInTheDocument()
     expect(useUIStore.getState().moreNavExpanded).toBe(false)
+  })
+
+  describe('on the collapsed rail', () => {
+    const renderRail = () =>
+      render(
+        <NavRailModeContext.Provider value="rail">
+          <NavRail />
+        </NavRailModeContext.Provider>,
+      )
+
+    it('folds the 更多 destinations behind a 更多 tile', () => {
+      renderRail()
+      expect(screen.getByRole('button', { name: /更多|More/ })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /快捷方式|Shortcuts/ })).toBeNull()
+      expect(screen.queryByRole('button', { name: /MCP/ })).toBeNull()
+    })
+
+    it('opens them beside the rail, and picking one sets the filter', () => {
+      renderRail()
+      fireEvent.click(screen.getByRole('button', { name: /更多|More/ }))
+      expect(screen.getByRole('button', { name: /知识库|Knowledge/ })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: /快捷方式|Shortcuts/ }))
+      expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'shortcuts' })
+    })
   })
 })

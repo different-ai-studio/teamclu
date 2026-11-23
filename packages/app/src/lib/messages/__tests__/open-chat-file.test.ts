@@ -8,13 +8,16 @@ const { openWithDefaultApp, attachmentPathExists, fetchAgentReplyAttachmentBytes
   }),
   toastError: vi.fn(),
 }));
+const { selectFile } = vi.hoisted(() => ({ selectFile: vi.fn(async () => undefined) }));
 
 vi.mock("sonner", () => ({ toast: { error: (...args: unknown[]) => toastError(...args) } }));
 vi.mock("@/lib/i18n", () => ({ default: { t: (_key: string, fallback?: string) => fallback ?? _key } }));
 vi.mock("@/lib/utils", () => ({ isTauri: () => true, openExternalUrl: vi.fn() }));
 vi.mock("@/lib/fs-scope", () => ({ allowFsScopeDirs: vi.fn(async () => undefined) }));
 vi.mock("@/stores/workspace", () => ({
-  useWorkspaceStore: { getState: () => ({ workspacePath: "C:/repo" }) },
+  useWorkspaceStore: {
+    getState: () => ({ workspacePath: "C:/repo", externalTrees: {}, selectFile }),
+  },
 }));
 vi.mock("@/stores/session-store", () => ({
   useSessionStore: { getState: () => ({ activeSessionId: null }) },
@@ -36,7 +39,7 @@ vi.mock("@/components/workspace/file-tree-operations", () => ({
   revealInFileManager: vi.fn(),
 }));
 
-import { openChatAttachment } from "@/lib/messages/open-chat-file";
+import { openChatAttachment, openChatHref } from "@/lib/messages/open-chat-file";
 
 describe("openChatAttachment", () => {
   beforeEach(() => {
@@ -45,6 +48,7 @@ describe("openChatAttachment", () => {
     fetchAgentReplyAttachmentBytes.mockClear();
     attachmentPathExists.mockReset();
     attachmentPathExists.mockResolvedValue(true);
+    selectFile.mockClear();
   });
 
   it("opens a local-only attachment that sits in the workspace", async () => {
@@ -72,5 +76,51 @@ describe("openChatAttachment", () => {
     expect(fetchAgentReplyAttachmentBytes).toHaveBeenCalled();
     expect(openWithDefaultApp).not.toHaveBeenCalled();
     expect(toastError).toHaveBeenCalledWith("下载失败");
+  });
+
+  it("opens the agent's own markdown in the file editor when it is on this machine", async () => {
+    await openChatAttachment({
+      filename: "poem.md",
+      url: "https://cdn.example/poem.md",
+      localPath: "C:/repo/output/poem.md",
+    });
+
+    expect(selectFile).toHaveBeenCalledWith("C:/repo/output/poem.md");
+    expect(fetchAgentReplyAttachmentBytes).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the uploaded copy when the agent's path is not on this machine", async () => {
+    attachmentPathExists.mockResolvedValue(false);
+    await openChatAttachment({
+      filename: "poem.md",
+      url: "https://cdn.example/poem.md",
+      localPath: "C:/repo/output/poem.md",
+    });
+
+    expect(selectFile).not.toHaveBeenCalled();
+    expect(fetchAgentReplyAttachmentBytes).toHaveBeenCalled();
+  });
+
+  it("keeps the default-app choice on the uploaded copy", async () => {
+    await openChatAttachment(
+      { filename: "poem.md", url: "https://cdn.example/poem.md", localPath: "C:/repo/poem.md" },
+      "default-app",
+    );
+
+    expect(selectFile).not.toHaveBeenCalled();
+    expect(fetchAgentReplyAttachmentBytes).toHaveBeenCalled();
+  });
+});
+
+describe("openChatHref", () => {
+  beforeEach(() => {
+    selectFile.mockClear();
+    attachmentPathExists.mockReset();
+    attachmentPathExists.mockResolvedValue(true);
+  });
+
+  it("opens a workspace markdown link in the file editor", async () => {
+    await openChatHref("C:/repo/docs/plan.md");
+    expect(selectFile).toHaveBeenCalledWith("C:/repo/docs/plan.md");
   });
 });

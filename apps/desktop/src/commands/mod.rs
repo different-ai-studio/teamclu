@@ -38,6 +38,7 @@ pub mod team_share;
 pub mod team_skills;
 pub mod team_sync_proxy;
 pub mod tray_menu;
+pub mod ui_layout_prefs;
 pub mod updater;
 pub mod voice_input;
 pub mod webview;

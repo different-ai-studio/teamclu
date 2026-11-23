@@ -634,13 +634,13 @@
     }
   },
   "navigation": {
-    "shortcuts": "Shortcuts",
     "files": "Files",
     "filesUnavailableRemoteAgent": "This session's agent runs on {{agents}}, so its files are not on this machine. Switching to this machine's agent keeps the chat history but not those files.",
-    "hideTabs": "Hide files",
     "restoreTabs": "Show files",
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
+    "collapseToRail": "Collapse to icons",
+    "pinSidebar": "Keep sidebar open",
     "settings": "Settings"
   },
   "chat": {
@@ -1168,11 +1168,6 @@
       "openWithDefaultApp": "Open with default app",
       "download": "Download",
       "reveal": "Show in folder",
-      "panel": "Reading panel",
-      "collapse": "Collapse reading panel",
-      "expand": "Expand reading panel",
-      "resize": "Drag to resize",
-      "closeTab": "Close {{name}}",
       "notFound": "File not found",
       "readFailed": "Could not read this file",
       "outsideWorkspace": "This path is outside the current session",
@@ -3746,9 +3741,7 @@
   "shortcuts": {
     "personal": "Personal",
     "team": "Team",
-    "refreshTeam": "Refresh Team Shortcuts",
-    "configurePersonal": "Configure Personal Shortcuts",
-    "backToSidebar": "Back to sidebar"
+    "refreshTeam": "Refresh Team Shortcuts"
   },
   "diff": {
     "agentActions": "Agent Actions",
@@ -4097,6 +4090,20 @@
     "loadFailed": "Failed to load page",
     "retry": "Retry",
     "openInBrowser": "Open in browser"
+  },
+  "contentColumn": {
+    "half": "Half width",
+    "full": "Full width",
+    "hide": "Hide",
+    "resize": "Drag to resize"
+  },
+  "sectionDetail": {
+    "knowledgeEmpty": "Pick a document on the left to open it here.",
+    "shortcutsEmpty": "Pick a shortcut on the left to open it here."
+  },
+  "sessionDrawer": {
+    "pin": "Dock beside the conversation",
+    "unpin": "Float over the conversation"
   },
   "tabBar": {
     "closeAria": "Close tab",

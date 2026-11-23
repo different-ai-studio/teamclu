@@ -1,6 +1,8 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Inbox, Lightbulb, Keyboard, ChevronDown } from 'lucide-react'
+import { Inbox, Lightbulb, Keyboard, ChevronDown, MoreHorizontal } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { useRailPopover } from '@/components/sidebar/use-rail-popover'
 import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
 import {
@@ -32,6 +34,15 @@ import { useFeatures } from '@/lib/config/remote-features'
 import { cn } from '@/lib/utils'
 import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
 import { MentionSignal, UnreadSignal } from '@/components/sidebar/session-attention-signal'
+import {
+  isRailMode,
+  navRowBox,
+  navRowIcon,
+  navRowLabel,
+  navRowSignal,
+  NavRailModeContext,
+  useNavRailMode,
+} from '@/components/sidebar/nav-rail-mode'
 
 interface TopEntryProps {
   label: string
@@ -43,28 +54,81 @@ interface TopEntryProps {
 }
 
 function TopEntry({ label, icon: Icon, active, signal, onClick }: TopEntryProps) {
+  const mode = useNavRailMode()
   return (
     <button
       type="button"
       onClick={onClick}
+      title={mode === 'rail' ? label : undefined}
       className={cn(
-        'flex w-full items-center gap-2.5 rounded-lg px-[9px] py-[7px] text-left text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]',
+        'flex w-full items-center gap-2.5 rounded-lg text-left text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]',
+        navRowBox(mode),
         active
           ? 'bg-paper font-semibold text-foreground shadow-[0_1px_2px_rgba(28,27,25,0.04)] ring-1 ring-black/[0.05]'
           : 'font-normal text-ink-2 hover:bg-black/[0.04]',
       )}
     >
       <Icon
-        className={cn('h-[15px] w-[15px] shrink-0', active ? 'text-foreground' : 'text-muted-foreground')}
+        className={cn(navRowIcon(mode), active ? 'text-foreground' : 'text-muted-foreground')}
       />
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {signal ? <span className={NAV_ROW_TRAILING_SLOT}>{signal}</span> : null}
+      <span className={navRowLabel(mode)}>{label}</span>
+      {signal ? <span className={cn(NAV_ROW_TRAILING_SLOT, navRowSignal(mode))}>{signal}</span> : null}
     </button>
+  )
+}
+
+/**
+ * The 更多 tile on the rail. Clicking it opens the folded destinations to its
+ * right as list rows; picking one closes it. The tile is
+ * marked active while one of them is the open section, since its row is not
+ * on the rail to show that.
+ */
+function RailMoreEntry({ active, children }: { active: boolean; children: React.ReactNode }) {
+  const { t } = useTranslation()
+  const { open, onOpenChange, contentProps } = useRailPopover()
+
+  const label = t('sidebar.more', 'More')
+  const mode = useNavRailMode()
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'flex w-full shrink-0 items-center rounded-lg text-[13px] transition-[background-color,box-shadow,color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]',
+            navRowBox(mode),
+            active
+              ? 'bg-paper font-semibold text-foreground shadow-[0_1px_2px_rgba(28,27,25,0.04)] ring-1 ring-black/[0.05]'
+              : open
+                ? 'bg-black/[0.04] font-normal text-ink-2'
+                : 'font-normal text-ink-2 hover:bg-black/[0.04]',
+          )}
+        >
+          <MoreHorizontal
+            className={cn(navRowIcon(mode), active ? 'text-foreground' : 'text-muted-foreground')}
+          />
+          <span className={navRowLabel(mode)}>{label}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="right"
+        align="start"
+        sideOffset={12}
+        {...contentProps}
+        className="w-[200px] rounded-xl border-black/[0.06] bg-sidebar p-1.5 shadow-[0_8px_24px_-8px_rgba(28,27,25,0.22)]"
+      >
+        <NavRailModeContext.Provider value="list">
+          <div className="flex flex-col gap-0.5">{children}</div>
+        </NavRailModeContext.Provider>
+      </PopoverContent>
+    </Popover>
   )
 }
 
 export function NavRail() {
   const { t } = useTranslation()
+  const mode = useNavRailMode()
+  const rail = isRailMode(mode)
   const features = useFeatures()
   const embedMode = useUIStore((s) => s.embedMode)
   const filter = useUIStore((s) => s.sidebarFilter)
@@ -166,8 +230,31 @@ export function NavRail() {
     return () => document.removeEventListener('keydown', down)
   }, [handleQuickNewChat])
 
+  const moreRows = (
+    <>
+      <TeamShareNavSection sections={['knowledge']} />
+      {!embedMode ? (
+        <TopEntry
+          label={t('sidebar.ideas', 'Ideas')}
+          icon={Lightbulb}
+          active={filter.kind === 'ideas'}
+          onClick={() => setFilter({ kind: 'ideas' })}
+        />
+      ) : null}
+      {!embedMode ? (
+        <TopEntry
+          label={t('common.shortcuts', 'Shortcuts')}
+          icon={Keyboard}
+          active={filter.kind === 'shortcuts'}
+          onClick={() => setFilter({ kind: 'shortcuts' })}
+        />
+      ) : null}
+      <TeamShareNavSection sections={['mcp', 'env']} />
+    </>
+  )
+
   return (
-    <div className="flex h-full w-full min-w-0 flex-col gap-2.5 overflow-hidden px-2.5 pt-0 pb-3">
+    <div className={cn('flex h-full w-full min-w-0 flex-col gap-2.5 overflow-hidden pt-0 pb-3', rail ? 'px-1.5' : 'px-2.5')}>
       <NewChatSplitButton
         quickChatState={quickChatState}
         creating={creating}
@@ -190,8 +277,13 @@ export function NavRail() {
         <ContactsNavEntry />
         <TeamShareNavSection sections={['skills']} />
         {features.apps && <AppsNavSection />}
+        {/* The rail has no room to unfold a group in place. 更多 is one more
+            tile; resting on it opens the folded destinations beside the rail,
+            drawn as the list draws them. */}
+        {rail ? <RailMoreEntry active={moreFilterActive}>{moreRows}</RailMoreEntry> : null}
       </div>
 
+      {rail ? null : (
       <div className="flex min-h-0 flex-1 flex-col">
         {/*
           A rule with the label floated in it, rather than another left-aligned
@@ -229,27 +321,11 @@ export function NavRail() {
             overflow-hidden. */}
         {moreExpanded && (
           <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto overflow-x-hidden">
-            <TeamShareNavSection sections={['knowledge']} />
-            {!embedMode ? (
-              <TopEntry
-                label={t('sidebar.ideas', 'Ideas')}
-                icon={Lightbulb}
-                active={filter.kind === 'ideas'}
-                onClick={() => setFilter({ kind: 'ideas' })}
-              />
-            ) : null}
-            {!embedMode ? (
-              <TopEntry
-                label={t('common.shortcuts', 'Shortcuts')}
-                icon={Keyboard}
-                active={filter.kind === 'shortcuts'}
-                onClick={() => setFilter({ kind: 'shortcuts' })}
-              />
-            ) : null}
-            <TeamShareNavSection sections={['mcp', 'env']} />
+            {moreRows}
           </div>
         )}
       </div>
+      )}
     </div>
   )
 }

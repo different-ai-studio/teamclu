@@ -22,13 +22,14 @@ import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
  * Self-contained: it resolves the local daemon actor itself and owns the
  * detail dialog and copy handlers.
  */
-export function LocalDaemonCard() {
-  const { t } = useTranslation()
+/**
+ * The local daemon agent and its runtime status, resolved once for whatever
+ * shows it: the card in the full sidebar, the mark on the collapsed rail.
+ */
+export function useLocalDaemonAgent() {
   const absent = useLocalAgentAbsent()
   const { actors, refetch, teamId } = useActorDirectory()
   const defaultAgentId = useMemberPreferencesStore((s) => s.defaultAgentId)
-
-  const [detailFor, setDetailFor] = React.useState<ActorRow | null>(null)
 
   const [localDaemonAgentId, setLocalDaemonAgentId] = React.useState<string | null>(null)
   React.useEffect(() => {
@@ -51,14 +52,25 @@ export function LocalDaemonCard() {
     return () => { cancelled = true }
   }, [teamId, actors])
 
-  const localDaemonActor = React.useMemo(
+  const actor = React.useMemo(
     () => actors.find((a) => a.id === localDaemonAgentId) ?? null,
     [actors, localDaemonAgentId],
   )
-  const runtimeStatus = useLocalDaemonRuntimeStatus(
-    localDaemonActor?.id ?? null,
-    !!localDaemonActor,
-  )
+  const runtimeStatus = useLocalDaemonRuntimeStatus(actor?.id ?? null, !!actor)
+  return { absent, actor, runtimeStatus, teamId, refetch, defaultAgentId }
+}
+
+export function LocalDaemonCard() {
+  const { t } = useTranslation()
+  const {
+    absent,
+    actor: localDaemonActor,
+    runtimeStatus,
+    teamId,
+    refetch,
+    defaultAgentId,
+  } = useLocalDaemonAgent()
+  const [detailFor, setDetailFor] = React.useState<ActorRow | null>(null)
   const daemonMqttDisconnected = runtimeStatus === 'daemonMqttDisconnected'
   const tokenUsage = useLocalDaemonTokenUsage(teamId, localDaemonActor?.id ?? null)
 
