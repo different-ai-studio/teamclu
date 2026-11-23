@@ -6,7 +6,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { BookOpen } from "lucide-react";
+import { BookOpen, Keyboard } from "lucide-react";
 import { lazyNamed } from "@/lib/lazy-component";
 import { PaneLoading } from "@/components/ui/pane-loading";
 import { teamShareSectionForTarget } from "@/lib/tabs/teamshare-target";
@@ -26,17 +26,24 @@ const ActorsDetailColumn = lazyNamed(
   "ActorsDetailColumn",
 );
 
-function KnowledgeEmptyState() {
+/** Knowledge and shortcuts open in column four; until one is, this says so. */
+function ContentColumnEmptyState({ section }: { section: "knowledge" | "shortcuts" }) {
   const { t } = useTranslation();
   return (
     <div
       className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center"
       data-tauri-drag-region
-      data-testid="knowledge-empty-state"
+      data-testid={`${section}-empty-state`}
     >
-      <BookOpen className="h-5 w-5 text-faint" />
+      {section === "knowledge" ? (
+        <BookOpen className="h-5 w-5 text-faint" />
+      ) : (
+        <Keyboard className="h-5 w-5 text-faint" />
+      )}
       <p className="text-[12.5px] text-muted-foreground">
-        {t("sectionDetail.knowledgeEmpty", "Pick a document on the left to open it here.")}
+        {section === "knowledge"
+          ? t("sectionDetail.knowledgeEmpty", "Pick a document on the left to open it here.")
+          : t("sectionDetail.shortcutsEmpty", "Pick a shortcut on the left to open it here.")}
       </p>
     </div>
   );
@@ -46,8 +53,8 @@ export function SectionDetailColumn({ section }: { section: SectionMode }) {
   const teamShareDetail = useTeamShareBrowserStore((s) => s.detailTarget);
 
   let body: React.ReactNode;
-  if (section === "knowledge") {
-    body = <KnowledgeEmptyState />;
+  if (section === "knowledge" || section === "shortcuts") {
+    body = <ContentColumnEmptyState section={section} />;
   } else if (section === "ideas") {
     body = <IdeasDetailColumn />;
   } else if (section === "actors") {

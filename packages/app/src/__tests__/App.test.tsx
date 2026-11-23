@@ -217,7 +217,6 @@ vi.mock('@/stores/tabs', () => ({
   selectActiveTab: () => tabsStoreState.activeTab,
   selectHasHiddenTabs: (_s: any) =>
     tabsStoreState.tabs.length > 0 && tabsStoreState.activeTabId === null,
-  CHAT_TAB_SCOPE: '__chat__',
 }))
 vi.mock('@/stores/team-share-browser', () => ({
   useTeamShareBrowserStore: vi.fn((sel: (s: any) => any) => sel(teamShareBrowserState)),
@@ -466,5 +465,30 @@ describe('App', () => {
     render(<App />)
 
     expect(screen.getByTestId('knowledge-empty-state')).toBeInTheDocument()
+  })
+
+  it('opens a shortcut page in place of the conversation', () => {
+    workspaceStoreState.workspacePath = '/workspace'
+    uiStoreState.sidebarFilter = { kind: 'shortcuts' }
+    tabsStoreState.activeTab = { id: 'tab-1', type: 'file', target: '/workspace/notes.md' }
+    tabsStoreState.tabs = [tabsStoreState.activeTab]
+    tabsStoreState.activeTabId = 'tab-1'
+
+    render(<App />)
+
+    expect(screen.getByTestId('content-column')).toBeInTheDocument()
+    expect(screen.queryByTestId('section-detail')).toBeNull()
+    expect(screen.queryByTestId('content-column-resize')).toBeNull()
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
+  })
+
+  it('prompts for a shortcut until one is open, with the conversation hidden', () => {
+    workspaceStoreState.workspacePath = '/workspace'
+    uiStoreState.sidebarFilter = { kind: 'shortcuts' }
+
+    render(<App />)
+
+    expect(screen.getByTestId('shortcuts-empty-state')).toBeInTheDocument()
+    expect(screen.getByTestId('chat-panel').closest('.hidden')).not.toBeNull()
   })
 })

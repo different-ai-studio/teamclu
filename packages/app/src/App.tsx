@@ -33,9 +33,8 @@ import {
   useContentColumnVisible,
   useEffectiveContentColumnMode,
 } from "@/components/content-column/ContentColumn";
-import { useSectionScopedTabs } from "@/hooks/use-section-scoped-tabs";
 import { SectionDetailColumn } from "@/components/content-column/SectionDetailColumn";
-import { useSectionMode } from "@/lib/layout/section-mode";
+import { sectionOpensInContentColumn, useSectionMode } from "@/lib/layout/section-mode";
 import { SessionDrawer } from "@/components/session-drawer/SessionDrawer";
 import { useOneSessionSidePanel } from "@/components/session-drawer/use-one-side-panel";
 import { useTauriBodyClass } from "@/hooks/use-tauri-body-class";
@@ -212,15 +211,16 @@ function AppContent() {
   const contentColumnVisible = useContentColumnVisible();
   const contentColumnMode = useEffectiveContentColumnMode();
   const contentColumnFull = contentColumnVisible && contentColumnMode === "full";
-  // Skills / knowledge / ideas / contacts replace the conversation: column
-  // three steps aside (still mounted) and the section's item opens in its
-  // place — its detail view, or for knowledge, column four's documents.
+  // Skills / knowledge / ideas / contacts / shortcuts replace the
+  // conversation: column three steps aside (still mounted) and the section's
+  // item opens in its place — its detail view, or for knowledge and shortcuts,
+  // column four's tabs.
   const sectionMode = useSectionMode();
   const conversationHidden = contentColumnFull || sectionMode !== null;
   const showSectionDetail =
     sectionMode !== null &&
     !contentColumnFull &&
-    !(sectionMode === "knowledge" && contentColumnVisible);
+    !(sectionOpensInContentColumn(sectionMode) && contentColumnVisible);
   // Header icon visibility — additive gates on top of the capability/session
   // conditions below. Defaults hidden; users enable per-icon in Settings →
   // General → "会话头部图标". See stores/header-preferences-store.ts.
@@ -316,7 +316,6 @@ function AppContent() {
   useAgentsSkillsAccessInit();
   useExternalLinkHandler();
   useFileTabSync();
-  useSectionScopedTabs();
   useEffect(() => {
     const stopPageContext = startEmbedPageContextListener()
     const stopLinkOpen = startEmbedLinkOpenListener()

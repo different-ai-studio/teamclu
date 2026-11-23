@@ -335,8 +335,8 @@ export const useUIStore = create<UIState>((set, get) => ({
     })
     useWorkspaceStore.getState().clearSelection()
     useWorkspaceStore.getState().closePanel()
-    // No hideAll: column four's tabs are not tied to a session
-    // (hooks/use-section-scoped-tabs), so they stay open for the new chat.
+    // No hideAll: column four's tabs are one set for the whole app, not tied
+    // to a session, so they stay open for the new chat.
     useTeamShareBrowserStore.getState().clearDetail()
 
     // Import session and other stores lazily to avoid circular dependencies
@@ -460,8 +460,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   clearActorDraft: () => set({ draftPreselectedActor: null }),
 
   setNarrowListSheetOpen: (open) => set({ narrowListSheetOpen: open }),
-  // Leaving a section needs no tab cleanup here: sections have their own tab
-  // scope (hooks/use-section-scoped-tabs), so their tabs park themselves.
+  // Leaving a section needs no tab cleanup here: column four's tabs are one
+  // set for the whole app, shown beside the chat and in every section alike.
   setSidebarFilter: (filter) => set({ sidebarFilter: filter }),
   toggleIdeasSection: () => set((s) => ({ ideasSectionCollapsed: !s.ideasSectionCollapsed })),
   toggleMoreNav: () => set((s) => ({ moreNavExpanded: !s.moreNavExpanded })),

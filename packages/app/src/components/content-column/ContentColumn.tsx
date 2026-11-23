@@ -24,7 +24,7 @@ import { useWebviewUIStore } from "@/app/webview-ui-store";
 import { PreviewTabContent } from "@/components/content-column/PreviewTabContent";
 import { useLayoutBreakpoint } from "@/hooks/use-layout-breakpoint";
 import { useEffectiveContentColumnMode } from "@/components/content-column/content-column-state";
-import { useSectionMode } from "@/lib/layout/section-mode";
+import { sectionOpensInContentColumn, useSectionMode } from "@/lib/layout/section-mode";
 
 export {
   useContentColumnVisible,
@@ -114,9 +114,9 @@ function LayoutButton({
 function LayoutSwitcher() {
   const { t } = useTranslation();
   const mode = useEffectiveContentColumnMode();
-  // In the knowledge section column four already has the row to itself, so
+  // In knowledge or shortcuts column four already has the row to itself, so
   // "half" has nothing to share it with; "full" there means "hide the list".
-  const fills = useSectionMode() === "knowledge";
+  const fills = sectionOpensInContentColumn(useSectionMode());
   const canHalf = useLayoutBreakpoint() === "wide" && !fills;
   const setMode = useUIStore((s) => s.setContentColumnMode);
   return (
@@ -190,9 +190,9 @@ export function ContentColumn() {
   const showFind = useWebviewUIStore((s) => s.showFind);
   const zoomLevels = useWebviewUIStore((s) => s.zoomLevels);
   const containerRef = useRef<HTMLElement | null>(null);
-  // Knowledge documents replace the conversation rather than sit beside it,
-  // so in that section a half-width column takes the whole row instead.
-  const fills = useSectionMode() === "knowledge" && mode === "half";
+  // Knowledge documents and shortcut pages replace the conversation rather
+  // than sit beside it, so there a half-width column takes the whole row.
+  const fills = sectionOpensInContentColumn(useSectionMode()) && mode === "half";
 
   if (!activeTab) return null;
 

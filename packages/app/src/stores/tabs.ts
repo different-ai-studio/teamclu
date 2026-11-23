@@ -22,32 +22,11 @@ interface OpenTabInput {
 
 let nextId = 1;
 
-/** The tab set that is not on screen, parked under its scope key. */
-interface ParkedScope {
-  tabs: Tab[];
-  activeTabId: string | null;
-  lastActiveTabId: string | null;
-}
-
-/** Scope of the conversation's tabs, shared by every session and the draft. */
-export const CHAT_TAB_SCOPE = "__chat__";
-
 interface TabsState {
   tabs: Tab[];
   activeTabId: string | null;
   /** Remembers the last active tab when hideAll is called */
   _lastActiveTabId: string | null;
-  /**
-   * Tabs belong to a session: what the content column shows next to a chat is
-   * that chat's files. `tabs` / `activeTabId` are always the current scope's;
-   * every other scope's set is parked here until its session is opened again.
-   */
-  scopeKey: string;
-  _parked: Record<string, ParkedScope>;
-  /** Park the current tab set and bring up `key`'s (empty if it has none). */
-  switchScope: (key: string) => void;
-  /** True if a tab with this id is open in any scope, on screen or parked. */
-  hasTabInAnyScope: (id: string) => boolean;
   openTab: (item: OpenTabInput) => void;
   closeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
@@ -84,34 +63,6 @@ export const useTabsStore = create<TabsState>((set, get) => ({
   tabs: [],
   activeTabId: null,
   _lastActiveTabId: null,
-  scopeKey: CHAT_TAB_SCOPE,
-  _parked: {},
-
-  switchScope: (key) => {
-    const { scopeKey, tabs, activeTabId, _lastActiveTabId, _parked } = get();
-    if (key === scopeKey) return;
-    const parked = { ..._parked };
-    if (tabs.length > 0) {
-      parked[scopeKey] = { tabs, activeTabId, lastActiveTabId: _lastActiveTabId };
-    } else {
-      delete parked[scopeKey];
-    }
-    const incoming = parked[key];
-    delete parked[key];
-    set({
-      scopeKey: key,
-      _parked: parked,
-      tabs: incoming?.tabs ?? [],
-      activeTabId: incoming?.activeTabId ?? null,
-      _lastActiveTabId: incoming?.lastActiveTabId ?? null,
-    });
-  },
-
-  hasTabInAnyScope: (id) => {
-    const { tabs, _parked } = get();
-    if (tabs.some((t) => t.id === id)) return true;
-    return Object.values(_parked).some((scope) => scope.tabs.some((t) => t.id === id));
-  },
 
   openTab: (item) => {
     const { tabs, activeTabId } = get();
@@ -171,35 +122,12 @@ export const useTabsStore = create<TabsState>((set, get) => ({
   },
 
   closeWhere: (match) => {
-    const { tabs, activeTabId, _parked } = get();
-    // Parked scopes too: the callers close tabs whose target stopped meaning
-    // anything (another team's rows), and that is true in every session.
-    let parkedChanged = false;
-    const parked: Record<string, ParkedScope> = {};
-    for (const [key, scope] of Object.entries(_parked)) {
-      const keptParked = scope.tabs.filter((t) => !match(t));
-      if (keptParked.length === scope.tabs.length) {
-        parked[key] = scope;
-        continue;
-      }
-      parkedChanged = true;
-      if (keptParked.length === 0) continue;
-      const survives = keptParked.some((t) => t.id === scope.activeTabId);
-      parked[key] = {
-        tabs: keptParked,
-        activeTabId: survives ? scope.activeTabId : null,
-        lastActiveTabId: survives ? scope.lastActiveTabId : null,
-      };
-    }
+    const { tabs, activeTabId } = get();
     const kept = tabs.filter((t) => !match(t));
-    if (kept.length === tabs.length) {
-      if (parkedChanged) set({ _parked: parked });
-      return;
-    }
+    if (kept.length === tabs.length) return;
     const activeSurvives = kept.some((t) => t.id === activeTabId);
     set({
       tabs: kept,
-      _parked: parked,
       // Falling back to the last remaining tab rather than to nothing: closing
       // the active one should leave you somewhere, the way closeTab does.
       activeTabId: activeSurvives ? activeTabId : (kept[kept.length - 1]?.id ?? null),

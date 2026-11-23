@@ -4241,7 +4241,8 @@
     "resize": "Drag to resize"
   },
   "sectionDetail": {
-    "knowledgeEmpty": "Pick a document on the left to open it here."
+    "knowledgeEmpty": "Pick a document on the left to open it here.",
+    "shortcutsEmpty": "Pick a shortcut on the left to open it here."
   },
   "sessionDrawer": {
     "pin": "Dock beside the conversation",
