@@ -990,6 +990,14 @@ export const useSessionListStore = create<State>((set, get) => ({
       set({ loading: false });
       return;
     }
+    // The team still belongs to the account that was just swapped out
+    // (adoptSession lands before the team does). The server would refuse the
+    // new account for it; App.tsx reloads once the team catches up.
+    const teamUserId = useCurrentTeamStore.getState().teamUserId;
+    if (teamUserId && teamUserId !== session.user.id) {
+      set({ loading: false });
+      return;
+    }
 
     const requestScope = `${teamId}:${kind}`;
     if (firstPageInFlight && firstPageInFlightScope === requestScope) {
