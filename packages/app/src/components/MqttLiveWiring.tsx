@@ -22,6 +22,7 @@ import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
 import { syncParticipantsForSession } from "@/lib/sync/session-participant-sync";
+import { noteAppAccessChanged } from "@/lib/apps/app-access-inbox";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { listenForEnvelopes } from "@/lib/mqtt/mqtt-bridge";
@@ -689,6 +690,7 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
                 }
                 void syncParticipantsForSession(sessionId, teamId);
               },
+              onAppAccessChanged: (teamId, appId) => noteAppAccessChanged(teamId, appId),
             });
             return;
           }
