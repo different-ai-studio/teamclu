@@ -611,8 +611,6 @@ function AppContent() {
 
             {/* Panel tabs - right side of header */}
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
-              {/* Column four is hidden but still holds tabs: bring it back. */}
-              <ContentColumnRestoreButton />
               {capabilities.workspace && sessionWorkspacePath && showSkillsRefresh && (
                 <RefreshSkillsHeaderButton workspacePath={sessionWorkspacePath} />
               )}
@@ -667,6 +665,9 @@ function AppContent() {
                   onClick={() => toggleAppControlPanel()}
                 />
               )}
+              {/* Column four is hidden but still holds tabs: bring it back.
+                  Last, nearest the edge column four opens from. */}
+              <ContentColumnRestoreButton />
             </div>
           </header>
           ) : null}
