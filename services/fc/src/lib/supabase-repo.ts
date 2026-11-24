@@ -38,6 +38,7 @@ import {
   DEFAULT_LIST_LIMIT,
   DEFAULT_MESSAGE_LIST_LIMIT,
   MAX_MESSAGE_LIST_LIMIT,
+  encodeCursor,
   encodeSessionAttachmentCursor,
 } from "./routing-utils.js";
 import {
@@ -54,6 +55,39 @@ import { encodeStorageObjectKeyForUrl } from "./storage-object-key.js";
  * until someone turns it off. See FeatureFlags.allowNewOrg for why this gates
  * "mint an org" rather than "create a team", and why it is FC-only.
  */
+/**
+ * Rows after the cursor in (updated_at desc, id desc) order.
+ *
+ * `updated_at < cursor` alone skipped every row sharing the last row's
+ * timestamp, and bulk writes do share one (a belayo team had two such pairs).
+ * The values are double-quoted for PostgREST's `or` grammar (a timestamp holds
+ * `:` and `+`); the cursor comes from the client, so anything that could close
+ * the quote is refused rather than escaped.
+ */
+export function applyWorkspaceKeysetCursor<Q extends { or(filter: string): Q; lt(column: string, value: string): Q }>(
+  query: Q,
+  cursor: { updatedAt: string; id?: string | null },
+): Q {
+  return applyKeysetCursor(query, "updated_at", cursor.updatedAt, cursor.id);
+}
+
+/** [`applyWorkspaceKeysetCursor`]'s rule on any (column desc, id desc) sort. */
+export function applyKeysetCursor<Q extends { or(filter: string): Q; lt(column: string, value: string): Q }>(
+  query: Q,
+  column: string,
+  at: string,
+  rawId?: string | null,
+): Q {
+  const value = String(at);
+  const id = rawId == null ? null : String(rawId);
+  const safe = (v: string) => /^[0-9A-Za-z:.+\- T]+$/.test(v);
+  if (!safe(value) || (id !== null && !safe(id))) {
+    throw new ApiError(400, "validation_failed", "Invalid cursor");
+  }
+  if (!id) return query.lt(column, value);
+  return query.or(`${column}.lt."${value}",and(${column}.eq."${value}",id.lt."${id}")`);
+}
+
 function newOrgAllowed(): boolean {
   return resolveFeatures().allowNewOrg !== false;
 }
@@ -2638,7 +2672,7 @@ export function createSupabaseBusinessRepository(options) {
         query = query.eq("agent_id", agentId);
       }
       if (cursor?.updatedAt) {
-        query = query.lt("updated_at", cursor.updatedAt);
+        query = applyWorkspaceKeysetCursor(query, cursor);
       }
       const { data, error } = await query;
       if (error) throw error;
@@ -5001,19 +5035,43 @@ export function createSupabaseBusinessRepository(options) {
     // WHERE clause. mapApp exposes the canonical 12-key contract shape.
 
     async listApps({ teamId, limit = 100 }: { teamId: string; limit?: number }) {
-      const { data, error } = await supabase
+      return (await this.listAppsPage({ teamId, limit })).items;
+    },
+
+    /**
+     * One page of a team's apps, newest first, and where the next starts.
+     *
+     * The cursor is made here, from the raw row, not by the route from the
+     * mapped one: `mapApp` rounds `created_at` to milliseconds, and a keyset
+     * on the rounded value would skip every row created later in that same
+     * millisecond. `id` breaks ties so rows sharing a timestamp are neither
+     * skipped nor repeated.
+     */
+    async listAppsPage({ teamId, limit = 100, cursor = null }: {
+      teamId: string;
+      limit?: number;
+      cursor?: { createdAt: string; id?: string | null } | null;
+    }) {
+      let query = supabase
         .from("apps")
         .select(APP_COLUMNS)
         .eq("team_id", teamId)
         .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
         .limit(limit);
+      if (cursor?.createdAt) query = applyKeysetCursor(query, "created_at", cursor.createdAt, cursor.id);
+      const { data, error } = await query;
       if (error) throw error;
       const rows = data ?? [];
       const viewer = await this.resolveAppViewer(teamId, rows.map((r: any) => r.id));
-      return rows.map((r: any) => ({
-        ...mapApp(r),
-        ...appRelationshipFor(r, viewer.actorId, viewer.grants),
-      }));
+      const last = rows.length >= limit ? rows[rows.length - 1] : null;
+      return {
+        items: rows.map((r: any) => ({
+          ...mapApp(r),
+          ...appRelationshipFor(r, viewer.actorId, viewer.grants),
+        })),
+        nextCursor: last ? encodeCursor({ createdAt: String(last.created_at), id: last.id }) : null,
+      };
     },
 
     async getAppAuthInfo(appId: string): Promise<AppAuthInfo> {

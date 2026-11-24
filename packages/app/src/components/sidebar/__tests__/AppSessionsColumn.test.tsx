@@ -178,4 +178,54 @@ describe('AppSessionsColumn', () => {
     expect(mocks.switchToSessionWorkspaceIfNeeded).not.toHaveBeenCalled()
     error.mockRestore()
   })
+
+  describe('opening the app', () => {
+    beforeEach(() => {
+      listAppSessions.mockResolvedValue([
+        row({ id: 'old', title: 'Older', lastMessageAt: '2026-11-01T00:00:00.000Z' }),
+        row({ id: 'new', title: 'Newer', lastMessageAt: '2026-11-20T00:00:00.000Z' }),
+      ])
+    })
+
+    it('opens the top session once the list loads', async () => {
+      useSessionSelectionStore.setState({ activeSessionId: 'some-chat' })
+      render(<AppSessionsColumn app={app} />)
+      await waitFor(() =>
+        expect(mocks.switchToSession).toHaveBeenCalledWith('new', { keepSidebarFilter: true }),
+      )
+      expect(mocks.openAppSession).toHaveBeenCalledWith(app, 'new')
+      expect(mocks.switchToSession).toHaveBeenCalledTimes(1)
+    })
+
+    it('does nothing when the app has no sessions', async () => {
+      listAppSessions.mockResolvedValue([])
+      useSessionSelectionStore.setState({ activeSessionId: 'some-chat' })
+      render(<AppSessionsColumn app={app} />)
+      await waitFor(() => expect(listAppSessions).toHaveBeenCalled())
+      await new Promise((r) => setTimeout(r, 0))
+      expect(mocks.switchToSession).not.toHaveBeenCalled()
+      expect(useSessionSelectionStore.getState().activeSessionId).toBe('some-chat')
+    })
+
+    it('stays on a session of this app that is already open', async () => {
+      useSessionSelectionStore.setState({ activeSessionId: 'old' })
+      render(<AppSessionsColumn app={app} />)
+      await screen.findByText('Older')
+      await new Promise((r) => setTimeout(r, 0))
+      expect(mocks.switchToSession).not.toHaveBeenCalled()
+    })
+
+    it('does not override a session the user picked while the list loaded', async () => {
+      let release!: (rows: AppSessionRow[]) => void
+      listAppSessions.mockReturnValue(new Promise((res) => { release = res }))
+      mocks.createAppSessionShell.mockResolvedValue('fresh')
+      render(<AppSessionsColumn app={app} />)
+      fireEvent.click(screen.getByRole('button', { name: /新建/ }))
+      await waitFor(() => expect(mocks.switchToSession).toHaveBeenCalledWith('fresh', { keepSidebarFilter: true }))
+      release([row({ id: 'new', title: 'Newer' })])
+      await screen.findByText('Newer')
+      await new Promise((r) => setTimeout(r, 0))
+      expect(mocks.switchToSession).toHaveBeenCalledTimes(1)
+    })
+  })
 })

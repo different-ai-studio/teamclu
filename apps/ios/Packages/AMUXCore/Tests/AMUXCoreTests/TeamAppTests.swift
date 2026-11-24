@@ -148,6 +148,34 @@ struct CloudAPITeamAppRepositoryTests {
         #expect(app.openableURL?.absoluteString == "https://zhou-hui-abc12345.apps.example.com")
     }
 
+    @Test("follows nextCursor until the last page")
+    func followsNextCursor() async throws {
+        let row: @Sendable (String) -> String = { id in
+            #"{"id":"\#(id)","teamId":"t","name":"n","slug":"n","type":"static_web","visibility":"team","provisionStatus":"ready","createdAt":"2026-09-01T10:00:00Z","updatedAt":"2026-09-01T10:00:00Z"}"#
+        }
+        let seen = LockedPaths()
+        let client = CloudAPIClient(
+            configuration: CloudAPIConfiguration(baseURL: URL(string: "https://api.example.com")!),
+            accessToken: { "test-token" },
+            send: { request in
+                let url = request.url!
+                seen.append(url.absoluteString)
+                let hasCursor = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.contains { $0.name == "cursor" } ?? false
+                let body = hasCursor
+                    ? #"{"items":[\#(row("a2"))],"nextCursor":null}"#
+                    : #"{"items":[\#(row("a1"))],"nextCursor":"c+1"}"#
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data(body.utf8), response)
+            }
+        )
+        let apps = try await CloudAPITeamAppRepository(client: client).listApps(teamID: "t")
+        #expect(apps.map(\.id) == ["a1", "a2"])
+        let paths = seen.all
+        #expect(paths.count == 2)
+        #expect(paths.last?.hasSuffix("&cursor=c%2B1") == true)
+    }
+
     @Test("a missing fcStatus stays nil rather than becoming a deploy state")
     func missingFcStatusStaysNil() async throws {
         let repo = CloudAPITeamAppRepository(client: makeClient(body: """
@@ -324,4 +352,12 @@ private final class CapturedBody: @unchecked Sendable {
         guard let data else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
+}
+
+/// Request URLs seen by a stubbed client, safe to append from its `send`.
+private final class LockedPaths: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String] = []
+    func append(_ path: String) { lock.lock(); paths.append(path); lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return paths }
 }

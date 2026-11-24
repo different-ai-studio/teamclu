@@ -276,10 +276,14 @@ export function isResumableShare(
 /** Names a personal skill cannot be shared under. */
 export function takenShareSlugs(
   registry: readonly TeamSkillRegistryEntry[],
-  items: readonly Pick<TeamSkillItem, 'slug' | 'origin'>[],
+  items: readonly Pick<TeamSkillItem, 'slug' | 'origin' | 'kind'>[],
   myActorId: string | null | undefined,
 ): Set<string> {
-  const installed = new Set(items.filter((s) => s.origin === 'registry').map((s) => s.slug))
+  // Installed on this Agent — the list also carries the team's uninstalled
+  // skills, which say nothing about what is here.
+  const installed = new Set(
+    items.filter((s) => s.origin === 'registry' && s.kind !== 'team-available').map((s) => s.slug),
+  )
   const taken = new Set(installed)
   for (const entry of registry) {
     if (!isResumableShare(entry, myActorId, installed.has(entry.slug))) taken.add(entry.slug)
@@ -756,6 +760,20 @@ async function listTeamSkills(
         updatedAt: null,
       }
     })
+    // The rest of the team's catalog, not installed on this Agent: the list
+    // offers them with an install button, the way the apps list offers a
+    // download. Deprecated ones are not offered — the team has asked people to
+    // stop picking them up.
+    const listedSlugs = new Set(items.filter((item) => item.origin === 'registry').map((item) => item.slug))
+    for (const skill of registry) {
+      if (listedSlugs.has(skill.slug) || skill.status === 'deprecated') continue
+      items.push({
+        ...registryItem(skill, onDisk, 'team-available', false),
+        installed: false,
+        installedVersion: null,
+        hasUpdate: false,
+      })
+    }
     items.sort((a, b) => a.name.localeCompare(b.name))
     const entries = registry.map(({ slug, createdBy, latestVersion }) => ({ slug, createdBy, latestVersion }))
     return { items, registry: entries, registryError: null }
@@ -1714,7 +1732,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // stays as the backstop for a name that appeared since this fetch.
     const backend = getBackend()
     const myActorId = useCurrentTeamStore.getState().currentMember?.id ?? null
-    const installedHere = get().skills.items.some((s) => s.origin === 'registry' && s.slug === publishedSlug)
+    const installedHere = get().skills.items.some((s) => s.kind === 'team-installed' && s.slug === publishedSlug)
     const registry = await backend.teamSkills.listTeamSkills(teamId).catch(() => null)
     const existing = registry?.find((s) => s.slug === publishedSlug) ?? null
     const resume = existing && isResumableShare(existing, myActorId, installedHere) ? existing : null

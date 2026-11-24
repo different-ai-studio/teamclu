@@ -52,14 +52,34 @@ pub fn app_owning_path(workspace: &Path, apps: &[(String, PathBuf)]) -> Option<S
 }
 
 impl AppOps<'_> {
+    /// Every app in the team, following `nextCursor` to the last page.
+    ///
+    /// Not the first page: resolving a name or a directory to an app needs the
+    /// whole team, and 100 is the server's page cap, not a bound on a team. A
+    /// server from before paging sends no `nextCursor`, which ends it at one.
     pub async fn list_team_apps(&self, team_id: &str) -> Result<Vec<Value>, String> {
-        let listing = self
-            .get(
-                &format!("/v1/apps?teamId={}&limit=100", urlencoding::encode(team_id)),
-                "Listing this team's apps",
-            )
-            .await?;
-        Ok(items_of(&listing))
+        /// A guard against a cursor that never ends, not a size anyone reaches.
+        const MAX_PAGES: usize = 50;
+        let base = format!("/v1/apps?teamId={}&limit=100", urlencoding::encode(team_id));
+        let mut apps = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let path = match &cursor {
+                Some(c) => format!("{base}&cursor={}", urlencoding::encode(c)),
+                None => base.clone(),
+            };
+            let listing = self.get(&path, "Listing this team's apps").await?;
+            apps.extend(items_of(&listing));
+            cursor = listing
+                .get("nextCursor")
+                .and_then(Value::as_str)
+                .filter(|c| !c.is_empty())
+                .map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(apps)
     }
 
     /// Every app this machine holds a checkout for, as `(app_id, workdir)`.
@@ -239,6 +259,27 @@ mod tests {
             app_owning_path(Path::new("/work/apps/site/public"), &apps).as_deref(),
             Some("inner")
         );
+    }
+
+    #[tokio::test]
+    async fn listing_reads_every_page() {
+        let cloud = FakeCloud::default();
+        cloud.reply(
+            Method::Get,
+            "/v1/apps?teamId=t1&limit=100",
+            json!({ "items": [{ "id": "a1", "name": "One" }], "nextCursor": "c/1" }),
+        );
+        cloud.reply(
+            Method::Get,
+            "/v1/apps?teamId=t1&limit=100&cursor=c%2F1",
+            json!({ "items": [{ "id": "a2", "name": "Two" }], "nextCursor": null }),
+        );
+        let daemon = FakeDaemon::default();
+        let host = TestHost(Surface::Cli);
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let apps = ops.list_team_apps("t1").await.unwrap();
+        let ids: Vec<_> = apps.iter().map(|a| a["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["a1", "a2"]);
     }
 
     #[tokio::test]

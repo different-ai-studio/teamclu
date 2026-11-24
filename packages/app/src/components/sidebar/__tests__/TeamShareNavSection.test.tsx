@@ -99,7 +99,7 @@ describe('TeamShareNavSection', () => {
     const { getByText, queryByText } = render(<TeamShareNavSection sections={['skills', 'knowledge']} />)
 
     expect(getByText('Skills')).toBeTruthy()
-    expect(getByText('Knowledge')).toBeTruthy()
+    expect(getByText('Docs')).toBeTruthy()
     expect(queryByText('MCP')).toBeNull()
     expect(queryByText('Team Env')).toBeNull()
   })

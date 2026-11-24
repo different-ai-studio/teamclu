@@ -77,6 +77,21 @@ describe("createTeamAppsApi", () => {
     ]);
   });
 
+  it("listApps follows nextCursor to the last page", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(json({ items: [WIRE_APP], nextCursor: "c+1" }))
+      .mockResolvedValueOnce(json({ items: [{ ...WIRE_APP, id: "app-2" }], nextCursor: null }));
+
+    const apps = await api(fetchImpl).listApps("t");
+
+    expect(apps.map((a) => a.id)).toEqual(["app-1", "app-2"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect((fetchImpl.mock.calls[1] as unknown as [string])[0]).toBe(
+      "https://cloud.test/v1/apps?teamId=t&limit=100&cursor=c%2B1",
+    );
+  });
+
   it("listApps tolerates a missing items array", async () => {
     const fetchImpl = vi.fn(async () => json({}));
     expect(await api(fetchImpl).listApps("t")).toEqual([]);

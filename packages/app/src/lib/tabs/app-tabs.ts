@@ -134,26 +134,13 @@ export const openAppEnv = (app: AppRow, label: string) =>
 
 const APP_LIBRARY_TARGET = 'app-library'
 
+/**
+ * A library tab restored from a session that opened one. Nothing opens it any
+ * more: the library is the Apps section's main view (see `section-mode.ts`),
+ * the way the marketplace is for skills.
+ */
 export function isAppLibraryTarget(target: string): boolean {
   return target === APP_LIBRARY_TARGET
-}
-
-/**
- * Every app the team has, in the main column.
- *
- * A tab rather than a dialog: it is a browsing surface next to the column-two
- * list of what is already here, and downloading from it changes that list —
- * both need to be on screen at the same time.
- *
- * The label is passed in because this module has no translator; there is one
- * caller and it has one.
- */
-export function openAppLibrary(label: string): void {
-  useTabsStore.getState().openTab({
-    type: 'native',
-    target: APP_LIBRARY_TARGET,
-    label,
-  })
 }
 
 const APP_CREATE_TARGET = 'app-create'

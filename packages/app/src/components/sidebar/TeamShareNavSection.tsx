@@ -22,7 +22,7 @@ const SECTION_DEFS: Record<TeamShareSection, SectionDef> = {
   skills: { section: 'skills', icon: Sparkles, labelKey: 'teamShare.skills', fallback: 'Skills' },
   mcp: { section: 'mcp', icon: Plug, labelKey: 'teamShare.mcp', fallback: 'MCP' },
   env: { section: 'env', icon: Box, labelKey: 'teamShare.env', fallback: 'Team Env' },
-  knowledge: { section: 'knowledge', icon: Bookmark, labelKey: 'teamShare.knowledge', fallback: 'Knowledge' },
+  knowledge: { section: 'knowledge', icon: Bookmark, labelKey: 'teamShare.knowledge', fallback: 'Docs' },
 }
 
 const ALL_SECTIONS: TeamShareSection[] = ['skills', 'mcp', 'env', 'knowledge']

@@ -129,8 +129,15 @@ export function registerApps(
     const teamId = ctx.query.get("teamId");
     requireString(teamId, "teamId");
     const limit = parseLimit(ctx.query.get("limit"));
-    const items = await ctx.repository.listApps({ teamId, limit });
-    return { body: { items } };
+    const cursor = decodeAppListCursor(ctx.query.get("cursor"));
+    // A repository without pages (older test doubles) answers one page, as
+    // this route always did.
+    if (typeof ctx.repository.listAppsPage !== "function") {
+      const items = await ctx.repository.listApps({ teamId, limit });
+      return { body: { items, nextCursor: null } };
+    }
+    const page = await ctx.repository.listAppsPage({ teamId, limit, cursor });
+    return { body: { items: page.items, nextCursor: page.nextCursor ?? null } };
   });
 
   router.post("/v1/apps", async (ctx) => {
@@ -662,4 +669,18 @@ export function registerApps(
     return { body: out.credentials };
   });
 
+}
+
+/** `GET /v1/apps`'s cursor: the last row's raw `created_at` and `id`. */
+export function decodeAppListCursor(value: string | null) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || typeof parsed.createdAt !== "string") {
+      throw new Error("not an app cursor");
+    }
+    return { createdAt: parsed.createdAt as string, id: typeof parsed.id === "string" ? parsed.id : null };
+  } catch (cause) {
+    throw new ApiError(400, "validation_failed", "Invalid cursor", { cause });
+  }
 }

@@ -65,27 +65,37 @@ describe('AppAccessTabContent member picker', () => {
     await waitFor(() => expect(backend.setAppAccess).toHaveBeenCalledWith('app-1', 'c', 'write'))
   })
 
-  it('never offers the app creator, and greys out an agent that is not connected', async () => {
+  it('lists people first, and agents only once Agent is picked', async () => {
     const user = userEvent.setup()
     render(<AppAccessTabContent appId="app-1" />)
 
-    await user.click(await screen.findByTestId('app-access-member-picker'))
-    const list = screen.getByRole('dialog')
+    // The creator is never offered: 3 people, 2 agents.
+    expect(await screen.findByTestId('app-access-kind-member')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('app-access-kind-member')).toHaveTextContent('3')
+    expect(screen.getByTestId('app-access-kind-agent')).toHaveTextContent('2')
+
+    await user.click(screen.getByTestId('app-access-member-picker'))
+    let list = screen.getByRole('dialog')
     expect(within(list).queryByText('创建者')).not.toBeInTheDocument()
-    const offline = within(list).getByText('离线助手').closest('[cmdk-item]')
-    expect(offline).toHaveAttribute('aria-disabled', 'true')
+    expect(within(list).queryByText('小助手')).not.toBeInTheDocument()
+    expect(within(list).getByText('朱昊勤')).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+
+    await user.click(screen.getByTestId('app-access-kind-agent'))
+    await user.click(screen.getByTestId('app-access-member-picker'))
+    list = screen.getByRole('dialog')
+    expect(within(list).queryByText('朱昊勤')).not.toBeInTheDocument()
+    // Greyed out, not hidden: a grant would name nobody who can act on it yet.
+    expect(within(list).getByText('离线助手').closest('[cmdk-item]')).toHaveAttribute('aria-disabled', 'true')
+    await user.click(within(list).getByText('小助手'))
+    await user.click(screen.getByTestId('app-access-grant'))
+    await waitFor(() => expect(backend.setAppAccess).toHaveBeenCalledWith('app-1', 'agent-1', 'write'))
   })
 
-  it('grants write to a connected agent in one click', async () => {
-    const user = userEvent.setup()
+  it('has no wall of one-click agent grants any more', async () => {
     render(<AppAccessTabContent appId="app-1" />)
-
-    const quick = await screen.findByTestId('app-access-quick-agents')
-    expect(within(quick).queryByText('离线助手')).not.toBeInTheDocument()
-    await user.click(screen.getByTestId('app-access-quick-grant-agent-1'))
-    await waitFor(() => expect(backend.setAppAccess).toHaveBeenCalledWith('app-1', 'agent-1', 'write'))
-    // Once granted, the agent leaves the quick list and shows up as a grantee.
-    await waitFor(() => expect(screen.queryByTestId('app-access-quick-agents')).not.toBeInTheDocument())
+    await screen.findByTestId('app-access-tab')
+    expect(screen.queryByTestId('app-access-quick-agents')).not.toBeInTheDocument()
   })
 
   it('marks an agent grantee with a badge', async () => {
@@ -108,7 +118,7 @@ describe('AppAccessTabContent member picker', () => {
     expect(within(tab).queryByText('hidden-agent')).not.toBeInTheDocument()
   })
 
-  it('lists inherited agents read-only, with their owner, and keeps them out of the quick grants', async () => {
+  it('lists inherited agents read-only, with their owner, and keeps them out of the picker', async () => {
     backend.listAppAccess.mockResolvedValue([
       {
         memberId: 'agent-1', permissionLevel: 'admin', grantedByMemberId: null, createdAt: null,
@@ -123,8 +133,8 @@ describe('AppAccessTabContent member picker', () => {
     // Read-only: no level picker and no revoke button on an inherited row.
     expect(within(row).queryByRole('combobox')).not.toBeInTheDocument()
     expect(within(row).queryByRole('button')).not.toBeInTheDocument()
-    // Not offered again as a one-click grant, and not listed among the grants.
-    expect(screen.queryByTestId('app-access-quick-grant-agent-1')).not.toBeInTheDocument()
+    // Not listed among the grants, and not offered again.
     expect(screen.getByTestId('app-access-empty')).toBeInTheDocument()
+    expect(screen.getByTestId('app-access-kind-agent')).toHaveTextContent('1')
   })
 })

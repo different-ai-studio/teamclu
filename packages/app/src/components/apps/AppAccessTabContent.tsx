@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { getBackend } from '@/lib/backend'
+import { cn } from '@/lib/utils'
 import { useAppsStore } from '@/stores/apps-store'
 import { AppTabShell } from './AppTabShell'
 import type {
@@ -23,6 +24,9 @@ import type {
 } from '@/lib/backend/types'
 
 const PERMISSION_LEVELS: AppPermissionLevel[] = ['read', 'write', 'admin']
+
+type GrantKind = 'member' | 'agent'
+const GRANT_KINDS: GrantKind[] = ['member', 'agent']
 
 /**
  * Who on the team may work on this app.
@@ -65,6 +69,10 @@ function AccessBody({ app }: { app: AppRow }) {
   const [grantMemberId, setGrantMemberId] = React.useState('')
   const [grantLevel, setGrantLevel] = React.useState<AppPermissionLevel>('write')
   const [memberPickerOpen, setMemberPickerOpen] = React.useState(false)
+  // Which kind the picker lists. People first: agents outnumber them several
+  // times over, and the one-click wall of agent chips this replaces buried the
+  // picker under it.
+  const [grantKind, setGrantKind] = React.useState<GrantKind>('member')
   const invalidateAppSummary = useAppsStore((s) => s.invalidateAppSummary)
 
   // `quiet`: a refresh after a change — no spinner, and a failure keeps what
@@ -119,11 +127,18 @@ function AccessBody({ app }: { app: AppRow }) {
       ),
     [members, rows, app.createdByActorId],
   )
-  const pickable = React.useMemo(() => candidates.filter((m) => m.connected), [candidates])
-  const agentsToGrant = React.useMemo(
-    () => candidates.filter((m) => m.actorType === 'agent' && m.connected),
+  const countByKind = React.useMemo(
+    () => ({
+      member: candidates.filter((m) => m.actorType !== 'agent').length,
+      agent: candidates.filter((m) => m.actorType === 'agent').length,
+    }),
     [candidates],
   )
+  const kindCandidates = React.useMemo(
+    () => candidates.filter((m) => (grantKind === 'agent') === (m.actorType === 'agent')),
+    [candidates, grantKind],
+  )
+  const pickable = React.useMemo(() => kindCandidates.filter((m) => m.connected), [kindCandidates])
 
   React.useEffect(() => {
     if (pickable.length === 0) {
@@ -309,36 +324,37 @@ function AccessBody({ app }: { app: AppRow }) {
         </div>
       )}
 
-      {agentsToGrant.length > 0 && (
-        <div className="space-y-2 border-t border-border-soft pt-4" data-testid="app-access-quick-agents">
-          <p className="text-[12.5px] text-muted-foreground">
-            {t('apps.controlPanel.quickGrantAgents', '授权给 agent')}
-          </p>
-          <ul className="flex flex-wrap gap-2">
-            {agentsToGrant.map((agent) => (
-              <li key={agent.id}>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 gap-1.5 rounded-[7px] text-[12.5px]"
-                  disabled={saving}
-                  onClick={() => void grant(agent.id, 'write')}
-                  data-testid={`app-access-quick-grant-${agent.id}`}
-                  title={t('apps.controlPanel.quickGrantWrite', '授予 write')}
-                >
-                  <Bot className="h-3.5 w-3.5" />
-                  {agent.displayName}
-                  <span className="font-mono text-[11px] text-muted-foreground">write</span>
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
       {candidates.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-t border-border-soft pt-4">
+          <div
+            role="group"
+            aria-label={t('apps.controlPanel.grantKind', '授权对象')}
+            className="flex h-9 shrink-0 items-center gap-0.5 rounded-[7px] border border-border p-0.5"
+          >
+            {GRANT_KINDS.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                aria-pressed={grantKind === kind}
+                data-testid={`app-access-kind-${kind}`}
+                disabled={saving}
+                onClick={() => {
+                  setGrantKind(kind)
+                  setMemberPickerOpen(false)
+                }}
+                className={cn(
+                  'flex h-full items-center gap-1 rounded-[5px] px-2.5 text-[12.5px] transition-colors',
+                  grantKind === kind
+                    ? 'bg-selected font-semibold text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {kind === 'agent' && <Bot className="h-3.5 w-3.5" />}
+                {kind === 'member' ? t('apps.controlPanel.kindMember', '人') : t('apps.controlPanel.kindAgent', 'Agent')}
+                <span className="font-mono text-[10.5px] tabular-nums text-faint">{countByKind[kind]}</span>
+              </button>
+            ))}
+          </div>
           <Popover open={memberPickerOpen} onOpenChange={setMemberPickerOpen}>
             <PopoverTrigger asChild>
               <Button
@@ -352,17 +368,25 @@ function AccessBody({ app }: { app: AppRow }) {
               >
                 <span className="truncate">
                   {pickable.find((m) => m.id === grantMemberId)?.displayName ??
-                    t('apps.controlPanel.pickMember', '选择成员或 agent')}
+                    (grantKind === 'agent'
+                      ? t('apps.controlPanel.pickAgent', '选择 agent')
+                      : t('apps.controlPanel.pickPerson', '选择成员'))}
                 </span>
                 <ChevronDown className="h-4 w-4 shrink-0 text-faint" />
               </Button>
             </PopoverTrigger>
             <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
               <Command>
-                <CommandInput placeholder={t('apps.controlPanel.searchMember', '搜索成员…')} />
+                <CommandInput
+                  placeholder={
+                    grantKind === 'agent'
+                      ? t('apps.controlPanel.searchAgent', '搜索 agent…')
+                      : t('apps.controlPanel.searchMember', '搜索成员…')
+                  }
+                />
                 <CommandList>
                   <CommandEmpty>{t('apps.controlPanel.noMatchingMembers', '没有匹配的成员')}</CommandEmpty>
-                  {candidates.map((m) => (
+                  {kindCandidates.map((m) => (
                     <CommandItem
                       key={m.id}
                       value={m.id}

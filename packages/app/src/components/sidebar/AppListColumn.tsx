@@ -1,34 +1,32 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AppWindow, ChevronRight, Download, LayoutGrid, Loader2 } from 'lucide-react'
+import { AppWindow, ChevronRight, Download, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useSidebar } from '@/components/ui/sidebar'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { openAppLibrary, openCreateApp } from '@/lib/tabs/app-tabs'
+import { openCreateApp } from '@/lib/tabs/app-tabs'
 import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
 import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 import { resolveAppType } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appStatusMeta, showsPublicBadge, isDeployInFlight } from '@/lib/apps/app-list-helpers'
 import { resolveAppLocality } from '@/lib/apps/app-locality'
-import {
-  countAppsByRelationship,
-  filterAppsByRelationship,
-  type AppRelationshipFilter,
-} from '@/lib/apps/app-relationship'
+import { appRelationship, type AppSidebarFilter } from '@/lib/apps/app-relationship'
+import { latestSessionActivityByApp, sortAppsByLastActivity, useAppTouchStore } from '@/lib/apps/app-recency'
 import { useAppRelationshipLabel } from '@/lib/apps/use-app-relationship-label'
 import { AppRelationshipChips } from '@/components/apps/AppRelationshipChips'
-import { useAppRelationshipFilter, useMyMemberActorId } from '@/stores/app-relationship-filter'
+import { useAppSidebarFilter, useMyMemberActorId } from '@/stores/app-relationship-filter'
+import { useSessionListStore } from '@/stores/session-list-store'
 import type { AppRow } from '@/lib/backend/types'
 
 /** What an empty filter says — "you have none of these", not "you have no apps". */
-const EMPTY_FILTER: Record<Exclude<AppRelationshipFilter, 'all'>, { key: string; fallback: string }> = {
+const EMPTY_FILTER: Record<AppSidebarFilter, { key: string; fallback: string }> = {
+  local: { key: 'apps.sidebarEmptyLocal', fallback: '本机还没有应用' },
   owner: { key: 'apps.relationshipEmptyOwner', fallback: '没有我的应用' },
   invited: { key: 'apps.relationshipEmptyInvited', fallback: '没有受邀的应用' },
-  team: { key: 'apps.relationshipEmptyTeam', fallback: '没有团队应用' },
 }
 
 function AppRowButton({
@@ -42,8 +40,8 @@ function AppRowButton({
   app: AppRow
   /**
    * The word under the icon (Mine / Invited / Team) and what hovering it says
-   * (who invited me), already resolved by the list — or null under a
-   * single-relationship filter, where every row would repeat the chip.
+   * (who invited me), already resolved by the list — or null under 我的 /
+   * 受邀, where every row would repeat the chip.
    */
   relationLabel: { label: string; hint: string | null } | null
   /** `null` while the daemon has not answered — treated as "here". */
@@ -160,8 +158,15 @@ function AppRowButton({
 }
 
 /**
- * Level one of column two's Apps section: the team's apps, marked by whether
- * each one is on this machine.
+ * Level one of column two's Apps section, split three ways:
+ *
+ * - 本机 — every app with a checkout here, whoever's it is, most recently used
+ *   first (see `app-recency.ts`);
+ * - 我的 — every app I created, here or not;
+ * - 受邀 — every app someone invited me to, here or not.
+ *
+ * A team app I was not invited to appears only once it is here; finding the
+ * rest of the team's apps is the library's job.
  *
  * Picking one that is here swaps this column for that app's sessions
  * (`AppsColumn` decides, on `selectedAppId`). Picking one that is not here
@@ -186,19 +191,41 @@ export function AppListColumn() {
   const selectApp = useAppsStore((s) => s.selectApp)
   const download = useAppsStore((s) => s.download)
   const [downloadingId, setDownloadingId] = React.useState<string | null>(null)
-  const [filter, setFilter] = useAppRelationshipFilter(teamId)
+  const [filter, setFilter] = useAppSidebarFilter(teamId)
   const myActorId = useMyMemberActorId()
   const relationLabelFor = useAppRelationshipLabel()
   const absent = useLocalAgentAbsent()
+  const touchedAt = useAppTouchStore((s) => s.touchedAt)
+  const sessionRows = useSessionListStore((s) => s.rows)
+  const appIdBySessionId = useAppsStore((s) => s.appIdBySessionId)
 
-  const counts = React.useMemo(() => countAppsByRelationship(items, myActorId), [items, myActorId])
-  const visibleItems = React.useMemo(
-    () => filterAppsByRelationship(items, filter, myActorId),
-    [items, filter, myActorId],
+  // `localAppIds === null` is "the daemon has not answered", so 本机 is empty
+  // until it does rather than guessing.
+  const localItems = React.useMemo(() => {
+    if (!localAppIds) return []
+    const local = new Set(localAppIds)
+    return sortAppsByLastActivity(
+      items.filter((app) => local.has(app.id)),
+      touchedAt,
+      latestSessionActivityByApp(sessionRows, appIdBySessionId),
+    )
+  }, [items, localAppIds, touchedAt, sessionRows, appIdBySessionId])
+
+  const byFilter = React.useMemo<Record<AppSidebarFilter, AppRow[]>>(
+    () => ({
+      local: localItems,
+      owner: items.filter((app) => appRelationship(app, myActorId) === 'owner'),
+      invited: items.filter((app) => appRelationship(app, myActorId) === 'invited'),
+    }),
+    [items, localItems, myActorId],
   )
+  const counts = React.useMemo(
+    () => ({ local: byFilter.local.length, owner: byFilter.owner.length, invited: byFilter.invited.length }),
+    [byFilter],
+  )
+  const visibleItems = byFilter[filter]
 
   const createLabel = t('apps.createTitle', '新建')
-  const libraryLabel = t('apps.libraryTitle', '所有应用')
 
   // Both halves. The nav row loads the cloud list too, but it is mounted once
   // and never asks again — so an empty answer it happened to catch mid
@@ -251,27 +278,6 @@ export function AppListColumn() {
             <span className="font-mono text-[11px] font-normal text-faint"> · {items.length}</span>
           </div>
         </div>
-        {/*
-          One way in, not two. Creating lives in the library dialog, which is
-          also where you go to find an app that is not on this machine — a `+`
-          here duplicated that button one click earlier and made the header
-          read as two competing actions.
-        */}
-        <div className="flex shrink-0 items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => {
-              if (absent) return
-              openAppLibrary(libraryLabel)
-            }}
-            disabled={absent || !teamId}
-            title={libraryLabel}
-            aria-label={libraryLabel}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground disabled:opacity-40"
-          >
-            <LayoutGrid className="h-4 w-4" />
-          </button>
-        </div>
       </div>
 
       {items.length > 0 && (
@@ -315,38 +321,25 @@ export function AppListColumn() {
               >
                 {t('apps.create', '新建')}
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (absent) return
-                  openAppLibrary(libraryLabel)
-                }}
-                disabled={absent || !teamId}
-                className="rounded-[8px] border border-border px-3 py-1.5 text-[13px] text-foreground hover:bg-selected/40 disabled:opacity-40"
-              >
-                {t('apps.libraryTitle', '所有应用')}
-              </button>
             </div>
           </div>
-        ) : visibleItems.length === 0 && filter !== 'all' ? (
+        ) : visibleItems.length === 0 ? (
           <div className="flex flex-col items-center gap-2 px-6 py-10 text-center">
             <p className="text-[13px] text-muted-foreground">
               {t(EMPTY_FILTER[filter].key, EMPTY_FILTER[filter].fallback)}
             </p>
-            <button
-              type="button"
-              onClick={() => setFilter('all')}
-              className="rounded-[8px] border border-border px-3 py-1.5 text-[13px] text-foreground hover:bg-selected/40"
-            >
-              {t('apps.relationshipShowAll', '查看全部')}
-            </button>
+            {filter === 'local' && (
+              <p className="text-[12px] text-faint">
+                {t('apps.sidebarEmptyLocalHint', '在右侧「所有应用」里下载一个，就会出现在这里。')}
+              </p>
+            )}
           </div>
         ) : (
           visibleItems.map((app) => (
             <AppRowButton
               key={app.id}
               app={app}
-              relationLabel={filter === 'all' ? relationLabelFor(app) : null}
+              relationLabel={filter === 'local' ? relationLabelFor(app) : null}
               local={resolveAppLocality(localAppIds, app.id)}
               downloading={downloadingId === app.id}
               onSelect={() => {

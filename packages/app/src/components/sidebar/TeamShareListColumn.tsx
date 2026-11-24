@@ -1,4 +1,6 @@
 import * as React from 'react'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
+import { QuickFilterChips } from '@/components/ui/quick-filter-chips'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import {
@@ -20,6 +22,7 @@ import {
   Bot,
   ChevronDown,
   Trash2,
+  Download,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -66,7 +69,6 @@ import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
 import {
   useTeamShareBrowserStore,
-  SkillMutationRefreshError,
   type TeamMcpKind,
   type TeamShareSection,
   type TeamSkillKind,
@@ -100,9 +102,6 @@ import {
   withDefaultExtension,
 } from '@/lib/knowledge/knowledge-file-names'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
-import { toastSkillMutationRefreshFailed } from '@/components/teamshare/skillMutationRefreshToast'
-import { useTeamPermissions } from '@/lib/team/team-permissions'
-import { teamSkillDeletableSlug } from '@/lib/skills/registry-deletable'
 
 /**
  * Agent the Skills column should land on: whoever the current conversation is
@@ -136,7 +135,7 @@ const SECTION_META: Record<
   skills: { icon: Sparkles, titleKey: 'teamShare.skills', titleFallback: 'Skills' },
   mcp: { icon: Plug, titleKey: 'teamShare.mcp', titleFallback: 'MCP' },
   env: { icon: Box, titleKey: 'teamShare.env', titleFallback: 'Team Env' },
-  knowledge: { icon: Bookmark, titleKey: 'teamShare.knowledge', titleFallback: 'Knowledge' },
+  knowledge: { icon: Bookmark, titleKey: 'teamShare.knowledge', titleFallback: 'Docs' },
 }
 
 interface RowProps {
@@ -368,17 +367,10 @@ type SkillRow = {
    * for something that only exists in the cloud until it is installed.
    */
   packDir?: string
-  /**
-   * Present on team-registry rows only, and the reason the row can offer a
-   * delete at all. `id` is not a substitute: a personal skill whose name the
-   * registry also uses carries `personal:<slug>`.
-   */
-  deletableSlug?: string
 }
 
 export function TeamShareListColumn({ section }: { section: TeamShareSection }) {
   const { t } = useTranslation()
-  const { canManageTeam } = useTeamPermissions()
   const { state: sidebarState } = useSidebar()
   const sidebarCollapsed = sidebarState === 'collapsed'
   const meta = SECTION_META[section]
@@ -393,37 +385,8 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const reconcileSkills = useTeamShareBrowserStore((s) => s.reconcileSkills)
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
   const setCreating = useTeamShareBrowserStore((s) => s.setCreating)
-  const deleteTeamSkill = useTeamShareBrowserStore((s) => s.deleteTeamSkill)
-  const retrySkillsRuntimeRefresh = useTeamShareBrowserStore((s) => s.retrySkillsRuntimeRefresh)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
-
-  // The skill a delete has been started on, and whether that delete is running.
-  const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null)
-  const [deleting, setDeleting] = React.useState(false)
-
-  const runDeleteTeamSkill = React.useCallback(async () => {
-    if (!deleteTarget || deleting) return
-    setDeleting(true)
-    try {
-      await deleteTeamSkill(deleteTarget)
-      setDeleteTarget(null)
-      toast.success(t('teamShare.skillDeleteTeamDone', '已从团队移除'))
-    } catch (e) {
-      if (e instanceof SkillMutationRefreshError) {
-        setDeleteTarget(null)
-        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
-        return
-      }
-      toast.error(
-        t('teamShare.skillDeleteTeamFailed', '移除失败：{{msg}}', {
-          msg: e instanceof Error ? e.message : String(e),
-        }),
-      )
-    } finally {
-      setDeleting(false)
-    }
-  }, [deleteTarget, deleting, deleteTeamSkill, retrySkillsRuntimeRefresh, t])
 
   // Which skill packages are showing their files, and which one is being added
   // to. View state, not persisted: it says nothing about the skill itself.
@@ -462,6 +425,36 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
 
   const [query, setQuery] = React.useState('')
+  // Skills show one trust boundary at a time — team or personal — as tabs atop
+  // the list, the way apps and contacts do, rather than two stacked groups.
+  const [skillTab, setSkillTab] = React.useState<'team' | 'personal'>('team')
+  // 文档 shows one of its two roots at a time: 资料库 (documents) first, then
+  // 知识库 (the wiki). They are different bodies of content — the Obsidian
+  // vault is knowledge alone — and one tree holding both made people scroll
+  // past one to reach the other.
+  const [knowledgeTab, setKnowledgeTab] = React.useState<'knowledge' | 'documents'>('documents')
+  const knowledgeTabRoot = syncRoot ? joinPathLike(syncRoot, knowledgeTab) : null
+  const [installingSkill, setInstallingSkill] = React.useState<string | null>(null)
+  const installSkill = useTeamShareBrowserStore((s) => s.installSkill)
+  const subjectAgentOffline =
+    !!subjectActorId &&
+    presenceByActor[subjectActorId]?.online !== true &&
+    resolveAgentDevicePresenceSync(subjectActorId) === 'offline'
+  /** Install a team skill on the selected Agent straight from its row. */
+  const installFromRow = React.useCallback(
+    async (slug: string) => {
+      if (installingSkill) return
+      setInstallingSkill(slug)
+      try {
+        await installSkill(slug)
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : String(e))
+      } finally {
+        setInstallingSkill(null)
+      }
+    },
+    [installSkill, installingSkill],
+  )
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [wikiPublished, setWikiPublished] = React.useState<boolean | undefined>(undefined)
 
@@ -717,11 +710,6 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           meta: metaParts.filter(Boolean).join(' · ') || undefined,
           badge: (
             <span className="flex shrink-0 items-center gap-1">
-              {s.kind === 'team-installed' ? (
-                <span className="rounded border border-border bg-paper px-1.5 py-0.5 text-[9.5px] font-semibold text-muted-foreground">
-                  {t('teamShare.scope.team', '团队')}
-                </span>
-              ) : null}
               {s.status === 'deprecated' ? (
                 <span className="rounded bg-muted px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">
                   {t('teamShare.skillDeprecated', 'Deprecated')}
@@ -729,8 +717,8 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
               ) : null}
             </span>
           ),
-          dimmed: s.status === 'deprecated',
-          deletableSlug: teamSkillDeletableSlug(canManageTeam, s.origin, s.slug),
+          // Not installed reads like an app not downloaded: dimmed, not hidden.
+          dimmed: s.status === 'deprecated' || s.kind === 'team-available',
           // Three states, and only one of them is asking for anything.
           //
           // Behind on version is a transitional state that resolves itself
@@ -741,7 +729,42 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           // where everything else is muted. That contrast is the emphasis;
           // coral is the brand accent, not a warning colour (AGENTS.md).
           trailing:
-            s.kind === 'team-installed' ? (
+            s.kind === 'team-available' ? (
+              // A span, not a button: the row is itself a button.
+              <span
+                role="button"
+                tabIndex={0}
+                data-testid={`skill-install-${s.slug}`}
+                aria-disabled={subjectAgentOffline || installingSkill !== null}
+                title={
+                  subjectAgentOffline
+                    ? t('common.offline', '离线')
+                    : t('teamShare.skillInstallHint', '这个团队技能还没装到当前 Agent，点击安装')
+                }
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (subjectAgentOffline) return
+                  void installFromRow(s.slug)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (!subjectAgentOffline) void installFromRow(s.slug)
+                }}
+                className={cn(
+                  'flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-[11.5px] text-muted-foreground transition-colors hover:bg-selected hover:text-foreground',
+                  subjectAgentOffline && 'cursor-not-allowed opacity-50',
+                )}
+              >
+                {installingSkill === s.slug ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+                {t('teamShare.skillInstall', '安装')}
+              </span>
+            ) : s.kind === 'team-installed' ? (
               localState[s.slug]?.state === 'foreign' ? (
                 <AlertTriangle
                   className="h-[15px] w-[15px] text-foreground"
@@ -769,19 +792,21 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             ) : undefined,
         }
       })
-  }, [section, q, skills.items, localState, canManageTeam, t])
+  }, [section, q, skills.items, localState, t, installingSkill, installFromRow, subjectAgentOffline])
 
-  /** Team and personal are different trust boundaries, so they get their own groups. */
+  /** Team and personal are different trust boundaries, so they get their own tabs. */
   const skillGroups = React.useMemo(() => {
-    const team = skillRows.filter(
-      (r) => r.kind === 'team-installed' || r.kind === 'team-available',
-    )
+    // Installed first, then the rest of the team's catalog — each by name.
+    const team = [
+      ...skillRows.filter((r) => r.kind === 'team-installed'),
+      ...skillRows.filter((r) => r.kind === 'team-available'),
+    ]
     const personal = skillRows.filter((r) => r.kind === 'personal')
     return [
       { key: 'team' as const, label: t('teamShare.scope.team', '团队'), rows: team },
       { key: 'personal' as const, label: t('teamShare.scope.personal', '个人'), rows: personal },
-    ].filter((g) => g.rows.length > 0 || !q)
-  }, [skillRows, t, q])
+    ]
+  }, [skillRows, t])
 
   const otherRows = React.useMemo(() => {
     if (section === 'mcp') {
@@ -978,7 +1003,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         ? name.trim()
         : withDefaultExtension(name, KNOWLEDGE_DEFAULT_EXTENSION)
     setRootCreating(null)
-    if (!trimmed || !syncRoot) return
+    if (!trimmed || !knowledgeTabRoot) return
     const nameError = fileNameError(t, trimmed)
     if (nameError) {
       toast.error(nameError)
@@ -986,17 +1011,17 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     }
     const ok =
       rootCreating === 'folder'
-        ? await createNewFolder(syncRoot, trimmed)
-        : await createNewFile(syncRoot, trimmed)
+        ? await createNewFolder(knowledgeTabRoot, trimmed)
+        : await createNewFile(knowledgeTabRoot, trimmed)
     if (!ok) {
       toast.error(t('fileExplorer.createFailed', { name: trimmed, defaultValue: 'Could not create "{{name}}"' }))
       return
     }
     // The knowledge tree is its own root in the store — re-list THAT. The
     // workspace tree has nothing to do with this column any more.
-    await openExternalRoot(syncRoot)
+    await openExternalRoot(knowledgeTabRoot)
     void loadSection('knowledge', { force: true })
-    if (rootCreating !== 'folder') selectFile(joinPathLike(syncRoot, trimmed))
+    if (rootCreating !== 'folder') selectFile(joinPathLike(knowledgeTabRoot, trimmed))
   }
 
   return (
@@ -1183,6 +1208,37 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+          {section === 'skills' && subjectActorId && (
+            <QuickFilterChips
+              value={skillTab}
+              onChange={setSkillTab}
+              ariaLabel={t('teamShare.skillScopeFilter', '按来源筛选')}
+              testIdPrefix="skill-tab"
+              className="mt-2"
+              chips={skillGroups.map((group) => ({
+                value: group.key,
+                label: group.label,
+                count: group.rows.length,
+              }))}
+            />
+          )}
+        </div>
+      )}
+
+      {section === 'knowledge' && syncRoot && (
+        <div className="border-b border-border px-3 py-2">
+          <QuickFilterChips
+            value={knowledgeTab}
+            onChange={setKnowledgeTab}
+            ariaLabel={t('teamShare.knowledgeTabs', '资料库与知识库')}
+            testIdPrefix="knowledge-tab"
+            // No counts: 资料库 lists what the manifest knows as well as what
+            // is on disk, and a number from the disk alone would undercount.
+            chips={[
+              { value: 'documents' as const, label: t('teamShare.documentsTab', '资料库') },
+              { value: 'knowledge' as const, label: t('teamShare.knowledgeTab', '知识库') },
+            ]}
+          />
         </div>
       )}
 
@@ -1216,12 +1272,13 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                 : t('teamShare.selectAgentFirst', 'Select an Agent first')}
             </div>
           ) : (
-            skillGroups.map((group) => (
+            skillGroups.filter((group) => group.key === skillTab).map((group) => (
               <div key={group.key}>
-                <GroupHeader label={group.label} count={group.rows.length} />
                 {group.rows.length === 0 ? (
-                  <div className="px-4 pb-2 text-[11.5px] text-faint">
-                    {t('teamShare.skillGroupEmpty', 'None')}
+                  <div className="px-6 py-10 text-center text-[13px] text-muted-foreground">
+                    {q
+                      ? t('teamShare.skillNoMatch', '没有匹配的技能')
+                      : t('teamShare.skillTabEmpty', '这里还没有技能')}
                   </div>
                 ) : (
                   group.rows.map((row) => {
@@ -1232,36 +1289,9 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                         title={row.title}
                         meta={row.meta}
                         badge={row.badge}
-                        trailing={
-                          row.deletableSlug ? (
-                            <span className="flex items-center gap-1">
-                              {row.trailing}
-                              {/*
-                                A span, for the reason the chevron above is one:
-                                the row is itself a button and nesting another
-                                is invalid. Hidden until the row is hovered so a
-                                destructive action is not sitting under the
-                                cursor of everyone scrolling the list, and
-                                stopPropagation so reaching for it does not also
-                                select the row underneath.
-                              */}
-                              <span
-                                role="button"
-                                aria-label={t('teamShare.skillDeleteTeam', '从团队移除')}
-                                title={t('teamShare.skillDeleteTeam', '从团队移除')}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setDeleteTarget(row.deletableSlug!)
-                                }}
-                                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-faint opacity-0 transition-opacity hover:bg-muted hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </span>
-                            </span>
-                          ) : (
-                            row.trailing
-                          )
-                        }
+                        // No delete here: removing a skill from the team is
+                        // on its detail page, away from a list people scroll.
+                        trailing={row.trailing}
                         dimmed={row.dimmed}
                         expandable={Boolean(row.packDir)}
                         expanded={isExpanded}
@@ -1354,11 +1384,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             // delete / move all come from FileBrowser's existing context menu,
             // and clicking a file opens it exactly as it does in the workspace.
             <>
-            <WikiMaintainerCard published={wikiPublished} />
-            <KnowledgeInboxStrip />
+            {knowledgeTab === 'knowledge' && <KnowledgeInboxStrip />}
             <FileBrowser
+              key={knowledgeTab}
               variant="panel"
-              rootPath={syncRoot}
+              rootPath={knowledgeTabRoot ?? syncRoot}
               hideFileActions={false}
               hideToolbar
               filterText={query}
@@ -1481,17 +1511,13 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         `knowledge/`), so this bar would be describing somebody else's state in
         any other section. Same slot as the skills column's scan paths.
       */}
+      {/* Maintaining the wiki is an occasional, deliberate act — at the
+          bottom, out of the way of the notes, and only beside the wiki. */}
+      {section === 'knowledge' && syncRoot && knowledgeTab === 'knowledge' && (
+        <WikiMaintainerCard published={wikiPublished} />
+      )}
       {section === 'knowledge' && <KnowledgeSyncFooter />}
 
-      {deleteTarget && (
-        <DeleteTeamSkillDialog
-          slug={deleteTarget}
-          open
-          busy={deleting}
-          onCancel={() => setDeleteTarget(null)}
-          onConfirm={() => void runDeleteTeamSkill()}
-        />
-      )}
     </div>
   )
 }
