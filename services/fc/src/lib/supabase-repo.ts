@@ -54,6 +54,29 @@ import { encodeStorageObjectKeyForUrl } from "./storage-object-key.js";
  * until someone turns it off. See FeatureFlags.allowNewOrg for why this gates
  * "mint an org" rather than "create a team", and why it is FC-only.
  */
+/**
+ * Rows after the cursor in (updated_at desc, id desc) order.
+ *
+ * `updated_at < cursor` alone skipped every row sharing the last row's
+ * timestamp, and bulk writes do share one (a belayo team had two such pairs).
+ * The values are double-quoted for PostgREST's `or` grammar (a timestamp holds
+ * `:` and `+`); the cursor comes from the client, so anything that could close
+ * the quote is refused rather than escaped.
+ */
+export function applyWorkspaceKeysetCursor<Q extends { or(filter: string): Q; lt(column: string, value: string): Q }>(
+  query: Q,
+  cursor: { updatedAt: string; id?: string | null },
+): Q {
+  const updatedAt = String(cursor.updatedAt);
+  const id = cursor.id == null ? null : String(cursor.id);
+  const safe = (v: string) => /^[0-9A-Za-z:.+\- T]+$/.test(v);
+  if (!safe(updatedAt) || (id !== null && !safe(id))) {
+    throw new ApiError(400, "validation_failed", "Invalid cursor");
+  }
+  if (!id) return query.lt("updated_at", updatedAt);
+  return query.or(`updated_at.lt."${updatedAt}",and(updated_at.eq."${updatedAt}",id.lt."${id}")`);
+}
+
 function newOrgAllowed(): boolean {
   return resolveFeatures().allowNewOrg !== false;
 }
@@ -2637,7 +2660,7 @@ export function createSupabaseBusinessRepository(options) {
         query = query.eq("agent_id", agentId);
       }
       if (cursor?.updatedAt) {
-        query = query.lt("updated_at", cursor.updatedAt);
+        query = applyWorkspaceKeysetCursor(query, cursor);
       }
       const { data, error } = await query;
       if (error) throw error;

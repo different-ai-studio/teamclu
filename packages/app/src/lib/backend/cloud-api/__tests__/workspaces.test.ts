@@ -49,6 +49,30 @@ describe("workspaces module", () => {
     expect(out[0].archived).toBe(false);
   });
 
+  it("listDaemonWorkspaces follows nextCursor past the 200-row page cap", async () => {
+    // A team with more workspaces than one page: a folder on page 2 must not
+    // read as "not on this machine".
+    const page1 = Array.from({ length: 200 }, (_, i) => ({ ...cloudWorkspace, id: `w${i}` }));
+    const page2 = [{ ...cloudWorkspace, id: "w-app", path: "/Users/me/.amuxd/teams/t1/apps/a1", agentId: "agent-1" }];
+    const paths: string[] = [];
+    const client = {
+      async get(path: string) {
+        paths.push(path);
+        const cursor = new URLSearchParams(path.split("?")[1]).get("cursor");
+        if (!cursor) return { items: page1, nextCursor: "c1" } as never;
+        if (cursor === "c1") return { items: page2, nextCursor: null } as never;
+        throw new Error(`unexpected cursor ${cursor}`);
+      },
+    } as unknown as CloudApiClient;
+    const out = await createWorkspacesModule(client).listDaemonWorkspaces("t1", "agent-1");
+    expect(out).toHaveLength(201);
+    expect(out.at(-1)?.path).toBe("/Users/me/.amuxd/teams/t1/apps/a1");
+    expect(paths).toEqual([
+      "/v1/workspaces?teamId=t1&limit=200&agentId=agent-1",
+      "/v1/workspaces?teamId=t1&limit=200&agentId=agent-1&cursor=c1",
+    ]);
+  });
+
   it("createDaemonWorkspace calls POST /v1/workspaces", async () => {
     const client = mockClient({ "POST /v1/workspaces": cloudWorkspace });
     const mod = createWorkspacesModule(client);

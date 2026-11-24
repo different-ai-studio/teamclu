@@ -17,6 +17,11 @@ type CloudWorkspace = {
 
 type Page<T> = { items: T[]; nextCursor: string | null };
 
+/** The server's maximum `limit` for GET /v1/workspaces. */
+const WORKSPACE_PAGE_SIZE = 200;
+/** A guard against a cursor that never ends, not a size anyone should reach. */
+const MAX_WORKSPACE_PAGES = 50;
+
 function workspacePathFromCloud(row: Pick<CloudWorkspace, "path" | "slug">): string | null {
   return row.path?.trim() || row.slug?.trim() || null;
 }
@@ -58,10 +63,24 @@ export function createWorkspacesModule(client: CloudApiClient): WorkspacesBacken
       }));
     },
     async listDaemonWorkspaces(teamId, agentId) {
-      const params = new URLSearchParams({ teamId, limit: "200" });
-      if (agentId) params.set("agentId", agentId);
-      const page = await client.get<Page<CloudWorkspace>>(`/v1/workspaces?${params}`);
-      return page.items.map(mapWorkspace);
+      // Every page, not the first. Callers treat this as the whole list — "is
+      // this session's folder on this machine", "which row has this path" — and
+      // 200 is the server's page cap, not a bound on a team. A belayo team with
+      // 345 rows had its app checkout at position 274, so every session of
+      // that app showed an empty file tree ("读取不到该会话的工作目录").
+      const out: DaemonWorkspaceBackendRow[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < MAX_WORKSPACE_PAGES; page += 1) {
+        const params = new URLSearchParams({ teamId, limit: String(WORKSPACE_PAGE_SIZE) });
+        if (agentId) params.set("agentId", agentId);
+        if (cursor) params.set("cursor", cursor);
+        const res: Page<CloudWorkspace> = await client.get<Page<CloudWorkspace>>(`/v1/workspaces?${params}`);
+        out.push(...res.items.map(mapWorkspace));
+        cursor = res.nextCursor ?? null;
+        if (!cursor) return out;
+      }
+      console.warn(`[workspaces] stopped after ${MAX_WORKSPACE_PAGES} pages for team ${teamId}`);
+      return out;
     },
     async createDaemonWorkspace(input) {
       const row = await client.post<CloudWorkspace>("/v1/workspaces", {
