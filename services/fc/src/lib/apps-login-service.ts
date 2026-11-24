@@ -20,6 +20,7 @@ import {
 import { appAdmitsAnyAudience } from "./apps-auth-paths.js";
 import type { TenantIdentity, TenantVisitor } from "./apps-tenant-identity.js";
 import { isRateLimited, resolveClientIp } from "./rate-limit.js";
+import { ADMIN_TYPE } from "./admin-type.js";
 import { resolveFeatures } from "./routes/config.js";
 
 /**
@@ -188,7 +189,7 @@ type PhoneLoginUser = {
   id: string;
   org_id?: string | null;
   org_name?: string | null;
-  /** `public.users.admin_type`: 1 = member, >= 2 = staff. */
+  /** `public.users.admin_type` (ADR-0016): 1 guest, 2 member, 3 creator, 4 platform operator. */
   admin_type?: number;
   nickname?: string | null;
   email?: string | null;
@@ -639,17 +640,25 @@ function phoneCodePage(ctx: LoginContext, phone: string, error = "", status = 20
 }
 
 /**
- * What `public.users.admin_type` means to the person choosing.
+ * What `public.users.admin_type` means to the person choosing (ADR-0016).
  *
- * The column is the partner's, and only the 1 / >=2 split is documented
- * (`amux.caller_employee_orgs` draws the employee line at 2), so this says no
- * more than that split supports. An unknown value gets no label at all rather
- * than a guessed one.
+ * Every entry here sits in the same org, so the tier is what tells two of a
+ * person's identities apart. An unknown value gets no label at all rather than
+ * a guessed one.
  */
 function kindLabel(adminType: number | undefined): string {
-  if (adminType === 1) return "会员";
-  if (typeof adminType === "number" && adminType >= 2) return "员工";
-  return "";
+  switch (adminType) {
+    case ADMIN_TYPE.GUEST:
+      return "访客";
+    case ADMIN_TYPE.MEMBER:
+      return "成员";
+    case ADMIN_TYPE.CREATOR:
+      return "创建者";
+    case ADMIN_TYPE.PLATFORM_OPERATOR:
+      return "平台运营";
+    default:
+      return "";
+  }
 }
 
 function phoneAccountPage(

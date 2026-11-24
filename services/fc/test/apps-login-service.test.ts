@@ -731,8 +731,8 @@ test("phone login supports the repository's multi-account picker", async () => {
       // Every entry is in the SAME tenant now, so the org name is identical on
       // all of them and is not what the visitor is choosing between. The kind
       // of identity and the email are.
-      assert.match(pickerHtml, /会员/);
-      assert.match(pickerHtml, /员工/);
+      assert.match(pickerHtml, /访客/);
+      assert.match(pickerHtml, /成员/);
       assert.match(pickerHtml, /wang@x\.test/);
       assert.match(pickerHtml, /wang@corp\.test/);
       assert.doesNotMatch(pickerHtml, /研发部/, "the org name is the same on every row; showing it says nothing");

@@ -5837,12 +5837,32 @@
         }
       }
     },
-    "Super admin": {
+    "Creator": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "超级管理员"
+            "value": "创建者"
+          }
+        }
+      }
+    },
+    "Guest": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "访客"
+          }
+        }
+      }
+    },
+    "Platform operator": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "平台运营"
           }
         }
       }

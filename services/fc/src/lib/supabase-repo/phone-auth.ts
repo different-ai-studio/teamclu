@@ -32,6 +32,7 @@ import crypto from "crypto";
 
 import { ApiError } from "../http-utils.js";
 import { REALTIME_TRANSPORT_OPTS } from "./shared.js";
+import { ADMIN_TYPE, adminTypeOf, isMember } from "../admin-type.js";
 
 const PHONE_RE = /^1[3-9]\d{9}$/;
 
@@ -134,17 +135,17 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     db: { schema: "public" }, realtime: REALTIME_TRANSPORT_OPTS,
   });
 
-  // On belayo `public.users` is the partner's gym MEMBERSHIP table: one row per
-  // gym this person holds a card at (admin_type = 1). Those rows are not
-  // accounts anyone signs in to TeamClu as, and offering them turns the account
-  // picker into a list of every gym the person ever climbed at. Keep a row only
-  // when it is
-  //   - a live employee record (admin_type >= 2 — the same rule as
+  // A person can hold a guest identity (admin_type 1, ADR-0016) in many orgs —
+  // on a shared database, one per partner tenant they were ever a customer of.
+  // Guest rows are not accounts anyone signs in to TeamClu as, and offering
+  // them turns the account picker into a list of every such org. Keep a row
+  // only when it is
+  //   - a member identity (isMember — the same rule as
   //     amux.caller_employee_orgs(), which the team picker already applies), or
   //   - an identity that already holds an actor: a phone sign-up's own row is
-  //     admin_type 1 yet owns the teams it created.
+  //     a guest yet owns the teams it created.
   // When nothing survives, fall back to the unfiltered rows so a person who only
-  // has membership rows signs in exactly as before.
+  // has guest rows signs in exactly as before.
   async function accountsForPicker(rows: any[]): Promise<any[]> {
     if (rows.length <= 1) return rows;
     const { data: actorRows, error } = await admin
@@ -158,15 +159,14 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
       return rows;
     }
     const withActor = new Set((actorRows ?? []).map((a: any) => a.user_id));
-    const kept = rows.filter((r) => Number(r.admin_type ?? 0) >= 2 || withActor.has(r.id));
+    const kept = rows.filter((r) => isMember(adminTypeOf(r)) || withActor.has(r.id));
     return kept.length > 0 ? kept : rows;
   }
 
-  // A row TeamClu may sign in as when staff-only is on: admin_type >= 2 — a
-  // partner employee record, a tenant creator (3) or an invited member (2).
-  // Keep in step with amux.is_teamclu_identity().
+  // A row TeamClu may sign in as when staff-only is on: a member, creator or
+  // platform operator (ADR-0016). Keep in step with amux.is_teamclu_identity().
   function isTeamCluIdentity(r: any): boolean {
-    return Number(r.admin_type ?? 0) >= 2;
+    return isMember(adminTypeOf(r));
   }
 
   // Staff-only is a database setting, shared with the team switch and the
@@ -243,18 +243,17 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     // predicate costs nothing to apply locally and the query stays a plain
     // equality that every caller of this module can reason about.
     //
-    // Member rows first. Since every TeamClu identity is its own account
-    // (docs/plans/2026-10-08-staff-only-identity-model.md), a staff row's
-    // account is that org's identity; an app sign-up must not hang a member
+    // Guest rows first. Since every TeamClu identity is its own account
+    // (docs/plans/2026-10-08-staff-only-identity-model.md), a member row's
+    // account is that org's identity; an app sign-up must not hang a guest
     // row in another tenant off it.
-    const rows = [...(data ?? [])].sort(
-      (a: any, b: any) => Number(Number(a.admin_type ?? 1) !== 1) - Number(Number(b.admin_type ?? 1) !== 1),
-    );
+    const isGuest = (r: any) => Number(r.admin_type ?? ADMIN_TYPE.GUEST) === ADMIN_TYPE.GUEST;
+    const rows = [...(data ?? [])].sort((a: any, b: any) => Number(!isGuest(a)) - Number(!isGuest(b)));
     return rows.map((r: any) => r.auth_user_id).find((id: any) => !!id) ?? null;
   }
 
   /**
-   * Claim an unbound identity row for this auth user — MEMBER ROWS ONLY.
+   * Claim an unbound identity row for this auth user — GUEST ROWS ONLY.
    *
    * Binding is how a partner row that has never signed in becomes reachable:
    * 550,666 of 629,445 rows carry no `auth_user_id`, and the gateway resolves a
@@ -263,10 +262,10 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
    * recycled — so whoever verifies an SMS on a recycled number would inherit
    * whatever the previous holder had.
    *
-   * Hence `admin_type === 1` only, by product decision: inheriting a membership
-   * is a nuisance, inheriting a coach's or an accountant's staff row is a
-   * privilege escalation, and staff rows are exactly what the `org` audience
-   * admits an app on. A staff row stays unbound and someone has to grant it.
+   * Hence guests (admin_type 1) only, by product decision: inheriting a guest
+   * identity is a nuisance, inheriting someone's member row is a privilege
+   * escalation, and member rows are exactly what the `org` audience admits an
+   * app on. A member row stays unbound and someone has to grant it.
    *
    * The `is("auth_user_id", null)` guard is not redundant with the early
    * return: two concurrent logins on one number would otherwise race, and the
@@ -302,9 +301,9 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     return { authId: created.user.id, created: true };
   }
 
-  async function bindMemberIdentity(user: any, authId: string): Promise<boolean> {
+  async function bindGuestIdentity(user: any, authId: string): Promise<boolean> {
     if (user.auth_user_id) return true;
-    if (Number(user.admin_type ?? 0) !== 1) return false;
+    if (adminTypeOf(user) !== ADMIN_TYPE.GUEST) return false;
     const { error } = await admin
       .from("users")
       .update({ auth_user_id: authId })
@@ -509,12 +508,11 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
       //
       // `accountsForPicker` is skipped under tenant scoping, and its own
       // rationale is why: it exists because an unscoped picker "turns into a
-      // list of every gym the person ever climbed at", which is a statement
-      // about rows in OTHER orgs. Inside one tenant there is no such list —
-      // there are at most a couple of rows, the org filter has already done the
-      // narrowing, and dropping the member row would leave someone who holds
-      // both a membership and a staff record with no way to sign in as a
-      // member at all.
+      // list of every such org", which is a statement about rows in OTHER
+      // orgs. Inside one tenant there is no such list — there are at most a
+      // couple of rows, the org filter has already done the narrowing, and
+      // dropping the guest row would leave someone who holds both a guest and
+      // a member identity with no way to sign in as the guest at all.
       const explicitPick = !!(userId && userId.trim() !== "");
       // Staff-only governs TeamClu's own sign-in, never an app's login page.
       const platformStaffOnly = !tenantOrgId && (await staffOnlyEnabled());
@@ -533,8 +531,8 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
       if (users && users.length > 1) {
         // `admin_type` rides along so a picker narrowed to ONE org still tells
         // its entries apart: within a tenant the org name is the same on every
-        // row, and what actually differs is the kind of identity (1 = member,
-        // >=2 = staff) and the email. 1,220 phone numbers hold two rows in one
+        // row, and what actually differs is the kind of identity (ADR-0016:
+        // 1 = guest, >= 2 = member) and the email. 1,220 phone numbers hold two rows in one
         // org today, 795 of them differing by admin_type and 796 by email.
         const picker = users.map((u: any) => ({
           id: u.id,
@@ -560,15 +558,15 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
 
         // An unbound row has no auth user behind it, and `user.id` is then just
         // a partner uuid — `getUserById` on it fails. Claim it instead, which
-        // is only allowed for a member row (see bindMemberIdentity). Checked
-        // BEFORE ensuring an auth user, so a staff row never causes one to be
+        // is only allowed for a guest row (see bindGuestIdentity). Checked
+        // BEFORE ensuring an auth user, so a member row never causes one to be
         // minted for a number that is not entitled to sign in.
         if (!user.auth_user_id) {
-          if (Number(user.admin_type ?? 0) !== 1) {
+          if (adminTypeOf(user) !== ADMIN_TYPE.GUEST) {
             throw new ApiError(403, "forbidden", "该账号尚未开通手机号登录，请联系管理员");
           }
           const { authId: ensured } = await ensureAuthUserForPhone(phone);
-          await bindMemberIdentity(user, ensured);
+          await bindGuestIdentity(user, ensured);
           if (!user.auth_user_id) {
             throw new ApiError(403, "forbidden", "该账号尚未开通手机号登录，请联系管理员");
           }
@@ -648,12 +646,11 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
           org_id: signupOrgId,
           mobile: phone,
           auth_user_id: authId,
-          // Decided by the product owner over this module's objection: on
-          // belayo `public.users` is the partner's membership table and
-          // admin_type 1 reads as "holds a card at this gym", which is not true
-          // of someone who only signed in to an app. Recorded here because the
-          // row it writes is indistinguishable from a real membership.
-          admin_type: 1,
+          // A guest (ADR-0016): someone who signed in to an app has an
+          // identity in its org but is not a member of it. On a shared
+          // database the partner may read admin_type 1 as one of its own
+          // customers; the row is indistinguishable from those.
+          admin_type: ADMIN_TYPE.GUEST,
           nickname,
         })
         .select()
