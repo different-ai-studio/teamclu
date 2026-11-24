@@ -744,11 +744,6 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           meta: metaParts.filter(Boolean).join(' · ') || undefined,
           badge: (
             <span className="flex shrink-0 items-center gap-1">
-              {s.kind === 'team-available' ? (
-                <span className="rounded border border-border px-1.5 py-0.5 text-[9.5px] font-semibold text-muted-foreground">
-                  {t('teamShare.skillNotInstalledBadge', '未安装')}
-                </span>
-              ) : null}
               {s.status === 'deprecated' ? (
                 <span className="rounded bg-muted px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">
                   {t('teamShare.skillDeprecated', 'Deprecated')}
