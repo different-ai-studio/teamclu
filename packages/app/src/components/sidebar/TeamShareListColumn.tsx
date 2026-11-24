@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
 import { QuickFilterChips } from '@/components/ui/quick-filter-chips'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -21,6 +22,7 @@ import {
   Bot,
   ChevronDown,
   Trash2,
+  Download,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -466,6 +468,27 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   // Skills show one trust boundary at a time — team or personal — as tabs atop
   // the list, the way apps and contacts do, rather than two stacked groups.
   const [skillTab, setSkillTab] = React.useState<'team' | 'personal'>('team')
+  const [installingSkill, setInstallingSkill] = React.useState<string | null>(null)
+  const installSkill = useTeamShareBrowserStore((s) => s.installSkill)
+  const subjectAgentOffline =
+    !!subjectActorId &&
+    presenceByActor[subjectActorId]?.online !== true &&
+    resolveAgentDevicePresenceSync(subjectActorId) === 'offline'
+  /** Install a team skill on the selected Agent straight from its row. */
+  const installFromRow = React.useCallback(
+    async (slug: string) => {
+      if (installingSkill) return
+      setInstallingSkill(slug)
+      try {
+        await installSkill(slug)
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : String(e))
+      } finally {
+        setInstallingSkill(null)
+      }
+    },
+    [installSkill, installingSkill],
+  )
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [wikiPublished, setWikiPublished] = React.useState<boolean | undefined>(undefined)
 
@@ -721,9 +744,9 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           meta: metaParts.filter(Boolean).join(' · ') || undefined,
           badge: (
             <span className="flex shrink-0 items-center gap-1">
-              {s.kind === 'team-installed' ? (
-                <span className="rounded border border-border bg-paper px-1.5 py-0.5 text-[9.5px] font-semibold text-muted-foreground">
-                  {t('teamShare.scope.team', '团队')}
+              {s.kind === 'team-available' ? (
+                <span className="rounded border border-border px-1.5 py-0.5 text-[9.5px] font-semibold text-muted-foreground">
+                  {t('teamShare.skillNotInstalledBadge', '未安装')}
                 </span>
               ) : null}
               {s.status === 'deprecated' ? (
@@ -733,7 +756,8 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
               ) : null}
             </span>
           ),
-          dimmed: s.status === 'deprecated',
+          // Not installed reads like an app not downloaded: dimmed, not hidden.
+          dimmed: s.status === 'deprecated' || s.kind === 'team-available',
           deletableSlug: teamSkillDeletableSlug(canManageTeam, s.origin, s.slug),
           // Three states, and only one of them is asking for anything.
           //
@@ -745,7 +769,42 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           // where everything else is muted. That contrast is the emphasis;
           // coral is the brand accent, not a warning colour (AGENTS.md).
           trailing:
-            s.kind === 'team-installed' ? (
+            s.kind === 'team-available' ? (
+              // A span, not a button: the row is itself a button.
+              <span
+                role="button"
+                tabIndex={0}
+                data-testid={`skill-install-${s.slug}`}
+                aria-disabled={subjectAgentOffline || installingSkill !== null}
+                title={
+                  subjectAgentOffline
+                    ? t('common.offline', '离线')
+                    : t('teamShare.skillInstallHint', '这个团队技能还没装到当前 Agent，点击安装')
+                }
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (subjectAgentOffline) return
+                  void installFromRow(s.slug)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (!subjectAgentOffline) void installFromRow(s.slug)
+                }}
+                className={cn(
+                  'flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-[11.5px] text-muted-foreground transition-colors hover:bg-selected hover:text-foreground',
+                  subjectAgentOffline && 'cursor-not-allowed opacity-50',
+                )}
+              >
+                {installingSkill === s.slug ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+                {t('teamShare.skillInstall', '安装')}
+              </span>
+            ) : s.kind === 'team-installed' ? (
               localState[s.slug]?.state === 'foreign' ? (
                 <AlertTriangle
                   className="h-[15px] w-[15px] text-foreground"
@@ -773,13 +832,15 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             ) : undefined,
         }
       })
-  }, [section, q, skills.items, localState, canManageTeam, t])
+  }, [section, q, skills.items, localState, canManageTeam, t, installingSkill, installFromRow, subjectAgentOffline])
 
   /** Team and personal are different trust boundaries, so they get their own tabs. */
   const skillGroups = React.useMemo(() => {
-    const team = skillRows.filter(
-      (r) => r.kind === 'team-installed' || r.kind === 'team-available',
-    )
+    // Installed first, then the rest of the team's catalog — each by name.
+    const team = [
+      ...skillRows.filter((r) => r.kind === 'team-installed'),
+      ...skillRows.filter((r) => r.kind === 'team-available'),
+    ]
     const personal = skillRows.filter((r) => r.kind === 'personal')
     return [
       { key: 'team' as const, label: t('teamShare.scope.team', '团队'), rows: team },
