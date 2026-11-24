@@ -72,16 +72,34 @@ export function AppSessionsColumn({ app }: { app: AppRow }) {
   const [sessions, setSessions] = React.useState<AppSessionRow[]>([])
   const [loading, setLoading] = React.useState(false)
   const [creating, setCreating] = React.useState(false)
+  // Set once the user opens or creates a session here, so the first load
+  // landing late never pulls them off the one they picked.
+  const userPickedRef = React.useRef(false)
+  // The row, not the id: it changes on every deploy or rename, which must not
+  // refetch the list.
+  const appRef = React.useRef(app)
+  appRef.current = app
 
   React.useEffect(() => {
     let cancelled = false
+    userPickedRef.current = false
     setLoading(true)
     void getBackend()
       .apps.listAppSessions(app.id)
       .then((rows) => {
         if (cancelled) return
-        setSessions(sortAppSessionsForDisplay(rows))
+        const sorted = sortAppSessionsForDisplay(rows)
+        setSessions(sorted)
         upsertAppSessionsIntoList(app.id, rows)
+        // Drilling into an app opens its top session, as picking a chat does.
+        // Not when there is none, not when the user already picked one while
+        // this loaded, and not when the open session is already this app's —
+        // coming back to the app you were in should not move you.
+        const first = sorted[0]
+        if (!first || userPickedRef.current) return
+        const active = useSessionSelectionStore.getState().activeSessionId
+        if (active && sorted.some((row) => row.id === active)) return
+        void openSessionRef.current(appRef.current, first.id)
       })
       .catch((e) => {
         console.error('[AppSessionsColumn] failed to load sessions', e)
@@ -103,6 +121,7 @@ export function AppSessionsColumn({ app }: { app: AppRow }) {
       // still until they came back. It registers before its first await, so a
       // runtime start triggered by the switch waits for it (app-session-setup);
       // after a first open it costs nothing.
+      userPickedRef.current = true
       const setup = openAppSession(targetApp, sessionId).then(
         () => true,
         (e: unknown) => {
@@ -133,8 +152,14 @@ export function AppSessionsColumn({ app }: { app: AppRow }) {
     [],
   )
 
+  // The load effect reads it through a ref, so it does not re-run (and
+  // re-fetch) whenever this is recreated.
+  const openSessionRef = React.useRef(openSession)
+  openSessionRef.current = openSession
+
   const handleCreateSession = React.useCallback(async () => {
     if (creating) return
+    userPickedRef.current = true
     setCreating(true)
     try {
       const sessionId = await createAppSessionShell(app)
