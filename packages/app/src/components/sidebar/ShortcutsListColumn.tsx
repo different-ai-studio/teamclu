@@ -5,7 +5,7 @@ import {
   ChevronRight,
   Keyboard,
   Plus,
-  RefreshCw,
+  Search,
   Settings,
 } from 'lucide-react'
 import { LucideIconByName } from '@/components/icons/LucideIconByName'
@@ -26,6 +26,28 @@ function collectFolderIds(nodes: ShortcutNode[], out = new Set<string>()) {
   for (const node of nodes) {
     if (node.type === 'folder') out.add(node.id)
     if (node.children?.length) collectFolderIds(node.children, out)
+  }
+  return out
+}
+
+/**
+ * The tree narrowed to `query`: a folder whose name matches keeps everything
+ * under it, and a match deeper down keeps the folders on the way to it.
+ * Exported for tests.
+ */
+export function filterShortcutTree(nodes: ShortcutNode[], query: string): ShortcutNode[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return nodes
+  const out: ShortcutNode[] = []
+  for (const node of nodes) {
+    if (node.label.toLowerCase().includes(needle)) {
+      out.push(node)
+      continue
+    }
+    if (node.type === 'folder' && node.children?.length) {
+      const children = filterShortcutTree(node.children, query)
+      if (children.length > 0) out.push({ ...node, children })
+    }
   }
   return out
 }
@@ -128,28 +150,37 @@ export function ShortcutsListColumn() {
   const sidebarCollapsed = sidebarState === 'collapsed'
   const personalNodes = useShortcutsStore((s) => s.personalNodes)
   const teamNodes = useShortcutsStore((s) => s.teamNodes)
+  // The team's shortcuts reload whenever this column opens, quietly — that is
+  // what the refresh button used to be for, and nobody needs to press it.
   const loadTeamForCurrentTeam = useShortcutsStore((s) => s.loadTeamForCurrentTeam)
-  const personalTree = React.useMemo(() => buildTree(personalNodes, null), [personalNodes])
-  const teamTree = React.useMemo(() => buildTree(teamNodes, null), [teamNodes])
+  const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
+  React.useEffect(() => {
+    if (teamId) void loadTeamForCurrentTeam(teamId)
+  }, [teamId, loadTeamForCurrentTeam])
+  const [query, setQuery] = React.useState('')
+  const [searchOpen, setSearchOpen] = React.useState(false)
+  const searching = query.trim() !== ''
+  const fullPersonalTree = React.useMemo(() => buildTree(personalNodes, null), [personalNodes])
+  const fullTeamTree = React.useMemo(() => buildTree(teamNodes, null), [teamNodes])
+  const personalTree = React.useMemo(() => filterShortcutTree(fullPersonalTree, query), [fullPersonalTree, query])
+  const teamTree = React.useMemo(() => filterShortcutTree(fullTeamTree, query), [fullTeamTree, query])
   const activeTab = useTabsStore(selectActiveTab)
   const tabs = useTabsStore((s) => s.tabs)
   const openSettings = useUIStore((s) => s.openSettings)
-  const folderIds = React.useMemo(
-    () => Array.from(collectFolderIds([...personalTree, ...teamTree])).sort(),
-    [personalTree, teamTree],
+  // Collapsed by default: a long tree opened in full buried the folder you
+  // wanted under every other folder's contents. What you open stays open.
+  const [expandedIds, setExpandedIds] = React.useState<Set<string>>(() => new Set())
+  // While searching, every folder left in the narrowed tree is open — the
+  // point is to see the matches. Clearing the search gives back what you had.
+  const searchExpandedIds = React.useMemo(
+    () => (searching ? collectFolderIds([...personalTree, ...teamTree]) : null),
+    [searching, personalTree, teamTree],
   )
-  const folderKey = folderIds.join('\u0000')
-  const [expandedIds, setExpandedIds] = React.useState<Set<string>>(
-    () => new Set(folderIds),
-  )
-
-  React.useEffect(() => {
-    setExpandedIds((current) => new Set([...current, ...folderIds]))
-  }, [folderKey])
+  const visibleExpandedIds = searchExpandedIds ?? expandedIds
 
   const openTargets = React.useMemo(() => new Set(tabs.map((tab) => tab.target)), [tabs])
   const activeTarget = activeTab?.target ?? null
-  const totalCount = personalTree.length + teamTree.length
+  const totalCount = fullPersonalTree.length + fullTeamTree.length
 
   const handleToggleFolder = (id: string) => {
     setExpandedIds((current) => {
@@ -174,11 +205,6 @@ export function ShortcutsListColumn() {
     else open()
   }
 
-  const handleRefreshTeam = async () => {
-    const teamId = useCurrentTeamStore.getState().team?.id ?? null
-    if (teamId) await loadTeamForCurrentTeam(teamId)
-  }
-
   const renderTree = (nodes: ShortcutNode[]) => (
     <div className="flex flex-col gap-0.5 px-2">
       {nodes.map((node) => (
@@ -188,7 +214,7 @@ export function ShortcutsListColumn() {
           level={0}
           activeTarget={activeTarget}
           openTargets={openTargets}
-          expandedIds={expandedIds}
+          expandedIds={visibleExpandedIds}
           onToggleFolder={handleToggleFolder}
           onSelect={handleSelect}
         />
@@ -216,11 +242,18 @@ export function ShortcutsListColumn() {
             type="button"
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-foreground"
-            onClick={() => void handleRefreshTeam()}
-            title={t('shortcuts.refreshTeam', 'Refresh Team Shortcuts')}
+            className={cn(
+              'h-7 w-7 text-muted-foreground hover:text-foreground',
+              searchOpen && 'bg-selected text-foreground',
+            )}
+            onClick={() => {
+              setSearchOpen((open) => !open)
+              setQuery('')
+            }}
+            title={t('common.search', 'Search')}
+            aria-label={t('common.search', 'Search')}
           >
-            <RefreshCw className="h-4 w-4" />
+            <Search className="h-4 w-4" />
           </Button>
           <Button
             type="button"
@@ -234,6 +267,18 @@ export function ShortcutsListColumn() {
           </Button>
         </div>
       </div>
+      {searchOpen && (
+        <div className="border-b border-border px-3 py-2">
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('shortcuts.searchPlaceholder', '搜索快捷方式')}
+            aria-label={t('shortcuts.searchPlaceholder', '搜索快捷方式')}
+            className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-[13px] outline-none focus:border-coral/60"
+          />
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-1.5">
         {personalTree.length > 0 ? (
           <>
@@ -246,6 +291,11 @@ export function ShortcutsListColumn() {
             <SectionDivider label={t('shortcuts.team', 'Team')} count={teamTree.length} />
             {renderTree(teamTree)}
           </>
+        ) : null}
+        {searching && totalCount > 0 && personalTree.length + teamTree.length === 0 ? (
+          <div className="px-6 py-10 text-center text-[13px] text-muted-foreground">
+            {t('shortcuts.noMatch', '没有匹配的快捷方式')}
+          </div>
         ) : null}
         {totalCount === 0 ? (
           <div className="flex flex-col items-center justify-center px-6 py-10 text-center">

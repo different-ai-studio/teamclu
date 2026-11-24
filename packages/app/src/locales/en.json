@@ -3746,7 +3746,8 @@
   "shortcuts": {
     "personal": "Personal",
     "team": "Team",
-    "refreshTeam": "Refresh Team Shortcuts"
+    "searchPlaceholder": "Search shortcuts",
+    "noMatch": "No matching shortcuts"
   },
   "diff": {
     "agentActions": "Agent Actions",

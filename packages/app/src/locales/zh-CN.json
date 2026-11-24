@@ -3746,7 +3746,8 @@
   "shortcuts": {
     "personal": "个人",
     "team": "团队",
-    "refreshTeam": "刷新团队快捷方式"
+    "searchPlaceholder": "搜索快捷方式",
+    "noMatch": "没有匹配的快捷方式"
   },
   "diff": {
     "agentActions": "助手操作",
