@@ -13,13 +13,30 @@ public actor CloudAPITeamAppRepository: TeamAppRepository {
     }
 
     public func listApps(teamID: String) async throws -> [TeamAppRecord] {
-        // No cursor on this endpoint — the server caps at `limit` and orders
-        // newest first. 100 is its own default, restated so a later change to
-        // that default does not silently change what a phone shows.
-        let page: CloudTeamAppList = try await client.get(
-            "/v1/apps?teamId=\(Self.enc(teamID))&limit=100"
-        )
-        return page.items.map(\.record)
+        // Every page, newest first: 100 is the server's page cap, not a bound
+        // on a team. A server from before paging sends no `nextCursor`, which
+        // ends this after one page. The page bound only guards against a
+        // cursor that never ends.
+        let base = "/v1/apps?teamId=\(Self.enc(teamID))&limit=100"
+        var records: [TeamAppRecord] = []
+        var cursor: String?
+        for _ in 0..<Self.maxPages {
+            let path = cursor.map { "\(base)&cursor=\(Self.encQuery($0))" } ?? base
+            let page: CloudTeamAppList = try await client.get(path)
+            records.append(contentsOf: page.items.map(\.record))
+            guard let next = page.nextCursor, !next.isEmpty else { break }
+            cursor = next
+        }
+        return records
+    }
+
+    private static let maxPages = 50
+
+    /// A query value: unlike `enc`, also escapes `&`, `=` and `+`.
+    private static func encQuery(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     public func getApp(appID: String) async throws -> TeamAppRecord {
@@ -67,6 +84,7 @@ public actor CloudAPITeamAppRepository: TeamAppRepository {
 
 private struct CloudTeamAppList: Decodable, Sendable {
     let items: [CloudTeamApp]
+    let nextCursor: String?
 }
 
 private struct CloudTeamAppSessionList: Decodable, Sendable {

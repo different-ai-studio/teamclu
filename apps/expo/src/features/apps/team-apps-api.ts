@@ -126,6 +126,8 @@ export type TeamAppsApi = {
   listAppSessions: (appId: string) => Promise<TeamAppSession[]>;
 };
 
+const MAX_APP_PAGES = 50;
+
 export function createTeamAppsApi(args: {
   getAccessToken: () => Promise<string | null>;
   baseUrl?: string;
@@ -140,13 +142,21 @@ export function createTeamAppsApi(args: {
 
   return {
     async listApps(teamId) {
-      // No cursor on this endpoint — the server caps at `limit`, newest
-      // first. 100 is its own default, restated so a later change to it does
-      // not silently change what a phone shows.
-      const page = await client.get<{ items?: CloudTeamApp[] | null }>(
-        `/v1/apps?teamId=${enc(teamId)}&limit=100`,
-      );
-      return (page?.items ?? []).map(toTeamApp);
+      // Every page, newest first: 100 is the server's page cap, not a bound
+      // on a team. A server from before paging sends no `nextCursor`, which
+      // ends this after one page. The page bound only guards against a cursor
+      // that never ends.
+      const out: TeamApp[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < MAX_APP_PAGES; page += 1) {
+        const path: string =
+          `/v1/apps?teamId=${enc(teamId)}&limit=100` + (cursor ? `&cursor=${enc(cursor)}` : "");
+        const res: { items?: CloudTeamApp[] | null; nextCursor?: string | null } = await client.get(path);
+        out.push(...(res?.items ?? []).map(toTeamApp));
+        cursor = res?.nextCursor || null;
+        if (!cursor) break;
+      }
+      return out;
     },
 
     async getApp(appId) {
