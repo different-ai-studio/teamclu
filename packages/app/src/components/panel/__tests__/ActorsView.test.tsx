@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { ActorsView, compareMembersByRoleThenName, matchesActorTypeFilter, memberTeamRolePill } from '../ActorsView'
+import { ActorsView, compareMembersByRoleThenName, memberTeamRolePill } from '../ActorsView'
 import { patchActorAvatar, useActorDirectoryStore, type ActorRow } from '@/stores/actor-directory-store'
 import { useActorDetailStore } from '@/stores/actor-detail-store'
 import { useUIStore } from '@/stores/ui'
@@ -79,15 +79,16 @@ describe('ActorsView', () => {
     render(<ActorsView />)
     await waitFor(() => expect(screen.getByText('Contacts')).toBeInTheDocument())
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument())
-    expect(screen.getByText('Reviewer')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Run on another computer' })).toBeInTheDocument()
     expect(screen.getByText('Member')).toBeInTheDocument()
-    expect(screen.getAllByText('Agent').length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText('online')).not.toBeInTheDocument()
     expect(screen.queryByText('offline')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Search')).toBeInTheDocument()
-    expect(screen.getByLabelText('Filter by type')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Alice/ })).toHaveClass('hover:bg-selected')
+
+    fireEvent.click(screen.getByTestId('actor-tab-agent'))
+    expect(screen.getByText('Reviewer')).toBeInTheDocument()
+    expect(screen.queryByText('Alice')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run on another computer' })).toBeInTheDocument()
   })
 
   it('shows owner and admin role pills for members from roles[]', async () => {
@@ -180,52 +181,32 @@ describe('ActorsView', () => {
     ])
   })
 
-  it('groups members before agents with section headers when unfiltered', async () => {
+  it('shows one kind per tab, starting on the team, with no section headers', async () => {
     mockActorsRows([
-      {
-        id: 'a-2',
-        actor_type: 'agent',
-        display_name: 'Zed',
-        member_status: null,
-        agent_status: 'online',
-        last_active_at: null,
-      },
-      {
-        id: 'a-1',
-        actor_type: 'member',
-        display_name: 'Alice',
-        member_status: 'active',
-        agent_status: null,
-        last_active_at: null,
-      },
-      {
-        id: 'a-3',
-        actor_type: 'agent',
-        display_name: 'Bob',
-        member_status: null,
-        agent_status: 'online',
-        last_active_at: null,
-      },
+      { id: 'a-2', actor_type: 'agent', display_name: 'Zed', member_status: null, agent_status: 'online', last_active_at: null },
+      { id: 'a-1', actor_type: 'member', display_name: 'Alice', member_status: 'active', agent_status: null, last_active_at: null },
+      { id: 'a-3', actor_type: 'agent', display_name: 'Bob', member_status: null, agent_status: 'online', last_active_at: null },
     ])
 
     render(<ActorsView />)
 
     await waitFor(() => expect(screen.getByRole('button', { name: /Alice/ })).toBeInTheDocument())
-    const actorButtons = screen.getAllByRole('button').filter((button) =>
-      ['Alice', 'Bob', 'Zed'].some((name) => button.textContent?.includes(name)),
-    )
+    expect(screen.getByTestId('actor-tab-member')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('actor-tab-member')).toHaveTextContent('Team1')
+    expect(screen.getByTestId('actor-tab-agent')).toHaveTextContent('Agent2')
+    expect(screen.queryByTestId('actor-tab-external')).not.toBeInTheDocument()
+    expect(screen.queryByText('Zed')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Filter by type', { selector: 'button' })).not.toBeInTheDocument()
 
-    expect(actorButtons.map((button) => button.textContent ?? '')).toEqual([
-      expect.stringContaining('Alice'),
+    fireEvent.click(screen.getByTestId('actor-tab-agent'))
+    const agentButtons = screen.getAllByRole('button').filter((button) =>
+      ['Bob', 'Zed'].some((name) => button.textContent?.includes(name)),
+    )
+    expect(agentButtons.map((button) => button.textContent ?? '')).toEqual([
       expect.stringContaining('Bob'),
       expect.stringContaining('Zed'),
     ])
-    expect(
-      screen.getByText((_, el) => el?.textContent?.replace(/\s+/g, ' ').trim() === 'Team · 1'),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText((_, el) => el?.textContent?.replace(/\s+/g, ' ').trim() === 'Agent · 2'),
-    ).toBeInTheDocument()
+    expect(screen.queryByText('Alice')).not.toBeInTheDocument()
   })
 
   it('renders empty state when no actors', async () => {
@@ -255,6 +236,8 @@ describe('ActorsView', () => {
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument())
     expect(screen.queryByText('wodi9vSQAAU8frf71')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/Contacts\s*·\s*1/)
+    // A tab of their own, offered only because there is one.
+    expect(screen.getByTestId('actor-tab-external')).toHaveTextContent('External1')
   })
 
   // Clicking a row used to jump straight into a new draft session addressed to
@@ -314,11 +297,8 @@ describe('ActorsView', () => {
 
     render(<ActorsView />)
 
-    // The row is only reachable under the external filter.
-    await waitFor(() => expect(screen.getByLabelText('Filter by type')).toBeInTheDocument())
-    fireEvent.click(screen.getByLabelText('Filter by type'))
-    await waitFor(() => expect(screen.getByText('External')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('External'))
+    // The row is only reachable under the external tab.
+    fireEvent.click(await screen.findByTestId('actor-tab-external'))
 
     const row = await screen.findByRole('button', { name: /Kefu Wang/ })
     fireEvent.click(row)
@@ -416,22 +396,5 @@ describe('memberTeamRolePill', () => {
     expect(memberTeamRolePill({ team_role: 'owner' })).toBe('owner')
     expect(memberTeamRolePill({ team_role: 'member' })).toBeNull()
     expect(memberTeamRolePill({})).toBeNull()
-  })
-})
-
-describe('matchesActorTypeFilter', () => {
-  it('excludes external contacts from "all"', () => {
-    expect(matchesActorTypeFilter('member', 'all')).toBe(true)
-    expect(matchesActorTypeFilter('agent', 'all')).toBe(true)
-    expect(matchesActorTypeFilter('external', 'all')).toBe(false)
-  })
-
-  it('matches exactly for every explicit kind', () => {
-    expect(matchesActorTypeFilter('external', 'external')).toBe(true)
-    expect(matchesActorTypeFilter('member', 'external')).toBe(false)
-    expect(matchesActorTypeFilter('agent', 'agent')).toBe(true)
-    expect(matchesActorTypeFilter('external', 'agent')).toBe(false)
-    expect(matchesActorTypeFilter('member', 'member')).toBe(true)
-    expect(matchesActorTypeFilter('agent', 'member')).toBe(false)
   })
 })

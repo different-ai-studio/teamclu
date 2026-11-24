@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { QuickFilterChips } from '@/components/ui/quick-filter-chips'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import {
@@ -462,6 +463,9 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
 
   const [query, setQuery] = React.useState('')
+  // Skills show one trust boundary at a time — team or personal — as tabs atop
+  // the list, the way apps and contacts do, rather than two stacked groups.
+  const [skillTab, setSkillTab] = React.useState<'team' | 'personal'>('team')
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [wikiPublished, setWikiPublished] = React.useState<boolean | undefined>(undefined)
 
@@ -771,7 +775,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       })
   }, [section, q, skills.items, localState, canManageTeam, t])
 
-  /** Team and personal are different trust boundaries, so they get their own groups. */
+  /** Team and personal are different trust boundaries, so they get their own tabs. */
   const skillGroups = React.useMemo(() => {
     const team = skillRows.filter(
       (r) => r.kind === 'team-installed' || r.kind === 'team-available',
@@ -780,8 +784,8 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     return [
       { key: 'team' as const, label: t('teamShare.scope.team', '团队'), rows: team },
       { key: 'personal' as const, label: t('teamShare.scope.personal', '个人'), rows: personal },
-    ].filter((g) => g.rows.length > 0 || !q)
-  }, [skillRows, t, q])
+    ]
+  }, [skillRows, t])
 
   const otherRows = React.useMemo(() => {
     if (section === 'mcp') {
@@ -1183,6 +1187,20 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+          {section === 'skills' && subjectActorId && (
+            <QuickFilterChips
+              value={skillTab}
+              onChange={setSkillTab}
+              ariaLabel={t('teamShare.skillScopeFilter', '按来源筛选')}
+              testIdPrefix="skill-tab"
+              className="mt-2"
+              chips={skillGroups.map((group) => ({
+                value: group.key,
+                label: group.label,
+                count: group.rows.length,
+              }))}
+            />
+          )}
         </div>
       )}
 
@@ -1216,12 +1234,13 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                 : t('teamShare.selectAgentFirst', 'Select an Agent first')}
             </div>
           ) : (
-            skillGroups.map((group) => (
+            skillGroups.filter((group) => group.key === skillTab).map((group) => (
               <div key={group.key}>
-                <GroupHeader label={group.label} count={group.rows.length} />
                 {group.rows.length === 0 ? (
-                  <div className="px-4 pb-2 text-[11.5px] text-faint">
-                    {t('teamShare.skillGroupEmpty', 'None')}
+                  <div className="px-6 py-10 text-center text-[13px] text-muted-foreground">
+                    {q
+                      ? t('teamShare.skillNoMatch', '没有匹配的技能')
+                      : t('teamShare.skillTabEmpty', '这里还没有技能')}
                   </div>
                 ) : (
                   group.rows.map((row) => {
