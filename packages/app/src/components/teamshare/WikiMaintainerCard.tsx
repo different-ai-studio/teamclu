@@ -93,7 +93,7 @@ export function WikiMaintainerCard({ published }: Props = {}) {
   return (
     <>
       <div
-        className="shrink-0 border-b border-border-soft px-3 py-2.5"
+        className="shrink-0 border-t border-border-soft px-3 py-2.5"
         data-testid="wiki-maintainer-card"
       >
         <div className="flex items-start justify-between gap-3">

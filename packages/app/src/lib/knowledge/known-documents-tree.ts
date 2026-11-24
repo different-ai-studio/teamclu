@@ -47,6 +47,12 @@ export function mergeKnownDocuments(
   nodes: FileNode[],
   knownKeys: Iterable<string>,
   keyForPath: (absPath: string) => string | null,
+  /**
+   * The folder `nodes` lists. When the tree is rooted inside documents/ — the
+   * knowledge column's 资料库 tab — what is listed directly in that folder has
+   * no directory node to hang from, so it is added at the top level.
+   */
+  rootPath?: string,
 ): KnownDocumentsMerge {
   const placeholderPaths = new Set<string>()
   const index = indexByParent(knownKeys)
@@ -93,7 +99,19 @@ export function mergeKnownDocuments(
     return changed ? out : level
   }
 
-  return { nodes: walk(nodes), placeholderPaths }
+  const walked = walk(nodes)
+  const rootKey = rootPath ? directoryKey(rootPath, keyForPath) : null
+  if (!rootPath || rootKey === null || (rootKey !== DOCUMENTS_ROOT && !rootKey.startsWith(`${DOCUMENTS_ROOT}/`))) {
+    return { nodes: walked, placeholderPaths }
+  }
+  const present = new Set(walked.map((n) => n.name))
+  const added: FileNode[] = []
+  for (const [name, kind] of index.get(rootKey) ?? []) {
+    if (present.has(name)) continue
+    added.push(placeholder(joinPathLike(rootPath, name), `${rootKey}/${name}`, name, kind))
+  }
+  if (added.length === 0) return { nodes: walked, placeholderPaths }
+  return { nodes: sortEntries([...walked, ...added]), placeholderPaths }
 }
 
 /** Sync key of a folder → the names listed directly inside it. */

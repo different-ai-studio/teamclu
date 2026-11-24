@@ -135,7 +135,7 @@ const SECTION_META: Record<
   skills: { icon: Sparkles, titleKey: 'teamShare.skills', titleFallback: 'Skills' },
   mcp: { icon: Plug, titleKey: 'teamShare.mcp', titleFallback: 'MCP' },
   env: { icon: Box, titleKey: 'teamShare.env', titleFallback: 'Team Env' },
-  knowledge: { icon: Bookmark, titleKey: 'teamShare.knowledge', titleFallback: 'Knowledge' },
+  knowledge: { icon: Bookmark, titleKey: 'teamShare.knowledge', titleFallback: 'Docs' },
 }
 
 interface RowProps {
@@ -428,6 +428,12 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   // Skills show one trust boundary at a time — team or personal — as tabs atop
   // the list, the way apps and contacts do, rather than two stacked groups.
   const [skillTab, setSkillTab] = React.useState<'team' | 'personal'>('team')
+  // 文档 shows one of its two roots at a time: 资料库 (documents) first, then
+  // 知识库 (the wiki). They are different bodies of content — the Obsidian
+  // vault is knowledge alone — and one tree holding both made people scroll
+  // past one to reach the other.
+  const [knowledgeTab, setKnowledgeTab] = React.useState<'knowledge' | 'documents'>('documents')
+  const knowledgeTabRoot = syncRoot ? joinPathLike(syncRoot, knowledgeTab) : null
   const [installingSkill, setInstallingSkill] = React.useState<string | null>(null)
   const installSkill = useTeamShareBrowserStore((s) => s.installSkill)
   const subjectAgentOffline =
@@ -997,7 +1003,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         ? name.trim()
         : withDefaultExtension(name, KNOWLEDGE_DEFAULT_EXTENSION)
     setRootCreating(null)
-    if (!trimmed || !syncRoot) return
+    if (!trimmed || !knowledgeTabRoot) return
     const nameError = fileNameError(t, trimmed)
     if (nameError) {
       toast.error(nameError)
@@ -1005,17 +1011,17 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     }
     const ok =
       rootCreating === 'folder'
-        ? await createNewFolder(syncRoot, trimmed)
-        : await createNewFile(syncRoot, trimmed)
+        ? await createNewFolder(knowledgeTabRoot, trimmed)
+        : await createNewFile(knowledgeTabRoot, trimmed)
     if (!ok) {
       toast.error(t('fileExplorer.createFailed', { name: trimmed, defaultValue: 'Could not create "{{name}}"' }))
       return
     }
     // The knowledge tree is its own root in the store — re-list THAT. The
     // workspace tree has nothing to do with this column any more.
-    await openExternalRoot(syncRoot)
+    await openExternalRoot(knowledgeTabRoot)
     void loadSection('knowledge', { force: true })
-    if (rootCreating !== 'folder') selectFile(joinPathLike(syncRoot, trimmed))
+    if (rootCreating !== 'folder') selectFile(joinPathLike(knowledgeTabRoot, trimmed))
   }
 
   return (
@@ -1219,6 +1225,23 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         </div>
       )}
 
+      {section === 'knowledge' && syncRoot && (
+        <div className="border-b border-border px-3 py-2">
+          <QuickFilterChips
+            value={knowledgeTab}
+            onChange={setKnowledgeTab}
+            ariaLabel={t('teamShare.knowledgeTabs', '资料库与知识库')}
+            testIdPrefix="knowledge-tab"
+            // No counts: 资料库 lists what the manifest knows as well as what
+            // is on disk, and a number from the disk alone would undercount.
+            chips={[
+              { value: 'documents' as const, label: t('teamShare.documentsTab', '资料库') },
+              { value: 'knowledge' as const, label: t('teamShare.knowledgeTab', '知识库') },
+            ]}
+          />
+        </div>
+      )}
+
       {searchOpen && (
         <div className="border-b border-border px-3 py-2">
           <input
@@ -1361,11 +1384,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             // delete / move all come from FileBrowser's existing context menu,
             // and clicking a file opens it exactly as it does in the workspace.
             <>
-            <WikiMaintainerCard published={wikiPublished} />
-            <KnowledgeInboxStrip />
+            {knowledgeTab === 'knowledge' && <KnowledgeInboxStrip />}
             <FileBrowser
+              key={knowledgeTab}
               variant="panel"
-              rootPath={syncRoot}
+              rootPath={knowledgeTabRoot ?? syncRoot}
               hideFileActions={false}
               hideToolbar
               filterText={query}
@@ -1488,6 +1511,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         `knowledge/`), so this bar would be describing somebody else's state in
         any other section. Same slot as the skills column's scan paths.
       */}
+      {/* Maintaining the wiki is an occasional, deliberate act — at the
+          bottom, out of the way of the notes, and only beside the wiki. */}
+      {section === 'knowledge' && syncRoot && knowledgeTab === 'knowledge' && (
+        <WikiMaintainerCard published={wikiPublished} />
+      )}
       {section === 'knowledge' && <KnowledgeSyncFooter />}
 
     </div>

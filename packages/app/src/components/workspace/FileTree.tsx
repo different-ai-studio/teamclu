@@ -264,14 +264,17 @@ export function FileTree({
   }, [refreshKnown]);
 
   const { fileTree, placeholderPaths } = useMemo(() => {
-    const merged = mergeKnownDocuments(rawFileTree, knownDocs.keys(), (p) =>
-      teamSyncKeyForPath(p, { syncRoot, workspacePath }),
+    const merged = mergeKnownDocuments(
+      rawFileTree,
+      knownDocs.keys(),
+      (p) => teamSyncKeyForPath(p, { syncRoot, workspacePath }),
+      rootPath,
     );
     return {
       fileTree: pruneKnowledgeNoise(merged.nodes, { syncRoot, workspacePath }),
       placeholderPaths: merged.placeholderPaths,
     };
-  }, [rawFileTree, knownDocs, syncRoot, workspacePath]);
+  }, [rawFileTree, knownDocs, syncRoot, workspacePath, rootPath]);
   // One badge per document, folded from the three things that can be true of
   // it: a conflict sidecar on disk, a local change not yet pushed, a cloud
   // version not yet pulled.

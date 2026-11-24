@@ -143,4 +143,25 @@ describe('mergeKnownDocuments on Windows', () => {
     expect(names(hr.children)).toEqual(['offer.pdf'])
     expect(placeholderPaths.has(`${RUST_DOCS}\\人力资源\\offer.pdf`)).toBe(true)
   })
+
+  // The 资料库 tab roots the tree at documents/ itself, so what is listed
+  // directly in it has no folder node to hang from.
+  it('adds listed top-level documents when the tree is rooted at documents/', () => {
+    const tree = [dir(`${DOCS}/运营部`, [])]
+    const { nodes, placeholderPaths } = mergeKnownDocuments(
+      tree,
+      ['documents/untitled.md', 'documents/运营部/a.md'],
+      keyForPath,
+      DOCS,
+    )
+    expect(names(nodes)).toEqual(['运营部', 'untitled.md'])
+    expect(names(nodes[0].children)).toEqual(['a.md'])
+    expect(placeholderPaths.has(`${DOCS}/untitled.md`)).toBe(true)
+  })
+
+  it('adds nothing at the top of a tree rooted at knowledge/', () => {
+    const tree = [file(`${KNOWLEDGE}/note.md`)]
+    const { nodes } = mergeKnownDocuments(tree, ['documents/untitled.md'], keyForPath, KNOWLEDGE)
+    expect(nodes).toBe(tree)
+  })
 })

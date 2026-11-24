@@ -93,7 +93,7 @@ describe('NavRail', () => {
     expect(screen.getByRole('button', { name: /技能|Skills/ })).toBeInTheDocument()
     expect(screen.getByTestId('apps-nav-section')).toBeInTheDocument()
 
-    expect(screen.queryByRole('button', { name: /知识库|Knowledge/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /文档|Docs/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Ideas|想法/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /快捷方式|Shortcuts/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /MCP/ })).not.toBeInTheDocument()
@@ -103,7 +103,7 @@ describe('NavRail', () => {
   it('reveals Knowledge, Ideas, Shortcuts, MCP and 密钥保险箱 once 更多 is expanded', () => {
     render(<NavRail />)
     expandMore()
-    expect(screen.getByRole('button', { name: /知识库|Knowledge/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /文档|Docs/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Ideas|想法/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /快捷方式|Shortcuts/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /MCP/ })).toBeInTheDocument()
@@ -113,7 +113,7 @@ describe('NavRail', () => {
   it('puts 知识库 first in 更多, before 想法', () => {
     render(<NavRail />)
     expandMore()
-    const knowledge = screen.getByRole('button', { name: /知识库|Knowledge/ })
+    const knowledge = screen.getByRole('button', { name: /文档|Docs/ })
     const ideas = screen.getByRole('button', { name: /Ideas|想法/ })
     expect(knowledge.compareDocumentPosition(ideas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
@@ -171,7 +171,7 @@ describe('NavRail', () => {
     it('opens them beside the rail, and picking one sets the filter', () => {
       renderRail()
       fireEvent.click(screen.getByRole('button', { name: /更多|More/ }))
-      expect(screen.getByRole('button', { name: /知识库|Knowledge/ })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /文档|Docs/ })).toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: /快捷方式|Shortcuts/ }))
       expect(useUIStore.getState().sidebarFilter).toEqual({ kind: 'shortcuts' })
     })

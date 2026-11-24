@@ -3,7 +3,8 @@ import { cn } from '@/lib/utils'
 export interface QuickFilterChip<V extends string> {
   value: V
   label: string
-  count: number
+  /** Left out where no honest number is at hand. */
+  count?: number
 }
 
 /**
@@ -50,7 +51,9 @@ export function QuickFilterChips<V extends string>({
             )}
           >
             {chip.label}
-            <span className="font-mono text-[10.5px] tabular-nums text-faint">{chip.count}</span>
+            {chip.count !== undefined && (
+              <span className="font-mono text-[10.5px] tabular-nums text-faint">{chip.count}</span>
+            )}
           </button>
         )
       })}

@@ -279,7 +279,7 @@ describe('AppSidebar', () => {
 
   it('does not render a bottom Knowledge entry', () => {
     render(<AppSidebar />)
-    expect(screen.queryByText('Knowledge')).toBeNull()
+    expect(screen.queryByText('Docs')).toBeNull()
   })
 
   it('renders settings entry with english fallback text', () => {
