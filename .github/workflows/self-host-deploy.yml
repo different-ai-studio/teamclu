@@ -60,6 +60,13 @@ jobs:
 
             cd deploy/self-host
 
+            echo "=== housekeeping (disk) ==="
+            # The 40G disk filled on 2026-11-24 and took Postgres, EMQX and the
+            # Cloud API down with it: Supabase Analytics logs were never
+            # trimmed, and every build below leaves dangling images. Runs
+            # before the build so the build has room; never fails the deploy.
+            sh maintenance/prune.sh
+
             echo "=== ensure runtime env ==="
             # The server's .env predates the bundled gateway and bootstrap/gen-secrets.sh
             # is NOT run here (it would re-mint ANON_KEY/SERVICE_ROLE_KEY with fresh
