@@ -192,3 +192,9 @@ test("resolveAppConnectionString rewrites public admin host to internal app host
   );
   assert.match(out, /@pgm-internal\.example:5432\/tc_org_abc/);
 });
+
+test("preserveExistingPassword leaves a live role's password alone and still creates a missing one", () => {
+  const stmts = buildProvisionStatements({ schema: "app_x", role: "app_x", password: "throwaway", preserveExistingPassword: true });
+  assert.doesNotMatch(stmts[1], /alter role app_x with login password/);
+  assert.match(stmts[1], /create role app_x login password 'throwaway'/);
+});

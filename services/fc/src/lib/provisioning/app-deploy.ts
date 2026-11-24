@@ -9,6 +9,7 @@ import {
   readAppsAppUrl,
   resolveAppConnectionString,
 } from "./app-postgres.js";
+import { runAppMigrations, type AppMigration } from "./app-migrations.js";
 import {
   readAppsFcVpcConfig,
 } from "./fc-client.js";
@@ -354,6 +355,8 @@ export interface FinalizeDeps {
   appsAppUrl?: string;
   /** Optional override of {@link provisionAppPostgres} for tests. */
   provisionDb?: typeof provisionAppPostgres;
+  /** Optional override of {@link runAppMigrations} for tests. */
+  runMigrations?: typeof runAppMigrations;
   /**
    * Whether a finalized image is one this app's own build could have pushed —
    * `imageBelongsToApp`, bound to this deployment's registry.
@@ -435,6 +438,14 @@ export interface FinalizeInput {
    * point the function at whatever the previous deploy left in OSS.
    */
   image?: string;
+  /**
+   * The repo's `migrations/*.sql` at the built revision, already validated and
+   * sorted ({@link parseAppMigrations}). Run before anything that could cut
+   * off the version still serving — see app-migrations.ts.
+   */
+  migrations?: AppMigration[];
+  /** Recorded in the migration ledger next to each file it applied. */
+  gitCommitSha?: string | null;
 }
 
 // Lives with the rest of what a type means; re-exported for the callers that
@@ -487,6 +498,12 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     env.PORT = String(input.declaration.start.port);
   }
 
+  const migrations = input.migrations ?? [];
+  if (migrations.length > 0 && !needsDatabase(input.appType)) {
+    throw new ApiError(409, "app_has_no_database",
+      `this app has no database (type ${input.appType}), so its migrations/ folder cannot run. Set the app type to data_app, or remove migrations/.`);
+  }
+
   if (needsDatabase(input.appType)) {
     const appsAdminUrl = deps.appsAdminUrl ?? readAppsAdminUrl();
     if (!appsAdminUrl) {
@@ -501,6 +518,18 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     const orgId = input.orgId?.trim();
     if (!orgId) {
       throw new Error("data_app deploy requires the team's org (public.orgs.id)");
+    }
+    // Migrations first, while the live function's password still works: a
+    // file that fails here leaves the previous version serving untouched.
+    // Provisioning below rotates that password, so it must come after.
+    if (migrations.length > 0) {
+      await (deps.runMigrations ?? runAppMigrations)(appsAdminUrl, {
+        orgId,
+        appId: input.appId,
+        slug: input.slug,
+        migrations,
+        gitCommitSha: input.gitCommitSha ?? null,
+      });
     }
     // provisionAppPostgres creates tc_org_<orgId> if needed, then a schema +
     // login role inside it. The password is only valid if we write it into the

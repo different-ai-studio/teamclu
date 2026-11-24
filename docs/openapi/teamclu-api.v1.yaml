@@ -8343,6 +8343,15 @@ paths:
         before storing the HTTP `fcEndpoint` with `fcStatus: live`.
         Missing origin configuration returns 503 `origin_security_unavailable`;
         provider entrypoint drift returns 409 `origin_security_drift`.
+        A data app's `migrations` run first, each file in its own
+        transaction under the app's own database role, before the app's
+        password is rotated or the function touched: a failing file returns
+        422 `migration_failed` and the previous version keeps serving. Applied
+        files are recorded in `_teamclu_migrations` in the app's schema; an
+        applied file whose content changed returns 409 `migration_modified`, a
+        new file numbered before the latest applied one 409
+        `migration_out_of_order`, and migrations on an app without a database
+        409 `app_has_no_database`.
         Failures land on `deploy_error` with the reason in `provisionError`;
         retry by calling `/deploy` again.
       tags: [Apps]
@@ -8381,6 +8390,22 @@ paths:
                       $ref: "#/components/schemas/AppStartSpec"
                 artifactVerification:
                   $ref: "#/components/schemas/AppArtifactVerification"
+                migrations:
+                  type: array
+                  maxItems: 500
+                  description: >-
+                    The checkout's `migrations/*.sql` at the built revision, as
+                    the daemon's build reported them. Run in name order; files
+                    already in the app's ledger are skipped. At most 512 KiB a
+                    file and 4 MiB in all.
+                  items:
+                    type: object
+                    required: [name, sql]
+                    properties:
+                      name:
+                        type: string
+                        pattern: "^[0-9]{1,16}_[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\\.sql$"
+                      sql: { type: string }
       responses:
         "200":
           description: The app, now live.
@@ -8390,6 +8415,8 @@ paths:
         "404":
           $ref: "#/components/responses/Error"
         "409":
+          $ref: "#/components/responses/Error"
+        "422":
           $ref: "#/components/responses/Error"
         "502":
           $ref: "#/components/responses/Error"

@@ -255,6 +255,13 @@ impl AppOps<'_> {
         if let Some(image) = row_str(&build, "image") {
             finalize_body["image"] = json!(image);
         }
+        // The checkout's migrations/*.sql at the revision just built. The
+        // server runs them against the app's database before the new code goes
+        // live, and a failing one stops the deploy with the old version still
+        // serving.
+        if let Some(migrations) = build.get("migrations").filter(|m| m.is_array()) {
+            finalize_body["migrations"] = migrations.clone();
+        }
         // Finalize provisions the schema and points the function at the
         // artifact. The UI waits for it with no timeout at all; giving up at a
         // 30 s client default reported a deploy the server went on to finish as
@@ -478,6 +485,33 @@ mod tests {
             "clean": true, "contentDigest": "sha256:d",
         }));
         (cloud, daemon)
+    }
+
+    #[tokio::test]
+    async fn the_builds_migrations_travel_to_finalize_and_none_sends_nothing() {
+        let migrations = json!([{ "name": "0001_tasks.sql", "sql": "create table t (id int);" }]);
+        for (reported, expected) in [(Some(migrations.clone()), Some(migrations)), (None, None)] {
+            let (cloud, daemon) = deploy_world();
+            let mut build = json!({
+                "declaration": { "build": { "kind": "node" } },
+                "revision": "sha256:d",
+                "artifactVerification": { "status": "checked", "revision": "sha256:d", "unknownFiles": [] },
+            });
+            if let Some(m) = reported {
+                build["migrations"] = m;
+            }
+            *daemon.build.lock().unwrap() = Some(Ok(build));
+            let host = TestHost(Surface::Cli);
+            let ops = AppOps::new(&cloud, &daemon, &host);
+            ops.deploy(&imported_row(), DeployArgs::default())
+                .await
+                .unwrap();
+            let finalize = cloud.calls_to(Method::Post, "/v1/apps/a1/deploy/finalize");
+            assert_eq!(
+                finalize[0].as_ref().unwrap().get("migrations"),
+                expected.as_ref()
+            );
+        }
     }
 
     #[tokio::test]

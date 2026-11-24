@@ -828,6 +828,10 @@ pub struct BuildAppResponse {
     /// that built an archive — that one went to the presigned URL instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// The checkout's `migrations/*.sql` at the built revision, in run order.
+    /// The client forwards them to deploy finalize; absent when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub migrations: Vec<crate::sync::app_migrations::AppMigration>,
 }
 
 /// Where a build's result goes. Exactly one, and the control plane picked it
@@ -988,6 +992,7 @@ pub async fn build_app(
     let pushed = built.product.image().map(str::to_string);
     let git_commit_sha = built.git_commit_sha;
     let declaration = built.declaration;
+    let migrations = built.migrations;
     let artifact_verification = built.artifact_verification.map(|mut verification| {
         verification.revision = Some(response_revision.clone());
         verification
@@ -1022,6 +1027,7 @@ pub async fn build_app(
         revision: response_revision,
         artifact_verification,
         image: pushed,
+        migrations,
     }))
 }
 

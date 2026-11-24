@@ -18,6 +18,17 @@ Custom environment, access, domain, data, files, and cron changes use their matc
 
 For TeamClu platform sign-in, organization roles, or protected pages and data endpoints, read the inherent `app-auth` skill before implementation. At release, verify its saved policies and report any auth acceptance limits.
 
+## Database changes (`migrations/`)
+
+Nobody can open a data app's database directly: not you, not the user, not another agent. Its credentials exist only inside the deployed function. So never hand the user a script to "run against production", and never block a deploy waiting for someone to create a table. Put every schema change in the checkout's `migrations/` folder and deploy:
+
+- One plain SQL file per change, named `NNNN_description.sql` (e.g. `0001_create_scan_tasks.sql`). Files run in name order, each once, each in its own transaction, as the app's own database role, with unqualified names landing in the app's schema. The platform records them in `_teamclu_migrations`. Every `.sql` file in the folder must follow this naming, or the build stops.
+- They run at deploy finalize, before the new code goes live. A failing file is rolled back and stops the deploy, and the previous version keeps serving. Read the error, fix that file, and deploy again.
+- Never edit or rename a file that has been deployed. The deploy refuses a changed one (`migration_modified`), so put a correction in a new, later-numbered file. A new file must sort after every applied one (`migration_out_of_order`).
+- The old version keeps running against the new schema until the new function takes over, so every migration must be **additive**: new tables, nullable or defaulted columns, new indexes. Drop or rename in two deploys: first stop using the old column, then remove it in a later migration.
+- No `BEGIN`/`COMMIT` and no `CREATE INDEX CONCURRENTLY` (the file already runs inside a transaction). Each statement times out after 120 s, and a lock wait after 15 s.
+- Only data apps (`type: data_app`) have a database. A `migrations/` folder on any other type stops the deploy (`app_has_no_database`).
+
 ## Uninstalling a deployment
 
 Only when the user explicitly requests uninstalling a deployment, call `manage_app undeploy` with an explicit app ID or name and obtain its native confirmation. This stops new gateway requests and cleans the FC function, HTTP trigger, origin domain mapping, build artifact and any legacy login client. It retains the App, code repository, sessions, database, uploaded files, auth policy and scheduled-job definitions. It does not delete the App or archive its repository.
