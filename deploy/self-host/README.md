@@ -74,6 +74,20 @@ docker compose down
 docker compose down -v
 ```
 
+### 磁盘清理
+
+Supabase Analytics（Logflare）把日志写进 `_supabase` 库的
+`_analytics.log_events_*` 表，自身从不删除；每次 `docker compose build` 也会留下悬空镜像。
+`maintenance/prune.sh` 删掉超过 `LOG_RETENTION_DAYS`（默认 14）天的日志行，并清理悬空镜像和
+7 天前的 build cache。nightly 的 `self-host-deploy.yml` 在构建前自动运行；自托管的机器请用 cron 定期跑：
+
+```bash
+cd deploy/self-host && sh maintenance/prune.sh
+```
+
+删行不会缩小表文件，但空间会被 autovacuum 复用，表大小稳定在约 14 天的量。已经涨大的表要一次性回收空间，
+需要手动 `VACUUM FULL`（或保留近期行后 `TRUNCATE`）。
+
 ---
 
 ## 运行时选择：Docker Desktop vs Podman

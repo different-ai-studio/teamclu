@@ -208,6 +208,13 @@ jobs:
             redirects="$(bash bootstrap/oauth-redirects.sh "$redirects" "$login_domain")"
             upsert_env ADDITIONAL_REDIRECT_URLS "$redirects"
 
+            echo "=== housekeeping (disk) ==="
+            # The 40G disk filled on 2026-11-24 and took Postgres, EMQX and the
+            # Cloud API down with it: Supabase Analytics logs were never
+            # trimmed, and every build below leaves dangling images. Runs
+            # before the build so the build has room; never fails the deploy.
+            sh maintenance/prune.sh
+
             echo "=== build fc + ai-gateway ==="
             # BOTH locally-built services. `up` runs with --pull never and no
             # --build, so anything omitted here keeps whatever image it was
