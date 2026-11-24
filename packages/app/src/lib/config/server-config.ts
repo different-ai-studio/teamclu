@@ -25,6 +25,26 @@ export interface ServerConfig {
   // the admin console sign-in URL + supabase-js storage key are not hardcoded.
   webSsoLoginUrl?: string;
   webSsoStorageKey?: string;
+  /**
+   * Partner web console hosts (`host[:port]`), delivered by /v1/config/public.
+   * Webviews mark pages on these hosts as embedded in TeamClu so the console
+   * can hide its own navigation. Server-delivered only — no env fallback.
+   */
+  partnerConsoleHosts?: string[];
+}
+
+const HOST_RE = /^[a-z0-9.-]+(:[0-9]{1,5})?$/;
+
+/** Lowercased, de-duplicated `host[:port]` entries; anything else is dropped. */
+export function normalizePartnerConsoleHosts(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const hosts = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const host = entry.trim().toLowerCase();
+    if (HOST_RE.test(host)) hosts.add(host);
+  }
+  return hosts.size ? [...hosts] : undefined;
 }
 
 // The Cloud API URL normally comes from the frontend build config
@@ -227,6 +247,7 @@ function normalizeCachedConfig(config: ServerConfig): ServerConfig {
     mqttPassword: config.mqttPassword?.trim() || undefined,
     webSsoLoginUrl: config.webSsoLoginUrl?.trim() || undefined,
     webSsoStorageKey: config.webSsoStorageKey?.trim() || undefined,
+    partnerConsoleHosts: normalizePartnerConsoleHosts(config.partnerConsoleHosts),
   };
 }
 
@@ -278,6 +299,7 @@ function resolve(rawSaved: ServerConfig): ServerConfig {
     // target is the official deployment's and must not leak across.
     webSsoLoginUrl: saved.webSsoLoginUrl ?? (bakedTransport ? env.webSsoLoginUrl : undefined),
     webSsoStorageKey: saved.webSsoStorageKey ?? (bakedTransport ? env.webSsoStorageKey : undefined),
+    partnerConsoleHosts: saved.partnerConsoleHosts,
   };
 }
 

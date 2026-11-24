@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { WebViewContent } from "../WebViewContent"
 import { useCurrentTeamStore } from "@/stores/current-team"
 import { normalizeUrl, urlToLabel } from "@/lib/ui/webview-utils"
+import { getSavedServerConfig, saveServerConfig } from "@/lib/config/server-config"
 
 const invokeMock = vi.hoisted(() => vi.fn())
 
@@ -92,6 +93,31 @@ describe("WebViewContent", () => {
     })
     // The deleted get_persistent_device_id command must not be invoked.
     expect(invokeMock).not.toHaveBeenCalledWith("get_persistent_device_id")
+  })
+
+  it("hands the cached partner console hosts to the native side for the embed marker", async () => {
+    const saved = await getSavedServerConfig()
+    await saveServerConfig({ ...saved, partnerConsoleHosts: ["admin.example.test"] })
+    try {
+      invokeMock.mockImplementation((command: string) => {
+        if (command === "webview_set_bounds") return Promise.resolve()
+        if (command === "get_device_hostname") return Promise.resolve("matts-mac")
+        if (command === "webview_create") return Promise.resolve()
+        if (command === "webview_hide") return Promise.resolve()
+        throw new Error(`unexpected command: ${command}`)
+      })
+
+      render(<WebViewContent url="https://admin.example.test/users" />)
+
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith(
+          "webview_create",
+          expect.objectContaining({ embedHosts: ["admin.example.test"] }),
+        )
+      })
+    } finally {
+      await saveServerConfig(saved)
+    }
   })
 
   it("falls back to device hostname when team member name is unavailable", async () => {

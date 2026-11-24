@@ -3,6 +3,7 @@ import { applyRemoteFeatures } from "@/lib/config/remote-features";
 import {
   getEffectiveServerConfig,
   getSavedServerConfig,
+  normalizePartnerConsoleHosts,
   saveServerConfig,
   type ServerConfig,
 } from "@/lib/config/server-config";
@@ -34,6 +35,8 @@ interface BootstrapWebSsoPayload {
 interface BootstrapPayload {
   mqtt?: BootstrapMqttPayload;
   webSso?: BootstrapWebSsoPayload;
+  /** /v1/config/public only: partner web console hosts. Absent means none. */
+  partnerConsoleHosts?: unknown;
   /**
    * Runtime feature overrides. Which flags arrive depends on the endpoint:
    * `/v1/config/public` carries `auth` (the login screen needs it before any
@@ -152,9 +155,12 @@ export async function fetchPublicConfig(args?: { fetchImpl?: typeof fetch }): Pr
   // sending stops applying instead of living on in the cache forever.
   applyRemoteFeatures("public", body.features);
   const patch = webSsoPatchFrom(body.webSso);
-  if (!patch) return;
   const saved = await getSavedServerConfig();
-  await saveServerConfig({ ...saved, ...patch });
+  // Partner console hosts follow the same rule as the flags above: written on
+  // every answer, absence included, so a host the server dropped is forgotten.
+  const partnerConsoleHosts = normalizePartnerConsoleHosts(body.partnerConsoleHosts);
+  if (!patch && String(saved.partnerConsoleHosts ?? "") === String(partnerConsoleHosts ?? "")) return;
+  await saveServerConfig({ ...saved, ...patch, partnerConsoleHosts });
 }
 
 // Switching servers without a reload (the onboarding wizard does exactly that,
