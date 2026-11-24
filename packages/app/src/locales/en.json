@@ -226,6 +226,16 @@
     "skillShareSummary": "Summary",
     "skillShareChangelog": "Changelog",
     "skillShareCategory": "Category",
+    "skillCategory": {
+      "general": "General",
+      "coding": "Coding",
+      "devops": "DevOps",
+      "data": "Data",
+      "research": "Research",
+      "writing": "Writing",
+      "communication": "Communication",
+      "integration": "Integration"
+    },
     "skillShareSubmit": "Share & install",
     "skillShareSuccess": "Shared and installed",
     "skillShareFailed": "Share failed: {{msg}}",

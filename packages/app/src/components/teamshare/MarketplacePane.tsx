@@ -5,11 +5,7 @@ import { toast } from 'sonner'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 import { getBackend } from '@/lib/backend/provider'
-import {
-  TEAM_SKILL_CATEGORIES,
-  type TeamSkill,
-  type TeamSkillCategory,
-} from '@/lib/backend/cloud-api/team-skills'
+import type { TeamSkill, TeamSkillCategory } from '@/lib/backend/cloud-api/team-skills'
 import type {
   MarketplaceSkill,
   MarketplaceSkillDetail,
@@ -23,6 +19,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { TeamSkillCategorySelectItems } from '@/components/teamshare/TeamSkillCategorySelect'
+import { useTeamSkillCategoryLabel } from '@/lib/skills/team-skill-category'
 import { cn } from '@/lib/utils'
 import { resolveAgentDevicePresenceSync } from '@/lib/agent/agent-device-reachability'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
@@ -50,6 +48,7 @@ function writeCache(items: MarketplaceSkill[]) {
 
 export function MarketplacePane({ slug }: { slug?: string }) {
   const { t } = useTranslation()
+  const categoryLabel = useTeamSkillCategoryLabel()
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? null)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const adoptMarketplaceSkill = useTeamShareBrowserStore((s) => s.adoptMarketplaceSkill)
@@ -217,7 +216,7 @@ export function MarketplacePane({ slug }: { slug?: string }) {
 
         <div className="space-y-4 px-6 py-5 text-[13.5px] leading-relaxed text-ink-2">
           <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-faint">
-            <span>{detail.category}</span>
+            <span>{categoryLabel(detail.category)}</span>
             <span>·</span>
             <span>
               {t('teamShare.marketplaceVersion', '市场')} v{detail.latestVersion}
@@ -322,15 +321,13 @@ export function MarketplacePane({ slug }: { slug?: string }) {
           onValueChange={(v) => setCategory(v as TeamSkillCategory | 'all')}
         >
           <SelectTrigger className="h-8 w-32 text-[12px]">
-            <SelectValue />
+            <SelectValue>
+              {category === 'all' ? t('common.all', '全部') : categoryLabel(category)}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('common.all', '全部')}</SelectItem>
-            {TEAM_SKILL_CATEGORIES.map((c) => (
-              <SelectItem key={c} value={c}>
-                {c}
-              </SelectItem>
-            ))}
+            <TeamSkillCategorySelectItems />
           </SelectContent>
         </Select>}
       </div>

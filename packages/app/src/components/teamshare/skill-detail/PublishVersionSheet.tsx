@@ -2,7 +2,11 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { Loader2, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectTrigger } from '@/components/ui/select'
+import {
+  TeamSkillCategorySelectItems,
+  TeamSkillCategorySelectValue,
+} from '@/components/teamshare/TeamSkillCategorySelect'
 import { type TeamSkillItem, type TeamSkillDraftMetadata, type TeamSkillPublishPreview } from '@/stores/team-share-browser'
 import { TEAM_SKILL_CATEGORIES, type TeamSkillCategory } from '@/lib/backend/cloud-api/team-skills'
 import {
@@ -320,14 +324,10 @@ export function PublishVersionSheet({
         </span>
         <Select value={category} onValueChange={(v) => setCategory(v as TeamSkillCategory)}>
           <SelectTrigger className="h-auto w-full rounded-[8px] border-border bg-background px-3 py-2 text-[13px] shadow-none">
-            <SelectValue />
+            <TeamSkillCategorySelectValue category={category} />
           </SelectTrigger>
           <SelectContent>
-            {TEAM_SKILL_CATEGORIES.map((c) => (
-              <SelectItem key={c} value={c} className="text-[13px]">
-                {c}
-              </SelectItem>
-            ))}
+            <TeamSkillCategorySelectItems itemClassName="text-[13px]" />
           </SelectContent>
         </Select>
       </label>
