@@ -781,3 +781,101 @@ test("a failure to set the minimum instance count does not fail a deploy that is
     assert.ok(warned.some((m) => /minimum instances to 1.*AccessDenied/.test(m)), warned.join("\n"));
   } finally { console.warn = warn; }
 });
+
+test("finalizeDeploy runs migrations before rotating the password or touching the function", async () => {
+  const calls: string[] = [];
+  const migrations = [{ name: "0001_tasks.sql", sql: "create table t (id int);" }];
+  await finalizeDeploy(
+    {
+      appsAdminUrl: "postgres://host:5432/postgres",
+      runMigrations: async (adminUrl, params) => {
+        calls.push("runMigrations");
+        assert.equal(adminUrl, "postgres://host:5432/postgres");
+        assert.deepEqual(params.migrations, migrations);
+        assert.equal(params.gitCommitSha, "a".repeat(40));
+        assert.equal(params.orgId, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+        return { applied: ["0001_tasks.sql"] };
+      },
+      provisionDb: async () => {
+        calls.push("provisionDb");
+        return { schema: "app_demo", role: "app_role", database: "tc_org_x", connectionString: "postgres://app_role:pw@host:5432/tc_org_x" };
+      },
+      fcOps: {
+        ensureFunction: async () => { calls.push("ensureFunction"); },
+        ensureHttpTrigger: async () => ({ internetUrlDisabled: true as const }),
+        ensureCustomDomain: async (_fn, domain) => `http://${domain}`,
+      },
+    },
+    {
+      appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo", orgId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      appType: "data_app", fcFunctionName: "tc-app-1", ossObjectName: "k",
+      declaration: { build: { kind: "python" as const, output: "." }, start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8088 } },
+      migrations, gitCommitSha: "a".repeat(40),
+    },
+  );
+  assert.deepEqual(calls, ["runMigrations", "provisionDb", "ensureFunction"]);
+});
+
+test("a failed migration stops finalize before the live function's password or code changes", async () => {
+  await assert.rejects(
+    () => finalizeDeploy(
+      {
+        appsAdminUrl: "postgres://host:5432/postgres",
+        runMigrations: async () => { throw Object.assign(new Error("migration 0001_x.sql failed"), { code: "migration_failed" }); },
+        provisionDb: async () => { throw new Error("must not rotate the password"); },
+        fcOps: {
+          ensureFunction: async () => { throw new Error("must not touch the function"); },
+          ensureHttpTrigger: async () => ({ internetUrlDisabled: true as const }),
+          ensureCustomDomain: async (_fn, domain) => `http://${domain}`,
+        },
+      },
+      {
+        appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo", orgId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        appType: "data_app", fcFunctionName: "tc-app-1", ossObjectName: "k",
+        migrations: [{ name: "0001_x.sql", sql: "nonsense" }],
+      },
+    ),
+    /migration 0001_x\.sql failed/,
+  );
+});
+
+test("no migrations leaves finalize exactly as before", async () => {
+  const calls: string[] = [];
+  await finalizeDeploy(
+    {
+      appsAdminUrl: "postgres://host:5432/postgres",
+      runMigrations: async () => { throw new Error("must not be called"); },
+      provisionDb: async () => { calls.push("provisionDb"); return { schema: "s", role: "r", database: "d", connectionString: "postgres://r:pw@host:5432/d" }; },
+      fcOps: {
+        ensureFunction: async () => { calls.push("ensureFunction"); },
+        ensureHttpTrigger: async () => ({ internetUrlDisabled: true as const }),
+        ensureCustomDomain: async (_fn, domain) => `http://${domain}`,
+      },
+    },
+    {
+      appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo", orgId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      appType: "data_app", fcFunctionName: "tc-app-1", ossObjectName: "k", migrations: [],
+    },
+  );
+  assert.deepEqual(calls, ["provisionDb", "ensureFunction"]);
+});
+
+test("an app with no database refuses a migrations/ folder instead of ignoring it", async () => {
+  await assert.rejects(
+    () => finalizeDeploy(
+      {
+        runMigrations: async () => { throw new Error("must not be called"); },
+        fcOps: {
+          ensureFunction: async () => { throw new Error("must not be called"); },
+          ensureHttpTrigger: async () => ({ internetUrlDisabled: true as const }),
+          ensureCustomDomain: async (_fn, domain) => `http://${domain}`,
+        },
+      },
+      {
+        appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo", appType: "static_web",
+        fcFunctionName: "tc-app-1", ossObjectName: "k", migrations: [{ name: "0001_x.sql", sql: "select 1" }],
+      },
+    ),
+    (e: any) => e.code === "app_has_no_database" && e.statusCode === 409,
+  );
+});

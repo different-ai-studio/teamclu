@@ -13,13 +13,20 @@ export interface ProvisionParams {
   schema: string; // already-sanitized schema name (see pg-name.ts)
   role: string; // already-sanitized role name
   password: string; // generated secret for the scoped login role
+  /**
+   * Leave an existing role's password alone; `password` is used only when the
+   * role has to be created. For work that runs BEFORE a deploy commits — the
+   * migrations — and must not cut off the function still serving on the old
+   * password if it fails.
+   */
+  preserveExistingPassword?: boolean;
 }
 
 // Returns the ordered, idempotent DDL statements that create the per-app schema
 // + a login role scoped to ONLY that schema. CREATE SCHEMA/ROLE cannot be
 // parameterized, so identifiers are interpolated AFTER assertSafe(); the
 // password is the only value-position datum and is single-quote-escaped.
-export function buildProvisionStatements({ schema, role, password }: ProvisionParams): string[] {
+export function buildProvisionStatements({ schema, role, password, preserveExistingPassword }: ProvisionParams): string[] {
   assertSafe(schema);
   assertSafe(role);
   const pw = password.replace(/'/g, "''");
@@ -32,7 +39,7 @@ export function buildProvisionStatements({ schema, role, password }: ProvisionPa
     // could no longer connect.
     `do $$ begin
        if exists (select 1 from pg_roles where rolname = '${role}') then
-         alter role ${role} with login password '${pw}';
+         ${preserveExistingPassword ? "null;" : `alter role ${role} with login password '${pw}';`}
        else
          create role ${role} login password '${pw}';
        end if;
@@ -55,6 +62,8 @@ export interface EnsureAppSchemaParams {
   // Base URL of the org database (or legacy shared apps DB), used to compose
   // the app's own connection string (role + password + pinned search_path).
   baseUrl: string;
+  /** See {@link ProvisionParams.preserveExistingPassword}. */
+  preserveExistingPassword?: boolean;
 }
 
 export interface AppConnection {
@@ -86,11 +95,11 @@ export function percentEncodeOptions(connectionString: string): string {
 
 export async function ensureAppSchema(
   exec: SqlExecutor,
-  { appId, slug, password, baseUrl }: EnsureAppSchemaParams,
+  { appId, slug, password, baseUrl, preserveExistingPassword }: EnsureAppSchemaParams,
 ): Promise<AppConnection> {
   const schema = appSchemaName(slug, appId);
   const role = appRoleName(appId);
-  for (const stmt of buildProvisionStatements({ schema, role, password })) {
+  for (const stmt of buildProvisionStatements({ schema, role, password, preserveExistingPassword })) {
     await exec(stmt);
   }
   const u = new URL(baseUrl);
@@ -144,6 +153,8 @@ export interface ProvisionAppPostgresParams {
   appId: string;
   slug: string;
   password: string;
+  /** See {@link ProvisionParams.preserveExistingPassword}. */
+  preserveExistingPassword?: boolean;
 }
 
 /**
@@ -171,6 +182,7 @@ export async function provisionAppPostgres(
       slug: params.slug,
       password: params.password,
       baseUrl: orgDbUrl,
+      preserveExistingPassword: params.preserveExistingPassword,
     });
   } finally {
     await sql.end({ timeout: 5 }).catch(() => {});

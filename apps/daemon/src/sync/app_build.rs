@@ -1062,6 +1062,10 @@ pub struct BuildOutput {
     /// recording the sha it started with would name a commit that is not what
     /// is now running.
     pub git_commit_sha: Option<String>,
+    /// The checkout's `migrations/*.sql` at the revision built, in run order.
+    /// Finalize hands them to the Cloud API, which runs them against the app's
+    /// database before the new code goes live.
+    pub migrations: Vec<super::app_migrations::AppMigration>,
 }
 
 /// Build the app, however this app is built.
@@ -1124,6 +1128,9 @@ fn build_artifact_with_push(
         git_commit_sha = prepare_git_build(workdir, ctx)?;
     }
     let declaration = read_app_declaration(workdir)?;
+    // Read now, off the revision just checked out, so a bad migrations/ folder
+    // fails before minutes of build rather than after.
+    let migrations = super::app_migrations::read_app_migrations(workdir)?;
     let build_override = declaration
         .build
         .command
@@ -1161,6 +1168,7 @@ fn build_artifact_with_push(
             artifact_verification: Some(artifact_verification),
             git_commit_sha,
             declaration,
+            migrations,
         });
     }
 
@@ -1220,6 +1228,7 @@ fn build_artifact_with_push(
         artifact_verification: Some(artifact_verification),
         git_commit_sha,
         declaration,
+        migrations,
     })
 }
 

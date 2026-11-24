@@ -154,6 +154,7 @@ import {
   parseOptionalGitCommitSha,
   readAppsCloudApiUrl,
 } from "./provisioning/app-deploy.js";
+import { parseAppMigrations } from "./provisioning/app-migrations.js";
 import type { AppLogKind } from "./provisioning/app-logs.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
@@ -5873,10 +5874,13 @@ export function createSupabaseBusinessRepository(options) {
 
     async finalizeDeploy(
       appId: string,
-      input: { gitCommitSha?: string; revision?: string; deployToken: string; declaration?: unknown; image?: unknown; artifactVerification?: unknown },
+      input: { gitCommitSha?: string; revision?: string; deployToken: string; declaration?: unknown; image?: unknown; artifactVerification?: unknown; migrations?: unknown },
     ) {
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
       const declaration = parseAppDeployDeclaration(input?.declaration);
+      // Shape-checked before anything is claimed, so a malformed list is a
+      // 400 on a deploy that changed nothing.
+      const migrations = parseAppMigrations(input?.migrations);
       const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
       // visible to the caller → surface null so the route 404s.
@@ -5972,6 +5976,10 @@ export function createSupabaseBusinessRepository(options) {
           // so without this the function would be pointed at whatever the
           // previous deploy happened to leave in OSS.
           image: parseDeployedImage(input?.image, declaration),
+          // The repo's migrations/*.sql at the built revision; run before the
+          // function is touched (app-migrations.ts).
+          migrations,
+          gitCommitSha: gitCommitSha ?? null,
         });
         const { data: row, error: updErr } = await writer
           .from("apps")

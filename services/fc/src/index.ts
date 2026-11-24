@@ -16,6 +16,7 @@ import {
   resolveFcEndpoint,
 } from "./lib/provisioning/fc-client.js";
 import { startDeploy as startDeployImpl, finalizeDeploy as finalizeDeployImpl } from "./lib/provisioning/app-deploy.js";
+import type { AppMigration } from "./lib/provisioning/app-migrations.js";
 import { readAppsAdminUrl } from "./lib/provisioning/app-postgres.js";
 import { makeAppDataOps, type AppDataOps } from "./lib/provisioning/app-data-db.js";
 import { makeTeardownAppDeps, type TeardownAppDeps } from "./lib/provisioning/app-delete.js";
@@ -230,6 +231,8 @@ function makeDeployDeps() {
       fcFunctionName: string;
       ossObjectName: string;
       platformAuthEnv?: Record<string, string>;
+      migrations?: AppMigration[];
+      gitCommitSha?: string | null;
     }) =>
       finalizeDeployImpl(
         {
