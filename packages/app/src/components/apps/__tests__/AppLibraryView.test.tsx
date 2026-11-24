@@ -85,24 +85,26 @@ describe('AppLibraryView', () => {
     expect(screen.getByText('Teamed')).toBeInTheDocument()
   })
 
-  it('groups by presence, with the ones that are not here first', () => {
-    // Said once per group rather than once per row: the tick used to run down
-    // eight of nine rows, which is the state that needs no marking at all.
+  it('is one flat list, each card saying for itself whether it is here', () => {
+    // The sidebar's 本机 tab is the "here" list now; a split in this view only
+    // pushed what people came looking for under a heading.
     render(<AppLibraryView />)
-    const away = screen.getByText('未在本机')
-    const here = screen.getByText('已在本机')
-    expect(away.compareDocumentPosition(here) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByText('未在本机')).not.toBeInTheDocument()
+    expect(screen.queryByText('已在本机')).not.toBeInTheDocument()
+    // Server order, untouched: app-1 (here) before app-2 (not).
+    const mine = screen.getByText('Mine')
+    const teamed = screen.getByText('Teamed')
+    expect(mine.compareDocumentPosition(teamed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // With app-1 local and app-2 not, exactly one download control may exist.
     expect(screen.getAllByRole('button', { name: /下载/ })).toHaveLength(1)
   })
 
-  it('groups nothing while the daemon has not answered', () => {
-    // `null` is "unknown", not "none". Split on it and every app the user
-    // already has would be offered for download.
+  it('offers no download while the daemon has not answered', () => {
+    // `null` is "unknown", not "none": every app the user already has would
+    // otherwise be offered for download.
     useAppsStore.setState({ localAppIds: null })
     render(<AppLibraryView />)
-    expect(screen.queryByText('未在本机')).not.toBeInTheDocument()
-    expect(screen.queryByText('已在本机')).not.toBeInTheDocument()
+    expect(screen.getByText('Mine')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /下载/ })).not.toBeInTheDocument()
   })
 
@@ -270,9 +272,7 @@ describe('AppLibraryView', () => {
     expect(screen.getByText('Shared two')).toBeInTheDocument()
   })
 
-  it('opens on the filter the sidebar list already picked', () => {
-    // One filter, not two: narrowing to 受邀 in column two and then opening the
-    // library should not show everything again.
+  it('remembers its own filter for the team', () => {
     useAppRelationshipFilterStore.setState({ byTeam: { 'team-1': 'team' } })
     useAppsStore.setState({
       items: [mkApp('app-1', 'Own', { relationship: 'owner' }), mkApp('app-4', 'Common', { relationship: 'team' })],
@@ -324,8 +324,6 @@ describe('AppLibraryView', () => {
 
     expect(screen.getByText('Own project')).toBeInTheDocument()
     expect(screen.queryByText('Team project')).not.toBeInTheDocument()
-    expect(screen.getByText('已在本机')).toBeInTheDocument()
-    expect(screen.queryByText('未在本机')).not.toBeInTheDocument()
     expect(screen.getByTestId('app-relationship-chip-owner')).toHaveTextContent('我的1')
     expect(screen.getByTestId('app-relationship-chip-team')).toHaveTextContent('团队1')
 

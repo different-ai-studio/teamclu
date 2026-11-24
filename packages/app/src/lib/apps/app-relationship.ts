@@ -13,6 +13,15 @@ export type AppRelationshipFilter = 'all' | AppRelationship
 export const APP_RELATIONSHIP_FILTERS: readonly AppRelationshipFilter[] = ['all', 'owner', 'invited', 'team']
 
 /**
+ * The sidebar's split: what is on this machine, then mine and invited wherever
+ * they are. A team app nobody invited me to shows only once it is here — the
+ * library is where the rest of the team's apps are found.
+ */
+export type AppSidebarFilter = 'local' | 'owner' | 'invited'
+
+export const APP_SIDEBAR_FILTERS: readonly AppSidebarFilter[] = ['local', 'owner', 'invited']
+
+/**
  * The server's answer, or the same rule worked out from the row.
  *
  * The fallback cannot see grants, so a team app the viewer was also invited to
@@ -73,7 +82,8 @@ export function keepRelationship(prev: AppRow, next: AppRow): AppRow {
   return { ...next, relationship: prev.relationship, invitedByActorId: prev.invitedByActorId ?? null }
 }
 
-export const APP_RELATIONSHIP_LABELS: Record<AppRelationshipFilter, { key: string; fallback: string }> = {
+export const APP_RELATIONSHIP_LABELS: Record<AppRelationshipFilter | AppSidebarFilter, { key: string; fallback: string }> = {
+  local: { key: 'apps.filterLocal', fallback: '本机' },
   all: { key: 'apps.relationshipAll', fallback: '全部' },
   owner: { key: 'apps.relationshipOwner', fallback: '我的' },
   invited: { key: 'apps.relationshipInvited', fallback: '受邀' },

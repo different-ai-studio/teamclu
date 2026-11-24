@@ -5,7 +5,9 @@ import { AppListColumn } from '../AppListColumn'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useTabsStore } from '@/stores/tabs'
-import { useAppRelationshipFilterStore } from '@/stores/app-relationship-filter'
+import { useAppSidebarFilterStore } from '@/stores/app-relationship-filter'
+import { useAppTouchStore } from '@/lib/apps/app-recency'
+import { useSessionListStore } from '@/stores/session-list-store'
 import { useLocalAgentInstallStore } from '@/stores/local-agent-install'
 import type { AppRow } from '@/lib/backend/types'
 
@@ -54,7 +56,10 @@ describe('AppListColumn', () => {
     vi.clearAllMocks()
     useCurrentTeamStore.setState({ team: { id: 'team-1' } as never })
     useTabsStore.setState({ tabs: [], activeTabId: null })
-    useAppRelationshipFilterStore.setState({ byTeam: {} })
+    // 我的 lists every app I made, here or not — what most of these cases need.
+    useAppSidebarFilterStore.setState({ byTeam: { 'team-1': 'owner' } })
+    useAppTouchStore.setState({ touchedAt: {} })
+    useSessionListStore.setState({ rows: [] })
     useLocalAgentInstallStore.setState({ byTeam: {} })
     useAppsStore.setState({
       items: [mkApp('app-1', 'Alpha'), mkApp('app-2', 'Beta')],
@@ -62,6 +67,7 @@ describe('AppListColumn', () => {
       selectedAppId: null,
       localAppIds: ['app-1'],
       deployingIds: [],
+      appIdBySessionId: {},
       refreshLocalApps: vi.fn().mockResolvedValue(undefined),
     })
   })
@@ -196,83 +202,120 @@ describe('AppListColumn', () => {
     expect(useTabsStore.getState().tabs).toHaveLength(0)
   })
 
-  describe('relationship', () => {
+  describe('本机 / 我的 / 受邀', () => {
     beforeEach(() => {
+      useAppSidebarFilterStore.setState({ byTeam: {} })
       useAppsStore.setState({
         items: [
-          mkApp('a', 'Own', { relationship: 'owner' }),
-          mkApp('b', 'Shared', { relationship: 'invited', invitedByActorId: 'actor-lin' }),
-          mkApp('c', 'Common', { relationship: 'team', visibility: 'team' }),
-          mkApp('d', 'Common Two', { relationship: 'team', visibility: 'team' }),
+          mkApp('a', 'Own here', { relationship: 'owner' }),
+          mkApp('a2', 'Own away', { relationship: 'owner' }),
+          mkApp('b', 'Shared here', { relationship: 'invited', invitedByActorId: 'actor-lin' }),
+          mkApp('b2', 'Shared away', { relationship: 'invited' }),
+          mkApp('c', 'Common here', { relationship: 'team', visibility: 'team' }),
+          mkApp('d', 'Common away', { relationship: 'team', visibility: 'team' }),
         ],
-        localAppIds: null,
+        localAppIds: ['a', 'b', 'c'],
       })
     })
 
-    it('counts the apps under each quick filter', () => {
+    const names = () => screen.getAllByTestId('app-row-status').map((el) => el.closest('button')!.textContent)
+
+    it('offers exactly 本机, 我的 and 受邀, starting on 本机', () => {
       render(<AppListColumn />)
-      expect(screen.getByTestId('app-relationship-chip-all')).toHaveTextContent('全部4')
-      expect(screen.getByTestId('app-relationship-chip-owner')).toHaveTextContent('我的1')
-      expect(screen.getByTestId('app-relationship-chip-invited')).toHaveTextContent('受邀1')
-      expect(screen.getByTestId('app-relationship-chip-team')).toHaveTextContent('团队2')
-      expect(screen.getByTestId('app-relationship-chip-all')).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByTestId('app-relationship-chip-local')).toHaveTextContent('本机3')
+      expect(screen.getByTestId('app-relationship-chip-owner')).toHaveTextContent('我的2')
+      expect(screen.getByTestId('app-relationship-chip-invited')).toHaveTextContent('受邀2')
+      expect(screen.queryByTestId('app-relationship-chip-all')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('app-relationship-chip-team')).not.toBeInTheDocument()
+      expect(screen.getByTestId('app-relationship-chip-local')).toHaveAttribute('aria-pressed', 'true')
     })
 
-    it('narrows the list to one relationship, and remembers it for the team', () => {
+    it('本机 is every app here, whoever it belongs to, and nothing else', () => {
       render(<AppListColumn />)
-      fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
-      expect(screen.queryByText('Own')).not.toBeInTheDocument()
-      expect(screen.queryByText('Shared')).not.toBeInTheDocument()
-      expect(screen.getByText('Common')).toBeInTheDocument()
-      expect(screen.getByText('Common Two')).toBeInTheDocument()
-      expect(screen.getByTestId('app-relationship-chip-team')).toHaveAttribute('aria-pressed', 'true')
-      expect(useAppRelationshipFilterStore.getState().byTeam['team-1']).toBe('team')
+      expect(screen.getByText('Own here')).toBeInTheDocument()
+      expect(screen.getByText('Shared here')).toBeInTheDocument()
+      expect(screen.getByText('Common here')).toBeInTheDocument()
+      expect(screen.queryByText('Own away')).not.toBeInTheDocument()
+      expect(screen.queryByText('Common away')).not.toBeInTheDocument()
     })
 
-    it('says under each icon how I am related to the app, with the inviter on hover', () => {
+    it('本机 puts the app I used last on top: opened here, or a session that moved', () => {
+      useAppTouchStore.setState({ touchedAt: { c: '2026-11-20T00:00:00.000Z' } })
+      useSessionListStore.setState({
+        rows: [
+          { id: 's1', app_id: 'b', last_message_at: '2026-11-22T00:00:00.000Z', updated_at: null },
+        ] as never,
+      })
+      render(<AppListColumn />)
+      expect(names()[0]).toContain('Shared here')
+      expect(names()[1]).toContain('Common here')
+      expect(names()[2]).toContain('Own here')
+    })
+
+    it('我的 and 受邀 list them wherever they are, the absent ones marked', () => {
+      render(<AppListColumn />)
+      fireEvent.click(screen.getByTestId('app-relationship-chip-owner'))
+      expect(screen.getByText('Own here')).toBeInTheDocument()
+      expect(screen.getByText('Own away')).toBeInTheDocument()
+      expect(screen.queryByText('Shared here')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Own away/ })).toContainElement(
+        screen.getByTestId('app-row-not-downloaded'),
+      )
+      expect(useAppSidebarFilterStore.getState().byTeam['team-1']).toBe('owner')
+
+      fireEvent.click(screen.getByTestId('app-relationship-chip-invited'))
+      expect(screen.getByText('Shared here')).toBeInTheDocument()
+      expect(screen.getByText('Shared away')).toBeInTheDocument()
+      expect(screen.queryByText('Own here')).not.toBeInTheDocument()
+      expect(screen.queryByText('Common away')).not.toBeInTheDocument()
+    })
+
+    it('says under each icon in 本机 how I am related to the app, with the inviter on hover', () => {
       render(<AppListColumn />)
       const labelIn = (name: RegExp) =>
         within(screen.getByRole('button', { name })).getByTestId('app-row-relationship')
-      expect(labelIn(/Own/)).toHaveTextContent('我的')
-      expect(labelIn(/Common Two/)).toHaveTextContent('团队')
-      // One short word fits under a 28px icon; the name does not, so it hovers.
-      expect(labelIn(/Shared/)).toHaveTextContent(/^受邀$/)
-      expect(labelIn(/Shared/)).toHaveAttribute('title', 'Lin 邀请')
-      expect(labelIn(/Own/)).not.toHaveAttribute('title')
+      expect(labelIn(/Own here/)).toHaveTextContent('我的')
+      expect(labelIn(/Common here/)).toHaveTextContent('团队')
+      expect(labelIn(/Shared here/)).toHaveTextContent(/^受邀$/)
+      expect(labelIn(/Shared here/)).toHaveAttribute('title', 'Lin 邀请')
+      expect(labelIn(/Own here/)).not.toHaveAttribute('title')
     })
 
-    it('drops the row label once one relationship is picked — every row would say the same word', () => {
+    it('drops the row label under 我的 / 受邀 — every row would say the same word', () => {
       render(<AppListColumn />)
-      expect(screen.getAllByTestId('app-row-relationship')).toHaveLength(4)
-      fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
+      expect(screen.getAllByTestId('app-row-relationship')).toHaveLength(3)
+      fireEvent.click(screen.getByTestId('app-relationship-chip-owner'))
       expect(screen.queryByTestId('app-row-relationship')).not.toBeInTheDocument()
     })
 
     it('shrinks the icon only to make room for the word under it', () => {
-      // 24px is what lets disc + word match name + status. With no word under
-      // it, a 24px disc just looks undersized next to two lines of text.
       render(<AppListColumn />)
       expect(screen.getAllByTestId('app-row-icon')[0]).toHaveClass('h-6', 'w-6')
-      fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
+      fireEvent.click(screen.getByTestId('app-relationship-chip-owner'))
       expect(screen.getAllByTestId('app-row-icon')[0]).toHaveClass('h-7', 'w-7')
     })
 
     it('keeps the label off the status line, so it never squeezes the status', () => {
-      // On the status line it cut "Deploy failed" to "Deploy fai…", and then
-      // itself to "M…". Under the icon neither competes for that width.
       render(<AppListColumn />)
       const status = screen.getAllByTestId('app-row-status')[0]
       const label = screen.getAllByTestId('app-row-relationship')[0]
       expect(status.parentElement).not.toContainElement(label)
     })
 
-    it('a filter with nothing under it says so and offers the whole list back', () => {
-      useAppRelationshipFilterStore.setState({ byTeam: { 'team-1': 'invited' } })
+    it('本机 is empty, not guessed, while the daemon has not answered', () => {
+      useAppsStore.setState({ localAppIds: null })
+      render(<AppListColumn />)
+      expect(screen.getByText('本机还没有应用')).toBeInTheDocument()
+    })
+
+    it('an empty filter says so and points at the library', () => {
+      useAppSidebarFilterStore.setState({ byTeam: { 'team-1': 'invited' } })
       useAppsStore.setState({ items: [mkApp('a', 'Own', { relationship: 'owner' })] })
       render(<AppListColumn />)
       expect(screen.getByText('没有受邀的应用')).toBeInTheDocument()
-      fireEvent.click(screen.getByRole('button', { name: '查看全部' }))
-      expect(screen.getByText('Own')).toBeInTheDocument()
+      // The header icon and the empty state's own button.
+      fireEvent.click(screen.getAllByRole('button', { name: '所有应用' })[1])
+      expect(useTabsStore.getState().tabs[0]).toMatchObject({ type: 'native', target: 'app-library' })
     })
   })
 

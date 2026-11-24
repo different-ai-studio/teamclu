@@ -4,24 +4,28 @@ import {
   APP_RELATIONSHIP_FILTERS,
   APP_RELATIONSHIP_LABELS,
   type AppRelationshipFilter,
+  type AppSidebarFilter,
 } from '@/lib/apps/app-relationship'
 
 /**
- * All · Mine · Invited · Team, each with its count.
+ * The quick filter chips, each with its count — All · Mine · Invited · Team in
+ * the library, 本机 · Mine · Invited in the sidebar.
  *
  * Ink, not coral: the palette spends coral on unread and send, and a selected
  * filter is neither. A chip whose count is zero stays in place, dimmed, so the
  * row does not reflow when a list is loaded or an app is created.
  */
-export function AppRelationshipChips({
+export function AppRelationshipChips<F extends AppRelationshipFilter | AppSidebarFilter = AppRelationshipFilter>({
   value,
   counts,
   onChange,
+  filters = APP_RELATIONSHIP_FILTERS as readonly F[],
   className,
 }: {
-  value: AppRelationshipFilter
-  counts: Record<AppRelationshipFilter, number>
-  onChange: (filter: AppRelationshipFilter) => void
+  value: F
+  counts: Record<F, number>
+  onChange: (filter: F) => void
+  filters?: readonly F[]
   className?: string
 }) {
   const { t } = useTranslation()
@@ -31,7 +35,7 @@ export function AppRelationshipChips({
       aria-label={t('apps.relationshipFilter', '按关系筛选')}
       className={cn('flex flex-wrap items-center gap-1', className)}
     >
-      {APP_RELATIONSHIP_FILTERS.map((filter) => {
+      {filters.map((filter) => {
         const label = APP_RELATIONSHIP_LABELS[filter]
         const selected = value === filter
         const empty = counts[filter] === 0

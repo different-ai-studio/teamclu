@@ -1,4 +1,5 @@
 import { create, type StoreApi } from "zustand";
+import { useAppTouchStore } from "@/lib/apps/app-recency";
 import { getBackend } from "@/lib/backend";
 import {
   seedDaemonApp,
@@ -717,6 +718,8 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     });
   },
   selectApp: (appId) => {
+    // Opening an app is using it: it moves to the top of the sidebar's 本机.
+    if (appId) useAppTouchStore.getState().touch(appId);
     set((s) => (s.selectedAppId === appId ? s : { selectedAppId: appId }));
   },
   load: async (teamId, opts) => {
@@ -832,6 +835,9 @@ export const useAppsStore = create<AppsState>((set, get) => ({
   download: async (app) => {
     await ensureAppCheckout(app, { surfaceErrors: true });
     await get().refreshLocalApps(app.teamId);
+    // Just downloaded is just used — it lands at the top of 本机, not wherever
+    // its last session happened to fall.
+    if (get().localAppIds?.includes(app.id)) useAppTouchStore.getState().touch(app.id);
   },
   reseed: async (appId) => {
     const app = get().items.find((a) => a.id === appId);

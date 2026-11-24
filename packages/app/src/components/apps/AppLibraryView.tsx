@@ -196,29 +196,16 @@ function RemoteRow({
   )
 }
 
-function GroupHeading({ label, count }: { label: string; count: number }) {
-  return (
-    <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-background pb-2 pt-4 text-[10.5px] font-semibold tracking-[0.08em] text-faint">
-      <span>{label}</span>
-      <span className="font-mono tabular-nums">· {count}</span>
-    </div>
-  )
-}
-
 /**
- * Every app the caller can see — their own and the team's — sorted by whether
- * it is on this machine, with search and creators.
+ * Every app the caller can see — their own and the team's — as one flat list,
+ * with search and creators.
  *
- * Column two lists the same apps and marks the ones that are not here, so this
- * is no longer the only way to reach them; what it still does that a sidebar
- * column cannot is show them as cards, grouped, searchable by name, creator or
- * type. It lives in the main column rather than in a dialog because downloading
- * from it changes that column-two list, and watching a row move out of 未在本机
- * next to the list it lands in is the point.
- *
- * The split into 未在本机 / 已在本机 is what removed the per-row "已在本机" tick
- * that ran down eight of nine rows: the group says it once, and the rows that
- * remain marked are the ones with something to do.
+ * Not grouped by whether an app is here: the sidebar's 本机 tab is that list
+ * already, and here a split only pushed the apps people were looking for below
+ * a heading. Each card still says it for itself — a 下载 button on the ones
+ * that are not here, the open chevron on the ones that are. It lives in the
+ * main column rather than in a dialog because downloading from it changes the
+ * column-two list.
  */
 export function AppLibraryView() {
   const { t } = useTranslation()
@@ -272,30 +259,8 @@ export function AppLibraryView() {
     })
   }, [items, filter, myActorId, query, creatorFor])
 
-  /**
-   * Not here first. This view exists to reach apps that are not on this
-   * machine; the ones that are, are already one column to the left.
-   *
-   * `localAppIds === null` is "the daemon has not answered", not "none are
-   * local" — grouping on it then would offer a download for every app the user
-   * already has. One flat list until it does answer.
-   */
-  const groups = React.useMemo(() => {
-    if (localAppIds === null) return [{ key: 'unknown' as const, label: null, apps: visible }]
-    const local = new Set(localAppIds)
-    return [
-      {
-        key: 'away' as const,
-        label: t('apps.libraryNotHere', '未在本机'),
-        apps: visible.filter((a) => !local.has(a.id)),
-      },
-      {
-        key: 'here' as const,
-        label: t('apps.libraryDownloaded', '已在本机'),
-        apps: visible.filter((a) => local.has(a.id)),
-      },
-    ].filter((g) => g.apps.length > 0)
-  }, [visible, localAppIds, t])
+  /** `null` is "the daemon has not answered", not "none are local". */
+  const localSet = React.useMemo(() => (localAppIds === null ? null : new Set(localAppIds)), [localAppIds])
 
   const handleDownload = React.useCallback(
     async (app: AppRow) => {
@@ -362,41 +327,32 @@ export function AppLibraryView() {
             <div className="py-10 text-center text-[12.5px] text-faint">
               {t('apps.empty', '还没有内容')}
             </div>
-          ) : groups.length === 0 ? (
+          ) : visible.length === 0 ? (
             // Distinct from the empty state: "you have no apps" and "none of
             // your apps match this" call for different next moves.
             <div className="py-10 text-center text-[12.5px] text-faint">
               {t('apps.libraryNoMatch', '没有匹配的应用')}
             </div>
           ) : (
-            groups.map((group) => (
-              <section key={group.key}>
-                {group.label && <GroupHeading label={group.label} count={group.apps.length} />}
-                <div className={cn(GRID, !group.label && 'pt-4')}>
-                  {group.apps.map((app) => {
-                    // No word under a filter: the pressed chip says it once for
-                    // every card below it.
-                    const relationLabel = filter === 'all' ? relationLabelFor(app) : null
-                    const shared = isSharedByMe(app, myActorId)
-                    const common = { app, creator: creatorFor(app), relationLabel, shared }
-                    if (group.key === 'here') {
-                      return <LocalRow key={app.id} {...common} />
-                    }
-                    if (group.key === 'unknown') {
-                      return <PendingRow key={app.id} {...common} />
-                    }
-                    return (
-                      <RemoteRow
-                        key={app.id}
-                        {...common}
-                        busy={downloading === app.id}
-                        onDownload={() => void handleDownload(app)}
-                      />
-                    )
-                  })}
-                </div>
-              </section>
-            ))
+            <div className={cn(GRID, 'pt-4')}>
+              {visible.map((app) => {
+                // No word under a filter: the pressed chip says it once for
+                // every card below it.
+                const relationLabel = filter === 'all' ? relationLabelFor(app) : null
+                const shared = isSharedByMe(app, myActorId)
+                const common = { app, creator: creatorFor(app), relationLabel, shared }
+                if (localSet === null) return <PendingRow key={app.id} {...common} />
+                if (localSet.has(app.id)) return <LocalRow key={app.id} {...common} />
+                return (
+                  <RemoteRow
+                    key={app.id}
+                    {...common}
+                    busy={downloading === app.id}
+                    onDownload={() => void handleDownload(app)}
+                  />
+                )
+              })}
+            </div>
           )}
         </div>
       </div>
