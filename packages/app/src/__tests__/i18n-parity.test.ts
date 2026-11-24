@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { TEAM_SKILL_CATEGORIES } from '../lib/backend/cloud-api/team-skills'
 
 // i18n guardrail tests. These keep the two locale files structurally in sync,
 // catch interpolation drift, and stop both runtime-missing keys and dead-key
@@ -138,6 +139,36 @@ describe('i18n locale parity', () => {
       .filter((k) => k in flatZh && placeholders(flatEn[k]) !== placeholders(flatZh[k]))
       .map((k) => `${k}: en={${placeholders(flatEn[k])}} zh={${placeholders(flatZh[k])}}`)
     expect(mismatches).toEqual([])
+  })
+})
+
+// Stored skill categories stay the English slugs. These are the only strings a
+// person should see for them. Both catalogues must carry the same set.
+const SKILL_CATEGORY_LABELS: Record<(typeof TEAM_SKILL_CATEGORIES)[number], { en: string; zh: string }> = {
+  general: { en: 'General', zh: '通用' },
+  coding: { en: 'Coding', zh: '编程' },
+  devops: { en: 'DevOps', zh: '运维' },
+  data: { en: 'Data', zh: '数据' },
+  research: { en: 'Research', zh: '研究' },
+  writing: { en: 'Writing', zh: '写作' },
+  communication: { en: 'Communication', zh: '沟通' },
+  integration: { en: 'Integration', zh: '集成' },
+}
+
+describe('skill category label parity', () => {
+  test('every stored category slug has an equivalent en and zh-CN label', () => {
+    expect(Object.keys(SKILL_CATEGORY_LABELS).sort()).toEqual([...TEAM_SKILL_CATEGORIES].sort())
+    for (const slug of TEAM_SKILL_CATEGORIES) {
+      const key = `teamShare.skillCategory.${slug}`
+      const expected = SKILL_CATEGORY_LABELS[slug]
+      expect(flatEn[key], key).toBe(expected.en)
+      expect(flatZh[key], key).toBe(expected.zh)
+      expect(expected.en).not.toBe(slug)
+      expect(expected.zh).not.toBe(slug)
+      expect(expected.zh).not.toBe(expected.en)
+      expect(expected.zh).toMatch(/\p{Script=Han}/u)
+      expect(expected.zh).not.toMatch(/[A-Za-z]/)
+    }
   })
 })
 

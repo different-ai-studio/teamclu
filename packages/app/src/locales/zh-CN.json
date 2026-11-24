@@ -226,6 +226,16 @@
     "skillShareSummary": "简介",
     "skillShareChangelog": "变更说明",
     "skillShareCategory": "分类",
+    "skillCategory": {
+      "general": "通用",
+      "coding": "编程",
+      "devops": "运维",
+      "data": "数据",
+      "research": "研究",
+      "writing": "写作",
+      "communication": "沟通",
+      "integration": "集成"
+    },
     "skillShareSubmit": "分享并安装",
     "skillShareSuccess": "已分享并安装",
     "skillShareFailed": "分享失败：{{msg}}",

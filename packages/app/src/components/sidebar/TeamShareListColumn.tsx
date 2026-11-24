@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { useTeamSkillCategoryLabel } from '@/lib/skills/team-skill-category'
 import { toast } from 'sonner'
 import {
   Search,
@@ -378,6 +379,7 @@ type SkillRow = {
 
 export function TeamShareListColumn({ section }: { section: TeamShareSection }) {
   const { t } = useTranslation()
+  const categoryLabel = useTeamSkillCategoryLabel()
   const { canManageTeam } = useTeamPermissions()
   const { state: sidebarState } = useSidebar()
   const sidebarCollapsed = sidebarState === 'collapsed'
@@ -692,9 +694,9 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         const metaParts: string[] = []
         if (s.kind === 'personal') {
           if (s.personalSourceLabel) metaParts.push(s.personalSourceLabel)
-          if (s.category) metaParts.push(s.category)
+          if (s.category) metaParts.push(categoryLabel(s.category))
         } else {
-          if (s.category) metaParts.push(s.category)
+          if (s.category) metaParts.push(categoryLabel(s.category))
           if (s.hasUpdate && s.installedVersion != null && s.latestVersion != null) {
             metaParts.push(`v${s.installedVersion} → v${s.latestVersion}`)
           } else if (s.latestVersion) metaParts.push(`v${s.latestVersion}`)
@@ -769,7 +771,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             ) : undefined,
         }
       })
-  }, [section, q, skills.items, localState, canManageTeam, t])
+  }, [section, q, skills.items, localState, canManageTeam, t, categoryLabel])
 
   /** Team and personal are different trust boundaries, so they get their own groups. */
   const skillGroups = React.useMemo(() => {

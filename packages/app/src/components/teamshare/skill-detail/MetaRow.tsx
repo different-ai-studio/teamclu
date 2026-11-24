@@ -1,12 +1,14 @@
 import { useTranslation } from 'react-i18next'
 import { type TeamSkillItem } from '@/stores/team-share-browser'
+import { useTeamSkillCategoryLabel } from '@/lib/skills/team-skill-category'
 import { formatShortDate } from './format'
 
 export function MetaRow({ item, ownerLabel }: { item: TeamSkillItem; ownerLabel: string | null }) {
   const { t } = useTranslation()
+  const categoryLabel = useTeamSkillCategoryLabel()
   const primary: string[] = []
   if (item.kind === 'personal' && item.personalSourceLabel) primary.push(item.personalSourceLabel)
-  if (item.category) primary.push(item.category)
+  if (item.category) primary.push(categoryLabel(item.category))
   if (item.latestVersion) primary.push(`v${item.latestVersion}`)
   if (item.installed && item.installedVersion && item.installedVersion !== item.latestVersion) {
     primary.push(t('teamShare.skillInstalledVersion', 'installed v{{v}}', { v: item.installedVersion }))
