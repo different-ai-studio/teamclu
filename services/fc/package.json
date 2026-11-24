@@ -24,7 +24,7 @@
     "jose": "^6.2.18",
     "mqtt": "^5.16.1",
     "postgres": "^3.4.9",
-    "stripe": "^22.6.0",
+    "stripe": "^23.2.0",
     "ws": "^8.23.0"
   },
   "devDependencies": {
