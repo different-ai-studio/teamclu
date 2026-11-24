@@ -124,6 +124,9 @@ export interface AuthBackend {
   listMyIdentities(): Promise<MyIdentity[]>;
   /** Become one of the caller's own identities: mints its session and adopts it. */
   switchIdentity(userId: string): Promise<AuthSession | null>;
+  /** A one-time sign-in URL for `url` when it is on a partner web console this
+   *  deployment hands sessions to (POST /v1/auth/web-handoff); null otherwise. */
+  webHandoffUrl(url: string): Promise<string | null>;
 }
 
 export interface SessionListEntry {
