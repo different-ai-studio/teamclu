@@ -136,10 +136,10 @@ describe('AppListColumn', () => {
     expect(tabs[0]).toMatchObject({ type: 'native', target: 'app-create' })
   })
 
-  it('the header offers only the library, never a second create button', () => {
+  it('has no library button: the library is already the main view beside it', () => {
     render(<AppListColumn />)
     expect(screen.queryByRole('button', { name: '新建' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '所有应用' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '所有应用' })).not.toBeInTheDocument()
   })
 
   it('gives each app type its own glyph', () => {
@@ -160,23 +160,11 @@ describe('AppListColumn', () => {
     }
   })
 
-  it('the library opens in column three, not over this column', () => {
-    render(<AppListColumn />)
-    fireEvent.click(screen.getByRole('button', { name: '所有应用' }))
-    const tabs = useTabsStore.getState().tabs
-    expect(tabs).toHaveLength(1)
-    expect(tabs[0]).toMatchObject({ type: 'native', target: 'app-library' })
-    expect(useTabsStore.getState().activeTabId).toBe(tabs[0].id)
-  })
-
-  it('offers both ways out when the team has no apps at all', () => {
+  it('offers to create one when the team has no apps at all', () => {
     useAppsStore.setState({ items: [], localAppIds: [] })
     render(<AppListColumn />)
     expect(screen.getByText('还没有内容')).toBeInTheDocument()
-    // One create button (the empty state's), two ways to the library (the
-    // header icon and the empty state's own button).
     expect(screen.getAllByRole('button', { name: '新建' })).toHaveLength(1)
-    expect(screen.getAllByRole('button', { name: '所有应用' })).toHaveLength(2)
   })
 
   it('keeps names visible and does not download or open when no local agent is installed', () => {
@@ -197,9 +185,6 @@ describe('AppListColumn', () => {
     fireEvent.click(screen.getByRole('button', { name: /Beta/ }))
     expect(useAppsStore.getState().selectedAppId).toBeNull()
     expect(download).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole('button', { name: '所有应用' }))
-    expect(useTabsStore.getState().tabs).toHaveLength(0)
   })
 
   describe('本机 / 我的 / 受邀', () => {
@@ -308,14 +293,11 @@ describe('AppListColumn', () => {
       expect(screen.getByText('本机还没有应用')).toBeInTheDocument()
     })
 
-    it('an empty filter says so and points at the library', () => {
+    it('an empty filter says so', () => {
       useAppSidebarFilterStore.setState({ byTeam: { 'team-1': 'invited' } })
       useAppsStore.setState({ items: [mkApp('a', 'Own', { relationship: 'owner' })] })
       render(<AppListColumn />)
       expect(screen.getByText('没有受邀的应用')).toBeInTheDocument()
-      // The header icon and the empty state's own button.
-      fireEvent.click(screen.getAllByRole('button', { name: '所有应用' })[1])
-      expect(useTabsStore.getState().tabs[0]).toMatchObject({ type: 'native', target: 'app-library' })
     })
   })
 

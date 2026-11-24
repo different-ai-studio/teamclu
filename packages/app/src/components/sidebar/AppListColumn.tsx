@@ -1,13 +1,13 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AppWindow, ChevronRight, Download, LayoutGrid, Loader2 } from 'lucide-react'
+import { AppWindow, ChevronRight, Download, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useSidebar } from '@/components/ui/sidebar'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { openAppLibrary, openCreateApp } from '@/lib/tabs/app-tabs'
+import { openCreateApp } from '@/lib/tabs/app-tabs'
 import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
 import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 import { resolveAppType } from '@/lib/apps/app-types'
@@ -226,7 +226,6 @@ export function AppListColumn() {
   const visibleItems = byFilter[filter]
 
   const createLabel = t('apps.createTitle', '新建')
-  const libraryLabel = t('apps.libraryTitle', '所有应用')
 
   // Both halves. The nav row loads the cloud list too, but it is mounted once
   // and never asks again — so an empty answer it happened to catch mid
@@ -279,27 +278,6 @@ export function AppListColumn() {
             <span className="font-mono text-[11px] font-normal text-faint"> · {items.length}</span>
           </div>
         </div>
-        {/*
-          One way in, not two. Creating lives in the library dialog, which is
-          also where you go to find an app that is not on this machine — a `+`
-          here duplicated that button one click earlier and made the header
-          read as two competing actions.
-        */}
-        <div className="flex shrink-0 items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => {
-              if (absent) return
-              openAppLibrary(libraryLabel)
-            }}
-            disabled={absent || !teamId}
-            title={libraryLabel}
-            aria-label={libraryLabel}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground disabled:opacity-40"
-          >
-            <LayoutGrid className="h-4 w-4" />
-          </button>
-        </div>
       </div>
 
       {items.length > 0 && (
@@ -344,17 +322,6 @@ export function AppListColumn() {
               >
                 {t('apps.create', '新建')}
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (absent) return
-                  openAppLibrary(libraryLabel)
-                }}
-                disabled={absent || !teamId}
-                className="rounded-[8px] border border-border px-3 py-1.5 text-[13px] text-foreground hover:bg-selected/40 disabled:opacity-40"
-              >
-                {t('apps.libraryTitle', '所有应用')}
-              </button>
             </div>
           </div>
         ) : visibleItems.length === 0 ? (
@@ -364,20 +331,9 @@ export function AppListColumn() {
             </p>
             {filter === 'local' && (
               <p className="text-[12px] text-faint">
-                {t('apps.sidebarEmptyLocalHint', '在「所有应用」里下载一个，就会出现在这里。')}
+                {t('apps.sidebarEmptyLocalHint', '在右侧「所有应用」里下载一个，就会出现在这里。')}
               </p>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                if (absent) return
-                openAppLibrary(libraryLabel)
-              }}
-              disabled={absent || !teamId}
-              className="rounded-[8px] border border-border px-3 py-1.5 text-[13px] text-foreground hover:bg-selected/40 disabled:opacity-40"
-            >
-              {libraryLabel}
-            </button>
           </div>
         ) : (
           visibleItems.map((app) => (
