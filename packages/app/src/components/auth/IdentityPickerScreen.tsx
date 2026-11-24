@@ -1,6 +1,7 @@
 import { Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MyIdentity } from '@/lib/backend/types'
+import { adminTypeLabel } from '@/lib/auth/admin-type'
 
 /**
  * Which org to enter, after a sign-in that named a person with identities in
@@ -23,12 +24,19 @@ export function IdentityPickerScreen({
   onSignOut: () => void
 }) {
   const { t } = useTranslation()
-  const roleLabel = (adminType: number) =>
-    adminType >= 3
-      ? t('auth.identityPicker.superAdmin', '超级管理员')
-      : adminType === 2
-        ? t('auth.identityPicker.admin', '管理员')
-        : null
+  // ADR-0016: a member (2) is the norm and carries no label.
+  const roleLabel = (adminType: number) => {
+    switch (adminTypeLabel(adminType)) {
+      case 'guest':
+        return t('auth.identityPicker.guest', '访客')
+      case 'creator':
+        return t('auth.identityPicker.creator', '创建者')
+      case 'platformOperator':
+        return t('auth.identityPicker.platformOperator', '平台运营')
+      default:
+        return null
+    }
+  }
 
   return (
     <div className="flex h-screen items-center justify-center bg-background px-6">

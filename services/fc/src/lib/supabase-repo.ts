@@ -250,6 +250,7 @@ import { appFileKey, appFilesPrefix, normalizeAppFolderPrefix } from "./provisio
 import { isOverQuota, type AppStorageOps } from "./provisioning/app-storage.js";
 import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";
+import { adminTypeOf, isMember } from "./admin-type.js";
 import {
   REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger,
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, MESSAGE_ATTACHMENT_SCAN_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
@@ -1391,7 +1392,7 @@ export function createSupabaseBusinessRepository(options) {
           .maybeSingle();
         if (error || !data?.org_id) return null;
         const sharedOrg = process.env.DEFAULT_ORG_ID || null;
-        if (data.org_id === sharedOrg && Number(data.admin_type ?? 0) < 2) return null;
+        if (data.org_id === sharedOrg && !isMember(adminTypeOf(data))) return null;
         return data.org_id as string;
       } catch (e) {
         console.warn("getHomeOrgId failed; not narrowing:", (e as Error)?.message ?? e);

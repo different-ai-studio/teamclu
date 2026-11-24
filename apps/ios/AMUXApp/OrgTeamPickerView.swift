@@ -135,10 +135,9 @@ struct IdentityPickerView: View {
         }
     }
 
+    /// ADR-0016: a member (2) is the norm and carries no label.
     private func roleLabel(_ adminType: Int) -> String? {
-        if adminType >= 3 { return String(localized: "Super admin") }
-        if adminType == 2 { return String(localized: "Admin") }
-        return nil
+        AdminType.label(for: adminType)
     }
 
     private func pick(_ identity: MyIdentity) {

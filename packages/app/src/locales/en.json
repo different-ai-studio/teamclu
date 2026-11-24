@@ -551,8 +551,9 @@
     "identityPicker": {
       "title": "Choose an organization",
       "subtitle": "You belong to more than one organization. Pick the one to enter this time.",
-      "superAdmin": "Super admin",
-      "admin": "Admin",
+      "guest": "Guest",
+      "creator": "Creator",
+      "platformOperator": "Platform operator",
       "unnamedOrg": "Unnamed organization",
       "current": "Current account",
       "switching": "Switching…"
