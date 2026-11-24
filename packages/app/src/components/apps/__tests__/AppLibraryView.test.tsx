@@ -5,7 +5,6 @@ import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useTabsStore } from '@/stores/tabs'
 import { useUIStore } from '@/stores/ui'
-import { useAppRelationshipFilterStore } from '@/stores/app-relationship-filter'
 import type { AppRow } from '@/lib/backend/types'
 
 vi.mock('react-i18next', () => ({
@@ -62,7 +61,6 @@ describe('AppLibraryView', () => {
     useCurrentTeamStore.setState({ team: { id: 'team-1' } as never })
     useTabsStore.setState({ tabs: [], activeTabId: null })
     useUIStore.setState({ sidebarFilter: { kind: 'all' } })
-    useAppRelationshipFilterStore.setState({ byTeam: {} })
     useAppsStore.setState({
       items: [
         mkApp('app-1', 'Mine'),
@@ -90,7 +88,8 @@ describe('AppLibraryView', () => {
     // pushed what people came looking for under a heading.
     render(<AppLibraryView />)
     expect(screen.queryByText('未在本机')).not.toBeInTheDocument()
-    expect(screen.queryByText('已在本机')).not.toBeInTheDocument()
+    // The row that is here says so beside it, as the marketplace says 已安装.
+    expect(screen.getByRole('button', { name: /Mine/ })).toHaveTextContent('已在本机')
     // Server order, untouched: app-1 (here) before app-2 (not).
     const mine = screen.getByText('Mine')
     const teamed = screen.getByText('Teamed')
@@ -213,18 +212,6 @@ describe('AppLibraryView', () => {
     expect(screen.queryByText('个人')).not.toBeInTheDocument()
   })
 
-  it('drops the badge under a filter, where every card would repeat the chip', () => {
-    useAppRelationshipFilterStore.setState({ byTeam: { 'team-1': 'owner' } })
-    useAppsStore.setState({
-      items: [mkApp('app-1', 'Mine shared', { relationship: 'owner', visibility: 'team' })],
-    })
-    render(<AppLibraryView />)
-    expect(screen.getByText('Mine shared')).toBeInTheDocument()
-    expect(screen.queryByTestId('app-card-relationship')).not.toBeInTheDocument()
-    // 已共享 stays: the pressed 我的 chip does not say who else can see it.
-    expect(screen.getByTestId('app-card-shared')).toHaveTextContent('已共享')
-  })
-
   it('marks my own apps the whole team can see, and only those', () => {
     useAppsStore.setState({
       items: [
@@ -250,36 +237,16 @@ describe('AppLibraryView', () => {
     expect(screen.queryByText('海港')).not.toBeInTheDocument()
   })
 
-  it('the quick filter narrows the cards, together with search', () => {
+  it('has no relationship filter: each row names its own', () => {
     useAppsStore.setState({
       items: [
         mkApp('app-1', 'Own', { relationship: 'owner' }),
-        mkApp('app-2', 'Shared one', { relationship: 'invited' }),
-        mkApp('app-3', 'Shared two', { relationship: 'invited' }),
         mkApp('app-4', 'Common', { relationship: 'team', visibility: 'team' }),
       ],
     })
     render(<AppLibraryView />)
-    expect(screen.getByTestId('app-relationship-chip-invited')).toHaveTextContent('受邀2')
-
-    fireEvent.click(screen.getByTestId('app-relationship-chip-invited'))
-    expect(screen.queryByText('Own')).not.toBeInTheDocument()
-    expect(screen.queryByText('Common')).not.toBeInTheDocument()
-    expect(screen.getByText('Shared one')).toBeInTheDocument()
-
-    fireEvent.change(screen.getByLabelText('搜索应用'), { target: { value: 'two' } })
-    expect(screen.queryByText('Shared one')).not.toBeInTheDocument()
-    expect(screen.getByText('Shared two')).toBeInTheDocument()
-  })
-
-  it('remembers its own filter for the team', () => {
-    useAppRelationshipFilterStore.setState({ byTeam: { 'team-1': 'team' } })
-    useAppsStore.setState({
-      items: [mkApp('app-1', 'Own', { relationship: 'owner' }), mkApp('app-4', 'Common', { relationship: 'team' })],
-    })
-    render(<AppLibraryView />)
-    expect(screen.getByTestId('app-relationship-chip-team')).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.queryByText('Own')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('app-relationship-chip-owner')).not.toBeInTheDocument()
+    expect(screen.getByText('Own')).toBeInTheDocument()
     expect(screen.getByText('Common')).toBeInTheDocument()
   })
 
@@ -308,7 +275,7 @@ describe('AppLibraryView', () => {
     ['k7m2q9vx4n8p', 'a-k7m2q9vx4n8p'],
     ['k7m2q9vx4n8p', 'q9vx4'],
     ['k7m2q9vx4n8p', '  A-K7M2Q9VX4N8P  '],
-  ])('search matches stored code %s with query %s within the relationship filter', (appCode, query) => {
+  ])('search matches stored code %s with query %s', (appCode, query) => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected search request'))
     // Both rows are visible to the caller. The team chip is a local relationship
     // filter, not an authorization boundary or a source of otherwise hidden apps.
@@ -324,14 +291,6 @@ describe('AppLibraryView', () => {
 
     expect(screen.getByText('Own project')).toBeInTheDocument()
     expect(screen.queryByText('Team project')).not.toBeInTheDocument()
-    expect(screen.getByTestId('app-relationship-chip-owner')).toHaveTextContent('我的1')
-    expect(screen.getByTestId('app-relationship-chip-team')).toHaveTextContent('团队1')
-
-    fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
-    fireEvent.change(search, { target: { value: 'a-k7m2q9vx4n8p' } })
-    expect(screen.queryByText('Own project')).not.toBeInTheDocument()
-    expect(screen.queryByText('Team project')).not.toBeInTheDocument()
-    expect(screen.getByText('没有匹配的应用')).toBeInTheDocument()
     expect(load).toHaveBeenCalledTimes(1)
     expect(load).toHaveBeenCalledWith('team-1', { force: true })
     expect(refreshLocalApps).toHaveBeenCalledTimes(1)
@@ -382,7 +341,7 @@ describe('AppLibraryView', () => {
 
   it('shows the loader only before the first list arrives', () => {
     useAppsStore.setState({ items: [], loading: true })
-    render(<AppLibraryView />)
-    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    const { container } = render(<AppLibraryView />)
+    expect(container.querySelector('svg.animate-spin')).not.toBeNull()
   })
 })

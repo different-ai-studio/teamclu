@@ -1,16 +1,12 @@
 import type { AppRelationship, AppRow } from '@/lib/backend/types'
 
 /**
- * How the viewer is related to an app, and the quick filter over it.
+ * How the viewer is related to an app, and the sidebar's quick filter.
  *
  * The server decides (`GET /v1/apps` sends `relationship`), because only it can
  * see the viewer's access grants. What is here is the fallback for a server
- * that predates the field, and the counting and filtering both lists share.
+ * that predates the field.
  */
-
-export type AppRelationshipFilter = 'all' | AppRelationship
-
-export const APP_RELATIONSHIP_FILTERS: readonly AppRelationshipFilter[] = ['all', 'owner', 'invited', 'team']
 
 /**
  * The sidebar's split: what is on this machine, then mine and invited wherever
@@ -54,24 +50,6 @@ export function isSharedByMe(
   return app.visibility === 'team' && appRelationship(app, myActorId) === 'owner'
 }
 
-export function countAppsByRelationship(
-  apps: readonly AppRow[],
-  myActorId: string | null,
-): Record<AppRelationshipFilter, number> {
-  const counts: Record<AppRelationshipFilter, number> = { all: apps.length, owner: 0, invited: 0, team: 0 }
-  for (const app of apps) counts[appRelationship(app, myActorId)] += 1
-  return counts
-}
-
-export function filterAppsByRelationship<T extends AppRow>(
-  apps: T[],
-  filter: AppRelationshipFilter,
-  myActorId: string | null,
-): T[] {
-  if (filter === 'all') return apps
-  return apps.filter((app) => appRelationship(app, myActorId) === filter)
-}
-
 /**
  * A row from a create/rename/deploy response, keeping the relationship the list
  * gave the row it replaces — those endpoints do not send one, and dropping it
@@ -82,10 +60,8 @@ export function keepRelationship(prev: AppRow, next: AppRow): AppRow {
   return { ...next, relationship: prev.relationship, invitedByActorId: prev.invitedByActorId ?? null }
 }
 
-export const APP_RELATIONSHIP_LABELS: Record<AppRelationshipFilter | AppSidebarFilter, { key: string; fallback: string }> = {
+export const APP_SIDEBAR_FILTER_LABELS: Record<AppSidebarFilter, { key: string; fallback: string }> = {
   local: { key: 'apps.filterLocal', fallback: '本机' },
-  all: { key: 'apps.relationshipAll', fallback: '全部' },
   owner: { key: 'apps.relationshipOwner', fallback: '我的' },
   invited: { key: 'apps.relationshipInvited', fallback: '受邀' },
-  team: { key: 'apps.relationshipTeam', fallback: '团队' },
 }

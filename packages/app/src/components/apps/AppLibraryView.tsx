@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ChevronRight, Download, Loader2, Plus, Search } from 'lucide-react'
+import { AppWindow, Check, Download, Loader2, Plus, Search } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -13,199 +13,86 @@ import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appGitKind } from '@/lib/apps/app-list-helpers'
 import { formatAppCode } from '@/lib/apps/app-code'
 import { openCreateApp } from '@/lib/tabs/app-tabs'
-import { countAppsByRelationship, filterAppsByRelationship, isSharedByMe } from '@/lib/apps/app-relationship'
+import { isSharedByMe } from '@/lib/apps/app-relationship'
 import { useAppRelationshipLabel, type AppRelationshipLabel } from '@/lib/apps/use-app-relationship-label'
-import { AppRelationshipChips } from '@/components/apps/AppRelationshipChips'
-import { useAppRelationshipFilter, useMyMemberActorId } from '@/stores/app-relationship-filter'
+import { useMyMemberActorId } from '@/stores/app-relationship-filter'
 import type { AppRow } from '@/lib/backend/types'
 
-/** Column widths are shared by the header and the list so the two line up. */
-const COLUMN = 'mx-auto w-full max-w-[820px]'
+/** Both marks beside the name wear the same pill. */
+const MARK = 'shrink-0 rounded border border-border px-1 py-px text-[10.5px] font-normal text-muted-foreground'
 
-function TypeMark({ app }: { app: AppRow }) {
-  const Icon = appTypeIcon(app.type)
-  return (
-    // Quiet, not coral: eleven coral discs down one edge is eleven accents, and
-    // the palette allows about two. The glyph carries the difference instead.
-    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-panel text-muted-foreground">
-      <Icon className="h-[15px] w-[15px]" />
-    </span>
-  )
-}
+/** One row, on the skills marketplace's pattern: a hover row, not a card. */
+const ROW = 'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-selected'
 
-function AppMeta({ app, creator }: { app: AppRow; creator: string | null }) {
-  const { t } = useTranslation()
-  const typeMeta = resolveAppType(app.type)
-  const gitMeta = appGitKind(app)
-
-  return (
-    // A line under the name now that these are cards: the old right-aligned
-    // column existed to fill 500px of empty row, and a card has no such gap.
-    //
-    // Where the code lives is the load-bearing part: it is what says whether a
-    // card can be downloaded at all.
-    <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px] text-faint">
-      {creator && (
-        <>
-          <span className="max-w-[10ch] truncate">{creator}</span>
-          <span aria-hidden>·</span>
-        </>
-      )}
-      <span>{t(typeMeta.labelKey, typeMeta.label)}</span>
-      <span aria-hidden>·</span>
-      <span>{t(gitMeta.key, gitMeta.fallback)}</span>
-    </span>
-  )
-}
-
-/** Both marks beside the name wear the same pill — see AppName. */
-const MARK = 'shrink-0 rounded border border-border px-1 py-px text-[10.5px] text-muted-foreground'
-
-function AppName({ app, relationLabel, shared }: { app: AppRow } & Omit<CardProps, 'app' | 'creator'>) {
-  const { t } = useTranslation()
-  return (
-    <span className="flex min-w-0 flex-1 items-center gap-1.5">
-      <span className="truncate text-[13px] font-semibold text-foreground">{app.name}</span>
-      {/* My relationship to the app, the same word column two puts under the
-          icon. It used to be the app's visibility instead, which marked an app
-          I own and shared 团队 while the sidebar called it 我的 — one word for
-          two different things. Dropped under a filter, where the chip above
-          already says it on every card. */}
-      {relationLabel && (
-        <span data-testid="app-card-relationship" title={relationLabel.hint ?? undefined} className={MARK}>
-          {relationLabel.label}
-        </span>
-      )}
-      {/* Who else can see my app — the half of the old badge that was worth
-          keeping. Same ink and hairline as the relationship mark: one step
-          quieter was a difference you had to look for, and two marks that read
-          as two kinds of thing is worse than two that read as one. It survives
-          a filter, because 我的 does not imply it. */}
-      {shared && (
-        <span
-          data-testid="app-card-shared"
-          title={t('apps.visibilityTeamHint', '团队里每个人都能在应用列表里看到它。')}
-          className={MARK}
-        >
-          {t('apps.sharedBadge', '已共享')}
-        </span>
-      )}
-    </span>
-  )
-}
-
-/**
- * One card. Bordered rather than shadowed, on paper — the palette's rule is
- * that depth comes from a hairline and a background change, never from a drop
- * shadow.
- */
-const CARD =
-  'group relative flex w-full flex-col gap-2 rounded-[12px] border border-border-soft bg-paper p-3 text-left transition-colors'
-
-/** The grid the cards sit in. Container queries, not viewport ones: the width
- *  that decides how many fit is this column's, and it changes with the right
- *  panel while the window does not. */
-const GRID = 'grid gap-2.5 @[520px]:grid-cols-2 @[880px]:grid-cols-3'
-
-/** Top-right of the card: the download button, or the chevron on hover. */
-const TRAILING = 'flex shrink-0 items-center justify-end'
-
-/** What every card needs on top of the app row itself. */
-interface CardProps {
-  app: AppRow
-  creator: string | null
-  relationLabel: AppRelationshipLabel | null
-  /** My own app, visible to the whole team. */
-  shared: boolean
-}
-
-/** A card for an app that is already here — clicking it opens it in column two. */
-function LocalRow({ app, creator, relationLabel, shared }: CardProps) {
-  const open = React.useCallback(() => {
-    useAppsStore.getState().selectApp(app.id)
-    useUIStore.getState().setSidebarFilter({ kind: 'apps' })
-  }, [app.id])
-
-  return (
-    <button type="button" onClick={open} className={cn(CARD, 'hover:bg-selected/30')}>
-      <span className="flex w-full items-center gap-2.5">
-        <TypeMark app={app} />
-        <AppName app={app} relationLabel={relationLabel} shared={shared} />
-        <span className={TRAILING}>
-          <ChevronRight className="h-4 w-4 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
-        </span>
-      </span>
-      <AppMeta app={app} creator={creator} />
-    </button>
-  )
-}
-
-/**
- * A row for an app whose presence is still unknown — the daemon has not
- * answered yet. No action, because the only two on offer (open it, fetch it)
- * both depend on the answer.
- */
-function PendingRow({ app, creator, relationLabel, shared }: CardProps) {
-  return (
-    <div className={cn(CARD, 'opacity-70')}>
-      <span className="flex w-full items-center gap-2.5">
-        <TypeMark app={app} />
-        <AppName app={app} relationLabel={relationLabel} shared={shared} />
-      </span>
-      <AppMeta app={app} creator={creator} />
-    </div>
-  )
-}
-
-/** A row for an app that is not here. The only thing to do with it is fetch it. */
-function RemoteRow({
+function AppRowBody({
   app,
   creator,
   relationLabel,
   shared,
-  busy,
-  onDownload,
-}: CardProps & {
-  busy: boolean
-  onDownload: () => void
+}: {
+  app: AppRow
+  creator: string | null
+  relationLabel: AppRelationshipLabel
+  /** My own app, visible to the whole team. */
+  shared: boolean
 }) {
   const { t } = useTranslation()
+  const Icon = appTypeIcon(app.type)
+  const typeMeta = resolveAppType(app.type)
+  const gitMeta = appGitKind(app)
   return (
-    <div className={CARD}>
-      <span className="flex w-full items-center gap-2.5">
-        <TypeMark app={app} />
-        <AppName app={app} relationLabel={relationLabel} shared={shared} />
-        <span className={TRAILING}>
-          <Button
-            variant="ghost"
-            onClick={onDownload}
-            disabled={busy}
-            className="h-7 gap-1.5 rounded-[7px] px-2 text-[12px]"
-          >
-            {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Download className="h-3.5 w-3.5" />
-            )}
-            {t('apps.libraryDownload', '下载')}
-          </Button>
+    <>
+      {/* Quiet, not coral: a list of coral discs is a list of accents. */}
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] bg-panel text-muted-foreground">
+        <Icon className="h-[15px] w-[15px]" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-[13px] font-semibold text-foreground">{app.name}</span>
+          {/* My relationship to the app — the same word column two uses. No
+              filter here, so every row says it. */}
+          <span data-testid="app-card-relationship" title={relationLabel.hint ?? undefined} className={MARK}>
+            {relationLabel.label}
+          </span>
+          {shared && (
+            <span
+              data-testid="app-card-shared"
+              title={t('apps.visibilityTeamHint', '团队里每个人都能在应用列表里看到它。')}
+              className={MARK}
+            >
+              {t('apps.sharedBadge', '已共享')}
+            </span>
+          )}
+        </span>
+        {/* Where the code lives is the load-bearing part: it says whether an
+            app can be downloaded at all. */}
+        <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-muted-foreground">
+          {creator && (
+            <>
+              <span className="max-w-[10ch] truncate">{creator}</span>
+              <span aria-hidden>·</span>
+            </>
+          )}
+          <span>{t(typeMeta.labelKey, typeMeta.label)}</span>
+          <span aria-hidden>·</span>
+          <span className="truncate">{t(gitMeta.key, gitMeta.fallback)}</span>
         </span>
       </span>
-      <AppMeta app={app} creator={creator} />
-    </div>
+    </>
   )
 }
 
 /**
- * Every app the caller can see — their own and the team's — as one flat list,
- * with search and creators.
+ * Every app the caller can see — their own and the team's — in one list, with
+ * search and creators.
  *
- * Not grouped by whether an app is here: the sidebar's 本机 tab is that list
- * already, and here a split only pushed the apps people were looking for below
- * a heading. Each card still says it for itself — a 下载 button on the ones
- * that are not here, the open chevron on the ones that are. It lives in the
- * main column rather than in a dialog because downloading from it changes the
- * column-two list.
+ * It is the Apps section's main view (see `section-mode.ts`), as the
+ * marketplace is for skills, and it is laid out like the marketplace: a header
+ * with search, then plain hover rows. No relationship filter: column two
+ * already splits 本机 / 我的 / 受邀, and each row here names its own.
+ *
+ * Each row says for itself whether the app is here: 已在本机 (click to open it
+ * in column two) or a 下载 button.
  */
 export function AppLibraryView() {
   const { t } = useTranslation()
@@ -219,10 +106,8 @@ export function AppLibraryView() {
   const [downloading, setDownloading] = React.useState<string | null>(null)
   const [query, setQuery] = React.useState('')
   const { actors } = useActorDirectory()
-  const [filter, setFilter] = useAppRelationshipFilter(teamId)
   const myActorId = useMyMemberActorId()
   const relationLabelFor = useAppRelationshipLabel()
-  const counts = React.useMemo(() => countAppsByRelationship(items, myActorId), [items, myActorId])
 
   const creatorById = React.useMemo(() => {
     const byId = new Map<string, string>()
@@ -230,8 +115,8 @@ export function AppLibraryView() {
     return byId
   }, [actors])
 
-  // Both halves are refreshed when the tab opens: the cloud list can have
-  // gained a teammate's app, and the local set can have changed on disk.
+  // Both halves are refreshed when it opens: the cloud list can have gained a
+  // teammate's app, and the local set can have changed on disk.
   React.useEffect(() => {
     if (!teamId) return
     void load(teamId, { force: true })
@@ -243,21 +128,17 @@ export function AppLibraryView() {
     [creatorById],
   )
 
-  // Name, creator, type and public code all match: in a team list the thing you remember is
-  // as often "the one 海港 made" as it is the app's own name.
-  //
-  // The relationship filter goes first and search narrows what it left, so the
-  // chip counts stay the team's totals while the query changes.
+  // Name, creator, type and public code all match: in a team list the thing
+  // you remember is as often "the one 海港 made" as it is the app's own name.
   const visible = React.useMemo(() => {
-    const related = filterAppsByRelationship(items, filter, myActorId)
     const needle = query.trim().toLowerCase()
-    if (!needle) return related
-    return related.filter((app) => {
+    if (!needle) return items
+    return items.filter((app) => {
       const typeMeta = resolveAppType(app.type)
       const haystack = [app.name, creatorFor(app) ?? '', typeMeta.label, formatAppCode(app.appCode) ?? '']
       return haystack.some((field) => field.toLowerCase().includes(needle))
     })
-  }, [items, filter, myActorId, query, creatorFor])
+  }, [items, query, creatorFor])
 
   /** `null` is "the daemon has not answered", not "none are local". */
   const localSet = React.useMemo(() => (localAppIds === null ? null : new Set(localAppIds)), [localAppIds])
@@ -274,87 +155,109 @@ export function AppLibraryView() {
     [download],
   )
 
+  const open = React.useCallback((app: AppRow) => {
+    useAppsStore.getState().selectApp(app.id)
+    useUIStore.getState().setSidebarFilter({ kind: 'apps' })
+  }, [])
+
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="border-b border-border-soft bg-paper px-6 py-4">
-        <div className={COLUMN}>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <h2 className="text-[15px] font-bold tracking-tight text-foreground">
-              {t('apps.libraryTitle', '所有应用')}
-            </h2>
-            <span className="font-mono text-[11px] tabular-nums text-faint">· {items.length}</span>
-            <div className="ml-auto flex items-center gap-2">
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
-                <Input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder={t('apps.librarySearch', '搜索应用')}
-                  aria-label={t('apps.librarySearch', '搜索应用')}
-                  className="h-7 w-[180px] pl-8 text-[12.5px]"
-                />
-              </div>
-              <Button
-                onClick={() => openCreateApp(t('apps.createTitle', '新建'))}
-                disabled={!teamId}
-                className="h-7 gap-1.5 rounded-[8px] bg-coral px-2.5 text-[12.5px] text-white hover:bg-coral/90"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                {t('apps.create', '新建')}
-              </Button>
-            </div>
-          </div>
-          <p className="mt-1 text-[12px] text-muted-foreground">
-            {t('apps.libraryDescription', '本人与团队的全部应用，可下载到本机。')}
-          </p>
-          {items.length > 0 && (
-            <AppRelationshipChips value={filter} counts={counts} onChange={setFilter} className="-ml-2 mt-2" />
-          )}
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center gap-3 border-b border-border px-5 py-3" data-tauri-drag-region>
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-panel text-muted-foreground">
+          <AppWindow className="h-[17px] w-[17px]" />
+        </span>
+        <div className="min-w-0 flex-1 text-[15px] font-bold text-foreground">
+          {t('apps.libraryTitle', '所有应用')}
+          <span className="ml-1.5 font-mono text-[11px] font-normal tabular-nums text-faint">· {items.length}</span>
         </div>
+        <div className="relative w-40">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('apps.librarySearch', '搜索应用')}
+            aria-label={t('apps.librarySearch', '搜索应用')}
+            className="h-8 pl-7 text-[12.5px]"
+          />
+        </div>
+        <Button
+          onClick={() => openCreateApp(t('apps.createTitle', '新建'))}
+          disabled={!teamId}
+          className="h-8 gap-1.5 rounded-[8px] bg-coral px-2.5 text-[12.5px] text-white hover:bg-coral/90"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          {t('apps.create', '新建')}
+        </Button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-8">
-        {/* Container query, not a viewport one: what decides whether the meta
-            column fits is this column's width, and it changes with the right
-            panel while the window does not. */}
-        <div className={cn(COLUMN, '@container')}>
-          {loading && items.length === 0 ? (
-            <div className="flex items-center justify-center gap-2 py-10 text-[12.5px] text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {t('common.loading', 'Loading…')}
-            </div>
-          ) : items.length === 0 ? (
-            <div className="py-10 text-center text-[12.5px] text-faint">
-              {t('apps.empty', '还没有内容')}
-            </div>
-          ) : visible.length === 0 ? (
-            // Distinct from the empty state: "you have no apps" and "none of
-            // your apps match this" call for different next moves.
-            <div className="py-10 text-center text-[12.5px] text-faint">
-              {t('apps.libraryNoMatch', '没有匹配的应用')}
-            </div>
-          ) : (
-            <div className={cn(GRID, 'pt-4')}>
-              {visible.map((app) => {
-                // No word under a filter: the pressed chip says it once for
-                // every card below it.
-                const relationLabel = filter === 'all' ? relationLabelFor(app) : null
-                const shared = isSharedByMe(app, myActorId)
-                const common = { app, creator: creatorFor(app), relationLabel, shared }
-                if (localSet === null) return <PendingRow key={app.id} {...common} />
-                if (localSet.has(app.id)) return <LocalRow key={app.id} {...common} />
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+        {loading && items.length === 0 ? (
+          <div className="flex justify-center py-10 text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
+          </div>
+        ) : items.length === 0 ? (
+          <div className="px-3 py-10 text-center text-[13px] text-muted-foreground">
+            {t('apps.empty', '还没有内容')}
+          </div>
+        ) : visible.length === 0 ? (
+          // Distinct from the empty state: "you have no apps" and "none of
+          // your apps match this" call for different next moves.
+          <div className="px-3 py-10 text-center text-[13px] text-muted-foreground">
+            {t('apps.libraryNoMatch', '没有匹配的应用')}
+          </div>
+        ) : (
+          <ul className="space-y-1">
+            {visible.map((app) => {
+              const body = (
+                <AppRowBody
+                  app={app}
+                  creator={creatorFor(app)}
+                  relationLabel={relationLabelFor(app)}
+                  shared={isSharedByMe(app, myActorId)}
+                />
+              )
+              // Unknown presence: no action, because both on offer (open it,
+              // fetch it) depend on the answer.
+              if (localSet === null) {
                 return (
-                  <RemoteRow
-                    key={app.id}
-                    {...common}
-                    busy={downloading === app.id}
-                    onDownload={() => void handleDownload(app)}
-                  />
+                  <li key={app.id} className={cn(ROW, 'hover:bg-transparent opacity-70')}>
+                    {body}
+                  </li>
                 )
-              })}
-            </div>
-          )}
-        </div>
+              }
+              if (localSet.has(app.id)) {
+                return (
+                  <li key={app.id}>
+                    <button type="button" onClick={() => open(app)} className={ROW}>
+                      {body}
+                      <span className="inline-flex shrink-0 items-center gap-1 text-[11.5px] text-muted-foreground">
+                        <Check className="h-3.5 w-3.5" />
+                        {t('apps.libraryHere', '已在本机')}
+                      </span>
+                    </button>
+                  </li>
+                )
+              }
+              const busy = downloading === app.id
+              return (
+                <li key={app.id} className={ROW}>
+                  {body}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void handleDownload(app)}
+                    disabled={busy}
+                    className="h-7 shrink-0 gap-1.5 text-[12px]"
+                  >
+                    {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                    {t('apps.libraryDownload', '下载')}
+                  </Button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </div>
     </div>
   )

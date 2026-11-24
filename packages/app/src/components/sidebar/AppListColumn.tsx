@@ -14,7 +14,7 @@ import { resolveAppType } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appStatusMeta, showsPublicBadge, isDeployInFlight } from '@/lib/apps/app-list-helpers'
 import { resolveAppLocality } from '@/lib/apps/app-locality'
-import { APP_SIDEBAR_FILTERS, appRelationship, type AppSidebarFilter } from '@/lib/apps/app-relationship'
+import { appRelationship, type AppSidebarFilter } from '@/lib/apps/app-relationship'
 import { latestSessionActivityByApp, sortAppsByLastActivity, useAppTouchStore } from '@/lib/apps/app-recency'
 import { useAppRelationshipLabel } from '@/lib/apps/use-app-relationship-label'
 import { AppRelationshipChips } from '@/components/apps/AppRelationshipChips'
@@ -285,7 +285,6 @@ export function AppListColumn() {
           value={filter}
           counts={counts}
           onChange={setFilter}
-          filters={APP_SIDEBAR_FILTERS}
           className="border-b border-border px-3 py-2"
         />
       )}

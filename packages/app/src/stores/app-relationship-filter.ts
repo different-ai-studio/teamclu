@@ -1,12 +1,7 @@
 import * as React from 'react'
 import { create } from 'zustand'
 import { appStoragePrefix } from '@/lib/config/build-config'
-import {
-  APP_RELATIONSHIP_FILTERS,
-  APP_SIDEBAR_FILTERS,
-  type AppRelationshipFilter,
-  type AppSidebarFilter,
-} from '@/lib/apps/app-relationship'
+import { APP_SIDEBAR_FILTERS, type AppSidebarFilter } from '@/lib/apps/app-relationship'
 import { useActorDirectory } from '@/stores/actor-directory-store'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -63,19 +58,9 @@ interface TeamFilterState<F extends string> {
   setFilter: (teamId: string, filter: F) => void
 }
 
-/** The library's filter: All / Mine / Invited / Team. */
-export const [useAppRelationshipFilterStore, useAppRelationshipFilter] = makeTeamFilterStore<AppRelationshipFilter>(
-  `${appStoragePrefix}-apps-relationship-filter`,
-  APP_RELATIONSHIP_FILTERS,
-  'all',
-)
-
 /**
- * The sidebar's filter: On this machine / Mine / Invited.
- *
- * Its own store, not the library's: the two lists no longer offer the same
- * choices — the sidebar has no All and no Team, the library has no 本机 — so
- * one picked value cannot mean the same thing in both.
+ * The sidebar's filter: On this machine / Mine / Invited. The library has
+ * none — it is every app, each row naming its own relationship.
  */
 export const [useAppSidebarFilterStore, useAppSidebarFilter] = makeTeamFilterStore<AppSidebarFilter>(
   `${appStoragePrefix}-apps-sidebar-filter`,

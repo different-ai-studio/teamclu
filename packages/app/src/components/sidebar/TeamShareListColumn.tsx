@@ -69,7 +69,6 @@ import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
 import {
   useTeamShareBrowserStore,
-  SkillMutationRefreshError,
   type TeamMcpKind,
   type TeamShareSection,
   type TeamSkillKind,
@@ -103,9 +102,6 @@ import {
   withDefaultExtension,
 } from '@/lib/knowledge/knowledge-file-names'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
-import { toastSkillMutationRefreshFailed } from '@/components/teamshare/skillMutationRefreshToast'
-import { useTeamPermissions } from '@/lib/team/team-permissions'
-import { teamSkillDeletableSlug } from '@/lib/skills/registry-deletable'
 
 /**
  * Agent the Skills column should land on: whoever the current conversation is
@@ -371,17 +367,10 @@ type SkillRow = {
    * for something that only exists in the cloud until it is installed.
    */
   packDir?: string
-  /**
-   * Present on team-registry rows only, and the reason the row can offer a
-   * delete at all. `id` is not a substitute: a personal skill whose name the
-   * registry also uses carries `personal:<slug>`.
-   */
-  deletableSlug?: string
 }
 
 export function TeamShareListColumn({ section }: { section: TeamShareSection }) {
   const { t } = useTranslation()
-  const { canManageTeam } = useTeamPermissions()
   const { state: sidebarState } = useSidebar()
   const sidebarCollapsed = sidebarState === 'collapsed'
   const meta = SECTION_META[section]
@@ -396,37 +385,8 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
   const reconcileSkills = useTeamShareBrowserStore((s) => s.reconcileSkills)
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
   const setCreating = useTeamShareBrowserStore((s) => s.setCreating)
-  const deleteTeamSkill = useTeamShareBrowserStore((s) => s.deleteTeamSkill)
-  const retrySkillsRuntimeRefresh = useTeamShareBrowserStore((s) => s.retrySkillsRuntimeRefresh)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
-
-  // The skill a delete has been started on, and whether that delete is running.
-  const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null)
-  const [deleting, setDeleting] = React.useState(false)
-
-  const runDeleteTeamSkill = React.useCallback(async () => {
-    if (!deleteTarget || deleting) return
-    setDeleting(true)
-    try {
-      await deleteTeamSkill(deleteTarget)
-      setDeleteTarget(null)
-      toast.success(t('teamShare.skillDeleteTeamDone', '已从团队移除'))
-    } catch (e) {
-      if (e instanceof SkillMutationRefreshError) {
-        setDeleteTarget(null)
-        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
-        return
-      }
-      toast.error(
-        t('teamShare.skillDeleteTeamFailed', '移除失败：{{msg}}', {
-          msg: e instanceof Error ? e.message : String(e),
-        }),
-      )
-    } finally {
-      setDeleting(false)
-    }
-  }, [deleteTarget, deleting, deleteTeamSkill, retrySkillsRuntimeRefresh, t])
 
   // Which skill packages are showing their files, and which one is being added
   // to. View state, not persisted: it says nothing about the skill itself.
@@ -753,7 +713,6 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
           ),
           // Not installed reads like an app not downloaded: dimmed, not hidden.
           dimmed: s.status === 'deprecated' || s.kind === 'team-available',
-          deletableSlug: teamSkillDeletableSlug(canManageTeam, s.origin, s.slug),
           // Three states, and only one of them is asking for anything.
           //
           // Behind on version is a transitional state that resolves itself
@@ -827,7 +786,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             ) : undefined,
         }
       })
-  }, [section, q, skills.items, localState, canManageTeam, t, installingSkill, installFromRow, subjectAgentOffline])
+  }, [section, q, skills.items, localState, t, installingSkill, installFromRow, subjectAgentOffline])
 
   /** Team and personal are different trust boundaries, so they get their own tabs. */
   const skillGroups = React.useMemo(() => {
@@ -1307,36 +1266,9 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                         title={row.title}
                         meta={row.meta}
                         badge={row.badge}
-                        trailing={
-                          row.deletableSlug ? (
-                            <span className="flex items-center gap-1">
-                              {row.trailing}
-                              {/*
-                                A span, for the reason the chevron above is one:
-                                the row is itself a button and nesting another
-                                is invalid. Hidden until the row is hovered so a
-                                destructive action is not sitting under the
-                                cursor of everyone scrolling the list, and
-                                stopPropagation so reaching for it does not also
-                                select the row underneath.
-                              */}
-                              <span
-                                role="button"
-                                aria-label={t('teamShare.skillDeleteTeam', '从团队移除')}
-                                title={t('teamShare.skillDeleteTeam', '从团队移除')}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setDeleteTarget(row.deletableSlug!)
-                                }}
-                                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-faint opacity-0 transition-opacity hover:bg-muted hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </span>
-                            </span>
-                          ) : (
-                            row.trailing
-                          )
-                        }
+                        // No delete here: removing a skill from the team is
+                        // on its detail page, away from a list people scroll.
+                        trailing={row.trailing}
                         dimmed={row.dimmed}
                         expandable={Boolean(row.packDir)}
                         expanded={isExpanded}
@@ -1558,15 +1490,6 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
       */}
       {section === 'knowledge' && <KnowledgeSyncFooter />}
 
-      {deleteTarget && (
-        <DeleteTeamSkillDialog
-          slug={deleteTarget}
-          open
-          busy={deleting}
-          onCancel={() => setDeleteTarget(null)}
-          onConfirm={() => void runDeleteTeamSkill()}
-        />
-      )}
     </div>
   )
 }
