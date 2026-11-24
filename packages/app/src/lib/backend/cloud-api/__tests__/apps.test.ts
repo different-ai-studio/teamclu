@@ -58,3 +58,26 @@ describe('apps module · undeploy',()=>{
   expect(client.post).toHaveBeenCalledWith('/v1/apps/app%201/undeploy',{});
  });
 });
+
+describe("apps module · listApps", () => {
+  it("follows nextCursor to the last page", async () => {
+    const get = vi.fn(async (path: string) => {
+      const cursor = new URL(path, "http://x").searchParams.get("cursor");
+      if (!cursor) return { items: [{ id: "a1" }, { id: "a2" }], nextCursor: "c1" };
+      if (cursor === "c1") return { items: [{ id: "a3" }], nextCursor: null };
+      throw new Error(`unexpected cursor ${cursor}`);
+    });
+    const out = await createAppsModule({ get } as unknown as CloudApiClient).listApps("team 1");
+    expect(out.map((a) => a.id)).toEqual(["a1", "a2", "a3"]);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(get.mock.calls[0][0]).toBe("/v1/apps?teamId=team+1&limit=100");
+    expect(get.mock.calls[1][0]).toBe("/v1/apps?teamId=team+1&limit=100&cursor=c1");
+  });
+
+  it("stops after one page on a server that does not page", async () => {
+    const get = vi.fn(async () => ({ items: [{ id: "a1" }] }));
+    const out = await createAppsModule({ get } as unknown as CloudApiClient).listApps("team-1");
+    expect(out.map((a) => a.id)).toEqual(["a1"]);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+});

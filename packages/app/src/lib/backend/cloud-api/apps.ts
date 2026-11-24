@@ -29,7 +29,12 @@ import type {
 } from "@/lib/backend/types";
 import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
 
-type Page<T> = { items: T[] };
+type Page<T> = { items: T[]; nextCursor?: string | null };
+
+/** The server's maximum `limit` for GET /v1/apps. */
+const APP_PAGE_SIZE = 100;
+/** A guard against a cursor that never ends, not a size anyone should reach. */
+const MAX_APP_PAGES = 50;
 
 export function createAppsModule(client: CloudApiClient): AppsBackend {
   return {
@@ -38,9 +43,22 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
     },
 
     async listApps(teamId) {
-      const params = new URLSearchParams({ teamId, limit: "100" });
-      const page = await client.get<Page<AppRow>>(`/v1/apps?${params}`);
-      return page.items;
+      // Every page, not the first: the app list, the sidebar's 本机 / 我的 /
+      // 受邀 and every "is this app here" check treat this as the whole team.
+      // 100 is the server's page cap, not a bound on a team. A server from
+      // before paging sends no `nextCursor`, which ends the loop after one.
+      const out: AppRow[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < MAX_APP_PAGES; page += 1) {
+        const params = new URLSearchParams({ teamId, limit: String(APP_PAGE_SIZE) });
+        if (cursor) params.set("cursor", cursor);
+        const res: Page<AppRow> = await client.get<Page<AppRow>>(`/v1/apps?${params}`);
+        out.push(...res.items);
+        cursor = res.nextCursor ?? null;
+        if (!cursor) return out;
+      }
+      console.warn(`[cloud-api] apps: stopped after ${MAX_APP_PAGES} pages`);
+      return out;
     },
     async createApp(input) {
       return client.post<AppRow>("/v1/apps", input);
