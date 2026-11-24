@@ -3,7 +3,8 @@
 // Two endpoints, and every key belongs to exactly ONE of them:
 //
 //   /v1/config/public     (no auth)  — what the login screen needs before a
-//                                      session exists: webSso, features.auth
+//                                      session exists: webSso, features.auth,
+//                                      partnerConsoleHosts
 //   /v1/config/bootstrap  (bearer)   — what only matters once signed in:
 //                                      mqtt, features.{channels,…}
 //
@@ -15,6 +16,7 @@
 // data backend.
 
 import { FEATURE_PROFILES, type FeatureFlags } from "../feature-profiles.js";
+import { webHandoffHosts } from "../web-handoff.js";
 
 function parseBool(raw) {
   if (raw == null) return undefined;
@@ -251,6 +253,13 @@ export function buildBootstrapConfig() {
 // URL for onboarding. No bearer; never includes the MQTT broker credentials.
 export function buildPublicConfig() {
   const config: any = { desktopDownloadUrl: resolveDesktopDownloadUrl() };
+  // Partner web consoles (WEB_HANDOFF_HOSTS). The desktop marks its webviews on
+  // these hosts as embedded in TeamClu (`<html data-embedder="teamclu">`) so
+  // the console can drop the navigation TeamClu already shows. Absent means
+  // none, and the client clears its cache on absence, so a host the server
+  // stops listing stops being marked.
+  const partnerConsoleHosts = [...webHandoffHosts()];
+  if (partnerConsoleHosts.length) config.partnerConsoleHosts = partnerConsoleHosts;
   const webSso = buildWebSsoConfig();
   if (webSso) config.webSso = webSso;
   const features = buildPublicFeatures();

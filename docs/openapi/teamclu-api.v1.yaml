@@ -11901,6 +11901,18 @@ components:
           $ref: "#/components/schemas/WebSsoConfig"
         features:
           $ref: "#/components/schemas/PublicFeatures"
+        partnerConsoleHosts:
+          type: array
+          items:
+            type: string
+          description: >-
+            Hosts (`host[:port]`, lowercase) of partner web consoles, from FC's
+            `WEB_HANDOFF_HOSTS`. The desktop marks a webview page on one of
+            these hosts with `<html data-embedder="teamclu">` and
+            `window.__TEAMCLU_EMBED__` at document start, so the console can
+            hide the navigation TeamClu already shows. Absent when none are
+            configured; a client then marks nothing (and forgets any it cached).
+          example: [admin.example.com]
       additionalProperties: true
     WebSsoConfig:
       type: object

@@ -268,6 +268,7 @@ test("GET /v1/config/public returns webSso WITHOUT auth (login-time config)", as
       MQTT_BROKER_URL: "mqtts://secret.example.com:8883",
       WEBSSO_LOGIN_URL: "https://admin.example.test/sign-in",
       WEBSSO_STORAGE_KEY: "sb-test-supa-auth-token",
+      WEB_HANDOFF_HOSTS: undefined,
     },
     async () => {
       const response = await handleBusinessApiRequest(
@@ -477,6 +478,7 @@ test("GET /v1/config/public serves auth flags without a bearer, and still no mqt
     {
       MQTT_BROKER_URL: "mqtts://secret.example.com:8883",
       WEBSSO_LOGIN_URL: undefined,
+      WEB_HANDOFF_HOSTS: undefined,
       APP_FEATURES_PROFILE: undefined,
       APP_FEATURES_JSON: JSON.stringify({ auth: { webSSO: true }, channels: { wecom: false } }),
     },
@@ -527,5 +529,23 @@ test("belayo offers quick sign-in and phone, never Google", () => {
     phone: true,
     password: false,
     webSSO: true,
+  });
+});
+
+test("partnerConsoleHosts lists WEB_HANDOFF_HOSTS, normalised, and is absent when unset", async () => {
+  await withEnv({ WEB_HANDOFF_HOSTS: " Admin.Example.test , ,console.example.test:8443 " }, () => {
+    assert.deepEqual(buildPublicConfig().partnerConsoleHosts, [
+      "admin.example.test",
+      "console.example.test:8443",
+    ]);
+  });
+  await withEnv({ WEB_HANDOFF_HOSTS: " , " }, () => {
+    assert.equal("partnerConsoleHosts" in buildPublicConfig(), false);
+  });
+});
+
+test("partnerConsoleHosts stays out of the authed bootstrap config", async () => {
+  await withEnv({ WEB_HANDOFF_HOSTS: "admin.example.test" }, () => {
+    assert.equal("partnerConsoleHosts" in buildBootstrapConfig(), false);
   });
 });

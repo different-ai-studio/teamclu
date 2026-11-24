@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { effectiveConfigRef, applySpy } = vi.hoisted(() => ({
+const { effectiveConfigRef, savedConfigRef, applySpy, saveSpy } = vi.hoisted(() => ({
   effectiveConfigRef: { value: {} as Record<string, unknown> },
+  savedConfigRef: { value: {} as Record<string, unknown> },
   applySpy: vi.fn(),
+  saveSpy: vi.fn(async (config: unknown) => config),
 }));
 
-vi.mock("@/lib/config/server-config", () => ({
-  getSavedServerConfig: vi.fn(async () => ({})),
+vi.mock("@/lib/config/server-config", async (importOriginal) => ({
+  normalizePartnerConsoleHosts: (
+    await importOriginal<typeof import("@/lib/config/server-config")>()
+  ).normalizePartnerConsoleHosts,
+  getSavedServerConfig: vi.fn(async () => savedConfigRef.value),
   getEffectiveServerConfig: vi.fn(async () => effectiveConfigRef.value),
-  saveServerConfig: vi.fn(async (config: unknown) => config),
+  saveServerConfig: saveSpy,
 }));
 
 vi.mock("@/lib/config/remote-features", () => ({
@@ -26,7 +31,9 @@ function jsonResponse(body: unknown): Response {
 
 beforeEach(() => {
   effectiveConfigRef.value = { cloudApiUrl: "https://default.example.com" };
+  savedConfigRef.value = {};
   applySpy.mockClear();
+  saveSpy.mockClear();
   vi.unstubAllGlobals();
 });
 
@@ -60,5 +67,29 @@ describe("fetchPublicConfig", () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ features: { auth: { google: true } } }));
     await fetchPublicConfig({ fetchImpl: fetchImpl as unknown as typeof fetch });
     expect(applySpy).toHaveBeenCalledWith("public", { auth: { google: true } });
+  });
+
+  it("caches the partner console hosts, normalised", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ partnerConsoleHosts: [" Admin.Example.com ", "bad host", 7, "admin.example.com"] }),
+    );
+    await fetchPublicConfig({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(saveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ partnerConsoleHosts: ["admin.example.com"] }),
+    );
+  });
+
+  it("forgets cached partner console hosts when the server stops sending them", async () => {
+    savedConfigRef.value = { partnerConsoleHosts: ["admin.example.com"] };
+    const fetchImpl = vi.fn(async () => jsonResponse({}));
+    await fetchPublicConfig({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(saveSpy).toHaveBeenCalledWith(expect.objectContaining({ partnerConsoleHosts: undefined }));
+  });
+
+  it("does not rewrite the cache when nothing changed", async () => {
+    savedConfigRef.value = { partnerConsoleHosts: ["admin.example.com"] };
+    const fetchImpl = vi.fn(async () => jsonResponse({ partnerConsoleHosts: ["admin.example.com"] }));
+    await fetchPublicConfig({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(saveSpy).not.toHaveBeenCalled();
   });
 });

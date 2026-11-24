@@ -431,6 +431,51 @@ fn apply_preflight_policy(probe: Result<(), String>) -> Result<(), String> {
 /// `session_json` is the already-serialized supabase session object; it is
 /// written under `storage_key` only when absent, so supabase-js's own
 /// refreshed session is never clobbered on reload.
+/// The marker partner web consoles read to know they are embedded in TeamClu:
+/// `<html data-embedder="teamclu">` plus `window.__TEAMCLU_EMBED__ = { v: 1 }`,
+/// set at document start so the console can hide its own navigation before
+/// first paint. `None` when no valid host is given.
+///
+/// The script checks `location` itself on every load. That is what keeps an
+/// ordinary page unmarked: the tab may navigate anywhere, and on macOS a user
+/// script lands on the shared WKWebViewConfiguration, so it also runs in every
+/// other external webview. Only https pages on a listed host are marked.
+fn build_embed_marker_script(hosts: &[String]) -> Option<String> {
+    let hosts: Vec<String> = hosts
+        .iter()
+        .map(|h| h.trim().to_ascii_lowercase())
+        .filter(|h| {
+            !h.is_empty()
+                && h.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
+        })
+        .collect();
+    if hosts.is_empty() {
+        return None;
+    }
+    let list = serde_json::to_string(&hosts).ok()?;
+    Some(format!(
+        r#"(function(){{
+  try {{
+    if (window.top !== window) return;
+    if (location.protocol !== "https:") return;
+    if ({list}.indexOf(location.host.toLowerCase()) < 0) return;
+    if (!window.__TEAMCLU_EMBED__) {{
+      Object.defineProperty(window, "__TEAMCLU_EMBED__", {{ value: Object.freeze({{ v: 1 }}) }});
+    }}
+    var mark = function(el) {{ el.setAttribute("data-embedder", "teamclu"); }};
+    if (document.documentElement) {{
+      mark(document.documentElement);
+    }} else {{
+      new MutationObserver(function(_, obs) {{
+        if (document.documentElement) {{ mark(document.documentElement); obs.disconnect(); }}
+      }}).observe(document, {{ childList: true }});
+    }}
+  }} catch (_) {{}}
+}})();"#
+    ))
+}
+
 fn build_supabase_session_script(storage_key: &str, session_json: &str) -> String {
     let key_lit = serde_json::to_string(storage_key).unwrap_or_else(|_| "\"\"".to_string());
     let val_lit = serde_json::to_string(session_json).unwrap_or_else(|_| "\"\"".to_string());
@@ -598,6 +643,7 @@ pub async fn webview_create(
     auth_storage_key: Option<String>,
     auth_session_json: Option<String>,
     clear_storage_key: Option<String>,
+    embed_hosts: Option<Vec<String>>,
 ) -> Result<(), String> {
     // If webview with this label already exists, just show and reposition it
     let exists = state
@@ -832,6 +878,12 @@ pub async fn webview_create(
     // boots logged-out and the user authenticates fresh.
     if let Some(ref script) = clear_inject_script {
         webview_builder = webview_builder.initialization_script(script);
+    }
+
+    // Partner console embed marker. Runs on every load of this webview and
+    // decides by the page's own host, so it needs no re-injection on navigation.
+    if let Some(script) = embed_hosts.as_deref().and_then(build_embed_marker_script) {
+        webview_builder = webview_builder.initialization_script(&script);
     }
 
     // Born parked, not on screen. A WKWebView paints white from the moment it
@@ -1605,6 +1657,29 @@ mod tests {
         assert!(EXTERNAL_WEBVIEW_INIT_SCRIPT.contains("__TEAMCLU_SAFE_NOTIFICATION__"));
         assert!(EXTERNAL_WEBVIEW_INIT_SCRIPT.contains("function SafeNotification"));
         assert!(EXTERNAL_WEBVIEW_INIT_SCRIPT.contains("set: function(next)"));
+    }
+
+    #[test]
+    fn embed_marker_script_lists_only_valid_hosts() {
+        let script = build_embed_marker_script(&[
+            " Admin.Example.com ".into(),
+            "console.example.com:8443".into(),
+            "evil\"];alert(1);//".into(),
+            "".into(),
+        ])
+        .expect("valid hosts produce a script");
+        assert!(script.contains(r#"["admin.example.com","console.example.com:8443"]"#));
+        assert!(!script.contains("alert"));
+        assert!(script.contains(r#"setAttribute("data-embedder", "teamclu")"#));
+        assert!(script.contains("__TEAMCLU_EMBED__"));
+        assert!(script.contains(r#"location.protocol !== "https:""#));
+        assert!(script.contains("window.top !== window"));
+    }
+
+    #[test]
+    fn embed_marker_script_is_none_without_hosts() {
+        assert!(build_embed_marker_script(&[]).is_none());
+        assert!(build_embed_marker_script(&["  ".into(), "a b".into()]).is_none());
     }
 
     #[test]

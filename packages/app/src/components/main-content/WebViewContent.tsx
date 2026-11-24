@@ -7,6 +7,7 @@ import { useTabsStore } from "@/stores/tabs"
 import { useCurrentTeamStore } from "@/stores/current-team"
 import { adminSsoInjectionFor } from "@/lib/extension/admin-sso-inject"
 import { consumeWebviewEntryUrl } from "@/lib/shortcuts/web-handoff"
+import { getEffectiveServerConfigSync } from "@/lib/config/server-config"
 import { hideNativeWebview } from "@/lib/ui/webview-hide"
 
 interface WebViewContentProps {
@@ -247,6 +248,11 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
               deviceName,
               authStorageKey: authInject?.storageKey,
               authSessionJson: authInject?.sessionJson,
+              // Pages on a partner console get `<html data-embedder="teamclu">`
+              // so the console can hide the navigation TeamClu already shows.
+              // The native script checks the host on every load itself, so a
+              // tab that wanders off to another site is not marked.
+              embedHosts: getEffectiveServerConfigSync().partnerConsoleHosts,
             })
 
             // Registered the moment it exists, mounted or not: this set is the
