@@ -542,6 +542,9 @@ services:
       # kept in step with it (and failed silently when it was not).
       WEBSSO_LOGIN_URL: "${WEBSSO_LOGIN_URL:-}"
       WEBSSO_STORAGE_KEY: "${WEBSSO_STORAGE_KEY:-}"
+      # Partner web consoles that FC hands one-time sign-in links to
+      # (POST /v1/auth/web-handoff), comma-separated hosts. Empty = off.
+      WEB_HANDOFF_HOSTS: "${WEB_HANDOFF_HOSTS:-}"
       # Desktop download link served by /v1/config/public (iOS onboarding).
       # Empty falls back to the GitHub releases page inside FC.
       DESKTOP_DOWNLOAD_URL: "${DESKTOP_DOWNLOAD_URL:-}"

@@ -10,7 +10,8 @@ import {
 } from 'lucide-react'
 import { LucideIconByName } from '@/components/icons/LucideIconByName'
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
+import { cn, isTauri } from '@/lib/utils'
+import { prepareWebHandoff } from '@/lib/shortcuts/web-handoff'
 import { useShortcutsStore, buildTree, type ShortcutNode } from '@/stores/shortcuts'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { selectActiveTab, useTabsStore } from '@/stores/tabs'
@@ -160,12 +161,17 @@ export function ShortcutsListColumn() {
   }
 
   const handleSelect = (node: ShortcutNode) => {
-    if (!node.target) return
-    useTabsStore.getState().openTab({
-      type: node.type === 'native' ? 'native' : 'webview',
-      target: node.target,
-      label: node.label,
-    })
+    const target = node.target
+    if (!target) return
+    const open = () =>
+      useTabsStore.getState().openTab({
+        type: node.type === 'native' ? 'native' : 'webview',
+        target,
+        label: node.label,
+      })
+    // A link to a partner web console opens signed in (lib/shortcuts/web-handoff.ts).
+    if (node.type === 'link' && isTauri()) void prepareWebHandoff(target).then(open)
+    else open()
   }
 
   const handleRefreshTeam = async () => {

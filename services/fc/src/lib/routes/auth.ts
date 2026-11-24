@@ -1,4 +1,5 @@
 import { ApiError, extractBearerToken, optionalBearerToken } from "../http-utils.js";
+import { buildWebHandoffUrl, resolveWebHandoffTarget, webHandoffHosts } from "../web-handoff.js";
 
 export function registerAuth(router) {
   router.post("/v1/auth/refresh", { auth: "none" }, async (ctx) => {
@@ -26,6 +27,22 @@ export function registerAuth(router) {
     const userId = decodeURIComponent(ctx.params.userId);
     const out = await ctx.repository.mintIdentitySession(userId, { accessToken });
     return { body: out };
+  });
+
+  // A one-time sign-in URL for an allowlisted partner web console (see
+  // lib/web-handoff.ts). `url: null` — not an error — for any URL this
+  // deployment does not hand sessions to, so the client simply opens the
+  // original link.
+  router.post("/v1/auth/web-handoff", { auth: "none" }, async (ctx) => {
+    const accessToken = extractBearerToken(ctx.headers);
+    const body = ctx.json ?? {};
+    if (typeof body.url !== "string" || body.url.length === 0) {
+      throw new ApiError(400, "validation_failed", "url is required");
+    }
+    const target = resolveWebHandoffTarget(body.url, webHandoffHosts());
+    if (!target) return { body: { url: null } };
+    const { tokenHash } = await ctx.repository.createWebHandoffToken({ accessToken });
+    return { body: { url: buildWebHandoffUrl(target, tokenHash) } };
   });
 
   // Anonymous / quick-trial sign-in has been removed from the product. Kept as

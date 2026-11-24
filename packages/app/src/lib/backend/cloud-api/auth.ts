@@ -104,6 +104,10 @@ export function createAuthModule(
       }
       return mapSession(await adoptRefreshToken(out.refreshToken));
     },
+    async webHandoffUrl(url: string): Promise<string | null> {
+      const out = await client.post<{ url: string | null }>("/v1/auth/web-handoff", { url });
+      return typeof out?.url === "string" && out.url ? out.url : null;
+    },
     async claimInvite(token: string): Promise<AuthClaimResult> {
       const claim = await client.post<AuthClaimResult>("/v1/invites/claim", { token });
       if (!claim) {

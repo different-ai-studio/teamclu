@@ -6,6 +6,7 @@ import { normalizeUrl, urlToLabel } from "@/lib/ui/webview-utils"
 import { useTabsStore } from "@/stores/tabs"
 import { useCurrentTeamStore } from "@/stores/current-team"
 import { adminSsoInjectionFor } from "@/lib/extension/admin-sso-inject"
+import { consumeWebviewEntryUrl } from "@/lib/shortcuts/web-handoff"
 import { hideNativeWebview } from "@/lib/ui/webview-hide"
 
 interface WebViewContentProps {
@@ -189,8 +190,14 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
 
             setIsLoading(false)
 
-            // If tab was closed and reopened, navigate back to the original URL
-            if (needsUrlReset.has(label)) {
+            // A pending sign-in handoff wins over the plain reset: it lands on
+            // the same page, signed in (lib/shortcuts/web-handoff.ts).
+            const handoffEntry = consumeWebviewEntryUrl(url)
+            if (handoffEntry) {
+              needsUrlReset.delete(label)
+              await invoke("webview_navigate", { label, url: handoffEntry })
+            } else if (needsUrlReset.has(label)) {
+              // If tab was closed and reopened, navigate back to the original URL
               needsUrlReset.delete(label)
               await invoke("webview_navigate", { label, url })
             }
@@ -229,7 +236,9 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
 
             await invoke("webview_create", {
               label,
-              url,
+              // The tab, label and load checks stay on `url`; only the first
+              // load goes through a pending sign-in handoff, when there is one.
+              url: consumeWebviewEntryUrl(url) ?? url,
               x: bounds.x,
               y: bounds.y,
               width: Math.max(1, bounds.width),

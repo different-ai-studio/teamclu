@@ -7736,6 +7736,43 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /v1/auth/web-handoff:
+    post:
+      operationId: createWebHandoff
+      summary: One-time sign-in URL for an allowlisted partner web console
+      description: |
+        For a URL on a host in the deployment's WEB_HANDOFF_HOSTS, mints a
+        one-time magic-link token_hash for the caller and answers the console's
+        own sign-in page (https://host/session?redirect=path#token_hash=hash),
+        so the console gets a session of its own instead of the caller's
+        tokens. Any other URL answers url null, and the client opens it as is.
+        409 when the account has no email to mint a link for.
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, description: The link the user is opening }
+      responses:
+        "200":
+          description: Sign-in URL, or null when the link gets no handoff
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url: { type: [string, "null"] }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
   /v1/auth/signin-idtoken:
     post:
       operationId: signInWithIdToken

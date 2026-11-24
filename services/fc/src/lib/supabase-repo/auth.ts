@@ -292,6 +292,28 @@ export function createSupabaseAuthRepository(options) {
       return { refreshToken: requiredString(data, "auth.mintIdentitySession", "refresh_token") };
     },
 
+    // One-time magic-link token_hash for the caller, for a partner console to
+    // verify into a session of its own (routes/auth.ts web-handoff). The
+    // caller is whoever the bearer resolves to — never a body field.
+    async createWebHandoffToken(ctx: { accessToken?: string } = {}) {
+      if (!ctx.accessToken) throw new ApiError(401, "missing_auth", "access token required");
+      const { data: userData, error: userErr } = await clientForToken(ctx.accessToken).auth.getUser();
+      if (userErr || !userData?.user?.id) {
+        throw new ApiError(401, "unauthorized", userErr?.message ?? "invalid access token");
+      }
+      const email = userData.user.email;
+      if (!email) {
+        throw new ApiError(409, "conflict", "this account has no email, so it cannot sign in to the web console");
+      }
+      const admin = serviceRoleClient("create a web handoff link");
+      const { data, error } = await admin.auth.admin.generateLink({ type: "magiclink", email });
+      const tokenHash = data?.properties?.hashed_token;
+      if (error || !tokenHash) {
+        throw new ApiError(500, "internal", `generateLink failed: ${error?.message ?? "no hashed_token"}`);
+      }
+      return { tokenHash };
+    },
+
     async acceptPendingInvite(inviteId, ctx: { accessToken?: string } = {}) {
       const client = clientForToken(ctx.accessToken);
       const { data, error } = await client.rpc("accept_pending_invite", { p_invite_id: inviteId });
