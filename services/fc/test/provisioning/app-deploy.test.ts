@@ -13,6 +13,7 @@ import {
   assertDeployAllowed,
   STALE_DEPLOY_MS,
 } from "../../src/lib/provisioning/app-deploy.js";
+import { FunctionNotReadyError } from "../../src/lib/provisioning/fc-client.js";
 
 let restoreOriginEnv: () => void;
 before(() => { restoreOriginEnv = installOriginEnv(); });
@@ -878,4 +879,59 @@ test("an app with no database refuses a migrations/ folder instead of ignoring i
     ),
     (e: any) => e.code === "app_has_no_database" && e.statusCode === 409,
   );
+});
+
+const STATIC_INPUT = {
+  appId: "3f1c9a2e-0000-4000-8000-000000000abc",
+  slug: "demo",
+  appType: "static_web",
+  fcFunctionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc",
+  ossObjectName: "apps/x/code.zip",
+};
+
+test("finalize waits for the function to be ready before publishing its endpoint", async () => {
+  const order: string[] = [];
+  const out = await finalizeDeploy({
+    fcOps: {
+      ensureFunction: async () => { order.push("ensureFunction"); },
+      waitUntilReady: async () => { order.push("waitUntilReady"); return { status: "ready" }; },
+      ensureHttpTrigger: async () => { order.push("trigger"); return { internetUrlDisabled: true as const }; },
+      ensureCustomDomain: async (_fn, domain) => { order.push("domain"); return `http://${domain}`; },
+    },
+  }, STATIC_INPUT);
+  assert.deepEqual(order, ["ensureFunction", "waitUntilReady", "trigger", "domain"]);
+  assert.deepEqual(out, { fcEndpoint: "http://demo-3f1c9a2e.origins.test" });
+});
+
+test("finalize fails with FC's reason when the function cannot start, and publishes nothing", async () => {
+  let published = false;
+  await assert.rejects(
+    () => finalizeDeploy({
+      fcOps: {
+        ensureFunction: async () => {},
+        waitUntilReady: async (name) => { throw new FunctionNotReadyError(name, "ImagePullFailed: manifest unknown"); },
+        ensureHttpTrigger: async () => { published = true; return { internetUrlDisabled: true as const }; },
+        ensureCustomDomain: async (_fn, domain) => { published = true; return `http://${domain}`; },
+      },
+    }, STATIC_INPUT),
+    (e: any) => e.statusCode === 502 && e.code === "function_start_failed" && /ImagePullFailed/.test(e.message),
+  );
+  assert.equal(published, false);
+});
+
+test("finalize still goes live when the wait times out or the state cannot be read", async () => {
+  for (const waitUntilReady of [
+    async () => ({ status: "timeout", reason: "slow pull" }),
+    async () => { throw new Error("getFunction 500"); },
+  ]) {
+    const out = await finalizeDeploy({
+      fcOps: {
+        ensureFunction: async () => {},
+        waitUntilReady,
+        ensureHttpTrigger: async () => ({ internetUrlDisabled: true as const }),
+        ensureCustomDomain: async (_fn, domain) => `http://${domain}`,
+      },
+    }, STATIC_INPUT);
+    assert.deepEqual(out, { fcEndpoint: "http://demo-3f1c9a2e.origins.test" });
+  }
 });
