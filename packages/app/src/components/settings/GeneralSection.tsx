@@ -48,6 +48,7 @@ import {
 import { reportDevicePermissionDefault } from '@/lib/teamclu/sync-session-permission-mode'
 import { NOTIFICATION_LEVEL_KEY } from '@/lib/ui/notification-service'
 import { LanguageSettingCard } from './LanguageSettingCard'
+import { PasswordCard } from './PasswordCard'
 import { getEffectiveServerConfig, type ServerConfig } from '@/lib/config/server-config'
 import { fetchAndApplyBootstrap } from '@/lib/config/bootstrap'
 import { useAuthStore } from '@/stores/auth-store'
@@ -261,6 +262,8 @@ export const GeneralSection = React.memo(function GeneralSection() {
           </div>
         </SettingCard>
       ) : null}
+
+      <PasswordCard />
 
       {currentTeamId ? (
         <SettingCard>

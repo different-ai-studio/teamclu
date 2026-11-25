@@ -82,6 +82,9 @@ export function createAuthModule(
     async signOut(): Promise<void> {
       await authClient.signOut();
     },
+    async updatePassword(password: string): Promise<void> {
+      await authClient.updateUser({ password });
+    },
     async adoptSession(refreshToken: string): Promise<AuthSession | null> {
       const next = await adoptRefreshToken(refreshToken);
       return mapSession(next);

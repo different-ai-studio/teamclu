@@ -111,6 +111,11 @@ export interface AuthBackend {
   loginWithPhoneUser(phone: string, code: string, userId: string): Promise<AuthSession | null>;
   signInWithOAuth(provider: OAuthProvider): Promise<AuthSession | null>;
   signOut(): Promise<void>;
+  /**
+   * Set or replace the signed-in account's password. The current session is
+   * the proof; the previous password is not sent.
+   */
+  updatePassword(password: string): Promise<void>;
   claimInvite(token: string): Promise<AuthClaimResult>;
   /** Invites matched to the signed-in user's verified email/phone. */
   listPendingInvites(): Promise<PendingInvite[]>;
