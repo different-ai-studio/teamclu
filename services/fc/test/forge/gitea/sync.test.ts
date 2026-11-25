@@ -11,8 +11,11 @@ import {
 } from "../../../src/lib/forge/gitea/client.js";
 import { reconcileGiteaApps, syncAppToGitea, syncTeamAppsToGitea } from "../../../src/lib/forge/gitea/sync.js";
 import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "../../../src/lib/forge/gitea/sync-runner.js";
-import { isGiteaReconcileMinute } from "../../../src/lib/routes/apps.js";
+import { giteaAccountFields, isGiteaReconcileMinute } from "../../../src/lib/forge/index.js";
 import { mapApp } from "../../../src/lib/supabase-repo/shared.js";
+
+/** An app as the repository answers it: the platform's fields plus the Gitea forge's. */
+const view = (r: any): Record<string, unknown> => mapApp(r, giteaAccountFields(r));
 
 const ORG = "6f1c2d3e-4b5a-4c6d-8e9f-0a1b2c3d4e5f";
 const OWNER = giteaOrgName(ORG);
@@ -255,19 +258,19 @@ test("app responses tell new clients to use HTTPS only for per-org repos with th
   const prev = process.env.GITEA_ACCOUNT_AUTH;
   try {
     process.env.GITEA_ACCOUNT_AUTH = "on";
-    const on = mapApp(base);
+    const on = view(base);
     assert.equal(on.gitAccountAuth, true);
     assert.equal(on.gitHttpUrl, `https://gitea.example/${OWNER}/tc-app-app-1.git`);
     // The stored values old daemons read are untouched.
     assert.equal(on.gitRemoteUrl, `git@gitea.example:${OWNER}/tc-app-app-1.git`);
     assert.equal(on.gitAuthKind, "gitea_deploy_key");
 
-    const legacy = mapApp({ ...base, git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git" });
+    const legacy = view({ ...base, git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git" });
     assert.equal(legacy.gitAccountAuth, false);
     assert.equal(legacy.gitHttpUrl, null);
 
     process.env.GITEA_ACCOUNT_AUTH = "off";
-    assert.equal(mapApp(base).gitAccountAuth, false, "turning the switch off sends clients back to SSH");
+    assert.equal(view(base).gitAccountAuth, false, "turning the switch off sends clients back to SSH");
   } finally {
     if (prev === undefined) delete process.env.GITEA_ACCOUNT_AUTH;
     else process.env.GITEA_ACCOUNT_AUTH = prev;

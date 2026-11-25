@@ -193,13 +193,7 @@ import { reclaimStaleDeploy, supabaseReclaimStore } from "./provisioning/app-dep
 import type { AppLogKind } from "./provisioning/app-logs.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
-import {
-  giteaOrgName,
-  giteaUnavailable,
-  GITEA_AUTH_KIND,
-  repoOwnerFromRemote,
-} from "./forge/gitea/client.js";
-import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "./forge/gitea/sync-runner.js";
+import { noForge } from "./app-platform/hooks.js";
 import {
   APP_GIT_HTTPS_CREDENTIAL_KIND,
   deserializeGitHttpsCredential,
@@ -208,11 +202,6 @@ import {
   serializeGitHttpsCredential,
   type GitHttpsCredential,
 } from "./forge/imported-http.js";
-import {
-  issueJitDeployKey,
-  revokeActorDeployKeys,
-  revokeOwnJitDeployKey,
-} from "./forge/gitea/deploy-key.js";
 import {
   applyAuthModeChange,
   buildPlatformAuthEnv,
@@ -295,7 +284,6 @@ import {
   mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut,
   mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
   mapFeedbackRow, mapLeaderboardRow, chunkedIn,
-  appGitAccountFields,
 } from "./supabase-repo/shared.js";
 export { publishableKeyFromEnv } from "./supabase-repo/shared.js";
 export { createSupabaseAuthRepository } from "./supabase-repo/auth.js";
@@ -789,12 +777,9 @@ export function createSupabaseBusinessRepository(options) {
     // Set when the two above are absent: names the environment variable that
     // made deploy provisioning unavailable (see makeDeployDeps in index.ts).
     deployUnavailableReason,
-    gitea,
-    giteaUnavailableReason,
-    // GITEA_ACCOUNT_AUTH: new apps under the TeamClu org, access mirrored to
-    // Gitea (forge/gitea/sync.ts). Read from the environment unless a
-    // caller (a test) says otherwise.
-    giteaAccountAuth = giteaAccountAuthEnabled(),
+    // Who hosts an app's code: TeamClu's forge integration (src/lib/forge/),
+    // wired in by index.ts. Absent: nobody — imported and local apps only.
+    forge: forgeFactory = noForge(),
     gotrue,
     gotrueUnavailableReason,
     teardownDeps,
@@ -1039,17 +1024,9 @@ export function createSupabaseBusinessRepository(options) {
     return createServiceRoleClient();
   }
 
-  const giteaSync = makeGiteaSyncRunner({ gitea, enabled: giteaAccountAuth, serviceRoleClient });
-
-  /**
-   * The Gitea client bound to the owner an app's repo actually lives under:
-   * `GITEA_OWNER` for apps created before per-org repos, the TeamClu org's
-   * `o<uuid>` for newer ones. Read from the stored remote, so no column says it.
-   */
-  function appGitea(app: { git_remote_url?: string | null }) {
-    if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
-    return gitea.withOwner(repoOwnerFromRemote(app.git_remote_url) ?? gitea.owner);
-  }
+  const forge = forgeFactory({ serviceRoleClient });
+  /** An app as `/v1/apps*` answers it: the platform's fields plus the forge's. */
+  const appView = (r: any) => mapApp(r, forge.decorate(r));
 
   function scheduleSessionParticipantsChanged(sessionId: string, removedUserId: string | null = null) {
     if (!publishSessionParticipantInbox) return;
@@ -1253,35 +1230,6 @@ export function createSupabaseBusinessRepository(options) {
     return out;
   }
 
-  /**
-   * Revoke JIT deploy keys when access is removed or downgraded to view-only.
-   *
-   * Best-effort throughout, like the `revokeActorDeployKeys` it wraps. This
-   * runs *after* the grant row is already gone, so throwing here reported a
-   * completed revoke as a 500 — the caller then retries against a grant that
-   * no longer exists. A deployment with no service-role key, or a transient
-   * PostgREST error, must not turn "access removed" into "request failed".
-   * The keys that survive are still bounded by the expiry sweep.
-   */
-  async function revokeAppMemberDeployKeysIfGitea(appId: string, memberId: string): Promise<void> {
-    if (!gitea) return;
-    try {
-      const admin = await serviceRoleClient("revoke deploy keys on deauth");
-      const { data: app, error } = await admin
-        .from("apps")
-        .select("id, git_auth_kind, git_remote_url")
-        .eq("id", appId)
-        .maybeSingle();
-      if (error) throw error;
-      if (!app || app.git_auth_kind !== GITEA_AUTH_KIND) return;
-      await revokeActorDeployKeys(appGitea(app), appId, memberId);
-    } catch (e) {
-      console.warn("[apps] deploy key revoke failed after deauth (non-fatal)", e);
-    }
-  }
-
-
-
   /** The app row the agent path authorises against, read past `apps` RLS. */
   async function readAppForAgentGitCredential(appId: string) {
     const admin = await serviceRoleClient("read app for agent git credential");
@@ -1315,34 +1263,6 @@ export function createSupabaseBusinessRepository(options) {
     if (error) throw error;
     const id = data?.id;
     return typeof id === "string" && id.trim() ? id : null;
-  }
-
-  /**
-   * Mint a JIT deploy key for a Gitea-managed app, titled for `actorId`.
-   * `readOnly` for a caller who may download the code but not push to it.
-   */
-  async function mintAppGitCredential(
-    appId: string,
-    app: { git_remote_url?: string | null; git_auth_kind?: string | null },
-    actorId: string,
-    { readOnly = false }: { readOnly?: boolean } = {},
-  ) {
-    if (!app.git_remote_url) return null;
-    // An imported app has a remote this deployment holds no credential for;
-    // minting a Gitea key for it would 404 on a repo that does not exist.
-    if (app.git_auth_kind !== GITEA_AUTH_KIND) return null;
-    if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
-
-    const jit = await issueJitDeployKey(appGitea(app), appId, actorId, Date.now(), { readOnly });
-    return {
-      remoteUrl: app.git_remote_url,
-      authKind: "deploy_key" as const,
-      ...jit,
-      // Per-account auth: the daemon keeps using this deploy key over SSH for
-      // its own seed/fetch, and points the checkout's people and agents at
-      // gitHttpUrl (spec §6). Absent → the checkout stays on SSH as before.
-      ...appGitAccountFields(app),
-    };
   }
 
   /** The bearer caller's actor in `teamId`, or null; same lookup as the `resolveCallerActorForTeam` method, for the module hosts below. */
@@ -1502,7 +1422,7 @@ export function createSupabaseBusinessRepository(options) {
         code: joinedRole,
       });
       // A new teammate reads the team's team-visible apps through its Gitea team.
-      await giteaSync.team(joinedTeamId);
+      await forge.teamAccessChanged(joinedTeamId);
       return mapTeam({
         id: joinedTeamId,
         name: row.team_name ?? row.name,
@@ -1799,7 +1719,7 @@ export function createSupabaseBusinessRepository(options) {
         .schema("amux")
         .rpc("remove_team_actor", { p_actor_id: actorId });
       if (error) throw error;
-      if (teamId) await giteaSync.team(teamId);
+      if (teamId) await forge.teamAccessChanged(teamId);
     },
 
     async updateCurrentActorProfile(actorId, { displayName, avatarUrl }) {
@@ -4488,7 +4408,7 @@ export function createSupabaseBusinessRepository(options) {
             if (envResult.error) throw envResult.error;
             if (cronResult.error) throw cronResult.error;
 
-            const app = mapApp(appRow);
+            const app = appView(appRow);
             const customDomainVerified = Boolean(appRow.custom_domain_verified_at);
             const canonicalUrl = customDomainVerified && appRow.custom_domain
               ? `https://${appRow.custom_domain}`
@@ -5135,7 +5055,7 @@ export function createSupabaseBusinessRepository(options) {
       const last = rows.length >= limit ? rows[rows.length - 1] : null;
       return {
         items: rows.map((r: any) => ({
-          ...mapApp(r),
+          ...appView(r),
           ...appRelationshipFor(r, viewer.actorId, viewer.grants),
         })),
         nextCursor: last ? encodeCursor({ createdAt: String(last.created_at), id: last.id }) : null,
@@ -5194,7 +5114,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!data) return null;
       const viewer = await this.resolveAppViewer(data.team_id, [data.id]);
       const permission = await this.resolveAppCallerPermissionForApp(data);
-      return { ...mapApp(data), canManageDeployment: permission?.level === "admin", ...appRelationshipFor(data, viewer.actorId, viewer.grants),
+      return { ...appView(data), canManageDeployment: permission?.level === "admin", ...appRelationshipFor(data, viewer.actorId, viewer.grants),
         originSecurity: projectOriginSecurity(await readAppOriginSecurity(data)) };
     },
 
@@ -5286,9 +5206,7 @@ export function createSupabaseBusinessRepository(options) {
       const visibility = input.visibility === "team" ? "team" : "personal";
       const importUrl = input.gitRemoteUrl?.trim() || null;
       const localOnly = input.localOnly === true;
-      if (!importUrl && !localOnly && !gitea) {
-        throw giteaUnavailable(giteaUnavailableReason);
-      }
+      if (!importUrl && !localOnly) forge.assertCanHostRepo();
 
       // The app's tenant, settled here rather than at the first finalize.
       //
@@ -5376,25 +5294,16 @@ export function createSupabaseBusinessRepository(options) {
       // provision, so there is no repo of ours to create and no deploy key to
       // hold. `git_auth_kind` stays null, which is what makes deploy build the
       // workdir as it sits.
-      if (importUrl || localOnly) return mapApp(row);
+      if (importUrl || localOnly) return appView(row);
 
       try {
-        // The SSH URL, not `clone_url`: the deploy key is the only credential
-        // we hand out for this repo, and it is useless over HTTPS.
-        // Per-org repos (GITEA_ACCOUNT_AUTH): the repo lives under the app's
-        // TeamClu org, so Gitea's org is TeamClu's. Otherwise the shared owner.
-        let repoGitea = gitea!;
-        if (giteaAccountAuth && row.org_id) {
-          const owner = giteaOrgName(row.org_id);
-          await gitea!.ensureOrg(owner);
-          repoGitea = gitea!.withOwner(owner);
-        }
-        const { sshUrl } = await repoGitea.createAppRepo(row.id);
+        // Ours to host: the forge creates the repo and says where it lives.
+        const repo = await forge.provisionRepo(row);
         const { data: updated, error: updErr } = await supabase
           .from("apps")
           .update({
-            git_remote_url: sshUrl,
-            git_auth_kind: GITEA_AUTH_KIND,
+            git_remote_url: repo.remoteUrl,
+            git_auth_kind: repo.authKind,
             provision_status: "repo_created",
             provision_error: null,
             updated_at: new Date().toISOString(),
@@ -5403,8 +5312,8 @@ export function createSupabaseBusinessRepository(options) {
           .select(APP_COLUMNS)
           .single();
         if (updErr) throw updErr;
-        await giteaSync.app(row.id);
-        return mapApp(updated);
+        await forge.appAccessChanged(row.id);
+        return appView(updated);
       } catch (e: unknown) {
         const msg = e instanceof ApiError ? e.message : String((e as Error)?.message ?? e);
         const { data: errored, error: errUpd } = await supabase
@@ -5419,11 +5328,7 @@ export function createSupabaseBusinessRepository(options) {
           .single();
         if (errUpd) throw errUpd;
         if (e instanceof ApiError) throw e;
-        // `details`, not a bare 4th-argument object — ApiError reads only
-        // `options.details` / `options.cause`, so the errored row was dropped.
-        throw new ApiError(502, "gitea_provision_failed", msg, {
-          details: { app: mapApp(errored) },
-        });
+        throw forge.provisionFailed(msg, { app: appView(errored) });
       }
     },
 
@@ -5660,8 +5565,8 @@ export function createSupabaseBusinessRepository(options) {
       // The proxy caches auth settings per host; without this a saved rule waits out the TTL.
       invalidateAppHosts({ id: appId, slug: cur.slug, appCode: cur.app_code, usesAppCodeDomain: cur.uses_app_code_domain, customDomain: cur.custom_domain });
       // Team visibility is read access for the whole team in Gitea too.
-      if (set.visibility !== undefined && set.visibility !== cur.visibility) await giteaSync.app(appId);
-      return mapApp(data);
+      if (set.visibility !== undefined && set.visibility !== cur.visibility) await forge.appAccessChanged(appId);
+      return appView(data);
     },
 
     /**
@@ -5847,7 +5752,7 @@ export function createSupabaseBusinessRepository(options) {
         existing.fc_status = "deploy_error";
       }
       const revision = String(input?.revision ?? "");
-      if (existing.git_auth_kind === GITEA_AUTH_KIND) {
+      if (forge.hostsRepo(existing)) {
         const head = await this.getAppGitHead(appId);
         if (!head || head.sha !== revision || input.gitCommitSha !== revision) {
           throw new ApiError(409, "revision_mismatch", "Gitea deploy requires the clean checkout at exact remote HEAD");
@@ -5925,7 +5830,7 @@ export function createSupabaseBusinessRepository(options) {
       }
       if (isAppDeployPreflightExpired(input.preflightToken)) throw new ApiError(409, "preflight_expired", "preflight expired; retry");
       const revision = String(input.revision ?? "");
-      if (existing.git_auth_kind === GITEA_AUTH_KIND) {
+      if (forge.hostsRepo(existing)) {
         const head = await this.getAppGitHead(appId);
         if (!head || head.sha !== revision || gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "Gitea HEAD changed after preflight");
       } else if (!revision.startsWith("sha256:")) {
@@ -5988,7 +5893,7 @@ export function createSupabaseBusinessRepository(options) {
         if (updErr) throw updErr;
         if (!row) throw new ApiError(409, "deploy_in_progress", "app deploy state changed before upload handle was issued");
         return {
-          ...mapApp(row),
+          ...appView(row),
           // Exactly one of these is set — see startDeploy. The daemon branches
           // on which one it got.
           ossObjectName: r.ossObjectName,
@@ -6059,7 +5964,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!info) return null;
       assertNoUnexpectedOriginEntries(info.originSecurity);
       verifyAppDeployPreflight(deployToken, appId, revision, declaration, info.currentDeployment);
-      if (existing.git_auth_kind === GITEA_AUTH_KIND && gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "built SHA differs from preflight revision");
+      if (forge.hostsRepo(existing) && gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "built SHA differs from preflight revision");
       const writer = await this.appDeployWriter(existing);
       const lifecycleAdmin = await serviceRoleClient("app deployment lifecycle");
       let { data: lifecycle, error: lifecycleError } = await lifecycleAdmin.from("app_lifecycle_operations")
@@ -6183,7 +6088,7 @@ export function createSupabaseBusinessRepository(options) {
         await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: deployToken });
         // The proxy caches fc_endpoint/fc_status per host.
         invalidateAppHosts({ id: appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: row.uses_app_code_domain, customDomain: existing.custom_domain });
-        return mapApp(row);
+        return appView(row);
       } catch (e: any) {
         await writer
           .from("apps")
@@ -6704,7 +6609,7 @@ export function createSupabaseBusinessRepository(options) {
       if (resolved.app.git_auth_kind === GIT_HTTPS_AUTH_KIND) {
         return this.readAppGitHttpsCredential(appId, resolved.app);
       }
-      return mintAppGitCredential(appId, resolved.app, resolved.actorId, {
+      return forge.issueCredential(resolved.app as { id: string }, resolved.actorId, {
         readOnly: resolved.readOnly,
       });
     },
@@ -6744,7 +6649,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!cur) return null;
       const permission = await this.resolveAppCallerPermissionForApp(cur);
       if (permission?.level !== "admin") return null;
-      if (cur.git_auth_kind === GITEA_AUTH_KIND) {
+      if (forge.hostsRepo(cur)) {
         throw new ApiError(
           409,
           "git_credential_not_applicable",
@@ -6791,7 +6696,7 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
-      return mapApp(data);
+      return appView(data);
     },
 
     /** Forget an imported app's stored token. Idempotent. */
@@ -6808,7 +6713,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!data) return null;
       const admin = await serviceRoleClient("clear app git credential");
       await deleteAppSecretSupabase(admin, appId, APP_GIT_HTTPS_CREDENTIAL_KIND);
-      return mapApp(data);
+      return appView(data);
     },
 
     /**
@@ -6819,12 +6724,11 @@ export function createSupabaseBusinessRepository(options) {
      * actor in its title — otherwise revoking would be a way to kill a push
      * another machine is in the middle of.
      */
-    async revokeAppGitCredential(appId: string, deployKeyId: number) {
+    async revokeAppGitCredential(appId: string, credentialId: number) {
       const resolved = await this.resolveAppGitCredentialActor(appId);
       if (!resolved) return null;
       const { actorId } = resolved;
-      if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
-      const revoked = await revokeOwnJitDeployKey(appGitea(resolved.app), appId, actorId, deployKeyId);
+      const revoked = await forge.revokeCredential(resolved.app as { id: string }, actorId, credentialId);
       // `revoked: false` is not an error the caller can act on — the key is
       // unusable either way, which is the whole point of asking.
       return { revoked };
@@ -6845,28 +6749,9 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (selErr) throw selErr;
       if (!existing) return null;
-      // An imported app's repo is somebody else's and we hold no credential for
-      // it, so there is no head to read. Null, not an error: "we cannot see the
-      // branch" is a legitimate state for such an app, permanently.
-      if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
-      if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
-
-      const repoGitea = appGitea(existing);
-      const head = await repoGitea.getRepoHead(appId);
-      const deployedSha = existing.git_commit_sha ?? null;
-      if (!opts.compare) return { ...head, deployedSha, undeployedCommits: null };
-
-      // Three cases, and only the last one costs a request:
-      //   nothing deployed  → unknown, not zero (there is no baseline)
-      //   already on head   → zero, known without asking
-      //   otherwise         → ask the forge
-      let undeployedCommits: number | null = null;
-      if (deployedSha === head.sha) {
-        undeployedCommits = 0;
-      } else if (deployedSha) {
-        undeployedCommits = await repoGitea.compareCommits(appId, deployedSha, head.sha);
-      }
-      return { ...head, deployedSha, undeployedCommits };
+      // Null for a repo this deployment does not host: "we cannot see the
+      // branch" is a legitimate, permanent state for an imported app.
+      return forge.repoHead(existing, { compare: opts.compare === true });
     },
 
     async getAppMembership(appId: string) {
@@ -7040,9 +6925,9 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
       const priorLevel = storedAppPermissionLevel(priorAccess?.permission_level);
       if (level === "read" && priorLevel && appLevelAtLeast(priorLevel, "write")) {
-        await revokeAppMemberDeployKeysIfGitea(appId, memberId);
+        await forge.memberWriteRevoked(appId, memberId);
       }
-      await giteaSync.app(appId);
+      await forge.appAccessChanged(appId);
       scheduleAppAccessChanged(manager.teamId, appId, grantee);
       return mapAppAccessRow(data);
     },
@@ -7065,8 +6950,8 @@ export function createSupabaseBusinessRepository(options) {
         .eq("app_id", appId)
         .eq("member_id", memberId);
       if (error) throw error;
-      await revokeAppMemberDeployKeysIfGitea(appId, memberId);
-      await giteaSync.app(appId);
+      await forge.memberWriteRevoked(appId, memberId);
+      await forge.appAccessChanged(appId);
       scheduleAppAccessChanged(manager.teamId, appId, granteeErr ? null : grantee);
       return true;
     },
@@ -7736,12 +7621,11 @@ export function createSupabaseBusinessRepository(options) {
         fcFunctionName: existing.fc_function_name,
         authMode: existing.auth_mode,
         oauthClientId: existing.oauth_client_id,
-        gitAuthKind: existing.git_auth_kind,
         gitRemoteUrl: existing.git_remote_url,
       };
       const teardown: TeardownAppDeps = {
         // Explicit uninstall already removed deployment resources.
-        gitea: gitea ? appGitea(existing) : gitea,
+        releaseRepo: () => forge.releaseRepo(existing),
         deleteSecret: (kind) => deleteAppSecretSupabase(admin, appId, kind),
       };
       const { archivedRepoUrl } = await teardownAppResources(teardown, teardownInput);

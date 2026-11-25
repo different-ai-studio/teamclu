@@ -143,7 +143,7 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
     // WeChat over the iPad protocol is self-host only: it needs a protocol
     // server beside the daemon, which only a self-hosted operator runs.
     channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, wechatpad: true, seatalk: false },
-    // Entry point only. Creating an app needs GITEA_* (see makeGiteaDeps in
+    // Entry point only. Creating an app needs GITEA_* (see makeForgeDeps in
     // src/index.ts); deploy needs ACCESS_KEY_ID + APPS_FC_ENDPOINT (see
     // makeDeployDeps). With those unset this box answers 503 naming the empty
     // variable while listing still works.

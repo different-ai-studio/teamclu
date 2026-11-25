@@ -4,32 +4,7 @@ import { ApiError } from "../http-utils.js";
 import { parseLimit, requireString } from "../routing-utils.js";
 import { runDueAppCronJobs } from "../app-cron-runner.js";
 import { createServiceRoleClient } from "../supabase.js";
-import { makeGiteaClient, readGiteaConfig } from "../forge/gitea/client.js";
-import { reconcileGiteaApps } from "../forge/gitea/sync.js";
-import { makeDeployKeyExpirySweep } from "../forge/gitea/deploy-key-expiry.js";
-import { giteaAccountAuthEnabled } from "../forge/gitea/sync-runner.js";
-
-/**
- * The Gitea repair pass for the heartbeat, or null when there is nothing to
- * repair: GITEA_ACCOUNT_AUTH off, or no Gitea configured.
- */
-function defaultGiteaReconcile(): ((client: any, deadline: number) => Promise<unknown>) | null {
-  if (!giteaAccountAuthEnabled()) return null;
-  const resolved = readGiteaConfig();
-  if (resolved.error) return null;
-  const gitea = makeGiteaClient(resolved.config);
-  return (admin, deadline) => reconcileGiteaApps({ gitea, admin, log: (m) => console.warn(m) }, { deadline });
-}
-
-function defaultDeployKeySweep() {
-  const resolved = readGiteaConfig();
-  return resolved.error ? null : makeDeployKeyExpirySweep({ gitea: makeGiteaClient(resolved.config) });
-}
-
-/** Every tenth minute: often enough that a failed request-path sync heals quickly, rarely enough to stay cheap. */
-export function isGiteaReconcileMinute(now: Date): boolean {
-  return now.getUTCMinutes() % 10 === 0;
-}
+import type { ForgeHeartbeat } from "../app-platform/hooks.js";
 
 /**
  * Object paths travel as base64url, the same trick the data browser plays with
@@ -119,11 +94,23 @@ function normalizeGitRemoteUrl(raw: unknown): string | null {
   return stripUrlCredentials(url);
 }
 
-export function registerApps(
-  router,
-  tickDeps: any = { createServiceRoleClient, makeAppUndeployDeps, giteaReconcile: defaultGiteaReconcile, deployKeySweep: defaultDeployKeySweep, now: () => new Date() },
-) {
-  const deployKeySweep = tickDeps.deployKeySweep?.();
+/**
+ * What the heartbeat route runs with. `forgeHeartbeat` is the forge
+ * integration's own background work (src/lib/forge/), handed in by the
+ * composition root; absent, the heartbeat runs the platform's jobs only.
+ */
+export function appTickDeps(overrides: Record<string, unknown> = {}): any {
+  return {
+    createServiceRoleClient,
+    makeAppUndeployDeps,
+    forgeHeartbeat: null as ForgeHeartbeat | null,
+    now: () => new Date(),
+    ...overrides,
+  };
+}
+
+export function registerApps(router, tickDeps: any = appTickDeps()) {
+  const forgeHeartbeat: ForgeHeartbeat | null = tickDeps.forgeHeartbeat ?? null;
   router.get("/v1/apps", async (ctx) => {
     const teamId = ctx.query.get("teamId");
     requireString(teamId, "teamId");
@@ -576,30 +563,15 @@ export function registerApps(
     const client = tickDeps.createServiceRoleClient();
     // Background jobs share the existing 55-second heartbeat request window.
     const started = Date.now();
-    let deployKeys: unknown;
-    if (deployKeySweep) {
-      try {
-        const result = await deployKeySweep(client, started + 8_000);
-        deployKeys = result;
-        if (result.failed) console.warn("[gitea] deploy key sweep failures:", result.failed);
-      } catch {
-        deployKeys = { error: "deploy key sweep failed" };
-        console.warn("[gitea] deploy key sweep failed");
-      }
-    }
+    // The forge's first slot (deploy key expiry) runs before the platform's jobs.
+    const forgeBefore = forgeHeartbeat?.before ? await forgeHeartbeat.before(client, started) : {};
     const cleanup = await runAppUndeployTick({ store: makeUndeployStore(client), deps: tickDeps.makeAppUndeployDeps(), maxTickMs: 25_000 });
     const out = await runDueAppCronJobs({ client, maxTickMs: Math.max(0, 45_000 - (Date.now() - started)) });
-    // Gitea repair rides the same heartbeat, in whatever is left of the window.
-    let gitea: unknown = null;
-    const reconcile = tickDeps.giteaReconcile?.() ?? null;
-    if (reconcile && isGiteaReconcileMinute(tickDeps.now?.() ?? new Date())) {
-      try {
-        gitea = await reconcile(client, started + 50_000);
-      } catch (e) {
-        gitea = { error: String((e as Error)?.message ?? e) };
-      }
-    }
-    return { body: { ...out, cleanup, ...(deployKeys ? { deployKeys } : {}), ...(gitea ? { gitea } : {}) } };
+    // The forge's repair pass rides the same heartbeat, in whatever is left of the window.
+    const forgeAfter = forgeHeartbeat?.after
+      ? await forgeHeartbeat.after(client, started, tickDeps.now?.() ?? new Date())
+      : {};
+    return { body: { ...out, cleanup, ...forgeBefore, ...forgeAfter } };
   });
 
   // The deployed app asking for its own credentials. `auth: "app-token"` gets a

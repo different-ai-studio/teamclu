@@ -71,24 +71,25 @@ services/fc/src/lib/
 
 ### 2.1 `AppLifecycleHooks`（平台定义接口，平台只调接口）
 
-```ts
-export interface AppLifecycleHooks {
-  /** createApp 插行之后调用。可返回要并入 app 行的字段（provision_status 等）。失败原样抛出。 */
-  appCreated?(app: AppRow, input: CreateAppForgeInput): Promise<Partial<AppRow> | void>;
-  /** 可见性、授权、成员变化之后调用。best-effort，失败只记日志（与现在一致）。 */
-  accessChanged?(appId: string, change: AccessChange): Promise<void>;
-  /** 删除 app 之前（DB 删除前）调用。best-effort，失败不挡删除（与现在一致）。 */
-  appDeleting?(app: AppRow): Promise<void>;
-  /** preflight / deploy / finalize 各调一次。抛 ApiError 即拒绝；没注册就不校验来源。 */
-  deployGuard?(app: AppRow, stage: "preflight" | "deploy" | "finalize", d: { revision: string; gitCommitSha?: string }): Promise<void>;
-  /** 拼进 /v1/apps 响应的 forge 字段（gitRemoteUrl / gitHttpUrl / gitAuthKind）。同步纯函数。 */
-  decorate?(row: AppRow): Record<string, unknown>;
-  /** 心跳里的周期任务（Gitea 修复、deploy key 过期清扫）。 */
-  heartbeat?(admin: ServiceRoleClient, deadline: number): Promise<void>;
-}
-```
+接口在 `app-platform/hooks.ts`（P1.2 已实现）。按 app 的生命周期分组：
 
-`supabase-repo.ts` 只拿到一个由组装根注入的 `hooks: AppLifecycleHooks`，自己不 import 任何 forge 模块。
+| 组 | 方法 | 说明 |
+|---|---|---|
+| 建 app | `assertCanHostRepo()`、`provisionRepo(app)`、`provisionFailed(msg, details)` | 平台把 `provisionRepo` 返回的 `remoteUrl` / `authKind` 写回 app 行；失败时平台先记 `provision_status=error`，再抛 forge 给的错误（Gitea：`502 gitea_provision_failed`） |
+| 授权 | `appAccessChanged(appId)`、`teamAccessChanged(teamId)`、`memberWriteRevoked(appId, memberId)` | 都是 best-effort，失败不影响触发它的那次变更 |
+| 代码访问 | `hostsRepo(app)`、`issueCredential`、`revokeCredential`、`repoHead` | 原 `mintAppGitCredential`、`getAppGitHead` 的逻辑 |
+| 删除 | `releaseRepo(app)` | 由 `teardownAppResources` 的 `releaseRepo` 回调调用 |
+| 响应 | `decorate(app)` | `mapApp(row, forgeFields)` 的第二个参数，Gitea 输出 `gitAccountAuth` / `gitHttpUrl` |
+
+心跳另有 `ForgeHeartbeat { before, after }`：`before` 在平台任务前跑（deploy key 过期清扫，`started + 8s`），
+`after` 在平台任务后跑（每十分钟一次的 Gitea 修复，`started + 50s`），各自返回要并入响应体的字段。
+
+组装：`createSupabaseBusinessRepository({ forge })` 接收一个 `AppLifecycleHooksFactory`
+（`(ctx: { serviceRoleClient }) => AppLifecycleHooks`），默认 `noForge()`：导入和本地 app 照常，
+需要托管仓库的 app 返回 `503 repo_hosting_unavailable`。`index.ts` 传入 `forgeFromEnv()`，
+`routes/index.ts` 把 `forgeHeartbeatFromEnv()` 交给 `registerApps`。
+
+部署守卫（`deployGuard`）留到 P1.3 加。
 
 ### 2.2 revision 通用化
 

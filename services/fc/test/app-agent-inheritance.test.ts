@@ -4,7 +4,8 @@ import { appsRepo, appsSupabase, fakeGitea } from "./fixtures/apps-repository.js
 import { giteaOrgName, giteaUserName } from "../src/lib/forge/gitea/client.js";
 import { syncAppToGitea } from "../src/lib/forge/gitea/sync.js";
 import { appGitLevel } from "../src/lib/forge/app-git-access.js";
-import { higherAppLevel, inheritedGiteaLevel } from "../src/lib/app-permission.js";
+import { higherAppLevel } from "../src/lib/app-permission.js";
+import { inheritedRepoLevel } from "../src/lib/forge/app-git-access.js";
 
 // An active agent reaches the apps its owner reaches (20261120120000), at its
 // owner's level, minus the two things a bot never does for its owner: change
@@ -217,7 +218,7 @@ test("git access counts an inherited level as Gitea enforces it", () => {
   assert.equal(appGitLevel({ isCreator: false, grant: null, inherited: "admin", visibility: "personal" }), "write");
   assert.equal(appGitLevel({ isCreator: false, grant: "read", inherited: "write", visibility: "personal" }), "write");
   assert.equal(appGitLevel({ isCreator: false, grant: null, inherited: null, visibility: "personal" }), null);
-  assert.equal(inheritedGiteaLevel("read"), "read");
+  assert.equal(inheritedRepoLevel("read"), "read");
   assert.equal(higherAppLevel(null, "read"), "read");
 });
 

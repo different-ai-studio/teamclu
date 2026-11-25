@@ -3,8 +3,6 @@ import type { AuthMode } from "./app-auth-mode.js";
 import { OAUTH_CLIENT_SECRET_KIND } from "./app-secrets.js";
 import { appOssObjectName } from "./app-deploy.js";
 import type { GotrueOAuthClient } from "./gotrue-oauth.js";
-import { GITEA_AUTH_KIND, type GiteaClient } from "../forge/gitea/client.js";
-import { revokeAllDeployKeys } from "../forge/gitea/deploy-key.js";
 import { resolveAppFunctionName, type FunctionNamingMode } from "../apps-function-identity.js";
 import { appDeploymentOriginHost } from "../apps-origin-auth.js";
 
@@ -17,7 +15,12 @@ export type TeardownAppDeps = {
   };
   deleteOssObject?: (ossObjectName: string) => Promise<void>;
   gotrue?: GotrueOAuthClient;
-  gitea?: GiteaClient;
+  /**
+   * Retire the app's repo (`AppLifecycleHooks.releaseRepo`): the forge decides
+   * whether it hosts one and what is left of it. Absent: the code stays where
+   * it is and the stored remote is what the archived workspace points at.
+   */
+  releaseRepo?: () => Promise<{ archivedRepoUrl: string | null }>;
   deleteSecret?: (kind: string) => Promise<void>;
 };
 
@@ -31,7 +34,6 @@ export type TeardownAppInput = {
   fcEndpoint?: string | null;
   authMode?: AuthMode | string | null;
   oauthClientId?: string | null;
-  gitAuthKind?: string | null;
   gitRemoteUrl?: string | null;
 };
 
@@ -90,26 +92,13 @@ export async function teardownAppResources(
     }
   }
 
-  if (input.gitAuthKind !== GITEA_AUTH_KIND || !deps.gitea) {
+  if (!deps.releaseRepo) return { archivedRepoUrl: input.gitRemoteUrl ?? null };
+  try {
+    return await deps.releaseRepo();
+  } catch {
+    // The forge is best-effort already; a throw here must not block the DB delete.
     return { archivedRepoUrl: input.gitRemoteUrl ?? null };
   }
-
-  let archivedRepoUrl: string | null = input.gitRemoteUrl ?? null;
-  // Before the rename: the calls below address the repo by its app name.
-  // Own try — a failure here must not leave the repo unarchived as well.
-  try {
-    await deps.gitea.removeAllAppAccess?.(input.appId);
-  } catch {
-    // Best effort, like the keys.
-  }
-  try {
-    await revokeAllDeployKeys(deps.gitea, input.appId);
-    const patched = await deps.gitea.archiveAndRenameAppRepo(input.appId);
-    archivedRepoUrl = patched.sshUrl ?? archivedRepoUrl;
-  } catch {
-    // Gitea failure must not block the DB delete; ops can reconcile manually.
-  }
-  return { archivedRepoUrl };
 }
 
 export function makeTeardownAppDeps(profile: {

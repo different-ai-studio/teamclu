@@ -53,17 +53,6 @@ export function higherAppLevel(
 }
 
 /**
- * The level an inherited agent gets in Gitea. Gitea's `admin` collaborator
- * adds nothing an agent needs — merging a PR is `write` — and is the level
- * that could change the repo's settings, so an agent that inherits `admin`
- * from the app's creator is mirrored as `write`. The Cloud API still treats it
- * as admin for deploys (see agent inheritance in supabase-repo).
- */
-export function inheritedGiteaLevel(level: AppPermissionLevel): AppPermissionLevel {
-  return level === "admin" ? "write" : level;
-}
-
-/**
  * Call one of the agent-inheritance functions of 20261120120000
  * (`app_inherited_agents`, `agent_inherited_app_level`).
  *

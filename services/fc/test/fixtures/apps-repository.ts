@@ -1,3 +1,4 @@
+import { makeGiteaForge } from "../../src/lib/forge/index.js";
 import { createSupabaseBusinessRepository } from "../../src/lib/supabase-repo.js";
 
 // Shared external DB/provider fixtures. Defaults preserve existing repository-test
@@ -359,15 +360,25 @@ export function fakeGitea(over: Record<string, unknown> = {}, owner = "teamclaw-
   return self;
 }
 
+/**
+ * A repository over `supabase`, with the Gitea forge wired in the way index.ts
+ * wires the real one. Tests still say `gitea` / `giteaUnavailableReason` /
+ * `giteaAccountAuth` — they become the forge's options here.
+ */
 export function appsRepo(supabase: any, extra: any = {}) {
+  const { gitea, giteaUnavailableReason, giteaAccountAuth, ...rest } = extra;
   return createSupabaseBusinessRepository({
     supabaseUrl: "https://example.supabase.co",
     publishableKey: "publishable-key",
     accessToken: "caller-token",
     createClient: () => supabase,
     createServiceRoleClient: () => supabase,
-    gitea: fakeGitea(),
+    forge: makeGiteaForge({
+      gitea: "gitea" in extra ? gitea : fakeGitea(),
+      unavailableReason: giteaUnavailableReason,
+      accountAuth: giteaAccountAuth,
+    }),
     validateAppOrigin: () => ({}),
-    ...extra,
+    ...rest,
   });
 }

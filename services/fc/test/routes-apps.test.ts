@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { registerApps, stripUrlCredentials } from "../src/lib/routes/apps.js";
 import { registerAppGitRoutes } from "../src/lib/forge/git-routes.js";
+import { makeForgeHeartbeat } from "../src/lib/forge/index.js";
 
 function makeRouter() {
   const routes = [];
@@ -1096,7 +1097,7 @@ test('authenticated heartbeat runs persistent cleanup with raw service client an
  registerApps(router,{
    createServiceRoleClient:()=>client,
    makeAppUndeployDeps:()=>({}),
-   deployKeySweep:()=>async (actual: unknown)=>{assert.equal(actual,client);return deployKeys;},
+   forgeHeartbeat: makeForgeHeartbeat({ deployKeySweep: async (actual: unknown)=>{assert.equal(actual,client);return deployKeys;} }),
  });
  const tick=findRoute(routes,'POST','/v1/internal/app-cron/tick');assert.equal(tick[3].auth,'cron-tick');
  const result=await tick[2]({repository:undefined});

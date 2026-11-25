@@ -11,10 +11,10 @@ import {
 import {
   appLevelAtLeast,
   callAgentInheritance,
-  inheritedGiteaLevel,
   storedAppPermissionLevel,
   type AppPermissionLevel,
 } from "../../app-permission.js";
+import { inheritedRepoLevel } from "../app-git-access.js";
 
 /**
  * Projects an app's TeamClu access onto its Gitea repo
@@ -172,7 +172,7 @@ export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promis
     const level = storedAppPermissionLevel(g.permission_level);
     if (level) want(g.member_id, level);
   }
-  for (const r of inherited) want(r.agentId, inheritedGiteaLevel(r.level));
+  for (const r of inherited) want(r.agentId, inheritedRepoLevel(r.level));
 
   for (const [username, { actor }] of desired) await ensureUser(username, actor);
   const current = new Map<string, GiteaCollaboratorPermission>(

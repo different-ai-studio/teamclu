@@ -34,11 +34,7 @@ const ALLOWED = new Set([
  * is no longer needed, so the list cannot rot.
  */
 const PENDING: Record<string, string> = {
-  "lib/supabase-repo.ts": "P1.2 hooks (create / access / delete / credentials), P1.3 deploy guard",
-  "lib/supabase-repo/shared.ts": "P1.2 hooks.decorate (gitHttpUrl / gitAuthKind)",
-  "lib/provisioning/app-delete.ts": "P1.2 hooks.appDeleting",
-  "lib/routes/apps.ts": "P1.2 hooks.heartbeat (repo repair, deploy key expiry)",
-  "lib/app-permission.ts": "P1.2 inheritedGiteaLevel moves into the forge",
+  "lib/supabase-repo.ts": "P1.3: deploy revision checks → forge deploy guard; imported-repo credential methods → forge",
 };
 
 const GITEA_TOKEN = /gitea|deploy[-_]?key/i;
