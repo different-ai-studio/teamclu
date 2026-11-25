@@ -23,7 +23,7 @@ import { appCurrentPublicUrl, appsFcRouteDomain, appsPublicDomain } from "./apps
  * hostname (the catch-all site block) and ask us whether to get a certificate
  * for it. The Alibaba Function Compute deployment has no such entry point: on
  * FC a hostname reaches a function only if a custom domain was created for it
- * — which is exactly what `fc-client.ts` `ensureCustomDomain` does for each
+ * — which is exactly what `app-platform/aliyun/fc.ts` `ensureCustomDomain` does for each
  * app's own route host. A visitor's CNAME resolves to FC's gateway, but the
  * Host it carries matches no configuration there and the request is refused
  * before any of this code runs.

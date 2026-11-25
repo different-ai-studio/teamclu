@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRuntimeCatalogReader, type CatalogClient } from "../../src/lib/provisioning/app-runtime-catalog.js";
-import { resolveFcEndpoint } from "../../src/lib/provisioning/fc-client.js";
+import { createRuntimeCatalogReader as createReader } from "../../src/lib/provisioning/app-runtime-catalog.js";
+import { aliyunRuntimeDiscovery, type CatalogClient } from "../../src/lib/app-platform/aliyun/runtimes.js";
+import { resolveFcEndpoint } from "../../src/lib/app-platform/aliyun/fc.js";
 import { readRuntimeObservations } from "../../src/lib/provisioning/app-runtime-observations.js";
 import { preflightAppDeploy } from "../../src/lib/provisioning/app-deploy-preflight.js";
+/** The catalog over the FC discovery, as the Aliyun driver builds it. */
+const createRuntimeCatalogReader = (clientForRegion: (region: string) => CatalogClient, options?: Parameters<typeof createReader>[1]) => {
+  const discovery = aliyunRuntimeDiscovery(clientForRegion);
+  return createReader(() => discovery, options);
+};
 const layer = (name: string, version: number) => ({ layerName: name, version,
   layerVersionArn: `acs:fc:cn-shenzhen:official:layers/${name}/versions/${version}`,
   compatibleRuntime: ["custom.debian10"] });
@@ -123,4 +129,13 @@ test("endpoint region mismatch returns incomplete catalog without mislabeled lay
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }
+});
+
+test("no resolvable provider: an empty, incomplete catalog naming the code, not a thrown read", async () => {
+  const read = createReader(() => { throw Object.assign(new Error("APPS_OSS_BUCKET is not set"), { code: "AppsNotConfigured" }); });
+  const result = await read("cn-shenzhen");
+  assert.deepEqual(result.candidates, []);
+  assert.equal(result.sourceStatus.documentation.complete, false);
+  assert.equal(result.sourceStatus.officialLayers.complete, false);
+  assert.deepEqual(result.sourceStatus.officialLayers.errors, ["discovery: AppsNotConfigured"]);
 });

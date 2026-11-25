@@ -10,10 +10,7 @@ import {
   resolveAppConnectionString,
 } from "./app-postgres.js";
 import { runAppMigrations, type AppMigration } from "./app-migrations.js";
-import {
-  FunctionNotReadyError,
-  readAppsFcVpcConfig,
-} from "./fc-client.js";
+import { FunctionNotReadyError } from "../app-platform/provider.js";
 import {
   BUILD_KINDS,
   isContainerKind,
@@ -367,6 +364,14 @@ export interface FinalizeDeps {
    * either: `startDeploy` refuses one before a build ever runs.
    */
   ownsImage?: (appId: string, image: string) => boolean;
+  /**
+   * Whether the app function joins the private network the apps database is
+   * on (`ComputeDriver.joinsPrivateNetwork`). Checked only when APPS_DB_APP_URL
+   * is set, i.e. when DATABASE_URL points at an internal host. Absent counts as
+   * not joined, so a data_app deploy that could not reach its database is
+   * refused here rather than timing out in the function.
+   */
+  joinsPrivateNetwork?: () => boolean;
   fcOps: {
     ensureFunction: (
       name: string,
@@ -517,7 +522,7 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
       throw new Error("apps database is not configured (APPS_DB_ADMIN_URL)");
     }
     const appsAppUrl = deps.appsAppUrl ?? readAppsAppUrl();
-    if (appsAppUrl && !readAppsFcVpcConfig()) {
+    if (appsAppUrl && !deps.joinsPrivateNetwork?.()) {
       throw new Error(
         "APPS_FC_VPC_ID, APPS_FC_VSWITCH_ID, and APPS_FC_SECURITY_GROUP_ID are required when APPS_DB_APP_URL is set — deployed app functions must join the App Postgres VPC",
       );

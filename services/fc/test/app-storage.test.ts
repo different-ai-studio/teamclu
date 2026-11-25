@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeAppStorageOps } from "../src/lib/provisioning/app-storage.js";
-import { normalizeAppFolderPrefix } from "../src/lib/provisioning/apps-oss.js";
+import { makeAppStorageOps } from "../src/lib/app-platform/aliyun/storage.js";
+import { normalizeAppFolderPrefix } from "../src/lib/provisioning/app-files.js";
 
 /**
  * The object store, faked at the command boundary.
@@ -148,7 +148,7 @@ test("a presigned PUT carries no checksum parameters", async () => {
   // URL comes back clean.
   const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
   const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
-  const { getAppsS3Client } = await import("../src/lib/provisioning/apps-oss.js");
+  const { getAppsS3Client } = await import("../src/lib/app-platform/aliyun/oss.js");
 
   const client = getAppsS3Client({
     bucket: "b",

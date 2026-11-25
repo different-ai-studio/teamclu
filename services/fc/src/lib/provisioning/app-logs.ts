@@ -27,7 +27,7 @@
  * That is stated in the API description rather than hidden.
  */
 
-import type { SlsRow } from "./sls-client.js";
+import type { SlsRow } from "../app-platform/aliyun/sls.js";
 
 /** Which of the two useful topics a caller wants. */
 export type AppLogKind = "app" | "request" | "all";

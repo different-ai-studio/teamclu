@@ -1,4 +1,4 @@
-import { makeFcOps } from "../src/lib/provisioning/fc-client.js";
+import { makeFcOps } from "../src/lib/app-platform/aliyun/fc.js";
 import { ORIGIN_CONFIG } from "./fixtures/apps-origin-auth/config.js";
 import { finalizeDeploy } from "../src/lib/provisioning/app-deploy.js";
 import { test } from "node:test";

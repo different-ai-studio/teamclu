@@ -13,7 +13,7 @@ import {
   assertDeployAllowed,
   STALE_DEPLOY_MS,
 } from "../../src/lib/provisioning/app-deploy.js";
-import { FunctionNotReadyError } from "../../src/lib/provisioning/fc-client.js";
+import { FunctionNotReadyError } from "../../src/lib/app-platform/provider.js";
 
 let restoreOriginEnv: () => void;
 before(() => { restoreOriginEnv = installOriginEnv(); });
@@ -124,102 +124,68 @@ test("a data app without orgId fails before provisioning", async () => {
 test("data_app finalize rewrites DATABASE_URL host via APPS_DB_APP_URL", async () => {
   const calls: any[] = [];
   const orgId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-  const prev = {
-    vpc: process.env.APPS_FC_VPC_ID,
-    vsw: process.env.APPS_FC_VSWITCH_ID,
-    sg: process.env.APPS_FC_SECURITY_GROUP_ID,
-  };
-  process.env.APPS_FC_VPC_ID = "vpc-apps";
-  process.env.APPS_FC_VSWITCH_ID = "vsw-apps";
-  process.env.APPS_FC_SECURITY_GROUP_ID = "sg-apps";
-  try {
-    await finalizeDeploy(
+  await finalizeDeploy(
+    {
+      appsAdminUrl: "postgres://postgres:pw@db:5432/postgres",
+      appsAppUrl: "postgres://postgres:pw@192.168.0.23:5432/postgres",
+      provisionDb: async () => ({
+        schema: "app_demo",
+        role: "app_role",
+        database: "tc_org_aaaaaaaabbbb4ccc8dddeeeeeeeeeeee",
+        connectionString:
+          "postgres://app_role:pw-fixed@db:5432/tc_org_aaaaaaaabbbb4ccc8dddeeeeeeeeeeee?options=-c%20search_path%3Dapp_demo",
+      }),
+      fcOps: {
+        ensureFunction: async (_n: string, a: any) => { calls.push(a); },
+        ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+        ensureCustomDomain: async (_fn, domain) => `http://${domain}`,
+      },
+      genPassword: () => "pw-fixed",
+      joinsPrivateNetwork: () => true,
+    },
+    {
+      appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
+      slug: "demo",
+      orgId,
+      appType: "data_app",
+      fcFunctionName: "tc-app-1",
+      ossObjectName: "apps/app-1/code.zip",
+    },
+  );
+  assert.match(calls[0].env.DATABASE_URL, /@192\.168\.0\.23:5432\/tc_org_/);
+  assert.doesNotMatch(calls[0].env.DATABASE_URL, /@db/);
+});
+
+test("data_app finalize fails when APPS_DB_APP_URL is set but the function joins no private network", async () => {
+  await assert.rejects(
+    () => finalizeDeploy(
       {
-        appsAdminUrl: "postgres://postgres:pw@db:5432/postgres",
-        appsAppUrl: "postgres://postgres:pw@192.168.0.23:5432/postgres",
+        appsAdminUrl: "postgres://postgres:pw@public.example:5432/postgres",
+        appsAppUrl: "postgres://postgres:pw@internal.example:5432/postgres",
         provisionDb: async () => ({
           schema: "app_demo",
           role: "app_role",
-          database: "tc_org_aaaaaaaabbbb4ccc8dddeeeeeeeeeeee",
-          connectionString:
-            "postgres://app_role:pw-fixed@db:5432/tc_org_aaaaaaaabbbb4ccc8dddeeeeeeeeeeee?options=-c%20search_path%3Dapp_demo",
+          database: "tc_org_x",
+          connectionString: "postgres://app_role:pw@public.example:5432/tc_org_x",
         }),
         fcOps: {
-          ensureFunction: async (_n: string, a: any) => { calls.push(a); },
+          ensureFunction: async () => { throw new Error("must not be called"); },
           ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
           ensureCustomDomain: async (_fn, domain) => `http://${domain}`,
         },
-        genPassword: () => "pw-fixed",
+        joinsPrivateNetwork: () => false,
       },
       {
         appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
         slug: "demo",
-        orgId,
+        orgId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
         appType: "data_app",
         fcFunctionName: "tc-app-1",
-        ossObjectName: "apps/app-1/code.zip",
+        ossObjectName: "k",
       },
-    );
-    assert.match(calls[0].env.DATABASE_URL, /@192\.168\.0\.23:5432\/tc_org_/);
-    assert.doesNotMatch(calls[0].env.DATABASE_URL, /@db/);
-  } finally {
-    for (const [k, v] of [
-      ["APPS_FC_VPC_ID", prev.vpc],
-      ["APPS_FC_VSWITCH_ID", prev.vsw],
-      ["APPS_FC_SECURITY_GROUP_ID", prev.sg],
-    ] as const) {
-      if (v === undefined) delete process.env[k]; else process.env[k] = v;
-    }
-  }
-});
-
-test("data_app finalize fails when APPS_DB_APP_URL is set but VPC env is missing", async () => {
-  const prev = {
-    vpc: process.env.APPS_FC_VPC_ID,
-    vsw: process.env.APPS_FC_VSWITCH_ID,
-    sg: process.env.APPS_FC_SECURITY_GROUP_ID,
-  };
-  delete process.env.APPS_FC_VPC_ID;
-  delete process.env.APPS_FC_VSWITCH_ID;
-  delete process.env.APPS_FC_SECURITY_GROUP_ID;
-  try {
-    await assert.rejects(
-      () => finalizeDeploy(
-        {
-          appsAdminUrl: "postgres://postgres:pw@public.example:5432/postgres",
-          appsAppUrl: "postgres://postgres:pw@internal.example:5432/postgres",
-          provisionDb: async () => ({
-            schema: "app_demo",
-            role: "app_role",
-            database: "tc_org_x",
-            connectionString: "postgres://app_role:pw@public.example:5432/tc_org_x",
-          }),
-          fcOps: {
-            ensureFunction: async () => { throw new Error("must not be called"); },
-            ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
-            ensureCustomDomain: async (_fn, domain) => `http://${domain}`,
-          },
-        },
-        {
-          appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
-          slug: "demo",
-          orgId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-          appType: "data_app",
-          fcFunctionName: "tc-app-1",
-          ossObjectName: "k",
-        },
-      ),
-      /APPS_FC_VPC_ID/,
-    );
-  } finally {
-    for (const [k, v] of [
-      ["APPS_FC_VPC_ID", prev.vpc],
-      ["APPS_FC_VSWITCH_ID", prev.vsw],
-      ["APPS_FC_SECURITY_GROUP_ID", prev.sg],
-    ] as const) {
-      if (v === undefined) delete process.env[k]; else process.env[k] = v;
-    }
-  }
+    ),
+    /APPS_FC_VPC_ID/,
+  );
 });
 
 test("data_app finalize fails when admin URL is compose-internal and APPS_DB_APP_URL is missing", async () => {
