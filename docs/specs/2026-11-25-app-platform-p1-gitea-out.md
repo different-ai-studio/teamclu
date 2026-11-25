@@ -11,7 +11,7 @@ P0（驱动接口）已合并（#2014）。本文把 P1 拆成几步，每一步
 | P1.2 钩子 | ✅ `app-platform/hooks.ts`（`AppLifecycleHooks` + `ForgeHeartbeat`），Gitea 实现在 `forge/index.ts` |
 | P1.3 部署守卫 | ✅ `deployGuard` + 导入仓库凭证（`storeExternalCredential` / `forgetExternalCredential`）；边界例外清零 |
 | P1.4 收尾 | ✅ 父 spec §6、§8 已更新 |
-| P1.5 搬表 | 未开始；合并前要在 self-host 与 belayo 跑迁移 |
+| P1.5 搬表 | ⏭ 2026-11-25 决定推迟到 P3，见 §3 P1.5 |
 
 ## 0. 目标与约束
 
@@ -164,6 +164,13 @@ services/fc/src/lib/
 - 更新父 spec：§6 修正 HEAD 复核的去向；§8 标明 P0 已合并，并记录 P1 进度。
 
 ### P1.5 数据：forge 关联搬到新表（唯一的迁移，只做加法）
+
+> **2026-11-25 决定：推迟到 P3，P1 到 P1.4 为止。** 动手前清点读写点后发现：
+> 1. 旧列在 P3 之前本来就删不掉（本节原计划也是留到 P3），现在搬表在 P3 之前看不到任何收益；
+> 2. `APP_COLUMNS` 喂所有 `/v1/apps` 读取，搬读就意味着每次读 app 都要关联新表，回落代码要留好几个月；
+> 3. 原方案「只写新表、读新表再回落旧列」在迁移后一旦回滚 FC，期间新建的 app 会在旧代码里丢失仓库地址，是单向的。
+>
+> P3 拆出 `app_platform` schema 时，平台表搬走、forge 表留在 `amux`，数据只搬一次。下面的设计留作 P3 的起点。
 
 ```sql
 create table amux.app_forge_repos (
