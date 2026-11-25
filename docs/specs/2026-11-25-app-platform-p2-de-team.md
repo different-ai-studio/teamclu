@@ -120,8 +120,8 @@ amux.app_links                 TeamClu：(app_id PK, team_id, workspace_id, crea
 | 步 | 内容 | 迁移 | 可回滚 |
 |---|---|---|---|
 | P2.1 扩表 | 新增 `app_links`、`app_grants`、`app_delegations`、`apps.created_by_user_id`、`*_by_user_id` 操作人列，全部从现有数据回填；FC **双写**（新旧两边都写），读取仍走旧路径 | 只加不删 | ✅ |
-| P2.2 FC 切读 | 权限判定改为：创建者 user → user 授权 → org 授权 → 委托；列表改为按 org，`teamId` 经 `app_links` 过滤；TeamClu 兼容层补字段 | 无 | ✅（旧数据一直在双写） |
-| P2.3 RLS 切换 | apps 及其附属表的策略改为 `is_org_member(org_id)` 加授权；新增 `app_has_access(app, uid)` | 换策略，旧策略保留到 P2.5 | ✅（可以把策略换回去） |
+| P2.2 FC 切读 | 权限级别改由 `amux.caller_app_access` 判定（创建者 user → user 授权 → 委托，限 app 所在 org）；slug 改为 org 内唯一。按 org 列表等挪到 P2.3，见下 | 加函数、加索引 | ✅（写入仍走旧表） |
+| P2.3 RLS 切换 | apps 及其附属表的策略改为 `is_org_member(org_id)` 加授权，复用 `caller_app_access`；同时做从 P2.2 挪来的：按 org 列表、`teamId` 经 `app_links` 过滤、`visibility` 派生，以及 `isAppCreator`（它决定写 apps 用哪个 client，必须和 `apps_update_if_creator` 一起换） | 换策略，旧策略保留到 P2.5 | ✅（可以把策略换回去） |
 | P2.4 平台边界 | 平台目录 grep 不到 team / actor / …，边界测试清零 | 无 | ✅ |
 | P2.5 收表 | 删除 `apps.team_id` / `created_by_actor_id` / `workspace_id` / `visibility`、`app_member_access`、旧函数和触发器 | **删列** | ❌ 单向 |
 
@@ -150,6 +150,36 @@ amux.app_links                 TeamClu：(app_id PK, team_id, workspace_id, crea
   - `app_member_access` 的 actor 换成对应的 `user_id`（`user_id` 为空的行跳过并记录下来）；
   - `visibility='team'` 的 app 补一行 org read。
 - `app_delegations`：每个 `active` 的 agent，委托人是它主人那个 member actor 的 user，代理人是 agent 自己的 user。
+
+**P2.2 实施（2026-11-25，迁移 `20261126100000_app_platform_p2_switch.sql`）：**
+
+- **`amux.caller_app_access(app)`**：SECURITY DEFINER，按 `auth.uid()` 返回 `(level, delegated, is_creator)`，没有行就是没有权限。
+  规则只读 P2.1 的新表：调用方必须是 app 所在 org 的成员；创建者 → admin；user 授权 → 其级别；委托 → 委托人按前两条
+  得到的级别，`delegated` 表示最终级别来自委托。授予 authenticated 和 service_role，P2.3 的 RLS 直接复用。
+- **FC**：`resolveAppCallerPermissionForApp` 的级别改由该函数给出，`inherited` 取 `delegated`。仍要求调用方在 app 所在团队
+  有 actor：旧表的写入要记录它（授权人、操作人），可见性也要到 P2.3 才离开团队。数据库还没有这条迁移时
+  （PGRST202 / 42883）退回旧的 actor 规则，镜像可以先于 belayo 的手工迁移上线。
+- **slug 改为 org 内唯一**（`apps_org_slug_uniq`）。迁移先查冲突：有冲突就 RAISE 并列出冲突项，不自动改名；冲突仍报
+  原来的 409 `duplicate_key`。
+- **没改的**：`isAppCreator` 仍按 actor 判断。它的四个调用方都用它来选写 apps 行的 client，而放不放行由旧 RLS
+  `apps_update_if_creator` 决定，后者按 actor 比较；两边不一致时，写入会变成静默的 0 行，所以它和策略一起留到 P2.3。
+  操作人列仍由 P2.1 的触发器从 member 列补上；agent 写入的行 user 列为空，和 member 列现在一样。forge
+  （Gitea 同步、`app-git-access`）和 access 页仍读旧表，这和触发器投影出来的结果等价，到 P2.4 再处理。
+
+P2.2 决定（2026-11-25，全部按推荐）：
+
+| 问题 | 决定 |
+|---|---|
+| org 授权是不是权限级别 | **不是。** 它只决定谁能看见 app、下载代码，和旧的团队可见一致；存储文件、cron、运行信息不对 org 开放 |
+| 委托的范围 | **只在 agent 自己所属的 org 内生效**，主人在别的 org 的授权不跟着 agent 走 |
+| 按 org 列表、`teamId` 过滤、`visibility` 派生 | **挪到 P2.3**，和 RLS 一起做。app 行仍由按团队的旧 RLS 放行，P2.2 改了也看不出变化 |
+| slug 冲突 | **迁移报错、人工处理**，推翻 Q2 的「自动加后缀」：slug 是公网域名和数据 schema 名的一部分 |
+
+验证（P2.2）：
+- FC 全量测试 2330 个 0 失败，`tsc` 通过；本机 pgTAP 82 个文件 0 失败，新增 `app_platform_p2_switch.test.sql`（15 条）。
+- self-host 上在回滚事务里依次执行 P2.1、P2.2，然后对每个 (app, 该团队里有账号的 actor) 分别按旧规则
+  （创建者 actor / `app_member_access` / `agent_inherited_app_level`）和 `caller_app_access` 计算级别：**1317 对，0 条差异**。
+  app 的 org 与其团队的 org 不一致的有 0 个；同一账号在同一 org 的多个团队里都有 actor 的有 0 个。
 
 ## 4. 验证
 

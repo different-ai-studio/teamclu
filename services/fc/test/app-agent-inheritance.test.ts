@@ -225,11 +225,13 @@ test("git access counts an inherited level as Gitea enforces it", () => {
 // ── before the migration ──────────────────────────────────────────────────
 
 test("a database without the inheritance functions reads as no inheritance, not as an error", async () => {
+  // A database older than 20261120120000 has neither these nor P2.2's
+  // caller_app_access, so the legacy actor rule runs.
   for (const code of ["PGRST202", "42883"]) {
     const client = appsSupabase({ seed: seed(), actorRow: CREATOR_BOT });
     const realRpc = client.rpc.bind(client);
     client.rpc = async (name: string, args: any) =>
-      name === "app_inherited_agents" || name === "agent_inherited_app_level"
+      name === "app_inherited_agents" || name === "agent_inherited_app_level" || name === "caller_app_access"
         ? { data: null, error: { code, message: "function does not exist" } }
         : realRpc(name, args);
     const repo = appsRepo(client);
@@ -241,4 +243,39 @@ test("any other database error from the inheritance functions is raised", async 
   const client = appsSupabase({ seed: seed(), actorRow: CREATOR_BOT });
   client.rpc = async () => ({ data: null, error: { code: "57014", message: "canceling statement due to statement timeout" } });
   await assert.rejects(() => appsRepo(client).resolveAppCallerPermissionForApp(APP), (e: any) => e.code === "57014");
+});
+
+// ── P2.2: the level comes from the platform model ─────────────────────────
+
+test("the level comes from amux.caller_app_access when the database has it", async () => {
+  const client = appsSupabase({ seed: seed(), actorRow: GRANTEE });
+  const realRpc = client.rpc.bind(client);
+  const asked: string[] = [];
+  client.rpc = async (name: string, args: any) => {
+    asked.push(name);
+    // The platform says admin, delegated; the legacy tables say write.
+    if (name === "caller_app_access") return { data: [{ level: "admin", delegated: true, is_creator: false }], error: null };
+    return realRpc(name, args);
+  };
+  assert.deepEqual(await appsRepo(client).resolveAppCallerPermissionForApp(APP), {
+    level: "admin",
+    callerActorId: "grantee",
+    callerMemberId: "grantee",
+    inherited: true,
+  });
+  assert.deepEqual(asked, ["caller_app_access"], "the legacy inheritance function is not consulted");
+});
+
+test("no row from amux.caller_app_access is no access, whatever the legacy tables say", async () => {
+  const client = appsSupabase({ seed: seed(), actorRow: GRANTEE });
+  const realRpc = client.rpc.bind(client);
+  client.rpc = async (name: string, args: any) =>
+    name === "caller_app_access" ? { data: [], error: null } : realRpc(name, args);
+  assert.equal(await appsRepo(client).resolveAppCallerPermissionForApp(APP), null);
+});
+
+test("without an actor in the app's team the caller has nothing, even with a platform level (until P2.3)", async () => {
+  const client = appsSupabase({ seed: seed(), actorRow: null });
+  client.rpc = async () => ({ data: [{ level: "admin", delegated: false, is_creator: true }], error: null });
+  assert.equal(await appsRepo(client).resolveAppCallerPermissionForApp(APP), null);
 });

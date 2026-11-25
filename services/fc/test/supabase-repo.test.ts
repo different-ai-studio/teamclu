@@ -3108,7 +3108,7 @@ test("apps: an agent administers the apps it created, and no others", async () =
     callerMemberId: null,
     inherited: false,
   });
-  assert.equal(await repo.isAppCreator("team-1", "agent-actor-1"), true);
+  assert.equal(await repo.isAppCreator(own), true);
 
   // On an app it did not make, an agent has exactly what it was granted
   // (grants are keyed on actors since 20261117000000) ...
@@ -4079,7 +4079,12 @@ test("deploy_error preserves a provider timeout lifecycle fence", async () => {
 test("preflight cancellation delegates the matching token to the atomic database operation", async () => {
   const db = appsSupabase({ seed: { apps: [APP_ROW] } });
   let seen: unknown;
-  db.rpc = async (name, args) => { seen = { name, args }; return { data: true, error: null }; };
+  const realRpc = db.rpc.bind(db);
+  db.rpc = async (name, args) => {
+    if (name === "caller_app_access") return realRpc(name, args);
+    seen = { name, args };
+    return { data: true, error: null };
+  };
   assert.deepEqual(await appsRepo(db).cancelAppDeployPreflight("app-1", { deployToken: APP_PREFLIGHT_TOKEN }), { cancelled: true });
   assert.deepEqual(seen, { name: "cancel_app_deploy_preflight", args: { p_app_id: "app-1", p_token: APP_PREFLIGHT_TOKEN } });
 });
@@ -6982,7 +6987,7 @@ test("apps: stale corrupt identity rejects before recovery, lifecycle or provide
       let providerCalls = 0;
       const db = appsSupabase({ projectSelects: true, calls, seed: { apps: [{ ...APP_ROW, id: "76af539e-5341-4e96-bda7-6c8dacf2b092", provision_status: "ready", fc_status: "building", deploy_started_at: "2000-01-01T00:00:00Z", function_naming_mode: "app_code", app_code: "a-p35cg2kk6bh3", fc_function_name: "a-p35cg2kk6bh3", ...corrupt }] } });
       const originalRpc = db.rpc;
-      db.rpc = async (name, args) => { lifecycleCalls++; return originalRpc(name, args); };
+      db.rpc = async (name, args) => { if (name !== "caller_app_access") lifecycleCalls++; return originalRpc(name, args); };
       const repo = appsRepo(db, {
         startDeploy: async () => { providerCalls++; throw Error("unexpected provider mutation"); },
         finalizeDeploy: async () => { providerCalls++; throw Error("unexpected provider mutation"); },
@@ -7016,7 +7021,7 @@ test("code uninstall captures exact validated code host before queuing cleanup",
  try {
   for(const fc_endpoint of [CODE_RESOURCE_ROW.fc_endpoint,null]) {
    const db=appsSupabase({seed:{apps:[{...CODE_RESOURCE_ROW,fc_endpoint}]}});const rpc=db.rpc.bind(db);const queued:any[]=[];
-   db.rpc=async(name,args)=>{queued.push([name,args]);return rpc(name,args);};
+   db.rpc=async(name,args)=>{if(name!=="caller_app_access")queued.push([name,args]);return rpc(name,args);};
    const result=await appsRepo(db).undeployApp(CODE_RESOURCE_ROW.id);
    assert.equal(result.operation.status,"pending");
    assert.equal(queued[0][1].p_origin_domain,"a-p35cg2kk6bh3.origins.test");

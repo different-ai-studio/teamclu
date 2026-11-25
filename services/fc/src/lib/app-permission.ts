@@ -68,3 +68,32 @@ export async function callAgentInheritance(client: any, fn: string, args: Record
   if (error.code === "PGRST202" || error.code === "42883") return null;
   throw error;
 }
+
+/** The caller's standing on one app, from the platform model. */
+export type CallerAppAccess = {
+  level: AppPermissionLevel;
+  /** The level came through a delegation (an agent acting for its owner). */
+  delegated: boolean;
+  isCreator: boolean;
+};
+
+/**
+ * `amux.caller_app_access` (20261126100000): the caller's level on an app from
+ * the platform model — creator, user grants, delegations inside the app's org.
+ *
+ * Null is no access. Undefined means the database has not had that migration
+ * yet (PGRST202 / 42883); the caller then falls back to the legacy actor rule,
+ * so the image can land before belayo's hand-applied migration, like
+ * `callAgentInheritance`.
+ */
+export async function callCallerAppAccess(client: any, appId: string): Promise<CallerAppAccess | null | undefined> {
+  const { data, error } = await client.rpc("caller_app_access", { p_app_id: appId });
+  if (error) {
+    if (error.code === "PGRST202" || error.code === "42883") return undefined;
+    throw error;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  const level = storedAppPermissionLevel(row?.level);
+  if (!level) return null;
+  return { level, delegated: row.delegated === true, isCreator: row.is_creator === true };
+}

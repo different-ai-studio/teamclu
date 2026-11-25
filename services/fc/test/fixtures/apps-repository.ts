@@ -266,6 +266,27 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         if (name === 'app_inherited_agents') return { data: rows, error: null };
         return { data: rows.find((r) => r.agent_id === args.p_actor_id)?.permission_level ?? null, error: null };
       }
+      // amux.caller_app_access (20261126100000) over the in-memory legacy
+      // tables, which P2.1's triggers project 1:1 in the real database. The
+      // caller is `actorRow`. The SQL itself is app_platform_p2_switch.test.sql.
+      if (name === 'caller_app_access') {
+        const app = (state.apps ?? []).find((a: any) => a.id === args.p_app_id);
+        const me = actorRow;
+        if (!app || !me?.id) return { data: [], error: null };
+        // Legacy words map as P2.1's amux.app_grant_level does.
+        const rank: Record<string, number> = { read: 1, write: 2, admin: 3, view: 1, prompt: 2 };
+        const name_ = ['', 'read', 'write', 'admin'];
+        const isCreator = app.created_by_actor_id === me.id;
+        const grant = (state.app_member_access ?? []).find((g: any) => g.app_id === app.id && g.member_id === me.id);
+        const direct = Math.max(isCreator ? 3 : 0, rank[grant?.permission_level] ?? 0);
+        const viaRow = me.actor_type === 'agent'
+          ? inheritedAgents(state, app.id).find((r) => r.agent_id === me.id)
+          : null;
+        const via = rank[viaRow?.permission_level] ?? 0;
+        const top = Math.max(direct, via);
+        if (!top) return { data: [], error: null };
+        return { data: [{ level: name_[top], delegated: via > direct, is_creator: isCreator }], error: null };
+      }
       return { data: [], error: null };
     },
   };

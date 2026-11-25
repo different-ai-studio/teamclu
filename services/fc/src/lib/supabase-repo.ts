@@ -17,6 +17,7 @@ import { assertTeamSkillSlug, canonicalTeamSkillSlug, teamSkillDisplayName } fro
 import {
   appLevelAtLeast,
   callAgentInheritance,
+  callCallerAppAccess,
   higherAppLevel,
   parseAppPermissionLevel,
   storedAppPermissionLevel,
@@ -5399,7 +5400,7 @@ export function createSupabaseBusinessRepository(options) {
           throw new ApiError(409, "lifecycle_conflict", "this failure does not own the build lifecycle");
         }
       }
-      const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
+      const callerIsCreator = await this.isAppCreator(cur);
 
       // Validated before the auth-mode change below, which has side effects (it
       // writes and deletes secrets with a service-role client): a PATCH that is
@@ -5586,7 +5587,7 @@ export function createSupabaseBusinessRepository(options) {
         created_by_actor_id: cur.created_by_actor_id,
       });
       if (permission?.level !== "admin") return null;
-      const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
+      const callerIsCreator = await this.isAppCreator(cur);
       const writer = callerIsCreator
         ? supabase
         : await serviceRoleClient("bind an app custom domain authorized by an admin grant");
@@ -5712,7 +5713,7 @@ export function createSupabaseBusinessRepository(options) {
     // updateApp and authorizeCustomDomainWrite. Only called after the caller
     // was resolved as `admin`.
     async appDeployWriter(app: { team_id: string; created_by_actor_id: string | null }) {
-      return (await this.isAppCreator(app.team_id, app.created_by_actor_id))
+      return (await this.isAppCreator(app))
         ? supabase
         : await serviceRoleClient("write app deploy state authorized by an admin grant");
     },
@@ -6405,14 +6406,21 @@ export function createSupabaseBusinessRepository(options) {
      * which RLS cannot roll back. RLS still has the last word on the write
      * itself; this only makes sure nothing irreversible happens first.
      */
-    async isAppCreator(teamId: string, createdByActorId: string | null): Promise<boolean> {
+    async isAppCreator(app: { team_id: string; created_by_actor_id: string | null }): Promise<boolean> {
       const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
       // Member or agent: a daemon's agent creates apps too, and is their creator.
-      const resolved = await this.resolveCurrentActor(teamId, userId);
-      return Boolean(resolved?.id) && createdByActorId === resolved!.id;
+      //
+      // Deliberately the actor rule, not the platform's `created_by_user_id`:
+      // every caller uses this to pick the client for an `apps` UPDATE, and the
+      // policy that decides whether the caller's own token may write is
+      // `apps_update_if_creator`, which compares actors. Answering "creator"
+      // where that policy says no turns the write into a silent zero-row match.
+      // It moves with the policy in P2.3.
+      const resolved = await this.resolveCurrentActor(app.team_id, userId);
+      return Boolean(resolved?.id) && app.created_by_actor_id === resolved!.id;
     },
 
     /**
@@ -6474,6 +6482,17 @@ export function createSupabaseBusinessRepository(options) {
       const isAgent = resolved.actorType === "agent";
       const callerMemberId = isAgent ? null : resolved.id;
 
+      // The level is the platform's (20261126100000): creator, user grants and
+      // delegations, by account rather than by actor. The actor above is still
+      // required — it is who the legacy writes record, and P2.3 is where
+      // visibility leaves the team — but it no longer decides the level.
+      const platform = await callCallerAppAccess(supabase, app.id);
+      if (platform !== undefined) {
+        if (!platform) return null;
+        return { level: platform.level, callerActorId, callerMemberId, inherited: platform.delegated };
+      }
+
+      // A database without that migration: the legacy actor rule.
       if (app.created_by_actor_id === callerActorId) {
         return { level: "admin", callerActorId, callerMemberId, inherited: false };
       }
@@ -6624,7 +6643,7 @@ export function createSupabaseBusinessRepository(options) {
           "this app's repo is hosted by this deployment, which issues its own deploy keys",
         );
       }
-      const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
+      const callerIsCreator = await this.isAppCreator(cur);
       const writer = callerIsCreator
         ? supabase
         : await serviceRoleClient("write an app git credential authorized by an admin grant");
