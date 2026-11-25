@@ -274,8 +274,27 @@ test("no row from amux.caller_app_access is no access, whatever the legacy table
   assert.equal(await appsRepo(client).resolveAppCallerPermissionForApp(APP), null);
 });
 
-test("without an actor in the app's team the caller has nothing, even with a platform level (until P2.3)", async () => {
+test("a platform level needs no actor in the app's team (P2.3); there is then no actor to record", async () => {
   const client = appsSupabase({ seed: seed(), actorRow: null });
-  client.rpc = async () => ({ data: [{ level: "admin", delegated: false, is_creator: true }], error: null });
+  client.rpc = async () => ({ data: [{ level: "write", delegated: true, is_creator: false }], error: null });
+  assert.deepEqual(await appsRepo(client).resolveAppCallerPermissionForApp(APP), {
+    level: "write",
+    callerActorId: null,
+    callerMemberId: null,
+    inherited: true,
+  });
+});
+
+test("on a database without caller_app_access, no actor in the team is still no access", async () => {
+  const client = appsSupabase({ seed: seed(), actorRow: null });
+  client.rpc = async () => ({ data: null, error: { code: "PGRST202", message: "not in schema cache" } });
   assert.equal(await appsRepo(client).resolveAppCallerPermissionForApp(APP), null);
+});
+
+test("isAppCreator says what apps_update_if_creator says: the platform's creator test", async () => {
+  const client = appsSupabase({ seed: seed(), actorRow: GRANTEE });
+  client.rpc = async () => ({ data: [{ level: "admin", delegated: false, is_creator: true }], error: null });
+  assert.equal(await appsRepo(client).isAppCreator(APP), true, "the account that created it, whatever actor the legacy column names");
+  client.rpc = async () => ({ data: [{ level: "admin", delegated: false, is_creator: false }], error: null });
+  assert.equal(await appsRepo(client).isAppCreator(APP), false, "an admin grantee is not the creator");
 });

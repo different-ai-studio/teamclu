@@ -6604,9 +6604,11 @@ function authInfoRepo({appOrg="org-1", teamOrg="org-1", member=true, rolesError=
  return {repo,calls};
 }
 test("auth_info_checks_app_and_catalog_visibility",async()=>{
- const {repo,calls}=authInfoRepo({member:false});
- await assert.rejects(repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===403);
- assert.equal(calls.some(c=>c.table==="roles"),false);
+ // Seeing the app is the gate (RLS: amux.caller_sees_app, which requires
+ // membership of the app's org); a member of another team of that org who
+ // sees it gets the org's catalog (P2.3).
+ const {repo}=authInfoRepo({member:false});
+ assert.deepEqual((await repo.getAppAuthInfo("app")).organization,{id:"org-1",name:"Organization"});
  const hidden=authInfoRepo({appVisible:false});
  await assert.rejects(hidden.repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===404);
  assert.equal(hidden.calls.some(c=>c.table==="roles"),false);
@@ -6620,10 +6622,10 @@ test("auth info aggregates only the active application organization catalog",asy
  assert.equal(calls.some(c=>c.table==="org_roles_users"),false);
  assert.ok(calls.some(c=>c.table==="roles" && c.op==="eq" && c.column==="org_id" && c.value==="org-1"));
 });
-test("auth info rejects organization mismatch and propagates directory failures",async()=>{
- const mismatch=authInfoRepo({appOrg:"other"});
- await assert.rejects(mismatch.repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===403);
- assert.equal(mismatch.calls.some(c=>c.table==="roles"),false);
+test("auth info reads the app's org, not its team's, and propagates directory failures",async()=>{
+ const moved=authInfoRepo({appOrg:"org-1",teamOrg:"other"});
+ assert.equal((await moved.repo.getAppAuthInfo("app")).organization.id,"org-1");
+ assert.equal(moved.calls.some(c=>c.table==="roles" && c.op==="eq" && c.column==="org_id" && c.value==="other"),false);
  const error=Object.assign(new Error("catalog unavailable"),{code:"upstream"});
  await assert.rejects(authInfoRepo({rolesError:error}).repo.getAppAuthInfo("app"),e=>e===error);
 });

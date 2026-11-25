@@ -121,7 +121,7 @@ amux.app_links                 TeamClu：(app_id PK, team_id, workspace_id, crea
 |---|---|---|---|
 | P2.1 扩表 | 新增 `app_links`、`app_grants`、`app_delegations`、`apps.created_by_user_id`、`*_by_user_id` 操作人列，全部从现有数据回填；FC **双写**（新旧两边都写），读取仍走旧路径 | 只加不删 | ✅ |
 | P2.2 FC 切读 | 权限级别改由 `amux.caller_app_access` 判定（创建者 user → user 授权 → 委托，限 app 所在 org）；slug 改为 org 内唯一。按 org 列表等挪到 P2.3，见下 | 加函数、加索引 | ✅（写入仍走旧表） |
-| P2.3 RLS 切换 | apps 及其附属表的策略改为 `is_org_member(org_id)` 加授权，复用 `caller_app_access`；同时做从 P2.2 挪来的：按 org 列表、`teamId` 经 `app_links` 过滤、`visibility` 派生，以及 `isAppCreator`（它决定写 apps 用哪个 client，必须和 `apps_update_if_creator` 一起换） | 换策略，旧策略保留到 P2.5 | ✅（可以把策略换回去） |
+| P2.3 RLS 切换 | apps 的 SELECT / UPDATE 和附属表的策略改为平台判定（`caller_sees_app` / `caller_app_access`）；`isAppCreator` 跟着换；权限判定不再要求团队 actor；角色目录取 `apps.org_id`。列表和 visibility 的去 team 留给 P2.4 / P3，见下 | 加函数、换策略 | ✅（策略是 DDL，可以换回去；旧定义写在迁移末尾） |
 | P2.4 平台边界 | 平台目录 grep 不到 team / actor / …，边界测试清零 | 无 | ✅ |
 | P2.5 收表 | 删除 `apps.team_id` / `created_by_actor_id` / `workspace_id` / `visibility`、`app_member_access`、旧函数和触发器 | **删列** | ❌ 单向 |
 
@@ -180,6 +180,36 @@ P2.2 决定（2026-11-25，全部按推荐）：
 - self-host 上在回滚事务里依次执行 P2.1、P2.2，然后对每个 (app, 该团队里有账号的 actor) 分别按旧规则
   （创建者 actor / `app_member_access` / `agent_inherited_app_level`）和 `caller_app_access` 计算级别：**1317 对，0 条差异**。
   app 的 org 与其团队的 org 不一致的有 0 个；同一账号在同一 org 的多个团队里都有 actor 的有 0 个。
+
+**P2.3 实施（2026-11-25，迁移 `20261126200000_app_platform_p2_rls.sql`）：**
+
+- **新函数 `amux.caller_sees_app(app)`**：调用方对 app 有级别（`caller_app_access`），或者 app 上有 org 授权且调用方是该 org 成员。
+- **策略**（名字不变，定义换掉）：
+  - `apps_select_if_visible` → `caller_sees_app(id)`；
+  - `apps_update_if_creator` → `caller_app_access(id).is_creator`；
+  - env / cron / cron runs 的 select → 有任意级别；env / cron / 授权的 manage → 创建者；
+  - 授权行的 select → 自己账号的行，或创建者看全部。
+  - apps 的 INSERT 不动：P3 之前仍按旧形态（team_id、created_by_actor_id）写入，由 P2.1 的触发器投影。
+- **按现有数据，旧策略放行的都在新策略里**：团队可见 → org 授权，创建 actor → 创建账号，授权和 agent 继承 → user 授权和委托。
+  唯一的放宽是 Q4：团队可见的 app 对整个 org 可见。
+- **FC**：
+  - `isAppCreator` 改问 `caller_app_access.is_creator`，和新的 UPDATE 策略保持一致；数据库没有这个函数时仍按 actor。
+  - `resolveAppCallerPermissionForApp` 不再要求调用方在 app 所在团队有 actor，`callerActorId` 可以为空，例如 agent
+    经主人访问同 org 另一团队的 app。为空时 git 凭证不走成员路径（Gitea 那边没有可以发凭证的人），留到 P2.4 的 forge 处理。
+  - `getAppAuthInfo` 和 `updateApp` 的角色码校验改用 `apps.org_id` 和调用方自己的 token 读角色目录
+    （`roles_select_org_member` 只要求 org 成员），删掉了「app 的 org 与团队的 org 不一致就 403」和「必须是团队成员」。
+- **从 P2.2 挪来、这一步又没做的两件**：按 org 列表（`teamId` 经 `app_links` 过滤），以及 `visibility` 从 org 授权派生。
+  P3 之前 `apps.team_id` / `visibility` 仍是写入的源头，触发器把它们 1:1 投影成 `app_links` / org 授权，现在改读投影不会有任何
+  行为差别，反而每次列表多一次查询。列表的团队过滤属于 TeamClu 兼容层，跟 P2.4 的边界一起搬；visibility 派生在 P3 删列时做。
+- **上线顺序**：先迁移、后镜像。镜像先上而数据库只有 P2.2 时，`isAppCreator` 已经按账号判断，UPDATE 策略却还按 actor；
+  只有「创建者是后来断开账号的 agent」这种 app 会受影响，写入变成 0 行。
+
+验证（P2.3）：
+- 本机 pgTAP 83 个文件 0 失败，新增 `app_platform_p2_rls.test.sql`（20 条）。原有的 `agent_inherits_owner_app_access`、
+  `app_access_actor_grants` 两个 RLS 测试在新策略下照样通过。FC 全量测试 0 失败。
+- self-host 回滚事务里依次执行 P2.1–P2.3，对每个 (app, 同 org 里有账号的用户) 分别按旧策略表达式和新函数计算「能看见 /
+  能改 app 行 / 能读 env」：**1317 对，三项全部 0 差异**。因 org 放宽而新看见的 0 对：self-host 多团队的 org 里没有团队可见的
+  跨团队情形。`caller_sees_app` 每个 app 约 2.5 ms（65 个 app 全表扫描 160 ms）；列表的开销随团队 app 数增长，belayo 上线前用它的数据量再测一次。
 
 ## 4. 验证
 

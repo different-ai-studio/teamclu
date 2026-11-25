@@ -5064,24 +5064,29 @@ export function createSupabaseBusinessRepository(options) {
         .select("org_id, auth_rules").eq("id", appId).maybeSingle();
       if (error) throw error;
       if (!raw) throw new ApiError(404, "not_found", "app not found");
-      const teamOrgId = await this.resolveTeamOrgId(app.teamId);
-      const orgId = raw.org_id ?? teamOrgId;
-      if (orgId && orgId !== teamOrgId) {
-        throw new ApiError(403, "forbidden", "application organization does not match team role catalog");
-      }
+      // The app's own org is the catalog (P2.3): seeing the app already means
+      // being a member of that org (amux.caller_sees_app), which is also what
+      // `roles_select_org_member` asks — so the caller's token reads it, from
+      // whichever team of the org they are in. `org_id` has been NOT NULL
+      // since 20260924100000; the team fallback is for rows older than that.
+      const orgId = raw.org_id ?? (await this.resolveTeamOrgId(app.teamId));
       let organization: AppAuthInfo["organization"] = null;
       let roles: AppAuthInfo["roles"] = [];
       if (orgId) {
-        // Reuse the catalog's membership authorization; failure aborts the
-        // entire response, even when the app itself was readable.
-        const catalog = await this.listOrgRoles(app.teamId);
+        const { data: catalog, error: catalogError } = await supabase.schema("public")
+          .from("roles").select("id, code, name, status, is_system, sort")
+          .eq("org_id", orgId).order("sort", { ascending: true });
+        if (catalogError) throw catalogError;
         const { data: org, error: orgError } = await supabase.schema("public")
           .from("orgs").select("id, name").eq("id", orgId).maybeSingle();
         if (orgError) throw orgError;
         if (!org) throw new ApiError(503, "app_org_unavailable", "application organization metadata unavailable");
         organization = { id: orgId, name: org.name };
-        roles = catalog.filter((role) => role.status === "active")
-          .map(({ id, code, name, status }) => ({ id, code, name, status }));
+        // System roles first, each group still in sort order, as listOrgRoles.
+        roles = (catalog ?? [])
+          .filter((role: any) => role.status === "active")
+          .sort((a: any, b: any) => Number(Boolean(b.is_system)) - Number(Boolean(a.is_system)))
+          .map(({ id, code, name, status }: any) => ({ id, code, name, status }));
       }
       return buildAppAuthInfo({
         appId: app.id,
@@ -5357,7 +5362,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id, custom_domain, deploy_token, deploy_started_at, visibility",
+          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, org_id, created_by_actor_id, custom_domain, deploy_token, deploy_started_at, visibility",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -5400,7 +5405,7 @@ export function createSupabaseBusinessRepository(options) {
           throw new ApiError(409, "lifecycle_conflict", "this failure does not own the build lifecycle");
         }
       }
-      const callerIsCreator = await this.isAppCreator(cur);
+      const callerIsCreator = await this.isAppCreator({ ...cur, id: appId });
 
       // Validated before the auth-mode change below, which has side effects (it
       // writes and deletes secrets with a service-role client): a PATCH that is
@@ -5469,7 +5474,9 @@ export function createSupabaseBusinessRepository(options) {
             ...new Set(rules.flatMap((r) => (Array.isArray(r.roles) ? r.roles : []))),
           ];
           if (wanted.length > 0 && cur?.team_id) {
-            const orgId = await this.resolveTeamOrgId(cur.team_id);
+            // The app's org, not its team's (P2.3); the same since
+            // 20260923200000 except for rows from before org_id existed.
+            const orgId = cur.org_id ?? (await this.resolveTeamOrgId(cur.team_id));
             if (orgId) {
               const rolesClient =
                 typeof supabase?.schema === "function"
@@ -5712,7 +5719,7 @@ export function createSupabaseBusinessRepository(options) {
     // the conditional writes below read as a lost race. Same escalation as
     // updateApp and authorizeCustomDomainWrite. Only called after the caller
     // was resolved as `admin`.
-    async appDeployWriter(app: { team_id: string; created_by_actor_id: string | null }) {
+    async appDeployWriter(app: { id: string; team_id: string; created_by_actor_id: string | null }) {
       return (await this.isAppCreator(app))
         ? supabase
         : await serviceRoleClient("write app deploy state authorized by an admin grant");
@@ -6406,19 +6413,21 @@ export function createSupabaseBusinessRepository(options) {
      * which RLS cannot roll back. RLS still has the last word on the write
      * itself; this only makes sure nothing irreversible happens first.
      */
-    async isAppCreator(app: { team_id: string; created_by_actor_id: string | null }): Promise<boolean> {
+    async isAppCreator(app: { id: string; team_id: string; created_by_actor_id: string | null }): Promise<boolean> {
       const { data: userData, error: userErr } = await getCurrentUser();
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
       // Member or agent: a daemon's agent creates apps too, and is their creator.
       //
-      // Deliberately the actor rule, not the platform's `created_by_user_id`:
-      // every caller uses this to pick the client for an `apps` UPDATE, and the
-      // policy that decides whether the caller's own token may write is
-      // `apps_update_if_creator`, which compares actors. Answering "creator"
-      // where that policy says no turns the write into a silent zero-row match.
-      // It moves with the policy in P2.3.
+      // Every caller uses this to pick the client for an `apps` UPDATE, so it
+      // must say exactly what `apps_update_if_creator` says — otherwise the
+      // caller's own token meets a policy that refuses it and the write is a
+      // silent zero-row match. Since 20261126200000 that policy is the
+      // platform's creator test (`caller_app_access.is_creator`), so this asks
+      // the same function. A database without it still has the actor policy.
+      const platform = await callCallerAppAccess(supabase, app.id);
+      if (platform !== undefined) return platform?.isCreator === true;
       const resolved = await this.resolveCurrentActor(app.team_id, userId);
       return Boolean(resolved?.id) && app.created_by_actor_id === resolved!.id;
     },
@@ -6467,7 +6476,13 @@ export function createSupabaseBusinessRepository(options) {
       created_by_actor_id: string | null;
     }): Promise<{
       level: AppPermissionLevel;
-      callerActorId: string;
+      /**
+       * The caller's actor in the app's team, for what the legacy tables
+       * record (who granted, who set an env var). Null for a caller with a
+       * level but no actor there — an agent reaching its owner's app in
+       * another team of the same org.
+       */
+      callerActorId: string | null;
       callerMemberId: string | null;
       inherited: boolean;
     } | null> {
@@ -6477,15 +6492,13 @@ export function createSupabaseBusinessRepository(options) {
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
 
       const resolved = await this.resolveCurrentActor(app.team_id, userId);
-      if (!resolved?.id) return null;
-      const callerActorId = resolved.id;
-      const isAgent = resolved.actorType === "agent";
-      const callerMemberId = isAgent ? null : resolved.id;
+      const callerActorId = resolved?.id ?? null;
+      const isAgent = resolved?.actorType === "agent";
+      const callerMemberId = callerActorId && !isAgent ? callerActorId : null;
 
       // The level is the platform's (20261126100000): creator, user grants and
-      // delegations, by account rather than by actor. The actor above is still
-      // required — it is who the legacy writes record, and P2.3 is where
-      // visibility leaves the team — but it no longer decides the level.
+      // delegations inside the app's org, by account rather than by actor.
+      // Since P2.3 the caller needs no actor in the app's team for it.
       const platform = await callCallerAppAccess(supabase, app.id);
       if (platform !== undefined) {
         if (!platform) return null;
@@ -6493,6 +6506,7 @@ export function createSupabaseBusinessRepository(options) {
       }
 
       // A database without that migration: the legacy actor rule.
+      if (!callerActorId) return null;
       if (app.created_by_actor_id === callerActorId) {
         return { level: "admin", callerActorId, callerMemberId, inherited: false };
       }
@@ -6564,7 +6578,10 @@ export function createSupabaseBusinessRepository(options) {
         // still gives every agent of the team a writable one (phase 1 leaves it
         // alone — the daemon's own seed/clone/deploy run on it), so narrowing
         // here would hand a granted agent less than an ungranted one.
-        if (permission) {
+        // A caller with a level but no actor in the app's team (an agent
+        // reaching its owner's app in another team) has no one to issue the
+        // credential to here; it falls through to the paths below.
+        if (permission?.callerActorId) {
           return {
             actorId: permission.callerActorId,
             app: visible,
