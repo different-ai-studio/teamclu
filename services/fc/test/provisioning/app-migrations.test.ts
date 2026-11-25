@@ -7,9 +7,12 @@ import {
   MAX_MIGRATION_BYTES,
   applyMigrations,
   migrationChecksum,
+  migrationSqlToRun,
   parseAppMigrations,
   planMigrations,
   runAppMigrations,
+  sessionOn,
+  splitSqlStatements,
   type MigrationSession,
 } from "../../src/lib/provisioning/app-migrations.js";
 import { appRoleName, appSchemaName, orgDatabaseName } from "../../src/lib/provisioning/pg-name.js";
@@ -136,6 +139,118 @@ test("no migrations touches nothing", async () => {
 test("unsafe role or schema names are refused before any SQL", async () => {
   const session: MigrationSession = { transaction: async () => { throw new Error("must not open a transaction"); } };
   await assert.rejects(() => applyMigrations(session, { role: "app_r; drop", schema: "app_s" }, [m("0001_a.sql", "select 1")], null), /unsafe/);
+});
+
+// --- Transaction control inside a file. Belayo 2026-11-25: a psql-style
+// `BEGIN; … COMMIT;` file committed the deploy's own transaction, the ledger
+// insert then failed outside the app's role and search_path, and through the
+// RDS proxy that failure never came back, hanging finalize with the lifecycle
+// lock held.
+
+// The file that did it, verbatim in shape.
+const PSQL_STYLE = `-- Apply once to a dedicated PostgreSQL database before enabling shared storage.
+BEGIN;
+CREATE TABLE IF NOT EXISTS procurement_workspace (
+  id smallint PRIMARY KEY CHECK (id = 1),
+  state jsonb
+);
+INSERT INTO procurement_workspace (id, state) VALUES (1, NULL)
+ON CONFLICT (id) DO NOTHING;
+COMMIT;
+`;
+
+test("splitSqlStatements ignores ; inside strings, identifiers, comments, dollar bodies and BEGIN ATOMIC", () => {
+  const sql = `select 'a;b', "c;d", E'it\\'s;' /* x; /* nested; */ y */ ; -- tail; comment
+do $$ begin perform 1; end $$;
+create function f(x int) returns int language sql begin atomic select case when x > 0 then 1 else 0 end; end;
+commit`;
+  const words = splitSqlStatements(sql).map(s => s.words[0]);
+  assert.deepEqual(words, ["SELECT", "DO", "CREATE", "COMMIT"]);
+});
+
+test("migrationSqlToRun drops a whole-file BEGIN … COMMIT wrapper and keeps the rest", () => {
+  const out = migrationSqlToRun(m("0001_workspace.sql", PSQL_STYLE));
+  assert.deepEqual(splitSqlStatements(out).map(s => s.words[0]), ["CREATE", "INSERT"]);
+  assert.match(out, /ON CONFLICT \(id\) DO NOTHING;/);
+  for (const sql of ["start transaction; create table t(); end;", "begin work;\ncreate table t();\ncommit work;"]) {
+    assert.deepEqual(splitSqlStatements(migrationSqlToRun(m("0001_a.sql", sql))).map(s => s.words[0]), ["CREATE"], sql);
+  }
+});
+
+test("migrationSqlToRun leaves PL/pgSQL BEGIN/END and plain files alone", () => {
+  for (const sql of [
+    "create table t (id int);",
+    "do $$ begin raise notice 'x'; end $$;",
+    "create function g() returns trigger language plpgsql as $f$ begin return new; end $f$;",
+  ]) assert.equal(migrationSqlToRun(m("0001_a.sql", sql)), sql);
+});
+
+test("migrationSqlToRun refuses transaction control it cannot unwrap", () => {
+  for (const sql of [
+    "create table a (id int); commit; create table b (id int);",
+    "begin; create table a (id int); rollback;",
+    "create table a (id int); savepoint s; create table b (id int);",
+    "begin; create table a (id int);",
+    "commit prepared 'x';",
+  ]) {
+    assert.throws(() => migrationSqlToRun(m("0001_a.sql", sql)),
+      (e: any) => e.code === "migration_failed" && e.statusCode === 422 && /transaction control/.test(e.message) && /0001_a\.sql/.test(e.message), sql);
+  }
+});
+
+test("applyMigrations runs a psql-style wrapped file as one ledgered transaction", async () => {
+  const { pg, session, target } = await pgliteWorld();
+  const files = [m("0001_workspace.sql", PSQL_STYLE), m("0002_more.sql", "begin;\ncreate table more (id int);\ncommit;")];
+  assert.deepEqual((await applyMigrations(session, target, files, "abc")).applied, ["0001_workspace.sql", "0002_more.sql"]);
+  const ledger = await pg.query<{ name: string; checksum: string }>(`select name, checksum from app_s.${LEDGER_TABLE} order by name`);
+  assert.deepEqual(ledger.rows.map(r => r.name), ["0001_workspace.sql", "0002_more.sql"]);
+  assert.equal(ledger.rows[0].checksum, migrationChecksum(PSQL_STYLE), "the checksum is the file's own text");
+  const owner = await pg.query<{ tableowner: string }>(`select tableowner from pg_tables where schemaname = 'app_s' and tablename = 'procurement_workspace'`);
+  assert.equal(owner.rows[0]?.tableowner, "app_r");
+});
+
+test("a file with stray transaction control stops the deploy before any file runs", async () => {
+  const { pg, session, target } = await pgliteWorld();
+  await assert.rejects(
+    () => applyMigrations(session, target, [m("0001_ok.sql", "create table good (id int);"), m("0002_bad.sql", "create table a (id int); commit;\ncreate table b (id int);")], null),
+    (e: any) => e.code === "migration_failed" && /0002_bad\.sql/.test(e.message),
+  );
+  const tables = await pg.query<{ tablename: string }>(`select tablename from pg_tables where schemaname = 'app_s'`);
+  assert.deepEqual(tables.rows, [], "not even the good file ran");
+});
+
+test("a file that ends the transaction anyway is caught before the ledger write", async () => {
+  // Simulated: the script call moves the session to a new transaction.
+  let xid = 100;
+  const writes: string[] = [];
+  const session: MigrationSession = {
+    transaction: async fn => fn({
+      query: async (text: string) => {
+        writes.push(text);
+        if (text.includes("pg_current_xact_id")) return [{ xid: String(xid) }] as never;
+        return [] as never;
+      },
+      script: async () => { xid++; },
+    }),
+  };
+  await assert.rejects(
+    () => applyMigrations(session, { role: "app_r", schema: "app_s" }, [m("0001_a.sql", "create table a (id int);")], null),
+    (e: any) => e.code === "migration_failed" && /ended the deploy's transaction/.test(e.message),
+  );
+  assert.ok(!writes.some(w => w.startsWith("insert into")), "no ledger insert on a transaction that is not ours");
+});
+
+test("sessionOn closes a connection that stops answering and fails with migration_stalled", async () => {
+  let ended = 0;
+  const hung = {
+    begin: () => new Promise(() => {}),
+    end: async () => { ended++; },
+  } as never;
+  await assert.rejects(
+    () => sessionOn(hung, 20).transaction(async () => 1),
+    (e: any) => e.code === "migration_stalled" && e.statusCode === 504 && !/timeout/i.test(e.code),
+  );
+  assert.equal(ended, 1);
 });
 
 // --- runAppMigrations against a real Postgres server: the privilege boundary
