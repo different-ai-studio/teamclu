@@ -125,6 +125,24 @@ amux.app_links                 TeamClu：(app_id PK, team_id, workspace_id, crea
 | P2.4 平台边界 | 平台目录 grep 不到 team / actor / …，边界测试清零 | 无 | ✅ |
 | P2.5 收表 | 删除 `apps.team_id` / `created_by_actor_id` / `workspace_id` / `visibility`、`app_member_access`、旧函数和触发器 | **删列** | ❌ 单向 |
 
+**P2.1 实施（2026-11-25，迁移 `20261125200000_app_platform_p2_expand.sql`）与上表的两处差异：**
+
+- **双写改由数据库触发器完成，FC 一行不改。** 旧表仍是写入的源头，新表是触发器在同一事务里维护的投影：
+  `apps`（插入，以及 team / workspace / 创建者 / visibility / org 变化）、`app_member_access`（增删改）、
+  `agents`（status / 主人变化）、`actors.user_id` 变化，都会同步到 `app_links` / `app_grants` / `app_delegations`
+  和 `created_by_user_id`；操作人列由 BEFORE 触发器补上。投影出来的行带标记：`app_grants.source='legacy'` 加
+  `legacy_member_id`，`app_delegations.source_agent_id`。这两列以 ON DELETE CASCADE 引用旧行，所以删 actor、
+  删 agent 时投影跟着消失，删除路径上没有任何插入，不会挡住删团队。原生写入（`source='native'`）不会被投影覆盖。
+  触发器和旧列在 P3 一起删除。
+- **org 内 slug 唯一索引挪到 P2.2。** 扩表这一步只加不改行为；唯一索引会让「同 org 跨团队重名」的建 app 请求
+  从成功变成失败，所以放到 P2.2，与按 org 列表、错误码映射一起做。self-host 现有数据没有冲突（0 条）。
+
+验证：
+- 本机按 CI 方式从空库应用全部迁移，pgTAP 81 个文件 0 失败。新增 `app_platform_p2_expand.test.sql`（26 条），
+  覆盖回填、各触发器、授权的原生优先、删 actor / 删团队。
+- self-host 上以 `postgres` 角色在事务里执行后回滚：65 个 app → 65 条 link，`created_by_user_id` 0 条为空；
+  5 条成员授权 → 5 条 user 授权；21 个团队可见 app → 21 条 org 授权；230 条委托。
+
 回填规则（P2.1）：
 - `created_by_user_id` 取 `actors.user_id`。如果创建者是没有连上账号的 agent（`user_id` 为空），就取它主人的 user id，
   见 §6 Q5。
