@@ -3901,10 +3901,40 @@ test("a late build failure cannot overwrite a concurrent finalize or newer token
   }
 });
 
-test("a stale provider deployment cannot be reclaimed by a new preflight", async () => {
+// Reversed from #1726 ("stale age alone cannot release them") after Belayo
+// 2026-11-25, where a finalize hung for hours and only hand-written SQL could
+// free the app. A deploy's unknown outcome is resolved by deploying again;
+// undeploy keeps its fence. See app-deploy-reclaim.ts.
+test("a provider deployment abandoned in deploying is reclaimed by a new preflight", async () => {
+  const app = { ...APP_ROW, provision_status: "ready", fc_status: "deploying", deploy_token: APP_PREFLIGHT_TOKEN, deploy_started_at: "2020-01-01T00:00:00Z" };
+  const db = appsSupabase({ seed: { apps: [app] } });
+  const { data: operation } = await db.rpc("begin_app_lifecycle", { p_app_id: "app-1", p_kind: "deploy", p_token: APP_PREFLIGHT_TOKEN });
+  operation.in_flight = true;
+  operation.updated_at = "2020-01-01T00:05:00Z";
+  // Past the reclaim, preflight goes on to runtime checks this fixture does
+  // not model; what matters is that it is no longer refused as in progress.
+  await appsRepo(db).preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION })
+    .catch((e: any) => assert.ok(!["lifecycle_conflict", "deploy_in_progress"].includes(e.code), e.code));
+  // The fixture replaces rows on update, so read them back.
+  const op = (await db.from("app_lifecycle_operations").select("*").eq("id", operation.id).maybeSingle()).data;
+  assert.equal(op.status, "succeeded");
+  assert.equal(op.in_flight, false);
+  assert.match(op.error, /^reclaimed:/);
+  const row = (await db.from("apps").select("*").eq("id", "app-1").maybeSingle()).data;
+  assert.equal(row.fc_status, "deploy_error");
+  assert.match(row.provision_error, /stopped responding while finalizing/);
+});
+
+test("a finalize that took over recently is not reclaimed, however old the deploy", async () => {
   const calls: any[] = [];
-  const db = appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "deploying", deploy_token: APP_PREFLIGHT_TOKEN, deploy_started_at: "2020-01-01T00:00:00Z" }] } });
-  await assert.rejects(() => appsRepo(db).preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION }), (e: any) => e.code === "lifecycle_conflict");
+  const app = { ...APP_ROW, provision_status: "ready", fc_status: "deploying", deploy_token: APP_PREFLIGHT_TOKEN, deploy_started_at: "2020-01-01T00:00:00Z" };
+  const db = appsSupabase({ calls, seed: { apps: [app] } });
+  const { data: operation } = await db.rpc("begin_app_lifecycle", { p_app_id: "app-1", p_kind: "deploy", p_token: APP_PREFLIGHT_TOKEN });
+  operation.in_flight = true;
+  operation.updated_at = new Date().toISOString();
+  await assert.rejects(() => appsRepo(db).preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION }), (e: any) => e.code === "deploy_in_progress");
+  assert.equal(operation.status, "pending");
+  assert.equal(app.fc_status, "deploying");
   assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
 });
 
@@ -6563,6 +6593,24 @@ test('undeploy only queues lifecycle cleanup and preserves app data and workspac
  assert.equal(result.operation.status,'pending');assert.equal(result.app.gitCommitSha,'last-live');
  assert.equal(result.app.workspaceId,'ws-1');
  assert.equal(calls.filter(c=>['update','delete','insert'].includes(c.op)).length,0);
+});
+
+test('undeploy first reclaims a deploy abandoned in deploying, then queues cleanup', async () => {
+ const db=appsSupabase({seed:{apps:[{...APP_ROW,fc_status:'deploying',deploy_token:APP_PREFLIGHT_TOKEN,deploy_started_at:'2020-01-01T00:00:00Z'}]}});
+ const {data:operation}=await db.rpc('begin_app_lifecycle',{p_app_id:'app-1',p_kind:'deploy',p_token:APP_PREFLIGHT_TOKEN});
+ operation.in_flight=true; operation.updated_at='2020-01-01T00:05:00Z';
+ const result=await appsRepo(db).undeployApp('app-1');
+ assert.equal(result.operation.status,'pending');
+ const deploy=(await db.from('app_lifecycle_operations').select('*').eq('id',operation.id).maybeSingle()).data;
+ assert.equal(deploy.status,'succeeded'); assert.equal(deploy.in_flight,false);
+});
+
+test('undeploy leaves a recently claimed finalize alone and stays refused', async () => {
+ const db=appsSupabase({seed:{apps:[{...APP_ROW,fc_status:'deploying',deploy_token:APP_PREFLIGHT_TOKEN,deploy_started_at:'2020-01-01T00:00:00Z'}]}});
+ const {data:operation}=await db.rpc('begin_app_lifecycle',{p_app_id:'app-1',p_kind:'deploy',p_token:APP_PREFLIGHT_TOKEN});
+ operation.in_flight=true; operation.updated_at=new Date().toISOString();
+ await assert.rejects(()=>appsRepo(db).undeployApp('app-1'),(e:any)=>e.code==='lifecycle_conflict');
+ assert.equal(operation.status,'pending');
 });
 
 for (const fcStatus of ["live", "deploy_error", "uninstalling", "uninstall_failed"]) {
