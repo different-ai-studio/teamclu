@@ -211,6 +211,15 @@ P2.2 决定（2026-11-25，全部按推荐）：
   能改 app 行 / 能读 env」：**1317 对，三项全部 0 差异**。因 org 放宽而新看见的 0 对：self-host 多团队的 org 里没有团队可见的
   跨团队情形。`caller_sees_app` 每个 app 约 2.5 ms（65 个 app 全表扫描 160 ms）；列表的开销随团队 app 数增长，belayo 上线前用它的数据量再测一次。
 
+**P2.4 拆分（2026-11-25 拍板：真正抽离）：** apps 业务原来是 `supabase-repo.ts` 里约 2750 行、68 个方法，和 TeamClu 代码混在一起。
+- **P2.4a 原样搬迁**：搬进 `services/fc/src/lib/app-platform/service/apps.ts` 的 `makeAppsRepo(host)`，照 `supabase-repo/` 其他模块的
+  `...makeXRepo(host)` 模式展开回业务 repository，所以方法里的 `this` 仍是整个 repository。一起搬走的还有只给 apps 用的模块级
+  helper（`mapApp*Row`、日志 / 数据浏览器参数解析等）和工厂闭包里的 helper（`scheduleAppAccessChanged`、配额与 finalize 的 env 构建、
+  agent 的 git 凭证读取）。工厂闭包变量和三个共用 helper 经 host 传入。逐字节核对过，搬过去的五段与原文相同；FC 全量测试
+  2332 个，结果与搬迁前一致。
+- **P2.4b `AppTenantHooks`**（§6 Q6）：把 team / actor / workspace / session 相关的部分移到 TeamClu 实现。
+- **P2.4c 边界测试**：`app-platform/` 和 `provisioning/` 里 grep 不到这几个概念。
+
 ## 4. 验证
 
 - 每一步：FC 全量测试 + `tsc`；P2.1 / P2.3 加 pgTAP（新表、策略、回填结果）。
