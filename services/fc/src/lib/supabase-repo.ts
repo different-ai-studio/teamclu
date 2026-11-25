@@ -189,6 +189,7 @@ import {
   readAppsCloudApiUrl,
 } from "./provisioning/app-deploy.js";
 import { parseAppMigrations } from "./provisioning/app-migrations.js";
+import { reclaimStaleDeploy, supabaseReclaimStore } from "./provisioning/app-deploy-reclaim.js";
 import type { AppLogKind } from "./provisioning/app-logs.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
@@ -5752,8 +5753,12 @@ export function createSupabaseBusinessRepository(options) {
       const progress = checkDeployInProgress({ fc_status: existing.fc_status, deploy_started_at: existing.deploy_started_at });
       if (progress === "blocked") throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
       if (progress === "stale") {
-        const abandoned = await this.updateApp(appId, { fcStatus: "deploy_error", deployToken: existing.deploy_token, deployError: "previous build timed out" });
-        if (!abandoned) return null;
+        // Any in-progress status, `deploying` included (app-deploy-reclaim.ts).
+        const reclaimed = await reclaimStaleDeploy(
+          supabaseReclaimStore(await serviceRoleClient("reclaim stale app deployment")), appId,
+          { fcStatus: existing.fc_status, deployStartedAt: existing.deploy_started_at, deployToken: existing.deploy_token },
+        );
+        if (reclaimed !== "reclaimed") throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
         existing.deploy_token = null;
         existing.deploy_started_at = null;
         existing.fc_status = "deploy_error";
@@ -5987,7 +5992,9 @@ export function createSupabaseBusinessRepository(options) {
         .select("id").maybeSingle();
       if (claimError) throw claimError;
       if (!claimed) throw new ApiError(409, "deploy_in_progress", "this deploy is already finalizing or its token changed");
-      const { error: flightError } = await lifecycleAdmin.from("app_lifecycle_operations").update({ in_flight: true }).eq("id", lifecycle.id).neq("status", "succeeded");
+      // updated_at = when finalize took over; app-deploy-reclaim.ts measures
+      // an in-flight attempt's age from it, not from deploy_started_at.
+      const { error: flightError } = await lifecycleAdmin.from("app_lifecycle_operations").update({ in_flight: true, updated_at: new Date().toISOString() }).eq("id", lifecycle.id).neq("status", "succeeded");
       if (flightError) throw flightError;
       try {
         // Convenience env for the app's own code. The login wall does not
@@ -7577,7 +7584,7 @@ export function createSupabaseBusinessRepository(options) {
 
     async undeployApp(appId: string) {
       const { data: app, error } = await supabase.from("apps")
-        .select("id, slug, app_code, function_naming_mode, team_id, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, env_deployed_at, custom_domain, uses_app_code_domain")
+        .select("id, slug, app_code, function_naming_mode, team_id, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, env_deployed_at, custom_domain, uses_app_code_domain, deploy_started_at, deploy_token")
         .eq("id", appId).maybeSingle();
       if (error) throw error;
       if (!app) return null;
@@ -7586,6 +7593,10 @@ export function createSupabaseBusinessRepository(options) {
       validateAllocatedAppIdentity(app, true);
       const originDomain = appDeploymentOriginHost(appFunctionTargetFromRow(app), app.fc_endpoint);
       const admin = await serviceRoleClient("app deployment lifecycle");
+      // An abandoned deploy would otherwise hold the lock against uninstall
+      // forever. Not stale, or still live: begin_app_lifecycle refuses below.
+      await reclaimStaleDeploy(supabaseReclaimStore(admin), appId,
+        { fcStatus: app.fc_status, deployStartedAt: app.deploy_started_at, deployToken: app.deploy_token });
       const operation = await lifecycleRpc(admin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "undeploy", p_token: null, p_origin_domain: originDomain });
       if (!operation) throw new ApiError(409, "not_deployed", "app has no deployment to uninstall");
       invalidateAppHosts({ id: appId, slug: app.slug, appCode: app.app_code, usesAppCodeDomain: app.uses_app_code_domain, customDomain: app.custom_domain });
