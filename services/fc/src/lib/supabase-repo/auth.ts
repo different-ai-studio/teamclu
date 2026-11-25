@@ -53,7 +53,7 @@ export function createSupabaseAuthRepository(options) {
     sendSms = undefined,
     verifyCaptcha = undefined,
     // Re-sync a team's apps to Gitea after someone joins it
-    // (provisioning/gitea-sync-runner.ts). Absent: nothing to mirror to.
+    // (forge/gitea/sync-runner.ts). Absent: nothing to mirror to.
     syncTeamToGitea = undefined as undefined | ((teamId: string) => Promise<void>),
     // Enterprise IM sign-in (lib/sso). A process-wide service handed in by the
     // factory; null/absent = not configured on this deployment.

@@ -4,7 +4,7 @@ import { registerSso } from "./sso.js";
 import { registerTeams } from "./teams.js";
 import { registerSessions } from "./sessions.js";
 import { registerApps } from "./apps.js";
-import { registerGit } from "./git.js";
+import { registerAppGitRoutes, registerGit } from "../forge/git-routes.js";
 import { registerMessages } from "./messages.js";
 import { registerSessionAttachments } from "./session-attachments.js";
 import { registerInvites } from "./invites.js";
@@ -44,6 +44,7 @@ export function registerAllRoutes(router) {
   registerTeams(router);
   registerSessions(router);
   registerApps(router);
+  registerAppGitRoutes(router);
   registerGit(router);
   registerMessages(router);
   registerSessionAttachments(router);

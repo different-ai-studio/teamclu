@@ -1,6 +1,6 @@
-import { ApiError } from "../http-utils.js";
+import { ApiError } from "../../http-utils.js";
 import { expiredJitDeployKeyIds } from "./deploy-key.js";
-import { GITEA_AUTH_KIND, repoOwnerFromRemote, type GiteaClient } from "./gitea.js";
+import { GITEA_AUTH_KIND, repoOwnerFromRemote, type GiteaClient } from "./client.js";
 
 type ManagedApp = { id: string; git_remote_url: string | null };
 type RepoClient = Pick<GiteaClient, "listAllDeployKeys" | "deleteDeployKey">;

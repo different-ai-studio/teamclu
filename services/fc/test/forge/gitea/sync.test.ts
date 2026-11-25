@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appsRepo, appsSupabase, fakeGitea } from "./fixtures/apps-repository.js";
+import { appsRepo, appsSupabase, fakeGitea } from "../../fixtures/apps-repository.js";
 import {
   giteaHttpUrlFromRemote,
   giteaOrgName,
@@ -8,11 +8,11 @@ import {
   giteaUserName,
   isTeamCluOrgOwner,
   repoOwnerFromRemote,
-} from "../src/lib/provisioning/gitea.js";
-import { reconcileGiteaApps, syncAppToGitea, syncTeamAppsToGitea } from "../src/lib/provisioning/gitea-sync.js";
-import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "../src/lib/provisioning/gitea-sync-runner.js";
-import { isGiteaReconcileMinute } from "../src/lib/routes/apps.js";
-import { mapApp } from "../src/lib/supabase-repo/shared.js";
+} from "../../../src/lib/forge/gitea/client.js";
+import { reconcileGiteaApps, syncAppToGitea, syncTeamAppsToGitea } from "../../../src/lib/forge/gitea/sync.js";
+import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "../../../src/lib/forge/gitea/sync-runner.js";
+import { isGiteaReconcileMinute } from "../../../src/lib/routes/apps.js";
+import { mapApp } from "../../../src/lib/supabase-repo/shared.js";
 
 const ORG = "6f1c2d3e-4b5a-4c6d-8e9f-0a1b2c3d4e5f";
 const OWNER = giteaOrgName(ORG);

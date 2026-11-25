@@ -7,14 +7,14 @@ import {
   repoOwnerFromRemote,
   type GiteaClient,
   type GiteaCollaboratorPermission,
-} from "./gitea.js";
+} from "./client.js";
 import {
   appLevelAtLeast,
   callAgentInheritance,
   inheritedGiteaLevel,
   storedAppPermissionLevel,
   type AppPermissionLevel,
-} from "../app-permission.js";
+} from "../../app-permission.js";
 
 /**
  * Projects an app's TeamClu access onto its Gitea repo

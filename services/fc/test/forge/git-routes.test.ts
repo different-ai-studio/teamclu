@@ -10,9 +10,9 @@ import {
   gitCallerCacheSize,
   GIT_CALLER_CACHE_MAX,
   type GitRouteDeps,
-} from "../src/lib/routes/git.js";
-import { signGitToken, verifyGitToken, GIT_TOKEN_TTL_SECONDS } from "../src/lib/git-token.js";
-import { giteaUserName } from "../src/lib/provisioning/gitea.js";
+} from "../../src/lib/forge/git-routes.js";
+import { signGitToken, verifyGitToken, GIT_TOKEN_TTL_SECONDS } from "../../src/lib/forge/git-token.js";
+import { giteaUserName } from "../../src/lib/forge/gitea/client.js";
 
 const SECRET = "s".repeat(40);
 const ALICE = "aaaaaaaa-0000-4000-8000-00000000000a";

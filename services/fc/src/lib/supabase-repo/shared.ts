@@ -11,8 +11,8 @@ import {
   giteaHttpUrlFromRemote,
   isTeamCluOrgOwner,
   repoOwnerFromRemote,
-} from "../provisioning/gitea.js";
-import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
+} from "../forge/gitea/client.js";
+import { giteaAccountAuthEnabled } from "../forge/gitea/sync-runner.js";
 
 // FC runtime is Node 20 which lacks native WebSocket. supabase-js v2.45+ tries
 // to construct a RealtimeClient at createClient() time and throws without a

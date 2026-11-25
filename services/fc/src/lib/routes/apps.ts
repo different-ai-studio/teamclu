@@ -4,11 +4,10 @@ import { ApiError } from "../http-utils.js";
 import { parseLimit, requireString } from "../routing-utils.js";
 import { runDueAppCronJobs } from "../app-cron-runner.js";
 import { createServiceRoleClient } from "../supabase.js";
-import { parseGitHttpsCredentialInput } from "../app-git-credential.js";
-import { makeGiteaClient, readGiteaConfig } from "../provisioning/gitea.js";
-import { reconcileGiteaApps } from "../provisioning/gitea-sync.js";
-import { makeDeployKeyExpirySweep } from "../provisioning/deploy-key-expiry.js";
-import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
+import { makeGiteaClient, readGiteaConfig } from "../forge/gitea/client.js";
+import { reconcileGiteaApps } from "../forge/gitea/sync.js";
+import { makeDeployKeyExpirySweep } from "../forge/gitea/deploy-key-expiry.js";
+import { giteaAccountAuthEnabled } from "../forge/gitea/sync-runner.js";
 
 /**
  * The Gitea repair pass for the heartbeat, or null when there is nothing to
@@ -224,46 +223,6 @@ export function registerApps(
     return { body: { items } };
   });
 
-  // Secret response — never log the body (private deploy key).
-  router.get("/v1/apps/:appId/git-credential", async (ctx) => {
-    const appId = decodeURIComponent(ctx.params.appId);
-    const out = await ctx.repository.getAppGitCredential(appId);
-    if (!out) throw new ApiError(404, "not_found", "app not found");
-    return { body: out };
-  });
-
-  // Handing a key back the moment ssh exits — see `amuxd git-ssh`. Idempotent:
-  // a key already gone answers 200 with `revoked: false`, because "not usable
-  // any more" is what the caller asked for either way.
-  router.delete("/v1/apps/:appId/git-credential/:deployKeyId", async (ctx) => {
-    const appId = decodeURIComponent(ctx.params.appId);
-    const deployKeyId = Number.parseInt(decodeURIComponent(ctx.params.deployKeyId), 10);
-    if (!Number.isInteger(deployKeyId)) {
-      throw new ApiError(400, "bad_request", "deployKeyId must be an integer");
-    }
-    const out = await ctx.repository.revokeAppGitCredential(appId, deployKeyId);
-    if (!out) throw new ApiError(404, "not_found", "app not found");
-    return { body: out };
-  });
-
-  // Store the token for an imported app's http(s) repo. Admin only, and
-  // write-only here: the value comes back out only through GET above, to the
-  // machines that clone. Secret request — never log the body.
-  router.put("/v1/apps/:appId/git-credential", async (ctx) => {
-    const appId = decodeURIComponent(ctx.params.appId);
-    const input = parseGitHttpsCredentialInput(ctx.json);
-    const out = await ctx.repository.setAppGitHttpsCredential(appId, input);
-    if (!out) throw new ApiError(404, "not_found", "app not found");
-    return { body: out };
-  });
-
-  router.delete("/v1/apps/:appId/git-credential", async (ctx) => {
-    const appId = decodeURIComponent(ctx.params.appId);
-    const out = await ctx.repository.clearAppGitHttpsCredential(appId);
-    if (!out) throw new ApiError(404, "not_found", "app not found");
-    return { body: out };
-  });
-
   router.get("/v1/apps/:appId/runtime-info", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const language = ctx.query?.get("language") ?? undefined;
@@ -286,18 +245,6 @@ export function registerApps(
       kind: ctx.query.get("kind"),
       contains: ctx.query.get("contains"),
       requestId: ctx.query.get("requestId"),
-    });
-    if (!out) throw new ApiError(404, "not_found", "app not found");
-    return { body: out };
-  });
-
-  // `?compare=1` also reports how many commits the branch is ahead of what is
-  // deployed. Opt-in: the deploy path calls this endpoint on every deploy and
-  // reads only `sha`, so the extra forge round trip is not made for it.
-  router.get("/v1/apps/:appId/git-head", async (ctx) => {
-    const appId = decodeURIComponent(ctx.params.appId);
-    const out = await ctx.repository.getAppGitHead(appId, {
-      compare: ctx.query.get("compare") === "1",
     });
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };

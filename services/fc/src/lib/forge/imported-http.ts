@@ -1,4 +1,4 @@
-import { ApiError } from "./http-utils.js";
+import { ApiError } from "../http-utils.js";
 
 /**
  * A stored HTTPS credential for an imported app's repo.

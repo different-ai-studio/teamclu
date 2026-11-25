@@ -15,8 +15,8 @@ import {
   makeDeployDeps,
   makeTeardownDeps,
 } from "./lib/app-platform/deps.js";
-import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
-import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "./lib/provisioning/gitea-sync-runner.js";
+import { readGiteaConfig, makeGiteaClient } from "./lib/forge/gitea/client.js";
+import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "./lib/forge/gitea/sync-runner.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
 import { makeSupabaseLoginAppLookup } from "./lib/apps-login-service.js";

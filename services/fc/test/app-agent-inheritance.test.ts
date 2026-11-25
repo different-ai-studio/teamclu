@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { appsRepo, appsSupabase, fakeGitea } from "./fixtures/apps-repository.js";
-import { giteaOrgName, giteaUserName } from "../src/lib/provisioning/gitea.js";
-import { syncAppToGitea } from "../src/lib/provisioning/gitea-sync.js";
-import { appGitLevel } from "../src/lib/supabase-repo/app-git-access.js";
+import { giteaOrgName, giteaUserName } from "../src/lib/forge/gitea/client.js";
+import { syncAppToGitea } from "../src/lib/forge/gitea/sync.js";
+import { appGitLevel } from "../src/lib/forge/app-git-access.js";
 import { higherAppLevel, inheritedGiteaLevel } from "../src/lib/app-permission.js";
 
 // An active agent reaches the apps its owner reaches (20261120120000), at its

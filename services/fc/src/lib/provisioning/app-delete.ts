@@ -3,8 +3,8 @@ import type { AuthMode } from "./app-auth-mode.js";
 import { OAUTH_CLIENT_SECRET_KIND } from "./app-secrets.js";
 import { appOssObjectName } from "./app-deploy.js";
 import type { GotrueOAuthClient } from "./gotrue-oauth.js";
-import { GITEA_AUTH_KIND, type GiteaClient } from "./gitea.js";
-import { revokeAllDeployKeys } from "./deploy-key.js";
+import { GITEA_AUTH_KIND, type GiteaClient } from "../forge/gitea/client.js";
+import { revokeAllDeployKeys } from "../forge/gitea/deploy-key.js";
 import { resolveAppFunctionName, type FunctionNamingMode } from "../apps-function-identity.js";
 import { appDeploymentOriginHost } from "../apps-origin-auth.js";
 

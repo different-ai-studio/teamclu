@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { registerApps, stripUrlCredentials } from "../src/lib/routes/apps.js";
+import { registerAppGitRoutes } from "../src/lib/forge/git-routes.js";
 
 function makeRouter() {
   const routes = [];
@@ -245,6 +246,7 @@ test("POST /v1/apps/:id/deploy/finalize 404s when repo returns null", async () =
 test("GET /v1/apps/:id/git-credential 404s when repo returns null (non-creator)", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
+  registerAppGitRoutes(router);
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-credential")[2];
   await assert.rejects(
     () => handler({ params: { appId: "app-1" }, repository: { getAppGitCredential: async () => null } }),
@@ -255,6 +257,7 @@ test("GET /v1/apps/:id/git-credential 404s when repo returns null (non-creator)"
 test("GET /v1/apps/:id/git-credential returns deploy key for creator", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
+  registerAppGitRoutes(router);
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-credential")[2];
   const cred = {
     remoteUrl: "https://gitea.example/tc-app-1.git",
@@ -273,6 +276,7 @@ test("GET /v1/apps/:id/git-credential returns deploy key for creator", async () 
 test("PUT /v1/apps/:id/git-credential refuses a body with no token before the repository sees it", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
+  registerAppGitRoutes(router);
   const handler = findRoute(routes, "PUT", "/v1/apps/:appId/git-credential")[2];
   let reached = false;
   await assert.rejects(
@@ -290,6 +294,7 @@ test("PUT /v1/apps/:id/git-credential refuses a body with no token before the re
 test("PUT /v1/apps/:id/git-credential stores the parsed credential and answers with the app", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
+  registerAppGitRoutes(router);
   const handler = findRoute(routes, "PUT", "/v1/apps/:appId/git-credential")[2];
   let stored: unknown = null;
   const row = { id: "app-1", gitAuthKind: "https_token" };
@@ -310,6 +315,7 @@ test("PUT /v1/apps/:id/git-credential stores the parsed credential and answers w
 test("PUT and DELETE /v1/apps/:id/git-credential 404 when the repository declines", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
+  registerAppGitRoutes(router);
   const cases = [
     ["PUT", { setAppGitHttpsCredential: async () => null }],
     ["DELETE", { clearAppGitHttpsCredential: async () => null }],
@@ -327,6 +333,7 @@ test("PUT and DELETE /v1/apps/:id/git-credential 404 when the repository decline
 test("GET /v1/apps/:id/git-head 404s when repo returns null", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
+  registerAppGitRoutes(router);
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-head")[2];
   await assert.rejects(
     () =>
@@ -344,6 +351,7 @@ test("GET /v1/apps/:id/git-head returns the head, and compares only when asked",
   // endpoint on every deploy while reading only `sha`.
   const { router, routes } = makeRouter();
   registerApps(router);
+  registerAppGitRoutes(router);
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-head")[2];
   const seen: unknown[] = [];
   const head = {

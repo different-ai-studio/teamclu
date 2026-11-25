@@ -198,8 +198,8 @@ import {
   giteaUnavailable,
   GITEA_AUTH_KIND,
   repoOwnerFromRemote,
-} from "./provisioning/gitea.js";
-import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "./provisioning/gitea-sync-runner.js";
+} from "./forge/gitea/client.js";
+import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "./forge/gitea/sync-runner.js";
 import {
   APP_GIT_HTTPS_CREDENTIAL_KIND,
   deserializeGitHttpsCredential,
@@ -207,12 +207,12 @@ import {
   isHttpGitRemote,
   serializeGitHttpsCredential,
   type GitHttpsCredential,
-} from "./app-git-credential.js";
+} from "./forge/imported-http.js";
 import {
   issueJitDeployKey,
   revokeActorDeployKeys,
   revokeOwnJitDeployKey,
-} from "./provisioning/deploy-key.js";
+} from "./forge/gitea/deploy-key.js";
 import {
   applyAuthModeChange,
   buildPlatformAuthEnv,
@@ -792,7 +792,7 @@ export function createSupabaseBusinessRepository(options) {
     gitea,
     giteaUnavailableReason,
     // GITEA_ACCOUNT_AUTH: new apps under the TeamClu org, access mirrored to
-    // Gitea (provisioning/gitea-sync.ts). Read from the environment unless a
+    // Gitea (forge/gitea/sync.ts). Read from the environment unless a
     // caller (a test) says otherwise.
     giteaAccountAuth = giteaAccountAuthEnabled(),
     gotrue,

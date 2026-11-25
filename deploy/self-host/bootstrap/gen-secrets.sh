@@ -56,7 +56,7 @@ if [ -z "$AI_GATEWAY_SERVICE_TOKEN" ]; then
 fi
 set_kv AI_GATEWAY_SERVICE_TOKEN "$AI_GATEWAY_SERVICE_TOKEN"
 
-# Signs the git-only tokens desktops hold (services/fc/src/lib/git-token.ts).
+# Signs the git-only tokens desktops hold (services/fc/src/lib/forge/git-token.ts).
 # Preserved across runs: a new value would sign every desktop out of git.
 GIT_TOKEN_SECRET="$(grep '^GIT_TOKEN_SECRET=' "$ENV_FILE" | cut -d= -f2- || true)"
 if [ -z "$GIT_TOKEN_SECRET" ]; then
