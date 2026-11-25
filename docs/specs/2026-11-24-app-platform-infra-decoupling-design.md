@@ -116,6 +116,8 @@ TeamClu 层可以随便引用平台的 app id。
 - **agent 继承主人权限 → 通用的 `Delegation`**（Q10）：`(delegate_user_id → principal_user_id)`，含义是「代理人拿到委托人的级别，**封顶 write**，不能管授权、不能删 app」。
   TeamClu 在 agent 账号创建 / 停用 / 换主人时写这张表。平台只认「委托」，不认「agent」。不把每个 grant 物化复制到 agent 身上，也就不会漂移。
   **与 11/20 决策 6 的差异（已确认接受）**：11/20 规定主人是创建者时 agent 拿 admin；封顶 write 后 **agent 不能部署主人的 app**（部署需要 admin），要部署须由主人另行授权 admin。
+  **2026-11-25 修订（P2 方案 Q1）：不封顶到 write。** 代理人拿到委托人的级别，最高可以部署（保住「成员建 app、agent 部署」这条主流程），
+  但永远不能管授权、不能删 app。
 - 原生审批弹窗（部署 / 删除 / 改授权，`introspect_api/confirm.rs`）是桌面端的能力。只装 amuxd 时改由 amuxd 发起审批，见 §7.5。
 
 ## 6. Gitea 移出平台
@@ -242,7 +244,7 @@ pi 只看到一条 bash 命令，full-access（cron、渠道会话默认就是�
 |---|---|---|
 | **P0 驱动接口** ✅ 已合并（#2014，`a10e92e47`） | 在 FC 内新建 `services/fc/src/lib/app-platform/`：三个驱动接口 + 阿里云实现；`index.ts` 里的依赖组装搬到 `deps.ts`；`app-runtime-info` / `app-runtime-catalog` / `app-undeploy-config` 改走 `resolveAppPlatform()`；假驱动在 `test/fixtures/app-platform/fake.ts` | 业务代码不再直接创建 SDK client（`test/app-platform/boundary.test.ts` 守住）；部署 → finalize → 下线 → 日志用假驱动跑通（`deploy-contract.test.ts`）。阿里云封装已挪进 `app-platform/aliyun/`（`fc.ts` / `sls.ts` / `oss.ts` / `index.ts`）；`apps-oss` 里与厂商无关的文件 key 规则拆到 `provisioning/app-files.ts`，`appsRegion` 拆到 `app-platform/region.ts`；VPC 改由驱动自己读，调用方只问 `compute.joinsPrivateNetwork()`。边界测试同时禁止 `aliyun/` 外的值导入（类型导入放行）。`app-storage.ts` 已拆：接口与配额留在 `provisioning/`，STS 签名、会话策略和 `makeAppStorageOps` 进 `aliyun/storage.ts`。runtime catalog 也收进驱动：`ComputeDriver.catalogClient` 换成 `runtimes: RuntimeDiscovery`（documented / listCurrent），FC 文档快照与 ListLayers 解析在 `aliyun/runtimes.ts`，缓存和过期兜底留在 `provisioning/app-runtime-catalog.ts`。边界测试不再有例外：`@alicloud` 的 FC/SLS SDK 只出现在 `aliyun/` |
 | **P1 Gitea 出平台** | §6 全部；revision 通用化；HEAD 复核挪进 forge 守卫（客户端复核保留）。实施拆分见 `2026-11-25-app-platform-p1-gitea-out.md`；P1.1–P1.4 已完成（Gitea 代码在 `services/fc/src/lib/forge/`，平台经 `app-platform/hooks.ts` 调用）；原 P1.5 搬表推迟到 P3 | 平台目录 grep 不到 `gitea`；导入 app 和 Gitea app 走同一条 finalize |
-| **P2 去 team 化** | 新表 `amux.app_links(app_id, team_id, workspace_id)` 承接 TeamClu 关联；apps 去掉 `team_id`/`created_by_actor_id`/`workspace_id` 外键（先加 `created_by_user_id` 回填，再删）；Grant 改指 `auth.users` 或 org；`visibility=team` 迁成 org read 授权；加 Delegation（封顶 write）；RLS 改成 org + grant；操作人列改 user_id；`/v1/apps` 改按 org | 平台目录 grep 不到 `team`/`actor`/`member`/`session`/`workspace`；老客户端按 teamId 调用经 `app_links` 兼容 |
+| **P2 去 team 化**（实施见 `2026-11-25-app-platform-p2-de-team.md`；收表推迟到 P3） | 新表 `amux.app_links(app_id, team_id, workspace_id)` 承接 TeamClu 关联；apps 去掉 `team_id`/`created_by_actor_id`/`workspace_id` 外键（先加 `created_by_user_id` 回填，再删）；Grant 改指 `auth.users` 或 org；`visibility=team` 迁成 org read 授权；加 Delegation（封顶 write）；RLS 改成 org + grant；操作人列改 user_id；`/v1/apps` 改按 org | 平台目录 grep 不到 `team`/`actor`/`member`/`session`/`workspace`；老客户端按 teamId 调用经 `app_links` 兼容 |
 | **P2.5 CLI 接管、MCP 退役** | §7.6 清单 1、3–6（2 在 P2 内完成）；可与 P1/P2 并行做清单 1、4 | 新会话提示词里没有 `manage_app*`；agent 只装 amuxd 也能走完建 app → 部署 → 改 env → 看日志；高危操作在会话里审批 |
 | **P3 独立 schema** | 平台表迁到 `app_platform` schema，FC 里只有平台模块碰它；TeamClu 只通过平台接口或 `app_links` 关联。同时完成原 P1.5：`git_remote_url` / `git_auth_kind` 进留在 `amux` 的 forge 表（`app_forge_repos`），`git_commit_sha` 并入通用的 `deployed_revision`（设计见 P1 方案 §3 P1.5） | 平台可以单独起库做测试 |
 | **P4（再评估）** | 平台拆成独立服务 / 独立 CLI（`appctl`） | 有第二个调用方真的需要时再做 |

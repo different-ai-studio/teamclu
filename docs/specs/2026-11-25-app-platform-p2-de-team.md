@@ -1,8 +1,8 @@
-# App 平台 P2 — 去 team 化（实施方案，草案）
+# App 平台 P2 — 去 team 化（实施方案）
 
 父 spec：`2026-11-24-app-platform-infra-decoupling-design.md`，见 §3、§5 和 §8 的 P2 行。
 前置：P1（Gitea 出平台）完成，代码在 `task/app-platform-p1-1`。
-本文先清点现状，再列出拆分步骤和待拍板的问题。§6 的问题定下来之前不写代码。
+本文清点现状，列出拆分步骤；§6 的 7 个问题已于 2026-11-25 拍板（全部按推荐）。
 
 ## 0. 目标与约束
 
@@ -148,22 +148,22 @@ amux.app_links                 TeamClu：(app_id PK, team_id, workspace_id, crea
 - belayo 的迁移是手工执行的；P2.1 和 P2.3 都要在 belayo 上执行，还要和 FC 镜像发布的顺序协调好。
 - 会话、知识库等 TeamClu 功能里用到 `apps.team_id` 的查询（会话列表 RPC、app 上下文快照）要改成经 `app_links`。
 
-## 6. 需要拍板
+## 6. 已拍板（2026-11-25，全部按推荐）
 
-1. **Delegation 封顶 write，agent 就不能部署主人的 app 了。** 父 spec §5 写的是「已确认接受」，但现状是创建者的 agent
-   拿到 admin、可以部署，「成员建 app、agent 部署」是主要流程（E2E 的容器用例就是这么走的）。封顶之后，这条流程需要
-   成员再额外授权 admin。是否仍按封顶执行？
-2. **slug 唯一性。** 现在是团队内唯一。去 team 之后有三个选项：改成 org 内唯一（同一个 org 下跨团队重名的 slug 要先处理）、
-   改成 `app_links (team_id, slug)` 唯一（留在 TeamClu）、或者干脆不再唯一（`app_code` 本来就是全局 id）。
-3. **删除团队时 app 怎么办。** 现在会被级联删除。去 team 之后，是 app 保留下来、只删 `app_links`（app 归 org 所有），
-   还是照旧随团队删除（经 `app_links` 级联）？如果保留，org 回收流程要改成显式删除 app。
-4. **授权给 org 的级别。** 父 spec 规定 org 授权只能是 read / write。现有 `visibility=team` 回填成 org read，
-   与现在「整个团队可读」相比，范围扩大到整个 org，这一点父 spec 已接受。新建 app 默认只有创建者可见，与现状一致。
-5. **创建者是没连账号的 agent 时**，`created_by_user_id` 回填成谁？候选：它的主人，或者留空（意味着这个 app 没有 admin，
-   只能由 org 管理员处理）。
-6. **兼容层放在哪。** 复用 `AppLifecycleHooks`，让它同时承担 forge 和 tenant 两类钩子；还是新建一组 `AppTenantHooks`？
-   后者更清楚，P3 拆 schema 时也更好切。
-7. **P2.5 收表是放在 P2 里做，还是和 P1.5 一样推迟到 P3？** 理由相同：P3 本来就要搬表，而且只要旧列还在，FC 回滚就始终安全。
+| # | 问题 | 决定 |
+|---|---|---|
+| Q1 | 代理人的级别 | **不封顶到 write，保留现状语义**：代理人拿到委托人的级别，最高可以部署；永远不能管授权、不能删 app。这两条由平台层强制（现在由 Cloud API 拦）。推翻父 spec §5「封顶 write」|
+| Q2 | slug 唯一性 | 改为 `(org_id, slug)` 唯一。迁移前先查同 org 下跨团队重名的 slug，有的话在迁移里加后缀 |
+| Q3 | 删除团队 | 保持现状：经 `app_links` 连带删除该团队的 app，org 回收流程不变 |
+| Q4 | org 授权与 Gitea | org 授权对应 Gitea org 下一个固定的「全员只读」team；现有团队可见回填为 org read |
+| Q5 | 没连账号的 agent 建的 app | `created_by_user_id` 回填为它的主人 |
+| Q6 | 兼容层 | 新建 `AppTenantHooks`，与 P1 的 forge 钩子分开 |
+| Q7 | 收表（P2.5） | 推迟到 P3。P2 到 P2.4 为止，旧列保留并持续双写，FC 回滚始终安全 |
+
+由此对上文的修正：
+- §3 的 P2.5 移到父 spec 的 P3 一并做；
+- `app_delegations` 不带封顶。平台判定代理人时，只排除「管授权」和「删 app」两项；
+- 删除团队时，由 `app_links` 上的级联删除连带删掉 app，触发器或外键的具体做法在 P2.1 设计时确定。
 
 ## 附录 A：FC 改动点（摘要）
 
