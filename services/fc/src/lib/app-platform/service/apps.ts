@@ -9,11 +9,6 @@
  * parts (teams, actors, workspaces, sessions) out behind AppTenantHooks.
  */
 import {
-  type AppAccessGrantee,
-  appAccessRecipientUserId,
-  publishAppAccessChanged,
-} from "../../app-access-notify.js";
-import {
   JOB_COLUMNS as CRON_JOB_COLUMNS,
   executeAppCronJob,
 } from "../../app-cron-runner.js";
@@ -35,11 +30,7 @@ import {
 import {
   type AppPermissionLevel,
   appLevelAtLeast,
-  callAgentInheritance,
   callCallerAppAccess,
-  higherAppLevel,
-  parseAppPermissionLevel,
-  storedAppPermissionLevel,
 } from "../../app-permission.js";
 import {
   appsRegion,
@@ -159,8 +150,6 @@ import {
   APP_COLUMNS,
   appFunctionTargetFromRow,
   appIso,
-  appRelationshipFor,
-  chunkedIn,
   slugify,
 } from "../../supabase-repo/shared.js";
 import {
@@ -203,15 +192,6 @@ function customDomainView(row: any) {
     dns: domain
       ? customDomainRecords({ id: row.id, slug: row.slug, appCode: row.app_code, usesAppCodeDomain: row.uses_app_code_domain, functionNamingMode: appFunctionTargetFromRow(row).functionNamingMode }, domain, row.custom_domain_token ?? "")
       : [],
-  };
-}
-
-function mapAppAccessRow(r: any) {
-  return {
-    memberId: r.member_id,
-    permissionLevel: storedAppPermissionLevel(r.permission_level) ?? r.permission_level,
-    grantedByMemberId: r.granted_by_member_id ?? null,
-    createdAt: appIso(r.created_at)!,
   };
 }
 
@@ -375,22 +355,26 @@ export function makeAppsRepo(host: any) {
     startDeploy, finalizeDeploy, deployUnavailableReason, gotrue, gotrueUnavailableReason,
     appData, appDataUnavailableReason, appStorage, appStorageUnavailableReason, appLogs, appLogsUnavailableReason,
     readRuntimeCatalog, readAppFunction, validateAppOrigin, readAppOriginSecurity,
-    publishSessionParticipantInbox, applyKeysetCursor, appEnvSecretKind, archiveSessionsForWorkspace,
+    applyKeysetCursor, appEnvSecretKind, tenant: tenantFactory,
   } = host;
 
-  /** Best-effort: a grant or revoke succeeds whether or not the hint lands. */
-  function scheduleAppAccessChanged(teamId: string, appId: string, grantee: AppAccessGrantee | null | undefined) {
-    if (!publishSessionParticipantInbox) return;
-    const userId = appAccessRecipientUserId(grantee);
-    if (!userId) return;
-    void publishAppAccessChanged({
-      teamId,
-      appId,
-      userId,
-      publish: publishSessionParticipantInbox,
-    }).catch((err: unknown) => {
-      console.error("[app-access] notify failed (swallowed):", err);
-    });
+  /** The caller's account id; 401 without one. */
+  async function currentUserId(): Promise<string> {
+    const { data: userData, error: userErr } = await getCurrentUser();
+    if (userErr) throw userErr;
+    const userId = userData?.user?.id;
+    if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+    return userId;
+  }
+
+  /** amux.caller_app_access, which this code cannot run without (P2.2). */
+  async function callerAccess(appId: string) {
+    const access = await callCallerAppAccess(supabase, appId);
+    if (access === undefined) {
+      throw new ApiError(503, "app_platform_schema_missing",
+        "the database is missing amux.caller_app_access (migration 20261126100000)");
+    }
+    return access;
   }
 
   /**
@@ -494,41 +478,6 @@ export function makeAppsRepo(host: any) {
     return out;
   }
 
-  /** The app row the agent path authorises against, read past `apps` RLS. */
-  async function readAppForAgentGitCredential(appId: string) {
-    const admin = await serviceRoleClient("read app for agent git credential");
-    const { data, error } = await admin
-      .from("apps")
-      .select("id, team_id, git_remote_url, git_auth_kind, created_by_actor_id")
-      .eq("id", appId)
-      .maybeSingle();
-    if (error) throw error;
-    return data ?? null;
-  }
-
-  /**
-   * The caller's `agent` actor in `teamId`, or null when the caller is not an
-   * agent there. `actors_team_user_idx` allows one actor per (team, user), so
-   * this is the daemon's own actor and never a human's.
-   */
-  async function resolveCurrentAgentActor(teamId: string): Promise<string | null> {
-    const { data: userData, error: userErr } = await getCurrentUser();
-    if (userErr) throw userErr;
-    const userId = userData?.user?.id;
-    if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-    const { data, error } = await supabase
-      .from("actors")
-      .select("id")
-      .eq("team_id", teamId)
-      .eq("user_id", userId)
-      .eq("actor_type", "agent")
-      .limit(1)
-      .maybeSingle();
-    if (error) throw error;
-    const id = data?.id;
-    return typeof id === "string" && id.trim() ? id : null;
-  }
-
   return {
     // --- Apps domain (production passthrough) ---
     //
@@ -536,8 +485,8 @@ export function makeAppsRepo(host: any) {
     // amux.apps / amux.sessions, so these methods carry no manual visibility
     // WHERE clause. mapApp exposes the canonical 12-key contract shape.
 
-    async listApps({ teamId, limit = 100 }: { teamId: string; limit?: number }) {
-      return (await this.listAppsPage({ teamId, limit })).items;
+    async listApps(input: { limit?: number; [scope: string]: unknown }) {
+      return (await this.listAppsPage(input)).items;
     },
 
     /**
@@ -549,15 +498,16 @@ export function makeAppsRepo(host: any) {
      * millisecond. `id` breaks ties so rows sharing a timestamp are neither
      * skipped nor repeated.
      */
-    async listAppsPage({ teamId, limit = 100, cursor = null }: {
-      teamId: string;
+    async listAppsPage({ limit = 100, cursor = null, ...scope }: {
       limit?: number;
       cursor?: { createdAt: string; id?: string | null } | null;
+      /** The tenant's own list arguments (AppTenantHooks.scopeList). */
+      [scope: string]: unknown;
     }) {
-      let query = supabase
+      const tenant = tenantFactory(this);
+      let query = tenant.scopeList(supabase
         .from("apps")
-        .select(APP_COLUMNS)
-        .eq("team_id", teamId)
+        .select(APP_COLUMNS), scope)
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
         .limit(limit);
@@ -565,12 +515,12 @@ export function makeAppsRepo(host: any) {
       const { data, error } = await query;
       if (error) throw error;
       const rows = data ?? [];
-      const viewer = await this.resolveAppViewer(teamId, rows.map((r: any) => r.id));
+      const extra = await tenant.decorate(rows);
       const last = rows.length >= limit ? rows[rows.length - 1] : null;
       return {
-        items: rows.map((r: any) => ({
+        items: rows.map((r: any, i: number) => ({
           ...appView(r),
-          ...appRelationshipFor(r, viewer.actorId, viewer.grants),
+          ...extra[i],
         })),
         nextCursor: last ? encodeCursor({ createdAt: String(last.created_at), id: last.id }) : null,
       };
@@ -589,8 +539,8 @@ export function makeAppsRepo(host: any) {
       // being a member of that org (amux.caller_sees_app), which is also what
       // `roles_select_org_member` asks — so the caller's token reads it, from
       // whichever team of the org they are in. `org_id` has been NOT NULL
-      // since 20260924100000; the team fallback is for rows older than that.
-      const orgId = raw.org_id ?? (await this.resolveTeamOrgId(app.teamId));
+      // since 20260924100000.
+      const orgId = raw.org_id ?? null;
       let organization: AppAuthInfo["organization"] = null;
       let roles: AppAuthInfo["roles"] = [];
       if (orgId) {
@@ -611,7 +561,7 @@ export function makeAppsRepo(host: any) {
       }
       return buildAppAuthInfo({
         appId: app.id,
-        teamId: app.teamId,
+        ...tenantFactory(this).authInfoFields(app),
         organization,
         roles,
         authMode: app.authMode,
@@ -631,63 +581,15 @@ export function makeAppsRepo(host: any) {
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
-      const viewer = await this.resolveAppViewer(data.team_id, [data.id]);
+      const [extra] = await tenantFactory(this).decorate([data]);
       const permission = await this.resolveAppCallerPermissionForApp(data);
-      return { ...appView(data), canManageDeployment: permission?.level === "admin", ...appRelationshipFor(data, viewer.actorId, viewer.grants),
+      return { ...appView(data), canManageDeployment: permission?.level === "admin", ...extra,
         originSecurity: projectOriginSecurity(await readAppOriginSecurity(data)) };
     },
 
-    /**
-     * The caller's member actor in this team, and which of `appIds` they hold a
-     * grant on (app id → who granted it).
-     *
-     * The grants are read with the service role, filtered to that actor and to
-     * apps RLS already showed the caller — so nothing the caller could not see
-     * leaves. The caller's own token cannot do this: `app_member_access_select`
-     * matches `current_member_id()`, the user's oldest actor, which hides their
-     * grants in every team after the first.
-     *
-     * Never fails the list. Without the grants every app still gets a
-     * relationship; only a team app the caller was also invited to reads as
-     * `team`, and an invited app loses the inviter's name.
-     */
-    async resolveAppViewer(
-      teamId: string,
-      appIds: string[],
-    ): Promise<{ actorId: string | null; grants: Map<string, string | null> | null }> {
-      const { data: userData, error: userErr } = await getCurrentUser();
-      if (userErr) throw userErr;
-      const userId = userData?.user?.id;
-      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      // Member or agent, so an agent's own apps read as its own.
-      const actorId = (await this.resolveCurrentActor(teamId, userId))?.id ?? null;
-      if (!actorId || appIds.length === 0) return { actorId, grants: null };
-      try {
-        const admin = await serviceRoleClient("read the caller's app grants");
-        const rows = await chunkedIn(appIds, async (chunk) => {
-          const { data, error } = await admin
-            .from("app_member_access")
-            .select("app_id, granted_by_member_id")
-            .eq("member_id", actorId)
-            .in("app_id", chunk);
-          if (error) throw error;
-          return data ?? [];
-        });
-        return {
-          actorId,
-          grants: new Map(rows.map((g: any) => [g.app_id, g.granted_by_member_id ?? null])),
-        };
-      } catch (e) {
-        console.warn(`[apps] app grants unavailable for the list: ${String(e)}`);
-        return { actorId, grants: null };
-      }
-    },
-
     async createApp(input: {
-      teamId: string;
       name: string;
       type: string;
-      visibility?: string;
       gitRemoteUrl?: string | null;
       /**
        * The code is already a git checkout on the caller's machine, so this
@@ -699,83 +601,30 @@ export function makeAppsRepo(host: any) {
        * Gitea repo it never pushes to.
        */
       localOnly?: boolean;
-      /**
-       * Actors (in practice: agents) to grant `write` on the new app. Agents
-       * get no access by default (spec decision 6); this is the create
-       * dialog's "also grant these agents" list. A grant that fails is logged
-       * and skipped — it must not undo a created app.
-       */
-      grantActorIds?: string[];
+      /** The tenant's own create arguments (AppTenantHooks.prepareCreate). */
+      [tenantField: string]: unknown;
     }) {
-      // Resolve the caller's actor in this team — the RLS insert policy
-      // (created_by_actor_id = amux.current_actor_id_for_team(team_id)) requires
-      // it. A member or an agent: a daemon's agent creates apps for the agents
-      // on its machine (`amuxd app create`), and that policy takes any actor.
-      const { data: userData, error: userErr } = await getCurrentUser();
-      if (userErr) throw userErr;
-      const userId = userData?.user?.id;
-      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      const resolved = await this.resolveCurrentActor(input.teamId, userId);
-      if (!resolved?.id) throw new ApiError(403, "forbidden", "not a member of this team");
-      const createdByActorId = resolved.id;
-      // `workspaces.created_by_member_id` references `amux.members`, which an
-      // agent is not; its insert policy takes null.
-      const createdByMemberId = resolved.actorType === "agent" ? null : createdByActorId;
+      // The tenant authorizes the create and says which org the app is in
+      // (it throws to refuse); nothing has been written yet.
+      const tenant = tenantFactory(this);
+      const placement = await tenant.prepareCreate(input);
       const slug = slugify(input.name);
-      const visibility = input.visibility === "team" ? "team" : "personal";
       const importUrl = input.gitRemoteUrl?.trim() || null;
       const localOnly = input.localOnly === true;
       if (!importUrl && !localOnly) forge.assertCanHostRepo();
-
-      // The app's tenant, settled here rather than at the first finalize.
-      //
-      // `apps.org_id` is a live tenant pointer (migration 20260923200000): the
-      // login page narrows its account picker by it and the proxy gateway
-      // resolves admission against it, so an app that reaches either of them
-      // without one is simply broken — and it used to reach them that way for
-      // its whole life before a successful deploy.
-      //
-      // `teams.oid` is nullable by design (a team is created before it has an
-      // org), so this can legitimately fail. It is answered with a 409 naming
-      // the cause, because the alternative once org_id is NOT NULL is a
-      // constraint violation surfacing as a 500 at the moment someone is
-      // trying to create an app.
-      const appOrgId = await this.resolveTeamOrgId(input.teamId);
-      if (!appOrgId) {
-        throw new ApiError(
-          409,
-          "team_has_no_org",
-          "该团队尚未关联组织，无法创建应用",
-        );
-      }
-
-      // 1:1 workspace for the app. created_by_member_id = the resolved actor so
-      // the workspace RLS insert policy is satisfied (same actor identity).
-      const { data: ws, error: wsErr } = await supabase
-        .from("workspaces")
-        .insert({
-          team_id: input.teamId,
-          created_by_member_id: createdByMemberId,
-          name: `app-${slug}-${Math.random().toString(36).slice(2, 8)}`,
-        })
-        .select("id")
-        .single();
-      if (wsErr) throw wsErr;
+      const tenantColumns = await placement.writeColumns({ slug });
 
       let row: any;
       for (let attempt = 0; attempt < 5; attempt++) {
         const result = await supabase
           .from("apps")
           .insert({
-            team_id: input.teamId,
-            created_by_actor_id: createdByActorId,
-            org_id: appOrgId,
+            ...tenantColumns,
+            org_id: placement.orgId,
             function_naming_mode: "app_code",
             name: input.name,
             slug,
             type: input.type,
-            visibility,
-            workspace_id: ws.id,
             git_remote_url: importUrl,
             // A local checkout needs no provisioning at all — the files are
             // already there. Leaving it `pending` would send the desktop down
@@ -790,7 +639,7 @@ export function makeAppsRepo(host: any) {
           break;
         }
         // Retry only the random-code collision; name/slug and other errors
-        // must still reach the caller. Reuse the workspace already created.
+        // must still reach the caller. Reuse the tenant's columns as written.
         if (
           result.error.code !== "23505" ||
           !String(result.error.message).includes('"apps_app_code_key"') ||
@@ -800,14 +649,7 @@ export function makeAppsRepo(host: any) {
         }
       }
 
-      for (const actorId of [...new Set(input.grantActorIds ?? [])]) {
-        if (typeof actorId !== "string" || !actorId || actorId === resolved.id) continue;
-        try {
-          await this.setAppAccess(row.id, actorId, "write");
-        } catch (e) {
-          console.warn(`[apps] initial grant to ${actorId} on ${row.id} skipped: ${String((e as Error)?.message ?? e)}`);
-        }
-      }
+      await placement.created(row);
 
       // Both import paths stop here: the app's code lives somewhere we did not
       // provision, so there is no repo of ours to create and no deploy key to
@@ -883,7 +725,7 @@ export function makeAppsRepo(host: any) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, org_id, created_by_actor_id, custom_domain, deploy_token, deploy_started_at, visibility",
+          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, org_id, custom_domain, deploy_token, deploy_started_at, visibility",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -904,11 +746,7 @@ export function makeAppsRepo(host: any) {
       // emphatically no escalation: a row we cannot read is not one we may
       // write with a service-role client.
       if (!cur) return null;
-      const callerPermission = await this.resolveAppCallerPermissionForApp({
-        id: appId,
-        team_id: cur.team_id,
-        created_by_actor_id: cur.created_by_actor_id,
-      });
+      const callerPermission = await this.resolveAppCallerPermissionForApp({ id: appId });
       if (callerPermission?.level !== "admin") return null;
       if (patch.fcStatus === "deploy_error") {
         if (!patch.deployToken || patch.deployToken !== cur.deploy_token) {
@@ -935,9 +773,9 @@ export function makeAppsRepo(host: any) {
 
       const set: any = { updated_at: new Date().toISOString() };
       if (typeof patch.name === "string" && patch.name.length > 0) set.name = patch.name;
-      if (patch.visibility === "team" || patch.visibility === "personal") {
-        set.visibility = patch.visibility;
-      }
+      // The tenant's own fields of the patch (TeamClu: visibility).
+      const tenantSet = tenantFactory(this).updateColumns(patch);
+      Object.assign(set, tenantSet);
       // Written as-is and nothing else moves: whether the function gets a
       // database is decided at the next finalize (needsDatabase), which also
       // stamps `deployed_type`. Switching away from data_app never drops the
@@ -994,10 +832,9 @@ export function makeAppsRepo(host: any) {
           const wanted = [
             ...new Set(rules.flatMap((r) => (Array.isArray(r.roles) ? r.roles : []))),
           ];
-          if (wanted.length > 0 && cur?.team_id) {
-            // The app's org, not its team's (P2.3); the same since
-            // 20260923200000 except for rows from before org_id existed.
-            const orgId = cur.org_id ?? (await this.resolveTeamOrgId(cur.team_id));
+          if (wanted.length > 0 && cur) {
+            // The app's org (P2.3); NOT NULL since 20260924100000.
+            const orgId = cur.org_id ?? null;
             if (orgId) {
               const rolesClient =
                 typeof supabase?.schema === "function"
@@ -1040,7 +877,7 @@ export function makeAppsRepo(host: any) {
             // the app.
             set.provision_error = null;
           }
-        } else if (set.name === undefined && set.visibility === undefined && set.type === undefined) {
+        } else if (set.name === undefined && Object.keys(tenantSet).length === 0 && set.type === undefined) {
           // A settings edit that carries a stale provisionStatus along is still
           // a settings edit; only a PATCH that is nothing BUT the illegal
           // transition is refused.
@@ -1085,8 +922,9 @@ export function makeAppsRepo(host: any) {
       }
       // The proxy caches auth settings per host; without this a saved rule waits out the TTL.
       invalidateAppHosts({ id: appId, slug: cur.slug, appCode: cur.app_code, usesAppCodeDomain: cur.uses_app_code_domain, customDomain: cur.custom_domain });
-      // Team visibility is read access for the whole team in Gitea too.
-      if (set.visibility !== undefined && set.visibility !== cur.visibility) await forge.appAccessChanged(appId);
+      // A tenant field that changed may change who reaches the app (TeamClu:
+      // visibility is read access for the whole org in the forge too).
+      if (Object.keys(tenantSet).some((k) => tenantSet[k] !== cur[k])) await forge.appAccessChanged(appId);
       return appView(data);
     },
 
@@ -1104,16 +942,12 @@ export function makeAppsRepo(host: any) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "id, slug, app_code, function_naming_mode, uses_app_code_domain, team_id, created_by_actor_id, custom_domain, custom_domain_token, custom_domain_verified_at",
+          "id, slug, app_code, function_naming_mode, uses_app_code_domain, custom_domain, custom_domain_token, custom_domain_verified_at",
         )
         .eq("id", appId)
         .maybeSingle();
       if (!cur) return null;
-      const permission = await this.resolveAppCallerPermissionForApp({
-        id: appId,
-        team_id: cur.team_id,
-        created_by_actor_id: cur.created_by_actor_id,
-      });
+      const permission = await this.resolveAppCallerPermissionForApp({ id: appId });
       if (permission?.level !== "admin") return null;
       const callerIsCreator = await this.isAppCreator(cur);
       const writer = callerIsCreator
@@ -1240,7 +1074,7 @@ export function makeAppsRepo(host: any) {
     // the conditional writes below read as a lost race. Same escalation as
     // updateApp and authorizeCustomDomainWrite. Only called after the caller
     // was resolved as `admin`.
-    async appDeployWriter(app: { id: string; team_id: string; created_by_actor_id: string | null }) {
+    async appDeployWriter(app: { id: string }) {
       return (await this.isAppCreator(app))
         ? supabase
         : await serviceRoleClient("write app deploy state authorized by an admin grant");
@@ -1248,7 +1082,7 @@ export function makeAppsRepo(host: any) {
 
     async preflightAppDeploy(appId: string, input: { revision?: string; gitCommitSha?: string; declaration?: unknown; migrationIntent?: boolean }) {
       const { data: existing, error } = await supabase.from("apps")
-        .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, team_id, created_by_actor_id, provision_status, git_auth_kind, git_remote_url, fc_status, deploy_started_at, deploy_token, deploy_attempt_id")
+        .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, provision_status, git_auth_kind, git_remote_url, fc_status, deploy_started_at, deploy_token, deploy_attempt_id")
         .eq("id", appId).maybeSingle();
       if (error) throw error;
       if (!existing) return null;
@@ -1313,7 +1147,7 @@ export function makeAppsRepo(host: any) {
         throw new ApiError(400, "validation_failed", "deployToken is required");
       }
       const { data: existing, error } = await supabase.from("apps")
-        .select("id, team_id, created_by_actor_id").eq("id", appId).maybeSingle();
+        .select("id").eq("id", appId).maybeSingle();
       if (error) throw error;
       if (!existing) return null;
       if ((await this.resolveAppCallerPermissionForApp(existing))?.level !== "admin") return null;
@@ -1338,7 +1172,7 @@ export function makeAppsRepo(host: any) {
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind, git_remote_url")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind, git_remote_url")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -1456,7 +1290,7 @@ export function makeAppsRepo(host: any) {
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, deploy_use_app_code_domain, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, git_auth_kind")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, deploy_use_app_code_domain, org_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, git_auth_kind")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -1518,7 +1352,7 @@ export function makeAppsRepo(host: any) {
         // re-deriving after it changes would provision a brand-new empty schema
         // in a different database and take the app live with no data. Deploy
         // where the data already is.
-        const orgId = existing.org_id ?? (await this.resolveTeamOrgId(existing.team_id));
+        const orgId = existing.org_id ?? null;
         // A FRESH storage token every finalize, sealed and injected in the same
         // breath. Reusing an existing one looks tempting and is the exact trap
         // the app's Postgres password documents at app-postgres.ts:28 - a
@@ -1639,7 +1473,7 @@ export function makeAppsRepo(host: any) {
     ): Promise<{ target: AppDataTarget } | null> {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, slug, team_id, org_id, type, fc_endpoint, created_by_actor_id")
+        .select("id, slug, org_id, type, fc_endpoint")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -1662,14 +1496,8 @@ export function makeAppsRepo(host: any) {
         throw new ApiError(409, "app_not_deployed", "the database is created by the first deploy");
       }
 
-      let orgId = app.org_id ?? null;
-      if (!orgId) {
-        // A row that predates apps.org_id. Deriving is the best we can do and
-        // it is the one case where we may be pointed at the wrong database
-        // (design §3.1) — so it goes in the log, without any of the data.
-        orgId = await this.resolveTeamOrgId(app.team_id);
-        console.warn(`[apps] app ${appId} has no org_id; deriving it from the team`);
-      }
+      // NOT NULL since 20260924100000; the check stays for its clear 409.
+      const orgId = app.org_id ?? null;
       if (!orgId) {
         throw new ApiError(409, "app_org_unknown", "this app is not associated with an org database");
       }
@@ -1763,7 +1591,7 @@ export function makeAppsRepo(host: any) {
     async getAppRuntimeInfo(appId: string, language?: AppLanguage) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, team_id, type, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, artifact_verification, git_commit_sha, env_deployed_at, updated_at, undeploy_operation")
+        .select("id, slug, app_code, function_naming_mode, type, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, artifact_verification, git_commit_sha, env_deployed_at, updated_at, undeploy_operation")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -1855,7 +1683,7 @@ export function makeAppsRepo(host: any) {
     async getAppLogs(appId: string, query: any = {}) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, team_id, type, fc_status, fc_endpoint, fc_function_name, created_by_actor_id")
+        .select("id, slug, app_code, function_naming_mode, type, fc_status, fc_endpoint, fc_function_name")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -1908,152 +1736,41 @@ export function makeAppsRepo(host: any) {
       }
     },
 
-    async listAppSessions(appId: string) {
-      // RLS on sessions governs visibility; a caller who cannot see the app's
-      // sessions gets an empty list.
-      const { data, error } = await supabase
-        .from("sessions")
-        .select("id, team_id, title, mode, last_message_at, created_at, updated_at")
-        .eq("app_id", appId);
-      if (error) throw error;
-      return (data ?? []).map((r: any) => ({
-        id: r.id,
-        teamId: r.team_id,
-        title: r.title ?? "",
-        mode: r.mode ?? "collab",
-        lastMessageAt: appIso(r.last_message_at),
-        createdAt: appIso(r.created_at)!,
-        updatedAt: appIso(r.updated_at)!,
-      }));
+    /**
+     * Whether the caller created this app (by account, inside its org).
+     *
+     * Every caller uses this to pick the client for an `apps` UPDATE, so it
+     * says exactly what `apps_update_if_creator` says — the platform's creator
+     * test, `caller_app_access.is_creator` (20261126200000). Answering
+     * "creator" where that policy says no would turn the write into a silent
+     * zero-row match.
+     */
+    async isAppCreator(app: { id: string }): Promise<boolean> {
+      await currentUserId();
+      return (await callerAccess(app.id))?.isCreator === true;
     },
 
     /**
-     * Whether the caller is the actor that created this app.
+     * The caller's level on an app, from the platform model
+     * (`amux.caller_app_access`, 20261126100000): creator, user grants, and
+     * delegations (an agent acting for its owner) inside the app's org. Null
+     * is no access.
      *
-     * The creator-only gate for operations with side effects outside Postgres,
-     * which RLS cannot roll back. RLS still has the last word on the write
-     * itself; this only makes sure nothing irreversible happens first.
+     * `inherited` is true when the level came through a delegation. The
+     * callers that change who has access, or delete the app, refuse such a
+     * caller (`assertNotInheritedFor`): those are the two things a delegate
+     * never does on its principal's behalf (§6 Q1). `callerUserId` is the
+     * account the platform records as having acted.
      */
-    async isAppCreator(app: { id: string; team_id: string; created_by_actor_id: string | null }): Promise<boolean> {
-      const { data: userData, error: userErr } = await getCurrentUser();
-      if (userErr) throw userErr;
-      const userId = userData?.user?.id;
-      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      // Member or agent: a daemon's agent creates apps too, and is their creator.
-      //
-      // Every caller uses this to pick the client for an `apps` UPDATE, so it
-      // must say exactly what `apps_update_if_creator` says — otherwise the
-      // caller's own token meets a policy that refuses it and the write is a
-      // silent zero-row match. Since 20261126200000 that policy is the
-      // platform's creator test (`caller_app_access.is_creator`), so this asks
-      // the same function. A database without it still has the actor policy.
-      const platform = await callCallerAppAccess(supabase, app.id);
-      if (platform !== undefined) return platform?.isCreator === true;
-      const resolved = await this.resolveCurrentActor(app.team_id, userId);
-      return Boolean(resolved?.id) && app.created_by_actor_id === resolved!.id;
-    },
-
-    /**
-     * `public.orgs.id` for a team (`amux.teams.oid`). Null when the team has
-     * no org — data_app finalize then fails with a clear error rather than
-     * inventing a shared database.
-     */
-    async resolveTeamOrgId(teamId: string): Promise<string | null> {
-      const { data, error } = await supabase
-        .from("teams")
-        .select("oid")
-        .eq("id", teamId)
-        .maybeSingle();
-      if (error) throw error;
-      const oid = data?.oid;
-      return typeof oid === "string" && oid.trim() ? oid.trim() : null;
-    },
-
-    /**
-     * Effective per-app permission for the caller. Creator → admin; no access row
-     * and not creator → null. Used for git credentials and deploy gates.
-     *
-     * The creator may be an agent actor — a daemon creating apps for the agents
-     * on its machine (`amuxd app`) — and administers its own apps like anyone
-     * else. Since 20261117000000 an agent can also be a grantee:
-     * `app_member_access.member_id` references `amux.actors`, and grants are
-     * looked up by the caller's actor id. `callerMemberId` is still null for an
-     * agent, because the other `*_member_id` columns it is written to (who set
-     * an env var, who made a cron job) reference `amux.members`;
-     * `callerActorId` is the caller either way, and is what a grant records as
-     * its grantor.
-     *
-     * Since 20261120120000 an active agent also inherits its owner's level
-     * (`amux.agent_inherited_app_level`; the rule lives in the database). The
-     * higher of the agent's own grant and the inherited level wins.
-     * `inherited` is true when the level came from the owner — the callers
-     * that change who has access, or delete the app, refuse such a caller
-     * (`assertNotInheritedFor`): those are the two things a bot never does on
-     * its owner's behalf.
-     */
-    async resolveAppCallerPermissionForApp(app: {
-      id: string;
-      team_id: string;
-      created_by_actor_id: string | null;
-    }): Promise<{
+    async resolveAppCallerPermissionForApp(app: { id: string }): Promise<{
       level: AppPermissionLevel;
-      /**
-       * The caller's actor in the app's team, for what the legacy tables
-       * record (who granted, who set an env var). Null for a caller with a
-       * level but no actor there — an agent reaching its owner's app in
-       * another team of the same org.
-       */
-      callerActorId: string | null;
-      callerMemberId: string | null;
       inherited: boolean;
+      callerUserId: string;
     } | null> {
-      const { data: userData, error: userErr } = await getCurrentUser();
-      if (userErr) throw userErr;
-      const userId = userData?.user?.id;
-      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-
-      const resolved = await this.resolveCurrentActor(app.team_id, userId);
-      const callerActorId = resolved?.id ?? null;
-      const isAgent = resolved?.actorType === "agent";
-      const callerMemberId = callerActorId && !isAgent ? callerActorId : null;
-
-      // The level is the platform's (20261126100000): creator, user grants and
-      // delegations inside the app's org, by account rather than by actor.
-      // Since P2.3 the caller needs no actor in the app's team for it.
-      const platform = await callCallerAppAccess(supabase, app.id);
-      if (platform !== undefined) {
-        if (!platform) return null;
-        return { level: platform.level, callerActorId, callerMemberId, inherited: platform.delegated };
-      }
-
-      // A database without that migration: the legacy actor rule.
-      if (!callerActorId) return null;
-      if (app.created_by_actor_id === callerActorId) {
-        return { level: "admin", callerActorId, callerMemberId, inherited: false };
-      }
-
-      const { data: access, error: accErr } = await supabase
-        .from("app_member_access")
-        .select("permission_level")
-        .eq("app_id", app.id)
-        .eq("member_id", callerActorId)
-        .maybeSingle();
-      if (accErr) throw accErr;
-      const granted = storedAppPermissionLevel(access?.permission_level);
-
-      let inheritedLevel: AppPermissionLevel | null = null;
-      if (isAgent && granted !== "admin") {
-        const viaOwner = await callAgentInheritance(supabase, "agent_inherited_app_level", {
-          p_app_id: app.id,
-          p_actor_id: callerActorId,
-        });
-        inheritedLevel = storedAppPermissionLevel(viaOwner);
-      }
-
-      const level = higherAppLevel(granted, inheritedLevel);
-      if (!level) return null;
-      const inherited = level !== granted;
-      return { level, callerActorId, callerMemberId, inherited };
+      const callerUserId = await currentUserId();
+      const access = await callerAccess(app.id);
+      if (!access) return null;
+      return { level: access.level, inherited: access.delegated, callerUserId };
     },
 
     /**
@@ -2075,90 +1792,6 @@ export function makeAppsRepo(host: any) {
     },
 
     /**
-     * Who, if anyone, the caller is for this app's git credentials — and the
-     * app row to act on. One rule, shared by mint and revoke, so the two can
-     * never drift apart.
-     */
-    async resolveAppGitCredentialActor(
-      appId: string,
-    ): Promise<{ actorId: string; app: Record<string, any>; readOnly: boolean } | null> {
-      const { data: visible, error: selErr } = await supabase
-        .from("apps")
-        .select("id, team_id, visibility, git_remote_url, git_auth_kind, created_by_actor_id")
-        .eq("id", appId)
-        .maybeSingle();
-      if (selErr) throw selErr;
-
-      if (visible) {
-        const permission = await this.resolveAppCallerPermissionForApp(visible);
-        // A member the app knows about is answered on the member rules alone,
-        // never by falling through to the agent path below. `read` may download
-        // the code but not push to it, so its key cannot push.
-        //
-        // An agent's `read` grant does not narrow its key. The agent path below
-        // still gives every agent of the team a writable one (phase 1 leaves it
-        // alone — the daemon's own seed/clone/deploy run on it), so narrowing
-        // here would hand a granted agent less than an ungranted one.
-        // A caller with a level but no actor in the app's team (an agent
-        // reaching its owner's app in another team) has no one to issue the
-        // credential to here; it falls through to the paths below.
-        if (permission?.callerActorId) {
-          return {
-            actorId: permission.callerActorId,
-            app: visible,
-            readOnly: permission.level === "read" && permission.callerMemberId !== null,
-          };
-        }
-        // A teammate with no grant on a team-visible app. The app list shows it
-        // to them with a download button, and refusing the repo made that
-        // button a dead end — while their own daemon, on the agent path below,
-        // could already push to it. Same terms as `read`.
-        if (visible.visibility === "team") {
-          const { data: userData, error: userErr } = await getCurrentUser();
-          if (userErr) throw userErr;
-          const userId = userData?.user?.id;
-          const member = userId
-            ? await this.resolveCurrentMemberActor(visible.team_id, userId)
-            : null;
-          if (member?.id) return { actorId: member.id, app: visible, readOnly: true };
-        }
-      }
-
-      // Agent-actor path. The daemon holds its own cloud account, so it never
-      // resolves to a member actor and the member rules above always decline
-      // it — yet the daemon is the only thing on the machine that can hand
-      // `git push` a credential (the agent's own push has none, and the key is
-      // deliberately not persisted anywhere). Authorisation is therefore
-      // team-scoped: any agent actor in the app's team may mint a key for a
-      // Gitea-managed app in that team.
-      //
-      // Coarser than the per-app member rules on purpose, and accepted when
-      // this path was chosen. An agent can hold a per-app grant now, and that
-      // grant is what Gitea enforces on its own HTTPS pushes; this deploy-key
-      // path keeps the team-wide rule until the daemon's git moves to HTTPS and
-      // the keys are retired (phase-1 plan, "旧 deploy key 路径"). The blast
-      // radius is one repo per key, and the key's title names the agent actor.
-      //
-      // The row is re-read with the service role because `apps.visibility`
-      // defaults to `personal`, which `apps_select_if_visible` hides from every
-      // actor but the creator — including the daemon of the very machine the
-      // app is checked out on.
-      const app = visible ?? (await readAppForAgentGitCredential(appId));
-      if (!app) return null;
-      const agentActorId = await resolveCurrentAgentActor(app.team_id);
-      if (!agentActorId) return null;
-      return { actorId: agentActorId, app, readOnly: false };
-    },
-
-    async getAppGitCredential(appId: string) {
-      const resolved = await this.resolveAppGitCredentialActor(appId);
-      if (!resolved) return null;
-      return forge.issueCredential(resolved.app as { id: string }, resolved.actorId, {
-        readOnly: resolved.readOnly,
-      });
-    },
-
-    /**
      * Authorize a write to an app's stored repo credential, and hand back the
      * client that can do it. Same gate as updateApp: `admin` on an app the
      * caller can already see, with the service role only for an admin grantee
@@ -2167,7 +1800,7 @@ export function makeAppsRepo(host: any) {
     async authorizeAppGitCredentialWrite(appId: string): Promise<{ cur: any; writer: any } | null> {
       const { data: cur, error } = await supabase
         .from("apps")
-        .select("id, team_id, created_by_actor_id, git_remote_url, git_auth_kind")
+        .select("id, git_remote_url, git_auth_kind")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -2228,24 +1861,6 @@ export function makeAppsRepo(host: any) {
     },
 
     /**
-     * Hand a JIT key back the moment its holder is done with it
-     * (`amuxd git-ssh` calls this as soon as ssh exits).
-     *
-     * Authorised exactly like minting, and the key must carry the caller's own
-     * actor in its title — otherwise revoking would be a way to kill a push
-     * another machine is in the middle of.
-     */
-    async revokeAppGitCredential(appId: string, credentialId: number) {
-      const resolved = await this.resolveAppGitCredentialActor(appId);
-      if (!resolved) return null;
-      const { actorId } = resolved;
-      const revoked = await forge.revokeCredential(resolved.app as { id: string }, actorId, credentialId);
-      // `revoked: false` is not an error the caller can act on — the key is
-      // unusable either way, which is the whole point of asking.
-      return { revoked };
-    },
-
-    /**
      * Default-branch HEAD on the app's Gitea repo.
      *
      * `compare` is opt-in because the deploy path calls this on every deploy
@@ -2265,208 +1880,6 @@ export function makeAppsRepo(host: any) {
       return forge.repoHead(existing, { compare: opts.compare === true });
     },
 
-    async getAppMembership(appId: string) {
-      const { data: userData, error: userErr } = await getCurrentUser();
-      if (userErr) throw userErr;
-      const userId = userData?.user?.id;
-      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      // Bypass apps RLS: membership is team-scoped, not visibility-scoped. A
-      // logged-in user checking access to a deployed app may not pass
-      // apps_select_if_visible yet still need a truthful member/non-member answer.
-      const admin = await serviceRoleClient("read app team for membership check");
-      const { data: row, error } = await admin
-        .from("apps")
-        .select("id, team_id")
-        .eq("id", appId)
-        .maybeSingle();
-      if (error) throw error;
-      if (!row) return null;
-      const resolved = await this.resolveCurrentMemberActor(row.team_id, userId);
-      return { member: Boolean(resolved?.id) };
-    },
-
-    /**
-     * Creator or `admin` grant on this app — required to list/set/remove access.
-     * Returns null when the app is not visible or the caller lacks manage rights
-     * (routes surface 404 to avoid leaking app existence).
-     */
-    async resolveAppAccessManager(appId: string): Promise<{
-      callerActorId: string;
-      callerMemberId: string | null;
-      teamId: string;
-    } | null> {
-      const { data: app, error } = await supabase
-        .from("apps")
-        .select("id, team_id, created_by_actor_id")
-        .eq("id", appId)
-        .maybeSingle();
-      if (error) throw error;
-      if (!app) return null;
-
-      const permission = await this.resolveAppCallerPermissionForApp(app);
-      if (!permission || permission.level !== "admin") return null;
-      this.assertNotInheritedFor(permission, "manage_access");
-      return {
-        callerActorId: permission.callerActorId,
-        callerMemberId: permission.callerMemberId,
-        teamId: app.team_id,
-      };
-    },
-
-    async listAppAccess(appId: string) {
-      const manager = await this.resolveAppAccessManager(appId);
-      if (!manager) return null;
-      // RLS only exposes all rows to the creator; admin grantees see self only.
-      // After the manage gate, read the full grant list with service role.
-      const admin = await serviceRoleClient("list app member access");
-      const { data, error } = await admin
-        .from("app_member_access")
-        .select("member_id, permission_level, granted_by_member_id, created_at")
-        .eq("app_id", appId)
-        .order("created_at", { ascending: true });
-      if (error) throw error;
-      const rows = data ?? [];
-
-      // The agents that reach the app through their owner (20261120120000).
-      // Listed after the grants, read-only: the way to take one away is to
-      // take its owner's access away.
-      const inheritedRows = await callAgentInheritance(admin, "app_inherited_agents", { p_app_id: appId });
-      const granted = new Set(rows.map((r: any) => r.member_id));
-      const inherited = ((inheritedRows ?? []) as any[]).filter(
-        (r) => r.agent_id && !granted.has(r.agent_id) && storedAppPermissionLevel(r.permission_level),
-      );
-
-      // Who each grantee is: the access tab shows agents apart from people,
-      // greys out an agent whose daemon never claimed an account, and shows
-      // the NAME from here — the caller's own directory hides agents it may
-      // not talk to, which left those rows as bare ids.
-      const ids = [
-        ...new Set(
-          [
-            ...rows.map((r: any) => r.member_id),
-            ...inherited.flatMap((r) => [r.agent_id, r.owner_actor_id]),
-          ].filter(Boolean),
-        ),
-      ];
-      const actors = new Map<string, any>();
-      if (ids.length > 0) {
-        const found = await chunkedIn(ids, async (chunk) => {
-          const { data: actorRows, error: actorErr } = await admin
-            .from("actors")
-            .select("id, actor_type, user_id, display_name")
-            .in("id", chunk);
-          if (actorErr) throw actorErr;
-          return actorRows ?? [];
-        });
-        for (const a of found) actors.set(a.id, a);
-      }
-      const describe = (actorId: string) => {
-        const actor = actors.get(actorId);
-        return {
-          actorType: actor?.actor_type ?? null,
-          connected: actor ? actor.actor_type !== "agent" || !!actor.user_id : null,
-          displayName: actor?.display_name ?? null,
-        };
-      };
-      return [
-        ...rows.map((r: any) => ({
-          ...mapAppAccessRow(r),
-          ...describe(r.member_id),
-          inherited: false,
-          inheritedFrom: null,
-        })),
-        ...inherited.map((r) => ({
-          memberId: r.agent_id,
-          permissionLevel: storedAppPermissionLevel(r.permission_level)!,
-          grantedByMemberId: null,
-          createdAt: null,
-          ...describe(r.agent_id),
-          inherited: true,
-          inheritedFrom: { actorId: r.owner_actor_id, displayName: actors.get(r.owner_actor_id)?.display_name ?? null },
-        })),
-      ];
-    },
-
-    async setAppAccess(appId: string, memberId: string, permissionLevel: string) {
-      const level = parseAppPermissionLevel(permissionLevel);
-      const manager = await this.resolveAppAccessManager(appId);
-      if (!manager) return null;
-      // RLS manage policy is creator-only; admin grantees write via service role.
-      const admin = await serviceRoleClient("manage app member access");
-      // The grantee is any actor in the app's team — a member or an agent. The
-      // database trigger enforces the team boundary; checking here first turns
-      // its 23514 into a sentence the access tab can show, and catches an agent
-      // that has no account yet (a device agent before its daemon claimed it),
-      // which could hold the row but never act on it.
-      const { data: grantee, error: granteeErr } = await admin
-        .from("actors")
-        .select("id, team_id, actor_type, user_id")
-        .eq("id", memberId)
-        .maybeSingle();
-      if (granteeErr) throw granteeErr;
-      if (!grantee || grantee.team_id !== manager.teamId
-          || (grantee.actor_type !== "member" && grantee.actor_type !== "agent")) {
-        throw new ApiError(422, "grantee_not_in_team", "the grantee must be a member or agent of the app's team");
-      }
-      if (grantee.actor_type === "agent" && !grantee.user_id) {
-        throw new ApiError(422, "agent_not_connected", "this agent has no account yet; connect its daemon first");
-      }
-      const { data: priorAccess, error: priorErr } = await admin
-        .from("app_member_access")
-        .select("permission_level")
-        .eq("app_id", appId)
-        .eq("member_id", memberId)
-        .maybeSingle();
-      if (priorErr) throw priorErr;
-      const now = new Date().toISOString();
-      const { data, error } = await admin
-        .from("app_member_access")
-        .upsert(
-          {
-            app_id: appId,
-            member_id: memberId,
-            permission_level: level,
-            granted_by_member_id: manager.callerActorId,
-            updated_at: now,
-          },
-          { onConflict: "app_id,member_id" },
-        )
-        .select("member_id, permission_level, granted_by_member_id, created_at")
-        .single();
-      if (error) throw error;
-      const priorLevel = storedAppPermissionLevel(priorAccess?.permission_level);
-      if (level === "read" && priorLevel && appLevelAtLeast(priorLevel, "write")) {
-        await forge.memberWriteRevoked(appId, memberId);
-      }
-      await forge.appAccessChanged(appId);
-      scheduleAppAccessChanged(manager.teamId, appId, grantee);
-      return mapAppAccessRow(data);
-    },
-
-    async removeAppAccess(appId: string, memberId: string) {
-      const manager = await this.resolveAppAccessManager(appId);
-      if (!manager) return null;
-      const admin = await serviceRoleClient("manage app member access");
-      // Who to tell, read before the row goes. A failed lookup only costs the
-      // hint; the revoke itself must not depend on it.
-      const { data: grantee, error: granteeErr } = await admin
-        .from("actors")
-        .select("actor_type, user_id")
-        .eq("id", memberId)
-        .maybeSingle();
-      if (granteeErr) console.warn(`[app-access] grantee lookup for ${memberId} failed: ${granteeErr.message}`);
-      const { error } = await admin
-        .from("app_member_access")
-        .delete()
-        .eq("app_id", appId)
-        .eq("member_id", memberId);
-      if (error) throw error;
-      await forge.memberWriteRevoked(appId, memberId);
-      await forge.appAccessChanged(appId);
-      scheduleAppAccessChanged(manager.teamId, appId, granteeErr ? null : grantee);
-      return true;
-    },
-
     // --- App file storage (design 2026-09-09-app-storage-design) ---
     //
     // Every human-facing operation goes through resolveAppStorageAccess, which
@@ -2478,7 +1891,7 @@ export function makeAppsRepo(host: any) {
       const { data: app, error } = await supabase
         .from("apps")
         .select(
-          "id, team_id, created_by_actor_id, oss_bucket, storage_bytes, storage_counted_at, storage_quota_bytes",
+          "id, oss_bucket, storage_bytes, storage_counted_at, storage_quota_bytes",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -2733,7 +2146,7 @@ export function makeAppsRepo(host: any) {
     async resolveAppEnvAccess(appId: string, minLevel: AppPermissionLevel) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, team_id, created_by_actor_id")
+        .select("id")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -2741,7 +2154,7 @@ export function makeAppsRepo(host: any) {
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission) return null;
       if (!appLevelAtLeast(permission.level, minLevel)) return null;
-      return { app, level: permission.level, callerMemberId: permission.callerMemberId };
+      return { app, level: permission.level, callerUserId: permission.callerUserId };
     },
 
     async listAppEnv(appId: string) {
@@ -2803,7 +2216,10 @@ export function makeAppsRepo(host: any) {
             // Exactly one of the two, matching the table's check constraint.
             value: isSecret ? null : value,
             ciphertext: isSecret ? sealAppSecret(appEnvSecretKind(name), value) : null,
-            updated_by_member_id: access.callerMemberId,
+            // The account, not the legacy member column; the member column is
+            // cleared so P2.1's trigger does not copy an older writer over it.
+            updated_by_user_id: access.callerUserId,
+            updated_by_member_id: null,
             updated_at: now,
           },
           { onConflict: "app_id,key" },
@@ -2921,7 +2337,7 @@ export function makeAppsRepo(host: any) {
     async listAppCronJobs(appId: string) {
       const { data: app, error: appErr } = await supabase
         .from("apps")
-        .select("id, team_id, created_by_actor_id")
+        .select("id")
         .eq("id", appId)
         .maybeSingle();
       if (appErr) throw appErr;
@@ -2941,14 +2357,14 @@ export function makeAppsRepo(host: any) {
     async resolveAppCronManager(appId: string) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, team_id, created_by_actor_id")
+        .select("id")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
       if (!app) return null;
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission || permission.level !== "admin") return null;
-      return { callerMemberId: permission.callerMemberId };
+      return { callerUserId: permission.callerUserId };
     },
 
     async createAppCronJob(appId: string, input: any) {
@@ -2971,7 +2387,7 @@ export function makeAppsRepo(host: any) {
 
       const { data, error } = await admin
         .from("app_cron_jobs")
-        .insert({ ...fields, app_id: appId, created_by_member_id: manager.callerMemberId })
+        .insert({ ...fields, app_id: appId, created_by_user_id: manager.callerUserId })
         .select("*")
         .single();
       if (error) throw error;
@@ -3043,7 +2459,7 @@ export function makeAppsRepo(host: any) {
     async listAppCronRuns(appId: string, jobId: string, limit = 20) {
       const { data: app, error: appErr } = await supabase
         .from("apps")
-        .select("id, team_id, created_by_actor_id")
+        .select("id")
         .eq("id", appId)
         .maybeSingle();
       if (appErr) throw appErr;
@@ -3063,7 +2479,7 @@ export function makeAppsRepo(host: any) {
 
     async undeployApp(appId: string) {
       const { data: app, error } = await supabase.from("apps")
-        .select("id, slug, app_code, function_naming_mode, team_id, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, env_deployed_at, custom_domain, uses_app_code_domain, deploy_started_at, deploy_token")
+        .select("id, slug, app_code, function_naming_mode, fc_status, fc_endpoint, fc_function_name, env_deployed_at, custom_domain, uses_app_code_domain, deploy_started_at, deploy_token")
         .eq("id", appId).maybeSingle();
       if (error) throw error;
       if (!app) return null;
@@ -3086,7 +2502,7 @@ export function makeAppsRepo(host: any) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
         .select(
-          "id, team_id, workspace_id, slug, name, app_code, function_naming_mode, uses_app_code_domain, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id, custom_domain",
+          "id, slug, name, app_code, function_naming_mode, uses_app_code_domain, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, custom_domain",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -3110,7 +2526,7 @@ export function makeAppsRepo(host: any) {
       appDeploymentOriginHost(appFunctionTargetFromRow(existing), existing.fc_endpoint);
       assertUninstalled(existing);
 
-      const admin = await serviceRoleClient("delete app and archive workspace");
+      const admin = await serviceRoleClient("delete app");
       const deletion = await lifecycleRpc(admin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "delete", p_token: null });
       const { data: acquired, error: acquireError } = await admin.from("app_lifecycle_operations")
         .update({ status: "running", in_flight: true, updated_at: new Date().toISOString() })
@@ -3141,19 +2557,9 @@ export function makeAppsRepo(host: any) {
       };
       const { archivedRepoUrl } = await teardownAppResources(teardown, teardownInput);
 
-      if (existing.workspace_id) {
-        const now = new Date().toISOString();
-        const { error: wsErr } = await admin
-          .from("workspaces")
-          .update({
-            archived: true,
-            path: archivedRepoUrl ?? existing.git_remote_url,
-            updated_at: now,
-          })
-          .eq("id", existing.workspace_id);
-        if (wsErr) throw wsErr;
-        await archiveSessionsForWorkspace(admin, existing.workspace_id);
-      }
+      // What the tenant attached to the app (TeamClu: its workspace and
+      // sessions, archived to point at wherever the code now lives).
+      await tenantFactory(this).appDeleting(appId, { admin, archivedRepoUrl, remoteUrl: existing.git_remote_url ?? null });
 
       const { error: delErr } = await admin.from("apps").delete().eq("id", appId);
       if (delErr) throw delErr;

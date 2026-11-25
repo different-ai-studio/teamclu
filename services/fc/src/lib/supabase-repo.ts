@@ -130,6 +130,9 @@ import { makeDocumentLibrariesRepo } from "./supabase-repo/document-libraries.js
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import { makeWikiMaintainerRepo } from "./supabase-repo/wiki-maintainer.js";
 import { makeAppsRepo } from "./app-platform/service/apps.js";
+import { makeTeamCluAppsRepo } from "./teamclu-apps/repo.js";
+import { teamCluAppTenant } from "./teamclu-apps/tenant.js";
+import { noTeamCluForge } from "./teamclu-apps/forge.js";
 import {
   assignSystemOrgRole,
   enrichActorsWithOrgRoles,
@@ -151,7 +154,6 @@ import {
   needsDatabase,
   readAppsCloudApiUrl,
 } from "./provisioning/app-deploy.js";
-import { noForge } from "./app-platform/hooks.js";
 
 
 /**
@@ -530,7 +532,7 @@ export function createSupabaseBusinessRepository(options) {
     deployUnavailableReason,
     // Who hosts an app's code: TeamClu's forge integration (src/lib/forge/),
     // wired in by index.ts. Absent: nobody — imported and local apps only.
-    forge: forgeFactory = noForge(),
+    forge: forgeFactory = noTeamCluForge(),
     gotrue,
     gotrueUnavailableReason,
     teardownDeps,
@@ -4640,10 +4642,18 @@ export function createSupabaseBusinessRepository(options) {
       readAppFunction,
       validateAppOrigin,
       readAppOriginSecurity,
-      publishSessionParticipantInbox,
       applyKeysetCursor,
       appEnvSecretKind,
-      archiveSessionsForWorkspace,
+      tenant: teamCluAppTenant({ supabase, getCurrentUser, archiveSessionsForWorkspace }),
+    }),
+
+    // --- TeamClu's side of apps: teamclu-apps/repo.ts (P2.4b) ---
+    ...makeTeamCluAppsRepo({
+      supabase,
+      serviceRoleClient,
+      getCurrentUser,
+      forge,
+      publishSessionParticipantInbox,
     }),
 
     // ─── Team skills registry ────────────────────────────────────────────────

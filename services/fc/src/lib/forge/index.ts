@@ -8,11 +8,10 @@
  * rules. P1.2 of docs/specs/2026-11-25-app-platform-p1-gitea-out.md.
  */
 import type {
-  AppLifecycleHooks,
-  AppLifecycleHooksFactory,
   AppRepoRow,
   ForgeHeartbeat,
 } from "../app-platform/hooks.js";
+import type { TeamCluForge, TeamCluForgeFactory } from "../teamclu-apps/forge.js";
 import { ApiError } from "../http-utils.js";
 import {
   GITEA_AUTH_KIND,
@@ -76,7 +75,7 @@ export function giteaAccountFields(app: AppRepoRow): { gitAccountAuth: boolean; 
   };
 }
 
-export function makeGiteaForge(opts: GiteaForgeOptions): AppLifecycleHooksFactory {
+export function makeGiteaForge(opts: GiteaForgeOptions): TeamCluForgeFactory {
   const { gitea, unavailableReason } = opts;
   const accountAuth = opts.accountAuth ?? giteaAccountAuthEnabled();
   return (ctx) => {
@@ -99,7 +98,7 @@ export function makeGiteaForge(opts: GiteaForgeOptions): AppLifecycleHooksFactor
       return gitea.withOwner(repoOwnerFromRemote(app.git_remote_url) ?? gitea.owner);
     }
 
-    const hooks: AppLifecycleHooks = {
+    const hooks: TeamCluForge = {
       assertCanHostRepo() {
         if (!gitea) throw giteaUnavailable(unavailableReason);
       },
@@ -307,7 +306,7 @@ export function makeGiteaForge(opts: GiteaForgeOptions): AppLifecycleHooksFactor
 }
 
 /** The forge for this deployment, from GITEA_* in the environment. */
-export function forgeFromEnv(env: NodeJS.ProcessEnv = process.env): AppLifecycleHooksFactory {
+export function forgeFromEnv(env: NodeJS.ProcessEnv = process.env): TeamCluForgeFactory {
   const resolved = readGiteaConfig(env);
   return resolved.error
     ? makeGiteaForge({ unavailableReason: resolved.error })

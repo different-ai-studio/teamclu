@@ -10,6 +10,10 @@
  *
  * Every method keeps the behaviour the inline Gitea code had: the same errors,
  * the same best-effort rules, the same response fields.
+ *
+ * Only what the platform itself calls is here. Who may push, and the
+ * credentials that let them, are keyed by TeamClu's identities; those methods
+ * are TeamClu's extension of this interface (`teamclu-apps/forge.ts`, P2.4b).
  */
 import { ApiError } from "../http-utils.js";
 
@@ -48,18 +52,10 @@ export interface AppLifecycleHooks {
   // --- access (best-effort: a failure here never fails the change that caused it) ---
   /** Who can reach one app changed: a grant, its visibility, or it was just created. */
   appAccessChanged(appId: string): Promise<void>;
-  /** Who is in a team changed, so every team-visible app of it changed too. */
-  teamAccessChanged(teamId: string): Promise<void>;
-  /** A member lost the right to push to an app (removed, or narrowed to read). */
-  memberWriteRevoked(appId: string, memberId: string): Promise<void>;
 
   // --- code access ---
   /** Whether this deployment hosts the app's repo and issues its credentials. */
   hostsRepo(app: AppRepoRow): boolean;
-  /** A credential for `actorId` to clone (and unless `readOnly`, push) a hosted repo; null if none applies. */
-  issueCredential(app: AppRepoRow, actorId: string, opts: { readOnly: boolean }): Promise<Record<string, unknown> | null>;
-  /** Hand back a credential `issueCredential` gave `actorId`. False when it was already gone. */
-  revokeCredential(app: AppRepoRow, actorId: string, credentialId: number): Promise<boolean>;
   /** The hosted repo's head; null for a repo this deployment does not host. */
   repoHead(app: AppRepoRow, opts: { compare: boolean }): Promise<AppRepoHead | null>;
 
@@ -112,11 +108,7 @@ export function noForge(): AppLifecycleHooksFactory {
       return new ApiError(502, "repo_provision_failed", message, { details });
     },
     async appAccessChanged() {},
-    async teamAccessChanged() {},
-    async memberWriteRevoked() {},
     hostsRepo: () => false,
-    async issueCredential() { return null; },
-    async revokeCredential() { return false; },
     async repoHead() { return null; },
     async deployGuard() {},
     async storeExternalCredential() {

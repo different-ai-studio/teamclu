@@ -8,13 +8,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ApiError } from "../../src/lib/http-utils.js";
-import { noForge, type AppLifecycleHooks, type AppLifecycleHooksFactory } from "../../src/lib/app-platform/hooks.js";
+import { noTeamCluForge, type TeamCluForge, type TeamCluForgeFactory } from "../../src/lib/teamclu-apps/forge.js";
 import { appsRepo, appsSupabase } from "../fixtures/apps-repository.js";
 
-function recordingForge(over: Partial<AppLifecycleHooks> = {}) {
+function recordingForge(over: Partial<TeamCluForge> = {}) {
   const calls: string[] = [];
-  const base = noForge()({ serviceRoleClient: async () => null });
-  const hooks: AppLifecycleHooks = {
+  const base = noTeamCluForge()({ serviceRoleClient: async () => null });
+  const hooks: TeamCluForge = {
     ...base,
     assertCanHostRepo() { calls.push("assertCanHostRepo"); },
     async provisionRepo(app) { calls.push(`provisionRepo ${app.id}`); return { remoteUrl: "ssh://forge.test/app.git", authKind: "forge_kind" }; },
@@ -25,7 +25,7 @@ function recordingForge(over: Partial<AppLifecycleHooks> = {}) {
     decorate: () => ({ forgeField: "from-the-forge" }),
     ...over,
   };
-  const factory: AppLifecycleHooksFactory = () => hooks;
+  const factory: TeamCluForgeFactory = () => hooks;
   return { calls, factory };
 }
 
@@ -91,7 +91,7 @@ test("a failed provision is recorded on the row, then surfaces as the forge's ow
 
 test("with no forge, a hosted app is refused before any row is written", async () => {
   const db: any[] = [];
-  const repo = appsRepo(appsSupabase({ calls: db }), { forge: noForge() });
+  const repo = appsRepo(appsSupabase({ calls: db }), { forge: noTeamCluForge() });
   await assert.rejects(
     () => repo.createApp({ teamId: "team-1", name: "Nowhere", type: "static_web" }),
     (e: any) => e.code === "repo_hosting_unavailable" && e.statusCode === 503,

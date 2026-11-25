@@ -217,8 +217,29 @@ P2.2 决定（2026-11-25，全部按推荐）：
   helper（`mapApp*Row`、日志 / 数据浏览器参数解析等）和工厂闭包里的 helper（`scheduleAppAccessChanged`、配额与 finalize 的 env 构建、
   agent 的 git 凭证读取）。工厂闭包变量和三个共用 helper 经 host 传入。逐字节核对过，搬过去的五段与原文相同；FC 全量测试
   2332 个，结果与搬迁前一致。
-- **P2.4b `AppTenantHooks`**（§6 Q6）：把 team / actor / workspace / session 相关的部分移到 TeamClu 实现。
-- **P2.4c 边界测试**：`app-platform/` 和 `provisioning/` 里 grep 不到这几个概念。
+- **P2.4b `AppTenantHooks`**（§6 Q6）：
+  - **接口** `app-platform/tenant.ts`：`prepareCreate`（授权并给出 org，`writeColumns` 在插入前写 TeamClu 的列，`created`
+    在插入后执行）、`scopeList`、`decorate`、`updateColumns`、`authInfoFields`、`appDeleting`。
+    TeamClu 的实现在 `teamclu-apps/tenant.ts`：团队内建 app、1:1 workspace、按团队列表、`relationship`、`visibility`、
+    `teamId`，删 app 时归档 workspace 和会话。
+  - **整块搬到 `teamclu-apps/repo.ts`**（以 actor 为键的 API）：access 页（list / set / remove、继承的 agent、收件箱提示）、
+    app 的会话列表、团队成员判断、git 凭证（发给调用方在 app 所在团队的 actor）、team → org 查询。
+  - **forge 接口拆开**：平台的 `AppLifecycleHooks` 只留平台自己调用的方法；`teamAccessChanged` / `memberWriteRevoked` /
+    `issueCredential` / `revokeCredential` 以 TeamClu 的 id 为参数，移到 `teamclu-apps/forge.ts` 的 `TeamCluForge`。
+  - **平台侧**：
+    - 权限判定只用 app id，返回 `{ level, inherited, callerUserId }`；`isAppCreator` 同样只问 `caller_app_access`。
+    - **删掉了旧数据库的兜底**：没有 `caller_app_access` 时返回 503 `app_platform_schema_missing`。
+      所以 P2.1–P2.3 的迁移必须先于镜像。
+    - env / cron 的操作人改写 `updated_by_user_id` / `created_by_user_id`。env 写入同时把 `updated_by_member_id` 置空，
+      否则 upsert 保留的旧 member 会让 P2.1 的触发器把旧账号覆盖回去。
+    - `org_id` 为空时不再按团队推导 org（finalize、数据浏览器、auth info）；这一列自 20260924100000 起就是 NOT NULL。
+    - 已知的行为差异：建 app 时「团队没有 org」的 409 现在先于「本部署不托管仓库」的 503，两者同时成立时才看得出来。
+- **P2.4c 边界测试** `test/app-platform/tenant-boundary.test.ts`：
+  - 范围：`app-platform/` 和 `provisioning/` 去掉注释后的代码。
+  - 按单词扫描（在 `_` 和驼峰处切分，先去掉品牌名 TeamClu），禁止 team / actor / member / membership / workspace / sessions。
+    单数 session 放行，因为 STS 和迁移的 session 不是 TeamClu 的会话。
+  - 只剩一项待办：`updated_by_member_id`，P3 删列时去掉。
+  - `stripComments` 抽到 `strip-comments.ts`，供两个边界测试共用。
 
 ## 4. 验证
 

@@ -3103,10 +3103,8 @@ test("apps: an agent administers the apps it created, and no others", async () =
   const repo = appsRepo(appsSupabase({ seed: { apps: [own] }, actorRow: agent }));
   assert.deepEqual(await repo.resolveAppCallerPermissionForApp(own), {
     level: "admin",
-    callerActorId: "agent-actor-1",
-    // Written to `*_member_id` columns, which reference `amux.members`.
-    callerMemberId: null,
     inherited: false,
+    callerUserId: "user-app-1",
   });
   assert.equal(await repo.isAppCreator(own), true);
 
@@ -3123,9 +3121,8 @@ test("apps: an agent administers the apps it created, and no others", async () =
   );
   assert.deepEqual(await granted.resolveAppCallerPermissionForApp(GITEA_MANAGED_APP), {
     level: "write",
-    callerActorId: "agent-actor-1",
-    callerMemberId: null,
     inherited: false,
+    callerUserId: "user-app-1",
   });
   // ... and with no grant, nothing.
   const ungranted = appsRepo(appsSupabase({ seed: { apps: [GITEA_MANAGED_APP] }, actorRow: agent }));
@@ -4406,12 +4403,14 @@ test("duplicate finalize claims the token and awaiting_build state only once", a
   assert.ok(calls.some(c => c.table === "apps" && c.op === "update.eq" && c.column === "deploy_token" && c.value === started.deployToken));
 });
 
-test("apps: finalizeDeploy pins apps.org_id on the first success", async () => {
+test("apps: finalizeDeploy deploys to the app's own org and keeps it on the row", async () => {
+  // P2.4b: the org is the app's (`apps.org_id`, NOT NULL since
+  // 20260924100000), never derived from a team at finalize.
   const calls: any[] = [];
   const seen: any[] = [];
   const repo = appsRepo(
     appsSupabase({
-      seed: { apps: [{ ...APP_ROW, provision_status: "ready" }], teams: [{ id: "team-1", oid: "org-old" }] },
+      seed: { apps: [{ ...APP_ROW, org_id: "org-old", provision_status: "ready" }], teams: [{ id: "team-1", oid: "org-team" }] },
       calls,
     }),
     {
@@ -4428,10 +4427,10 @@ test("apps: finalizeDeploy pins apps.org_id on the first success", async () => {
   const started = await repo.deployApp("app-1", APP_DEPLOY);
   await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
 
-  assert.equal(seen[0].orgId, "org-old", "first finalize derives the org from the team");
+  assert.equal(seen[0].orgId, "org-old", "the app's org, not the team's");
   const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
   assert.equal(upd.length, 1);
-  assert.equal(upd[0].row.org_id, "org-old", "the derived org is written back to the row");
+  assert.equal(upd[0].row.org_id, "org-old", "the org stays stamped on the row");
 });
 
 test("apps: finalizeDeploy deploys to the stored org even after teams.oid changes", async () => {
@@ -4481,8 +4480,8 @@ test("apps: finalizeDeploy stamps org_id on a static app too", async () => {
   const repo = appsRepo(
     appsSupabase({
       seed: {
-        apps: [{ ...APP_ROW, type: "static_web", provision_status: "ready" }],
-        teams: [{ id: "team-1", oid: "org-old" }],
+        apps: [{ ...APP_ROW, org_id: "org-old", type: "static_web", provision_status: "ready" }],
+        teams: [{ id: "team-1", oid: "org-team" }],
       },
       calls,
     }),
@@ -5873,13 +5872,15 @@ test("app data: targets apps.org_id, not the team's current org", async () => {
   assert.deepEqual(seen, { orgId: "org-1", appId: "app-1", slug: "my-app" });
 });
 
-test("app data: a row from before apps.org_id falls back to deriving it", async () => {
+test("app data: the database is the app's own org, never derived from its team", async () => {
   let seen: any;
-  const repo = dataRepo({ ...DEPLOYED_DATA_APP, org_id: null }, {
+  const repo = dataRepo({ ...DEPLOYED_DATA_APP, org_id: "org-app" }, {
     appData: fakeAppData({ listTables: async (t: any) => { seen = t; return []; } }),
   });
   await repo.listAppDataTables("app-1");
-  assert.equal(seen.orgId, "org-derived");
+  assert.equal(seen.orgId, "org-app");
+  const orphan = dataRepo({ ...DEPLOYED_DATA_APP, org_id: null }, { appData: fakeAppData() });
+  await assert.rejects(() => orphan.listAppDataTables("app-1"), (e: any) => e?.code === "app_org_unknown");
 });
 
 test("app data: an app with no org at all is a 409, not a wrong database", async () => {
@@ -6629,9 +6630,8 @@ test("auth info reads the app's org, not its team's, and propagates directory fa
  const error=Object.assign(new Error("catalog unavailable"),{code:"upstream"});
  await assert.rejects(authInfoRepo({rolesError:error}).repo.getAppAuthInfo("app"),e=>e===error);
 });
-test("auth info supports legacy team organization fallback and unconfigured teams",async()=>{
- assert.equal((await authInfoRepo({appOrg:null}).repo.getAppAuthInfo("app")).organization.id,"org-1");
- const {repo,calls}=authInfoRepo({appOrg:null,teamOrg:null});
+test("auth info with no org on the app is unconfigured (never derived from the team)",async()=>{
+ const {repo,calls}=authInfoRepo({appOrg:null,teamOrg:"org-1"});
  const info=await repo.getAppAuthInfo("app");
  assert.equal(info.organization,null);
  assert.equal(info.organizationStatus,"unconfigured");
