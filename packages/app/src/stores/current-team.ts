@@ -4,14 +4,45 @@ import { isTauri } from "@/lib/utils";
 import { markLocalAgentInstallPending } from "./local-agent-install";
 import { useAuthStore } from "./auth-store";
 
+// The desktop command is last-write-wins and has no generation of its own.
+// Two invokes that are in flight together can be applied in either order, so
+// an older team can land after the team the user just entered. Calls go
+// through one chain: a newer request is not sent until the previous invoke
+// has finished, and a rejected invoke does not stall the requests behind it.
+let gateTail: Promise<void> = Promise.resolve();
+
 export async function setLocalCacheTeamGate(teamId: string | null): Promise<void> {
+  const run = gateTail.then(async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("local_cache_set_current_team", { teamId });
+    } catch (error) {
+      // Non-fatal: browser preview or missing tauri runtime. The gate is a
+      // defense-in-depth layer, not a correctness requirement.
+      console.debug("[CurrentTeam] local_cache_set_current_team unavailable", error);
+    }
+  });
+  gateTail = run;
+  return run;
+}
+
+// `load()` awaits the team list, the cache gate, and the member read before
+// it writes. A switch moves the gate before it replaces the team object, so a
+// comparison of that object alone still looks current and lets the old load
+// point the gate back. Explicit team changes bump this counter first; `load`
+// remembers the value it started with and drops the result when it no longer
+// matches. Depth covers a load that starts while a change is already in
+// progress, before the counter moves again.
+let teamMutationEpoch = 0;
+let teamMutationDepth = 0;
+
+async function withTeamMutation<T>(body: () => Promise<T>): Promise<T> {
+  teamMutationDepth += 1;
+  teamMutationEpoch += 1;
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("local_cache_set_current_team", { teamId });
-  } catch (error) {
-    // Non-fatal: browser preview or missing tauri runtime. The gate is a
-    // defense-in-depth layer, not a correctness requirement.
-    console.debug("[CurrentTeam] local_cache_set_current_team unavailable", error);
+    return await body();
+  } finally {
+    teamMutationDepth -= 1;
   }
 }
 
@@ -147,6 +178,25 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
   error: null,
 
   load: async () => {
+    const epochAtStart = teamMutationEpoch;
+    const heldTeam = get().team;
+    const heldTeamUserId = get().teamUserId;
+    const heldUserId = useAuthStore.getState().session?.user.id ?? null;
+    // Object identity, not team id: leaving A and coming back creates a new
+    // team object, and the load that started on the first visit must not write
+    // over that return. A changed user id is the same kind of stale context
+    // even when the team object has not been replaced yet.
+    const isCurrent = () => {
+      if (teamMutationDepth !== 0 || teamMutationEpoch !== epochAtStart) return false;
+      const liveUserId = useAuthStore.getState().session?.user.id ?? null;
+      if (liveUserId !== heldUserId) return false;
+      const live = get();
+      return live.team === heldTeam && live.teamUserId === heldTeamUserId;
+    };
+    // A caller that lost the race before doing any work must not clear
+    // `loading` or `error` — those belong to the operation that replaced it.
+    if (!isCurrent()) return;
+
     const { session, loading: authLoading } = useAuthStore.getState();
     if (!session) {
       // No session YET is not the same as no session. On cold start the auth
@@ -162,6 +212,7 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
         return;
       }
       await setLocalCacheTeamGate(null);
+      if (!isCurrent()) return;
       set({ team: null, currentMember: null, teamUserId: null, loading: false, error: null });
       return;
     }
@@ -170,23 +221,21 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
     let resolution: ResolveTeamFromListResult;
     try {
       const rows = await getBackend().teams.listCurrentUserTeams({ limit: 50 });
+      if (!isCurrent()) return;
       resolution = resolveTeamFromActiveOrgList(
         rows,
-        get().team,
+        heldTeam,
         session.user.id,
-        get().teamUserId,
+        heldTeamUserId,
       );
     } catch (error) {
+      if (!isCurrent()) return;
       set({ loading: false, error: error instanceof Error ? error.message : String(error) });
       return;
     }
 
-    if (resolution.action === "preserve") {
-      set({ loading: false });
-      return;
-    }
-
-    if (resolution.action === "no_selection") {
+    if (resolution.action === "preserve" || resolution.action === "no_selection") {
+      if (!isCurrent()) return;
       set({ loading: false });
       return;
     }
@@ -199,10 +248,13 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
             slug: resolution.row.slug ?? "",
           }
         : null;
+    if (!isCurrent()) return;
     await setLocalCacheTeamGate(activeTeam?.id ?? null);
+    if (!isCurrent()) return;
     const currentMember = activeTeam
       ? await loadCurrentMember(activeTeam.id, session.user.id)
       : null;
+    if (!isCurrent()) return;
     set({
       team: activeTeam,
       currentMember,
@@ -211,7 +263,7 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
     });
   },
 
-  reloadAndSwitchTo: async (teamId: string, opts) => {
+  reloadAndSwitchTo: async (teamId: string, opts) => withTeamMutation(async () => {
     const session = useAuthStore.getState().session;
     if (!session) {
       await setLocalCacheTeamGate(null);
@@ -246,7 +298,7 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
       teamUserId: activeTeam ? userId : null,
       loading: false,
     });
-  },
+  }),
 
   /**
    * The single supported way to enter a team.
@@ -266,7 +318,7 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
    * is already known to be in the active org — e.g. it came back from
    * `listCurrentUserTeams`, which is itself an active-org listing.
    */
-  enterTeam: async (teamId: string, opts) => {
+  enterTeam: async (teamId: string, opts) => withTeamMutation(async () => {
     let activatedUserId: string | undefined
     // A support session's JWT already carries the customer org, and the server
     // refuses to mint the support account any other session (it would escape
@@ -283,9 +335,9 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
       }
     }
     await get().reloadAndSwitchTo(teamId, { userId: activatedUserId });
-  },
+  }),
 
-  switchToTeam: async (teamId: string) => {
+  switchToTeam: async (teamId: string) => withTeamMutation(async () => {
     set({ loading: true, error: null });
     const previousUserId = useAuthStore.getState().session?.user?.id ?? null;
     try {
@@ -310,16 +362,16 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
       console.warn("[CurrentTeam] daemon refresh after switch failed", e);
     }
     set({ loading: false });
-  },
+  }),
 
-  setActiveTeam: async (team) => {
+  setActiveTeam: async (team) => withTeamMutation(async () => {
     const session = useAuthStore.getState().session;
     await setLocalCacheTeamGate(team.id);
     const currentMember = session
       ? await loadCurrentMember(team.id, session.user.id)
       : null;
     set({ team, currentMember, teamUserId: session?.user.id ?? null, loading: false, error: null });
-  },
+  }),
 
   rename: async (newName) => {
     const team = get().team;
