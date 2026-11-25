@@ -3,6 +3,16 @@
 父 spec：`2026-11-24-app-platform-infra-decoupling-design.md` 的 §6，以及 §8 里 P1 那一行。
 P0（驱动接口）已合并（#2014）。本文把 P1 拆成几步，每一步都能单独合并。
 
+## 进度
+
+| 步 | 状态 |
+|---|---|
+| P1.1 搬家 | ✅ Gitea 模块与 git 路由在 `lib/forge/`，`test/app-platform/forge-boundary.test.ts` 守边界 |
+| P1.2 钩子 | ✅ `app-platform/hooks.ts`（`AppLifecycleHooks` + `ForgeHeartbeat`），Gitea 实现在 `forge/index.ts` |
+| P1.3 部署守卫 | ✅ `deployGuard` + 导入仓库凭证（`storeExternalCredential` / `forgetExternalCredential`）；边界例外清零 |
+| P1.4 收尾 | ✅ 父 spec §6、§8 已更新 |
+| P1.5 搬表 | 未开始；合并前要在 self-host 与 belayo 跑迁移 |
+
 ## 0. 目标与约束
 
 **目标**：平台只认一条部署契约：客户端构建 → 上传产物 → `finalize(revision)`。
