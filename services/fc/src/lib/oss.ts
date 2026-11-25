@@ -4,7 +4,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 // OSS / S3-compatible environment helpers
 //
 // Each reader takes the environment as an argument (defaulting to process.env)
-// so the apps profile in provisioning/apps-oss.ts can resolve its fallbacks
+// so the apps profile in app-platform/aliyun/oss.ts can resolve its fallbacks
 // against an injected environment without duplicating these defaults — a
 // duplicated default is how a bucket name drifts between two code paths.
 // ---------------------------------------------------------------------------

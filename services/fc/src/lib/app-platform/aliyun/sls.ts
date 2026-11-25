@@ -1,7 +1,8 @@
 import SlsClient, * as $sls from "@alicloud/sls20201230";
 import { Config } from "@alicloud/openapi-client";
-import { appsOpenApiCredentials, appsRegion, type AppsOssProfile } from "./apps-oss.js";
-import { accountIdFromRoleArn } from "./fc-client.js";
+import { appsRegion } from "../region.js";
+import { appsOpenApiCredentials, type AppsOssProfile } from "./oss.js";
+import { accountIdFromRoleArn } from "./fc.js";
 
 type SlsClientInstance = InstanceType<typeof SlsClient.default>;
 

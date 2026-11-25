@@ -14,17 +14,15 @@ import {
   appFilesPrefix,
   appStorageBucket,
   defaultStorageQuotaBytes,
-  type AppsOssProfile,
-} from "../../src/lib/provisioning/apps-oss.js";
+} from "../../src/lib/provisioning/app-files.js";
+import type { AppsOssProfile } from "../../src/lib/app-platform/aliyun/oss.js";
+import { AppStorageUnavailable, isOverQuota, measurePrefixUsage } from "../../src/lib/provisioning/app-storage.js";
 import {
   assumeAppStorageRole,
   buildAppStoragePolicy,
-  isOverQuota,
-  measurePrefixUsage,
   signRpcV1,
   storageSessionName,
-  AppStorageUnavailable,
-} from "../../src/lib/provisioning/app-storage.js";
+} from "../../src/lib/app-platform/aliyun/storage.js";
 
 const APP = "0c0a97bf-d615-47f1-b471-45cb717f1629";
 const PROFILE: AppsOssProfile = {

@@ -5,7 +5,7 @@ import {
   defaultSlsProject,
   resolveAppsSls,
   resolveSlsAccountId,
-} from "../src/lib/provisioning/sls-client.js";
+} from "../src/lib/app-platform/aliyun/sls.js";
 
 const ACCT_API = "1317424610922997"; // where the Cloud API's own role lives
 const ACCT_FNS = "1457752404144823"; // where the app functions actually run

@@ -172,7 +172,7 @@ import { readRuntimeCatalog as defaultReadRuntimeCatalog, type AppLanguage } fro
 import { readRuntimeObservations } from "./provisioning/app-runtime-observations.js";
 import { readAppFunction as defaultReadAppFunction, projectFunction, providerErrorCode, driftFields, validateAppOrigin as defaultValidateAppOrigin, readAppOriginSecurity as defaultReadAppOriginSecurity, projectOriginSecurity } from "./provisioning/app-runtime-info.js";
 import { preflightAppDeploy as checkAppDeployPreflight, verifyAppDeployPreflight, isAppDeployPreflightExpired } from "./provisioning/app-deploy-preflight.js";
-import { appsRegion } from "./provisioning/apps-oss.js";
+import { appsRegion } from "./app-platform/region.js";
 import {
   appOssObjectName,
   assertDeployAllowed,
@@ -282,7 +282,7 @@ import {
 function appEnvSecretKind(key: string): string {
   return `env:${key}`;
 }
-import { appFileKey, appFilesPrefix, normalizeAppFolderPrefix } from "./provisioning/apps-oss.js";
+import { appFileKey, appFilesPrefix, normalizeAppFolderPrefix } from "./provisioning/app-files.js";
 import { isOverQuota, type AppStorageOps } from "./provisioning/app-storage.js";
 import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";

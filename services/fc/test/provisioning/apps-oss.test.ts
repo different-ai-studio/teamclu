@@ -8,8 +8,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appsOpenApiCredentials, appsRegion, getAppsS3Client, resolveAppsOss } from "../../src/lib/provisioning/apps-oss.js";
-import { assumeAppStorageRole } from "../../src/lib/provisioning/app-storage.js";
+import { appsOpenApiCredentials, getAppsS3Client, resolveAppsOss } from "../../src/lib/app-platform/aliyun/oss.js";
+import { appsRegion } from "../../src/lib/app-platform/region.js";
+import { assumeAppStorageRole } from "../../src/lib/app-platform/aliyun/storage.js";
 
 /** The Alibaba FC target: one account, no APPS_* overrides. */
 const SHARED_ENV = {

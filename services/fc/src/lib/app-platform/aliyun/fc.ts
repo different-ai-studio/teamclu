@@ -1,16 +1,18 @@
-import { appManagedOriginHost, resolveAppFunctionName } from "../apps-function-identity.js";
-import { privateFcTriggerUrl, originJwks, ORIGIN_VERSION_HEADER, ORIGIN_VERSION_CLAIM_MAPPING, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
+import { appManagedOriginHost, resolveAppFunctionName } from "../../apps-function-identity.js";
+import { privateFcTriggerUrl, originJwks, ORIGIN_VERSION_HEADER, ORIGIN_VERSION_CLAIM_MAPPING, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../../apps-origin-auth.js";
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
-import { appsOpenApiCredentials, appsRegion, type AppsOssProfile } from "./apps-oss.js";
-import { imageForPull, type RegistryPullNetwork } from "./apps-registry.js";
-import { ApiError } from "../http-utils.js";
+import { appsRegion } from "../region.js";
+import { appsOpenApiCredentials, type AppsOssProfile } from "./oss.js";
+import { imageForPull, type RegistryPullNetwork } from "../../provisioning/apps-registry.js";
+import { ApiError } from "../../http-utils.js";
 import {
   isContainerKind,
   resolveLayers,
   type AppDeployDeclaration,
   type AppStartSpec,
-} from "./app-runtime-spec.js";
+} from "../../provisioning/app-runtime-spec.js";
+import { FunctionNotReadyError, type FunctionReadiness } from "../provider.js";
 
 type FcClientInstance = InstanceType<typeof FcClient.default>;
 
@@ -441,20 +443,6 @@ function assertOriginTarget(config: OriginAuthConfig, domainName: string, target
 class OriginSecurityDrift extends Error {}
 function driftError(fields: string[]): Error {
   return new OriginSecurityDrift(`FC origin security drift: ${[...new Set(fields)].join(", ")}`);
-}
-
-export type FunctionReadiness =
-  | { status: "ready" }
-  | { status: "pending"; reason?: string }
-  | { status: "failed"; reason: string }
-  | { status: "timeout"; reason?: string };
-
-/** A function FC reports as Failed — to create, or to apply the last update. */
-export class FunctionNotReadyError extends Error {
-  constructor(readonly functionName: string, readonly reason: string) {
-    super(`Function Compute could not start ${functionName}: ${reason}`);
-    this.name = "FunctionNotReadyError";
-  }
 }
 
 /**

@@ -3,9 +3,8 @@ import { appManagedOriginHost, resolveAppFunctionName } from "../apps-function-i
 import { appFunctionTargetFromRow } from "../supabase-repo/shared.js";
 import { privateFcTriggerUrl, usesPrivateFcOrigin, classifyOriginEndpoint, originJwks, readAppsOriginAuthConfig, type OriginAuthConfig, type OriginSecuritySummary, type OriginTarget } from "../apps-origin-auth.js";
 import { ApiError } from "../http-utils.js";
-import * as $fc from "@alicloud/fc20230330";
-import { getFcClient, makeFcOps } from "./fc-client.js";
-import { appsRegion, resolveAppsOss } from "./apps-oss.js";
+import { resolveAppPlatform } from "../app-platform/index.js";
+import { appsRegion } from "../app-platform/region.js";
 
 /** Only the fields required to compare a deployment may cross the API boundary. */
 export function projectFunction(raw: any) {
@@ -27,10 +26,9 @@ export function projectFunction(raw: any) {
 }
 
 export async function readAppFunction(functionName: string, region: string) {
-  const resolved = resolveAppsOss();
-  if (!resolved.profile) throw Object.assign(new Error("FC credentials unavailable"), { code: "provider_unavailable" });
-  const client = getFcClient({ ...resolved.profile, region });
-  return (await client.getFunction(functionName, new $fc.GetFunctionRequest({}))).body;
+  const { platform } = resolveAppPlatform();
+  if (!platform) throw Object.assign(new Error("FC credentials unavailable"), { code: "provider_unavailable" });
+  return platform.compute.getFunction(functionName, region) as Promise<any>;
 }
 
 export function providerErrorCode(error: unknown): string {
@@ -105,10 +103,9 @@ export async function verifyAppPrivateOrigin(
   const now = Date.now();
   let entry = verifiedPrivateOrigins.get(key);
   if (!entry || entry.expiresAt <= now) {
-    const resolved = resolveAppsOss();
-    if (!resolved.profile || resolved.profile.region !== region) throw new Error("FC credentials unavailable");
-    const profile = resolved.profile;
-    const ops = makeFcOps(getFcClient(profile), { bucket: profile.bucket, role: process.env.ROLE_ARN, region, originAuth: config });
+    const { platform } = resolveAppPlatform();
+    if (!platform || platform.region !== region) throw new Error("FC credentials unavailable");
+    const ops = platform.compute.ops({ region, originAuth: config });
     const readback = ops.readPrivateOrigin(functionName, target);
     entry = { expiresAt: now + 30_000, readback };
     if (verifiedPrivateOrigins.size >= 256) verifiedPrivateOrigins.delete(verifiedPrivateOrigins.keys().next().value!);
@@ -125,10 +122,9 @@ export async function verifyAppPrivateOrigin(
 type OriginRow = { app_code?: string | null; function_naming_mode?: unknown; id: string; slug: string; fc_endpoint?: string | null; fc_function_name?: string | null; fc_region?: string | null };
 type OriginReader = (functionName: string, host: string, target: OriginTarget, config: OriginAuthConfig, region?: string | null) => Promise<OriginSecuritySummary>;
 const readProviderOrigin: OriginReader = async (functionName, host, target, config, region) => {
-  const resolved = resolveAppsOss();
-  if (!resolved.profile) throw new Error("provider unavailable");
-  const profile = { ...resolved.profile, ...(region ? { region } : {}) };
-  return makeFcOps(getFcClient(profile), { bucket: profile.bucket, role: process.env.ROLE_ARN, region: profile.region, originAuth: config })
+  const { platform } = resolveAppPlatform();
+  if (!platform) throw new Error("provider unavailable");
+  return platform.compute.ops({ region: region || platform.region, originAuth: config })
     .readOriginSecurity(functionName, host, target);
 };
 
@@ -143,9 +139,9 @@ export async function readAppOriginSecurity(row: OriginRow, reader: OriginReader
     const region = row.fc_region || appsRegion();
     if (usesPrivateFcOrigin() && privateFcTriggerUrl(row.fc_endpoint, region)) {
       const { config } = validateAppOrigin(target);
-      const profile = resolveAppsOss().profile;
-      if (!profile || profile.region !== region) return { ...summary, driftFields: ["originAuth"] };
-      const ops = makeFcOps(getFcClient(profile), { bucket: profile.bucket, role: process.env.ROLE_ARN, region, originAuth: config });
+      const platform = resolveAppPlatform().platform;
+      if (!platform || platform.region !== region) return { ...summary, driftFields: ["originAuth"] };
+      const ops = platform.compute.ops({ region, originAuth: config });
       return projectOriginSecurity(await ops.readPrivateOriginSecurity(name, target, row.fc_endpoint));
     }
     legacy = classifyOriginEndpoint(row.fc_endpoint, target, process.env.APPS_FC_ROUTE_DOMAIN ?? "") === "legacy";

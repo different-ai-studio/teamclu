@@ -1,7 +1,7 @@
 import { originJwks, type OriginAuthConfig } from "../../src/lib/apps-origin-auth.js";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { makeFcOps, fcEndpoint, accountIdFromRoleArn, readAppsFcVpcConfig } from "../../src/lib/provisioning/fc-client.js";
+import { makeFcOps, fcEndpoint, accountIdFromRoleArn, readAppsFcVpcConfig } from "../../src/lib/app-platform/aliyun/fc.js";
 
 const TARGET = { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "app-a" };
 const DOMAIN = "app-a-76af539e.origins.test";

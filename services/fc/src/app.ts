@@ -11,7 +11,7 @@ import { appsFcRouteDomain, parseAppPublicHost } from "./lib/apps-public-host.js
 import { handleLoginRequest, isLoginHost, type LookupLoginApp, type LoginServiceDeps } from "./lib/apps-login-service.js";
 import { privateFcTriggerUrl, usesPrivateFcOrigin, classifyOriginEndpoint, readAppsOriginAuthConfig, type OriginAuthConfig } from "./lib/apps-origin-auth.js";
 import { verifyAppPrivateOrigin } from "./lib/provisioning/app-runtime-info.js";
-import { appsRegion } from "./lib/provisioning/apps-oss.js";
+import { appsRegion } from "./lib/app-platform/region.js";
 import { applyAuthGate, type GateDeps } from "./lib/apps-auth-gate.js";
 import { makeTraefikDynamicEndpoint, type ListTraefikCustomDomains } from "./lib/apps-traefik-provider.js";
 import { renderJoinLinkPage } from "./lib/join-link-page.js";
