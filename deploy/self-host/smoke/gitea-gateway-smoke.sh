@@ -5,7 +5,8 @@
 # per-account git auth is exactly as safe as the claims checked here
 # (docs/specs/2026-11-16-app-platform-identity-design.md §6, §10):
 #
-#   1-2  the public name serves git paths only: web UI and API are 404
+#   1    the web UI is 404
+#   2    the API is 404 except the PR routes, which need a credential (401)
 #   3    a git request with no credential is 401 and asks git for one
 #   4    a forged X-WEBAUTH-USER is ignored
 #   5    a real Gitea password/token is not accepted (Authorization is stripped)
@@ -55,8 +56,19 @@ echo "=== gitea gateway ($BASE) ==="
 c=$(code "$BASE/")
 [ "$c" = "404" ] && ok "web UI is closed (/ -> $c)" || bad "web UI answered $c, want 404"
 
-c=$(code "$BASE/api/v1/version")
-[ "$c" = "404" ] && ok "API is closed (/api/v1/version -> $c)" || bad "API answered $c, want 404"
+# The API is closed except the few PR routes Caddy hands to FC (@prapi /
+# @prread, #1884): those need a credential, so an anonymous call is FC's 401
+# challenge, and everything else in the API is still a 404.
+hdr=$(curl -s -D - -o /dev/null -m 10 "$BASE/api/v1/version" || true)
+c=$(printf '%s' "$hdr" | awk 'NR==1{print $2}')
+if [ "$c" = "401" ] && printf '%s' "$hdr" | grep -qi '^www-authenticate: *basic'; then
+  ok "PR API without a credential -> 401 with WWW-Authenticate (/api/v1/version)"
+else
+  bad "PR API without a credential answered $c (or no WWW-Authenticate), want 401 + Basic challenge"
+fi
+
+c=$(code "$BASE/api/v1/settings/api")
+[ "$c" = "404" ] && ok "rest of the API is closed (/api/v1/settings/api -> $c)" || bad "API answered $c, want 404"
 
 hdr=$(curl -s -D - -o /dev/null -m 10 "$BASE$REPO_PATH" || true)
 c=$(printf '%s' "$hdr" | awk 'NR==1{print $2}')
