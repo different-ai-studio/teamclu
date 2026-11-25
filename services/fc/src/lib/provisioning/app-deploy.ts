@@ -11,6 +11,7 @@ import {
 } from "./app-postgres.js";
 import { runAppMigrations, type AppMigration } from "./app-migrations.js";
 import {
+  FunctionNotReadyError,
   readAppsFcVpcConfig,
 } from "./fc-client.js";
 import {
@@ -376,6 +377,12 @@ export interface FinalizeDeps {
         image?: string;
       },
     ) => Promise<void>;
+    /**
+     * Resolve once FC can serve the function `ensureFunction` just wrote, or
+     * report `timeout`; throw when FC says it failed. Absent on a target that
+     * serves a function the moment it is written.
+     */
+    waitUntilReady?: (name: string) => Promise<{ status: string; reason?: string }>;
     ensurePrivateOrigin?: (name: string, target: OriginTarget) => Promise<string>;
     ensureHttpTrigger: (name: string) => Promise<{ internetUrlDisabled: true }>;
     /** Absent on a deployment that has no route domain configured. */
@@ -585,6 +592,7 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     declaration: input.declaration,
     image: input.image,
   });
+  await waitForFunction(deps, input.fcFunctionName);
   try {
     if (privateOrigin) {
       const endpoint = await deps.fcOps.ensurePrivateOrigin!(input.fcFunctionName, target);
@@ -649,6 +657,32 @@ export function buildAppStorageEnv(input: {
     TEAMCLU_STORAGE_REGION: input.region,
     TEAMCLU_STORAGE_ENDPOINT: input.endpoint,
   };
+}
+
+/**
+ * Hold the deploy until FC can serve what `ensureFunction` wrote, so `live`
+ * means the page answers rather than `412 function is pending state` (a new
+ * container app spends ~20 s pulling its image). A function FC failed to start
+ * fails the deploy with FC's reason — the old version, if any, keeps serving
+ * and the row is not marked live. Running out of time only logs: FC is still
+ * working, and that is how every deploy behaved before this wait.
+ */
+async function waitForFunction(deps: FinalizeDeps, functionName: string): Promise<void> {
+  if (!deps.fcOps.waitUntilReady) return;
+  let result: { status: string; reason?: string };
+  try {
+    result = await deps.fcOps.waitUntilReady(functionName);
+  } catch (e) {
+    if (e instanceof FunctionNotReadyError) {
+      throw new ApiError(502, "function_start_failed", e.message);
+    }
+    // Could not read the state at all: no worse than not having asked.
+    console.warn(`[apps] ${functionName}: could not read the function's state: ${e}`);
+    return;
+  }
+  if (result.status === "timeout") {
+    console.warn(`[apps] ${functionName}: still not ready when the wait ran out${result.reason ? ` (${result.reason})` : ""}; marking live anyway`);
+  }
 }
 
 /**

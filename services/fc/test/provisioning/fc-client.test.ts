@@ -1012,3 +1012,52 @@ test("native private origin refuses the public trigger endpoint or authenticatio
   triggerConfig = JSON.stringify(config);
   await assert.rejects(ops.readPrivateOrigin("tc-app-1", TARGET), /authConfig.authType/);
 });
+
+test("waitUntilReady polls a pending function until FC reports it Active", async () => {
+  const states = [
+    { state: "Pending", stateReasonCode: "Creating", stateReason: "pulling image" },
+    { state: "Pending" },
+    { state: "Active", lastUpdateStatus: "Successful" },
+  ];
+  const slept: number[] = [];
+  const { client, calls } = fakeClient({
+    getFunction: async (name: string) => { calls.push(["getFunction", name]); return { body: states.shift() }; },
+  });
+  const ops = makeFcOps(client as any, OPS_CONFIG);
+  const out = await ops.waitUntilReady("tc-app-1", { intervalMs: 5, sleep: async ms => { slept.push(ms); } });
+  assert.deepEqual(out, { status: "ready" });
+  assert.equal(calls.filter(c => c[0] === "getFunction").length, 3);
+  assert.deepEqual(slept, [5, 5]);
+});
+
+test("waitUntilReady waits out an update that is still in progress", async () => {
+  const states = [{ state: "Active", lastUpdateStatus: "InProgress" }, { state: "Active", lastUpdateStatus: "Successful" }];
+  const { client } = fakeClient({ getFunction: async () => ({ body: states.shift() }) });
+  const out = await makeFcOps(client as any, OPS_CONFIG).waitUntilReady("tc-app-1", { sleep: async () => {} });
+  assert.deepEqual(out, { status: "ready" });
+});
+
+test("waitUntilReady throws FC's reason when the function failed to start or update", async () => {
+  for (const body of [
+    { state: "Failed", stateReasonCode: "ImagePullFailed", stateReason: "manifest unknown" },
+    { state: "Active", lastUpdateStatus: "Failed", lastUpdateStatusReasonCode: "ImagePullFailed", lastUpdateStatusReason: "denied" },
+  ]) {
+    const { client } = fakeClient({ getFunction: async () => ({ body }) });
+    await assert.rejects(
+      () => makeFcOps(client as any, OPS_CONFIG).waitUntilReady("tc-app-1", { sleep: async () => {} }),
+      (e: any) => e.name === "FunctionNotReadyError" && /ImagePullFailed/.test(e.message),
+    );
+  }
+});
+
+test("waitUntilReady gives up quietly when the time runs out, and passes a function with no state", async () => {
+  let t = 0;
+  const { client } = fakeClient({ getFunction: async () => ({ body: { state: "Pending", stateReason: "slow pull" } }) });
+  const out = await makeFcOps(client as any, OPS_CONFIG).waitUntilReady("tc-app-1", {
+    timeoutMs: 10, intervalMs: 4, now: () => t, sleep: async ms => { t += ms; },
+  });
+  assert.deepEqual(out, { status: "timeout", reason: "slow pull" });
+  // Older functions / API shapes carry no state at all: nothing to wait for.
+  const bare = fakeClient();
+  assert.deepEqual(await makeFcOps(bare.client as any, OPS_CONFIG).waitUntilReady("tc-app-1"), { status: "ready" });
+});

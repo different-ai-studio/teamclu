@@ -240,6 +240,7 @@ function makeDeployDeps() {
           appsAppUrl,
           fcOps: {
             ensureFunction: (name, args) => secureFcOps().ensureFunction(name, args),
+            waitUntilReady: name => secureFcOps().waitUntilReady(name),
             ensurePrivateOrigin: (name, target) => secureFcOps().ensurePrivateOrigin(name, target),
             ensureHttpTrigger: name => secureFcOps().ensureHttpTrigger(name),
             ensureCustomDomain: (name, domain, target) => secureFcOps().ensureCustomDomain(name, domain, target),

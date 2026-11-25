@@ -443,6 +443,47 @@ function driftError(fields: string[]): Error {
   return new OriginSecurityDrift(`FC origin security drift: ${[...new Set(fields)].join(", ")}`);
 }
 
+export type FunctionReadiness =
+  | { status: "ready" }
+  | { status: "pending"; reason?: string }
+  | { status: "failed"; reason: string }
+  | { status: "timeout"; reason?: string };
+
+/** A function FC reports as Failed — to create, or to apply the last update. */
+export class FunctionNotReadyError extends Error {
+  constructor(readonly functionName: string, readonly reason: string) {
+    super(`Function Compute could not start ${functionName}: ${reason}`);
+    this.name = "FunctionNotReadyError";
+  }
+}
+
+/**
+ * Where a GetFunction body says the function is. `state` is absent on old
+ * functions and some API versions; absent means nothing to wait for, which is
+ * how every deploy behaved before.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function functionReadiness(body: any): Exclude<FunctionReadiness, { status: "timeout" }> {
+  const state = typeof body?.state === "string" ? body.state : undefined;
+  const update = typeof body?.lastUpdateStatus === "string" ? body.lastUpdateStatus : undefined;
+  const reason = (r: unknown, code: unknown) =>
+    [code, r].filter(v => typeof v === "string" && v.trim()).join(": ") || undefined;
+  if (state === "Failed") {
+    return { status: "failed", reason: reason(body.stateReason, body.stateReasonCode) ?? "state Failed" };
+  }
+  if (update === "Failed") {
+    return {
+      status: "failed",
+      reason: reason(body.lastUpdateStatusReason, body.lastUpdateStatusReasonCode) ?? "last update Failed",
+    };
+  }
+  if (state === "Pending") return { status: "pending", reason: reason(body.stateReason, body.stateReasonCode) };
+  if (update === "InProgress") {
+    return { status: "pending", reason: reason(body.lastUpdateStatusReason, body.lastUpdateStatusReasonCode) };
+  }
+  return { status: "ready" };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function makeFcOps(client: any, cfg: FcOpsConfig) {
   function codeLocation(ossObjectName: string) {
@@ -570,6 +611,42 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
           ...functionLogInput(cfg.logs?.()),
         }),
       }));
+    },
+    /**
+     * Wait until Function Compute can actually serve the function just written.
+     *
+     * CreateFunction and UpdateFunction return as soon as the change is
+     * accepted. A new function then sits in `state: Pending` while FC attaches
+     * the VPC and, for a container app, pulls the image; requests meanwhile get
+     * `412 PreconditionFailed: function is pending state`. An update runs with
+     * `lastUpdateStatus: InProgress` the same way. Marking the app live before
+     * that is over shows the operator a live app whose page errors for the
+     * first 20 s or so — and one whose image never pulls, live forever.
+     *
+     * `Failed` is thrown with FC's reason, so the deploy fails with something
+     * the operator can act on. Running out of time is not a failure: FC is
+     * still working and usually gets there, so the caller goes ahead as it did
+     * before this wait existed.
+     */
+    async waitUntilReady(
+      functionName: string,
+      opts: { timeoutMs?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+    ): Promise<FunctionReadiness> {
+      const timeoutMs = opts.timeoutMs ?? 120_000;
+      const intervalMs = opts.intervalMs ?? 2_000;
+      const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+      const now = opts.now ?? Date.now;
+      const deadline = now() + timeoutMs;
+      for (;;) {
+        const body = (await client.getFunction(functionName, new $fc.GetFunctionRequest({})))?.body ?? {};
+        const readiness = functionReadiness(body);
+        if (readiness.status === "failed") {
+          throw new FunctionNotReadyError(functionName, readiness.reason);
+        }
+        if (readiness.status === "ready") return readiness;
+        if (now() + intervalMs > deadline) return { status: "timeout", reason: readiness.reason };
+        await sleep(intervalMs);
+      }
     },
     /**
      * Converge the function's minimum instance count. Reads first so an
