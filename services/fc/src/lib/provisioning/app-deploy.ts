@@ -529,7 +529,7 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     }
     const orgId = input.orgId?.trim();
     if (!orgId) {
-      throw new Error("data_app deploy requires the team's org (public.orgs.id)");
+      throw new Error("data_app deploy requires the app's org (apps.org_id)");
     }
     // Migrations first, while the live function's password still works: a
     // file that fails here leaves the previous version serving untouched.
