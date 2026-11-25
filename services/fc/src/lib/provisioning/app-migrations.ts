@@ -61,9 +61,156 @@ const STATEMENT_TIMEOUT = "120s";
 const LOCK_TIMEOUT = "15s";
 /** First key of the advisory lock; the second is the schema's hash. */
 const ADVISORY_NAMESPACE = 0x7c11;
+/**
+ * How long one file's transaction may take before its connection is cut.
+ *
+ * statement_timeout does not cover a connection where the server is waiting on
+ * the client. That happened on Belayo (2026-11-25): an extended-protocol query
+ * sent through the RDS read/write proxy got no reply, the server sat in
+ * ClientRead for hours, and the finalize request that awaited it never
+ * returned, so the deploy lifecycle lock was never released. Past this
+ * deadline the connection is closed (the server rolls the transaction back)
+ * and the deploy fails with `migration_stalled`.
+ */
+export const MIGRATION_TRANSACTION_DEADLINE_MS = 5 * 60_000;
 
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 export const migrationChecksum = (sql: string) => createHash("sha256").update(sql, "utf8").digest("hex");
+
+/** One top-level statement of a SQL file: its text and where it sits. */
+interface SqlStatement {
+  /** Index of the first character that is not whitespace or a comment. */
+  start: number;
+  /** Index just past the terminating `;`, or the end of the text. */
+  end: number;
+  /** Upper-cased leading words, comments dropped, e.g. ["BEGIN"], ["COMMIT"]. */
+  words: string[];
+}
+
+/**
+ * Split SQL into top-level statements the way the server does: a `;` inside a
+ * string, quoted identifier, dollar-quoted body or comment does not end one,
+ * and neither does one inside a `BEGIN ATOMIC … END` function body (where
+ * CASE … END nests).
+ */
+export function splitSqlStatements(sql: string): SqlStatement[] {
+  const out: SqlStatement[] = [];
+  let i = 0;
+  let start = -1;
+  let words: string[] = [];
+  let atomicDepth = 0;
+  let prevWord = "";
+  const n = sql.length;
+  const flush = (end: number) => {
+    if (start >= 0) out.push({ start, end, words });
+    start = -1;
+    words = [];
+    atomicDepth = 0;
+    prevWord = "";
+  };
+  while (i < n) {
+    const c = sql[i];
+    const next = sql[i + 1];
+    if (c === "-" && next === "-") {
+      const nl = sql.indexOf("\n", i);
+      i = nl < 0 ? n : nl + 1;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      let depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        if (sql[i] === "/" && sql[i + 1] === "*") { depth++; i += 2; } else if (sql[i] === "*" && sql[i + 1] === "/") { depth--; i += 2; } else i++;
+      }
+      continue;
+    }
+    if (/\s/.test(c)) { i++; continue; }
+    if (start < 0) start = i;
+    if (c === ";") {
+      if (atomicDepth > 0) { i++; continue; }
+      flush(i + 1);
+      i++;
+      continue;
+    }
+    if (c === "'") {
+      // E'…' allows backslash escapes; a standard string only doubles quotes.
+      const escaped = i > 0 && /[eE]/.test(sql[i - 1]) && (i < 2 || !/[A-Za-z0-9_]/.test(sql[i - 2]));
+      i++;
+      while (i < n) {
+        if (escaped && sql[i] === "\\") { i += 2; continue; }
+        if (sql[i] === "'") { if (sql[i + 1] === "'") { i += 2; continue; } i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (c === '"') {
+      i++;
+      while (i < n) { if (sql[i] === '"') { if (sql[i + 1] === '"') { i += 2; continue; } i++; break; } i++; }
+      continue;
+    }
+    if (c === "$") {
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
+      if (tag && (i === 0 || !/[A-Za-z0-9_]/.test(sql[i - 1]))) {
+        const close = sql.indexOf(tag[0], i + tag[0].length);
+        i = close < 0 ? n : close + tag[0].length;
+        continue;
+      }
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      let j = i + 1;
+      while (j < n && /[A-Za-z0-9_$]/.test(sql[j])) j++;
+      const word = sql.slice(i, j).toUpperCase();
+      if (words.length < 3) words.push(word);
+      if (word === "ATOMIC" && prevWord === "BEGIN") atomicDepth++;
+      else if (atomicDepth > 0 && word === "CASE") atomicDepth++;
+      else if (atomicDepth > 0 && word === "END") atomicDepth--;
+      prevWord = word;
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  flush(n);
+  return out;
+}
+
+const TX_CONTROL = new Set(["BEGIN", "START", "COMMIT", "END", "ROLLBACK", "ABORT", "SAVEPOINT", "RELEASE"]);
+function isTransactionControl(words: string[]): boolean {
+  if (TX_CONTROL.has(words[0])) return true;
+  return words[0] === "PREPARE" && words[1] === "TRANSACTION";
+}
+const isOpen = (w: string[]) => w[0] === "BEGIN" || (w[0] === "START" && w[1] === "TRANSACTION");
+const isClose = (w: string[]) => (w[0] === "COMMIT" || w[0] === "END") && w[1] !== "PREPARED";
+
+/**
+ * The SQL actually sent for a file. Each file already runs inside a transaction
+ * this module owns, so transaction control in the file would end it early:
+ * the file's work and everything after it would commit outside the app's role
+ * and search_path, the ledger write would fail, and through the RDS proxy that
+ * failure hung the deploy outright (see MIGRATION_TRANSACTION_DEADLINE_MS).
+ *
+ * A file wrapped whole in `BEGIN; … COMMIT;` (how a script written for psql
+ * usually looks) means exactly what running it here means, so the wrapper is
+ * dropped. Any other transaction control is refused before anything runs.
+ * The ledger checksum stays on the file's own text.
+ */
+export function migrationSqlToRun(m: AppMigration): string {
+  const stmts = splitSqlStatements(m.sql);
+  let sql = m.sql;
+  let inner = stmts;
+  if (stmts.length >= 2 && isOpen(stmts[0].words) && isClose(stmts[stmts.length - 1].words)) {
+    const first = stmts[0];
+    const last = stmts[stmts.length - 1];
+    sql = m.sql.slice(first.end, last.start) + m.sql.slice(last.end);
+    inner = stmts.slice(1, -1);
+  }
+  const bad = inner.find(st => isTransactionControl(st.words));
+  if (bad) {
+    throw new ApiError(422, "migration_failed",
+      `migration ${m.name} contains transaction control (${bad.words.slice(0, 2).join(" ")}). Each file already runs in its own transaction: remove BEGIN/COMMIT/ROLLBACK/SAVEPOINT from it. Nothing was applied and the live version keeps running.`);
+  }
+  return sql;
+}
 
 /**
  * Validate the `migrations` a finalize body carries. Absent means none.
@@ -203,6 +350,8 @@ export async function applyMigrations(
   assertSafe(target.role);
   assertSafe(target.schema);
   if (migrations.length === 0) return { applied: [] };
+  // Every file is checked before any of them runs.
+  const runnable = new Map(migrations.map(m => [m.name, migrationSqlToRun(m)]));
   const pending = await session.transaction(async tx => {
     await enter(tx, target);
     return planMigrations(migrations, await readLedger(tx));
@@ -217,10 +366,20 @@ export async function applyMigrations(
         planMigrations([m], ledger);
         return false;
       }
+      const [{ xid: before }] = await tx.query<{ xid: string }>("select pg_current_xact_id()::text as xid");
       try {
-        await tx.script(m.sql);
+        await tx.script(runnable.get(m.name) ?? m.sql);
       } catch (e) {
         throw describeMigrationError(m.name, e);
+      }
+      // migrationSqlToRun refuses transaction control it can see; this catches
+      // what it cannot (a different transaction means the file ended ours).
+      // Parameterless on purpose: the ledger insert below is the statement
+      // that hung once the transaction was gone.
+      const [{ xid: after }] = await tx.query<{ xid: string }>("select pg_current_xact_id()::text as xid");
+      if (after !== before) {
+        throw new ApiError(422, "migration_failed",
+          `migration ${m.name} ended the deploy's transaction itself (COMMIT or ROLLBACK); part of it may already be committed. Remove transaction control from the file and deploy again.`);
       }
       // Back to the app's role and schema whatever the file did with them: a
       // file that reset its role can no longer write the ledger, and fails.
@@ -259,12 +418,34 @@ export function migratorRoleName(): string {
   return `tc_mig_${randomBytes(8).toString("hex")}`;
 }
 
-function sessionOn(sql: ReturnType<typeof postgres>): MigrationSession {
+type SessionSql = Pick<ReturnType<typeof postgres>, "begin" | "end">;
+
+/**
+ * Transactions on one migrator connection, each bounded by `deadlineMs`. Past
+ * it the connection is closed (the server rolls back) and the call fails with
+ * `migration_stalled`. The code deliberately avoids the word "timeout": the
+ * finalize catch treats timeout-looking codes as "provider outcome unknown"
+ * and keeps the lifecycle lock, which is wrong here — migrations run before
+ * the function is touched.
+ */
+export function sessionOn(sql: SessionSql, deadlineMs = MIGRATION_TRANSACTION_DEADLINE_MS): MigrationSession {
   return {
-    transaction: fn => sql.begin(async tx => fn({
-      query: async (text, params) => (await tx.unsafe(text, (params ?? []) as never[])) as never,
-      script: async text => { await tx.unsafe(text).simple(); },
-    })) as never,
+    transaction: fn => {
+      const run = sql.begin(async tx => fn({
+        query: async (text, params) => (await tx.unsafe(text, (params ?? []) as never[])) as never,
+        script: async text => { await tx.unsafe(text).simple(); },
+      })) as Promise<never>;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stalled = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          void sql.end({ timeout: 0 }).catch(() => {});
+          reject(new ApiError(504, "migration_stalled",
+            `a migration transaction made no progress for ${Math.round(deadlineMs / 1000)} s and its connection was closed. The live version keeps running; deploy again, and if it stalls again report it.`));
+        }, deadlineMs);
+      });
+      run.catch(() => {});
+      return Promise.race([run, stalled]).finally(() => clearTimeout(timer));
+    },
   };
 }
 

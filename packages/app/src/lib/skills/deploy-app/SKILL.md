@@ -26,7 +26,7 @@ Nobody can open a data app's database directly: not you, not the user, not anoth
 - They run at deploy finalize, before the new code goes live. A failing file is rolled back and stops the deploy, and the previous version keeps serving. Read the error, fix that file, and deploy again.
 - Never edit or rename a file that has been deployed. The deploy refuses a changed one (`migration_modified`), so put a correction in a new, later-numbered file. A new file must sort after every applied one (`migration_out_of_order`).
 - The old version keeps running against the new schema until the new function takes over, so every migration must be **additive**: new tables, nullable or defaulted columns, new indexes. Drop or rename in two deploys: first stop using the old column, then remove it in a later migration.
-- No `BEGIN`/`COMMIT` and no `CREATE INDEX CONCURRENTLY` (the file already runs inside a transaction). Each statement times out after 120 s, and a lock wait after 15 s.
+- No `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` and no `CREATE INDEX CONCURRENTLY` (the file already runs inside a transaction). A file wrapped whole in one `BEGIN; … COMMIT;` is accepted and the wrapper ignored; any other transaction control stops the deploy before any file runs. Each statement times out after 120 s, a lock wait after 15 s, and a file's whole transaction after 5 minutes (`migration_stalled`).
 - Only data apps (`type: data_app`) have a database. A `migrations/` folder on any other type stops the deploy (`app_has_no_database`).
 
 ## Uninstalling a deployment
