@@ -19,6 +19,10 @@
 //! process of this OS user can read — which no scheme can prevent, and why the
 //! file holds a git-only, 30-day, revocable token rather than a session.
 //!
+//! Each identity answers only for its own cloud's git host: an agent for the
+//! host the daemon's cloud named (the account cache), a person for the host in
+//! the token file. A desktop signed in to one environment and a daemon on
+//! another share this machine, and neither token may reach the other's host.
 //! Hosts it does not know (any other forge) get no answer, so git moves on to
 //! its next helper. Always exits 0, for the same reason the per-app helper does.
 
@@ -332,14 +336,34 @@ fn read_cache() -> AccountCache {
     crate::sync::git_account_cache::read_account_cache()
 }
 
-/// Whether a login may be answered for this request: a known host, over the
-/// scheme the cloud serves it on. `https` always; `http` only where the cloud
-/// said its git host is plain http — otherwise a remote rewritten to
-/// `http://<the real host>` would have git send the login in cleartext.
-pub fn answers_for(file: Option<&TokenFile>, cache: &AccountCache, request: &Request) -> bool {
-    if cache.answers(&request.protocol, &request.host) {
-        return true;
+/// Whether `caller`'s login may be answered for this request: the host that
+/// login belongs to, over the scheme the cloud serves it on. `https` always;
+/// `http` only where the cloud said its git host is plain http — otherwise a
+/// remote rewritten to `http://<the real host>` would have git send the login
+/// in cleartext.
+///
+/// Each identity answers only for its own cloud's host. An agent sends the
+/// daemon account's token, so only the host the daemon's cloud named (the
+/// account cache) qualifies; a person sends the desktop's token, so only the
+/// host in that token file does. One machine can hold a desktop signed in to
+/// one environment and a daemon on another, and neither token may reach the
+/// other's git host.
+pub fn answers_for(
+    caller: &Caller,
+    file: Option<&TokenFile>,
+    cache: &AccountCache,
+    request: &Request,
+) -> bool {
+    match caller {
+        Caller::Person => file_answers(file, request),
+        Caller::AgentSocket { .. } | Caller::AgentBearer { .. } => {
+            cache.answers(&request.protocol, &request.host)
+        }
     }
+}
+
+/// Whether the desktop's token file is for this host, over an allowed scheme.
+fn file_answers(file: Option<&TokenFile>, request: &Request) -> bool {
     let Some(file) = file else { return false };
     let host_matches = file
         .git_host
@@ -358,6 +382,20 @@ pub fn answers_for(file: Option<&TokenFile>, cache: &AccountCache, request: &Req
     }
 }
 
+/// Why a person gets no login for a host this daemon's cloud does know: the
+/// desktop is signed in to a different environment (or not at all). Without
+/// this, git only reports the server's bare 401.
+fn person_host_mismatch(file: Option<&TokenFile>, request: &Request) -> String {
+    match file.and_then(|f| f.git_host.as_deref()).map(str::trim) {
+        Some(h) if !h.is_empty() => format!(
+            "TeamClu on this computer is signed in to {h}, not {} — sign in to that \
+             environment in TeamClu to use git there",
+            request.host
+        ),
+        _ => "not signed in — open TeamClu and sign in to use git".into(),
+    }
+}
+
 pub fn answer(login: &Login) -> Option<String> {
     let one_line = |v: &str| !v.contains(['\n', '\r', '\0']);
     (one_line(&login.username) && one_line(&login.password))
@@ -371,10 +409,20 @@ pub fn run(brand: Option<&str>, operation: &str) -> i32 {
     }
     let file = read_token_file(&token_file_path(brand));
     let cache = read_cache();
-    if !answers_for(file.as_ref(), &cache, &request) {
+    let caller = caller_from_env(|k| std::env::var(k).ok());
+    if !answers_for(&caller, file.as_ref(), &cache, &request) {
+        if matches!(caller, Caller::Person) && cache.answers(&request.protocol, &request.host) {
+            eprintln!("{TAG} {}", person_host_mismatch(file.as_ref(), &request));
+        }
         return 0;
     }
-    let login = match caller_from_env(|k| std::env::var(k).ok()) {
+    // The access hint carries the login too, so it goes to the API of the
+    // cloud that login belongs to.
+    let api_base = match caller {
+        Caller::Person => file.as_ref().and_then(|f| f.api_base.clone()),
+        _ => cache.api_base.clone(),
+    };
+    let login = match caller {
         Caller::AgentSocket { socket } => agent_login(&socket),
         Caller::AgentBearer {
             url,
@@ -391,10 +439,6 @@ pub fn run(brand: Option<&str>, operation: &str) -> i32 {
             return 0;
         }
     };
-    let api_base = file
-        .as_ref()
-        .and_then(|f| f.api_base.clone())
-        .or(cache.api_base.clone());
     if let (Some(base), Some(path)) = (api_base, request.path.as_deref()) {
         if let Some(hint) = access_hint_once(&base, path, &login) {
             eprintln!("{TAG} {hint}");
@@ -712,6 +756,7 @@ mod tests {
         let raw = r#"{"gitHost":"gitea.example.com","gitScheme":"https","apiBase":null,"userId":null,"userName":null,"token":"","expiresAt":null}"#;
         let file: TokenFile = serde_json::from_str(raw).unwrap();
         assert!(answers_for(
+            &Caller::Person,
             Some(&file),
             &AccountCache::default(),
             &Request {
@@ -816,32 +861,98 @@ mod tests {
             hosts: vec!["git.headless.box".into()],
             ..Default::default()
         };
+        let agent = Caller::AgentSocket {
+            socket: PathBuf::from("/run/amuxd.sock"),
+        };
         assert!(answers_for(
+            &Caller::Person,
             Some(&file),
             &cache,
             &request("https", "gitea.example.com")
         ));
         assert!(answers_for(
+            &agent,
             None,
             &cache,
             &request("https", "git.headless.box")
         ));
         // The same hosts over http: a rewritten remote must not get the login.
         assert!(!answers_for(
+            &Caller::Person,
             Some(&file),
             &cache,
             &request("http", "gitea.example.com")
         ));
         assert!(!answers_for(
+            &agent,
             None,
             &cache,
             &request("http", "git.headless.box")
         ));
         assert!(!answers_for(
+            &Caller::Person,
             Some(&file),
             &cache,
             &request("https", "github.com")
         ));
+    }
+
+    #[test]
+    fn each_identity_answers_only_for_its_own_clouds_host() {
+        // The desktop is signed in to one environment, the daemon belongs to
+        // another (a test daemon next to a production desktop).
+        let file = TokenFile {
+            git_host: Some("git.prod.example".into()),
+            token: "desktop-token".into(),
+            ..Default::default()
+        };
+        let cache = AccountCache {
+            hosts: vec!["git.test.example".into()],
+            ..Default::default()
+        };
+        let agent = Caller::AgentBearer {
+            url: "http://127.0.0.1:1".into(),
+            token: "t".into(),
+            host_generation_id: "g".into(),
+            backend_kind: "pi".into(),
+        };
+        // A person's desktop token never goes to the daemon's host...
+        assert!(!answers_for(
+            &Caller::Person,
+            Some(&file),
+            &cache,
+            &request("https", "git.test.example")
+        ));
+        // ...nor the daemon's token to the desktop's.
+        assert!(!answers_for(
+            &agent,
+            Some(&file),
+            &cache,
+            &request("https", "git.prod.example")
+        ));
+        // Each still answers for its own.
+        assert!(answers_for(
+            &Caller::Person,
+            Some(&file),
+            &cache,
+            &request("https", "git.prod.example")
+        ));
+        assert!(answers_for(
+            &agent,
+            Some(&file),
+            &cache,
+            &request("https", "git.test.example")
+        ));
+        // And the person is told why instead of getting a bare 401.
+        let why = person_host_mismatch(Some(&file), &request("https", "git.test.example"));
+        assert!(
+            why.contains("git.prod.example") && why.contains("git.test.example"),
+            "{why}"
+        );
+        assert!(
+            person_host_mismatch(None, &request("https", "git.test.example"))
+                .contains("not signed in")
+        );
     }
 
     #[test]
@@ -853,6 +964,7 @@ mod tests {
             ..Default::default()
         };
         assert!(answers_for(
+            &Caller::Person,
             Some(&file),
             &AccountCache::default(),
             &request("http", "gitea.localhost:8080")
