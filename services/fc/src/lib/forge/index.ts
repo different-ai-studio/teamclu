@@ -8,6 +8,7 @@
  * rules. P1.2 of docs/specs/2026-11-25-app-platform-p1-gitea-out.md.
  */
 import type {
+  AppLifecycleHooks,
   AppLifecycleHooksFactory,
   AppRepoRow,
   ForgeHeartbeat,
@@ -33,6 +34,19 @@ import {
 import { makeDeployKeyExpirySweep } from "./gitea/deploy-key-expiry.js";
 import { reconcileGiteaApps } from "./gitea/sync.js";
 import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "./gitea/sync-runner.js";
+import {
+  APP_GIT_HTTPS_CREDENTIAL_KIND,
+  deserializeGitHttpsCredential,
+  GIT_HTTPS_AUTH_KIND,
+  isHttpGitRemote,
+  serializeGitHttpsCredential,
+  type GitHttpsCredential,
+} from "./imported-http.js";
+import {
+  deleteAppSecretSupabase,
+  getAppSecretSupabase,
+  putAppSecretSupabase,
+} from "../provisioning/app-secrets.js";
 
 export interface GiteaForgeOptions {
   /** Absent when GITEA_URL / GITEA_TOKEN / GITEA_OWNER are not all set. */
@@ -85,7 +99,7 @@ export function makeGiteaForge(opts: GiteaForgeOptions): AppLifecycleHooksFactor
       return gitea.withOwner(repoOwnerFromRemote(app.git_remote_url) ?? gitea.owner);
     }
 
-    return {
+    const hooks: AppLifecycleHooks = {
       assertCanHostRepo() {
         if (!gitea) throw giteaUnavailable(unavailableReason);
       },
@@ -145,10 +159,28 @@ export function makeGiteaForge(opts: GiteaForgeOptions): AppLifecycleHooksFactor
       hostsRepo,
 
       /**
-       * Mint a JIT deploy key for a Gitea-managed app, titled for `actorId`.
-       * `readOnly` for a caller who may download the code but not push to it.
+       * The credential for whoever may clone the app's repo:
+       *
+       * - an app imported from an http(s) repo with a stored token: that token,
+       *   for exactly the callers a Gitea app's deploy key goes to — the machines
+       *   that clone the repo and the agents that pull it;
+       * - a Gitea-managed app: a JIT deploy key titled for `actorId`, `readOnly`
+       *   for a caller who may download the code but not push to it.
        */
       async issueCredential(app, actorId, { readOnly }) {
+        if (app.git_auth_kind === GIT_HTTPS_AUTH_KIND) {
+          if (!isHttpGitRemote(app.git_remote_url)) return null;
+          const admin = await ctx.serviceRoleClient("read app git credential");
+          const plaintext = await getAppSecretSupabase(admin, app.id, APP_GIT_HTTPS_CREDENTIAL_KIND);
+          const credential = plaintext ? deserializeGitHttpsCredential(plaintext) : null;
+          if (!credential) return null;
+          return {
+            remoteUrl: app.git_remote_url as string,
+            authKind: GIT_HTTPS_AUTH_KIND,
+            username: credential.username,
+            token: credential.token,
+          };
+        }
         if (!app.git_remote_url) return null;
         // An imported app has a remote this deployment holds no credential for;
         // minting a Gitea key for it would 404 on a repo that does not exist.
@@ -195,6 +227,58 @@ export function makeGiteaForge(opts: GiteaForgeOptions): AppLifecycleHooksFactor
         return { ...head, deployedSha, undeployedCommits };
       },
 
+      async deployGuard(app, stage, { revision, gitCommitSha }) {
+        // A Gitea-managed app deploys a commit of its repo, and only the one at
+        // the branch head: what is live is always something the repo holds.
+        // The daemon checks the same before it asks (crates/teamclu-apps
+        // deploy.rs); this is the server side of it, for every caller.
+        if (stage === "finalize") {
+          if (gitCommitSha !== revision) {
+            throw new ApiError(409, "revision_mismatch", "built SHA differs from preflight revision");
+          }
+          return;
+        }
+        const head = await hooks.repoHead(app, { compare: false });
+        if (!head || head.sha !== revision || gitCommitSha !== revision) {
+          throw new ApiError(
+            409,
+            "revision_mismatch",
+            stage === "preflight"
+              ? "Gitea deploy requires the clean checkout at exact remote HEAD"
+              : "Gitea HEAD changed after preflight",
+          );
+        }
+      },
+
+      /**
+       * Keep the token for an imported app's http(s) repo. The secret is
+       * written before the platform's row names it, and deleted only after the
+       * row stops naming it, so a row that says `https_token` always has a
+       * secret behind it.
+       */
+      async storeExternalCredential(app, input) {
+        if (!isHttpGitRemote(app.git_remote_url)) {
+          throw new ApiError(
+            400,
+            "validation_failed",
+            "a stored credential only applies to an app imported from an http(s) repo address",
+          );
+        }
+        const admin = await ctx.serviceRoleClient("store app git credential");
+        await putAppSecretSupabase(
+          admin,
+          app.id,
+          APP_GIT_HTTPS_CREDENTIAL_KIND,
+          serializeGitHttpsCredential(input as GitHttpsCredential),
+        );
+        return { authKind: GIT_HTTPS_AUTH_KIND };
+      },
+
+      async forgetExternalCredential(app) {
+        const admin = await ctx.serviceRoleClient("clear app git credential");
+        await deleteAppSecretSupabase(admin, app.id, APP_GIT_HTTPS_CREDENTIAL_KIND);
+      },
+
       async releaseRepo(app) {
         let archivedRepoUrl: string | null = app.git_remote_url ?? null;
         if (!hostsRepo(app) || !gitea) return { archivedRepoUrl };
@@ -218,6 +302,7 @@ export function makeGiteaForge(opts: GiteaForgeOptions): AppLifecycleHooksFactor
 
       decorate: giteaAccountFields,
     };
+    return hooks;
   };
 }
 

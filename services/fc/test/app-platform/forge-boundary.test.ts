@@ -33,9 +33,7 @@ const ALLOWED = new Set([
  * each one out. Shrinks to empty by P1.4; the second test fails when an entry
  * is no longer needed, so the list cannot rot.
  */
-const PENDING: Record<string, string> = {
-  "lib/supabase-repo.ts": "P1.3: deploy revision checks → forge deploy guard; imported-repo credential methods → forge",
-};
+const PENDING: Record<string, string> = {};
 
 const GITEA_TOKEN = /gitea|deploy[-_]?key/i;
 /** A relative import path into the forge, e.g. `"../forge/gitea/client.js"`. */

@@ -195,14 +195,6 @@ import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
 import { noForge } from "./app-platform/hooks.js";
 import {
-  APP_GIT_HTTPS_CREDENTIAL_KIND,
-  deserializeGitHttpsCredential,
-  GIT_HTTPS_AUTH_KIND,
-  isHttpGitRemote,
-  serializeGitHttpsCredential,
-  type GitHttpsCredential,
-} from "./forge/imported-http.js";
-import {
   applyAuthModeChange,
   buildPlatformAuthEnv,
   parseAuthAudience,
@@ -5727,7 +5719,7 @@ export function createSupabaseBusinessRepository(options) {
 
     async preflightAppDeploy(appId: string, input: { revision?: string; gitCommitSha?: string; declaration?: unknown; migrationIntent?: boolean }) {
       const { data: existing, error } = await supabase.from("apps")
-        .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, team_id, created_by_actor_id, provision_status, git_auth_kind, fc_status, deploy_started_at, deploy_token, deploy_attempt_id")
+        .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, team_id, created_by_actor_id, provision_status, git_auth_kind, git_remote_url, fc_status, deploy_started_at, deploy_token, deploy_attempt_id")
         .eq("id", appId).maybeSingle();
       if (error) throw error;
       if (!existing) return null;
@@ -5752,11 +5744,10 @@ export function createSupabaseBusinessRepository(options) {
         existing.fc_status = "deploy_error";
       }
       const revision = String(input?.revision ?? "");
+      // A hosted repo's forge vouches for the revision; every other app names
+      // it by content digest.
       if (forge.hostsRepo(existing)) {
-        const head = await this.getAppGitHead(appId);
-        if (!head || head.sha !== revision || input.gitCommitSha !== revision) {
-          throw new ApiError(409, "revision_mismatch", "Gitea deploy requires the clean checkout at exact remote HEAD");
-        }
+        await forge.deployGuard(existing, "preflight", { revision, gitCommitSha: input.gitCommitSha });
       } else if (!revision.startsWith("sha256:")) {
         throw new ApiError(400, "validation_failed", "imported deploy requires a content digest");
       }
@@ -5818,7 +5809,7 @@ export function createSupabaseBusinessRepository(options) {
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind, git_remote_url")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -5831,8 +5822,7 @@ export function createSupabaseBusinessRepository(options) {
       if (isAppDeployPreflightExpired(input.preflightToken)) throw new ApiError(409, "preflight_expired", "preflight expired; retry");
       const revision = String(input.revision ?? "");
       if (forge.hostsRepo(existing)) {
-        const head = await this.getAppGitHead(appId);
-        if (!head || head.sha !== revision || gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "Gitea HEAD changed after preflight");
+        await forge.deployGuard(existing, "deploy", { revision, gitCommitSha });
       } else if (!revision.startsWith("sha256:")) {
         throw new ApiError(400, "validation_failed", "imported deploy requires its content digest");
       }
@@ -5964,7 +5954,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!info) return null;
       assertNoUnexpectedOriginEntries(info.originSecurity);
       verifyAppDeployPreflight(deployToken, appId, revision, declaration, info.currentDeployment);
-      if (forge.hostsRepo(existing) && gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "built SHA differs from preflight revision");
+      if (forge.hostsRepo(existing)) await forge.deployGuard(existing, "finalize", { revision, gitCommitSha });
       const writer = await this.appDeployWriter(existing);
       const lifecycleAdmin = await serviceRoleClient("app deployment lifecycle");
       let { data: lifecycle, error: lifecycleError } = await lifecycleAdmin.from("app_lifecycle_operations")
@@ -6606,31 +6596,9 @@ export function createSupabaseBusinessRepository(options) {
     async getAppGitCredential(appId: string) {
       const resolved = await this.resolveAppGitCredentialActor(appId);
       if (!resolved) return null;
-      if (resolved.app.git_auth_kind === GIT_HTTPS_AUTH_KIND) {
-        return this.readAppGitHttpsCredential(appId, resolved.app);
-      }
       return forge.issueCredential(resolved.app as { id: string }, resolved.actorId, {
         readOnly: resolved.readOnly,
       });
-    },
-
-    /**
-     * The token an admin stored for an imported app's http(s) repo, for exactly
-     * the callers a Gitea app's deploy key goes to (resolveAppGitCredentialActor)
-     * — the machines that clone the repo and the agents that pull it.
-     */
-    async readAppGitHttpsCredential(appId: string, app: Record<string, any>) {
-      if (!isHttpGitRemote(app.git_remote_url)) return null;
-      const admin = await serviceRoleClient("read app git credential");
-      const plaintext = await getAppSecretSupabase(admin, appId, APP_GIT_HTTPS_CREDENTIAL_KIND);
-      const credential = plaintext ? deserializeGitHttpsCredential(plaintext) : null;
-      if (!credential) return null;
-      return {
-        remoteUrl: app.git_remote_url as string,
-        authKind: GIT_HTTPS_AUTH_KIND,
-        username: credential.username,
-        token: credential.token,
-      };
     },
 
     /**
@@ -6671,26 +6639,13 @@ export function createSupabaseBusinessRepository(options) {
      * `https_token` always has a secret behind it. The other order leaves a
      * window in which every fetch reads "no credential".
      */
-    async setAppGitHttpsCredential(appId: string, input: GitHttpsCredential) {
+    async setAppGitHttpsCredential(appId: string, input: unknown) {
       const gate = await this.authorizeAppGitCredentialWrite(appId);
       if (!gate) return null;
-      if (!isHttpGitRemote(gate.cur.git_remote_url)) {
-        throw new ApiError(
-          400,
-          "validation_failed",
-          "a stored credential only applies to an app imported from an http(s) repo address",
-        );
-      }
-      const admin = await serviceRoleClient("store app git credential");
-      await putAppSecretSupabase(
-        admin,
-        appId,
-        APP_GIT_HTTPS_CREDENTIAL_KIND,
-        serializeGitHttpsCredential(input),
-      );
+      const { authKind } = await forge.storeExternalCredential(gate.cur, input);
       const { data, error } = await gate.writer
         .from("apps")
-        .update({ git_auth_kind: GIT_HTTPS_AUTH_KIND, updated_at: new Date().toISOString() })
+        .update({ git_auth_kind: authKind, updated_at: new Date().toISOString() })
         .eq("id", appId)
         .select(APP_COLUMNS)
         .maybeSingle();
@@ -6711,8 +6666,7 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
-      const admin = await serviceRoleClient("clear app git credential");
-      await deleteAppSecretSupabase(admin, appId, APP_GIT_HTTPS_CREDENTIAL_KIND);
+      await forge.forgetExternalCredential(gate.cur);
       return appView(data);
     },
 

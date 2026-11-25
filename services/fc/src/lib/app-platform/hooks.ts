@@ -63,6 +63,25 @@ export interface AppLifecycleHooks {
   /** The hosted repo's head; null for a repo this deployment does not host. */
   repoHead(app: AppRepoRow, opts: { compare: boolean }): Promise<AppRepoHead | null>;
 
+  // --- deploy ---
+  /**
+   * Check a deploy's revision against the hosted repo, at each stage of the
+   * deploy. Called only for an app this forge hosts (`hostsRepo`); throws an
+   * ApiError to refuse. Every other app names its revision by content digest,
+   * which the platform checks itself.
+   */
+  deployGuard(
+    app: AppRepoRow,
+    stage: "preflight" | "deploy" | "finalize",
+    deploy: { revision: string; gitCommitSha?: string | null },
+  ): Promise<void>;
+
+  // --- credentials for a repo hosted elsewhere (an app imported over http(s)) ---
+  /** Validate and keep the credential; the platform records the auth kind it returns. */
+  storeExternalCredential(app: AppRepoRow, input: unknown): Promise<{ authKind: string }>;
+  /** Forget it, after the platform has stopped naming it on the row. */
+  forgetExternalCredential(app: AppRepoRow): Promise<void>;
+
   // --- delete ---
   /** Retire the app's repo before its row goes. Best-effort; returns where the code now lives. */
   releaseRepo(app: AppRepoRow): Promise<{ archivedRepoUrl: string | null }>;
@@ -99,6 +118,11 @@ export function noForge(): AppLifecycleHooksFactory {
     async issueCredential() { return null; },
     async revokeCredential() { return false; },
     async repoHead() { return null; },
+    async deployGuard() {},
+    async storeExternalCredential() {
+      throw new ApiError(503, "repo_credentials_unavailable", "this deployment keeps no repository credentials");
+    },
+    async forgetExternalCredential() {},
     async releaseRepo(app) { return { archivedRepoUrl: app.git_remote_url ?? null }; },
     decorate: () => ({ ...NO_FORGE_FIELDS }),
   });
