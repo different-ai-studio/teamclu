@@ -32,8 +32,8 @@ use axum::{extract::State, Json};
 use serde::Deserialize;
 use serde_json::Value;
 use teamclu_apps::{
-    AppOps, AppSelector, Cloud, CloudError, CreateArgs, CronFields, DaemonError, Host, LocalDaemon,
-    LogsArgs, Method, Named, OpError, RowRef, RowsQuery, Surface, UpdateArgs,
+    AppOps, AppSelector, Cloud, CloudError, CreateArgs, CronFields, DaemonError, GateRule, GateSet,
+    Host, LocalDaemon, LogsArgs, Method, Named, OpError, RowRef, RowsQuery, Surface, UpdateArgs,
 };
 
 use super::apps;
@@ -350,8 +350,10 @@ pub struct AppOpsBody {
     pub args: Value,
 }
 
-const READ_ACTIONS: [&str; 10] = [
+const READ_ACTIONS: [&str; 12] = [
     "whoami",
+    "access_ls",
+    "gate_show",
     "list",
     "status",
     "logs",
@@ -362,7 +364,12 @@ const READ_ACTIONS: [&str; 10] = [
     "data_tables",
     "data_rows",
 ];
-const WRITE_ACTIONS: [&str; 21] = [
+const WRITE_ACTIONS: [&str; 26] = [
+    "access_grant",
+    "access_revoke",
+    "gate_set",
+    "gate_rule_add",
+    "gate_rule_rm",
     "create",
     "reseed",
     "download",
@@ -404,16 +411,25 @@ fn need_str(args: &Value, key: &str, what: &str) -> Result<String, OpError> {
     arg_str(args, key).ok_or_else(|| OpError::invalid("missing_argument", format!("needs {what}")))
 }
 
-/// `job`: a job id when it looks like one, otherwise a name that must match
-/// exactly one job.
-fn named_job(args: &Value) -> Result<Named, OpError> {
-    let job = need_str(args, "job", "a job id or name")?;
-    let is_uuid = job.len() == 36 && job.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+/// `args[key]`: an id when it looks like one, otherwise a name that must
+/// match exactly one.
+fn named(args: &Value, key: &str, what: &str) -> Result<Named, OpError> {
+    let value = need_str(args, key, what)?;
+    let is_uuid = value.len() == 36 && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
     Ok(if is_uuid {
-        Named::Id(job)
+        Named::Id(value)
     } else {
-        Named::Name(job)
+        Named::Name(value)
     })
+}
+
+fn named_job(args: &Value) -> Result<Named, OpError> {
+    named(args, "job", "a job id or name")
+}
+
+/// `org: true` means the whole org instead of one actor.
+fn for_org(args: &Value) -> bool {
+    args.get("org").and_then(Value::as_bool).unwrap_or(false)
 }
 
 fn cron_fields(args: &Value) -> CronFields {
@@ -631,6 +647,53 @@ async fn resource(
     args: &Value,
 ) -> Result<Value, OpError> {
     match action {
+        "access_ls" => ops.access_list(row).await,
+        "access_grant" => {
+            let level = need_str(args, "level", "a level: read, write or admin")?;
+            if for_org(args) {
+                ops.access_org(row, Some(&level)).await
+            } else {
+                let who = named(args, "who", "who to grant: an actor id or a name")?;
+                ops.access_grant(row, &who, &level).await
+            }
+        }
+        "access_revoke" => {
+            if for_org(args) {
+                ops.access_org(row, None).await
+            } else {
+                let who = named(args, "who", "whose grant to revoke: an actor id or a name")?;
+                ops.access_revoke(row, &who).await
+            }
+        }
+        "gate_show" => ops.gate_show(row).await,
+        "gate_set" => {
+            let set = GateSet {
+                mode: arg_str(args, "mode"),
+                audience: arg_str(args, "audience"),
+                scope: arg_str(args, "scope"),
+                rules: args.get("rules").filter(|v| !v.is_null()).cloned(),
+            };
+            ops.gate_set(row, &set).await
+        }
+        "gate_rule_add" => {
+            let rule = GateRule {
+                path: need_str(args, "path", "a path starting with /")?,
+                auth: need_str(args, "auth", "--auth required or public")?,
+                audience: arg_str(args, "audience"),
+                roles: args.get("roles").and_then(Value::as_array).map(|roles| {
+                    roles
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                }),
+            };
+            ops.gate_rule_add(row, &rule).await
+        }
+        "gate_rule_rm" => {
+            ops.gate_rule_rm(row, &need_str(args, "path", "the rule's path")?)
+                .await
+        }
         "env_list" => ops.env_list(row).await,
         "env_set" => {
             let key = need_str(args, "key", "the variable name")?;

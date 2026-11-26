@@ -71,9 +71,8 @@ pub enum AppAction {
         /// (default for --from-git / --from-dir).
         #[arg(long = "type")]
         app_type: Option<String>,
-        /// personal (default) or team.
-        #[arg(long)]
-        visibility: Option<String>,
+        #[arg(long = "visibility", hide = true)]
+        old_visibility: Option<String>,
         /// Import this repository instead of starting from a template.
         #[arg(long, conflicts_with = "from_dir")]
         from_git: Option<String>,
@@ -92,8 +91,9 @@ pub enum AppAction {
     /// Put a team app's code on this machine. Never clones over a checkout
     /// that is already here.
     Download(AppTarget),
-    /// Change the app's settings: name, type, visibility, and the login wall.
-    /// The reply's `notes` say what each change does and when it takes effect.
+    /// Rename the app or change its type. The reply's `notes` say what each
+    /// change does and when it takes effect. Who may work on it: `access`;
+    /// who may open the site: `gate`.
     Update {
         #[command(flatten)]
         target: AppTarget,
@@ -104,23 +104,16 @@ pub enum AppAction {
         /// deploy; leaving data_app drops DATABASE_URL from the app.
         #[arg(long = "type")]
         app_type: Option<String>,
-        /// personal or team. A personal app is invisible to this daemon's
-        /// agent unless that agent created it.
-        #[arg(long)]
-        visibility: Option<String>,
-        /// none or platform (the login wall).
-        #[arg(long)]
-        auth_mode: Option<String>,
-        /// any or org.
-        #[arg(long)]
-        auth_audience: Option<String>,
-        /// all or paths.
-        #[arg(long)]
-        auth_scope: Option<String>,
-        /// The per-path rules, as JSON:
-        /// '[{"path":"/admin","auth":"required","audience":"org"}]'.
-        #[arg(long, value_parser = parse_json)]
-        auth_rules: Option<Value>,
+        #[arg(long = "visibility", hide = true)]
+        old_visibility: Option<String>,
+        #[arg(long = "auth-mode", hide = true)]
+        old_auth_mode: Option<String>,
+        #[arg(long = "auth-audience", hide = true)]
+        old_auth_audience: Option<String>,
+        #[arg(long = "auth-scope", hide = true)]
+        old_auth_scope: Option<String>,
+        #[arg(long = "auth-rules", hide = true)]
+        old_auth_rules: Option<String>,
     },
     /// Build the checkout on this machine and publish it. A Gitea-hosted app
     /// must be committed and pushed first. Needs write on the app.
@@ -179,6 +172,12 @@ pub enum AppAction {
         #[arg(long)]
         yes: bool,
     },
+    /// Who may work on the app: read, write or admin, per person, per agent,
+    /// or for the whole org.
+    Access(Group<AccessCmd>),
+    /// Who may open the deployed site: the login wall. Applies from the next
+    /// request; no deploy needed.
+    Gate(Group<GateCmd>),
     /// Environment variables and secrets — live on the next deploy.
     Env(Group<EnvCmd>),
     /// Scheduled HTTP calls the platform makes to the app's own URL.
@@ -200,6 +199,89 @@ pub struct Group<C: Subcommand> {
     pub app: Option<String>,
     #[command(subcommand)]
     pub cmd: C,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AccessCmd {
+    /// Every grant and where it comes from (direct, or inherited from an
+    /// agent's owner), the org-wide level, and who else could be granted.
+    /// Needs admin on the app.
+    Ls,
+    /// Grant a person or an agent a level, or the whole org with --org.
+    /// Needs admin on the app, held directly.
+    ///
+    /// Examples: amuxd app access grant 王芳 write
+    ///           amuxd app access grant --org read
+    Grant {
+        /// An actor id or a name (`access ls` lists them); with --org, the level.
+        who: String,
+        /// read, write or admin.
+        level: Option<String>,
+        /// Grant the whole org instead (read only, for now).
+        #[arg(long)]
+        org: bool,
+    },
+    /// Remove a person's or an agent's own grant, or the org's with --org.
+    ///
+    /// Examples: amuxd app access revoke 王芳
+    ///           amuxd app access revoke --org
+    Revoke {
+        /// An actor id or a name.
+        #[arg(required_unless_present = "org")]
+        who: Option<String>,
+        #[arg(long, conflicts_with = "who")]
+        org: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GateCmd {
+    /// The wall as set, the policy each path resolves to, and the org's roles.
+    Show,
+    /// Change only the fields given; --rules-file replaces the whole rule list.
+    ///
+    /// Example: amuxd app gate set --mode platform --audience org
+    Set {
+        /// none (anyone with the URL) or platform (sign-in required).
+        #[arg(long)]
+        mode: Option<String>,
+        /// any (any signed-in user) or org (members of the app's org).
+        #[arg(long)]
+        audience: Option<String>,
+        /// all (whole site, rules are exceptions) or paths (only rule paths).
+        #[arg(long)]
+        scope: Option<String>,
+        /// A JSON array of {path, auth, audience?, roles?}; `-` for stdin.
+        #[arg(long)]
+        rules_file: Option<String>,
+    },
+    /// Add or replace the rule for one path prefix.
+    Rule {
+        #[command(subcommand)]
+        cmd: GateRuleCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GateRuleCmd {
+    /// Add the rule, or replace the one on the same path.
+    ///
+    /// Example: amuxd app gate rule add /admin --auth required --audience org
+    Add {
+        /// A path prefix starting with /.
+        path: String,
+        /// required or public.
+        #[arg(long)]
+        auth: String,
+        /// any or org (with --auth required).
+        #[arg(long)]
+        audience: Option<String>,
+        /// Org role codes, comma-separated (with --auth required).
+        #[arg(long, value_delimiter = ',')]
+        roles: Option<Vec<String>>,
+    },
+    /// Remove the rule on exactly this path.
+    Rm { path: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -349,10 +431,6 @@ pub enum DataCmd {
     },
 }
 
-fn parse_json(raw: &str) -> Result<Value, String> {
-    serde_json::from_str(raw).map_err(|e| format!("not valid JSON: {e}"))
-}
-
 /// An argument mistake, refused before the daemon is asked (exit 2).
 #[derive(Debug)]
 struct Usage {
@@ -375,6 +453,27 @@ fn renamed(old: &str, new: &str) -> Usage {
         "renamed_argument",
         format!("{old} was renamed to {new}"),
         Some(format!("use {new}")),
+    )
+}
+
+/// A flag that left this command for another group.
+fn moved(old: &str, new: &str) -> Usage {
+    usage(
+        "moved_argument",
+        format!("{old} moved out of this command"),
+        Some(new.to_string()),
+    )
+}
+
+/// `--visibility` is an org grant now (CLI design Q11).
+fn visibility_moved(value: &str) -> Usage {
+    moved(
+        "--visibility",
+        if value.trim() == "team" {
+            "amuxd app access grant --org read"
+        } else {
+            "amuxd app access revoke --org"
+        },
     )
 }
 
@@ -497,6 +596,75 @@ fn cron_args(spec: &CronSpec) -> Result<Value, Usage> {
 /// The action and arguments of a resource-group command.
 fn group_body(action: &AppAction) -> Result<Option<(&'static str, Value)>, Usage> {
     Ok(Some(match action {
+        AppAction::Access(g) => match &g.cmd {
+            AccessCmd::Ls => ("access_ls", json!({})),
+            AccessCmd::Grant { who, level, org } => match (org, level) {
+                (true, None) => ("access_grant", json!({ "org": true, "level": who })),
+                (true, Some(_)) => {
+                    return Err(usage(
+                        "invalid_argument",
+                        "with --org, give only the level",
+                        Some("amuxd app access grant --org read".to_string()),
+                    ))
+                }
+                (false, Some(level)) => ("access_grant", json!({ "who": who, "level": level })),
+                (false, None) => {
+                    return Err(usage(
+                        "missing_level",
+                        "access grant needs a level: read, write or admin",
+                        Some(format!("amuxd app access grant {who} write")),
+                    ))
+                }
+            },
+            AccessCmd::Revoke { who, org } => ("access_revoke", json!({ "who": who, "org": org })),
+        },
+        AppAction::Gate(g) => match &g.cmd {
+            GateCmd::Show => ("gate_show", json!({})),
+            GateCmd::Set {
+                mode,
+                audience,
+                scope,
+                rules_file,
+            } => {
+                let rules = match rules_file {
+                    Some(f) => {
+                        let text = read_text(Some(f.as_str()).filter(|f| *f != "-"))?;
+                        let rules: Value = serde_json::from_str(&text).map_err(|e| {
+                            usage(
+                                "invalid_json",
+                                format!("--rules-file is not JSON: {e}"),
+                                None,
+                            )
+                        })?;
+                        if !rules.is_array() {
+                            return Err(usage(
+                                "invalid_rules",
+                                "--rules-file holds a JSON array of {path, auth, audience?, roles?}",
+                                None,
+                            ));
+                        }
+                        Some(rules)
+                    }
+                    None => None,
+                };
+                (
+                    "gate_set",
+                    json!({ "mode": mode, "audience": audience, "scope": scope, "rules": rules }),
+                )
+            }
+            GateCmd::Rule { cmd } => match cmd {
+                GateRuleCmd::Add {
+                    path,
+                    auth,
+                    audience,
+                    roles,
+                } => (
+                    "gate_rule_add",
+                    json!({ "path": path, "auth": auth, "audience": audience, "roles": roles }),
+                ),
+                GateRuleCmd::Rm { path } => ("gate_rule_rm", json!({ "path": path })),
+            },
+        },
         AppAction::Env(g) => match &g.cmd {
             EnvCmd::Ls => ("env_list", json!({})),
             EnvCmd::Set {
@@ -593,6 +761,8 @@ fn group_body(action: &AppAction) -> Result<Option<(&'static str, Value)>, Usage
 fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage> {
     if let Some((name, args)) = group_body(action)? {
         let (id, app) = match action {
+            AppAction::Access(g) => (&g.id, &g.app),
+            AppAction::Gate(g) => (&g.id, &g.app),
             AppAction::Env(g) => (&g.id, &g.app),
             AppAction::Cron(g) => (&g.id, &g.app),
             AppAction::Domain(g) => (&g.id, &g.app),
@@ -616,7 +786,12 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
     };
     let mut body = match action {
         AppAction::Whoami | AppAction::List => json!({}),
-        AppAction::Env(_) | AppAction::Cron(_) | AppAction::Domain(_) | AppAction::Data(_) => {
+        AppAction::Access(_)
+        | AppAction::Gate(_)
+        | AppAction::Env(_)
+        | AppAction::Cron(_)
+        | AppAction::Domain(_)
+        | AppAction::Data(_) => {
             unreachable!("handled by group_body above")
         }
         AppAction::Status(t) | AppAction::Reseed(t) | AppAction::Download(t) => target(t),
@@ -624,20 +799,44 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
             target: t,
             name,
             app_type,
-            visibility,
-            auth_mode,
-            auth_audience,
-            auth_scope,
-            auth_rules,
+            old_visibility,
+            old_auth_mode,
+            old_auth_audience,
+            old_auth_scope,
+            old_auth_rules,
         } => {
+            if let Some(v) = old_visibility {
+                return Err(visibility_moved(v));
+            }
+            for (flag, set, new) in [
+                (
+                    "--auth-mode",
+                    old_auth_mode.is_some(),
+                    "amuxd app gate set --mode",
+                ),
+                (
+                    "--auth-audience",
+                    old_auth_audience.is_some(),
+                    "amuxd app gate set --audience",
+                ),
+                (
+                    "--auth-scope",
+                    old_auth_scope.is_some(),
+                    "amuxd app gate set --scope",
+                ),
+                (
+                    "--auth-rules",
+                    old_auth_rules.is_some(),
+                    "amuxd app gate rule add|rm, or gate set --rules-file",
+                ),
+            ] {
+                if set {
+                    return Err(moved(flag, new));
+                }
+            }
             let mut body = target(t);
             body["name"] = json!(name);
             body["type"] = json!(app_type);
-            body["visibility"] = json!(visibility);
-            body["authMode"] = json!(auth_mode);
-            body["authAudience"] = json!(auth_audience);
-            body["authScope"] = json!(auth_scope);
-            body["authRules"] = json!(auth_rules);
             body
         }
         AppAction::Undeploy { target: t } => target(t),
@@ -649,7 +848,7 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
         AppAction::Create {
             name,
             app_type,
-            visibility,
+            old_visibility,
             from_git,
             from_dir,
             old_name,
@@ -665,6 +864,9 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
                         old_name.as_deref().unwrap_or("")
                     )),
                 ));
+            }
+            if let Some(v) = old_visibility {
+                return Err(visibility_moved(v));
             }
             if old_git_remote.is_some() {
                 return Err(renamed("--git-remote", "--from-git"));
@@ -686,7 +888,6 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
             json!({
                 "name": name,
                 "type": app_type,
-                "visibility": visibility,
                 "gitRemoteUrl": from_git,
                 "localDir": local_dir,
             })
@@ -743,7 +944,12 @@ fn action_name(action: &AppAction) -> &'static str {
         AppAction::Delete { .. } => "delete",
         AppAction::Deploy { .. } => "deploy",
         AppAction::Logs { .. } => "logs",
-        AppAction::Env(_) | AppAction::Cron(_) | AppAction::Domain(_) | AppAction::Data(_) => {
+        AppAction::Access(_)
+        | AppAction::Gate(_)
+        | AppAction::Env(_)
+        | AppAction::Cron(_)
+        | AppAction::Domain(_)
+        | AppAction::Data(_) => {
             unreachable!("a resource group's action comes from group_body")
         }
     }
@@ -1076,21 +1282,62 @@ mod tests {
     }
 
     #[test]
-    fn update_sends_only_what_was_given_and_rules_as_json() {
-        let body = body_of(&[
-            "update",
-            "--app",
-            "记账",
-            "--visibility",
-            "team",
-            "--auth-rules",
-            r#"[{"path":"/admin","auth":"required"}]"#,
-        ]);
+    fn update_keeps_name_and_type_and_points_moved_flags_to_their_groups() {
+        let body = body_of(&["update", "--app", "记账", "--name", "账本"]);
         assert_eq!(body["action"], "update");
-        assert_eq!(body["visibility"], "team");
-        assert_eq!(body["name"], Value::Null);
-        assert_eq!(body["authRules"][0]["path"], "/admin");
-        assert!(Harness::try_parse_from(["app", "update", "--auth-rules", "[oops"]).is_err());
+        assert_eq!(body["name"], "账本");
+        assert!(body.get("visibility").is_none());
+        let v = refusal(&["update", "--visibility", "team"]);
+        assert_eq!(v.code, "moved_argument");
+        assert_eq!(v.next.as_deref(), Some("amuxd app access grant --org read"));
+        let r = refusal(&["update", "--auth-rules", "[]"]);
+        assert!(r.next.unwrap().contains("gate rule"));
+        assert_eq!(
+            refusal(&["create", "x", "--visibility", "personal"])
+                .next
+                .as_deref(),
+            Some("amuxd app access revoke --org")
+        );
+    }
+
+    #[test]
+    fn access_grants_one_actor_or_the_org() {
+        let g = body_of(&["access", "grant", "王芳", "write", "--app", "记账"]);
+        assert_eq!(g["action"], "access_grant");
+        assert_eq!(g["appName"], "记账");
+        assert_eq!(g["args"], json!({"who":"王芳","level":"write"}));
+        let org = body_of(&["access", "grant", "--org", "read"]);
+        assert_eq!(org["args"], json!({"org":true,"level":"read"}));
+        assert_eq!(refusal(&["access", "grant", "王芳"]).code, "missing_level");
+        assert_eq!(
+            body_of(&["access", "revoke", "--org"])["args"],
+            json!({"who":null,"org":true})
+        );
+        assert!(Harness::try_parse_from(["app", "access", "revoke"]).is_err());
+    }
+
+    #[test]
+    fn gate_edits_fields_and_single_rules() {
+        let set = body_of(&["gate", "set", "--mode", "platform"]);
+        assert_eq!(set["action"], "gate_set");
+        assert_eq!(set["args"]["mode"], "platform");
+        assert_eq!(set["args"]["rules"], Value::Null);
+        let add = body_of(&[
+            "gate",
+            "rule",
+            "add",
+            "/admin",
+            "--auth",
+            "required",
+            "--roles",
+            "finance,ops",
+        ]);
+        assert_eq!(add["action"], "gate_rule_add");
+        assert_eq!(add["args"]["roles"], json!(["finance", "ops"]));
+        assert_eq!(
+            body_of(&["gate", "rule", "rm", "/legacy"])["args"],
+            json!({"path":"/legacy"})
+        );
     }
 
     #[test]

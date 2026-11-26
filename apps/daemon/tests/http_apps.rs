@@ -322,6 +322,9 @@ async fn fake_cloud() -> String {
                 "id": "a1", "teamId": "team-mock", "name": "Notes", "slug": "notes",
                 "fcStatus": "live", "provisionStatus": "ready",
                 "publicUrl": "https://notes.apps.test",
+                "createdByActorId": "m-owner", "visibility": "personal",
+                "authMode": "platform", "authScope": "all",
+                "authRules": [{ "path": "/health", "auth": "public" }],
             }),
             _ => serde_json::json!({
                 "id": id, "teamId": "team-mock", "name": "Draft", "slug": "draft",
@@ -359,6 +362,45 @@ async fn fake_cloud() -> String {
                 authed(&headers)?;
                 Ok::<_, StatusCode>(StatusCode::NO_CONTENT)
             }),
+        )
+        .route(
+            "/v1/teams/:team/actors",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({ "items": [
+                    { "id": "m-owner", "kind": "member", "displayName": "Owner" },
+                    { "id": "m-li", "kind": "member", "displayName": "李雷" },
+                    { "id": "m-wang", "kind": "member", "displayName": "王芳" },
+                    { "id": "g-bot", "kind": "agent", "displayName": "Bot", "agentOwnerMemberId": "m-wang" },
+                ] })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/access",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({ "items": [
+                    { "memberId": "m-li", "permissionLevel": "read", "displayName": "李雷", "actorType": "member", "inherited": false },
+                ] })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/access/:member",
+            axum::routing::put(
+                |headers: HeaderMap, Path((id, member)): Path<(String, String)>, Json(body): Json<Value>| async move {
+                    authed(&headers)?;
+                    if id == "a2" {
+                        return Ok::<_, StatusCode>((
+                            StatusCode::FORBIDDEN,
+                            Json(serde_json::json!({ "error": { "code": "inherited_access_not_allowed", "message": "inherited" } })),
+                        ));
+                    }
+                    Ok((
+                        StatusCode::OK,
+                        Json(serde_json::json!({ "memberId": member, "permissionLevel": body["permissionLevel"] })),
+                    ))
+                },
+            ),
         )
         .route(
             "/v1/apps/:id/env",
@@ -659,4 +701,106 @@ async fn app_ops_resource_groups() {
     )
     .await;
     assert_eq!(data_of(status, &body)["action"], "delete_row");
+}
+
+/// `amuxd app access` / `gate`: grants by name, the org grant as visibility,
+/// single-rule edits, and the platform's refusal as exit 4.
+#[tokio::test]
+async fn app_ops_access_and_gate() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+    let call = |action: &str, app_id: &str, args: Value| serde_json::json!({ "action": action, "appId": app_id, "args": args });
+
+    let (status, body) = app_ops(&app, call("access_ls", "a1", Value::Null)).await;
+    let ls = data_of(status, &body);
+    assert_eq!(ls["creator"]["name"], "Owner");
+    assert_eq!(ls["grants"][0]["source"], "direct");
+    assert_eq!(ls["org"], Value::Null);
+    let members: Vec<&str> = ls["candidates"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        members,
+        vec!["王芳"],
+        "neither the creator nor a grantee is a candidate"
+    );
+    assert_eq!(ls["candidates"]["agents"][0]["owner"]["name"], "王芳");
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "access_grant",
+            "a1",
+            serde_json::json!({ "who": "王芳", "level": "write" }),
+        ),
+    )
+    .await;
+    let grant = data_of(status, &body);
+    assert_eq!(grant["grant"]["actor_id"], "m-wang");
+    assert_eq!(grant["grant"]["level"], "write");
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "access_grant",
+            "a2",
+            serde_json::json!({ "who": "王芳", "level": "admin" }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        error_of(status, &body, 4)["code"],
+        "inherited_access_not_allowed"
+    );
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "access_grant",
+            "a1",
+            serde_json::json!({ "org": true, "level": "read" }),
+        ),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["org"], "read");
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "access_grant",
+            "a1",
+            serde_json::json!({ "org": true, "level": "write" }),
+        ),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 2)["code"], "org_level_unsupported");
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "gate_rule_add",
+            "a1",
+            serde_json::json!({ "path": "/admin", "auth": "required", "audience": "org" }),
+        ),
+    )
+    .await;
+    let gate = data_of(status, &body);
+    assert_eq!(gate["gate"]["rules"].as_array().unwrap().len(), 2);
+    assert_eq!(gate["gate"]["rules"][1]["path"], "/admin");
+
+    let (status, body) = app_ops(
+        &app,
+        call("gate_rule_rm", "a1", serde_json::json!({ "path": "/nope" })),
+    )
+    .await;
+    let e = error_of(status, &body, 5);
+    assert_eq!(e["code"], "no_such_rule");
+    assert_eq!(e["next"], "`amuxd app gate show`");
+
+    let (status, body) = app_ops(&app, call("gate_set", "a1", serde_json::json!({}))).await;
+    assert_eq!(error_of(status, &body, 2)["code"], "nothing_to_set");
 }

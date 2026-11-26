@@ -29,6 +29,7 @@
 //! Permissions are the Cloud API's: nothing here checks or escalates past what
 //! the bearer may do.
 
+mod access;
 mod checkout;
 mod cloud;
 mod daemon;
@@ -49,6 +50,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 
+pub use access::{access_level, GateRule, GateSet, ACCESS_LEVELS};
 pub use checkout::{
     bind_workspace_fields, run_seed, workspace_paths_match, write_provision_status, CreateArgs,
     CreateSource, SEED_TIMEOUT,
