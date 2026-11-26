@@ -58,7 +58,7 @@ org 成员关系现在只能这么算（`org_roles_users` 只有角色，不覆�
 | 步 | 内容 | 数据库 | 可回滚 |
 |---|---|---|---|
 | P3.1 读切换 | TeamClu 层剩下的旧读取全部改读新表：列表经 `app_links`；`relationship` / `invitedByActorId` / access 页经 `app_grants` + actor↔账号映射；git 访问和 Gitea 同步改问 `caller_app_access` 或 `app_grants`；agent 继承改读 `app_delegations`；`visibility` 由 org 授权推导。`APP_COLUMNS` 拆开 | 无（或只加函数） | ✅ 写入仍是旧列 + 触发器 |
-| P3.2 写切换 | FC 直接写新表：建 app 写 `created_by_user_id`、`app_links`、org 授权；access 页写 `app_grants`；agent 委托由 agents 触发器维护（保留）。旧列改为可空、不再写；**反向触发器**把新表写回旧列，让 P3.1 镜像回滚后仍然正确 | 改可空、反向触发器、换 INSERT 策略 | ✅（靠反向触发器） |
+| P3.2 写两边 | FC 写旧列之后直接写新表：建 app 写 `created_by_user_id`、`app_links`、org 授权；PATCH visibility 同步 org 授权；access 页写 `app_grants`。触发器保留，新表这一步在 P3.4 前多为空操作 | 无 | ✅（旧列照写） |
 | P3.3 forge 表（原 P1.5） | `amux.app_forge_repos(app_id, kind, remote_url, auth_kind)` 归 TeamClu；`git_commit_sha` → 通用 `apps.deployed_revision`。读新列、旧列回填，先双写 | 新表 + 回填 + 新列 | ✅ |
 | P3.4 删旧（单向） | 删旧列、`app_member_access`、`legacy_member_id`、正反两套触发器、旧函数；`apps_team_slug_uniq` 随列删；改写排行榜、`upgrade_account_to_org`、`guard_team_org_move` 改读 `app_links`；pgTAP 全部改为新形态插入；删 forge 旧列 | 删除 | ❌ |
 | ~~P3.5 独立 schema~~ | 不做（Q5）：表留在 `amux`，靠外键规则 + 边界测试守边界；单独起库留到 P4 | — | — |
@@ -81,6 +81,14 @@ org 成员关系现在只能这么算（`org_roles_users` 只有角色，不覆�
 - **行为变化**：没有账号的 agent 持有的旧授权不再出现在 access 页（授权按账号存，这种行从未投影；新授权本来就被 `agent_not_connected` 拒绝；belayo 上 0 行）。
 - **P3.1f 守卫**：`test/app-platform/legacy-reads.test.ts` 扫描 `src/`：`apps` 的查询链不许出现四个旧列；`app_member_access` 只许出现在 access 页的三处写入；不许调用 actor 版继承函数。放一个读 `apps.team_id` 的探针文件，守卫会报错。
 
+### 2.3 P3.2 实施记录（2026-11-26）
+
+- 平台 `app-platform/grants.ts`：`setUserGrant`（先 update，没有再 insert，23505 视为已存在——唯一索引是部分索引，PostgREST 的 upsert 用不上）、`removeUserGrant`、`setOrgGrant`、`readUserGrantLevel`。
+- 建 app：平台直接写 `created_by_user_id`（P2.1 触发器在 INSERT 时保留显式值）；TeamClu `created` upsert `app_links`（workspace 取自 `writeColumns` 刚建的，不能用返回行——平台选列里已经没有 `workspace_id`，否则会把投影写成 null）并为团队可见的 app 写 org 授权。
+- `AppTenantHooks.updated(row, patch)`：PATCH 改 visibility 后 TeamClu 同步 org 授权。
+- access 页：授权 / 撤销同时写 `app_grants`（按账号）；写之前读原级别也改读 `app_grants`。`legacy-reads` 守卫的 `app_member_access` 计数 3 → 2。
+- 测试：FC `dual-write.test.ts`（4 条）；pgTAP `app_platform_p3_dual_write.test.sql`（10 条）在真实触发器下按 FC 的顺序写，确认每一步都落在投影上、不报错不覆盖。
+
 ## 3. 回滚
 
 - P3.1：换回 P2 镜像即可。
@@ -97,7 +105,7 @@ org 成员关系现在只能这么算（`org_roles_users` 只有角色，不覆�
 | # | 问题 | 决定 |
 |---|---|---|
 | Q1 | `/v1` 字段 | 保持不变，`teamId` / `visibility` / `workspaceId` / `createdByActorId` / `relationship` / `invitedByActorId` 由 TeamClu 层从 `app_links` / `app_grants` 推导；客户端不改 |
-| Q2 | 写切换能否回滚 | 能：P3.2 加反向触发器（新表 → 旧列），P3.4 一并删除 |
+| Q2 | 写切换能否回滚 | 能。~~反向触发器~~ → 11/26 改为**同时写两边**：P3.2 起 FC 先写旧列（P2.1 正向触发器照常投影），再直接写新表；回滚到 P3.1 镜像时旧列和投影仍一致。P3.4 删旧时去掉旧列写入和触发器 |
 | Q3 | 删旧的节奏 | P3.4 单独一个 PR；P2 和 P3.1–P3.3 在 belayo 跑满一周再合。开发和整体测试照常一起做 |
 | Q4 | access 接口 | `/v1/apps/:id/access` 仍按 actor id；存成 `app_grants`（账号），TeamClu 层换算；agent 的授权 = 它账号的授权；git 访问、Gitea 同步改问新模型，继承改读 `app_delegations` |
 | Q5 | 独立 schema | 不搬（P3.5 取消）。表留在 `amux`，边界靠「平台表不指向 TeamClu 表」+ `tenant-boundary.test.ts`；单独起库留到 P4 |

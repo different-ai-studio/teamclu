@@ -634,6 +634,10 @@ export function makeAppsRepo(host: any) {
       const localOnly = input.localOnly === true;
       if (!importUrl && !localOnly) forge.assertCanHostRepo();
       const tenantColumns = await placement.writeColumns({ slug });
+      // The creating account, written by the platform (P3.2). P2.1's trigger
+      // keeps an explicit value; until P3.4 it would otherwise derive it from
+      // the product's creating actor.
+      const createdByUserId = await currentUserId();
 
       let row: any;
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -642,6 +646,7 @@ export function makeAppsRepo(host: any) {
           .insert({
             ...tenantColumns,
             org_id: placement.orgId,
+            created_by_user_id: createdByUserId,
             function_naming_mode: "app_code",
             name: input.name,
             slug,
@@ -957,6 +962,7 @@ export function makeAppsRepo(host: any) {
       invalidateAppHosts({ id: appId, slug: cur.slug, appCode: cur.app_code, usesAppCodeDomain: cur.uses_app_code_domain, customDomain: cur.custom_domain });
       // A tenant field that changed may change who reaches the app (TeamClu:
       // visibility is read access for the whole org in the forge too).
+      if (Object.keys(tenantSet).length > 0) await tenant.updated(data, patch);
       const presented = await this.presentApp(data);
       if (tenantBefore !== null) {
         const after = (await tenant.fields([data]))[0];

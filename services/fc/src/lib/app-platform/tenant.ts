@@ -71,6 +71,12 @@ export interface AppTenantHooks {
   readonly accessColumns?: readonly string[];
 
   /**
+   * After an update that wrote `updateColumns`' columns: `row` is the app as
+   * it now stands. Where the product keeps the rest of its fields.
+   */
+  updated(row: Record<string, any>, patch: Record<string, unknown>): Promise<void>;
+
+  /**
    * Extra fields for an app's auth info (`GET /v1/apps/:id/auth-info`); `app`
    * is the app as the platform answers it, `fields` included.
    */

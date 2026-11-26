@@ -52,9 +52,11 @@ function inheritedAgents(state: any, appId: string) {
  * The platform tables P2.1's triggers keep in step with the legacy ones
  * (20261125200000), derived on every read the same way: app_links from the app
  * row, user grants from app_member_access, org grants from `visibility: team`,
- * delegations from active agents. Read-only here, as the projection is in the
- * real database until P3.2. An actor's account is its `user_id`; the caller's
- * actor (`actorRow`) without one is the signed-in test user.
+ * delegations from active agents. Derived here, as the projection is in the
+ * real database until P3.4. Writes to them are recorded in `calls` and
+ * otherwise ignored: P3.2's direct writes only settle what the projection
+ * already holds. An actor's account is its `user_id`; the caller's actor
+ * (`actorRow`) without one is the signed-in test user.
  */
 const PROJECTED_TABLES = new Set(["app_links", "app_grants", "app_delegations"]);
 /** An actor's account: its `user_id`, the caller's actor's the signed-in user, else a stand-in. */
@@ -191,7 +193,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         },
         insert(row: any) {
           ctx.op = "insert";
-          if (PROJECTED_TABLES.has(table)) throw new Error(`${table} is projected from the legacy tables until P3.2`);
+          if (PROJECTED_TABLES.has(table)) ctx.projectedWrite = true;
           calls.push({ table, op: "insert", row });
           // mutate state so the inserted row is what subsequent .single() returns
           const inserted = {
@@ -210,7 +212,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         },
         upsert(row: any, options?: any) {
           ctx.op = "upsert";
-          if (PROJECTED_TABLES.has(table)) throw new Error(`${table} is projected from the legacy tables until P3.2`);
+          if (PROJECTED_TABLES.has(table)) ctx.projectedWrite = true;
           calls.push({ table, op: "upsert", row, options });
           const upserted = { ...row, id: row.id ?? `${table}-id-${(state[table]?.length ?? 0) + 1}` };
           if (!upserted.created_at) upserted.created_at = new Date().toISOString();
@@ -235,7 +237,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         },
         delete() {
           ctx.op = "delete";
-          if (PROJECTED_TABLES.has(table)) throw new Error(`${table} is projected from the legacy tables until P3.2`);
+          if (PROJECTED_TABLES.has(table)) ctx.projectedWrite = true;
           calls.push({ table, op: "delete" });
           return builder;
         },
@@ -263,6 +265,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
           return builder;
         },
         single() {
+          if (ctx.projectedWrite) return Promise.resolve({ data: null, error: null });
           if (ctx.op === "insert" || ctx.op === "upsert") return Promise.resolve({ data: ctx.inserted, error: null });
           if (ctx.op === "update") {
             const matched = matchRows();
@@ -282,6 +285,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
           return Promise.resolve({ data: project(matchRows()[0] ?? null), error: null });
         },
         maybeSingle() {
+          if (ctx.projectedWrite) return Promise.resolve({ data: null, error: null });
           if (table === "actors") return Promise.resolve({ data: matchActor(), error: null });
           if (ctx.op === "delete") {
             const matched = matchRows();
@@ -300,6 +304,9 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
           return Promise.resolve({ data: project(matchRows()[0] ?? null), error: null });
         },
         then(resolve: any, reject: any) {
+          if (ctx.projectedWrite || (PROJECTED_TABLES.has(table) && ctx.op === "update")) {
+            return Promise.resolve({ data: [], error: null }).then(resolve, reject);
+          }
           if (ctx.op === "update") {
             const matched = matchRows();
             state[table] = state[table].map((row: any) => matched.includes(row) ? { ...row, ...ctx.update } : row);

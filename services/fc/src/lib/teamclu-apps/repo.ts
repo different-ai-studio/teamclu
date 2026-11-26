@@ -22,6 +22,7 @@ import {
 } from "../app-permission.js";
 import { appIso, chunkedIn } from "../supabase-repo/shared.js";
 import { readTeamAppAccess } from "./team-app-access.js";
+import { readUserGrantLevel, removeUserGrant, setUserGrant } from "../app-platform/grants.js";
 import { appAccessRecipientUserId, publishAppAccessChanged, type AppAccessGrantee } from "../app-access-notify.js";
 import type { TeamCluForge } from "./forge.js";
 
@@ -44,6 +45,14 @@ export type TeamCluAppsHost = {
 
 export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
   const { supabase, serviceRoleClient, getCurrentUser, forge, publishSessionParticipantInbox } = host;
+
+  async function currentUserId(): Promise<string> {
+    const { data: userData, error: userErr } = await getCurrentUser();
+    if (userErr) throw userErr;
+    const userId = userData?.user?.id;
+    if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+    return userId;
+  }
 
   /** The caller's actor (member or agent) in `teamId`, or null. */
   async function callerActorIn(repo: any, teamId: string): Promise<{ id: string; actorType?: string | null } | null> {
@@ -283,13 +292,8 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
       if (grantee.actor_type === "agent" && !grantee.user_id) {
         throw new ApiError(422, "agent_not_connected", "this agent has no account yet; connect its daemon first");
       }
-      const { data: priorAccess, error: priorErr } = await admin
-        .from("app_member_access")
-        .select("permission_level")
-        .eq("app_id", appId)
-        .eq("member_id", memberId)
-        .maybeSingle();
-      if (priorErr) throw priorErr;
+      // The level before this write, from the platform's grant (by account).
+      const priorLevel = storedAppPermissionLevel(await readUserGrantLevel(admin, appId, grantee.user_id));
       const now = new Date().toISOString();
       const { data, error } = await admin
         .from("app_member_access")
@@ -306,7 +310,10 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
         .select("member_id, permission_level, granted_by_member_id, created_at")
         .single();
       if (error) throw error;
-      const priorLevel = storedAppPermissionLevel(priorAccess?.permission_level);
+      // …and the platform's own grant, by account (P3.2). P2.1's trigger has
+      // usually projected the legacy row already; this settles it either way,
+      // and is the only write once P3.4 drops app_member_access.
+      await setUserGrant(admin, { appId, userId: grantee.user_id, level, grantedByUserId: await currentUserId() });
       if (level === "read" && priorLevel && appLevelAtLeast(priorLevel, "write")) {
         await forge.memberWriteRevoked(appId, memberId);
       }
@@ -333,6 +340,9 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
         .eq("app_id", appId)
         .eq("member_id", memberId);
       if (error) throw error;
+      // The platform's grant goes with it (P3.2; see setAppAccess). Without the
+      // account there is no grant to remove — none was ever projected.
+      if (grantee?.user_id) await removeUserGrant(admin, appId, grantee.user_id);
       await forge.memberWriteRevoked(appId, memberId);
       await forge.appAccessChanged(appId);
       scheduleAppAccessChanged(manager.teamId, appId, granteeErr ? null : grantee);

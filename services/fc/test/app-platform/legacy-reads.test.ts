@@ -7,7 +7,7 @@
  * What is left are the writes, until P3.2 moves them: TeamClu's create
  * (`writeColumns`) and PATCH (`updateColumns`) write the app row's legacy
  * columns as insert/update objects, which this scan does not look at, and the
- * access tab writes app_member_access (WRITE_POINTS).
+ * access tab writes app_member_access (WRITE_POINTS: its upsert and delete).
  */
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -19,7 +19,7 @@ const SRC = join(import.meta.dirname, "../../src");
 const LEGACY_APP_COLUMNS = ["team_id", "created_by_actor_id", "workspace_id", "visibility"];
 const LEGACY_FUNCTIONS = ["app_inherited_agents", "agent_inherited_app_level", "actor_has_app_access", "caller_has_app_grant"];
 /** file → how many `app_member_access` references it may hold (the access tab's writes). */
-const WRITE_POINTS: Record<string, number> = { "lib/teamclu-apps/repo.ts": 3 };
+const WRITE_POINTS: Record<string, number> = { "lib/teamclu-apps/repo.ts": 2 };
 
 function sources(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {

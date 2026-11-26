@@ -4645,7 +4645,7 @@ export function createSupabaseBusinessRepository(options) {
       readAppOriginSecurity,
       applyKeysetCursor,
       appEnvSecretKind,
-      tenant: teamCluAppTenant({ supabase, getCurrentUser, archiveSessionsForWorkspace }),
+      tenant: teamCluAppTenant({ supabase, serviceRoleClient, getCurrentUser, archiveSessionsForWorkspace }),
     }),
 
     // --- TeamClu's side of apps: teamclu-apps/repo.ts (P2.4b) ---

@@ -14,6 +14,7 @@
 import { ApiError } from "../http-utils.js";
 import type { AppTenantHooksFactory } from "../app-platform/tenant.js";
 import { chunkedIn } from "../supabase-repo/shared.js";
+import { setOrgGrant } from "../app-platform/grants.js";
 
 export type AppRelationship = "owner" | "invited" | "team";
 
@@ -51,13 +52,15 @@ export type TeamCluAppFields = {
 
 export type TeamCluAppTenantDeps = {
   supabase: any;
+  /** For TeamClu's writes to app_links and the platform's grants (P3.2). */
+  serviceRoleClient: (why: string) => Promise<any>;
   getCurrentUser: () => Promise<any>;
   /** Archive the sessions of a workspace (supabase-repo.ts). */
   archiveSessionsForWorkspace: (admin: any, workspaceId: string) => Promise<unknown>;
 };
 
 export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFactory {
-  const { supabase, getCurrentUser, archiveSessionsForWorkspace } = deps;
+  const { supabase, serviceRoleClient, getCurrentUser, archiveSessionsForWorkspace } = deps;
 
   async function currentUserId(): Promise<string> {
     const { data: userData, error: userErr } = await getCurrentUser();
@@ -105,6 +108,7 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
         throw new ApiError(409, "team_has_no_org", "该团队尚未关联组织，无法创建应用");
       }
 
+      let workspaceId: string | null = null;
       return {
         orgId,
         async writeColumns({ slug }) {
@@ -120,6 +124,7 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
             .select("id")
             .single();
           if (wsErr) throw wsErr;
+          workspaceId = ws.id;
           return {
             team_id: input.teamId,
             created_by_actor_id: createdByActorId,
@@ -128,6 +133,17 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
           };
         },
         async created(row) {
+          // The app's link and, for a team-visible app, its org grant, written
+          // directly (P3.2). P2.1's trigger has projected both from the
+          // columns above already; these settle them either way and are the
+          // only writes once P3.4 drops those columns.
+          const admin = await serviceRoleClient("link a new app to its team");
+          const { error: linkErr } = await admin.from("app_links").upsert(
+            { app_id: row.id, team_id: input.teamId, workspace_id: workspaceId, created_by_actor_id: createdByActorId },
+            { onConflict: "app_id" },
+          );
+          if (linkErr) throw linkErr;
+          if (input.visibility === "team") await setOrgGrant(admin, row.id, orgId, true);
           for (const actorId of [...new Set((input.grantActorIds ?? []) as unknown[])]) {
             if (typeof actorId !== "string" || !actorId || actorId === createdByActorId) continue;
             try {
@@ -240,6 +256,15 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
     // That org grant is access: a delegate (an agent acting for its owner)
     // may not widen or narrow who sees the owner's app (P2 spec §6 Q1).
     accessColumns: ["visibility"],
+
+    // The org grant follows `visibility` (P3.2), alongside the legacy column
+    // updateColumns wrote.
+    async updated(row, patch) {
+      if (patch.visibility !== "team" && patch.visibility !== "personal") return;
+      if (!row?.id || !row.org_id) return;
+      const admin = await serviceRoleClient("set an app's org grant");
+      await setOrgGrant(admin, row.id, row.org_id, patch.visibility === "team");
+    },
 
     // Desktop introspect decodes `teamId` as required.
     authInfoFields(app) {
