@@ -3,7 +3,7 @@
 - 父 spec：`2026-11-24-app-platform-infra-decoupling-design.md` §7（CLI 规范 C1–C10、审批 §7.5、退役清单 §7.6）。
 - 命令树：`2026-11-24-amuxd-app-cli-design.md`（Q1–Q23 已拍板）。
 - 平台侧依赖：P2（PR #2016，Delegation、`caller_app_access`）、P3（`app_links` / `app_grants` / `app_forge_repos`）。
-- **状态：2026-11-26 草案，§4 的问题待拍板。**
+- **状态：2026-11-26 已拍板（§4），开始实施。**
 - **2026-11-26 决定：不做审批。** 有权限就执行，没权限就拒绝，由平台的权限判断（`caller_app_access`）决定。
   父 spec §7.5 和 CLI 设计 §2.6 / Q5、Q17–Q23 里的审批部分作废。
 
@@ -43,7 +43,7 @@
 |---|---|---|---|
 | **S1 CLI 契约底座** | `{"v":1,"ok",…}` 外层、错误 `code/message/next/retryable`、退出码表（0、2–8，9 不再使用）、输出上限和截断游标、`-o table`、`-o file:`、`whoami`（说明当前是哪个账号、在哪个团队）、`--help` 规范；现有 9 条命令按 Q7 改参数（`--visibility` → `access --org`、`--auth-*` → `gate`、`--git-remote/--dir` → `--from-git/--from-dir`、`--since`）；CLI 契约测试 | — | 中 |
 | **S2 补齐命令** | `teamclu-apps` 增加 access / gate / env / data / files / cron / domain / runtime / sessions / `checkout move\|bind`，挂到 `/v1/app-ops` 和 CLI。桌面 `settings.rs` / `data.rs` / `files.rs` 的逻辑搬进 crate。可拆成 S2a（只读 + env / cron / data / domain）、S2b（files，CLI 进程里直接传字节）、S2c（access / gate） | S1 | 大 |
-| **S3 长操作（可选，见 §4 Q2）** | deploy / undeploy 由 amuxd 在后台执行，CLI 只等待；CLI 被杀不影响操作，`op status / wait / list`、`--detach`、退出码 8 表示「结果未知、不要重试」 | S1 | 中 |
+| **S3 长操作** | deploy / undeploy 由 amuxd 在后台执行，CLI 只等待；CLI 被杀不影响操作，`op status / wait / list`、`--detach`、退出码 8 表示「结果未知、不要重试」 | S1 | 中 |
 | **S4 切换文案** | 系统提示词一行；`deploy-app` / `app-auth` skill、`app-deploy-prompt.ts`、locale、`app_build.rs` / `app-runtime-spec.ts` 里的错误文案改成 `amuxd app`；`teamclu-apps` 的 `Surface` 统一为 CLI；更新钉住文案的测试 | S2 | 小 |
 | **S5 删除** | 删 `teamclu-introspect` 的 `manage_app*`、桌面 `introspect_api/apps*`、app 相关确认弹窗（`confirm.rs` 里 app 的部分和 `confirm/app_domain*`，保留 `mcp_servers_replace`）、`caller.rs` 里 app 路由的条目 | S4 | 中（主要是删） |
 
@@ -55,10 +55,12 @@
 - **visibility**：CLI 设计 Q11 取消 `visibility`，改用 `access grant --org`。P3 Q1 保留了 `/v1` 的 `visibility` 字段（由 org 授权推导）。CLI 的 `access grant --org read` 可以落到 PATCH visibility=team，`revoke --org` 落到 personal；`--org write` 平台允许（`app_grants_org_level`），但现在没有接口。
 - **身份**：`manage_app` 用登录真人的 bearer，CLI 用 agent 自己的账号。切换后 agent 看到的 app 少了：主人的个人 app 只能通过 Delegation 看到。agent 建的 app 归 agent；Delegation 是「agent 按主人的级别行事」，反过来主人看不到 agent 的 app，除非 agent 授权给他。
 
-## 4. 待拍板
+## 4. 决定（2026-11-26）
 
-1. **agent 对主人的 app 能做到哪一步？** 没有审批之后，这就是唯一的闸门。现在上线的 P2 规则是：agent 通过 Delegation 按主人的级别行事，最高到部署，不能删 app、不能管理授权。也就是说，主人是 admin 的 app，他的 agent 可以不问任何人直接部署到公网。(a) 保持现状（推荐，和「有权限就部署」一致）；(b) 按 CLI 设计 Q10 封顶 write，agent 不能部署主人的 app，要部署就得给 agent 单独授权。
-2. **S3 长操作做不做？** 现在 deploy 是 CLI 发一个 HTTP 请求、daemon 在请求里执行，CLI 被杀（比如模型给 bash 设了超时）时，部署可能跟着中断，结果不明。(a) 做（推荐，部署动辄几分钟，模型自设超时很常见）；(b) 不做，先靠 skill 提醒「deploy 不要设超时」。
+| # | 问题 | 决定 |
+|---|---|---|
+| Q1 | agent 对主人的 app 能做到哪一步 | 保持 P2 现状：Delegation 按主人的级别，最高到部署，不能删 app、不能管理授权。主人是 admin 的 app，他的 agent 可以直接部署。CLI 设计 Q10 作废 |
+| Q2 | 长操作（S3）做不做 | 做：deploy / undeploy 由 amuxd 后台执行，CLI 只等待，`op status / wait / list`、`--detach`、退出码 8 |
 
 ## 5. 验证
 

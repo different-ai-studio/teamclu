@@ -70,7 +70,7 @@
 ### 2.6 长操作与审批（Q17 / Q18 / Q21）
 
 > **2026-11-26 作废：不做审批。** 有权限就执行，没权限就拒绝。见 `2026-11-26-app-platform-p25-cli-takeover.md`。
-> 长操作（amuxd 执行、CLI 等待、`op wait`、`--detach`）是否保留见该文档 §4 Q2；⚠ 标记和退出码 9 不再使用。
+> 长操作（amuxd 执行、CLI 等待、`op wait`、`--detach`）保留（该文档 §4 Q2）；⚠ 标记和退出码 9 不再使用。
 
 - 真正干活的是 amuxd，CLI 只是等待者：`deploy` / `undeploy` 默认等到**审批 + 执行**都结束；进度写 stderr，结果 JSON 写 stdout。
 - CLI 被杀（模型自设 bash 超时、用户中断）不影响操作，`amuxd app op wait <op>` 接着等。
@@ -237,7 +237,7 @@ amuxd app logs --since-cursor <cursor>   # 只拉之后的
 
 ## 7. 已定决策（2026-11-24 grilling）
 
-> 2026-11-26：Q5、Q18、Q20–Q23（审批）作废，Q17 的审批部分作废、长操作待定，Q19（区分 agent 与真人）不再需要。
+> 2026-11-26：Q5、Q18、Q20–Q23（审批）作废，Q17 的审批部分作废、长操作保留，Q19（区分 agent 与真人）不再需要，Q10 作废（Delegation 最高到部署，按 P2）。
 
 | # | 决策 |
 |---|---|
