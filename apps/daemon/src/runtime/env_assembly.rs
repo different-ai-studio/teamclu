@@ -6,34 +6,6 @@ use crate::team_shared_env;
 
 use super::SpawnRuntimeEnv;
 
-/// Assemble personal + team + system env and materialize the active-team
-/// `provider.team` into amuxd's global OpenCode config before attaching a pi
-/// host.
-///
-/// Workspace-root `opencode.json` is not resolved on spawn (pi reads env
-/// bindings, not that file). Team gateway credentials still land in
-/// `TEAMCLU_TEAM_PROVIDER` / `tc_gateway_token` via [`assemble_runtime_env`].
-pub fn assemble_spawn_runtime_env(
-    workspace_root: &Path,
-    team_id: Option<&str>,
-    actor_id: &str,
-    display_name: &str,
-    managed_llm: &ManagedLlmState,
-    gateway_token: Option<&str>,
-    ai_proxy_base: Option<&str>,
-) -> anyhow::Result<SpawnRuntimeEnv> {
-    assemble_spawn_runtime_env_for_execution(
-        workspace_root,
-        workspace_root,
-        team_id,
-        actor_id,
-        display_name,
-        managed_llm,
-        gateway_token,
-        ai_proxy_base,
-    )
-}
-
 /// The personal-variable layer for an agent spawned now: the machine owner's
 /// encrypted store, or nothing while the active team runs in support mode
 /// (`config::layout::support_file`). There the agent acts in a customer org,
@@ -45,12 +17,14 @@ pub fn personal_env_for_spawn() -> anyhow::Result<std::collections::HashMap<Stri
     teamclu_runtime_env::personal_secrets::load_personal_env()
 }
 
-/// Assemble environment sources from the registered parent workspace. Team LLM
-/// materialization uses the active-team global config; execution-directory
-/// `opencode.json` placeholders are not written on spawn.
-pub fn assemble_spawn_runtime_env_for_execution(
+/// Assemble personal + team + system env and materialize the active team's
+/// `provider.team` into `providers.json` before attaching a pi host. Team
+/// gateway credentials land in `TEAMCLU_TEAM_PROVIDER` / `tc_gateway_token`.
+///
+/// `workspace_root` is the registered workspace — for a worktree spawn, the
+/// parent workspace, whose team env the worktree inherits.
+pub fn assemble_spawn_runtime_env(
     workspace_root: &Path,
-    execution_directory: &Path,
     team_id: Option<&str>,
     actor_id: &str,
     display_name: &str,
@@ -66,7 +40,6 @@ pub fn assemble_spawn_runtime_env_for_execution(
         teamclu_runtime_env::stabilize_managed_llm_for_spawn(managed_llm, disk_team.as_ref());
     let team_env = team_shared_env::load_team_env_for_workspace_detailed(workspace_root, team_id);
     let mut bundle = teamclu_runtime_env::assemble_runtime_env_with_personal(
-        execution_directory,
         personal_env_for_spawn()?,
         team_env.values,
         teamclu_runtime_env::SystemEnvContext {
@@ -111,10 +84,8 @@ pub fn assemble_spawn_runtime_env_for_execution(
             }
         }));
     let mut extra_env = bundle.extra_env;
-    // Backend-neutral team-provider handoff. opencode consumes the team gateway
-    // via `provider.team` in the active team's opencode.json; other local
-    // runtimes (pi, …) cannot read that file and instead register the provider
-    // themselves from this payload.
+    // Team-provider handoff: pi registers the provider itself from this
+    // payload.
     //
     // The secret is NOT embedded: the payload carries `apiKeyEnv`, naming the
     // binding to read it from — `tc_gateway_token`, bound above. That binding
@@ -148,7 +119,7 @@ mod tests {
     ///
     /// Every test that assembles a spawn environment needs this: assembly calls
     /// `ensure_global_team_provider`, which WRITES the team provider into
-    /// `<amuxd home>/teams/<active team>/state/opencode.json`. Without the
+    /// `<amuxd home>/teams/<active team>/state/providers.json`. Without the
     /// override that path is the developer's real `~/.amuxd` — running this
     /// suite locally overwrote the machine's actual gateway URL and model list
     /// with these fixtures, then read them back on the next run, which is why
@@ -172,11 +143,11 @@ mod tests {
         (home, guard)
     }
 
-    /// Where the active team's `opencode.json` lives — resolved the same way
+    /// Where the active team's `providers.json` lives — resolved the same way
     /// the production writer resolves it, so the test cannot drift from the
     /// layout by hand-joining a path.
     fn global_team_config() -> std::path::PathBuf {
-        teamclu_runtime_env::opencode_config::global_opencode_config_path()
+        teamclu_runtime_env::config_store::providers_config_path()
     }
 
     /// Covers the production boundary, rather than merely testing the secret
@@ -240,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_inherits_parent_team_env_without_materializing_opencode_json() {
+    fn worktree_inherits_parent_team_env() {
         let (_home, _home_guard) = amuxd_home_with_active_team();
         let workspace = tempfile::tempdir().unwrap();
         let worktree = workspace.path().join(".worktrees/cron-j1-r1");
@@ -271,20 +242,6 @@ mod tests {
             serde_json::to_vec(&envelope).unwrap(),
         )
         .unwrap();
-        std::fs::write(
-            worktree.join("opencode.json"),
-            serde_json::json!({
-                "mcp": {
-                    "sentinel": {
-                        "environment": {
-                            "TOKEN": "${CRON_WORKTREE_ENV_SENTINEL}"
-                        }
-                    }
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
         let managed = ManagedLlmState::Enabled(ManagedLlmProvider {
             name: "Team".into(),
             base_url: "https://gateway.example/v1".into(),
@@ -294,9 +251,8 @@ mod tests {
             }],
         });
 
-        let spawn_env = assemble_spawn_runtime_env_for_execution(
+        let spawn_env = assemble_spawn_runtime_env(
             workspace.path(),
-            &worktree,
             None,
             "cron-actor",
             "Cron Agent",
@@ -313,17 +269,13 @@ mod tests {
                 .map(String::as_str),
             Some("from-parent")
         );
-        // Pi spawn resolves team secrets into env bindings only — workspace
-        // opencode.json placeholders stay on disk unchanged.
-        let on_disk = std::fs::read_to_string(worktree.join("opencode.json")).unwrap();
-        assert!(on_disk.contains("${CRON_WORKTREE_ENV_SENTINEL}"));
-        assert!(!on_disk.contains("from-parent"));
-        // The team provider is NOT part of that file any more: since #941 it is
-        // scoped to the active team and written once, globally.
+        // Nothing lands in the worktree; the team provider is written once,
+        // into the active team's providers.json.
+        assert!(!worktree.join("opencode.json").exists());
         let global = std::fs::read_to_string(global_team_config()).unwrap();
         assert!(
             global.contains("\"team\""),
-            "the managed provider belongs in the active team's global opencode.json"
+            "the managed provider belongs in the active team's providers.json"
         );
         // The tier list is pinned client-side, so the cloud's model name is not
         // what proves the provider landed -- the provider entry itself is.
@@ -331,10 +283,6 @@ mod tests {
         assert!(
             !global.contains("cron-model"),
             "cloud model list is not used"
-        );
-        assert!(
-            !on_disk.contains("cron-model"),
-            "cloud model list is not duplicated into the worktree config"
         );
     }
 

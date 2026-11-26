@@ -1,11 +1,11 @@
 pub mod active_session;
 pub mod amuxd_layout;
 pub mod atomic_write;
+pub mod config_store;
 pub mod env_activation;
 pub mod env_catalog;
 pub mod merge;
 pub mod node;
-pub mod opencode_config;
 pub mod personal_secrets;
 pub mod resolved_env;
 pub mod session_context;
@@ -25,7 +25,6 @@ mod storage_lint;
 pub mod test_util;
 
 use std::collections::HashMap;
-use std::path::Path;
 
 pub use active_session::{
     clear_active_session_id_if_matches, read_active_session_id, write_active_session_id,
@@ -60,9 +59,7 @@ pub use team_provider::{
     stabilize_managed_llm_for_spawn, team_provider_env_payload, ManagedLlmModel,
     ManagedLlmProvider, ManagedLlmState,
 };
-pub use team_provider_sync::{
-    resolve_workspace_runtime_config, sync_global_team_provider, TeamProviderSyncResult,
-};
+pub use team_provider_sync::sync_global_team_provider;
 
 pub use amuxd_layout::{active_team as active_amuxd_team, team_state_dir as amuxd_team_state_dir};
 pub use storage_namespace::{
@@ -123,20 +120,18 @@ pub struct SystemEnvContext {
 }
 
 pub fn assemble_runtime_env(
-    workspace: &Path,
     team_env: HashMap<String, String>,
     system: SystemEnvContext,
     managed_llm: &ManagedLlmState,
 ) -> anyhow::Result<RuntimeEnvBundle> {
     let personal = personal_secrets::load_personal_env()?;
-    assemble_runtime_env_with_personal(workspace, personal, team_env, system, managed_llm)
+    assemble_runtime_env_with_personal(personal, team_env, system, managed_llm)
 }
 
 /// [`assemble_runtime_env`] with the personal layer supplied by the caller —
 /// the daemon passes an empty one for a team it runs in support mode, where
 /// the machine owner's own variables must not reach the agent.
 pub fn assemble_runtime_env_with_personal(
-    workspace: &Path,
     personal: HashMap<String, String>,
     team_env: HashMap<String, String>,
     system: SystemEnvContext,
@@ -144,8 +139,11 @@ pub fn assemble_runtime_env_with_personal(
 ) -> anyhow::Result<RuntimeEnvBundle> {
     let ai_proxy_base = system.ai_proxy_base.clone();
     let resolved_env = resolved_env::resolve_runtime_env(personal, team_env, system);
-    sync_global_team_provider(managed_llm, &resolved_env.bindings, ai_proxy_base.as_deref())?;
-    let _sync = resolve_workspace_runtime_config(workspace)?;
+    sync_global_team_provider(
+        managed_llm,
+        &resolved_env.bindings,
+        ai_proxy_base.as_deref(),
+    )?;
     Ok(RuntimeEnvBundle {
         extra_env: resolved_env.bindings.clone(),
         resolved_env,
@@ -167,8 +165,6 @@ mod tests {
             "active_team = \"team-test\"\n",
         )
         .unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("opencode.json"), "{}").unwrap();
 
         let managed = ManagedLlmState::Enabled(ManagedLlmProvider {
             name: "Team".to_string(),
@@ -180,7 +176,6 @@ mod tests {
         });
 
         let bundle = assemble_runtime_env(
-            dir.path(),
             HashMap::new(),
             SystemEnvContext {
                 actor_id: "spawn-actor".to_string(),
@@ -204,7 +199,7 @@ mod tests {
         let raw = std::fs::read_to_string(
             global_dir
                 .path()
-                .join("teams/team-test/state/opencode.json"),
+                .join("teams/team-test/state/providers.json"),
         )
         .unwrap();
         assert!(raw.contains("tok_spawn_actor"));
@@ -212,7 +207,5 @@ mod tests {
         // so a model name coming back from the cloud is deliberately ignored.
         assert!(raw.contains("\"default\""), "pinned tiers are materialized");
         assert!(!raw.contains("model-a"), "cloud model list is not used");
-        let workspace_raw = std::fs::read_to_string(dir.path().join("opencode.json")).unwrap();
-        assert!(!workspace_raw.contains("\"team\""));
     }
 }

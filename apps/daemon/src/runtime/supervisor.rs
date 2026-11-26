@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,19 +20,7 @@ use tracing::{info, warn};
 
 /// Matches `apps/desktop/src/commands/introspect_api.rs` — desktop Tauri hosts the API.
 pub(crate) const INTROSPECT_API_PORT: u16 = 13144;
-const TEAM_SKILLS_PATH: &str = "teamclu-team/skills";
-const REMOTE_TOOLS_MCP_SERVER_NAME: &str = "amuxd-remote-tools";
 const MAX_AUTO_SKILL_REFRESHES_PER_TICK: usize = 1;
-
-/// Inherent MCP servers that older builds wrote into workspace configs under a
-/// name this build no longer maintains. Removed on sight — see the call site.
-/// Names no runtime should load any more. `teamclaw-introspect` is the
-/// pre-rename sidecar; `amuxd-send` is the retired second daemon MCP server
-/// whose `send` tool now lives in `teamclu-introspect`; `autoui` is the retired
-/// vision-and-mouse desktop fallback. Removed from any workspace config that
-/// still carries a copy — leaving one means spawning a server that no longer
-/// exists, and under pi a failed bridge spawn used to take the whole runtime down.
-const LEGACY_MCP_NAMES: &[&str] = &["teamclaw-introspect", "amuxd-send", "autoui"];
 
 use crate::config::workspace_control::{
     ApplyOutcome, EnvActivationBlocker, EnvActivationDiagnostics, RuntimeStatus,
@@ -75,196 +63,20 @@ fn inherent_skills() -> Vec<InherentSkill> {
     ]
 }
 
-fn opencode_json_path(workspace_path: &Path) -> PathBuf {
-    workspace_path.join("opencode.json")
-}
-
-fn map_store_err(
-    e: teamclu_runtime_env::opencode_config::OpencodeConfigError,
-) -> WorkspaceControlError {
-    WorkspaceControlError::Io(e.to_string())
-}
-
-fn ws_to_store_err(
-    e: WorkspaceControlError,
-) -> teamclu_runtime_env::opencode_config::OpencodeConfigError {
-    match e {
-        WorkspaceControlError::Io(s) => {
-            teamclu_runtime_env::opencode_config::OpencodeConfigError::Io(s)
-        }
-        WorkspaceControlError::Parse(s) => {
-            teamclu_runtime_env::opencode_config::OpencodeConfigError::Parse(s)
-        }
-        other => {
-            teamclu_runtime_env::opencode_config::OpencodeConfigError::Parse(other.to_string())
-        }
-    }
-}
-
-fn mutate_default_permissions(
-    config: &mut serde_json::Value,
-) -> Result<bool, WorkspaceControlError> {
-    let obj = config.as_object_mut().ok_or_else(|| {
-        WorkspaceControlError::Parse("opencode.json root is not an object".into())
-    })?;
-    if obj.contains_key("permission") {
-        return Ok(false);
-    }
-    obj.insert(
-        "permission".to_string(),
-        serde_json::json!({
-            "bash": "ask",
-            "edit": "ask",
-            "write": "ask",
-            "external_directory": "ask",
-            "doom_loop": "ask"
-        }),
-    );
-    Ok(true)
-}
-
-fn mutate_inherent_mcp(
-    workspace_path: &Path,
-    config: &mut serde_json::Value,
-) -> Result<bool, WorkspaceControlError> {
-    if config.as_object().map(|o| o.is_empty()).unwrap_or(true) && config.get("$schema").is_none() {
-        if let Some(obj) = config.as_object_mut() {
-            obj.insert(
-                "$schema".to_string(),
-                serde_json::json!("https://opencode.ai/config.json"),
-            );
-        }
-    }
-
-    let obj = config.as_object_mut().ok_or_else(|| {
-        WorkspaceControlError::Parse("opencode.json root is not an object".into())
-    })?;
-
-    let mcp = obj.entry("mcp").or_insert_with(|| serde_json::json!({}));
-    let mcp_obj = mcp
-        .as_object_mut()
-        .ok_or_else(|| WorkspaceControlError::Parse("mcp is not an object".into()))?;
-
-    let mut changed = false;
-
-    // `amuxd-remote-tools` and its `remote-tools-mcp` subcommand are gone.
-    // Strip leftovers from earlier builds so GET /mcp and Team Share go quiet.
-    if mcp_obj.remove(REMOTE_TOOLS_MCP_SERVER_NAME).is_some() {
-        changed = true;
-    }
-
-    // `amuxd-send`, `playwright`, `chrome-control` and `open-computer-use` are device-level
-    // and live in `~/.amuxd/mcp.json` (see `config::device_mcp`). They used to be
-    // written here, once per workspace, each copy carrying this machine's
-    // absolute binary paths. Drop any such copy: it outranks the device file, so
-    // leaving it pins the workspace to whatever was current when it was written.
-    let device_names: Vec<String> = mcp_obj
-        .keys()
-        .filter(|name| crate::config::device_mcp::is_device_scoped(name))
-        .cloned()
-        .collect();
-    for name in device_names {
-        mcp_obj.remove(&name);
-        changed = true;
-    }
-
-    // Renamed inherent servers. The 2026-08-09 teamclaw→teamclu rename changed
-    // the sidecar's binary name; the entries already written into every
-    // workspace kept the old name AND an absolute path into the app bundle, and
-    // nothing owned them afterwards: `is_device_scoped` does not list them and
-    // the introspect self-heal below matches the new name only. Under opencode
-    // a dead server is merely ignored, so they sat there until someone switched
-    // to pi — where the extension's bridge spawn took the whole runtime down.
-    for name in LEGACY_MCP_NAMES {
-        if mcp_obj.remove(*name).is_some() {
-            info!(
-                workspace = %workspace_path.display(),
-                server = name,
-                "dropping renamed inherent MCP entry from workspace config"
-            );
-            changed = true;
-        }
-    }
-
-    ensure_extended_inherent_config(config, &mut changed)?;
-    Ok(changed)
-}
-
-/// One read-modify-write for prepare/reload paths.
-pub fn materialize_opencode_for_prepare(
-    workspace_path: &Path,
-) -> Result<(), WorkspaceControlError> {
-    ensure_device_layers();
-    teamclu_runtime_env::opencode_config::OpencodeConfigStore::apply(workspace_path, |config| {
-        let mut changed = false;
-        changed |= mutate_default_permissions(config).map_err(ws_to_store_err)?;
-        changed |= mutate_inherent_mcp(workspace_path, config).map_err(ws_to_store_err)?;
-        Ok(changed)
-    })
-    .map_err(map_store_err)?;
-    Ok(())
-}
-
-/// One read-modify-write for spawn: inherent MCP only.
+/// Seed `~/.amuxd/mcp.json`, the device MCP layer (`config::device_mcp`).
 ///
-/// Cloud `provider.team` materialization and secret resolution run in
-/// [`teamclu_runtime_env::assemble_runtime_env`] via
-/// [`teamclu_runtime_env::sync_global_team_provider`].
-pub fn materialize_inherent_mcp_for_spawn(
-    workspace_path: &Path,
-) -> Result<(), WorkspaceControlError> {
-    ensure_device_layers();
-    teamclu_runtime_env::opencode_config::OpencodeConfigStore::apply(workspace_path, |config| {
-        mutate_inherent_mcp(workspace_path, config).map_err(ws_to_store_err)
-    })
-    .map_err(map_store_err)?;
-    Ok(())
-}
-
-/// Seed the device MCP file for a read that is not a spawn.
-///
-/// The MCP inventory RPC reports what this machine has; `ensure_device_mcp` is
-/// what puts the device servers there. Exposed separately from
-/// [`ensure_device_layers`] because an inventory read has no business touching
-/// the team's `skills.paths`.
-pub(crate) fn ensure_device_mcp_for_inventory() {
-    if let Err(e) = crate::config::device_mcp::ensure_device_mcp() {
-        warn!(error = %e, "seeding device MCP config failed");
+/// Best-effort on purpose: readers treat a missing file as "no device servers",
+/// so a failure here degrades to that for one run instead of blocking a spawn
+/// or a settings read. It logs, which is what makes that visible.
+pub(crate) fn ensure_device_mcp_layer() {
+    match crate::config::device_mcp::ensure_device_mcp() {
+        // A reinstalled app (new introspect path) or a newly seeded server:
+        // carry it to the pi hosts already running, which watch their
+        // effective MCP file.
+        Ok(true) => crate::runtime::pi_rpc::refresh_effective_mcp(None),
+        Ok(false) => {}
+        Err(e) => warn!(error = %e, "seeding device MCP config failed"),
     }
-}
-
-/// Seed the two device-level layers the workspace config no longer carries:
-/// `~/.amuxd/mcp.json` (device MCP) and the active team's global `skills.paths`.
-///
-/// Best-effort on purpose — both are read with a "missing means empty" fallback,
-/// so a failure here degrades to "no device MCP this run" rather than blocking a
-/// spawn. It logs, which is what makes that visible.
-fn ensure_device_layers() {
-    if let Err(e) = crate::config::device_mcp::ensure_device_mcp() {
-        warn!(error = %e, "seeding device MCP config failed");
-    }
-    if let Err(e) = ensure_global_skill_paths() {
-        warn!(error = %e, "seeding global skill paths failed");
-    }
-}
-
-/// Seed inherent MCP entries that TeamClu expects (non-destructive).
-pub fn ensure_inherent_mcp(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
-    ensure_device_layers();
-    let config_path = opencode_json_path(workspace_path);
-    let changed = teamclu_runtime_env::opencode_config::OpencodeConfigStore::apply(
-        workspace_path,
-        |config| mutate_inherent_mcp(workspace_path, config).map_err(ws_to_store_err),
-    )
-    .map_err(map_store_err)?;
-    if changed {
-        info!(
-            workspace = %workspace_path.display(),
-            config_path = %config_path.display(),
-            "ensure_inherent_mcp: opencode.json updated"
-        );
-    }
-    Ok(())
 }
 
 // The gateway `send` bridge moved to `config::device_mcp`: nothing in its argv is
@@ -499,231 +311,6 @@ fn introspect_command_stale_against(existing: &serde_json::Value, injected: Opti
     }
 }
 
-/// Port of desktop `ensure_inherent_config`, now down to pruning stale
-/// `skills.paths`: every inherent MCP server it used to seed here is written
-/// once per machine instead, so nothing in it depends on the workspace any more.
-fn ensure_extended_inherent_config(
-    config: &mut serde_json::Value,
-    changed: &mut bool,
-) -> Result<(), WorkspaceControlError> {
-    let obj = config.as_object_mut().ok_or_else(|| {
-        WorkspaceControlError::Parse("opencode.json root is not an object".into())
-    })?;
-
-    // No MCP server is seeded here any more. teamclu-introspect,
-    // open-computer-use, playwright and chrome-control are written once per
-    // machine by `config::device_mcp::ensure_device_mcp`. Introspect was the
-    // last one written per workspace, for the sake of a `--workspace` argument
-    // it does not need: the flag defaults to `.` and MCP children are spawned
-    // with the worktree as cwd.
-
-    // `skills.paths` is not workspace state either. It used to be seeded here as
-    // `["teamclu-team/skills", "<home>/.agents/skills"]`:
-    //
-    // - `teamclu-team/skills` is workspace-*relative*, and under the v2 home
-    //   layout the team share lives in `~/.amuxd/teams/<id>/shared/teamclu-team`.
-    //   It resolved only through the symlink a fully-onboarded workspace happens
-    //   to have; in a workspace without one it silently pointed at nothing.
-    // - `<home>/.agents/skills` is the same directory for every workspace.
-    //
-    // Both now go into the active team's global config as absolute paths.
-    // Stale workspace copies are dropped so the relative form cannot outrank them.
-    {
-        let dropped = obj
-            .get_mut("skills")
-            .and_then(|skills| skills.as_object_mut())
-            .and_then(|skills| skills.get_mut("paths"))
-            .and_then(|paths| paths.as_array_mut())
-            .map(|paths| {
-                let before = paths.len();
-                paths.retain(|value| !is_migrated_skill_path(value.as_str()));
-                before != paths.len()
-            })
-            .unwrap_or(false);
-        if dropped {
-            *changed = true;
-        }
-        // Drop an emptied `skills` object rather than leaving `{"paths": []}`,
-        // which reads as "this workspace deliberately has no skill paths".
-        let empty = obj
-            .get("skills")
-            .and_then(|skills| skills.as_object())
-            .map(|skills| {
-                skills.len() <= 1
-                    && skills
-                        .get("paths")
-                        .and_then(|paths| paths.as_array())
-                        .map(|paths| paths.is_empty())
-                        .unwrap_or(true)
-            })
-            .unwrap_or(false);
-        if empty {
-            obj.remove("skills");
-            *changed = true;
-        }
-    }
-
-    Ok(())
-}
-
-/// Skill paths that moved to the global config — the ones older builds seeded
-/// into every workspace. Both the `~`-prefixed and the expanded form of the
-/// agents dir count: older builds wrote either. Hosted team cloud roots also
-/// belong in the global file; a workspace copy of one would outrank it.
-fn is_migrated_skill_path(path: Option<&str>) -> bool {
-    let Some(path) = path else { return false };
-    if path == TEAM_SKILLS_PATH || path == "~/.agents/skills" {
-        return true;
-    }
-    if is_hosted_team_skills_path(path, &crate::config::layout::teams_dir()) {
-        return true;
-    }
-    dirs::home_dir()
-        .map(|home| home.join(".agents").join("skills"))
-        .map(|agents| path == agents.to_string_lossy())
-        .unwrap_or(false)
-}
-
-/// Daemon-managed hosted install root: `<teams_root>/<teamId>/state/cloud/skills`.
-///
-/// Shape-alike paths outside `teams_root` are user config and must not be
-/// rewritten or dropped.
-pub(crate) fn is_hosted_team_skills_path(path: &str, teams_root: &Path) -> bool {
-    let path = PathBuf::from(path.replace('\\', "/").trim_end_matches('/'));
-    let root = PathBuf::from(
-        teams_root
-            .to_string_lossy()
-            .replace('\\', "/")
-            .trim_end_matches('/'),
-    );
-    let Ok(rel) = path.strip_prefix(&root) else {
-        return false;
-    };
-    let mut comps = rel.components();
-    match (
-        comps.next(),
-        comps.next(),
-        comps.next(),
-        comps.next(),
-        comps.next(),
-    ) {
-        (
-            Some(Component::Normal(team)),
-            Some(Component::Normal(state)),
-            Some(Component::Normal(cloud)),
-            Some(Component::Normal(skills)),
-            None,
-        ) => !team.is_empty() && state == "state" && cloud == "cloud" && skills == "skills",
-        _ => false,
-    }
-}
-
-/// Put the system-managed skill root first, then keep any user-defined extras.
-///
-/// Runtime path is `~/.agents/skills`. Hosted `cloud/skills` is a comparison
-/// cache and is stripped from `skills.paths` so OpenCode never loads it.
-pub fn normalize_managed_skill_paths(
-    existing: &[String],
-    hosted: Option<&str>,
-    member: Option<&str>,
-    teams_root: &Path,
-) -> Vec<String> {
-    let path_eq = |a: &str, b: &str| a.replace('\\', "/") == b.replace('\\', "/");
-    let is_member =
-        |path: &str| path_eq(path, "~/.agents/skills") || member.is_some_and(|m| path_eq(path, m));
-    let is_managed = |path: &str| is_hosted_team_skills_path(path, teams_root) || is_member(path);
-    let _ = hosted;
-
-    let mut out = Vec::new();
-    if let Some(member) = member.filter(|p| !p.is_empty()) {
-        out.push(member.to_string());
-    }
-    for path in existing {
-        if path.trim().is_empty() || is_managed(path) {
-            continue;
-        }
-        if out.iter().any(|p| path_eq(p, path)) {
-            continue;
-        }
-        out.push(path.clone());
-    }
-    out
-}
-
-/// Seed `~/.agents/skills` into the active team's global config.
-///
-/// Hosted `cloud/skills` is a comparison cache, not a runtime root — it is
-/// stripped from `skills.paths` rather than registered. OpenCode loads the
-/// working copy only.
-///
-/// Notably NOT the team share's `teamclu-team/skills`: file sync carries
-/// documents only, so nothing is ever installed there (see the note on
-/// `config::team_skill_roots`). The relative `teamclu-team/skills` that older
-/// builds wrote into every workspace pointed at that empty directory — and only
-/// resolved at all in a workspace whose team-share symlink existed.
-pub fn ensure_global_skill_paths() -> Result<bool, WorkspaceControlError> {
-    use teamclu_runtime_env::opencode_config::{OpencodeConfigError, OpencodeConfigStore};
-
-    let hosted = crate::config::team_mcp::onboarded_team_id().map(|team_id| {
-        crate::runtime::team_skills::team_cloud_skills_dir(&team_id)
-            .to_string_lossy()
-            .into_owned()
-    });
-    let member = dirs::home_dir().map(|home| {
-        home.join(".agents")
-            .join("skills")
-            .to_string_lossy()
-            .into_owned()
-    });
-    if hosted.is_none() && member.is_none() {
-        return Ok(false);
-    }
-
-    OpencodeConfigStore::apply_global(|config| {
-        let obj = config.as_object_mut().ok_or_else(|| {
-            OpencodeConfigError::Parse("global opencode.json root is not an object".to_string())
-        })?;
-        if !obj.contains_key("$schema") {
-            obj.insert(
-                "$schema".to_string(),
-                serde_json::json!("https://opencode.ai/config.json"),
-            );
-        }
-        let skills = obj.entry("skills").or_insert_with(|| serde_json::json!({}));
-        let skills_obj = skills.as_object_mut().ok_or_else(|| {
-            OpencodeConfigError::Parse("global opencode.json skills is not an object".to_string())
-        })?;
-        let paths_val = skills_obj
-            .entry("paths")
-            .or_insert_with(|| serde_json::json!([]));
-        let paths = paths_val.as_array_mut().ok_or_else(|| {
-            OpencodeConfigError::Parse(
-                "global opencode.json skills.paths is not an array".to_string(),
-            )
-        })?;
-        let existing: Vec<String> = paths
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
-        let teams_root = crate::config::layout::teams_dir();
-        let normalized = normalize_managed_skill_paths(
-            &existing,
-            hosted.as_deref(),
-            member.as_deref(),
-            &teams_root,
-        );
-        if existing == normalized {
-            return Ok(false);
-        }
-        *paths = normalized
-            .into_iter()
-            .map(serde_json::Value::String)
-            .collect();
-        Ok(true)
-    })
-    .map_err(map_store_err)
-}
-
 fn remove_retired_desktop_control_skills(skills_dir: &Path) {
     for name in ["macos-control", "windows-control"] {
         let path = skills_dir.join(name);
@@ -911,7 +498,7 @@ pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlEr
             "writing skill creation policy file failed; continuing"
         );
     }
-    materialize_opencode_for_prepare(workspace_path)?;
+    ensure_device_mcp_layer();
     ensure_inherent_skills_in_dir(&inherent_skills_dir()?)?;
     // Claude bridge only: may soft-skip on Windows without symlink privilege
     // (see `ensure_claude_team_skills`). Failure there must not block pi prep.
@@ -2112,70 +1699,6 @@ fn auto_apply_priority(state: &WorkspaceRefreshState, occupancy: WorkspaceOccupa
 }
 
 #[cfg(test)]
-mod inherent_mcp_tests {
-    use super::*;
-
-    fn inherent_mcp_map(
-        config: &mut serde_json::Value,
-    ) -> serde_json::Map<String, serde_json::Value> {
-        let dir = tempfile::tempdir().unwrap();
-        mutate_inherent_mcp(dir.path(), config).unwrap();
-        config
-            .get("mcp")
-            .and_then(|m| m.as_object())
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    // Device-level servers are no longer written per workspace — the send bridge,
-    // the npx bridges and their argv now live once in `~/.amuxd/mcp.json`
-    // (`config::device_mcp`, which owns the tests for their contents).
-    #[test]
-    fn device_scoped_servers_are_not_written_into_a_workspace() {
-        let mut config = serde_json::json!({});
-        let mcp = inherent_mcp_map(&mut config);
-        for name in crate::config::device_mcp::DEVICE_MCP_NAMES {
-            assert!(!mcp.contains_key(*name), "{name} leaked into the workspace");
-        }
-    }
-
-    #[test]
-    fn a_device_scoped_copy_left_by_an_older_build_is_removed() {
-        // The copy outranks the device file, so leaving it pins this workspace to
-        // whatever binary path was current the day it was written — after a
-        // reinstall, a path that no longer exists.
-        let mut config = serde_json::json!({
-            "mcp": {
-                "amuxd-send": { "type": "local", "enabled": true, "command": ["/old/amuxd", "mcp-server"] },
-                "autoui": { "type": "local", "enabled": true, "command": ["npx", "autoui-mcp"] },
-                "chrome-control": { "type": "local", "enabled": true, "command": ["npx", "chrome"] },
-                // Introspect copies additionally pin `--workspace` to whichever
-                // workspace happened to write them.
-                "teamclu-introspect": { "type": "local", "enabled": true, "command": [
-                    "/old/bundle/teamclu-introspect", "--workspace", "/some/other/repo"
-                ] }
-            }
-        });
-        let mcp = inherent_mcp_map(&mut config);
-        assert!(!mcp.contains_key("amuxd-send"));
-        assert!(!mcp.contains_key("autoui"));
-        assert!(!mcp.contains_key("chrome-control"));
-        assert!(!mcp.contains_key("teamclu-introspect"));
-    }
-
-    #[test]
-    fn rewriting_an_existing_config_keeps_user_servers() {
-        let mut config = serde_json::json!({
-            "mcp": { "ctx7": { "type": "local", "enabled": true, "command": ["npx", "ctx7"] } }
-        });
-        let mcp = inherent_mcp_map(&mut config);
-        assert!(mcp.contains_key("ctx7"), "user server survived");
-        // The retired remote-tools entry is stripped, never injected.
-        assert!(!mcp.contains_key(REMOTE_TOOLS_MCP_SERVER_NAME));
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::global_team_store::TEST_HOME_LOCK;
@@ -2390,7 +1913,7 @@ mod tests {
             .record_change(
                 &workspace_id,
                 dir.path(),
-                refresh::RefreshChangeKind::OpencodeJson,
+                refresh::RefreshChangeKind::Skills,
                 refresh::RefreshSource::FilesystemWatch,
             )
             .await
@@ -2719,7 +2242,7 @@ mod tests {
         std::fs::set_permissions(&meta, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         result.unwrap();
-        assert!(dir.path().join("opencode.json").is_file());
+        assert!(!dir.path().join("opencode.json").exists());
         assert!(!meta.join("instructions").exists());
     }
 
@@ -2730,14 +2253,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         prepare_workspace(dir.path()).unwrap();
 
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(cfg.get("permission").is_some());
         assert!(
-            cfg["mcp"].get(REMOTE_TOOLS_MCP_SERVER_NAME).is_none(),
-            "amuxd-remote-tools must not be auto-injected"
+            !dir.path().join("opencode.json").exists(),
+            "nothing is written into the user's workspace root any more"
         );
 
         assert!(home
@@ -2800,33 +2318,6 @@ mod tests {
     }
 
     #[test]
-    fn prepare_workspace_strips_paused_remote_tools_mcp() {
-        let home = tempfile::tempdir().unwrap();
-        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("opencode.json"),
-            r#"{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "amuxd-remote-tools": {
-      "type": "local",
-      "enabled": true,
-      "command": ["amuxd", "remote-tools-mcp"]
-    }
-  }
-}"#,
-        )
-        .unwrap();
-        prepare_workspace(dir.path()).unwrap();
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(cfg["mcp"].get("amuxd-remote-tools").is_none());
-    }
-
-    #[test]
     /// A white-label build seeds the same shared root as the official one:
     /// skills are not brand-namespaced any more.
     fn prepare_workspace_white_label_seeds_the_shared_agents_dir() {
@@ -2843,252 +2334,5 @@ mod tests {
             .path()
             .join(".copilot361/skills/create-role/SKILL.md")
             .exists());
-    }
-
-    #[test]
-    fn prepare_workspace_drops_renamed_inherent_mcp_entry() {
-        // A workspace written before the 2026-08-09 teamclaw→teamclu rename
-        // carries `teamclaw-introspect` with an absolute path into an app
-        // bundle that no longer ships that binary. Nothing owned the old name
-        // afterwards, and under pi the extension's bridge spawn took the whole
-        // runtime down with it, so every session in the workspace failed with
-        // "process exited before responding".
-        let home = tempfile::tempdir().unwrap();
-        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("opencode.json"),
-            r#"{"mcp":{"teamclaw-introspect":{"type":"local","enabled":true,
-                 "command":["/Applications/Old.app/Contents/MacOS/teamclaw-introspect"]},
-                 "user-server":{"type":"local","enabled":true,"command":["npx","-y","x"]}}}"#,
-        )
-        .unwrap();
-
-        prepare_workspace(dir.path()).unwrap();
-
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            cfg["mcp"].get("teamclaw-introspect").is_none(),
-            "the renamed inherent entry must be dropped"
-        );
-        assert!(
-            cfg["mcp"].get("user-server").is_some(),
-            "a user's own server must survive the migration"
-        );
-    }
-
-    #[test]
-    fn prepare_workspace_strips_managed_skill_paths_from_workspace_config() {
-        let home = tempfile::tempdir().unwrap();
-        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
-        let agents = home.path().join(".agents/skills");
-        let hosted = home.path().join(".amuxd/teams/team-a/state/cloud/skills");
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("opencode.json"),
-            serde_json::json!({
-                "skills": {
-                    "paths": [
-                        agents.to_string_lossy(),
-                        hosted.to_string_lossy(),
-                        "/opt/custom/skills"
-                    ]
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
-
-        prepare_workspace(dir.path()).unwrap();
-
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
-        )
-        .unwrap();
-        let paths = cfg["skills"]["paths"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        assert!(
-            paths
-                .iter()
-                .all(|p| p.as_str() != Some(agents.to_string_lossy().as_ref())),
-            "member path must not stay in workspace opencode.json"
-        );
-        assert!(
-            paths
-                .iter()
-                .all(|p| p.as_str() != Some(hosted.to_string_lossy().as_ref())),
-            "hosted path must not stay in workspace opencode.json"
-        );
-        assert!(
-            paths
-                .iter()
-                .any(|p| p.as_str() == Some("/opt/custom/skills")),
-            "user custom paths survive"
-        );
-    }
-}
-
-#[cfg(test)]
-mod skill_path_normalize_tests {
-    use super::*;
-
-    const TEAMS_ROOT: &str = "/Users/me/.amuxd/teams";
-    const HOSTED_A: &str = "/Users/me/.amuxd/teams/team-a/state/cloud/skills";
-    const HOSTED_B: &str = "/Users/me/.amuxd/teams/team-b/state/cloud/skills";
-    const MEMBER: &str = "/Users/me/.agents/skills";
-    const CUSTOM: &str = "/opt/company/skills";
-    const LOOKALIKE: &str = "/opt/company/teams/team-a/state/cloud/skills";
-
-    fn normalize(existing: &[String], hosted: Option<&str>, member: Option<&str>) -> Vec<String> {
-        normalize_managed_skill_paths(existing, hosted, member, Path::new(TEAMS_ROOT))
-    }
-
-    #[test]
-    fn empty_config_emits_member_only() {
-        assert_eq!(
-            normalize(&[], Some(HOSTED_A), Some(MEMBER)),
-            vec![MEMBER.to_string()]
-        );
-    }
-
-    #[test]
-    fn member_only_existing_stays_member() {
-        assert_eq!(
-            normalize(&[MEMBER.to_string()], Some(HOSTED_A), Some(MEMBER)),
-            vec![MEMBER.to_string()]
-        );
-    }
-
-    #[test]
-    fn drops_hosted_even_when_listed_first() {
-        assert_eq!(
-            normalize(
-                &[HOSTED_A.to_string(), MEMBER.to_string()],
-                Some(HOSTED_A),
-                Some(MEMBER)
-            ),
-            vec![MEMBER.to_string()]
-        );
-    }
-
-    #[test]
-    fn dedupes_repeated_managed_paths() {
-        assert_eq!(
-            normalize(
-                &[
-                    HOSTED_A.to_string(),
-                    MEMBER.to_string(),
-                    HOSTED_A.to_string(),
-                    MEMBER.to_string()
-                ],
-                Some(HOSTED_A),
-                Some(MEMBER)
-            ),
-            vec![MEMBER.to_string()]
-        );
-    }
-
-    #[test]
-    fn preserves_custom_paths_and_their_order() {
-        let extra = "/home/me/extra-skills";
-        assert_eq!(
-            normalize(
-                &[CUSTOM.to_string(), MEMBER.to_string(), extra.to_string()],
-                Some(HOSTED_A),
-                Some(MEMBER)
-            ),
-            vec![MEMBER.to_string(), CUSTOM.to_string(), extra.to_string()]
-        );
-    }
-
-    #[test]
-    fn switching_teams_drops_previous_hosted_root() {
-        assert_eq!(
-            normalize(
-                &[HOSTED_A.to_string(), MEMBER.to_string()],
-                Some(HOSTED_B),
-                Some(MEMBER)
-            ),
-            vec![MEMBER.to_string()]
-        );
-    }
-
-    #[test]
-    fn no_active_team_drops_hosted_roots() {
-        assert_eq!(
-            normalize(
-                &[HOSTED_A.to_string(), MEMBER.to_string(), CUSTOM.to_string()],
-                None,
-                Some(MEMBER)
-            ),
-            vec![MEMBER.to_string(), CUSTOM.to_string()]
-        );
-    }
-
-    #[test]
-    fn tilde_member_alias_is_treated_as_managed() {
-        assert_eq!(
-            normalize(
-                &["~/.agents/skills".into(), CUSTOM.to_string()],
-                Some(HOSTED_A),
-                Some(MEMBER)
-            ),
-            vec![MEMBER.to_string(), CUSTOM.to_string()]
-        );
-    }
-
-    #[test]
-    fn normalize_is_idempotent() {
-        let first = normalize(
-            &[MEMBER.to_string(), HOSTED_A.to_string(), CUSTOM.to_string()],
-            Some(HOSTED_A),
-            Some(MEMBER),
-        );
-        let second = normalize(&first, Some(HOSTED_A), Some(MEMBER));
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn hosted_path_matcher_requires_managed_teams_root() {
-        let root = Path::new(TEAMS_ROOT);
-        assert!(is_hosted_team_skills_path(HOSTED_A, root));
-        assert!(is_hosted_team_skills_path(
-            "/Users/me/.amuxd/teams/team-b/state/cloud/skills/",
-            root
-        ));
-        assert!(is_hosted_team_skills_path(
-            r"C:\Users\me\.amuxd\teams\team-a\state\cloud\skills",
-            Path::new(r"C:\Users\me\.amuxd\teams")
-        ));
-        assert!(!is_hosted_team_skills_path(LOOKALIKE, root));
-        assert!(!is_hosted_team_skills_path(
-            "/Users/me/.amuxd/teams/team-a/shared/skills",
-            root
-        ));
-        assert!(!is_hosted_team_skills_path(
-            "/Users/me/.amuxd/teams/team-a/state/cloud/skills/extra",
-            root
-        ));
-        assert!(!is_hosted_team_skills_path(
-            "/Users/me/.amuxd/teams/team-a/state/cloud",
-            root
-        ));
-    }
-
-    #[test]
-    fn lookalike_company_hosted_path_is_kept_as_custom() {
-        assert_eq!(
-            normalize(
-                &[LOOKALIKE.to_string(), MEMBER.to_string()],
-                Some(HOSTED_A),
-                Some(MEMBER)
-            ),
-            vec![MEMBER.to_string(), LOOKALIKE.to_string()]
-        );
     }
 }

@@ -23,7 +23,7 @@
 //! channel as a marked `select` dialog (see `translate::QUESTION_MARKER`).
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -291,14 +291,12 @@ fn split_model_id(model_id: &str) -> Option<(String, String)> {
     Some((provider.to_string(), model.to_string()))
 }
 
-/// Build the `TEAMCLU_MCP_SERVERS` payload for the pi extension from a
-/// workspace `opencode.json` (the MCP SSOT: team + inherent + user servers all
-/// merge into its `mcp` map). pi has no native MCP, so the extension connects
-/// to each enabled server with the official MCP SDK and proxies its tools.
+/// How [`mcp_servers_from_value`] shapes each server for the pi extension. pi
+/// has no native MCP, so the extension connects to each enabled server with the
+/// official MCP SDK and proxies its tools.
 ///
-/// Returns a JSON string keyed by server name, carrying the same two shapes
-/// opencode understands, normalized so the extension does not have to repeat
-/// opencode's defaulting rules:
+/// The payload is a JSON object keyed by server name, carrying two shapes,
+/// normalized so the extension does not have to repeat the defaulting rules:
 ///
 /// - local (stdio):  `{ "type": "local",  "command": [...], "environment": {...} }`
 /// - remote (HTTP):  `{ "type": "remote", "url": "...",     "headers": {...} }`
@@ -410,61 +408,87 @@ fn mcp_servers_from_value(root: &serde_json::Value) -> Option<String> {
     Some(serde_json::Value::Object(out).to_string())
 }
 
-fn mcp_servers_from_opencode_json(worktree: &str) -> Option<String> {
+/// The `TEAMCLU_MCP_SERVERS` payload for a pi host in `worktree`: every MCP
+/// layer (device, team, workspace — `team_mcp::load_merged_mcp_lossy`, the same
+/// merge the settings view shows) normalized by [`pi_server_spec`].
+///
+/// The same map is written to the worktree's `mcp.effective.json`, which is
+/// what the extension watches (`TEAMCLU_MCP_CONFIG_PATH`). The env var is only
+/// a snapshot at spawn; the file is how a later change to *any* layer reaches a
+/// running host. The extension used to watch the workspace's `opencode.json`
+/// instead — one layer of three — so every write to that file (a model switch,
+/// a gateway token rotation) re-read a list without the device and team
+/// servers and disposed them: `teamclu-introspect` included, whose tools then
+/// failed with "Not connected" until pi restarted.
+fn effective_mcp_servers(worktree: &str) -> Option<String> {
+    let servers = effective_mcp_map(Path::new(worktree));
+    write_effective_mcp_file(Path::new(worktree), &servers);
+    if servers.is_empty() {
+        return None;
+    }
+    Some(serde_json::Value::Object(servers).to_string())
+}
+
+fn effective_mcp_map(worktree: &Path) -> serde_json::Map<String, serde_json::Value> {
+    let merged = crate::config::team_mcp::load_merged_mcp_lossy(worktree);
     let mut mcp = serde_json::Map::new();
-    // Device layer first, team over it, workspace last — the precedence
-    // `team_mcp::load_merged_mcp` applies, so pi ends up with the same servers
-    // the settings view and the other runtimes report.
-    //
-    // pi used to skip this layer entirely, which was survivable only because
-    // every device server also had a stale copy in some workspace config. It
-    // stops being survivable the moment one of them exists *only* here:
-    // `teamclu-introspect` moved to this file, `amuxd-send` has always lived
-    // here, and without it a cron run on pi is told to call a `send` tool that
-    // was never registered.
-    //
-    // Same `{"mcp": …}` shape as a workspace config, so the entries go in
-    // verbatim.
-    if let Ok(body) = std::fs::read_to_string(crate::config::device_mcp::device_mcp_file()) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            if let Some(servers) = json.get("mcp").and_then(|v| v.as_object()) {
-                for (name, server) in servers {
-                    mcp.insert(name.clone(), server.clone());
-                }
+    for (name, cfg) in merged {
+        match serde_json::to_value(&cfg) {
+            Ok(value) => {
+                mcp.insert(name, value);
             }
-        }
-    }
-    if let Some(team_id) = crate::config::team_mcp::onboarded_team_id() {
-        let path = crate::runtime::team_cloud_config::team_cloud_mcp_file(&team_id);
-        if let Ok(body) = std::fs::read_to_string(&path) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                if let Some(servers) = json.get("mcpServers").and_then(|v| v.as_object()) {
-                    for (name, raw) in servers {
-                        let Ok(parsed) = serde_json::from_value::<
-                            crate::config::team_mcp::CursorMcpServer,
-                        >(raw.clone()) else {
-                            continue;
-                        };
-                        let cfg = crate::config::team_mcp::convert_cursor_server(&parsed);
-                        if let Ok(val) = serde_json::to_value(cfg) {
-                            mcp.insert(name.clone(), val);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let path = Path::new(worktree).join("opencode.json");
-    if let Ok(body) = std::fs::read_to_string(&path) {
-        if let Ok(root) = serde_json::from_str::<serde_json::Value>(&body) {
-            if let Some(ws) = root.get("mcp").and_then(|v| v.as_object()) {
-                for (name, server) in ws {
-                    mcp.insert(name.clone(), server.clone());
-                }
-            }
+            Err(e) => warn!(server = %name, error = %e, "unserializable MCP entry skipped"),
         }
     }
     mcp_servers_from_value(&serde_json::json!({ "mcp": mcp }))
+        .and_then(|payload| serde_json::from_str::<serde_json::Value>(&payload).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+}
+
+/// Write `{ "workspace": …, "mcp": servers }` to the worktree's effective file,
+/// only when it differs, so the extension's watcher fires for real changes.
+fn write_effective_mcp_file(worktree: &Path, servers: &serde_json::Map<String, serde_json::Value>) {
+    let path = teamclu_runtime_env::config_store::effective_mcp_path(worktree);
+    let value = serde_json::json!({
+        "workspace": worktree.to_string_lossy(),
+        "mcp": servers,
+    });
+    if let Err(e) =
+        teamclu_runtime_env::config_store::ConfigStore::write_if_changed_at(&path, &value)
+    {
+        warn!(path = %path.display(), error = %e, "writing effective MCP file failed");
+    }
+}
+
+/// Recompute the effective MCP file of every workspace that has one, so a
+/// change to a shared layer (device `mcp.json`, the team's cloud MCP) reaches
+/// running pi hosts without a restart. `only` limits it to one workspace —
+/// the settings PUT, which changed that workspace's own layer.
+pub(crate) fn refresh_effective_mcp(only: Option<&Path>) {
+    if let Some(workspace) = only {
+        write_effective_mcp_file(workspace, &effective_mcp_map(workspace));
+        return;
+    }
+    let dir = teamclu_runtime_env::config_store::workspaces_config_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file = entry
+            .path()
+            .join(teamclu_runtime_env::config_store::EFFECTIVE_MCP_FILE_NAME);
+        let Some(workspace) = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .and_then(|json| json.get("workspace")?.as_str().map(PathBuf::from))
+        else {
+            continue;
+        };
+        if workspace.is_dir() {
+            write_effective_mcp_file(&workspace, &effective_mcp_map(&workspace));
+        }
+    }
 }
 
 /// Current model id (`provider/model`) from a `get_state` response.
@@ -583,7 +607,7 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
     let env = SpawnEnv {
         extra_env: args.extra_env,
         force_env_override: args.force_env_override,
-        mcp_servers: mcp_servers_from_opencode_json(&worktree),
+        mcp_servers: effective_mcp_servers(&worktree),
     };
     let proc = shared
         .pool
@@ -829,7 +853,7 @@ pub(crate) async fn fork_branched_session(
     let env = SpawnEnv {
         extra_env,
         force_env_override,
-        mcp_servers: mcp_servers_from_opencode_json(&worktree),
+        mcp_servers: effective_mcp_servers(&worktree),
     };
     let proc = shared
         .pool
@@ -1759,7 +1783,7 @@ impl AgentBackend for PiRpcBackend {
         let env = SpawnEnv {
             extra_env,
             force_env_override,
-            mcp_servers: mcp_servers_from_opencode_json(&worktree),
+            mcp_servers: effective_mcp_servers(&worktree),
         };
         if let Err(e) = self.shared.pool.ensure_with_env(&self.shared, &key, env) {
             warn!(worktree, error = %e, "pi prewarm failed");
@@ -1950,7 +1974,7 @@ impl AgentBackend for PiRpcBackend {
         let env = SpawnEnv {
             extra_env,
             force_env_override: false,
-            mcp_servers: mcp_servers_from_opencode_json(&worktree),
+            mcp_servers: effective_mcp_servers(&worktree),
         };
         // `ensure_for_catalog`, never `ensure_with_env`: this env is missing
         // fields the attach env has, so its fingerprint can never match and
@@ -2235,14 +2259,12 @@ mod tests {
         .unwrap();
 
         let worktree = tempfile::tempdir().unwrap();
-        std::fs::write(
-            worktree.path().join("opencode.json"),
-            r#"{"mcp":{"shared":{"type":"local","command":["workspace","version"]}}}"#,
-        )
-        .unwrap();
+        write_workspace_mcp(
+            worktree.path(),
+            r#"{"shared":{"type":"local","command":["workspace","version"]}}"#,
+        );
 
-        let payload =
-            mcp_servers_from_opencode_json(worktree.path().to_str().unwrap()).expect("payload");
+        let payload = effective_mcp_servers(worktree.path().to_str().unwrap()).expect("payload");
         let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(
             parsed["amuxd-send"]["command"],
@@ -2254,6 +2276,75 @@ mod tests {
             parsed["shared"]["command"],
             serde_json::json!(["workspace", "version"])
         );
+        // The extension watches the file, which must hold the same map.
+        assert_eq!(read_effective_mcp(worktree.path()), parsed);
+        assert!(!worktree.path().join("opencode.json").exists());
+    }
+
+    fn write_workspace_mcp(workspace: &Path, servers: &str) {
+        let servers: HashMap<String, crate::config::workspace_control::McpServerConfig> =
+            serde_json::from_str(servers).unwrap();
+        crate::config::team_mcp::write_persisted_mcp(workspace, &servers).unwrap();
+    }
+
+    fn read_effective_mcp(workspace: &Path) -> serde_json::Value {
+        let path = teamclu_runtime_env::config_store::effective_mcp_path(workspace);
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        json["mcp"].clone()
+    }
+
+    #[test]
+    fn a_workspace_mcp_edit_keeps_the_device_servers_in_the_watched_file() {
+        // The regression this file exists for: the extension used to watch the
+        // workspace's own `opencode.json`, so a write there re-read a list with
+        // no device servers and disposed `teamclu-introspect`.
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::write(
+            crate::config::device_mcp::device_mcp_file(),
+            r#"{"mcp":{"teamclu-introspect":{"type":"local","command":["introspect"]}}}"#,
+        )
+        .unwrap();
+        let worktree = tempfile::tempdir().unwrap();
+        effective_mcp_servers(worktree.path().to_str().unwrap()).expect("payload");
+
+        write_workspace_mcp(
+            worktree.path(),
+            r#"{"mine":{"type":"local","command":["mine"]}}"#,
+        );
+        refresh_effective_mcp(Some(worktree.path()));
+
+        let watched = read_effective_mcp(worktree.path());
+        assert_eq!(
+            watched["teamclu-introspect"]["command"],
+            serde_json::json!(["introspect"])
+        );
+        assert_eq!(watched["mine"]["command"], serde_json::json!(["mine"]));
+    }
+
+    #[test]
+    fn a_device_change_reaches_every_workspace_with_an_effective_file() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        effective_mcp_servers(a.path().to_str().unwrap());
+        effective_mcp_servers(b.path().to_str().unwrap());
+
+        std::fs::write(
+            crate::config::device_mcp::device_mcp_file(),
+            r#"{"mcp":{"new-device":{"type":"local","command":["new"]}}}"#,
+        )
+        .unwrap();
+        refresh_effective_mcp(None);
+
+        for ws in [a.path(), b.path()] {
+            assert_eq!(
+                read_effective_mcp(ws)["new-device"]["command"],
+                serde_json::json!(["new"])
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,9 @@
-// Runs the real extension (through pi's jiti) against a stub stdio MCP server,
-// kills the server, and checks that the next tool call reconnects instead of
-// failing with the SDK's "Not connected" for the rest of the host's life.
+// Runs the real extension (through pi's jiti) against stub stdio MCP servers:
+// - kills a server and checks that the next tool call reconnects instead of
+//   failing with the SDK's "Not connected" for the rest of the host's life;
+// - rewrites the effective MCP file (`TEAMCLU_MCP_CONFIG_PATH`) the way amuxd
+//   does and checks that a server still listed stays connected while a new one
+//   is bridged.
 //
 // It needs pi's installed node_modules (jiti + @modelcontextprotocol/sdk),
 // which CI does not have, so it is not in ci.yml and skips without them. Run it
@@ -96,6 +99,68 @@ test(
       assert.equal(await call("whoami"), secondPid, "the new connection is reused");
     } finally {
       await call("crash").catch(() => {});
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "rewriting the effective MCP file keeps listed servers and bridges new ones",
+  { skip: jitiModule ? false : `pi node_modules not found at ${nodeModules}` },
+  async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "teamclu-mcp-effective-"));
+    fs.symlinkSync(nodeModules, path.join(dir, "node_modules"), "dir");
+    fs.copyFileSync(path.join(here, "teamclu.ts"), path.join(dir, "teamclu.ts"));
+    fs.writeFileSync(path.join(dir, "stub.mjs"), STUB_SERVER);
+
+    const stub = { type: "local", command: [process.execPath, path.join(dir, "stub.mjs")] };
+    const effective = path.join(dir, "ws", "mcp.effective.json");
+    fs.mkdirSync(path.dirname(effective));
+    const writeEffective = (mcp) =>
+      fs.writeFileSync(effective, JSON.stringify({ workspace: "/ws", mcp }));
+    writeEffective({ "teamclu-introspect": stub });
+    process.env.TEAMCLU_MCP_SERVERS = JSON.stringify({ "teamclu-introspect": stub });
+    process.env.TEAMCLU_MCP_CONFIG_PATH = effective;
+    delete process.env.TEAMCLU_MCP_TOOL_CACHE_DIR;
+    // A fresh module instance: the bridge registry and watcher live on globalThis.
+    delete globalThis.__teamcluMcpBridges;
+    delete globalThis.__teamcluMcpSdk;
+    delete globalThis.__teamcluMcpToolOwners;
+    delete globalThis.__teamcluMcpWatchState;
+
+    const jiti = jitiModule.createJiti(import.meta.url, { moduleCache: false });
+    const extension = await jiti.import(path.join(dir, "teamclu.ts"));
+    const tools = new Map();
+    const pi = new Proxy(
+      { registerTool: (tool) => tools.set(tool.name, tool) },
+      { get: (target, key) => target[key] ?? (() => {}) },
+    );
+    await extension.default(pi);
+    const call = async (name) => {
+      const result = await tools.get(name).execute("call", {}, undefined, undefined, { ui: {} });
+      assert.notEqual(result.isError, true, JSON.stringify(result.content));
+      return result.content[0].text;
+    };
+    const whoami = () => [...tools.keys()].find((n) => n.endsWith("whoami"));
+
+    try {
+      const firstName = whoami();
+      const firstPid = await call(firstName);
+
+      // amuxd rewrites the file with the same server plus a new one.
+      writeEffective({ "teamclu-introspect": stub, "added-later": stub });
+      const whoamis = () => [...tools.keys()].filter((n) => n.endsWith("whoami")).length;
+      for (let i = 0; i < 40 && whoamis() < 2; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.equal(await call(firstName), firstPid, "the listed server kept its connection");
+      const added = [...tools.keys()].filter((n) => n.endsWith("whoami") && n !== firstName);
+      assert.equal(added.length, 1, `new server bridged (have: ${[...tools.keys()].join(", ")})`);
+      assert.notEqual(await call(added[0]), firstPid);
+    } finally {
+      for (const name of tools.keys()) {
+        if (name.endsWith("crash")) await call(name).catch(() => {});
+      }
       fs.rmSync(dir, { recursive: true, force: true });
     }
   },

@@ -252,7 +252,7 @@ mod tests {
     /// second lock only serialized this module against itself while leaving it
     /// free to race `runtime::env_assembly` — which is exactly what turned main
     /// red after #948: both suites drive `<amuxd home>/teams/<active>/state/
-    /// opencode.json`, so whoever set AMUXD_HOME last won.
+    /// opencode.json` (now `providers.json`), so whoever set AMUXD_HOME last won.
     fn isolated_global_config() -> (tempfile::TempDir, BrandEnvGuard) {
         let dir = tempfile::TempDir::new().unwrap();
         let home = BrandEnvGuard::set_amuxd_home(dir.path());
@@ -266,10 +266,9 @@ mod tests {
     }
 
     fn team_model_ids() -> Vec<String> {
-        let raw = std::fs::read_to_string(
-            teamclu_runtime_env::opencode_config::global_opencode_config_path(),
-        )
-        .unwrap();
+        let raw =
+            std::fs::read_to_string(teamclu_runtime_env::config_store::providers_config_path())
+                .unwrap();
         let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
         let mut ids: Vec<String> = json["provider"]["team"]["models"]
             .as_object()
@@ -345,10 +344,9 @@ mod tests {
     }
 
     fn team_api_key() -> String {
-        let raw = std::fs::read_to_string(
-            teamclu_runtime_env::opencode_config::global_opencode_config_path(),
-        )
-        .unwrap();
+        let raw =
+            std::fs::read_to_string(teamclu_runtime_env::config_store::providers_config_path())
+                .unwrap();
         let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
         json["provider"]["team"]["options"]["apiKey"]
             .as_str()
@@ -375,7 +373,7 @@ mod tests {
 
     fn write_team_provider(api_key: &str) {
         std::fs::write(
-            teamclu_runtime_env::opencode_config::global_opencode_config_path(),
+            teamclu_runtime_env::config_store::providers_config_path(),
             serde_json::to_string_pretty(&serde_json::json!({
                 "provider": {
                     "team": {
@@ -461,7 +459,7 @@ mod tests {
     async fn unknown_state_leaves_disk_untouched() {
         let (_global, _home) = isolated_global_config();
         std::fs::write(
-            teamclu_runtime_env::opencode_config::global_opencode_config_path(),
+            teamclu_runtime_env::config_store::providers_config_path(),
             serde_json::to_string_pretty(&serde_json::json!({
                 "provider": { "team": { "models": { "model-a": { "name": "Model A" } } } }
             }))

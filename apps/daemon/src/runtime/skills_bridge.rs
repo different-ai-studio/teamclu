@@ -371,16 +371,9 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", home.path());
         let ws = tempfile::tempdir().unwrap();
-        let team_skills = ws.path().join("team-skills");
+        // The registry install dir is the team root (`team_skill_roots`).
+        let team_skills = home.path().join(".agents/skills");
         std::fs::create_dir_all(&team_skills).unwrap();
-        std::fs::write(
-            ws.path().join("opencode.json"),
-            format!(
-                r#"{{"skills":{{"paths":["{}"]}}}}"#,
-                team_skills.to_string_lossy()
-            ),
-        )
-        .unwrap();
         (lock, home, ws, team_skills)
     }
 

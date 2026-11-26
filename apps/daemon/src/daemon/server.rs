@@ -755,17 +755,6 @@ impl DaemonServer {
         }
     }
 
-    pub(crate) fn suppress_internal_opencode_writes(&self, worktree: &str) {
-        if let Some(ref refresh) = self.refresh_coordinator {
-            crate::runtime::refresh::refresh_watch::suppress_for_workspace_path(
-                refresh,
-                Path::new(worktree),
-                &crate::runtime::refresh::INTERNAL_OPENCODE_KINDS,
-                crate::runtime::refresh::INTERNAL_WRITE_SUPPRESS,
-            );
-        }
-    }
-
     /// Team-link sweep: reads the cloud `workspaces` table (all of this
     /// team's workspaces, across every device — the sole source of truth),
     /// then filters to paths that exist on *this* machine before symlinking
@@ -1102,9 +1091,7 @@ impl DaemonServer {
             self.refresh_watch_registry = Some(refresh_watch_registry);
             let workspace_control: Option<
                 std::sync::Arc<dyn crate::config::WorkspaceControlStore>,
-            > = Some(std::sync::Arc::new(
-                crate::config::OpenCodeCompatStore::new(),
-            ));
+            > = Some(std::sync::Arc::new(crate::config::LocalControlStore::new()));
             let session_prompt = Some(Arc::new(
                 crate::runtime::session_prompt::SessionPromptService::new(
                     self.agents.clone(),

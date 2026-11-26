@@ -681,12 +681,12 @@ impl PiProcessPool {
         if let Some(servers) = &env.mcp_servers {
             cmd.env("TEAMCLU_MCP_SERVERS", servers);
         }
-        // Same file `mcp_servers_from_opencode_json` read to build the payload.
-        // The extension watches it so an edit re-bridges in place; the env
-        // payload alone only ever reflects spawn time.
+        // The merged map `effective_mcp_servers` wrote alongside the payload.
+        // The extension watches it so a change to any MCP layer re-bridges in
+        // place; the env payload alone only ever reflects spawn time.
         cmd.env(
             "TEAMCLU_MCP_CONFIG_PATH",
-            Path::new(worktree).join("opencode.json"),
+            teamclu_runtime_env::config_store::effective_mcp_path(Path::new(worktree)),
         );
         let generation_id = format!("pi-{}", uuid::Uuid::new_v4());
         if let Some(service) = self.context_service.read().as_ref() {

@@ -1,22 +1,15 @@
 //! Shared `provider.team` materialization + secret resolution for spawn and reconcile.
 //!
 //! Both paths must stay aligned: write the cloud-sourced team provider into the
-//! global config. Workspace secrets are never resolved onto disk: pi reads env
-//! bindings, not the workspace config file.
+//! active team's `providers.json`. Workspace secrets are never resolved onto
+//! disk: pi reads env bindings.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use crate::team_provider::{self, ManagedLlmState};
 
-#[derive(Debug, Clone, Default)]
-pub struct TeamProviderSyncResult {
-    pub provider_section_changed: bool,
-}
-
-/// Materialize `provider.team` from `managed_llm` into amuxd's active-team OpenCode
-/// config. Workspace config remains reserved
-/// for workspace-owned MCP and project settings.
+/// Materialize `provider.team` from `managed_llm` into the active team's
+/// `providers.json`.
 pub fn sync_global_team_provider(
     managed_llm: &ManagedLlmState,
     secrets: &HashMap<String, String>,
@@ -28,7 +21,7 @@ pub fn sync_global_team_provider(
     let Some(gateway_token) = secrets.get("tc_gateway_token") else {
         return Ok(changed);
     };
-    let resolved = crate::opencode_config::OpencodeConfigStore::apply_global(|config| {
+    let resolved = crate::config_store::ConfigStore::apply_providers(|config| {
         let Some(key) = config
             .get_mut("provider")
             .and_then(|providers| providers.get_mut("team"))
@@ -56,18 +49,6 @@ pub fn sync_global_team_provider(
     Ok(changed || resolved)
 }
 
-/// Strip the legacy workspace `provider.team` section before a spawn. Secrets
-/// are not written into the workspace config (pi reads env bindings), and team
-/// LLM materialization belongs to the active-team config.
-pub fn resolve_workspace_runtime_config(
-    workspace: &Path,
-) -> anyhow::Result<TeamProviderSyncResult> {
-    team_provider::remove_legacy_workspace_team_provider(workspace)?;
-    Ok(TeamProviderSyncResult {
-        provider_section_changed: false,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,10 +66,6 @@ mod tests {
                 name: "Model A".to_string(),
             }],
         }
-    }
-
-    fn read_opencode(path: &Path) -> String {
-        fs::read_to_string(path.join("opencode.json")).unwrap()
     }
 
     fn global_config_dir() -> (
@@ -109,47 +86,7 @@ mod tests {
     }
 
     fn global_config_path(home: &TempDir) -> std::path::PathBuf {
-        home.path().join("teams/team-test/state/opencode.json")
-    }
-
-    #[test]
-    fn workspace_resolve_strips_team_provider_and_leaves_mcp_placeholder() {
-        let (_lock, global_dir, _home) = global_config_dir();
-        let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join("opencode.json"),
-            r#"{
-  "provider": {
-    "team": {
-      "options": { "apiKey": "${tc_gateway_token}" },
-      "models": { "model-a": { "name": "Model A" } }
-    }
-  },
-  "mcp": {
-    "github": {
-      "environment": { "TOKEN": "${GITHUB_TOKEN}" }
-    }
-  }
-}"#,
-        )
-        .unwrap();
-
-        let secrets = secrets_for_team_provider("tok_actor_123");
-        sync_global_team_provider(&ManagedLlmState::Enabled(sample_provider()), &secrets, None).unwrap();
-        resolve_workspace_runtime_config(dir.path()).unwrap();
-
-        let on_disk = read_opencode(dir.path());
-        let global = fs::read_to_string(global_config_path(&global_dir)).unwrap();
-        assert!(global.contains("tok_actor_123"));
-        assert!(!on_disk.contains("provider.team"));
-        assert!(
-            on_disk.contains("${GITHUB_TOKEN}"),
-            "workspace resolve must not resolve MCP placeholders"
-        );
-        assert!(
-            !dir.path().join(".teamclu/opencode.runtime.json").exists(),
-            "workspace resolve must not install spawn overlay"
-        );
+        home.path().join("teams/team-test/state/providers.json")
     }
 
     #[test]

@@ -21,37 +21,20 @@ pub enum RefreshChangeKind {
     ProviderAuth,
     ProviderCatalog,
     Permissions,
-    OpencodeJson,
     TeamcluConfig,
 }
 
 pub const INTERNAL_WRITE_SUPPRESS: Duration = Duration::from_secs(3);
 pub const APPLY_REFRESH_SUPPRESS: Duration = Duration::from_secs(5);
 
-pub const INTERNAL_OPENCODE_KINDS: [RefreshChangeKind; 1] = [RefreshChangeKind::OpencodeJson];
-
-/// Global coordinator handle for writers that live outside the manager
-/// (e.g. the opencode HTTP backend's MCP-injection writes to a worktree's
-/// `opencode.json`). Set once at daemon startup via
+/// Global coordinator handle for writers that live outside the manager. Set
+/// once at daemon startup via
 /// `RuntimeManager::attach_refresh_coordinator`; absent in unit tests.
 static GLOBAL_COORDINATOR: std::sync::OnceLock<std::sync::Arc<RuntimeRefreshCoordinator>> =
     std::sync::OnceLock::new();
 
 pub fn set_global_coordinator(coordinator: std::sync::Arc<RuntimeRefreshCoordinator>) {
     let _ = GLOBAL_COORDINATOR.set(coordinator);
-}
-
-/// Suppress filesystem-watch refreshes for an internal `opencode.json` write
-/// in `worktree`. No-op when the coordinator isn't up yet (tests, startup).
-pub fn suppress_internal_opencode_write(worktree: &std::path::Path) {
-    if let Some(coordinator) = GLOBAL_COORDINATOR.get() {
-        refresh_watch::suppress_for_workspace_path(
-            coordinator,
-            worktree,
-            &INTERNAL_OPENCODE_KINDS,
-            INTERNAL_WRITE_SUPPRESS,
-        );
-    }
 }
 
 /// Record an `EnvVars` pending refresh for `worktree` via the global coordinator.
@@ -90,7 +73,6 @@ pub fn parse_refresh_change_kinds(kinds: &[String]) -> Vec<RefreshChangeKind> {
             "provider_auth" => Some(RefreshChangeKind::ProviderAuth),
             "provider_catalog" => Some(RefreshChangeKind::ProviderCatalog),
             "permissions" => Some(RefreshChangeKind::Permissions),
-            "opencode_json" => Some(RefreshChangeKind::OpencodeJson),
             "teamclu_config" => Some(RefreshChangeKind::TeamcluConfig),
             _ => None,
         };
@@ -102,11 +84,8 @@ pub fn parse_refresh_change_kinds(kinds: &[String]) -> Vec<RefreshChangeKind> {
     }
     out
 }
-pub const INTERNAL_PREPARE_KINDS: [RefreshChangeKind; 3] = [
-    RefreshChangeKind::OpencodeJson,
-    RefreshChangeKind::Skills,
-    RefreshChangeKind::TeamcluConfig,
-];
+pub const INTERNAL_PREPARE_KINDS: [RefreshChangeKind; 2] =
+    [RefreshChangeKind::Skills, RefreshChangeKind::TeamcluConfig];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -148,7 +127,6 @@ pub fn activation_policy(kind: RefreshChangeKind) -> RefreshActivationPolicy {
     match kind {
         RefreshChangeKind::Skills
         | RefreshChangeKind::Mcp
-        | RefreshChangeKind::OpencodeJson
         | RefreshChangeKind::TeamcluConfig
         | RefreshChangeKind::EnvVars => RefreshActivationPolicy::NextRuntimeStart,
         RefreshChangeKind::ProviderCatalog | RefreshChangeKind::Permissions => {
@@ -448,12 +426,10 @@ impl RuntimeRefreshCoordinator {
         let should_clear = state.revision == attempt.workspace_revision
             || (state.sources.len() == 1
                 && state.sources.contains(&RefreshSource::FilesystemWatch)
-                && state.change_kinds.iter().all(|kind| {
-                    matches!(
-                        kind,
-                        RefreshChangeKind::OpencodeJson | RefreshChangeKind::Skills
-                    )
-                }));
+                && state
+                    .change_kinds
+                    .iter()
+                    .all(|kind| matches!(kind, RefreshChangeKind::Skills)));
 
         if should_clear {
             guard.workspaces.remove(workspace_id);
@@ -531,8 +507,7 @@ fn impact_for_kind(kind: RefreshChangeKind) -> RefreshImpact {
         | RefreshChangeKind::EnvVars
         | RefreshChangeKind::ProviderAuth
         | RefreshChangeKind::ProviderCatalog
-        | RefreshChangeKind::Permissions
-        | RefreshChangeKind::OpencodeJson => RefreshImpact::IdleReload,
+        | RefreshChangeKind::Permissions => RefreshImpact::IdleReload,
     }
 }
 
@@ -576,7 +551,6 @@ impl RefreshChangeKind {
             Self::ProviderAuth => "provider_auth",
             Self::ProviderCatalog => "provider_catalog",
             Self::Permissions => "permissions",
-            Self::OpencodeJson => "opencode_json",
             Self::TeamcluConfig => "teamclu_config",
         }
     }
@@ -600,7 +574,7 @@ impl RefreshChangeKind {
     pub fn requires_provider_host_evict(self) -> bool {
         matches!(
             self,
-            Self::ProviderAuth | Self::ProviderCatalog | Self::OpencodeJson | Self::EnvVars
+            Self::ProviderAuth | Self::ProviderCatalog | Self::EnvVars
         )
     }
 }
@@ -681,7 +655,7 @@ mod tests {
             .record_change(
                 &path_identity,
                 path,
-                RefreshChangeKind::OpencodeJson,
+                RefreshChangeKind::TeamcluConfig,
                 RefreshSource::UiMutation,
             )
             .await
@@ -844,15 +818,15 @@ mod tests {
 
         coordinator.suppress_workspace_watch(
             workspace_id,
-            &INTERNAL_OPENCODE_KINDS,
+            &[RefreshChangeKind::TeamcluConfig],
             Duration::from_millis(50),
         );
 
-        assert!(coordinator.is_watch_suppressed(workspace_id, RefreshChangeKind::OpencodeJson));
+        assert!(coordinator.is_watch_suppressed(workspace_id, RefreshChangeKind::TeamcluConfig));
         assert!(!coordinator.is_watch_suppressed(workspace_id, RefreshChangeKind::Skills));
 
         tokio::time::sleep(Duration::from_millis(60)).await;
-        assert!(!coordinator.is_watch_suppressed(workspace_id, RefreshChangeKind::OpencodeJson));
+        assert!(!coordinator.is_watch_suppressed(workspace_id, RefreshChangeKind::TeamcluConfig));
     }
 
     #[tokio::test]
@@ -862,17 +836,17 @@ mod tests {
 
         coordinator.suppress_workspace_watch(
             workspace_id,
-            &INTERNAL_OPENCODE_KINDS,
+            &[RefreshChangeKind::TeamcluConfig],
             Duration::from_millis(80),
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
         coordinator.suppress_workspace_watch(
             workspace_id,
-            &INTERNAL_OPENCODE_KINDS,
+            &[RefreshChangeKind::TeamcluConfig],
             Duration::from_millis(80),
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(coordinator.is_watch_suppressed(workspace_id, RefreshChangeKind::OpencodeJson));
+        assert!(coordinator.is_watch_suppressed(workspace_id, RefreshChangeKind::TeamcluConfig));
     }
 
     #[tokio::test]
@@ -885,7 +859,7 @@ mod tests {
             .record_change(
                 workspace_id,
                 &workspace,
-                RefreshChangeKind::OpencodeJson,
+                RefreshChangeKind::Skills,
                 RefreshSource::FilesystemWatch,
             )
             .await
@@ -897,7 +871,7 @@ mod tests {
             .record_change(
                 workspace_id,
                 &workspace,
-                RefreshChangeKind::OpencodeJson,
+                RefreshChangeKind::Skills,
                 RefreshSource::FilesystemWatch,
             )
             .await

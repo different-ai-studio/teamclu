@@ -48,7 +48,7 @@ pub use team_skill_draft::{
     TeamSkillDraftUpdateResult, TeamSkillDraftView,
 };
 pub use workspace_control::{
-    decode_workspace_path, encode_workspace_path, ApplyOutcome, OpenCodeCompatStore,
+    decode_workspace_path, encode_workspace_path, ApplyOutcome, LocalControlStore,
     ProviderAuthRequest, ProviderModelConfig, WorkspaceControlStore,
 };
 pub use workspace_instructions::{

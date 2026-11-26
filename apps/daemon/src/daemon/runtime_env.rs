@@ -12,7 +12,6 @@ pub(crate) struct ExecutionContextAssembler {
     workspace_resolver: std::sync::Arc<crate::config::WorkspaceResolver>,
     backend: std::sync::Arc<dyn crate::backend::Backend>,
     managed_llm: std::sync::Arc<crate::runtime::managed_llm::ManagedLlmResolver>,
-    refresh_coordinator: Option<std::sync::Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
     team_id: Option<String>,
     actor_id: String,
     actor_name: String,
@@ -24,7 +23,6 @@ impl DaemonServer {
             workspace_resolver: self.workspace_resolver.clone(),
             backend: self.backend.clone(),
             managed_llm: self.managed_llm.clone(),
-            refresh_coordinator: self.refresh_coordinator.clone(),
             team_id: self.config.team_id.clone(),
             actor_id: self.config.actor.id.clone(),
             actor_name: self.config.actor.name.clone(),
@@ -105,7 +103,6 @@ mod execution_context_tests {
             managed_llm: Arc::new(crate::runtime::managed_llm::ManagedLlmResolver::new(
                 backend,
             )),
-            refresh_coordinator: None,
             team_id: Some(team_id.into()),
             actor_id: actor_id.into(),
             actor_name: "Agent A".into(),
@@ -535,9 +532,7 @@ impl ExecutionContextAssembler {
                 workspace.workspace_id
             ));
         }
-        let mut spawn_env = self
-            .assemble_workspace_execution_env(&workspace, &working_directory)
-            .await?;
+        let mut spawn_env = self.assemble_workspace_execution_env(&workspace).await?;
         spawn_env.is_gateway = is_gateway;
         spawn_env.permission = permission;
 
@@ -552,7 +547,6 @@ impl ExecutionContextAssembler {
     async fn assemble_workspace_execution_env(
         &self,
         workspace: &WorkspaceIdentity,
-        working_directory: &Path,
     ) -> Result<SpawnRuntimeEnv, String> {
         let team_id = workspace
             .team_id
@@ -564,19 +558,9 @@ impl ExecutionContextAssembler {
             Some(team_id) => self.managed_llm.resolve(team_id).await,
             None => ManagedLlmState::Unknown,
         };
-        if let Some(ref refresh) = self.refresh_coordinator {
-            crate::runtime::refresh::refresh_watch::suppress_for_workspace_path(
-                refresh,
-                working_directory,
-                &crate::runtime::refresh::INTERNAL_OPENCODE_KINDS,
-                crate::runtime::refresh::INTERNAL_WRITE_SUPPRESS,
-            );
-        }
-        crate::runtime::supervisor::materialize_inherent_mcp_for_spawn(working_directory)
-            .map_err(|e| format!("materialize_inherent_mcp_for_spawn failed: {e}"))?;
-        crate::runtime::env_assembly::assemble_spawn_runtime_env_for_execution(
+        crate::runtime::supervisor::ensure_device_mcp_layer();
+        crate::runtime::env_assembly::assemble_spawn_runtime_env(
             &workspace.workspace_root,
-            working_directory,
             team_id,
             &self.actor_id,
             &self.actor_name,
@@ -731,21 +715,12 @@ impl DaemonServer {
         worktree: &str,
         workspace_id: &str,
     ) -> Result<SpawnRuntimeEnv, String> {
-        // Async lookups first — these must not race the refresh-watch suppress
-        // window. Managed-LLM cloud fetch can exceed INTERNAL_WRITE_SUPPRESS
-        // (3s); if we suppress *before* that await and only write afterward,
-        // opencode.json rewrites leak as Pending "OpenCode config" banners.
         let team_id = self.resolve_workspace_team_id(workspace_id).await;
         let managed_llm = match team_id.as_deref() {
             Some(tid) => self.resolve_managed_llm(tid).await,
             None => ManagedLlmState::Unknown,
         };
-        // Suppress immediately before sync disk writes (inherent MCP, then
-        // global provider.team sync + workspace secret resolve). Callers
-        // must not rely on a suppress issued before the awaits above.
-        self.suppress_internal_opencode_writes(worktree);
-        crate::runtime::supervisor::materialize_inherent_mcp_for_spawn(Path::new(worktree))
-            .map_err(|e| format!("materialize_inherent_mcp_for_spawn failed: {e}"))?;
+        crate::runtime::supervisor::ensure_device_mcp_layer();
         crate::runtime::env_assembly::assemble_spawn_runtime_env(
             Path::new(worktree),
             team_id.as_deref(),
