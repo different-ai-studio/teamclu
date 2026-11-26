@@ -443,7 +443,14 @@ interface TeamShareBrowserState {
   listDraftRecoveries: (slug: string) => Promise<DraftRecoveryRecord[]>
   /** Discard local edits and install the team's latest version (rebase). */
   rebaseSkillOnLatest: (slug: string) => Promise<string>
-  loadSection: (section: TeamShareSection, opts?: { force?: boolean; withTools?: boolean }) => Promise<void>
+  /**
+   * `coalesce`: join an identical load already in flight instead of starting a
+   * second one. For navigation-driven refreshes only — see `inflightLoads`.
+   */
+  loadSection: (
+    section: TeamShareSection,
+    opts?: { force?: boolean; withTools?: boolean; coalesce?: boolean },
+  ) => Promise<void>
   loadMcpTools: (opts?: { refresh?: boolean }) => Promise<void>
   loadCounts: () => Promise<void>
 }
@@ -1302,6 +1309,32 @@ function daemonConfigToCatalogWrite(
     headers: null,
     env,
   }
+}
+
+/**
+ * Section loads currently running, keyed by what they would fetch.
+ *
+ * Opening a section used to start the same forced load twice in the same
+ * tick: the nav row's click handler and the list column's `[section]` effect
+ * each called `loadSection(section, { force: true })`. Neither can simply drop
+ * its call — the list column is not mounted in a narrow window or while the
+ * content column is full width, and a re-click on the active row changes no
+ * section, so no effect fires. For skills each load is a registry fetch, an
+ * Agent inventory RPC, a daemon skill scan and then a per-skill inspect, so the
+ * pair doubled all of it on every visit.
+ *
+ * Callers that pass `coalesce` join a matching load in flight. Callers that do
+ * not (every refresh after a mutation) always start their own, so a load that
+ * began before an install or delete is never handed back as its result.
+ */
+const inflightLoads = new Map<string, Promise<void>>()
+
+function sectionLoadKey(
+  section: TeamShareSection,
+  withTools: boolean,
+  subjectActorId: string | null,
+): string {
+  return [section, withTools ? 'tools' : '', currentTeamId() ?? '', subjectActorId ?? ''].join('|')
 }
 
 export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get) => ({
@@ -2341,112 +2374,130 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     }).catch(() => [])
   },
 
-  loadSection: async (section, opts) => {
-    const wsPath = await workspacePath()
-
-    if (section === 'env') {
-      try {
-        await useEnvVarsStore.getState().loadEnvCatalog()
-      } catch {
-        /* surfaced by env store */
-      }
-      // The env section manages both scopes now, so the badge counts both.
-      const envState = useEnvVarsStore.getState()
-      set({ envCount: envState.teamSecrets.length + envState.envVars.length })
-      return
+  loadSection: (section, opts) => {
+    const key = sectionLoadKey(section, Boolean(opts?.withTools), get().subjectActorId)
+    if (opts?.coalesce) {
+      const pending = inflightLoads.get(key)
+      if (pending) return pending
     }
+    const run = (async () => {
+      const wsPath = await workspacePath()
 
-    const current = get()[section] as SectionState<unknown>
-    if (current.loaded && !opts?.force) {
-      if (section === 'mcp' && opts?.withTools) await get().loadMcpTools()
-      return
-    }
-
-    set(
-      (s) =>
-        ({ [section]: { ...s[section], loading: true, error: null } }) as Partial<TeamShareBrowserState>,
-    )
-    try {
-      if (section === 'skills') {
-        const { items, registry, registryError } = await listTeamSkills(
-          wsPath,
-          currentTeamId(),
-          get().subjectActorId ?? undefined,
-        )
-        set({
-          skills: { items, loading: false, loaded: true, error: registryError },
-          skillRegistry: registry,
-        })
-        await get().refreshSkillLocalState().catch(() => {})
-      } else if (section === 'knowledge') {
-        // The daemon's own directory, by absolute path:
-        // `~/.amuxd[-brand]/teams/<id>/shared/knowledge`. That is the tree the
-        // OSS sync engine scans, pushes and pulls (`sync_content_root` +
-        // the `knowledge/` prefix), so it is the only honest source here.
-        //
-        // The per-workspace `team-knowledge` symlink is deliberately NOT used.
-        // It is a convenience surface for agents and the workspace file panel,
-        // and reading through it made this column depend on a link that need
-        // not exist — no workspace open, a workspace opened before the daemon's
-        // link sweep, a Windows `LinkStatus::Fallback` machine — while the
-        // content sat right there on disk. It also disagreed with the nav
-        // count, which has always been read from the real directory.
-        //
-        // `null` still falls back to `TeamDirInitPanel`, but now it means "the
-        // team dir is missing on this machine", not "this workspace lacks a
-        // link into it". Note there is no workspace gate left: knowledge is
-        // per-team, not per-workspace.
-        const root = await resolveTeamSyncRoot()
-        const previous = get().syncRoot
-        if (previous && previous !== root) {
-          // Switching teams repoints knowledge at a different directory. The old
-          // one has to stop being rendered and, more importantly, stop being
-          // watched — otherwise the previous team's writes keep waking this
-          // column.
-          await useWorkspaceStore.getState().closeExternalRoot(previous)
+      if (section === 'env') {
+        try {
+          await useEnvVarsStore.getState().loadEnvCatalog()
+        } catch {
+          /* surfaced by env store */
         }
-        const items = root ? await listTeamKnowledge(root) : []
-        set({ syncRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
-      } else if (section === 'mcp') {
-        // Not gated on `wsPath`: with an Agent selected this goes over RPC to
-        // that Agent and never touches the local workspace. Requiring one made
-        // a remote Agent's servers render as an empty list, with no error, on
-        // any client with no folder open.
-        const items = await listTeamMcp(
-          wsPath,
-          currentTeamId(),
-          get().mcp.items,
-          get().subjectActorId ?? undefined,
-        )
-        // `listTeamMcp` merges the probes it saw when THIS call started, which
-        // is stale whenever a probing load landed while this one was in flight.
-        // A refresh that does not probe (`loadCounts` on a team/workspace
-        // switch, `createMcp`) routinely outlives the probing load that opened
-        // the pane, and its late `set` then put every probed server back to
-        // "Idle · 0 tools" — with nothing left to re-probe, until the user
-        // clicked Re-sync. Merge against the live rows at write time instead.
-        set((s) => ({
-          mcp: {
-            ...s.mcp,
-            items: preserveMcpProbes(items, s.mcp.items),
-            loading: false,
-            loaded: true,
-            error: null,
-          },
-        }))
-        if (opts?.withTools) await get().loadMcpTools()
+        // The env section manages both scopes now, so the badge counts both.
+        const envState = useEnvVarsStore.getState()
+        set({ envCount: envState.teamSecrets.length + envState.envVars.length })
+        return
       }
-    } catch (e) {
-      const msg = section === 'skills' || section === 'mcp'
-        ? agentManagementError(e)
-        : e instanceof Error ? e.message : String(e)
+
+      const current = get()[section] as SectionState<unknown>
+      if (current.loaded && !opts?.force) {
+        if (section === 'mcp' && opts?.withTools) await get().loadMcpTools()
+        return
+      }
+
       set(
         (s) =>
-          ({
-            [section]: { ...s[section], loading: false, loaded: true, error: msg },
-          }) as Partial<TeamShareBrowserState>,
+          ({ [section]: { ...s[section], loading: true, error: null } }) as Partial<TeamShareBrowserState>,
       )
+      try {
+        if (section === 'skills') {
+          const { items, registry, registryError } = await listTeamSkills(
+            wsPath,
+            currentTeamId(),
+            get().subjectActorId ?? undefined,
+          )
+          set({
+            skills: { items, loading: false, loaded: true, error: registryError },
+            skillRegistry: registry,
+          })
+          await get().refreshSkillLocalState().catch(() => {})
+        } else if (section === 'knowledge') {
+          // The daemon's own directory, by absolute path:
+          // `~/.amuxd[-brand]/teams/<id>/shared/knowledge`. That is the tree the
+          // OSS sync engine scans, pushes and pulls (`sync_content_root` +
+          // the `knowledge/` prefix), so it is the only honest source here.
+          //
+          // The per-workspace `team-knowledge` symlink is deliberately NOT used.
+          // It is a convenience surface for agents and the workspace file panel,
+          // and reading through it made this column depend on a link that need
+          // not exist — no workspace open, a workspace opened before the daemon's
+          // link sweep, a Windows `LinkStatus::Fallback` machine — while the
+          // content sat right there on disk. It also disagreed with the nav
+          // count, which has always been read from the real directory.
+          //
+          // `null` still falls back to `TeamDirInitPanel`, but now it means "the
+          // team dir is missing on this machine", not "this workspace lacks a
+          // link into it". Note there is no workspace gate left: knowledge is
+          // per-team, not per-workspace.
+          const root = await resolveTeamSyncRoot()
+          const previous = get().syncRoot
+          if (previous && previous !== root) {
+            // Switching teams repoints knowledge at a different directory. The old
+            // one has to stop being rendered and, more importantly, stop being
+            // watched — otherwise the previous team's writes keep waking this
+            // column.
+            await useWorkspaceStore.getState().closeExternalRoot(previous)
+          }
+          const items = root ? await listTeamKnowledge(root) : []
+          set({ syncRoot: root, knowledge: { items, loading: false, loaded: true, error: null } })
+        } else if (section === 'mcp') {
+          // Not gated on `wsPath`: with an Agent selected this goes over RPC to
+          // that Agent and never touches the local workspace. Requiring one made
+          // a remote Agent's servers render as an empty list, with no error, on
+          // any client with no folder open.
+          const items = await listTeamMcp(
+            wsPath,
+            currentTeamId(),
+            get().mcp.items,
+            get().subjectActorId ?? undefined,
+          )
+          // `listTeamMcp` merges the probes it saw when THIS call started, which
+          // is stale whenever a probing load landed while this one was in flight.
+          // A refresh that does not probe (`loadCounts` on a team/workspace
+          // switch, `createMcp`) routinely outlives the probing load that opened
+          // the pane, and its late `set` then put every probed server back to
+          // "Idle · 0 tools" — with nothing left to re-probe, until the user
+          // clicked Re-sync. Merge against the live rows at write time instead.
+          set((s) => ({
+            mcp: {
+              ...s.mcp,
+              items: preserveMcpProbes(items, s.mcp.items),
+              loading: false,
+              loaded: true,
+              error: null,
+            },
+          }))
+          if (opts?.withTools) await get().loadMcpTools()
+        }
+      } catch (e) {
+        const msg = section === 'skills' || section === 'mcp'
+          ? agentManagementError(e)
+          : e instanceof Error ? e.message : String(e)
+        set(
+          (s) =>
+            ({
+              [section]: { ...s[section], loading: false, loaded: true, error: msg },
+            }) as Partial<TeamShareBrowserState>,
+        )
+      }
+    })()
+    // Only a load that really fetches is worth joining. A non-forced call on a
+    // loaded section returns at once without fetching, and a forced caller
+    // handed that would skip the refresh it asked for.
+    if (opts?.force || section === 'env') {
+      inflightLoads.set(key, run)
+      const clear = () => {
+        if (inflightLoads.get(key) === run) inflightLoads.delete(key)
+      }
+      run.then(clear, clear)
     }
+    return run
   },
 
   loadMcpTools: async (opts) => {
