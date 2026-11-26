@@ -1119,7 +1119,7 @@ fn build_artifact_with_push(
     workdir: &Path,
     git: Option<&BuildGitContext<'_>>,
     push: Option<&ImagePushTarget<'_>>,
-    publish: &dyn Fn(&Path, &ImagePushTarget<'_>) -> anyhow::Result<()>,
+    publish: &dyn Fn(&Path, &ImagePushTarget<'_>) -> anyhow::Result<String>,
     verify_source: &dyn Fn(&Path) -> anyhow::Result<()>,
     verify_image: &dyn Fn(&Path, &str) -> anyhow::Result<ArtifactVerification>,
 ) -> anyhow::Result<BuildOutput> {
@@ -1162,9 +1162,9 @@ fn build_artifact_with_push(
         }
         verify_source(workdir)?;
         let artifact_verification = verify_image(workdir, target.image)?;
-        publish(workdir, &target)?;
+        let pushed_image = publish(workdir, &target)?;
         return Ok(BuildOutput {
-            product: BuildProduct::Image(target.image.to_string()),
+            product: BuildProduct::Image(pushed_image),
             artifact_verification: Some(artifact_verification),
             git_commit_sha,
             declaration,
@@ -1333,7 +1333,7 @@ fn build_image_args<'a>(build: &'a AppBuildSpec, target: &'a ImagePushTarget<'_>
 /// builder state in the config dir, and an empty one makes it create a fresh
 /// builder with no layer cache — turning a two-minute rebuild into the full
 /// emulated build every time.
-fn push_image(workdir: &Path, target: &ImagePushTarget<'_>) -> anyhow::Result<()> {
+fn push_image(workdir: &Path, target: &ImagePushTarget<'_>) -> anyhow::Result<String> {
     let config_dir = tempfile::Builder::new()
         .prefix("teamclu-registry-")
         .tempdir()
@@ -1349,7 +1349,35 @@ fn push_image(workdir: &Path, target: &ImagePushTarget<'_>) -> anyhow::Result<()
     // Explicit, so the credentials are gone before the error is propagated
     // rather than whenever the guard happens to drop.
     drop(config_dir);
-    out.map(|_| ())
+    let out = out?;
+    image_reference_from_push(
+        target.image,
+        &format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// Docker reports the registry's manifest digest after push. Finalize with
+/// that immutable reference so FC can prove it pulled this exact build.
+fn image_reference_from_push(image: &str, output: &str) -> anyhow::Result<String> {
+    let digest = output
+        .lines()
+        .find_map(|line| {
+            let (_, digest) = line.split_once("digest: ")?;
+            let token = digest.split_whitespace().next()?;
+            let hash = token.strip_prefix("sha256:")?;
+            (hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(token)
+        })
+        .ok_or_else(|| anyhow::anyhow!("docker push returned no manifest digest"))?;
+    let repository = image
+        .rfind('/')
+        .and_then(|slash| image[slash + 1..].find(':').map(|colon| slash + 1 + colon))
+        .or_else(|| image.find('@'))
+        .map_or(image, |end| &image[..end]);
+    Ok(format!("{repository}@{digest}"))
 }
 
 fn write_registry_config(dir: &Path, target: &ImagePushTarget<'_>) -> anyhow::Result<()> {
@@ -1812,7 +1840,7 @@ mod tests {
             Some(&target),
             &|_, _| {
                 pushes.set(pushes.get() + 1);
-                Ok(())
+                Ok("example.test/app@sha256:".to_string() + &"a".repeat(64))
             },
             &|_| Ok(()),
             &|_, _| image_platform_result(Some("linux/arm64")),
@@ -2355,7 +2383,7 @@ mod tests {
             Some(&target),
             &|_, _| {
                 pushes.set(pushes.get() + 1);
-                Ok(())
+                Ok("example.test/app@sha256:".to_string() + &"a".repeat(64))
             },
             &|path| {
                 if std::fs::read(path.join("tracked.txt"))? != b"original" {
@@ -2386,6 +2414,50 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("image.txt")).unwrap(),
             "registry.example.com/apps/a:sha"
         );
+    }
+
+    #[test]
+    fn pushed_image_reference_uses_the_registry_manifest_digest() {
+        let digest = "a".repeat(64);
+        let output = format!("latest: digest: sha256:{digest} size: 1234\n");
+        assert_eq!(
+            image_reference_from_push("registry.example/apps/a:latest", &output).unwrap(),
+            format!("registry.example/apps/a@sha256:{digest}")
+        );
+        assert!(
+            image_reference_from_push("registry.example/apps/a:latest", "push complete").is_err()
+        );
+    }
+
+    #[test]
+    fn container_build_returns_the_digest_reference_for_finalize() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": {"kind": "container", "command": "true"},
+                "start": {"port": 9000}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let target = ImagePushTarget {
+            image: "registry.example/apps/a:latest",
+            registry: "registry.example",
+            username: "u",
+            password: "p",
+        };
+        let digest_reference = format!("registry.example/apps/a@sha256:{}", "a".repeat(64));
+        let built = build_artifact_with_push(
+            tmp.path(),
+            None,
+            Some(&target),
+            &|_, _| Ok(digest_reference.clone()),
+            &|_| Ok(()),
+            &|_, _| image_platform_result(Some(FC_PLATFORM)),
+        )
+        .unwrap();
+        assert_eq!(built.product.image(), Some(digest_reference.as_str()));
     }
 
     #[test]

@@ -1,6 +1,7 @@
-import { installOriginEnv } from "../fixtures/apps-origin-auth/config.js";
+import { installOriginEnv, ORIGIN_CONFIG } from "../fixtures/apps-origin-auth/config.js";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { makeFcOps } from "../../src/lib/app-platform/aliyun/fc.js";
 import {
   startDeploy,
   finalizeDeploy,
@@ -18,6 +19,111 @@ import { FunctionNotReadyError } from "../../src/lib/app-platform/provider.js";
 let restoreOriginEnv: () => void;
 before(() => { restoreOriginEnv = installOriginEnv(); });
 after(() => restoreOriginEnv());
+
+test("finalize verifies a native private origin after reconciling a timed-out FC create", async (t) => {
+  const previousMode = process.env.APPS_FC_ORIGIN_MODE;
+  t.after(() => {
+    if (previousMode === undefined) delete process.env.APPS_FC_ORIGIN_MODE;
+    else process.env.APPS_FC_ORIGIN_MODE = previousMode;
+  });
+  process.env.APPS_FC_ORIGIN_MODE = "private-trigger-jwt";
+  const events: string[] = [];
+  const image = "registry.example/apps/a@sha256:" + "a".repeat(64);
+  const endpoint = "https://app-hash.cn-hangzhou-vpc.fcapp.run";
+  let submitted: any;
+  let triggerConfig: string;
+  const client = {
+    getFunction: async () => {
+      events.push("getFunction");
+      if (!submitted) throw { code: "FunctionNotFound", statusCode: 404 };
+      return { body: { ...submitted, state: "Active", lastUpdateStatus: "Successful",
+        customContainerConfig: { ...submitted.customContainerConfig, resolvedImageUri: image } } };
+    },
+    createFunctionWithOptions: async (request: any) => {
+      events.push("createFunction");
+      submitted = request.body;
+      throw Object.assign(new Error("connection timed out"), { code: "ConnectTimeout" });
+    },
+    createTrigger: async (_name: string, request: any) => {
+      events.push("createTrigger");
+      triggerConfig = request.body.triggerConfig;
+    },
+    getTrigger: async () => {
+      events.push("getTrigger");
+      return { body: { triggerConfig, httpTrigger: { urlIntranet: endpoint } } };
+    },
+    listTriggers: async () => {
+      events.push("listTriggers");
+      return { body: { triggers: [{ triggerType: "http", triggerName: "http" }] } };
+    },
+    listCustomDomains: async () => {
+      events.push("listCustomDomains");
+      return { body: { customDomains: [] } };
+    },
+    getScalingConfig: async () => ({ body: { minInstances: 0 } }),
+  };
+  const fcOps = makeFcOps(client, { bucket: "b", role: undefined, region: "cn-hangzhou", originAuth: ORIGIN_CONFIG });
+  const result = await finalizeDeploy({ fcOps }, {
+    appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo", appType: "static_web",
+    fcFunctionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc", ossObjectName: "",
+    image, declaration: { build: { kind: "container", output: "." }, start: { port: 8080 } },
+  });
+  assert.equal(result.fcEndpoint, endpoint);
+  assert.equal(JSON.parse(triggerConfig!).authType, "jwt");
+  assert.equal(JSON.parse(triggerConfig!).disableURLInternet, true);
+  assert.deepEqual(events, ["getFunction", "createFunction", "getFunction", "getFunction", "createTrigger", "getTrigger", "listTriggers", "listCustomDomains"]);
+});
+
+test("finalize never creates an entrypoint when timed-out FC update remains ambiguous", async () => {
+  let entrypoints = 0;
+  const client = {
+    getFunction: async () => ({ body: { functionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc", state: "Active", lastUpdateStatus: "Successful" } }),
+    updateFunctionWithOptions: async () => { throw Object.assign(new Error("read timed out"), { code: "SDK.TimeoutError" }); },
+  };
+  const fc = makeFcOps(client, { bucket: "b", role: undefined, region: "cn-hangzhou" });
+  await assert.rejects(() => finalizeDeploy({ fcOps: {
+    ...fc,
+    ensureHttpTrigger: async () => { entrypoints++; return { internetUrlDisabled: true }; },
+    ensureCustomDomain: async () => { entrypoints++; return "http://unused"; },
+  } }, {
+    appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo", appType: "static_web",
+    fcFunctionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc", ossObjectName: "apps/a/code.zip",
+    declaration: { build: { kind: "node", output: ".output" }, start: { fcRuntime: "custom.debian10", command: ["node"], port: 8080, layers: [] } },
+  }), /timed out/);
+  assert.equal(entrypoints, 0);
+});
+
+test("finalize continues to the protected entrypoint after a timed-out FC update is reconciled", async () => {
+  const events: string[] = [];
+  let submitted: any;
+  const client = {
+    getFunction: async () => {
+      events.push("getFunction");
+      return { body: submitted
+        ? { ...submitted, functionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc", state: "Active", lastUpdateStatus: "Successful",
+          layers: submitted.layers.map((arn: string) => ({ arn })) }
+        : { functionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc", state: "Active", lastUpdateStatus: "Successful" } };
+    },
+    updateFunctionWithOptions: async (_name: string, request: any) => {
+      events.push("updateFunction");
+      submitted = request.body;
+      throw Object.assign(new Error("read timed out"), { code: "SDK.TimeoutError" });
+    },
+  };
+  const fc = makeFcOps(client, { bucket: "b", role: undefined, region: "cn-hangzhou" });
+  const result = await finalizeDeploy({ fcOps: {
+    ...fc,
+    setMinInstances: async () => ({ changed: false }),
+    ensureHttpTrigger: async () => { events.push("trigger"); return { internetUrlDisabled: true }; },
+    ensureCustomDomain: async (_name, host) => { events.push("origin"); return `http://${host}`; },
+  } }, {
+    appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo", appType: "static_web",
+    fcFunctionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc", ossObjectName: "apps/a/code.zip",
+    declaration: { build: { kind: "node", output: ".output" }, start: { fcRuntime: "custom.debian10", command: ["node"], port: 8080, layers: [] } },
+  });
+  assert.equal(result.fcEndpoint, "http://demo-3f1c9a2e.origins.test");
+  assert.deepEqual(events, ["getFunction", "updateFunction", "getFunction", "getFunction", "trigger", "origin"]);
+});
 
 test("startDeploy mints the upload handle and names the function + object", async () => {
   const out = await startDeploy(
