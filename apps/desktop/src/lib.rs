@@ -190,6 +190,12 @@ fn spawn_shell_path_probe(shell: &str, interactive: bool) -> std::io::Result<std
     }
 }
 
+/// Size at which the desktop log rotates to a dated archive.
+const LOG_FILE_MAX_BYTES: u128 = 5 * 1024 * 1024;
+/// Dated archives kept beside the active log. `KeepSome(n)` keeps n archives
+/// plus the file being written, so 4 means five files, about 25 MB at most.
+const LOG_FILES_KEPT: usize = 4;
+
 // STR-9: everything from here to `tauri::Builder::default()` runs before
 // `tauri_plugin_log` has installed a global logger, so `log::` here would go
 // nowhere. These few `eprintln!` are deliberate; the rest of the crate logs.
@@ -368,8 +374,17 @@ pub fn run() {
     // ("Error performing stderr logging after error occurred during regular
     // logging") — Sentry TEAMCLU-RUST-3, seen while spawning amuxd. Keep LogDir
     // as the only release target; Stdout/Webview stay for debug builds.
+    //
+    // Size and rotation are set explicitly because the plugin's defaults are a
+    // 40 KB file with `KeepOne`, and `KeepOne` rotates by deleting the file.
+    // A busy session filled 40 KB in minutes, so a Windows hang report found
+    // only the log of the run started after the hang — everything before the
+    // freeze was already gone. The active file plus four 5 MB archives keep days
+    // of history and cap the directory at about 25 MB.
     let mut log_builder = tauri_plugin_log::Builder::new()
         .level(log::LevelFilter::Info)
+        .max_file_size(LOG_FILE_MAX_BYTES)
+        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(LOG_FILES_KEPT))
         .filter(|metadata| {
             // Suppress noisy third-party crate logs
             let target = metadata.target();
