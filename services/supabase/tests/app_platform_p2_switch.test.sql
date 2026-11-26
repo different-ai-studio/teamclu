@@ -22,7 +22,41 @@ returns text language sql as $$
     'none')
 $$;
 
-select plan(15);
+-- amux.caller_apps() (20261126200000) must give, for every app, exactly what
+-- caller_app_access gives for that app alone, plus the apps seen only through
+-- an org grant (level null). Counts the rows that differ, over the given users;
+-- runs as the session role with only the JWT claims switched.
+create or replace function pg_temp.disagreements(p_users uuid[])
+returns int language plpgsql as $$
+declare u uuid; n int := 0; m int;
+begin
+  foreach u in array p_users loop
+    perform set_config('request.jwt.claims',
+                       json_build_object('sub', u::text, 'role', 'authenticated')::text, true);
+    with per_app as (
+      select a.id as app_id, x.level, x.delegated, x.is_creator
+        from amux.apps a cross join lateral amux.caller_app_access(a.id) x
+      union all
+      select a.id, null::text, false, false
+        from amux.apps a
+       where not exists (select 1 from amux.caller_app_access(a.id))
+         and exists (select 1 from amux.app_grants g where g.app_id = a.id and g.principal_org_id = a.org_id)
+         and exists (select 1 from amux.actors x join amux.teams t on t.id = x.team_id
+                      where x.user_id = u and t.oid = a.org_id)
+    ),
+    batch as (select app_id, level, delegated, is_creator from amux.caller_apps())
+    select count(*) into m
+      from ((select * from per_app except select * from batch)
+            union all
+            (select * from batch except select * from per_app)) d;
+    n := n + m;
+  end loop;
+  perform set_config('request.jwt.claims', '', true);
+  return n;
+end;
+$$;
+
+select plan(17);
 
 -- ── fixtures (session role) ───────────────────────────────────────────────
 -- Org A, teams A1 and A2; org B, team B1.
@@ -127,10 +161,16 @@ select is(pg_temp.access('00000000-0000-0000-0063-000000000301'), 'admin',
           'an agent''s own grant that beats its owner''s is not delegated');
 reset role;
 
+select is(pg_temp.disagreements(array['00000000-0000-0000-0063-000000000101', '00000000-0000-0000-0063-000000000102', '00000000-0000-0000-0063-000000000103', '00000000-0000-0000-0063-000000000111', '00000000-0000-0000-0063-000000000112', '00000000-0000-0000-0063-000000000113']::uuid[]), 0,
+          'caller_apps() agrees with caller_app_access for every user and app');
+
 update amux.agents set status = 'disabled' where id = '00000000-0000-0000-0063-000000000212';
 select pg_temp.as_user('00000000-0000-0000-0063-000000000112');
 select is(pg_temp.access('00000000-0000-0000-0063-000000000301'), 'none', 'a disabled agent reaches nothing');
 reset role;
+
+select is(pg_temp.disagreements(array['00000000-0000-0000-0063-000000000101', '00000000-0000-0000-0063-000000000102', '00000000-0000-0000-0063-000000000103', '00000000-0000-0000-0063-000000000111', '00000000-0000-0000-0063-000000000112', '00000000-0000-0000-0063-000000000113']::uuid[]), 0,
+          'and still agrees once a delegation lapses');
 
 -- ── slugs are unique per org ──────────────────────────────────────────────
 

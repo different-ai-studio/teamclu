@@ -6605,7 +6605,7 @@ function authInfoRepo({appOrg="org-1", teamOrg="org-1", member=true, rolesError=
  return {repo,calls};
 }
 test("auth_info_checks_app_and_catalog_visibility",async()=>{
- // Seeing the app is the gate (RLS: amux.caller_sees_app, which requires
+ // Seeing the app is the gate (RLS: amux.caller_apps(), which requires
  // membership of the app's org); a member of another team of that org who
  // sees it gets the org's catalog (P2.3).
  const {repo}=authInfoRepo({member:false});

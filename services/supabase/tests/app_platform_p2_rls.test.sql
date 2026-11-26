@@ -1,5 +1,5 @@
 -- 20261126200000_app_platform_p2_rls: row security on apps and their tables
--- reads the platform model (caller_app_access + org grants).
+-- reads the platform model (caller_apps: caller_app_access + org grants).
 begin;
 
 create or replace function pg_temp.as_user(p_user uuid)
@@ -12,7 +12,41 @@ begin
 end;
 $$;
 
-select plan(20);
+-- amux.caller_apps() (20261126200000) must give, for every app, exactly what
+-- caller_app_access gives for that app alone, plus the apps seen only through
+-- an org grant (level null). Counts the rows that differ, over the given users;
+-- runs as the session role with only the JWT claims switched.
+create or replace function pg_temp.disagreements(p_users uuid[])
+returns int language plpgsql as $$
+declare u uuid; n int := 0; m int;
+begin
+  foreach u in array p_users loop
+    perform set_config('request.jwt.claims',
+                       json_build_object('sub', u::text, 'role', 'authenticated')::text, true);
+    with per_app as (
+      select a.id as app_id, x.level, x.delegated, x.is_creator
+        from amux.apps a cross join lateral amux.caller_app_access(a.id) x
+      union all
+      select a.id, null::text, false, false
+        from amux.apps a
+       where not exists (select 1 from amux.caller_app_access(a.id))
+         and exists (select 1 from amux.app_grants g where g.app_id = a.id and g.principal_org_id = a.org_id)
+         and exists (select 1 from amux.actors x join amux.teams t on t.id = x.team_id
+                      where x.user_id = u and t.oid = a.org_id)
+    ),
+    batch as (select app_id, level, delegated, is_creator from amux.caller_apps())
+    select count(*) into m
+      from ((select * from per_app except select * from batch)
+            union all
+            (select * from batch except select * from per_app)) d;
+    n := n + m;
+  end loop;
+  perform set_config('request.jwt.claims', '', true);
+  return n;
+end;
+$$;
+
+select plan(22);
 
 -- ── fixtures (session role) ───────────────────────────────────────────────
 -- Org A: teams A1, A2. Org B: team B1.
@@ -65,10 +99,13 @@ insert into amux.app_env_vars (app_id, key, value) values
   ('00000000-0000-0000-0064-000000000301', 'P23_KEY', 'v'),
   ('00000000-0000-0000-0064-000000000302', 'P23_TEAM_KEY', 'v');
 
-select ok(has_function_privilege('authenticated', 'amux.caller_sees_app(uuid)', 'execute'),
-          'signed-in users can ask whether they see an app');
-select ok(not has_function_privilege('anon', 'amux.caller_sees_app(uuid)', 'execute'),
+select ok(has_function_privilege('authenticated', 'amux.caller_apps()', 'execute'),
+          'signed-in users can list what they see');
+select ok(not has_function_privilege('anon', 'amux.caller_apps()', 'execute'),
           'anonymous callers cannot');
+
+select is(pg_temp.disagreements(array['00000000-0000-0000-0064-000000000101', '00000000-0000-0000-0064-000000000102', '00000000-0000-0000-0064-000000000103', '00000000-0000-0000-0064-000000000104', '00000000-0000-0000-0064-000000000112']::uuid[]), 0,
+          'caller_apps() agrees with caller_app_access for every user and app');
 
 -- ── the creator ───────────────────────────────────────────────────────────
 
@@ -145,6 +182,9 @@ select pg_temp.as_user('00000000-0000-0000-0064-000000000112');
 select is((select count(*)::int from amux.apps where id = '00000000-0000-0000-0064-000000000301'), 0,
           'nor does their agent');
 reset role;
+
+select is(pg_temp.disagreements(array['00000000-0000-0000-0064-000000000101', '00000000-0000-0000-0064-000000000102', '00000000-0000-0000-0064-000000000103', '00000000-0000-0000-0064-000000000104', '00000000-0000-0000-0064-000000000112']::uuid[]), 0,
+          'and still agrees after visibility and grants change');
 
 select * from finish();
 rollback;

@@ -536,7 +536,7 @@ export function makeAppsRepo(host: any) {
       if (error) throw error;
       if (!raw) throw new ApiError(404, "not_found", "app not found");
       // The app's own org is the catalog (P2.3): seeing the app already means
-      // being a member of that org (amux.caller_sees_app), which is also what
+      // being a member of that org (amux.caller_apps()), which is also what
       // `roles_select_org_member` asks — so the caller's token reads it, from
       // whichever team of the org they are in. `org_id` has been NOT NULL
       // since 20260924100000.
