@@ -96,30 +96,41 @@ by another until it is disconnected.
 
 ## Setting up a deployment
 
-1. In the WeCom provider console (服务商后台), create the third-party app.
-   Set its 指令回调 URL to `<api origin>/v1/auth/sso/wecom/suite-callback`,
-   and its trusted / 登录授权 domain and install redirect domain to the API
-   host. Configure 登录授权 if it is a separate suite.
-2. Set `WECOM_SUITE_ID`, `WECOM_SUITE_SECRET`, `WECOM_CALLBACK_TOKEN` and
-   `WECOM_CALLBACK_AES_KEY`, plus the optional `WECOM_LOGIN_SUITE_*`, `WECOM_LOGIN_CALLBACK_TOKEN` / `_AES_KEY` (the 登录授权 page's own key pair, if it does not reuse the app's),
-   `WECOM_PROVIDER_CORPID`, `WECOM_REDIRECT_BASE_URL` and
-   `WECOM_INSTALL_TEST_MODE=1` while the app is unpublished. Both deploy
-   targets carry these keys.
-3. Wait for the first `suite_ticket` (up to 10 minutes after the callback URL
-   verifies). Until then, install and login answer 503.
-4. Turn on `auth.wecom` for the deployment.
+Confirmed against real WeCom on self-host (2026-11-26).
+
+1. In the WeCom provider console (服务商后台), create the third-party web
+   app. Set its 指令回调 URL to `<api origin>/v1/auth/sso/wecom/suite-callback`
+   and its 数据回调 URL to `<api origin>/v1/auth/sso/wecom/data-callback`.
+   Add the egress IP of the Cloud API to the IP whitelist (else 60020). Use a
+   test company until the app is published (else -31428 on install).
+2. Under 通用配置 → 登录授权, set the trusted domain to the API host and the
+   指令回调 URL to the same suite-callback URL. Domain ownership is checked
+   with a `WW_verify_<code>.txt` file; list the code in
+   `WECOM_DOMAIN_VERIFY_CODES` and FC serves it at the root. The page has its
+   own Token / EncodingAESKey; reuse the app's, or set them as
+   `WECOM_LOGIN_CALLBACK_TOKEN` / `_AES_KEY`.
+3. 登录授权 is a separate suite. Its SuiteID is not shown in the console:
+   after 开通并保存, WeCom pushes a `suite_ticket` for it to the callback, and
+   the SuiteId is read from `amux.sso_suite_tickets`. Its Secret is separate
+   from the app's (the app's gives 40001).
+4. Set the env: `WECOM_SUITE_ID` / `_SECRET`, `WECOM_CALLBACK_TOKEN` /
+   `_AES_KEY` (the app), `WECOM_LOGIN_SUITE_ID` / `_SECRET` (the 登录授权
+   suite; the QR `appid`), the optional `WECOM_LOGIN_CALLBACK_*`,
+   `WECOM_PROVIDER_CORPID`, `WECOM_REDIRECT_BASE_URL`,
+   `WECOM_DOMAIN_VERIFY_CODES`, and `WECOM_INSTALL_TEST_MODE=1` while the app
+   is unpublished. Both deploy targets carry these keys.
+5. Wait for the first `suite_ticket` of each suite (刷新Ticket in the
+   console forces one). Until then, install and login answer 503.
+6. Turn on `auth.wecom` for the deployment.
 
 ## Open points
 
-- **Not verified against real WeCom yet.** We have no provider registration
-  yet. Two items in the docs are ambiguous. First, whether the QR `appid` is
-  the 登录授权 SuiteID or the provider CorpID: document 98171 says SuiteID,
-  but its own example shows a CorpID. Second, whether the 登录授权 suite gets
-  its own `suite_ticket` push. `WECOM_LOGIN_SUITE_*` covers a separate suite;
-  the appid is the one that may need changing after the first real test.
+- **Names and avatars.** WeCom gives third-party apps neither: `getuserinfo3rd`
+  returns only corpid / userid / open_userid, `user/get` returns the userid as
+  `name`, and the old `get_login_info` stopped returning real names in 2020.
+  The desktop asks for a display name on first sign-in instead. Real names
+  would need a 代开发自建应用 that each customer admin authorizes.
 - Desktop only. The browser extension and iOS (custom scheme `teamclu://`
   already passes the redirect check) can follow.
-- Names: a contact-permission lookup through `permanent_code` could fill in
-  real names later.
 - DingTalk and Feishu: add a provider adapter plus env; the provider column
   check already allows them.
