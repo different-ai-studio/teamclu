@@ -57,15 +57,15 @@ function inheritedAgents(state: any, appId: string) {
  * actor (`actorRow`) without one is the signed-in test user.
  */
 const PROJECTED_TABLES = new Set(["app_links", "app_grants", "app_delegations"]);
+/** An actor's account: its `user_id`, the caller's actor's the signed-in user, else a stand-in. */
+function accountOf(state: any, actorRow: any, callerUserId: string, id: string | null | undefined): string | null {
+  if (!id) return null;
+  const a = (state.actors ?? []).find((x: any) => x.id === id) ?? (actorRow?.id === id ? actorRow : null);
+  if (a?.user_id) return a.user_id;
+  return actorRow?.id === id ? callerUserId : `user:${id}`;
+}
 function projectedTables(state: any, actorRow: any, callerUserId: string) {
-  const actor = (id: string | null | undefined) =>
-    !id ? null : (state.actors ?? []).find((a: any) => a.id === id) ?? (actorRow?.id === id ? actorRow : null);
-  const userOf = (id: string | null | undefined): string | null => {
-    if (!id) return null;
-    const a = actor(id);
-    if (a?.user_id) return a.user_id;
-    return actorRow?.id === id ? callerUserId : `user:${id}`;
-  };
+  const userOf = (id: string | null | undefined) => accountOf(state, actorRow, callerUserId, id);
   const level = (l: string) => ({ view: "read", prompt: "write" } as Record<string, string>)[l] ?? l;
   const apps = state.apps ?? [];
   return {
@@ -168,8 +168,15 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
       };
       // Older repository tests intentionally read complete rows. Integration opts in
       // to projection so an omitted identity column cannot silently survive a select.
-      const project = (row: any) => !projectSelects || !row || !ctx.columns || ctx.columns === "*" ? row
-        : Object.fromEntries(ctx.columns.split(",").map((column: string) => column.trim()).map((column: string) => [column, row[column]]));
+      // apps.created_by_user_id is P2.1's BEFORE trigger's, from the creating actor.
+      const derive = (row: any) => table === "apps" && row && row.created_by_user_id === undefined
+        ? { ...row, created_by_user_id: accountOf(state, actorRow, "user-app-1", row.created_by_actor_id) }
+        : row;
+      const project = (raw: any) => {
+        const row = derive(raw);
+        return !projectSelects || !row || !ctx.columns || ctx.columns === "*" ? row
+          : Object.fromEntries(ctx.columns.split(",").map((column: string) => column.trim()).map((column: string) => [column, row[column]]));
+      };
       const builder: any = {
         not(col: string, operator: string, val: any) {
           if (operator !== "is") throw new Error("unsupported test filter");

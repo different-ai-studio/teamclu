@@ -39,27 +39,27 @@ function fakeAdmin(opts: { users?: Record<string, any>; sessions?: Record<string
   };
   const sessions: Record<string, string> = { "alice-session": ALICE, "agent-session": AGENT, "stranger-session": STRANGER, ...(opts.sessions ?? {}) };
   const seed = opts.seed ?? {};
-  // Minimal PostgREST shape: select().eq()...maybeSingle(), filters honoured.
+  // Minimal PostgREST shape: select / eq / in / not-is-null / order / limit,
+  // then maybeSingle() or await; filters honoured.
   const from = (table: string) => {
-    const filters: [string, unknown][] = [];
+    const tests: ((row: any) => boolean)[] = [];
+    const rows = () => (seed[table] ?? []).filter((row: any) => tests.every((t) => t(row)));
     const builder: any = {
       select: () => builder,
-      eq: (col: string, val: unknown) => { filters.push([col, val]); return builder; },
-      maybeSingle: async () => ({
-        data: (seed[table] ?? []).find((row: any) => filters.every(([c, v]) => row[c] === v)) ?? null,
-        error: null,
-      }),
+      eq: (col: string, val: unknown) => { tests.push((r) => r[col] === val); return builder; },
+      in: (col: string, vals: unknown[]) => { tests.push((r) => vals.includes(r[col])); return builder; },
+      not: (col: string, _op: string, val: unknown) => { tests.push((r) => (r[col] ?? null) !== val); return builder; },
+      order: () => builder,
+      limit: () => builder,
+      maybeSingle: async () => ({ data: rows()[0] ?? null, error: null }),
+      then: (resolve: any, reject: any) => Promise.resolve({ data: rows(), error: null }).then(resolve, reject),
     };
     return builder;
   };
   return {
     users,
     from,
-    // amux.agent_inherited_app_level: seed `inherited` as { "<appId>:<actorId>": level }.
-    rpc: async (name: string, args: any) => ({
-      data: name === "agent_inherited_app_level" ? (seed.inherited?.[`${args.p_app_id}:${args.p_actor_id}`] ?? null) : null,
-      error: null,
-    }),
+    rpc: async () => ({ data: null, error: null }),
     auth: {
       getUser: async (jwt: string) => {
         const id = sessions[jwt];
@@ -200,13 +200,17 @@ test("minting needs a session, a secret, and stays under the hourly limit", asyn
 
 // ── /v1/git/access ────────────────────────────────────────────────────────
 
+// The platform model (P3.1): the app's link to its team, grants by account,
+// delegations from an agent to its owner.
 const accessSeed = {
-  apps: [{ id: APP_ID, name: "订单看板", team_id: "team-1", visibility: "personal", created_by_actor_id: "actor-alice" }],
+  apps: [{ id: APP_ID, name: "订单看板", org_id: "org-1", created_by_user_id: ALICE }],
+  app_links: [{ app_id: APP_ID, team_id: "team-1", workspace_id: null, created_by_actor_id: "actor-alice" }],
   actors: [
     { id: "actor-alice", team_id: "team-1", actor_type: "member", user_id: ALICE, display_name: "Alice" },
     { id: "actor-agent", team_id: "team-1", actor_type: "agent", user_id: AGENT, display_name: "小助手" },
   ],
-  app_member_access: [] as any[],
+  app_grants: [] as any[],
+  app_delegations: [] as any[],
 };
 
 test("access tells an ungranted agent which app it lacks", async () => {
@@ -216,21 +220,22 @@ test("access tells an ungranted agent which app it lacks", async () => {
 });
 
 test("access reports the creator as admin and a granted agent at its level", async () => {
-  const granted = { ...accessSeed, app_member_access: [{ app_id: APP_ID, member_id: "actor-agent", permission_level: "write" }] };
+  const granted = { ...accessSeed, app_grants: [{ app_id: APP_ID, principal_user_id: AGENT, level: "write", granted_by_user_id: ALICE }] };
   const { call } = setup({ seed: granted });
   assert.equal((await call("GET /v1/git/access", { authorization: basic("alice-session") }, `repo=o1/tc-app-${APP_ID}`)).body.permission, "admin");
   assert.equal((await call("GET /v1/git/access", { authorization: basic("agent-session") }, `repo=o1/tc-app-${APP_ID}`)).body.permission, "write");
 });
 
 test("access counts an agent's inherited level as Gitea enforces it (admin → write)", async () => {
-  const inherited = { ...accessSeed, inherited: { [`${APP_ID}:actor-agent`]: "admin" } };
+  // The agent is Alice's; Alice created the app, so it acts at admin.
+  const inherited = { ...accessSeed, app_delegations: [{ delegate_user_id: AGENT, principal_user_id: ALICE }] };
   const { call } = setup({ seed: inherited });
   const res = await call("GET /v1/git/access", { authorization: basic("agent-session") }, `repo=o1/tc-app-${APP_ID}`);
   assert.equal(res.body.permission, "write");
 });
 
 test("access says read for a teammate on a team-visible app", async () => {
-  const team = { ...accessSeed, apps: [{ ...accessSeed.apps[0], visibility: "team" }] };
+  const team = { ...accessSeed, app_grants: [{ app_id: APP_ID, principal_org_id: "org-1", level: "read" }] };
   const { call } = setup({ seed: team });
   assert.equal((await call("GET /v1/git/access", { authorization: basic("agent-session") }, `repo=o1/tc-app-${APP_ID}`)).body.permission, "read");
 });

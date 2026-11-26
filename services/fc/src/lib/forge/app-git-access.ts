@@ -1,6 +1,6 @@
+import { readTeamAppAccess } from "../teamclu-apps/team-app-access.js";
 import {
   appLevelAtLeast,
-  callAgentInheritance,
   higherAppLevel,
   storedAppPermissionLevel,
   type AppPermissionLevel,
@@ -59,44 +59,32 @@ export function appGitLevel(input: {
   return granted;
 }
 
-/** null when there is no such app, or the account is not in its team — the two are not told apart. */
+/**
+ * null when there is no such app, or the account is not in its team — the two
+ * are not told apart. Read from the platform model (P3.1d): team, creator,
+ * grants and inheritance through readTeamAppAccess.
+ */
 export async function readAppGitAccess(admin: any, appId: string, userId: string): Promise<AppGitAccess | null> {
-  const { data: app, error: appErr } = await admin
-    .from("apps")
-    .select("id, name, team_id, visibility, created_by_actor_id")
-    .eq("id", appId)
-    .maybeSingle();
-  if (appErr) throw appErr;
-  if (!app) return null;
+  const access = await readTeamAppAccess(admin, appId);
+  if (!access) return null;
   const { data: actor, error: actorErr } = await admin
     .from("actors")
     .select("id, actor_type, display_name")
-    .eq("team_id", app.team_id)
+    .eq("team_id", access.teamId)
     .eq("user_id", userId)
     .maybeSingle();
   if (actorErr) throw actorErr;
   if (!actor) return null;
 
-  const isCreator = app.created_by_actor_id === actor.id;
-  let grant: unknown = null;
-  if (!isCreator) {
-    const { data, error } = await admin
-      .from("app_member_access")
-      .select("permission_level")
-      .eq("app_id", app.id)
-      .eq("member_id", actor.id)
-      .maybeSingle();
-    if (error) throw error;
-    grant = data?.permission_level;
-  }
-  let inherited: unknown = null;
-  if (!isCreator && actor.actor_type === "agent") {
-    inherited = await callAgentInheritance(admin, "agent_inherited_app_level", { p_app_id: app.id, p_actor_id: actor.id });
-  }
+  const isCreator = access.createdByActorId === actor.id;
+  const grant = isCreator ? null : access.grants.find((g) => g.actorId === actor.id)?.level ?? null;
+  const inherited = !isCreator && actor.actor_type === "agent"
+    ? access.inherited.find((r) => r.agentId === actor.id)?.level ?? null
+    : null;
   return {
-    appId: app.id,
-    appName: app.name,
-    permission: appGitLevel({ isCreator, grant, inherited, visibility: app.visibility }),
+    appId: access.appId,
+    appName: access.name,
+    permission: appGitLevel({ isCreator, grant, inherited, visibility: access.teamVisible ? "team" : "personal" }),
     actorName: actor.display_name ?? null,
     actorType: actor.actor_type,
   };

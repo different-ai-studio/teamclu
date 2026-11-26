@@ -2778,6 +2778,9 @@ test("apps: listAppAccess returns rows for creator", async () => {
     granted_by_member_id: "actor-app-1",
     created_at: "2026-08-27T00:00:00.000Z",
   }];
+  // A legacy grant to an agent that never got an account: a grant is to an
+  // account (app_grants, P2.1/P3.1), so it was never projected and is not
+  // listed. New ones are refused (agent_not_connected); it could never act.
   const unclaimedAgent = { id: "agent-3", team_id: "team-1", actor_type: "agent", user_id: null };
   accessRows.push({
     app_id: "app-1",
@@ -2786,15 +2789,15 @@ test("apps: listAppAccess returns rows for creator", async () => {
     granted_by_member_id: "actor-app-1",
     created_at: "2026-08-28T00:00:00.000Z",
   });
+  const creator = { id: "actor-app-1", team_id: "team-1", actor_type: "member", user_id: "user-app-1" };
   const admin = appsSupabase({
-    seed: { apps: [APP_ROW], app_member_access: accessRows, actors: [MEMBER_2_ACTOR, unclaimedAgent] },
+    seed: { apps: [APP_ROW], app_member_access: accessRows, actors: [creator, MEMBER_2_ACTOR, unclaimedAgent] },
   });
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), {
     createServiceRoleClient: () => admin,
   });
   const items = await repo.listAppAccess("app-1");
-  // A row written before the rename still reads back under the new name; an
-  // agent with no account yet is marked not connected.
+  // A row written before the rename still reads back under the new name.
   assert.deepEqual(items, [{
     memberId: "member-2",
     permissionLevel: "write",
@@ -2802,16 +2805,6 @@ test("apps: listAppAccess returns rows for creator", async () => {
     createdAt: "2026-08-27T00:00:00.000Z",
     actorType: "member",
     connected: true,
-    displayName: null,
-    inherited: false,
-    inheritedFrom: null,
-  }, {
-    memberId: "agent-3",
-    permissionLevel: "read",
-    grantedByMemberId: "actor-app-1",
-    createdAt: "2026-08-28T00:00:00.000Z",
-    actorType: "agent",
-    connected: false,
     displayName: null,
     inherited: false,
     inheritedFrom: null,

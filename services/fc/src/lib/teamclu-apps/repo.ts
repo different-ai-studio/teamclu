@@ -17,11 +17,11 @@
 import { ApiError } from "../http-utils.js";
 import {
   appLevelAtLeast,
-  callAgentInheritance,
   parseAppPermissionLevel,
   storedAppPermissionLevel,
 } from "../app-permission.js";
 import { appIso, chunkedIn } from "../supabase-repo/shared.js";
+import { readTeamAppAccess } from "./team-app-access.js";
 import { appAccessRecipientUserId, publishAppAccessChanged, type AppAccessGrantee } from "../app-access-notify.js";
 import type { TeamCluForge } from "./forge.js";
 
@@ -69,16 +69,40 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
     });
   }
 
-  /** The app row the agent path authorises against, read past `apps` RLS. */
+  /** The forge columns of an app the credential paths act on. */
+  const APP_GIT_COLUMNS = "id, git_remote_url, git_auth_kind";
+
+  /** An app's team (app_links), with `client`'s rights. */
+  async function appTeamId(client: any, appId: string): Promise<string | null> {
+    const { data, error } = await client.from("app_links").select("team_id").eq("app_id", appId).maybeSingle();
+    if (error) throw error;
+    return data?.team_id ?? null;
+  }
+
+  /** Whether an app carries an org grant (TeamClu's `visibility: team`), with `client`'s rights. */
+  async function appTeamVisible(client: any, appId: string): Promise<boolean> {
+    const { data, error } = await client
+      .from("app_grants")
+      .select("app_id")
+      .eq("app_id", appId)
+      .not("principal_org_id", "is", null)
+      .limit(1);
+    if (error) throw error;
+    return (data ?? []).length > 0;
+  }
+
+  /** The app row the agent path authorises against, and its team, read past RLS. */
   async function readAppForAgentGitCredential(appId: string) {
     const admin = await serviceRoleClient("read app for agent git credential");
     const { data, error } = await admin
       .from("apps")
-      .select("id, team_id, git_remote_url, git_auth_kind, created_by_actor_id")
+      .select(APP_GIT_COLUMNS)
       .eq("id", appId)
       .maybeSingle();
     if (error) throw error;
-    return data ?? null;
+    if (!data) return null;
+    const teamId = await appTeamId(admin, appId);
+    return teamId ? { app: data, teamId } : null;
   }
 
   /**
@@ -105,52 +129,6 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
   }
 
   return {
-    /**
-     * The caller's member actor in this team, and which of `appIds` they hold a
-     * grant on (app id → who granted it).
-     *
-     * The grants are read with the service role, filtered to that actor and to
-     * apps RLS already showed the caller — so nothing the caller could not see
-     * leaves. The caller's own token cannot do this: `app_member_access_select`
-     * matches `current_member_id()`, the user's oldest actor, which hides their
-     * grants in every team after the first.
-     *
-     * Never fails the list. Without the grants every app still gets a
-     * relationship; only a team app the caller was also invited to reads as
-     * `team`, and an invited app loses the inviter's name.
-     */
-    async resolveAppViewer(
-      teamId: string,
-      appIds: string[],
-    ): Promise<{ actorId: string | null; grants: Map<string, string | null> | null }> {
-      const { data: userData, error: userErr } = await getCurrentUser();
-      if (userErr) throw userErr;
-      const userId = userData?.user?.id;
-      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      // Member or agent, so an agent's own apps read as its own.
-      const actorId = (await this.resolveCurrentActor(teamId, userId))?.id ?? null;
-      if (!actorId || appIds.length === 0) return { actorId, grants: null };
-      try {
-        const admin = await serviceRoleClient("read the caller's app grants");
-        const rows = await chunkedIn(appIds, async (chunk) => {
-          const { data, error } = await admin
-            .from("app_member_access")
-            .select("app_id, granted_by_member_id")
-            .eq("member_id", actorId)
-            .in("app_id", chunk);
-          if (error) throw error;
-          return data ?? [];
-        });
-        return {
-          actorId,
-          grants: new Map(rows.map((g: any) => [g.app_id, g.granted_by_member_id ?? null])),
-        };
-      } catch (e) {
-        console.warn(`[apps] app grants unavailable for the list: ${String(e)}`);
-        return { actorId, grants: null };
-      }
-    },
-
     async listAppSessions(appId: string) {
       // RLS on sessions governs visibility; a caller who cannot see the app's
       // sessions gets an empty list.
@@ -179,14 +157,9 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
       // logged-in user checking access to a deployed app may not pass
       // apps_select_if_visible yet still need a truthful member/non-member answer.
       const admin = await serviceRoleClient("read app team for membership check");
-      const { data: row, error } = await admin
-        .from("apps")
-        .select("id, team_id")
-        .eq("id", appId)
-        .maybeSingle();
-      if (error) throw error;
-      if (!row) return null;
-      const resolved = await this.resolveCurrentMemberActor(row.team_id, userId);
+      const teamId = await appTeamId(admin, appId);
+      if (!teamId) return null;
+      const resolved = await this.resolveCurrentMemberActor(teamId, userId);
       return { member: Boolean(resolved?.id) };
     },
 
@@ -217,11 +190,13 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
     } | null> {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, team_id, created_by_actor_id")
+        .select("id")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
       if (!app) return null;
+      const teamId = await appTeamId(supabase, appId);
+      if (!teamId) return null;
 
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission || permission.level !== "admin") return null;
@@ -229,8 +204,8 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
       // The grantor the legacy grant row records: the caller's actor in the
       // app's team (an admin by grant or the creator always has one).
       return {
-        callerActorId: (await callerActorIn(this, app.team_id))?.id ?? null,
-        teamId: app.team_id,
+        callerActorId: (await callerActorIn(this, teamId))?.id ?? null,
+        teamId,
       };
     },
 
@@ -238,51 +213,24 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
       const manager = await this.resolveAppAccessManager(appId);
       if (!manager) return null;
       // RLS only exposes all rows to the creator; admin grantees see self only.
-      // After the manage gate, read the full grant list with service role.
+      // After the manage gate, read the whole picture with service role — from
+      // the platform model, by actor in the app's team (team-app-access.ts).
       const admin = await serviceRoleClient("list app member access");
-      const { data, error } = await admin
-        .from("app_member_access")
-        .select("member_id, permission_level, granted_by_member_id, created_at")
-        .eq("app_id", appId)
-        .order("created_at", { ascending: true });
-      if (error) throw error;
-      const rows = data ?? [];
+      const access = await readTeamAppAccess(admin, appId);
+      if (!access) return [];
 
-      // The agents that reach the app through their owner (20261120120000).
-      // Listed after the grants, read-only: the way to take one away is to
-      // take its owner's access away.
-      const inheritedRows = await callAgentInheritance(admin, "app_inherited_agents", { p_app_id: appId });
-      const granted = new Set(rows.map((r: any) => r.member_id));
-      const inherited = ((inheritedRows ?? []) as any[]).filter(
-        (r) => r.agent_id && !granted.has(r.agent_id) && storedAppPermissionLevel(r.permission_level),
-      );
+      // The agents that reach the app through their owner. Listed after the
+      // grants, read-only: the way to take one away is to take its owner's
+      // access away.
+      const granted = new Set(access.grants.map((g) => g.actorId));
+      const inherited = access.inherited.filter((r) => !granted.has(r.agentId));
 
-      // Who each grantee is: the access tab shows agents apart from people,
-      // greys out an agent whose daemon never claimed an account, and shows
-      // the NAME from here — the caller's own directory hides agents it may
-      // not talk to, which left those rows as bare ids.
-      const ids = [
-        ...new Set(
-          [
-            ...rows.map((r: any) => r.member_id),
-            ...inherited.flatMap((r) => [r.agent_id, r.owner_actor_id]),
-          ].filter(Boolean),
-        ),
-      ];
-      const actors = new Map<string, any>();
-      if (ids.length > 0) {
-        const found = await chunkedIn(ids, async (chunk) => {
-          const { data: actorRows, error: actorErr } = await admin
-            .from("actors")
-            .select("id, actor_type, user_id, display_name")
-            .in("id", chunk);
-          if (actorErr) throw actorErr;
-          return actorRows ?? [];
-        });
-        for (const a of found) actors.set(a.id, a);
-      }
+      // Who each grantee is: the access tab shows agents apart from people and
+      // shows the NAME from here — the caller's own directory hides agents it
+      // may not talk to, which left those rows as bare ids. Every grantee here
+      // has an account (a grant is to an account), so every one is connected.
       const describe = (actorId: string) => {
-        const actor = actors.get(actorId);
+        const actor = access.actors.get(actorId);
         return {
           actorType: actor?.actor_type ?? null,
           connected: actor ? actor.actor_type !== "agent" || !!actor.user_id : null,
@@ -290,20 +238,23 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
         };
       };
       return [
-        ...rows.map((r: any) => ({
-          ...mapAppAccessRow(r),
-          ...describe(r.member_id),
+        ...access.grants.map((g) => ({
+          memberId: g.actorId,
+          permissionLevel: g.level,
+          grantedByMemberId: g.grantedByActorId,
+          createdAt: appIso(g.createdAt)!,
+          ...describe(g.actorId),
           inherited: false,
           inheritedFrom: null,
         })),
         ...inherited.map((r) => ({
-          memberId: r.agent_id,
-          permissionLevel: storedAppPermissionLevel(r.permission_level)!,
+          memberId: r.agentId,
+          permissionLevel: r.level,
           grantedByMemberId: null,
           createdAt: null,
-          ...describe(r.agent_id),
+          ...describe(r.agentId),
           inherited: true,
-          inheritedFrom: { actorId: r.owner_actor_id, displayName: actors.get(r.owner_actor_id)?.display_name ?? null },
+          inheritedFrom: { actorId: r.ownerActorId, displayName: access.actors.get(r.ownerActorId)?.display_name ?? null },
         })),
       ];
     },
@@ -398,16 +349,21 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
     ): Promise<{ actorId: string; app: Record<string, any>; readOnly: boolean } | null> {
       const { data: visible, error: selErr } = await supabase
         .from("apps")
-        .select("id, team_id, visibility, git_remote_url, git_auth_kind, created_by_actor_id")
+        .select(APP_GIT_COLUMNS)
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
+      // Team and visibility as TeamClu reads them: the app's link, and whether
+      // it carries an org grant (`visibility: team`), both with the caller's token.
+      const fields = visible
+        ? { teamId: await appTeamId(supabase, appId), visibility: (await appTeamVisible(supabase, appId)) ? "team" : "personal" }
+        : null;
 
-      if (visible) {
+      if (visible && fields?.teamId) {
         const permission = await this.resolveAppCallerPermissionForApp(visible);
         // The platform answers the level; who the credential is for is the
         // caller's actor in the app's team (TeamClu's identity for Gitea).
-        const actor = permission ? await callerActorIn(this, visible.team_id) : null;
+        const actor = permission ? await callerActorIn(this, fields.teamId!) : null;
         // A member the app knows about is answered on the member rules alone,
         // never by falling through to the agent path below. `read` may download
         // the code but not push to it, so its key cannot push.
@@ -430,12 +386,12 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
         // to them with a download button, and refusing the repo made that
         // button a dead end — while their own daemon, on the agent path below,
         // could already push to it. Same terms as `read`.
-        if (visible.visibility === "team") {
+        if (fields.visibility === "team") {
           const { data: userData, error: userErr } = await getCurrentUser();
           if (userErr) throw userErr;
           const userId = userData?.user?.id;
           const member = userId
-            ? await this.resolveCurrentMemberActor(visible.team_id, userId)
+            ? await this.resolveCurrentMemberActor(fields.teamId!, userId)
             : null;
           if (member?.id) return { actorId: member.id, app: visible, readOnly: true };
         }
@@ -460,11 +416,13 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
       // defaults to `personal`, which `apps_select_if_visible` hides from every
       // actor but the creator — including the daemon of the very machine the
       // app is checked out on.
-      const app = visible ?? (await readAppForAgentGitCredential(appId));
-      if (!app) return null;
-      const agentActorId = await resolveCurrentAgentActor(app.team_id);
+      const target = visible && fields?.teamId
+        ? { app: visible, teamId: fields.teamId as string }
+        : await readAppForAgentGitCredential(appId);
+      if (!target) return null;
+      const agentActorId = await resolveCurrentAgentActor(target.teamId);
       if (!agentActorId) return null;
-      return { actorId: agentActorId, app, readOnly: false };
+      return { actorId: agentActorId, app: target.app, readOnly: false };
     },
 
     // The credential's fields are the forge's (a key pair, or a token).

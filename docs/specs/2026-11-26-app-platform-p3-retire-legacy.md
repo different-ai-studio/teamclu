@@ -74,6 +74,13 @@ org 成员关系现在只能这么算（`org_roles_users` 只有角色，不覆�
 - **P3.1e 其他读者**：会话 appContext、apps 登录页、vanity、`updateApp` 判断 visibility 是否变化。
 - **P3.1f 守卫**：测试扫描 `src/`，旧列名只能出现在登记过的写入点。
 
+### 2.2 P3.1 实施记录（2026-11-26）
+
+- **P3.1a/b**（`2ec19aefc`）：`AppTenantHooks` 加 `fields` / `listEmbed`；平台所有返回 App 的接口都经 `presentApps`。迁移 `20261127100000` 给 `app_links`、`app_grants` 加 `authenticated` 的 SELECT 策略（看得见 app 才读得到它的 link；授权行：自己的、看得见的 app 上的 org 授权、创建者看全部），TeamClu 字段全部用调用方 token 读，列表不再需要 service role。
+- **P3.1c–e**：新模块 `teamclu-apps/team-app-access.ts`，按 actor 读出某个 app 在其团队里的创建者、授权、继承的 agent 和是否团队可见，规则与 `app_inherited_agents` 相同。access 页、git 访问判定、Gitea 同步、git 凭证、成员判断、apps 登录页的团队名都改用它或 `app_links`。`callAgentInheritance` 删除；vanity / gate 里没人用的 `teamId` 删除。
+- **行为变化**：没有账号的 agent 持有的旧授权不再出现在 access 页（授权按账号存，这种行从未投影；新授权本来就被 `agent_not_connected` 拒绝；belayo 上 0 行）。
+- **P3.1f 守卫**：`test/app-platform/legacy-reads.test.ts` 扫描 `src/`：`apps` 的查询链不许出现四个旧列；`app_member_access` 只许出现在 access 页的三处写入；不许调用 actor 版继承函数。放一个读 `apps.team_id` 的探针文件，守卫会报错。
+
 ## 3. 回滚
 
 - P3.1：换回 P2 镜像即可。

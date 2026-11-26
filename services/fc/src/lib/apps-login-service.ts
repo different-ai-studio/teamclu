@@ -96,7 +96,7 @@ export type LookupLoginApp = (appId: string) => Promise<LoginApp | null>;
  * custom domain was refused as "返回地址与该应用不符".
  */
 const LOGIN_APP_COLUMNS =
-  "id, slug, app_code, uses_app_code_domain, name, team_id, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
+  "id, slug, app_code, uses_app_code_domain, name, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -128,7 +128,7 @@ export function makeSupabaseLoginAppLookup(
       appCode: data.app_code ?? null,
       usesAppCodeDomain: data.uses_app_code_domain,
       name: data.name ?? null,
-      teamName: await readTeamName(client, data.team_id ?? null),
+      teamName: await readTeamName(client, data.id),
       authMode: data.auth_mode ?? "none",
       orgId: data.org_id ?? null,
       authAudience: data.auth_audience ?? null,
@@ -145,10 +145,12 @@ export function makeSupabaseLoginAppLookup(
  * and a failed read must not become a login page that refuses to render.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function readTeamName(client: any, teamId: string | null): Promise<string | null> {
-  if (!teamId) return null;
+async function readTeamName(client: any, appId: string): Promise<string | null> {
   try {
-    const { data } = await client.from("teams").select("name").eq("id", teamId).maybeSingle();
+    // The app's team is TeamClu's link (app_links), not a column of the app (P3.1).
+    const { data: link } = await client.from("app_links").select("team_id").eq("app_id", appId).maybeSingle();
+    if (!link?.team_id) return null;
+    const { data } = await client.from("teams").select("name").eq("id", link.team_id).maybeSingle();
     return typeof data?.name === "string" && data.name.trim() ? data.name.trim() : null;
   } catch {
     return null;
