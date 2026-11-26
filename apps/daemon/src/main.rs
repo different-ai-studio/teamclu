@@ -42,7 +42,10 @@ use clap::Parser;
 use cli::{Cli, Commands, TestClientAction};
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => cli::app::exit_on_parse_error(e),
+    };
 
     match cli.command {
         Commands::Setup { print_only } => {
@@ -235,8 +238,9 @@ fn main() -> anyhow::Result<()> {
             cli::process::run_status()?;
         }
         Commands::App(args) => {
-            if !cli::app::run(args)? {
-                std::process::exit(1);
+            let code = cli::app::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
             }
         }
         Commands::Doctor => {

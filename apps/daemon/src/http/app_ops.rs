@@ -17,6 +17,12 @@
 //! The work runs here rather than in the CLI process because only this
 //! process may refresh the agent's cloud session: the refresh token rotates on
 //! use, and a second process refreshing it would sign the running daemon out.
+//!
+//! Every outcome a flow reaches — done, refused, failed — answers 200 with the
+//! CLI contract's envelope (docs/specs/2026-11-24-amuxd-app-cli-design.md
+//! §2.2): `{"v":1,"ok":true,"data":…}` or `{"v":1,"ok":false,"error":{code,
+//! message,next,retryable,kind,exit}}`. HTTP errors are left to the layer
+//! below the flows: a token without the scope.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,12 +33,12 @@ use serde::Deserialize;
 use serde_json::Value;
 use teamclu_apps::{
     AppOps, AppSelector, Cloud, CloudError, CreateArgs, DaemonError, Host, LocalDaemon, LogsArgs,
-    Method, Surface, UpdateArgs,
+    Method, OpError, Surface, UpdateArgs,
 };
 
 use super::apps;
 use super::auth::{require_scope, Principal};
-use super::errors::{ErrorCode, HttpError};
+use super::errors::HttpError;
 use super::state::HttpState;
 use crate::backend::Backend;
 
@@ -340,7 +346,7 @@ pub struct AppOpsBody {
     pub request_id: Option<String>,
 }
 
-const READ_ACTIONS: [&str; 3] = ["list", "status", "logs"];
+const READ_ACTIONS: [&str; 4] = ["whoami", "list", "status", "logs"];
 const WRITE_ACTIONS: [&str; 7] = [
     "create", "reseed", "download", "update", "deploy", "undeploy", "delete",
 ];
@@ -353,10 +359,12 @@ fn present(v: &Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// A flow's refusal, as a problem body whose `detail` is the whole sentence.
-/// 422, not 500: the flow ran and said no, and the sentence is for the agent.
-fn refused(message: String) -> HttpError {
-    HttpError::new(ErrorCode::ValidationFailed, message)
+/// The contract's envelope (cli-design §2.2).
+pub fn envelope(out: Result<Value, OpError>) -> Value {
+    match out {
+        Ok(data) => serde_json::json!({ "v": 1, "ok": true, "data": data }),
+        Err(e) => serde_json::json!({ "v": 1, "ok": false, "error": e.to_json() }),
+    }
 }
 
 pub async fn app_ops(
@@ -370,23 +378,49 @@ pub async fn app_ops(
     } else if READ_ACTIONS.contains(&action.as_str()) {
         require_scope(&principal, "workspace:read")?;
     } else {
-        return Err(HttpError::validation(format!(
-            "unknown action {action:?} (expected one of: {}, {})",
-            READ_ACTIONS.join(", "),
-            WRITE_ACTIONS.join(", ")
-        )));
+        return Ok(Json(envelope(Err(OpError::invalid(
+            "unknown_action",
+            format!(
+                "unknown action {action:?} (expected one of: {}, {})",
+                READ_ACTIONS.join(", "),
+                WRITE_ACTIONS.join(", ")
+            ),
+        )
+        .with_next("amuxd app --help")))));
     }
+    Ok(Json(envelope(run(principal, state, &action, &body).await)))
+}
 
-    let backend = state
-        .backend
-        .clone()
-        .ok_or_else(|| HttpError::runtime_unavailable("this daemon has no cloud backend"))?;
+async fn run(
+    principal: Principal,
+    state: HttpState,
+    action: &str,
+    body: &AppOpsBody,
+) -> Result<Value, OpError> {
+    let Some(backend) = state.backend.clone() else {
+        return Err(OpError::upstream("daemon_not_onboarded", "this daemon has no cloud backend")
+            .with_next("amuxd init"));
+    };
     let team_id = backend.team_id().to_string();
     let base_url = backend.cloud_base_url().unwrap_or_default();
     if team_id.is_empty() || base_url.is_empty() {
-        return Err(HttpError::runtime_unavailable(
+        return Err(OpError::upstream(
+            "daemon_not_onboarded",
             "this daemon is not onboarded to a team yet — run `amuxd init` first",
-        ));
+        )
+        .with_next("amuxd init"));
+    }
+    if action == "whoami" {
+        // CLI design §2.5, without the agent / person split (P2.5 decision):
+        // every command acts as this daemon's agent account, and the platform
+        // decides what that account may do.
+        return Ok(serde_json::json!({
+            "principal": "daemon_agent",
+            "actorId": backend.actor_id(),
+            "teamId": team_id,
+            "cloud": base_url,
+            "note": "Every `amuxd app` command acts as this daemon's agent account. What it may do is that account's grants on each app, including what its owner delegates to it (up to deploy; never delete or managing access).",
+        }));
     }
 
     let cloud = DaemonCloud {
@@ -415,32 +449,35 @@ pub async fn app_ops(
     };
     // Argument mistakes are refused before anything is resolved, so they cost
     // no round trip and read as the mistakes they are.
-    match action.as_str() {
+    match action {
         "update" => {
-            update.patch().map_err(refused)?;
+            update.patch()?;
         }
         // The app a directory happens to be is the right default for
         // deploying, and the wrong one for deleting: an agent that lost track
         // of which checkout it is in must not destroy the one it stands in.
         "undeploy" if !selector.is_explicit() => {
-            return Err(refused(
-                "undeploy takes the app's site offline, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory".to_string(),
+            return Err(OpError::invalid(
+                "explicit_app_required",
+                "undeploy takes the app's site offline, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory",
             ))
         }
         "delete" if !selector.is_explicit() => {
-            return Err(refused(
-                "delete cannot be undone, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory".to_string(),
+            return Err(OpError::invalid(
+                "explicit_app_required",
+                "delete cannot be undone, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory",
             ))
         }
         "delete" if !body.confirm => {
-            return Err(refused(
-                "delete cannot be undone: the app's site goes offline and its repository is archived. Pass --yes to delete it.".to_string(),
+            return Err(OpError::invalid(
+                "confirmation_required",
+                "delete cannot be undone: the app's site goes offline and its repository is archived. Pass --yes to delete it.",
             ))
         }
         _ => {}
     }
 
-    let out = match action.as_str() {
+    match action {
         "list" => ops.list(&team_id).await,
         "create" => {
             let args = CreateArgs {
@@ -453,11 +490,8 @@ pub async fn app_ops(
             ops.create(&team_id, &args).await
         }
         _ => {
-            let row = ops
-                .resolve_app(&team_id, &selector)
-                .await
-                .map_err(refused)?;
-            match action.as_str() {
+            let row = ops.resolve_app(&team_id, &selector).await?;
+            match action {
                 "status" => {
                     Ok(serde_json::json!({ "action": "status", "app": ops.status(&row).await }))
                 }
@@ -486,6 +520,5 @@ pub async fn app_ops(
                 other => unreachable!("action {other} passed the allow-list"),
             }
         }
-    };
-    out.map(Json).map_err(refused)
+    }
 }

@@ -1,5 +1,6 @@
 //! `update` and `delete` — the app row's settings, and the app itself.
 
+use crate::OpError;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
@@ -28,14 +29,14 @@ pub struct UpdateArgs {
     pub auth_rules: Option<Value>,
 }
 
-fn one_of(field: &str, value: &Option<String>, allowed: &[&str]) -> Result<Option<String>, String> {
+fn one_of(field: &str, value: &Option<String>, allowed: &[&str]) -> Result<Option<String>, OpError> {
     match value {
         None => Ok(None),
         Some(value) if allowed.contains(&value.as_str()) => Ok(Some(value.clone())),
-        Some(value) => Err(format!(
+        Some(value) => Err(OpError::invalid(&format!("invalid_{field}"), format!(
             "{field} must be one of: {} (got {value:?})",
             allowed.join(", ")
-        )),
+        ))),
     }
 }
 
@@ -43,7 +44,7 @@ impl UpdateArgs {
     /// The `PATCH /v1/apps/:id` body, checked for the errors that need no
     /// round trip. The server validates again (rules as a set, the scope/rules
     /// pair) and its message is passed on.
-    pub fn patch(&self) -> Result<Value, String> {
+    pub fn patch(&self) -> Result<Value, OpError> {
         let mut patch = Map::new();
         if let Some(name) = &self.name {
             patch.insert("name".into(), json!(name));
@@ -68,23 +69,23 @@ impl UpdateArgs {
         if let Some(rules) = &self.auth_rules {
             let list = rules
                 .as_array()
-                .ok_or("auth_rules must be an array of {path, auth, audience?, roles?}")?;
+                .ok_or_else(|| OpError::invalid("invalid_auth_rules", "auth_rules must be an array of {path, auth, audience?, roles?}"))?;
             for rule in list {
                 let path = rule.get("path").and_then(Value::as_str).unwrap_or("");
                 let auth = rule.get("auth").and_then(Value::as_str).unwrap_or("");
                 if !path.starts_with('/') || !matches!(auth, "required" | "public") {
-                    return Err(format!(
+                    return Err(OpError::invalid("invalid_auth_rules", format!(
                         "each auth rule needs a path starting with \"/\" and auth \"required\" or \"public\" (got {rule})"
-                    ));
+                    )));
                 }
             }
             patch.insert("authRules".into(), rules.clone());
         }
         if patch.is_empty() {
-            return Err(
-                "update needs at least one of: name, type, visibility, auth_mode, auth_audience, auth_scope, auth_rules"
-                    .to_string(),
-            );
+            return Err(OpError::invalid(
+                "nothing_to_update",
+                "update needs at least one of: name, type, visibility, auth_mode, auth_audience, auth_scope, auth_rules",
+            ));
         }
         Ok(Value::Object(patch))
     }
@@ -185,7 +186,7 @@ impl AppOps<'_> {
     /// Approval of an exposure change, where a surface asks for one, is the
     /// caller's to obtain before this runs: it needs the row and the patch,
     /// and nothing here has changed yet.
-    pub async fn update(&self, row: &Value, args: &UpdateArgs) -> Result<Value, String> {
+    pub async fn update(&self, row: &Value, args: &UpdateArgs) -> Result<Value, OpError> {
         let patch = args.patch()?;
         let app_id = row_id(row)?;
         let updated = self
@@ -209,7 +210,7 @@ impl AppOps<'_> {
     /// `undeploy` — take the deployed site down and keep everything else: the
     /// app, its code, sessions and data. A deployed app has to be uninstalled
     /// this way before [`AppOps::delete`] will take it.
-    pub async fn undeploy(&self, row: &Value) -> Result<Value, String> {
+    pub async fn undeploy(&self, row: &Value) -> Result<Value, OpError> {
         let app_id = row_id(row)?;
         let result = self
             .call(
@@ -243,7 +244,7 @@ impl AppOps<'_> {
     /// `delete` — the app, its function and its login client; the repository
     /// is archived. Cannot be undone from here, so callers name the app
     /// outright ([`crate::AppSelector::is_explicit`]) and confirm first.
-    pub async fn delete(&self, row: &Value) -> Result<Value, String> {
+    pub async fn delete(&self, row: &Value) -> Result<Value, OpError> {
         let app_id = row_id(row)?;
         // Tears down the function, its trigger, the artifact and the login
         // client, and archives the repo — well past 30 s on a slow region.

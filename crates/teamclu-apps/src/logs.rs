@@ -1,5 +1,6 @@
 //! `logs` — the deployed function's own output.
 
+use crate::OpError;
 use serde_json::{json, Value};
 
 use crate::row::{app_path, row_id, row_str};
@@ -26,14 +27,14 @@ impl LogsArgs {
     /// The window and the row cap are bounded here as well as server-side: an
     /// app under load writes more in ten minutes than a turn can hold, and a
     /// reply large enough to blow the context is worse than no logs at all.
-    fn query(&self) -> Result<LogsQuery, String> {
+    fn query(&self) -> Result<LogsQuery, OpError> {
         let since_minutes = self.since_minutes.unwrap_or(30).clamp(1, 7 * 24 * 60);
         let limit = self.limit.unwrap_or(100).clamp(1, 200);
         let kind = self.kind.clone().unwrap_or_else(|| "app".to_string());
         if !matches!(kind.as_str(), "app" | "request" | "all") {
-            return Err(format!(
+            return Err(OpError::invalid("invalid_kind", format!(
                 "Unknown kind: {kind} (expected app, request or all)"
-            ));
+            )));
         }
         let mut query = format!("?sinceMinutes={since_minutes}&limit={limit}&kind={kind}");
         if let Some(contains) = &self.contains {
@@ -51,14 +52,14 @@ impl LogsArgs {
 }
 
 impl AppOps<'_> {
-    pub async fn logs(&self, row: &Value, args: &LogsArgs) -> Result<Value, String> {
+    pub async fn logs(&self, row: &Value, args: &LogsArgs) -> Result<Value, OpError> {
         let app_id = row_id(row)?;
         let fc_status = row_str(row, "fcStatus").unwrap_or("");
         if fc_status.is_empty() || fc_status == "not_deployed" {
-            return Err(format!(
+            return Err(OpError::conflict("app_not_deployed", format!(
                 "This app has never been deployed, so it has no logs yet. Deploy it first ({}).",
                 self.surface().step("manage_app", "deploy")
-            ));
+            )));
         }
         let q = args.query()?;
         let out = self

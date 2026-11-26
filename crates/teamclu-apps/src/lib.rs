@@ -32,6 +32,7 @@ mod checkout;
 mod cloud;
 mod daemon;
 mod deploy;
+mod error;
 mod logs;
 mod redact;
 mod resolve;
@@ -52,6 +53,7 @@ pub use checkout::{
 };
 pub use cloud::{explain, Cloud, CloudError, Method};
 pub use daemon::{daemon_error_text, DaemonError, LocalDaemon, DAEMON_DOWN};
+pub use error::{ErrorKind, OpError};
 pub use deploy::{
     deploy_failure_request, mint_git_credential, require_artifact_verification,
     return_git_credential, DeployArgs, GitCredential,
@@ -174,18 +176,18 @@ impl<'a> AppOps<'a> {
         body: Option<&Value>,
         timeout: Option<Duration>,
         what: &str,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, OpError> {
         self.cloud
             .send(method, path, body, timeout)
             .await
-            .map_err(|e| explain(self.surface(), what, &e))
+            .map_err(|e| OpError::from_cloud(self.surface(), what, &e))
     }
 
-    pub async fn get(&self, path: &str, what: &str) -> Result<Value, String> {
+    pub async fn get(&self, path: &str, what: &str) -> Result<Value, OpError> {
         self.call(Method::Get, path, None, None, what).await
     }
 
-    pub async fn post(&self, path: &str, body: &Value, what: &str) -> Result<Value, String> {
+    pub async fn post(&self, path: &str, body: &Value, what: &str) -> Result<Value, OpError> {
         self.call(Method::Post, path, Some(body), None, what).await
     }
 }

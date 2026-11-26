@@ -388,31 +388,53 @@ async fn app_ops(app: &TestApp, body: Value) -> (u16, Value) {
     (status, resp.json().await.expect("app-ops body"))
 }
 
-/// `amuxd app list` / `logs` run the shared flows on the daemon's own token.
+/// The contract envelope's `data`, asserting the call succeeded.
+fn data_of(status: u16, body: &Value) -> Value {
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["v"], 1, "{body}");
+    assert_eq!(body["ok"], true, "{body}");
+    body["data"].clone()
+}
+
+/// The contract envelope's `error`, asserting the call failed with `exit`.
+fn error_of(status: u16, body: &Value, exit: i64) -> Value {
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["v"], 1, "{body}");
+    assert_eq!(body["ok"], false, "{body}");
+    assert_eq!(body["error"]["exit"], exit, "{body}");
+    body["error"].clone()
+}
+
+/// `amuxd app list` / `logs` / `whoami` run the shared flows on the daemon's own token.
 #[tokio::test]
 async fn app_ops_runs_the_shared_flows_as_the_daemon_agent() {
     let backend = backend::mock::MockBackend::new();
     backend.state().cloud_base_url = Some(fake_cloud().await);
     let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
 
-    let (status, listed) = app_ops(&app, serde_json::json!({ "action": "list" })).await;
-    assert_eq!(status, 200, "{listed}");
+    let (status, body) = app_ops(&app, serde_json::json!({ "action": "list" })).await;
+    let listed = data_of(status, &body);
     assert_eq!(listed["team_id"], "team-mock");
     assert_eq!(listed["apps"][0]["url"], "https://notes.apps.test");
 
-    let (status, logs) = app_ops(
+    let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "logs", "appName": "notes", "sinceMinutes": 5 }),
     )
     .await;
-    assert_eq!(status, 200, "{logs}");
+    let logs = data_of(status, &body);
     assert_eq!(logs["app_id"], "a1");
     assert_eq!(logs["since_minutes"], 5);
     assert_eq!(logs["entries"][0]["message"], "listening on :9000");
+
+    let (status, body) = app_ops(&app, serde_json::json!({ "action": "whoami" })).await;
+    let me = data_of(status, &body);
+    assert_eq!(me["principal"], "daemon_agent");
+    assert_eq!(me["teamId"], "team-mock");
 }
 
-/// A flow that says no answers 422 with its whole sentence as `detail`, and
-/// names the next step as a CLI command rather than an MCP tool.
+/// A flow that says no answers with a stable code, its whole sentence, the
+/// exit status it stands for, and the next step as a CLI command.
 #[tokio::test]
 async fn app_ops_refusals_carry_the_cli_next_step() {
     let backend = backend::mock::MockBackend::new();
@@ -421,14 +443,20 @@ async fn app_ops_refusals_carry_the_cli_next_step() {
 
     let (status, body) =
         app_ops(&app, serde_json::json!({ "action": "logs", "appId": "a2" })).await;
-    assert_eq!(status, 422, "{body}");
-    let detail = body["detail"].as_str().unwrap();
-    assert!(detail.contains("never been deployed"), "{detail}");
-    assert!(detail.contains("`amuxd app deploy`"), "{detail}");
+    let e = error_of(status, &body, 6);
+    assert_eq!(e["code"], "app_not_deployed");
+    let message = e["message"].as_str().unwrap();
+    assert!(message.contains("never been deployed"), "{message}");
+    assert!(message.contains("`amuxd app deploy`"), "{message}");
+
+    let (status, body) =
+        app_ops(&app, serde_json::json!({ "action": "status", "appName": "nope" })).await;
+    assert_eq!(error_of(status, &body, 5)["code"], "app_not_found");
 
     let (status, body) = app_ops(&app, serde_json::json!({ "action": "publish" })).await;
-    assert_eq!(status, 422, "{body}");
-    assert!(body["detail"].as_str().unwrap().contains("unknown action"));
+    let e = error_of(status, &body, 2);
+    assert_eq!(e["code"], "unknown_action");
+    assert_eq!(e["next"], "amuxd app --help");
 }
 
 /// No cloud session to act on: a daemon that was never onboarded says so
@@ -437,8 +465,9 @@ async fn app_ops_refusals_carry_the_cli_next_step() {
 async fn app_ops_needs_an_onboarded_daemon() {
     let (app, _dir) = test_app_inner(Some(Arc::new(backend::mock::MockBackend::new()))).await;
     let (status, body) = app_ops(&app, serde_json::json!({ "action": "list" })).await;
-    assert_eq!(status, 503, "{body}");
-    assert!(body["detail"].as_str().unwrap().contains("amuxd init"));
+    let e = error_of(status, &body, 7);
+    assert_eq!(e["code"], "daemon_not_onboarded");
+    assert_eq!(e["next"], "amuxd init");
 }
 
 /// `update` reaches the row; `delete` refuses an app inferred from a directory
@@ -454,45 +483,41 @@ async fn app_ops_update_and_the_delete_guards() {
         serde_json::json!({ "action": "update", "appId": "a1", "visibility": "team" }),
     )
     .await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body["app"]["visibility"], "team");
+    assert_eq!(data_of(status, &body)["app"]["visibility"], "team");
 
     let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "update", "appId": "a1", "authMode": "third" }),
     )
     .await;
-    assert_eq!(status, 422, "{body}");
+    assert_eq!(error_of(status, &body, 2)["code"], "invalid_auth_mode");
 
     let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "delete", "workspacePath": "/work/notes", "confirm": true }),
     )
     .await;
-    assert_eq!(status, 422, "{body}");
-    assert!(body["detail"].as_str().unwrap().contains("explicit"));
+    assert_eq!(error_of(status, &body, 2)["code"], "explicit_app_required");
 
     let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "undeploy", "workspacePath": "/work/notes" }),
     )
     .await;
-    assert_eq!(status, 422, "{body}");
-    assert!(body["detail"].as_str().unwrap().contains("explicit"));
+    assert_eq!(error_of(status, &body, 2)["code"], "explicit_app_required");
 
     let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "delete", "appId": "a1" }),
     )
     .await;
-    assert_eq!(status, 422, "{body}");
-    assert!(body["detail"].as_str().unwrap().contains("--yes"));
+    let e = error_of(status, &body, 2);
+    assert!(e["message"].as_str().unwrap().contains("--yes"));
 
     let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "delete", "appId": "a1", "confirm": true }),
     )
     .await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body["action"], "delete");
+    assert_eq!(data_of(status, &body)["action"], "delete");
 }

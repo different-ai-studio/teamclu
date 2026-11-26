@@ -530,7 +530,7 @@ pub(super) async fn resolve_app_row(
         introspect_current_team(app).await?
     };
     let host = DesktopHost::new(app, api);
-    app_ops(api, &host).resolve_app(&team_id, &selector).await
+    Ok(app_ops(api, &host).resolve_app(&team_id, &selector).await?)
 }
 
 async fn daemon_selected_host_facts(row: &Value) -> Result<Value, String> {
@@ -715,7 +715,7 @@ async fn deploy_to_completion(
     };
     tauri::async_runtime::spawn(async move {
         let host = DesktopHost::new(&app, &api);
-        app_ops(&api, &host).deploy(&row, args).await
+        app_ops(&api, &host).deploy(&row, args).await.map_err(String::from)
     })
     .await
     .map_err(|e| format!("The deploy task stopped unexpectedly: {e}"))?

@@ -1,6 +1,7 @@
 //! Which app: listing a team's apps, and turning an id, a name or a directory
 //! into exactly one app row.
 
+use crate::OpError;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -57,7 +58,7 @@ impl AppOps<'_> {
     /// Not the first page: resolving a name or a directory to an app needs the
     /// whole team, and 100 is the server's page cap, not a bound on a team. A
     /// server from before paging sends no `nextCursor`, which ends it at one.
-    pub async fn list_team_apps(&self, team_id: &str) -> Result<Vec<Value>, String> {
+    pub async fn list_team_apps(&self, team_id: &str) -> Result<Vec<Value>, OpError> {
         /// A guard against a cursor that never ends, not a size anyone reaches.
         const MAX_PAGES: usize = 50;
         let base = format!("/v1/apps?teamId={}&limit=100", urlencoding::encode(team_id));
@@ -94,7 +95,7 @@ impl AppOps<'_> {
     /// `list` — the team's apps, each with this machine's checkout when it
     /// has one. One daemon call for every app, not one per app: the path is
     /// how an agent tells the app it is working in from the rest.
-    pub async fn list(&self, team_id: &str) -> Result<Value, String> {
+    pub async fn list(&self, team_id: &str) -> Result<Value, OpError> {
         let apps = self.list_team_apps(team_id).await?;
         let local = self.local_app_workdirs(team_id).await;
         let briefs: Vec<Value> = apps
@@ -132,14 +133,15 @@ impl AppOps<'_> {
         &self,
         team_id: &str,
         selector: &AppSelector,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, OpError> {
         if let Some(id) = &selector.app_id {
             return self.get(&app_path(id, ""), "Reading the app").await;
         }
         if team_id.is_empty() {
-            return Err(
-                "No current team to look the app up in — pass an app id instead".to_string(),
-            );
+            return Err(OpError::invalid(
+                "no_team",
+                "No current team to look the app up in — pass an app id instead",
+            ));
         }
         let Some(name) = &selector.app_name else {
             let id = self.app_id_from_workspace(team_id, selector).await?;
@@ -160,17 +162,17 @@ impl AppOps<'_> {
             .collect();
         match matches.len() {
             1 => Ok(matches[0].clone()),
-            0 => Err(format!(
+            0 => Err(OpError::not_found("app_not_found", format!(
                 "No app named {:?} in this team. Apps: {}",
                 name,
                 Value::Array(apps.iter().map(app_brief).collect())
-            )),
-            n => Err(format!(
+            ))),
+            n => Err(OpError::not_found("app_ambiguous", format!(
                 "{:?} matches {} apps — pass the app id instead. Matches: {}",
                 name,
                 n,
                 Value::Array(matches.iter().map(|a| app_brief(a)).collect())
-            )),
+            ))),
         }
     }
 
@@ -183,13 +185,13 @@ impl AppOps<'_> {
         &self,
         team_id: &str,
         selector: &AppSelector,
-    ) -> Result<String, String> {
+    ) -> Result<String, OpError> {
         let ask = format!(
             "name the app by id or name, or run {} to see this team's apps",
             self.surface().step("manage_app", "list")
         );
         let workspace = selector.workspace_path.as_deref().ok_or_else(|| {
-            format!("No app named, and no working directory to resolve one from — {ask}")
+            OpError::invalid("no_app_named", format!("No app named, and no working directory to resolve one from — {ask}"))
         })?;
         let apps: Vec<(String, PathBuf)> = self
             .local_app_workdirs(team_id)
@@ -198,7 +200,8 @@ impl AppOps<'_> {
             .map(|(id, dir)| (id, canonical_path(&dir)))
             .collect();
         app_owning_path(&canonical_path(workspace), &apps).ok_or_else(|| {
-            format!("{workspace} is not the checkout of any app in this team — {ask}")
+            OpError::not_found("not_a_checkout", format!("{workspace} is not the checkout of any app in this team — {ask}"))
+                .with_next(self.surface().step("manage_app", "list"))
         })
     }
 

@@ -16,6 +16,7 @@
 //! web app sends the daemon, or to how it claims the app's workspace row,
 //! belongs in both.
 
+use crate::OpError;
 use std::path::Path;
 use std::time::Duration;
 
@@ -66,37 +67,37 @@ pub struct CreateArgs {
 impl CreateArgs {
     /// Validate without touching anything, so a mistake costs no round trip
     /// and reads as the mistake it is.
-    pub fn source(&self) -> Result<CreateSource, String> {
+    pub fn source(&self) -> Result<CreateSource, OpError> {
         if self.name.is_none() {
-            return Err("create needs a name".to_string());
+            return Err(OpError::invalid("name_required", "create needs a name"));
         }
         if let Some(visibility) = &self.visibility {
             if !matches!(visibility.as_str(), "personal" | "team") {
-                return Err(format!(
+                return Err(OpError::invalid("invalid_visibility", format!(
                     "visibility must be personal or team (got {visibility:?})"
-                ));
+                )));
             }
         }
         if let Some(app_type) = &self.app_type {
             if !APP_TYPES.contains(&app_type.as_str()) {
-                return Err(format!(
+                return Err(OpError::invalid("invalid_type", format!(
                     "type must be one of: {} (got {app_type:?})",
                     APP_TYPES.join(", ")
-                ));
+                )));
             }
         }
         match (&self.git_remote_url, &self.local_dir) {
-            (Some(_), Some(_)) => Err(
-                "pass a git remote or a local directory, not both — they are two different sources"
-                    .to_string(),
-            ),
+            (Some(_), Some(_)) => Err(OpError::invalid(
+                "two_sources",
+                "pass a git remote or a local directory, not both — they are two different sources",
+            )),
             (Some(url), None) => Ok(CreateSource::Remote(url.clone())),
             (None, Some(dir)) if Path::new(dir).is_absolute() => {
                 Ok(CreateSource::LocalDir(dir.clone()))
             }
-            (None, Some(dir)) => Err(format!(
+            (None, Some(dir)) => Err(OpError::invalid("relative_dir", format!(
                 "the local directory must be an absolute path (got {dir:?})"
-            )),
+            ))),
             (None, None) => Ok(CreateSource::Template),
         }
     }
@@ -106,13 +107,13 @@ impl CreateArgs {
 /// which is exactly right for an app whose checkout was never written, and
 /// exactly wrong for one that works. The control panel offers it on the same
 /// three states (`canReseed`).
-pub(crate) fn reseed_allowed(provision_status: &str) -> Result<(), String> {
+pub(crate) fn reseed_allowed(provision_status: &str) -> Result<(), OpError> {
     if matches!(provision_status, "pending" | "repo_created" | "error") {
         return Ok(());
     }
-    Err(format!(
+    Err(OpError::conflict("reseed_not_allowed", format!(
         "reseed is for an app whose code was never written or failed to be (provision_status pending, repo_created or error); this one is {provision_status:?}. Reseeding a working app would write the starter template or a clone over it."
-    ))
+    )))
 }
 
 // ─── The app's workspace row ────────────────────────────────────────────────
@@ -161,7 +162,7 @@ async fn bind_workspace_row(
     ops: &AppOps<'_>,
     row: &Value,
     workdir: &str,
-) -> Result<String, String> {
+) -> Result<String, OpError> {
     let agent_id = ops
         .daemon
         .actor_id()
@@ -172,7 +173,7 @@ async fn bind_workspace_row(
     let saved_id = |saved: Value| {
         row_str(&saved, "id")
             .map(str::to_string)
-            .ok_or_else(|| "the workspace write returned no id".to_string())
+            .ok_or_else(|| OpError::from("the workspace write returned no id"))
     };
 
     if let Some(workspace_id) = row_str(row, "workspaceId") {
@@ -404,7 +405,7 @@ impl AppOps<'_> {
     /// `POST /v1/apps`. It creates the Gitea repo before it answers — the web
     /// app waits for that with no timeout, and a 30 s client default would
     /// report an app the server went on to create as a failure.
-    async fn post_app(&self, body: &Value) -> Result<Value, String> {
+    async fn post_app(&self, body: &Value) -> Result<Value, OpError> {
         self.call(
             Method::Post,
             "/v1/apps",
@@ -433,28 +434,27 @@ impl AppOps<'_> {
     }
 
     /// Whether a folder is a git checkout, and its `origin` when it has one.
-    async fn folder_origin(&self, dir: &str) -> Result<Option<String>, String> {
+    async fn folder_origin(&self, dir: &str) -> Result<Option<String>, OpError> {
         match self.daemon.inspect_dir(dir).await {
             Ok(out) if out.get("isGitRepo").and_then(Value::as_bool) == Some(true) => {
                 Ok(row_str(&out, "gitRemoteUrl").map(str::to_string))
             }
             Ok(_) => Ok(None),
-            Err(e) if e.unreachable => Err(
-                "The local amuxd is not running, so the folder cannot be checked and no app was created."
-                    .to_string(),
-            ),
-            Err(e) => Err(format!("Checking {dir} failed: {}", daemon_error_text(&e))),
+            Err(e) if e.unreachable => Err(OpError::daemon_down(
+                "The local amuxd is not running, so the folder cannot be checked and no app was created.",
+            )),
+            Err(e) => Err(OpError::daemon_failed(format!("Checking {dir} failed: {}", daemon_error_text(&e)))),
         }
     }
 
     /// Point the app at a directory already on this machine, leaving it in place.
-    async fn bind_workdir(&self, row: &Value, dir: &str) -> Result<String, String> {
+    async fn bind_workdir(&self, row: &Value, dir: &str) -> Result<String, OpError> {
         let app_id = row_id(row)?;
         let team_id = row_str(row, "teamId").unwrap_or("");
         match self.daemon.bind_workdir(&app_id, team_id, dir).await {
             Ok(out) => Ok(row_str(&out, "workdir").unwrap_or(dir).to_string()),
-            Err(e) if e.unreachable => Err(DAEMON_DOWN.to_string()),
-            Err(e) => Err(daemon_error_text(&e)),
+            Err(e) if e.unreachable => Err(OpError::daemon_down(DAEMON_DOWN)),
+            Err(e) => Err(OpError::daemon_failed(daemon_error_text(&e))),
         }
     }
 
@@ -466,7 +466,7 @@ impl AppOps<'_> {
     /// removed instead, again as the dialog does: a row with no code and a
     /// repository this machine could not reach is an empty shell that looks
     /// like a created app.
-    pub async fn create(&self, team_id: &str, args: &CreateArgs) -> Result<Value, String> {
+    pub async fn create(&self, team_id: &str, args: &CreateArgs) -> Result<Value, OpError> {
         let source = args.source()?;
         let mut create_body = json!({
             "teamId": team_id,
@@ -491,10 +491,10 @@ impl AppOps<'_> {
                 if row_str(&checkout, "outcome") == Some("failed") {
                     self.discard_created_app(&row).await;
                     self.host.app_changed(&row);
-                    return Err(format!(
+                    return Err(OpError::upstream("clone_failed", format!(
                         "Cloning {url} failed, so the app was not kept: {}",
                         row_str(&checkout, "error").unwrap_or("unknown failure")
-                    ));
+                    )));
                 }
                 (row, checkout)
             }
@@ -502,7 +502,7 @@ impl AppOps<'_> {
                 // Checked before any row exists: a folder that is not there, or
                 // a daemon that cannot look at it, should not leave an app behind.
                 if !Path::new(dir).is_dir() {
-                    return Err(format!("{dir} is not a directory on this machine"));
+                    return Err(OpError::not_found("dir_not_found", format!("{dir} is not a directory on this machine")));
                 }
                 let origin = self.folder_origin(dir).await?;
                 create_body["type"] = type_or(IMPORTED_TYPE);
@@ -587,15 +587,15 @@ impl AppOps<'_> {
 
     /// `reseed` — write the app's code again, for an app whose seed never ran
     /// or failed.
-    pub async fn reseed(&self, row: &Value) -> Result<Value, String> {
+    pub async fn reseed(&self, row: &Value) -> Result<Value, OpError> {
         reseed_allowed(row_str(row, "provisionStatus").unwrap_or(""))?;
         let report = run_seed(self, row, false, None).await;
         self.host.app_changed(row);
         if row_str(&report, "outcome") != Some("seeded") {
-            return Err(format!(
+            return Err(OpError::upstream("reseed_failed", format!(
                 "reseed did not complete: {}",
                 row_str(&report, "error").unwrap_or("unknown failure")
-            ));
+            )));
         }
         Ok(json!({
             "ok": true,
@@ -617,14 +617,14 @@ fn download_allowed(
     provision_status: &str,
     gitea_managed: bool,
     has_remote: bool,
-) -> Result<(), String> {
+) -> Result<(), OpError> {
     if provision_status == "ready" || (!gitea_managed && has_remote) {
         return Ok(());
     }
-    Err(format!(
+    Err(OpError::conflict("nothing_to_download", format!(
         "This app's code has not been written anywhere yet (provision_status {provision_status:?}), so there is nothing to download. Run {} on it first.",
         surface.step("manage_app", "reseed")
-    ))
+    )))
 }
 
 impl AppOps<'_> {
@@ -633,7 +633,7 @@ impl AppOps<'_> {
     /// Nothing is cloned over a directory that already has files in it,
     /// because the only thing that could do there is destroy the checkout
     /// someone has.
-    pub async fn download(&self, row: &Value) -> Result<Value, String> {
+    pub async fn download(&self, row: &Value) -> Result<Value, OpError> {
         let app_id = row_id(row)?;
         let status = row_str(row, "provisionStatus").unwrap_or("");
         download_allowed(
@@ -645,7 +645,7 @@ impl AppOps<'_> {
         let (workdir, device) = self
             .app_workdir_on_this_machine(row)
             .await
-            .ok_or(DAEMON_DOWN)?;
+            .ok_or_else(|| OpError::daemon_down(DAEMON_DOWN))?;
         if dir_has_files(&workdir) {
             return Ok(json!({
                 "ok": true,
@@ -662,7 +662,7 @@ impl AppOps<'_> {
             Some(
                 mint_git_credential(self, &app_id)
                     .await
-                    .map_err(|e| format!("No access to this app's repository: {e}"))?,
+                    .map_err(|e| OpError { message: format!("No access to this app's repository: {e}"), ..e })?,
             )
         } else {
             None
@@ -673,10 +673,10 @@ impl AppOps<'_> {
             // An app with no remote of any kind has nothing to fetch — its code
             // only ever existed on the machine that made it.
             (None, None) => {
-                return Err(
-                    "This app has no repository address to download from; its code only exists on the machine that created it."
-                        .to_string(),
-                )
+                return Err(OpError::conflict(
+                    "no_remote",
+                    "This app has no repository address to download from; its code only exists on the machine that created it.",
+                ))
             }
         };
 
@@ -705,9 +705,9 @@ impl AppOps<'_> {
         }
         let out = cloned.map_err(|e| {
             if e.unreachable {
-                DAEMON_DOWN.to_string()
+                OpError::daemon_down(DAEMON_DOWN)
             } else {
-                format!("Cloning the app failed: {}", daemon_error_text(&e))
+                OpError::daemon_failed(format!("Cloning the app failed: {}", daemon_error_text(&e)))
             }
         })?;
 

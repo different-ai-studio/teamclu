@@ -1,5 +1,6 @@
 //! Reading a Cloud API app row, and the shapes an agent is shown.
 
+use crate::OpError;
 use serde_json::{json, Value};
 
 /// The types an app may be created as or changed to. The legacy stored id is
@@ -19,10 +20,10 @@ pub fn row_str<'a>(row: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
-pub fn row_id(row: &Value) -> Result<String, String> {
+pub fn row_id(row: &Value) -> Result<String, OpError> {
     row_str(row, "id")
         .map(str::to_string)
-        .ok_or_else(|| "app row has no id".to_string())
+        .ok_or_else(|| OpError::from("app row has no id"))
 }
 
 /// The rows of a `{ items: [...] }` page.
