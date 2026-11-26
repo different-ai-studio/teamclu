@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeAppStorageOps } from "../src/lib/app-platform/aliyun/storage.js";
+import { contentMd5Middleware, makeAppStorageOps } from "../src/lib/app-platform/aliyun/storage.js";
 import { normalizeAppFolderPrefix } from "../src/lib/provisioning/app-files.js";
 
 /**
@@ -187,4 +187,45 @@ test("a presigned PUT carries no checksum parameters", async () => {
     { expiresIn: 900 },
   );
   assert.match(bareUrl, /x-amz-checksum-crc32/i, "the SDK default was expected to add one");
+});
+
+// --- batch delete carries Content-MD5 (OSS requires it) ------------------------
+
+test("the batch delete OSS needs carries Content-MD5 of its body", async () => {
+  const body = '<?xml version="1.0"?><Delete><Quiet>true</Quiet><Object><Key>a</Key></Object></Delete>';
+  let seen: any;
+  await contentMd5Middleware(async (args) => {
+    seen = args;
+  })({ request: { headers: {}, body } });
+  // md5 of the exact bytes sent, base64 — what OSS recomputes and compares.
+  const { createHash } = await import("node:crypto");
+  assert.equal(seen.request.headers["content-md5"], createHash("md5").update(body).digest("base64"));
+  // A body it cannot hash (a stream) is left alone rather than guessed at.
+  const stream = { pipe() {} };
+  await contentMd5Middleware(async (args) => {
+    seen = args;
+  })({ request: { headers: {}, body: stream } });
+  assert.equal(seen.request.headers["content-md5"], undefined);
+});
+
+test("removing a folder attaches the Content-MD5 step to every batch delete", async () => {
+  const added: string[] = [];
+  class DeleteObjects {
+    middlewareStack = { add: (_fn: unknown, opts: { name: string }) => added.push(opts.name) };
+    constructor(public input: any) {}
+  }
+  const sent: any[] = [];
+  const s3: any = {
+    async send(cmd: any) {
+      sent.push(cmd);
+      return cmd instanceof DeleteObjects ? {} : { Contents: [{ Key: "app-files/a1/x/1" }], IsTruncated: false };
+    },
+  };
+  const ops = makeAppStorageOps(profile, s3, {
+    getSignedUrl: async () => "",
+    commands: { ...commands, DeleteObjectsCommand: DeleteObjects },
+    env: {} as any,
+  });
+  assert.equal(await ops.removePrefix("apps", "app-files/a1/x/"), 1);
+  assert.deepEqual(added, ["ossContentMd5"]);
 });
