@@ -43,7 +43,7 @@ export interface DiscordConfig {
   retry?: RetryConfig
   /** Empty inherits the agent default workspace. */
   workspaceId?: string
-  /** `provider/model`. Empty inherits the gateway model, then pi's default. */
+  /** `provider/model`. Empty inherits the gateway model, then the session default. */
   model?: string
 }
 
@@ -210,7 +210,7 @@ export interface WeComBot {
    * back empty, where empty means "unchanged".
    */
   apiKey?: string
-  /** `provider/model`. Empty inherits the gateway model, then pi's default. */
+  /** `provider/model`. Empty inherits the gateway model, then the session default. */
   model?: string
 }
 

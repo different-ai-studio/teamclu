@@ -6,8 +6,9 @@ import {
   type DaemonWorkspace,
 } from '@/lib/daemon/daemon-workspaces'
 import { loadGatewayModel } from '@/lib/daemon/amuxd-channels'
-import { loadDeviceModelOptions } from '@/lib/agent/device-default-models'
-import { loadSelectableModels, type SelectableModel } from '@/lib/agent/selectable-models'
+import { loadSelectableModelCatalog, type SelectableModel } from '@/lib/agent/selectable-models'
+import { clientMruModels } from '@/stores/client-model-mru'
+import { sessionDefaultModel } from './channel-runtime'
 
 export interface ChannelRuntimeDefaults {
   ready: boolean
@@ -15,7 +16,7 @@ export interface ChannelRuntimeDefaults {
   models: SelectableModel[]
   /** Agent `defaultWorkspaceId` — what a channel uses when it has not chosen one. */
   inheritedWorkspaceId: string | null
-  /** `channels.model` — what a channel uses when it has not chosen a model. */
+  /** Gateway model, or the model a new chat session uses when that is unset. */
   inheritedModel: string | null
 }
 
@@ -52,23 +53,26 @@ export function useChannelRuntimeDefaults(): ChannelRuntimeDefaults {
       } catch {
         // Leave the lists empty; the fields still save a hand-entered id.
       }
+      let gatewayModel: string | null = null
       try {
-        next.inheritedModel = (await loadGatewayModel())?.trim() || null
+        gatewayModel = (await loadGatewayModel())?.trim() || null
       } catch {
-        next.inheritedModel = null
+        gatewayModel = null
       }
+      let defaultBackend = 'pi'
       try {
         // Same list as Maintain Wiki: device catalog, then team gateway models.
-        next.models = teamId
-          ? await loadSelectableModels(teamId)
-          : (await loadDeviceModelOptions(null)).options.map((option) => ({
-              id: option.id,
-              displayName: option.displayName,
-              providerName: option.providerName,
-            }))
+        const catalog = await loadSelectableModelCatalog(teamId)
+        next.models = catalog.models
+        defaultBackend = catalog.defaultBackend
       } catch {
         next.models = []
       }
+      // A channel with no model of its own used to fall through to Pi's
+      // internal default. Pin the model a new chat session would start on
+      // instead, unless the gateway model is already set.
+      next.inheritedModel =
+        gatewayModel || sessionDefaultModel(next.models, clientMruModels(defaultBackend, teamId))
       if (!cancelled) setState(next)
     })()
     return () => {

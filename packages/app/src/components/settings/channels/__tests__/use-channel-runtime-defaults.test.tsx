@@ -31,6 +31,7 @@ vi.mock('@/lib/backend/provider', () => ({
   }),
 }))
 
+import { useClientModelMruStore } from '@/stores/client-model-mru'
 import { useChannelRuntimeDefaults } from '../use-channel-runtime-defaults'
 
 describe('useChannelRuntimeDefaults', () => {
@@ -39,6 +40,7 @@ describe('useChannelRuntimeDefaults', () => {
     loadLlmConfig.mockReset()
     loadGatewayModel.mockReset()
     loadGatewayModel.mockResolvedValue('anthropic/claude-sonnet')
+    useClientModelMruStore.setState({ byBackendTeam: {} })
     loadDeviceModelOptions.mockResolvedValue({
       options: [
         {
@@ -67,5 +69,32 @@ describe('useChannelRuntimeDefaults', () => {
       { id: 'anthropic/claude-sonnet', displayName: 'Claude Sonnet', providerName: 'anthropic' },
       { id: 'team/glm-4.6', displayName: '标准', providerName: 'team' },
     ])
+    expect(result.current.inheritedModel).toBe('anthropic/claude-sonnet')
+  })
+
+  it('prefills the session default when the gateway model is unset', async () => {
+    loadGatewayModel.mockResolvedValue(null)
+    useClientModelMruStore.setState({
+      byBackendTeam: { 'pi::team-1': ['retired/old', 'team/glm-4.6'] },
+    })
+
+    const { result } = renderHook(() => useChannelRuntimeDefaults())
+
+    await waitFor(() => expect(result.current.ready).toBe(true))
+
+    expect(result.current.inheritedModel).toBe('team/glm-4.6')
+  })
+
+  it('uses the first advertised model when this client has no matching pick', async () => {
+    loadGatewayModel.mockResolvedValue('   ')
+    useClientModelMruStore.setState({
+      byBackendTeam: { 'pi::team-1': ['retired/old'] },
+    })
+
+    const { result } = renderHook(() => useChannelRuntimeDefaults())
+
+    await waitFor(() => expect(result.current.ready).toBe(true))
+
+    expect(result.current.inheritedModel).toBe('anthropic/claude-sonnet')
   })
 })
