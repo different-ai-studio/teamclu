@@ -227,6 +227,38 @@ describe('DiagnosticsSection symptom tabs', () => {
     })
   })
 
+  it('offers export once, in the export card, not on every failing finding', () => {
+    render(<DiagnosticsSection />)
+    expect(screen.queryByRole('button', { name: '导出诊断包' })).toBeNull()
+    expect(screen.getAllByRole('button', { name: '导出 zip 包' })).toHaveLength(1)
+  })
+
+  it('shows the next step on a problem banner even when it has no fix button', () => {
+    diagnosticsState.report = {
+      ...sampleReport,
+      findings: [
+        finding({
+          code: 'sync.team_link_broken',
+          symptom: 'auth_sync',
+          status: 'fail',
+          title: '团队环境同步',
+          message: '工作区未链接团队目录',
+          nextAction: '侧边栏 → Knowledge 查看团队目录状态',
+        }),
+      ],
+    }
+    render(<DiagnosticsSection />)
+    expect(screen.getByText('工作区未链接团队目录')).toBeTruthy()
+    expect(screen.getByText('侧边栏 → Knowledge 查看团队目录状态')).toBeTruthy()
+  })
+
+  it('keeps the live console folded away until asked for', () => {
+    render(<DiagnosticsSection />)
+    expect(screen.queryByTestId('live-debug-console')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /实时调试台/ }))
+    expect(screen.getByTestId('live-debug-console')).toBeTruthy()
+  })
+
   it('switches to the send tab and shows the mqtt hop on the timeline', () => {
     render(<DiagnosticsSection />)
     fireEvent.click(screen.getByRole('tab', { name: '消息回复' }))
@@ -260,7 +292,7 @@ describe('DiagnosticsSection symptom tabs', () => {
       expect(collectDiagnosticReport).toHaveBeenCalledWith({ sessionId: 'sess-9' })
     })
     expect(screen.queryByTestId('live-debug-console')).toBeNull()
-    expect(screen.getByText(/消息回复已限定到当前会话/)).toBeTruthy()
+    expect(screen.getByText(/消息回复只看当前会话/)).toBeTruthy()
     expect(screen.getByRole('tab', { name: '消息回复（此会话）' })).toBeTruthy()
     expect(screen.getByRole('tab', { name: '模型（全局）' })).toBeTruthy()
     expect(screen.queryByText(/other session boom/)).toBeNull()

@@ -2076,6 +2076,8 @@
       "sessionDescription": "消息回复只看当前会话；模型与实时通道是全局环境，不针对某一会话。",
       "privacyNote": "运行后会收集版本、连接状态与最近日志（已脱敏），数据不会自动上传。",
       "run": "运行诊断",
+      "rerun": "重新诊断",
+      "lastRun": "运行于 {{time}}",
       "running": "正在诊断…",
       "runComplete": "诊断完成",
       "symptomNoConclusion": "此症状暂无结论。先运行一次诊断。",
@@ -2086,11 +2088,10 @@
       "evidenceHeading": "证据",
       "runFailed": "诊断失败：{{message}}",
       "summary": "{{ok}} 通过 · {{warn}} 警告 · {{fail}} 失败",
-      "results": "检查结果",
       "upload": {
-        "action": "上传诊断 ZIP",
+        "action": "上传给支持团队",
         "uploading": "正在生成并上传…",
-        "description": "将与本机导出相同的 ZIP 上传到私有支持存储（最大 10 MiB，7 天内可用），本机导出不受影响。",
+        "unavailable": "当前服务器未开启诊断上传，请导出 zip 包后发给支持人员。",
         "confirmTitle": "向支持团队上传诊断信息？",
         "consent": "将上传与本机导出相同的诊断包：诊断结果、应用/系统与连接信息、运行时快照、浏览器控制台输出以及近期应用、daemon 和 ACP 日志。沿用现有导出脱敏规则，但日志仍可能包含个人信息、路径或内容；你可以先本机导出检查。诊断包私有保存 7 天，仅你本人和获授权的平台支持人员可申请短时下载链接，回执本身不授予下载权限。仅在同意分享这些信息后继续。",
         "confirm": "同意并上传",
@@ -2102,6 +2103,7 @@
         "failed": "上传失败：{{message}}。你可以重试或在本机导出 ZIP。"
       },
       "exportTitle": "导出与反馈",
+      "exportDescription": "自己解决不了时，把诊断包交给支持人员：上传后提供回执，或导出 zip 自行发送。",
       "copyReport": "复制诊断报告",
       "copyFailed": "复制失败",
       "exportZip": "导出 zip 包",
@@ -2113,7 +2115,6 @@
       "desktopOnlyDetail": "一键诊断需要在 Desktop 客户端中使用。请下载并安装 TeamClu Desktop 后重试。",
       "openFromError": "打开诊断",
       "openFromSidebar": "运行诊断",
-      "sessionFocus": "消息回复已限定到当前会话。模型、实时通道与下方检查是全局环境。",
       "tab": {
         "model": "模型",
         "send": "消息回复",

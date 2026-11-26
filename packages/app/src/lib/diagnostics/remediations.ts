@@ -7,18 +7,11 @@ export type RemediationId =
   | 'open_llm'
   | 'reselect_model'
   | 'retry_diagnose'
-  | 'export_report'
 
 export interface RemediationAction {
   id: RemediationId
   label: string
   tone: 'default' | 'danger'
-}
-
-const EXPORT: RemediationAction = {
-  id: 'export_report',
-  label: '导出诊断包',
-  tone: 'default',
 }
 
 const ACTION: Record<RemediationId, RemediationAction> = {
@@ -28,7 +21,6 @@ const ACTION: Record<RemediationId, RemediationAction> = {
   open_llm: { id: 'open_llm', label: '重新连接 Provider', tone: 'default' },
   reselect_model: { id: 'reselect_model', label: '重新选择模型', tone: 'default' },
   retry_diagnose: { id: 'retry_diagnose', label: '重新诊断', tone: 'default' },
-  export_report: EXPORT,
 }
 
 const PRIMARY: Partial<Record<DiagnosticCauseCode, RemediationId[]>> = {
@@ -60,9 +52,12 @@ const PRIMARY: Partial<Record<DiagnosticCauseCode, RemediationId[]>> = {
 export function remediationsForFinding(
   finding: Pick<DiagnosticFinding, 'code' | 'status'>,
 ): RemediationAction[] {
+  // Only actions that can fix this finding. Exporting the report is not one of
+  // them: it lives once, in the page's 导出与反馈 card, instead of being
+  // appended to every failing row — where a check with no real fix ended up
+  // offering nothing but "导出诊断包", repeated down the page.
   if (finding.status === 'ok') return []
-  const primary = (PRIMARY[finding.code] ?? []).map((id) => ACTION[id])
-  return [...primary, EXPORT]
+  return (PRIMARY[finding.code] ?? []).map((id) => ACTION[id])
 }
 
 export function causeCodesFromFindings(

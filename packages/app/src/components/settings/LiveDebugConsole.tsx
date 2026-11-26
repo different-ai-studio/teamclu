@@ -11,6 +11,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  ChevronDown,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { SettingCard } from './shared'
@@ -142,7 +143,12 @@ function DiskLogPanel({
   )
 }
 
-export const LiveDebugConsole = React.memo(function LiveDebugConsole() {
+export const LiveDebugConsole = React.memo(function LiveDebugConsole({
+  onCollapse,
+}: {
+  /** When given, the title row becomes a button that folds the console away. */
+  onCollapse?: () => void
+}) {
   const { t } = useTranslation()
   const [tab, setTab] = React.useState<LiveTab>('console')
   const [level, setLevel] = React.useState<ConsoleLevel | 'all'>('all')
@@ -260,17 +266,26 @@ export const LiveDebugConsole = React.memo(function LiveDebugConsole() {
   return (
     <SettingCard>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div>
-          <h4 className="text-[13px] font-semibold">
-            {t('settings.diagnostics.liveConsole.title', '实时调试台')}
-          </h4>
-          <p className="text-[12px] text-muted-foreground mt-0.5">
-            {t(
-              'settings.diagnostics.liveConsole.description',
-              '查看 Console 输出、运行状态与磁盘日志，无需 Web Inspector。',
-            )}
-          </p>
-        </div>
+        <button
+          type="button"
+          onClick={onCollapse}
+          disabled={!onCollapse}
+          aria-expanded={onCollapse ? true : undefined}
+          className="flex min-w-0 items-start gap-2 text-left disabled:cursor-default"
+        >
+          {onCollapse && <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-faint" />}
+          <span className="min-w-0">
+            <span className="block text-[13px] font-semibold">
+              {t('settings.diagnostics.liveConsole.title', '实时调试台')}
+            </span>
+            <span className="mt-0.5 block text-[12px] text-muted-foreground">
+              {t(
+                'settings.diagnostics.liveConsole.description',
+                '查看 Console 输出、运行状态与磁盘日志，无需 Web Inspector。',
+              )}
+            </span>
+          </span>
+        </button>
         <div className="flex flex-wrap gap-1.5">
           <TabButton active={tab === 'console'} onClick={() => setTab('console')}>
             {t('settings.diagnostics.liveConsole.tabConsole', 'Console')}
