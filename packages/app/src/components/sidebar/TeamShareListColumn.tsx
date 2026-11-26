@@ -463,7 +463,8 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     setSearchOpen(false)
     setExpandedSkills(new Set())
     setRootCreate(null)
-    void loadSection(section, { force: true, withTools: section === 'mcp' })
+    // Joins the nav row's load when this mount came from clicking it.
+    void loadSection(section, { force: true, withTools: section === 'mcp', coalesce: true })
   }, [section, loadSection])
 
   // `knowledge.items` is a new array after every reload, including the ones a

@@ -152,7 +152,9 @@ export function TeamShareNavSection({ sections = ALL_SECTIONS }: { sections?: Te
   const handleSelect = React.useCallback(
     (section: TeamShareSection) => {
       setFilter({ kind: 'teamShare', section })
-      void loadSection(section, { force: true, withTools: section === 'mcp' })
+      // `coalesce`: the list column's `[section]` effect starts this same load
+      // in the same tick when it is mounted; one of the two is enough.
+      void loadSection(section, { force: true, withTools: section === 'mcp', coalesce: true })
       // Skills with nothing selected used to leave the main column blank. Default
       // to the marketplace browse view — same entry as the store button, so the
       // list header stays consistent with what's on the right.
