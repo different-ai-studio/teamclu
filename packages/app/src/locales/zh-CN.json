@@ -591,6 +591,13 @@
     "signInWithGoogle": "使用 Google 登录",
     "signInWithWechat": "使用微信登录",
     "signInWithWecom": "使用企业微信登录",
+    "ssoNamePrompt": {
+      "title": "团队里该怎么称呼你？",
+      "description": "企业微信不会把你的姓名提供给 TeamClu。请填写同事熟悉的名字，之后可以在个人资料里修改。",
+      "placeholder": "你的名字",
+      "later": "稍后",
+      "failed": "名字没保存成功，请重试。"
+    },
     "oauthWaiting": "请在浏览器中完成登录后返回。",
     "oauthCancel": "取消并换一种方式",
     "signInWithWebSso": "快捷登录",

@@ -591,6 +591,13 @@
     "signInWithGoogle": "Sign in with Google",
     "signInWithWechat": "Sign in with WeChat",
     "signInWithWecom": "Sign in with WeCom",
+    "ssoNamePrompt": {
+      "title": "What should your team call you?",
+      "description": "WeCom doesn't share your name with TeamClu. Enter the name your teammates know you by; you can change it later in your profile.",
+      "placeholder": "Your name",
+      "later": "Later",
+      "failed": "Could not save your name. Try again."
+    },
     "oauthWaiting": "Finish signing in in your browser, then come back.",
     "oauthCancel": "Cancel and try another way",
     "signInWithWebSso": "Quick sign-in",
