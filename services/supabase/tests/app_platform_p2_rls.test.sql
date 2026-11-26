@@ -46,7 +46,7 @@ begin
 end;
 $$;
 
-select plan(22);
+select plan(23);
 
 -- ── fixtures (session role) ───────────────────────────────────────────────
 -- Org A: teams A1, A2. Org B: team B1.
@@ -114,6 +114,14 @@ select is((select count(*)::int from amux.apps where id in ('00000000-0000-0000-
           2, 'the creator sees both apps');
 with u as (update amux.apps set name = 'Renamed' where id = '00000000-0000-0000-0064-000000000301' returning 1)
 select is((select count(*)::int from u), 1, 'the creator updates the app row with their own token');
+-- PostgREST inserts with RETURNING, so the new row must pass the SELECT
+-- policy too — inside the INSERT, where the row is not yet in any snapshot.
+select lives_ok($$insert into amux.apps (id, team_id, created_by_actor_id, name, slug, type, org_id)
+                  values ('00000000-0000-0000-0064-000000000303', '00000000-0000-0000-0064-0000000000a1',
+                          '00000000-0000-0000-0064-000000000201', 'P2.3 new app', 'p23-new-app', 'static_web',
+                          '00000000-0000-0000-0064-0000000000fa')
+                  returning id$$,
+                'the creator inserts an app and reads it back in the same statement');
 select lives_ok($$insert into amux.app_env_vars (app_id, key, value) values ('00000000-0000-0000-0064-000000000301', 'P23_NEW', 'v')$$,
                 'the creator manages env vars');
 select is((select count(*)::int from amux.app_member_access where app_id = '00000000-0000-0000-0064-000000000301'),

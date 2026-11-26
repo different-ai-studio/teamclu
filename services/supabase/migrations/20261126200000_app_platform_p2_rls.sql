@@ -6,9 +6,11 @@
 -- Every policy below used to ask "which actor is the caller in this app's
 -- team" (amux.current_actor_id_for_team). They now ask the platform:
 --
---   see an app            amux.caller_apps(): a level on it (the rule of
---                         amux.caller_app_access, 20261126100000), or an org
---                         grant on it while a member of that org
+--   see an app            the creator (on the row's own columns, see
+--                         caller_org_ids), or amux.caller_apps(): a level on
+--                         it (the rule of amux.caller_app_access,
+--                         20261126100000), or an org grant on it while a
+--                         member of that org
 --   update an app row     the creator (by account), inside the app's org
 --   read its env / cron   any level on it
 --   manage env / cron /   the creator, as before
@@ -107,6 +109,33 @@ comment on function amux.caller_apps() is
 revoke all on function amux.caller_apps() from public, anon;
 grant execute on function amux.caller_apps() to authenticated, service_role;
 
+-- amux.caller_org_ids(): the orgs the caller is a member of. The apps
+-- policies test "the creator" on the row's own columns —
+-- `created_by_user_id = auth.uid() and org_id in (select caller_org_ids())`,
+-- which is caller_app_access's is_creator — rather than through caller_apps(),
+-- because PostgREST inserts with RETURNING: the new row must pass the SELECT
+-- policy inside the INSERT, where no snapshot (and so no caller_apps() call)
+-- sees it yet. created_by_user_id is already on it: P2.1's BEFORE trigger.
+create or replace function amux.caller_org_ids()
+returns setof uuid
+language sql
+stable
+security definer
+set search_path = amux, public, auth
+as $$
+  select distinct t.oid
+    from amux.actors x
+    join amux.teams t on t.id = x.team_id
+   where x.user_id = auth.uid()
+     and t.oid is not null
+$$;
+
+comment on function amux.caller_org_ids() is
+  'The orgs the caller is a member of (an actor in any of their teams). Used by the P2.3 apps policies.';
+
+revoke all on function amux.caller_org_ids() from public, anon;
+grant execute on function amux.caller_org_ids() to authenticated, service_role;
+
 -- caller_app_access looks delegations up by delegate.
 create index if not exists app_delegations_delegate_idx on amux.app_delegations (delegate_user_id);
 
@@ -115,13 +144,16 @@ create index if not exists app_delegations_delegate_idx on amux.app_delegations 
 drop policy if exists apps_select_if_visible on amux.apps;
 create policy apps_select_if_visible on amux.apps
   for select to authenticated
-  using (id in (select app_id from amux.caller_apps()));
+  using (
+    (created_by_user_id = (select auth.uid()) and org_id in (select amux.caller_org_ids()))
+    or id in (select app_id from amux.caller_apps())
+  );
 
 drop policy if exists apps_update_if_creator on amux.apps;
 create policy apps_update_if_creator on amux.apps
   for update to authenticated
-  using (id in (select app_id from amux.caller_apps() where is_creator))
-  with check (id in (select app_id from amux.caller_apps() where is_creator));
+  using (created_by_user_id = (select auth.uid()) and org_id in (select amux.caller_org_ids()))
+  with check (created_by_user_id = (select auth.uid()) and org_id in (select amux.caller_org_ids()));
 
 -- ── env vars, cron ──────────────────────────────────────────────────────────
 

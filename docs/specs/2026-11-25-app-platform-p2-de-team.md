@@ -208,7 +208,7 @@ P2.2 决定（2026-11-25，全部按推荐）：
   只有「创建者是后来断开账号的 agent」这种 app 会受影响，写入变成 0 行。
 
 验证（P2.3）：
-- 本机 pgTAP 83 个文件 0 失败，新增 `app_platform_p2_rls.test.sql`（20 条，11/26 起 22 条）。原有的 `agent_inherits_owner_app_access`、
+- 本机 pgTAP 83 个文件 0 失败，新增 `app_platform_p2_rls.test.sql`（20 条，11/26 起 23 条）。原有的 `agent_inherits_owner_app_access`、
   `app_access_actor_grants` 两个 RLS 测试在新策略下照样通过。FC 全量测试 0 失败。
 - self-host 回滚事务里依次执行 P2.1–P2.3，对每个 (app, 同 org 里有账号的用户) 分别按旧策略表达式和新函数计算「能看见 /
   能改 app 行 / 能读 env」：**1317 对，三项全部 0 差异**。因 org 放宽而新看见的 0 对：self-host 多团队的 org 里没有团队可见的
@@ -217,6 +217,13 @@ P2.2 决定（2026-11-25，全部按推荐）：
   - pgTAP 在 P2.2、P2.3 两套数据上逐个 (用户, app) 断言 `caller_apps()` 与 `caller_app_access` 加 org 授权的结果一致；故意改坏委托级别时这两条断言会失败。
   - self-host 回滚事务：493 个有账号的用户 × 66 个 app = 32538 对，0 差异；每人看见的 app 数与逐行版一致。
   - 每人列一次全表：新策略平均 1.9 ms、最慢 8.3 ms；逐行版平均 6.0 ms、最慢 101 ms（逐行版的数字叠在新策略之上测得，略偏高）。
+- **11/26 self-host E2E 抓到的 bug：建 app 被 RLS 拒绝**（`new row violates row-level security policy for table "apps"`）。
+  - 原因：PostgREST 插入时带 RETURNING，新行要在 INSERT 内部通过 SELECT 策略；`caller_apps()`（以及更早的逐行 `caller_sees_app`）去表里查 app，这时任何快照都还看不到新行。pgTAP 一直没测「以用户身份插入并读回」，FC 单测用的是假库。
+  - 修复：apps 的 SELECT / UPDATE 用行上的列判断创建者：`created_by_user_id = auth.uid() and org_id in (select amux.caller_org_ids())`。这和 `caller_app_access` 的 `is_creator` 等价；`created_by_user_id` 由 P2.1 的 BEFORE 触发器写在新行上。其他情况仍走 `caller_apps()`。
+  - pgTAP 加了「创建者插入 app 并在同一语句读回」，修复前红、修复后绿。
+- **self-host 已正式执行 P2.1–P2.3（11/26）**，FC 换成本分支镜像（`teamclu-fc:p2-f33866a9`，备份 `teamclu-fc:pre-p2`）：
+  - 自带 E2E 11/11；app 平台 E2E 35/35（agent 建静态和数据 app、部署、文件、STS、日志、下线、删除）；
+  - 容器 E2E 20/20（成员经 `POST /v1/apps` 建 app 并授权 agent、git 凭证、HEAD 校验、删除归档仓库）。第一轮因 box 连阿里云 FC 接口 ConnectTimeout 失败 5 条，重跑全过。
 - belayo 预检（11/26，只读）：账本只差 P2.1–P2.3；同 org slug 撞名 0；创建者、81 条授权、env / cron 操作人都能解析到账号，投影不丢行、不撞外键。
 
 **P2.4 拆分（2026-11-25 拍板：真正抽离）：** apps 业务原来是 `supabase-repo.ts` 里约 2750 行、68 个方法，和 TeamClu 代码混在一起。
