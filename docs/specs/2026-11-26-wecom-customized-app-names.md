@@ -1,6 +1,6 @@
 # WeCom member names via a 代开发 app
 
-Status: proposed (2026-11-26). Follows `2026-11-26-enterprise-im-sso.md`.
+Status: implemented on `task/gei-teamclu-zeng-jia` (2026-11-27), not yet tried against real WeCom. Follows `2026-11-26-enterprise-im-sso.md`.
 
 ## Problem
 
@@ -89,63 +89,77 @@ is set. Add the keys to the compose `environment:` map, `.env.example` and
 `deploy/belayo/cloud-api.env.keys`. Unset template = the feature is off and
 the routes answer 501.
 
-### Data (new migration)
+### Data (migration `20261127090000_sso_directory_apps.sql`)
 
-`amux.sso_customized_apps`, service_role only:
+`amux.sso_directory_apps`, service_role only:
 
 | Column | Notes |
 |---|---|
 | provider, tenant_id | PK; FK to `sso_org_bindings` (cascade on unbind) |
 | permanent_code | the company's 代开发 secret |
-| status | `pending_review` / `live` |
 | names_granted | last result of `agent/get_permissions` |
-| updated_at | |
+| last_checked_at, last_error | why names are not readable yet (not granted, app still 开发中, …) |
+| authorized_by | the org admin whose QR link was scanned |
 
-`sso_flows.kind` gains `customized`. Its `state` is generated as 32
-alphanumeric characters to meet WeCom's rule.
+`sso_flows.kind` gains `directory`. Its `state` is 32 hex characters, to
+meet WeCom's rule.
+
+RPCs, service_role only:
+
+- `sso_is_placeholder_name(text)`: the one definition of the fallback name.
+- `sso_identities_needing_name(provider, tenant_id)`: the company's identities
+  still on the placeholder, in their profile or in any team.
+- `sso_apply_directory_name(user_id, name)`: replace the placeholder in
+  `public.users.nickname` and the member `amux.actors.display_name` rows,
+  leaving chosen names alone.
+
+pgTAP: `064_sso_directory_names.sql`.
 
 ### Backend (FC, `services/fc/src/lib/sso/`)
 
-- **Install link.** `POST /v1/teams/:teamId/sso/wecom/directory-install` (org
-  owner/admin). It requires the org to have a bound company, stores a
-  `customized` flow, calls `get_customized_auth_url`, and returns
-  `{ qrcodeUrl, expiresAt }`.
-- **Status.** `GET /v1/teams/:teamId/sso/wecom` adds
-  `directory: { status, namesGranted } | null`.
-- **Callbacks** (handled in the suite callback):
-  - `create_auth` with a `State` that names a `customized` flow: call
-    `get_permanent_code` and check that the corpid is the flow org's bound
-    company; refuse and log otherwise. Store the row as `pending_review`.
-  - `change_auth`: refresh `names_granted`, and mark `live` once
-    `agent/get_permissions` succeeds. If names were just granted, run the
-    backfill.
-  - `reset_permanent_code`: exchange the new `AuthCode` and replace the secret.
-  - `cancel_auth` for a template SuiteId: delete the row only, and keep the
-    sign-in binding.
+- **QR link.** `POST /v1/teams/:teamId/sso/wecom/directory` (org
+  owner/admin). It requires the org to have a bound company, calls
+  `get_customized_auth_url`, stores a `directory` flow (as long as the link
+  lives, at most 10 days), and returns `{ qrcodeUrl, expiresAt }`.
+- **Status.** `GET /v1/teams/:teamId/sso/wecom` adds `directoryConfigured`,
+  plus `directory: { namesGranted, lastCheckedAt, lastError, createdAt } | null`.
+- **Manual re-check.** `POST /v1/teams/:teamId/sso/wecom/directory/sync`
+  re-checks the grant and fills placeholders. It returns `{ directory, updated }`,
+  or 409 when the company has not authorized.
+- **Callbacks.** Messages whose `SuiteId` is the template are answered
+  `success` at once; the WeCom calls run in the background, because WeCom
+  allows 1000 ms.
+  - `create_auth`: consume the `directory` flow named by `State` (or the
+    state echoed by `get_permanent_code`), exchange the code, and store the
+    secret only if the corp is the flow org's bound company. Otherwise log and
+    ignore. Then check the grant, and fill names if it is there.
+  - `change_auth`: re-check, and fill names if granted.
+  - `reset_permanent_code`: exchange the new code, replace the secret, re-check.
+  - `cancel_auth`: delete the directory app only. The company keeps signing in.
+  - The template's `suite_ticket` is stored like any other suite's.
 - **Company token.** `gettoken(corpid, permanent_code)`, cached per company
-  until 5 minutes before expiry.
-- **Name fill.** Only a placeholder name is replaced, never one the person
-  chose.
-  - **On sign-in:** if the identity's nickname is still the placeholder and
-    the company has a `live` app with `names_granted`, call `user/get` and set
-    the name via a SECURITY DEFINER RPC that updates only while the placeholder
-    is in place.
-  - **Backfill:** when names are first granted, call `user/simplelist` and fill
-    every identity of that company still on the placeholder.
-  - **Manual:** a 「从企业微信同步姓名」 action triggers the same backfill.
-  - Failures (no grant, member outside 可见范围, no licence) are logged and
-    never block sign-in.
-- **Tests.** A fake WeCom covering `get_customized_auth_url`,
-  `get_permanent_code`, `gettoken`, `user/get` / `simplelist` and
-  `get_permissions`. Cases: the state → org mapping, refusing another org's
-  company, replacing a placeholder but not a chosen name, and rotation and
-  cancel. Plus pgTAP for the table and RPC, and OpenAPI paths.
+  until 5 minutes before expiry; dropped on rotation or cancel.
+- **Name fill.** `user/get?userid=<subject>`. A `name` equal to the userid
+  means "not revealed" and is skipped. It runs:
+  - on each sign-in, in the background, for that person only, while their
+    name is a placeholder;
+  - after a grant (`create_auth` / `change_auth`), for the whole company;
+  - from the manual re-check.
+
+  A lookup failure is logged and never blocks sign-in.
+- **Env.** `WECOM_CUSTOMIZED_SUITE_ID` / `_SECRET` and `WECOM_PROVIDER_SECRET`,
+  plus `WECOM_PROVIDER_CORPID`. Names are on only when all four are set; a
+  partial setup logs an error and leaves them off.
+- **Tests.** `sso-wecom.test.ts`, against a fake WeCom.
 
 ### Desktop
 
-- The 「连接企业微信」 card gets an optional second step, 「同步成员姓名」.
-  It shows the QR from `directory-install` and the status: 未授权 /
-  待上线审核 / 已生效 / 未授予姓名权限.
+- Once the company is connected, the 「企业微信登录」 card shows a 「成员姓名」
+  step (only where names are configured). It has three states:
+  - not authorized: 「获取成员姓名」 shows the QR;
+  - authorized but not readable: explains the review and the grant, shows
+    `lastError`, and offers 「重新检查」;
+  - active: offers 「立即同步」.
 - The first-sign-in name prompt is unchanged: it keys on the placeholder name,
   so it stops appearing once a real name lands.
 
@@ -159,7 +173,7 @@ Steps 2 and 3 are the friction; ship a one-page customer guide with this.
 
 ## Rollout
 
-1. Separate PR after #2023 merges.
+1. Ships with #2023 (built on the same branch).
 2. Verify on self-host with the 引力拼图 test company: install, review, grant,
    sign-in fill, backfill.
 3. Then the first real customer.

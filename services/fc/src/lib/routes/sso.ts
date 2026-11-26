@@ -125,6 +125,25 @@ export function registerSso(router) {
     return { body: out };
   });
 
+  // Member names through the 代开发 template (WeCom only).
+  router.post("/v1/teams/:teamId/sso/wecom/directory", { auth: "none", noStore: true }, async (ctx) => {
+    const out = await sso(ctx).directoryAuthUrl({
+      provider: "wecom",
+      accessToken: extractBearerToken(ctx.headers),
+      teamId: decodeURIComponent(ctx.params.teamId),
+    });
+    return { body: out };
+  });
+
+  router.post("/v1/teams/:teamId/sso/wecom/directory/sync", { auth: "none", noStore: true }, async (ctx) => {
+    const out = await sso(ctx).syncDirectory({
+      provider: "wecom",
+      accessToken: extractBearerToken(ctx.headers),
+      teamId: decodeURIComponent(ctx.params.teamId),
+    });
+    return { body: out };
+  });
+
   router.delete("/v1/teams/:teamId/sso/:provider", { auth: "none" }, async (ctx) => {
     const out = await sso(ctx).unbind({
       provider: decodeURIComponent(ctx.params.provider),

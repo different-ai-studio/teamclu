@@ -8115,6 +8115,11 @@ paths:
                       tenantId: { type: string }
                       tenantName: { type: [string, "null"] }
                       createdAt: { type: string, format: date-time }
+                  directoryConfigured:
+                    type: boolean
+                    description: Whether member names (WeCom 代开发 template) are configured on this deployment.
+                  directory:
+                    $ref: "#/components/schemas/OrgSsoDirectory"
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
     delete:
@@ -8160,6 +8165,62 @@ paths:
                 required: [url]
                 properties:
                   url: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/sso/wecom/directory:
+    post:
+      operationId: startTeamOrgSsoDirectoryAuth
+      summary: QR link for a WeCom admin to authorize member names
+      description: |
+        Org owner/admin only; the org must already be bound to its company.
+        Returns the link of WeCom's 代开发 authorization QR code (render it as a
+        QR code). A WeCom admin of the bound company scans it; WeCom then calls
+        the suite callback with `create_auth`, and once the company grants
+        「姓名」, placeholder names of its members are replaced with their
+        directory names. Names someone chose are kept.
+        docs/specs/2026-11-26-wecom-customized-app-names.md
+      tags: [Auth]
+      parameters:
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Authorization link
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [qrcodeUrl, expiresAt]
+                properties:
+                  qrcodeUrl: { type: string }
+                  expiresAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/sso/wecom/directory/sync:
+    post:
+      operationId: syncTeamOrgSsoDirectory
+      summary: Re-check the names grant and fill placeholder names
+      description: Org owner/admin only. 409 when the bound company has not authorized member names.
+      tags: [Auth]
+      parameters:
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [directory, updated]
+                properties:
+                  directory:
+                    $ref: "#/components/schemas/OrgSsoDirectory"
+                  updated:
+                    type: integer
+                    description: Accounts whose placeholder name was replaced.
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
@@ -10675,6 +10736,16 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    OrgSsoDirectory:
+      type: [object, "null"]
+      description: The bound company's authorization of the WeCom 代开发 app that reads member names; null when not authorized.
+      properties:
+        namesGranted:
+          type: boolean
+          description: Whether WeCom currently lets TeamClu read member names (「姓名」 granted and the app live).
+        lastCheckedAt: { type: [string, "null"], format: date-time }
+        lastError: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
     DiagnosticReceipt:
       type: object
       required: [receiptId, expiresAt]

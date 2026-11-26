@@ -16,6 +16,7 @@ import {
   sha256Base64Url,
   SsoTenantNotBoundError,
   type SsoBinding,
+  type SsoDirectoryApp,
   type SsoFlow,
   type SsoStore,
   type WecomSsoConfig,
@@ -88,6 +89,9 @@ function memoryStore(opts: { managerOrg?: string | null } = {}) {
   const identities = new Map<string, string>();
   const tickets = new Map<string, string>();
   const minted: string[] = [];
+  const directoryApps = new Map<string, SsoDirectoryApp & { authorizedBy: string | null }>();
+  // Display name per user id; absent = still the placeholder.
+  const names = new Map<string, string>();
   const store: SsoStore = {
     async saveSuiteTicket(p, s, t) { tickets.set(`${p}:${s}`, t); },
     async loadSuiteTicket(p, s) { return tickets.get(`${p}:${s}`) ?? null; },
@@ -111,6 +115,12 @@ function memoryStore(opts: { managerOrg?: string | null } = {}) {
       f.consumedAt = new Date().toISOString();
       return f;
     },
+    async consumeDirectoryFlow(s) {
+      const f = flows.get(s);
+      if (!f || f.kind !== "directory" || f.consumedAt) return null;
+      f.consumedAt = new Date().toISOString();
+      return f;
+    },
     async sweepExpiredFlows() {},
     async ensureIdentity({ provider, tenantId, subject }) {
       const b = bindings.get(`${provider}:${tenantId}`);
@@ -128,20 +138,102 @@ function memoryStore(opts: { managerOrg?: string | null } = {}) {
     async saveBinding(b) {
       bindings.set(`${b.provider}:${b.tenantId}`, { ...b, createdAt: "2026-11-26T00:00:00Z" });
     },
-    async deleteBinding(p, t) { bindings.delete(`${p}:${t}`); },
+    async deleteBinding(p, t) {
+      bindings.delete(`${p}:${t}`);
+      directoryApps.delete(`${p}:${t}`); // FK cascade
+    },
+    async getDirectoryApp(p, t) { return directoryApps.get(`${p}:${t}`) ?? null; },
+    async saveDirectoryApp({ provider, tenantId, permanentCode, authorizedBy }) {
+      directoryApps.set(`${provider}:${tenantId}`, {
+        provider, tenantId, permanentCode, authorizedBy,
+        namesGranted: false, lastCheckedAt: null, lastError: null, createdAt: "2026-11-27T00:00:00Z",
+      });
+    },
+    async rotateDirectoryAppSecret(p, t, code) {
+      const a = directoryApps.get(`${p}:${t}`);
+      if (!a) return false;
+      a.permanentCode = code;
+      return true;
+    },
+    async recordDirectoryCheck(p, t, { namesGranted, lastError }) {
+      const a = directoryApps.get(`${p}:${t}`);
+      if (a) Object.assign(a, { namesGranted, lastError, lastCheckedAt: "2026-11-27T01:00:00Z" });
+    },
+    async deleteDirectoryApp(p, t) { directoryApps.delete(`${p}:${t}`); },
+    async identitiesNeedingName(p, t) {
+      const out: { subject: string; userId: string }[] = [];
+      for (const [k, userId] of identities) {
+        const [kp, kt, subject] = k.split(":");
+        if (kp === p && kt === t && !names.has(userId)) out.push({ subject, userId });
+      }
+      return out;
+    },
+    async applyDirectoryName(userId, name) {
+      if (names.has(userId)) return false;
+      names.set(userId, name);
+      return true;
+    },
     async resolveOrgManager(token, _teamId) {
       if (token !== "admin-token" || opts.managerOrg === null) throw new ApiError(403, "forbidden", "no");
       return { userId: "admin-user", orgId: opts.managerOrg ?? "org-1" };
     },
   };
-  return { store, flows, bindings, identities, tickets, minted };
+  return { store, flows, bindings, identities, tickets, minted, directoryApps, names };
 }
+
+/** What the fake WeCom's directory (代开发) side answers; tests mutate it. */
+const directoryWorld = {
+  permissions: ["contact:sensitive:user_name"] as string[],
+  permissionsError: null as null | number,
+  directoryNames: { "open-1": "张三", "open-2": "李四" } as Record<string, string>,
+  authUrlStates: [] as string[],
+  permanentCodes: { AUTH: "DIRSECRET", RESET: "DIRSECRET2", "AUTH-OTHER": "OTHERSECRET" } as Record<string, string>,
+  echoState: null as string | null,
+};
 
 function fakeWecomFetch(calls: string[] = []) {
   return async (url: any, init?: any) => {
     const u = new URL(String(url));
     calls.push(u.pathname);
     const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200 });
+    if (u.pathname.endsWith("/service/get_provider_token")) {
+      const body = JSON.parse(init.body);
+      assert.deepEqual(body, { corpid: "wwprovider", provider_secret: "provsecret" });
+      return json({ errcode: 0, provider_access_token: "PAT", expires_in: 7200 });
+    }
+    if (u.pathname.endsWith("/service/get_customized_auth_url")) {
+      assert.equal(u.searchParams.get("provider_access_token"), "PAT");
+      const body = JSON.parse(init.body);
+      assert.deepEqual(body.templateid_list, ["dktemplate"]);
+      assert.match(body.state, /^[A-Za-z0-9]{1,32}$/);
+      directoryWorld.authUrlStates.push(body.state);
+      return json({ errcode: 0, qrcode_url: "https://open.work.weixin.qq.com/qr/abc", expires_in: 864000 });
+    }
+    if (u.pathname.endsWith("/service/v2/get_permanent_code")) {
+      const body = JSON.parse(init.body);
+      const code = directoryWorld.permanentCodes[body.auth_code];
+      if (!code) return json({ errcode: 40078, errmsg: "invalid auth code" });
+      return json({
+        errcode: 0,
+        permanent_code: code,
+        auth_corp_info: { corpid: body.auth_code === "AUTH-OTHER" ? "wwOther" : "wwCorp", corp_name: "示例公司" },
+        ...(directoryWorld.echoState ? { state: directoryWorld.echoState } : {}),
+      });
+    }
+    if (u.pathname.endsWith("/cgi-bin/gettoken")) {
+      const secret = u.searchParams.get("corpsecret");
+      if (!secret?.startsWith("DIRSECRET")) return json({ errcode: 40001, errmsg: "invalid credential" });
+      return json({ errcode: 0, access_token: `CAT-${secret}`, expires_in: 7200 });
+    }
+    if (u.pathname.endsWith("/agent/get_permissions")) {
+      if (directoryWorld.permissionsError) return json({ errcode: directoryWorld.permissionsError, errmsg: "app not online" });
+      return json({ errcode: 0, app_permissions: directoryWorld.permissions });
+    }
+    if (u.pathname.endsWith("/cgi-bin/user/get")) {
+      const userid = u.searchParams.get("userid")!;
+      const granted = directoryWorld.permissions.includes("contact:sensitive:user_name");
+      return json({ errcode: 0, userid, name: granted ? directoryWorld.directoryNames[userid] ?? userid : userid });
+    }
     if (u.pathname.endsWith("/service/get_suite_token")) {
       const body = JSON.parse(init.body);
       assert.equal(body.suite_ticket, "TICKET");
@@ -163,10 +255,12 @@ function fakeWecomFetch(calls: string[] = []) {
   };
 }
 
-function service(mem = memoryStore(), calls: string[] = [], extra: Partial<WecomSsoConfig> = {}) {
+function service(mem = memoryStore(), calls: string[] = [], extra: Partial<WecomSsoConfig> = {}, pending: Promise<unknown>[] = []) {
   mem.tickets.set("wecom:wwsuite", "TICKET");
+  mem.tickets.set("wecom:dktemplate", "TICKET");
   let n = 0;
   const svc = createSsoService({
+    background: (_label, task) => { pending.push(task()); },
     store: mem.store,
     wecom: {
       config: { suite: SUITE, callback: CB, redirectBaseUrl: "https://api.example.test", installTestMode: true, ...extra },
@@ -175,7 +269,7 @@ function service(mem = memoryStore(), calls: string[] = [], extra: Partial<Wecom
     refreshSession: async (rt) => ({ access_token: `at-for-${rt}`, refresh_token: "rt2", user: { id: "u" } }),
     randomToken: () => `tok${++n}`.padEnd(12, "x"),
   });
-  return { svc, mem, calls };
+  return { svc, mem, calls, pending };
 }
 
 const VERIFIER = "v".repeat(50);
@@ -428,7 +522,7 @@ test("routes: binding status needs a bearer; unconfigured deployment is 501", as
     headers: { authorization: "Bearer admin-token" }, body: null,
   }, routeDeps(svc));
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(JSON.parse(res.body), { configured: true, binding: null });
+  assert.deepEqual(JSON.parse(res.body), { configured: true, binding: null, directoryConfigured: false, directory: null });
 
   const missing = await handleBusinessApiRequest({ httpMethod: "GET", path: "/v1/teams/t1/sso/wecom", headers: {}, body: null }, routeDeps(svc));
   assert.equal(missing.statusCode, 401);
@@ -483,4 +577,211 @@ test("WeCom domain-verify file: only allowlisted codes are served", async () => 
     if (prev === undefined) delete process.env.WECOM_DOMAIN_VERIFY_CODES;
     else process.env.WECOM_DOMAIN_VERIFY_CODES = prev;
   }
+});
+
+// ── member names through the 代开发 template ──────────────────────────────
+
+const DIRECTORY: Partial<WecomSsoConfig> = {
+  providerCorpId: "wwprovider",
+  directory: { template: { suiteId: "dktemplate", suiteSecret: "dksecret" }, providerSecret: "provsecret" },
+};
+
+function resetDirectoryWorld() {
+  directoryWorld.permissions = ["contact:sensitive:user_name"];
+  directoryWorld.permissionsError = null;
+  directoryWorld.authUrlStates = [];
+  directoryWorld.echoState = null;
+}
+
+function boundStore(orgId = "org-1") {
+  const mem = memoryStore();
+  mem.bindings.set("wecom:wwCorp", { provider: "wecom", tenantId: "wwCorp", orgId, tenantName: "示例公司", createdAt: "", permanentCode: null });
+  return mem;
+}
+
+function templateEvent(xml: string) {
+  return signedCallback(`<xml><SuiteId><![CDATA[dktemplate]]></SuiteId>${xml}</xml>`, "dktemplate");
+}
+
+async function authorizeDirectory(svc: ReturnType<typeof service>["svc"], pending: Promise<unknown>[], authCode = "AUTH") {
+  const { qrcodeUrl } = await svc.directoryAuthUrl({ provider: "wecom", accessToken: "admin-token", teamId: "t1" });
+  assert.equal(qrcodeUrl, "https://open.work.weixin.qq.com/qr/abc");
+  const state = directoryWorld.authUrlStates.at(-1)!;
+  const ev = templateEvent(`<InfoType>create_auth</InfoType><AuthCode>${authCode}</AuthCode><State>${state}</State>`);
+  const res = await svc.handleSuiteCallback({ method: "POST", query: ev.query, body: ev.body });
+  assert.deepEqual(res, { status: 200, text: "success" }, "answered before the WeCom calls run");
+  await Promise.all(pending.splice(0));
+  return state;
+}
+
+test("readWecomSsoConfig: member names need the template, its secret, the provider secret and corpid", () => {
+  const base = { WECOM_SUITE_ID: "s", WECOM_SUITE_SECRET: "x", WECOM_CALLBACK_TOKEN: "t", WECOM_CALLBACK_AES_KEY: AES_KEY };
+  assert.equal(readWecomSsoConfig(base)?.directory, undefined);
+  assert.equal(readWecomSsoConfig({ ...base, WECOM_CUSTOMIZED_SUITE_ID: "dk", WECOM_CUSTOMIZED_SUITE_SECRET: "y", WECOM_PROVIDER_SECRET: "p" })?.directory, undefined,
+    "no provider corpid → off");
+  const cfg = readWecomSsoConfig({
+    ...base, WECOM_CUSTOMIZED_SUITE_ID: "dk", WECOM_CUSTOMIZED_SUITE_SECRET: "y", WECOM_PROVIDER_SECRET: "p", WECOM_PROVIDER_CORPID: "wwp",
+  });
+  assert.deepEqual(cfg?.directory, { template: { suiteId: "dk", suiteSecret: "y" }, providerSecret: "p" });
+});
+
+test("directory: the QR link needs the feature, a manager, and a bound company", async () => {
+  resetDirectoryWorld();
+  await assert.rejects(service(boundStore()).svc.directoryAuthUrl({ provider: "wecom", accessToken: "admin-token", teamId: "t1" }), /not configured/);
+  await assert.rejects(service(memoryStore(), [], DIRECTORY).svc.directoryAuthUrl({ provider: "wecom", accessToken: "admin-token", teamId: "t1" }), /connect the organization/);
+  await assert.rejects(service(boundStore(), [], DIRECTORY).svc.directoryAuthUrl({ provider: "wecom", accessToken: "nope", teamId: "t1" }), /no/);
+
+  const mem = boundStore();
+  const { svc } = service(mem, [], DIRECTORY);
+  const out = await svc.directoryAuthUrl({ provider: "wecom", accessToken: "admin-token", teamId: "t1" });
+  const state = directoryWorld.authUrlStates.at(-1)!;
+  const flow = mem.flows.get(state)!;
+  assert.equal(flow.kind, "directory");
+  assert.equal(flow.orgId, "org-1");
+  assert.equal(flow.requestedBy, "admin-user");
+  assert.equal(out.expiresAt, flow.expiresAt);
+});
+
+test("directory: authorizing fills every placeholder name, and later sign-ins get theirs", async () => {
+  resetDirectoryWorld();
+  const mem = boundStore();
+  const pending: Promise<unknown>[] = [];
+  const { svc } = service(mem, [], DIRECTORY, pending);
+  // Two people signed in before names were available.
+  const alice = await mem.store.ensureIdentity({ provider: "wecom", tenantId: "wwCorp", subject: "open-1" });
+  const chose = await mem.store.ensureIdentity({ provider: "wecom", tenantId: "wwCorp", subject: "open-2" });
+  mem.names.set(chose, "自己起的名");
+
+  await authorizeDirectory(svc, pending);
+  const app = mem.directoryApps.get("wecom:wwCorp")!;
+  assert.equal(app.permanentCode, "DIRSECRET");
+  assert.equal(app.authorizedBy, "admin-user");
+  assert.equal(app.namesGranted, true);
+  assert.equal(mem.names.get(alice), "张三", "the placeholder is replaced");
+  assert.equal(mem.names.get(chose), "自己起的名", "a chosen name is kept");
+
+  // A new member's first scan picks up their name in the background.
+  const url = await startLogin(svc);
+  directoryWorld.directoryNames["open-1"] = "张三";
+  mem.identities.clear();
+  mem.names.clear();
+  const res = await svc.handleLoginCallback({ provider: "wecom", code: "c1", state: url.searchParams.get("state") });
+  assert.ok("redirect" in res);
+  await Promise.all(pending.splice(0));
+  const newUser = [...mem.identities.values()][0];
+  assert.equal(mem.names.get(newUser), "张三");
+
+  const status = await svc.binding({ provider: "wecom", accessToken: "admin-token", teamId: "t1" });
+  assert.equal(status.directoryConfigured, true);
+  assert.equal(status.directory?.namesGranted, true);
+});
+
+test("directory: an authorization without a live link, or from another org's company, is ignored", async () => {
+  resetDirectoryWorld();
+  const mem = boundStore();
+  mem.bindings.set("wecom:wwOther", { provider: "wecom", tenantId: "wwOther", orgId: "org-2", tenantName: null, createdAt: "", permanentCode: null });
+  const pending: Promise<unknown>[] = [];
+  const { svc } = service(mem, [], DIRECTORY, pending);
+
+  const stray = templateEvent("<InfoType>create_auth</InfoType><AuthCode>AUTH</AuthCode><State>unknownstate</State>");
+  assert.equal((await svc.handleSuiteCallback({ method: "POST", query: stray.query, body: stray.body })).text, "success");
+  await Promise.all(pending.splice(0));
+  assert.equal(mem.directoryApps.size, 0, "no live link → nothing stored");
+
+  await authorizeDirectory(svc, pending, "AUTH-OTHER");
+  assert.equal(mem.directoryApps.size, 0, "org-1's link cannot attach org-2's company");
+});
+
+test("directory: without the 「姓名」 grant nothing is filled; change_auth after the grant fills", async () => {
+  resetDirectoryWorld();
+  directoryWorld.permissions = [];
+  const mem = boundStore();
+  const pending: Promise<unknown>[] = [];
+  const { svc } = service(mem, [], DIRECTORY, pending);
+  const alice = await mem.store.ensureIdentity({ provider: "wecom", tenantId: "wwCorp", subject: "open-1" });
+
+  await authorizeDirectory(svc, pending);
+  const app = mem.directoryApps.get("wecom:wwCorp")!;
+  assert.equal(app.namesGranted, false);
+  assert.match(app.lastError ?? "", /姓名/);
+  assert.equal(mem.names.has(alice), false);
+
+  directoryWorld.permissions = ["contact:sensitive:user_name"];
+  const change = templateEvent("<InfoType>change_auth</InfoType><AuthCorpId>wwCorp</AuthCorpId>");
+  await svc.handleSuiteCallback({ method: "POST", query: change.query, body: change.body });
+  await Promise.all(pending.splice(0));
+  assert.equal(mem.directoryApps.get("wecom:wwCorp")!.namesGranted, true);
+  assert.equal(mem.names.get(alice), "张三");
+});
+
+test("directory: an app WeCom still refuses (开发中) is recorded as not granted", async () => {
+  resetDirectoryWorld();
+  directoryWorld.permissionsError = 60011;
+  const mem = boundStore();
+  const pending: Promise<unknown>[] = [];
+  const { svc } = service(mem, [], DIRECTORY, pending);
+  await authorizeDirectory(svc, pending);
+  const app = mem.directoryApps.get("wecom:wwCorp")!;
+  assert.equal(app.namesGranted, false);
+  assert.match(app.lastError ?? "", /60011/);
+});
+
+test("directory: reset_permanent_code rotates the secret; the template's cancel_auth keeps sign-in", async () => {
+  resetDirectoryWorld();
+  const mem = boundStore();
+  const pending: Promise<unknown>[] = [];
+  const { svc } = service(mem, [], DIRECTORY, pending);
+  await authorizeDirectory(svc, pending);
+
+  const reset = templateEvent("<InfoType>reset_permanent_code</InfoType><AuthCode>RESET</AuthCode>");
+  await svc.handleSuiteCallback({ method: "POST", query: reset.query, body: reset.body });
+  await Promise.all(pending.splice(0));
+  assert.equal(mem.directoryApps.get("wecom:wwCorp")!.permanentCode, "DIRSECRET2");
+
+  const cancel = templateEvent("<InfoType>cancel_auth</InfoType><AuthCorpId>wwCorp</AuthCorpId>");
+  await svc.handleSuiteCallback({ method: "POST", query: cancel.query, body: cancel.body });
+  await Promise.all(pending.splice(0));
+  assert.equal(mem.directoryApps.size, 0, "the names app is gone");
+  assert.ok(mem.bindings.has("wecom:wwCorp"), "the company still signs in");
+
+  // The template's suite_ticket is stored like any other.
+  const ticket = templateEvent("<InfoType>suite_ticket</InfoType><SuiteTicket>DKT</SuiteTicket>");
+  await svc.handleSuiteCallback({ method: "POST", query: ticket.query, body: ticket.body });
+  assert.equal(mem.tickets.get("wecom:dktemplate"), "DKT");
+});
+
+test("directory: sync re-checks and fills on demand", async () => {
+  resetDirectoryWorld();
+  const mem = boundStore();
+  const pending: Promise<unknown>[] = [];
+  const { svc } = service(mem, [], DIRECTORY, pending);
+  await assert.rejects(svc.syncDirectory({ provider: "wecom", accessToken: "admin-token", teamId: "t1" }), /not authorized member names/);
+
+  directoryWorld.permissions = [];
+  await authorizeDirectory(svc, pending);
+  const a = await mem.store.ensureIdentity({ provider: "wecom", tenantId: "wwCorp", subject: "open-1" });
+  const b = await mem.store.ensureIdentity({ provider: "wecom", tenantId: "wwCorp", subject: "open-2" });
+  directoryWorld.permissions = ["contact:sensitive:user_name"];
+  const out = await svc.syncDirectory({ provider: "wecom", accessToken: "admin-token", teamId: "t1" });
+  assert.equal(out.updated, 2);
+  assert.equal(out.directory?.namesGranted, true);
+  assert.deepEqual([mem.names.get(a), mem.names.get(b)], ["张三", "李四"]);
+});
+
+test("routes: directory link and sync are served for org managers", async () => {
+  resetDirectoryWorld();
+  const mem = boundStore();
+  const { svc } = service(mem, [], DIRECTORY);
+  const res = await handleBusinessApiRequest({
+    httpMethod: "POST", path: "/v1/teams/t1/sso/wecom/directory",
+    headers: { authorization: "Bearer admin-token" }, body: "{}",
+  }, routeDeps(svc));
+  assert.equal(res.statusCode, 200);
+  assert.equal(JSON.parse(res.body).qrcodeUrl, "https://open.work.weixin.qq.com/qr/abc");
+
+  const sync = await handleBusinessApiRequest({
+    httpMethod: "POST", path: "/v1/teams/t1/sso/wecom/directory/sync",
+    headers: { authorization: "Bearer admin-token" }, body: "{}",
+  }, routeDeps(svc));
+  assert.equal(sync.statusCode, 409, "nothing authorized yet");
 });

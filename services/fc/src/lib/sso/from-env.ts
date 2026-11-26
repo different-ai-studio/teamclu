@@ -12,7 +12,11 @@
 //   WECOM_LOGIN_CALLBACK_TOKEN / _AES_KEY 登录授权 page's own pair, if it differs
 //                                         from the app's (optional)
 //   WECOM_PROVIDER_CORPID                 provider CorpID (optional; accepted as
-//                                         a callback receiveId)
+//                                         a callback receiveId; required for
+//                                         member names)
+//   WECOM_CUSTOMIZED_SUITE_ID / _SECRET   代开发 template that reads member names
+//   WECOM_PROVIDER_SECRET                 provider secret (get_customized_auth_url)
+//                                         — names are on only with all three
 //   WECOM_REDIRECT_BASE_URL               public origin registered as the trusted
 //                                         domain (optional; else the request's)
 //   WECOM_INSTALL_TEST_MODE               "1" while the app is unpublished
@@ -40,6 +44,13 @@ export function readWecomSsoConfig(env: Env): WecomSsoConfig | null {
   }
   const loginSuiteId = env.WECOM_LOGIN_SUITE_ID?.trim();
   const loginSuiteSecret = env.WECOM_LOGIN_SUITE_SECRET?.trim();
+  const customizedSuiteId = env.WECOM_CUSTOMIZED_SUITE_ID?.trim();
+  const customizedSuiteSecret = env.WECOM_CUSTOMIZED_SUITE_SECRET?.trim();
+  const providerSecret = env.WECOM_PROVIDER_SECRET?.trim();
+  const providerCorpId = env.WECOM_PROVIDER_CORPID?.trim() || undefined;
+  if (customizedSuiteId && !(customizedSuiteSecret && providerSecret && providerCorpId)) {
+    console.error("sso: WECOM_CUSTOMIZED_SUITE_ID is set but WECOM_CUSTOMIZED_SUITE_SECRET / WECOM_PROVIDER_SECRET / WECOM_PROVIDER_CORPID are not; WeCom member names disabled");
+  }
   const loginCallbackToken = env.WECOM_LOGIN_CALLBACK_TOKEN?.trim();
   const loginCallbackAesKey = env.WECOM_LOGIN_CALLBACK_AES_KEY?.trim();
   return {
@@ -49,7 +60,11 @@ export function readWecomSsoConfig(env: Env): WecomSsoConfig | null {
     loginCallback: loginCallbackToken && loginCallbackAesKey
       ? { token: loginCallbackToken, encodingAesKey: loginCallbackAesKey }
       : undefined,
-    providerCorpId: env.WECOM_PROVIDER_CORPID?.trim() || undefined,
+    providerCorpId,
+    directory:
+      customizedSuiteId && customizedSuiteSecret && providerSecret && providerCorpId
+        ? { template: { suiteId: customizedSuiteId, suiteSecret: customizedSuiteSecret }, providerSecret }
+        : undefined,
     redirectBaseUrl: env.WECOM_REDIRECT_BASE_URL?.trim() || undefined,
     installTestMode: env.WECOM_INSTALL_TEST_MODE === "1" || env.WECOM_INSTALL_TEST_MODE === "true",
   };

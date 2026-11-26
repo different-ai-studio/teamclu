@@ -3603,7 +3603,19 @@
       "connected": "Connected to {{name}}. Company members can sign in by scanning with WeCom; their first sign-in adds them to this organization.",
       "connect": "Connect WeCom",
       "disconnect": "Disconnect",
-      "confirmDisconnect": "After disconnecting, members of this company can no longer sign in with WeCom. Existing accounts stay. Disconnect?"
+      "confirmDisconnect": "After disconnecting, members of this company can no longer sign in with WeCom. Existing accounts stay. Disconnect?",
+      "names": {
+        "title": "Member names",
+        "description": "WeCom doesn't give the sign-in app member names. Once a WeCom admin authorizes TeamClu by scanning a QR code, members show their directory names; names members set themselves are kept.",
+        "authorize": "Get member names",
+        "scan": "Ask a WeCom admin to scan this QR code with WeCom to let TeamClu read member names, then come back here.",
+        "pending": "Authorized, not active yet: TeamClu has to finish this company's go-live review, and a WeCom admin has to grant the 「姓名」 permission and set visibility to all members.",
+        "recheck": "Check again",
+        "active": "Member names are on. Members show their real names when they sign in.",
+        "syncNow": "Sync now",
+        "synced": "Synced; updated {{count}} member names.",
+        "stillPending": "Names still can't be read. Check that the go-live review passed and 「姓名」 is granted."
+      }
     },
     "teamRoles": {
       "title": "Organization Roles",

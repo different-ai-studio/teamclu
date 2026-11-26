@@ -17,6 +17,12 @@
 //   Only a WeCom admin can install, which is what stops an employee binding
 //   their company to an org of their own.
 //
+// Member names (optional, docs/specs/2026-11-26-wecom-customized-app-names.md):
+//   WeCom gives the third-party app no names. A company that also authorizes
+//   TeamClu's 代开发 template (QR from POST /v1/teams/:teamId/sso/wecom/directory)
+//   and grants 「姓名」 lets FC read them with user/get; a placeholder name is
+//   then replaced on sign-in, on the grant, and on demand. Never a chosen name.
+//
 // The client redirect is restricted to loopback http and the brand's custom
 // schemes. With an arbitrary redirect, anyone could start a flow with their own
 // PKCE challenge, send the authorize link to a victim, and receive the code for
@@ -32,6 +38,7 @@ import {
   type WecomCryptoConfig,
 } from "./wecom-crypto.js";
 import {
+  WECOM_NAME_PERMISSION,
   wecomInstallUrl,
   wecomLoginUrl,
   type WecomClient,
@@ -48,7 +55,7 @@ const EXCHANGE_TTL_MS = 2 * 60 * 1000;
 export interface SsoFlow {
   state: string;
   provider: string;
-  kind: "login" | "install";
+  kind: "login" | "install" | "directory";
   redirect: string | null;
   codeChallenge: string | null;
   orgId: string | null;
@@ -66,6 +73,16 @@ export interface SsoBinding {
   createdAt: string;
 }
 
+export interface SsoDirectoryApp {
+  provider: string;
+  tenantId: string;
+  permanentCode: string;
+  namesGranted: boolean;
+  lastCheckedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+}
+
 export class SsoTenantNotBoundError extends Error {}
 
 export interface SsoStore {
@@ -79,6 +96,8 @@ export interface SsoStore {
   consumeLoginCode(codeHash: string): Promise<SsoFlow | null>;
   /** Atomically mark an install flow consumed and return it. */
   consumeInstallFlow(state: string): Promise<SsoFlow | null>;
+  /** Atomically mark a directory (代开发 authorization) flow consumed and return it. */
+  consumeDirectoryFlow(state: string): Promise<SsoFlow | null>;
   sweepExpiredFlows(): Promise<void>;
   /** Throws SsoTenantNotBoundError when the company is not bound. */
   ensureIdentity(args: { provider: string; tenantId: string; subject: string; nickname?: string | null }): Promise<string>;
@@ -94,6 +113,17 @@ export interface SsoStore {
     boundBy: string | null;
   }): Promise<void>;
   deleteBinding(provider: string, tenantId: string): Promise<void>;
+  getDirectoryApp(provider: string, tenantId: string): Promise<SsoDirectoryApp | null>;
+  /** Insert or replace a company's 代开发 authorization (names unchecked again). */
+  saveDirectoryApp(args: { provider: string; tenantId: string; permanentCode: string; authorizedBy: string | null }): Promise<void>;
+  /** Replace the secret of an existing authorization. False if there is none. */
+  rotateDirectoryAppSecret(provider: string, tenantId: string, permanentCode: string): Promise<boolean>;
+  recordDirectoryCheck(provider: string, tenantId: string, result: { namesGranted: boolean; lastError: string | null }): Promise<void>;
+  deleteDirectoryApp(provider: string, tenantId: string): Promise<void>;
+  /** Identities of the company still on the placeholder name. */
+  identitiesNeedingName(provider: string, tenantId: string): Promise<{ subject: string; userId: string }[]>;
+  /** Replace the account's placeholder name; false when nothing was a placeholder. */
+  applyDirectoryName(userId: string, name: string): Promise<boolean>;
   /** The caller and the team's org, if the caller is an owner/admin of that org. 403 otherwise. */
   resolveOrgManager(accessToken: string, teamId: string): Promise<{ userId: string; orgId: string }>;
 }
@@ -115,6 +145,11 @@ export interface WecomSsoConfig {
   redirectBaseUrl?: string;
   /** Install as a test authorization (auth_type 1) while the app is unpublished. */
   installTestMode?: boolean;
+  /**
+   * The 代开发 template used to read member names, and the provider secret
+   * that get_customized_auth_url needs (with providerCorpId). Optional.
+   */
+  directory?: { template: WecomSuite; providerSecret: string };
 }
 
 export interface SsoServiceDeps {
@@ -126,7 +161,20 @@ export interface SsoServiceDeps {
   allowedRedirectSchemes?: string[];
   nowMs?: () => number;
   randomToken?: () => string;
+  /**
+   * Run work that must not hold up the response: WeCom wants callback answers
+   * within a second, and sign-in must not wait on a name lookup. Defaults to
+   * fire-and-forget with the error logged; tests collect and await it.
+   */
+  background?: (label: string, task: () => Promise<unknown>) => void;
 }
+
+/** WeCom's limit for get_customized_auth_url's state: 1–32 letters / digits. */
+function directoryState(): string {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+const DIRECTORY_FLOW_MAX_MS = 10 * 24 * 60 * 60 * 1000;
 
 /**
  * Open a callback with the app's key pair, falling back to the 登录授权 pair.
@@ -200,6 +248,11 @@ export function createSsoService(deps: SsoServiceDeps) {
   const nowMs = deps.nowMs ?? (() => Date.now());
   const randomToken = deps.randomToken ?? defaultRandomToken;
   const extraSchemes = deps.allowedRedirectSchemes ?? [];
+  const background =
+    deps.background ??
+    ((label: string, task: () => Promise<unknown>) => {
+      void task().catch((e) => console.error(`sso: ${label} failed:`, e?.message ?? e));
+    });
 
   function wecom() {
     if (!deps.wecom) {
@@ -226,6 +279,110 @@ export function createSsoService(deps: SsoServiceDeps) {
 
   function live(flow: SsoFlow | null, kind: SsoFlow["kind"]): flow is SsoFlow {
     return !!flow && flow.kind === kind && !flow.consumedAt && Date.parse(flow.expiresAt) > nowMs();
+  }
+
+  function directory() {
+    const w = wecom();
+    const d = w.config.directory;
+    if (!d || !w.config.providerCorpId) {
+      throw new ApiError(501, "not_implemented", "WeCom member names are not configured on this deployment");
+    }
+    return { ...w, directory: d, providerCorpId: w.config.providerCorpId };
+  }
+
+  /**
+   * Ask WeCom whether the company's 代开发 app can read names now, record the
+   * answer, and return it. Errors (app still 开发中, secret revoked, no
+   * licence) count as "not granted" and are kept as lastError.
+   */
+  async function checkDirectory(provider: string, tenantId: string): Promise<SsoDirectoryApp | null> {
+    const { client } = wecom();
+    const app = await store.getDirectoryApp(provider, tenantId);
+    if (!app) return null;
+    let namesGranted = false;
+    let lastError: string | null = null;
+    try {
+      const permissions = await client.directoryPermissions(tenantId, app.permanentCode);
+      namesGranted = permissions.includes(WECOM_NAME_PERMISSION);
+      if (!namesGranted) lastError = "「姓名」权限未授予";
+    } catch (e: any) {
+      lastError = String(e?.message ?? e).slice(0, 500);
+    }
+    await store.recordDirectoryCheck(provider, tenantId, { namesGranted, lastError });
+    return { ...app, namesGranted, lastError, lastCheckedAt: iso(nowMs()) };
+  }
+
+  /**
+   * Fill placeholder names of the company's identities from the directory
+   * (all of them, or only `onlySubject`). Returns how many accounts changed.
+   */
+  async function fillNames(provider: string, tenantId: string, onlySubject?: string): Promise<number> {
+    const { client } = wecom();
+    const app = await store.getDirectoryApp(provider, tenantId);
+    if (!app?.namesGranted) return 0;
+    let pending = await store.identitiesNeedingName(provider, tenantId);
+    if (onlySubject !== undefined) pending = pending.filter((p) => p.subject === onlySubject);
+    let updated = 0;
+    for (const { subject, userId } of pending) {
+      // The third-party app's open_userid equals the 代开发 app's userid for
+      // companies authorized after the 2022 ID upgrade (document/path/97104).
+      let name: string | null;
+      try {
+        name = await client.directoryName(tenantId, app.permanentCode, subject);
+      } catch (e: any) {
+        console.error(`sso: user/get for a ${tenantId} member failed:`, e?.message ?? e);
+        continue;
+      }
+      if (name && (await store.applyDirectoryName(userId, name.slice(0, 64)))) updated++;
+    }
+    return updated;
+  }
+
+  /** A 代开发 template callback (create_auth / change_auth / reset_permanent_code / cancel_auth). */
+  async function handleDirectoryEvent(provider: string, xml: string): Promise<void> {
+    const { client, directory: d } = directory();
+    const infoType = xmlField(xml, "InfoType");
+    const corpIdFromXml = xmlField(xml, "AuthCorpId");
+    if (infoType === "create_auth") {
+      const authCode = xmlField(xml, "AuthCode");
+      if (!authCode) return;
+      const auth = await client.directoryPermanentAuth(d.template, authCode);
+      const state = xmlField(xml, "State") || auth.state;
+      const flow = state ? await store.consumeDirectoryFlow(state) : null;
+      if (!flow || !flow.orgId || Date.parse(flow.expiresAt) <= nowMs()) {
+        console.error(`sso: 代开发 authorization from ${auth.corpId} has no live TeamClu link; ignored`);
+        return;
+      }
+      const binding = await store.bindingForTenant(provider, auth.corpId);
+      if (!binding || binding.orgId !== flow.orgId) {
+        console.error(`sso: 代开发 authorization from ${auth.corpId} is not the company bound to the requesting org; ignored`);
+        return;
+      }
+      await store.saveDirectoryApp({ provider, tenantId: auth.corpId, permanentCode: auth.permanentCode, authorizedBy: flow.requestedBy });
+      const app = await checkDirectory(provider, auth.corpId);
+      if (app?.namesGranted) await fillNames(provider, auth.corpId);
+    } else if (infoType === "reset_permanent_code") {
+      const authCode = xmlField(xml, "AuthCode");
+      if (!authCode) return;
+      const auth = await client.directoryPermanentAuth(d.template, authCode);
+      client.forgetCorpToken(auth.corpId);
+      if (await store.rotateDirectoryAppSecret(provider, auth.corpId, auth.permanentCode)) {
+        await checkDirectory(provider, auth.corpId);
+      }
+    } else if (infoType === "change_auth" && corpIdFromXml) {
+      const app = await checkDirectory(provider, corpIdFromXml);
+      if (app?.namesGranted) await fillNames(provider, corpIdFromXml);
+    } else if (infoType === "cancel_auth" && corpIdFromXml) {
+      // Only the names app goes; the company still signs in.
+      await store.deleteDirectoryApp(provider, corpIdFromXml);
+      client.forgetCorpToken(corpIdFromXml);
+    }
+  }
+
+  function directoryView(app: SsoDirectoryApp | null) {
+    return app
+      ? { namesGranted: app.namesGranted, lastCheckedAt: app.lastCheckedAt, lastError: app.lastError, createdAt: app.createdAt }
+      : null;
   }
 
   return {
@@ -306,6 +463,10 @@ export function createSsoService(deps: SsoServiceDeps) {
         throw e;
       }
 
+      if (config.directory) {
+        background("directory name on sign-in", () => fillNames(args.provider, who.corpId, who.openUserId));
+      }
+
       const code = randomToken();
       const ok = await store.completeLoginFlow(flow.state, {
         userId,
@@ -334,9 +495,12 @@ export function createSsoService(deps: SsoServiceDeps) {
       assertProvider(args.provider);
       const { orgId } = await store.resolveOrgManager(args.accessToken, args.teamId);
       const b = await store.bindingForOrg(args.provider, orgId);
+      const directoryConfigured = !!deps.wecom?.config.directory && !!deps.wecom?.config.providerCorpId;
       return {
         configured: !!deps.wecom,
         binding: b ? { tenantId: b.tenantId, tenantName: b.tenantName, createdAt: b.createdAt } : null,
+        directoryConfigured,
+        directory: b && directoryConfigured ? directoryView(await store.getDirectoryApp(args.provider, b.tenantId)) : null,
       };
     },
 
@@ -424,6 +588,56 @@ export function createSsoService(deps: SsoServiceDeps) {
     },
 
     /**
+     * The QR link a WeCom admin of the bound company scans to authorize the
+     * 代开发 template, so that member names can be read. Org owner/admin only.
+     */
+    async directoryAuthUrl(args: { provider: string; accessToken: string; teamId: string }) {
+      assertProvider(args.provider);
+      const { client, directory: d, providerCorpId } = directory();
+      const { userId, orgId } = await store.resolveOrgManager(args.accessToken, args.teamId);
+      const binding = await store.bindingForOrg(args.provider, orgId);
+      if (!binding) {
+        throw new ApiError(409, "conflict", "connect the organization to its WeCom company first");
+      }
+      const state = directoryState();
+      const { qrcodeUrl, expiresInSec } = await client.directoryAuthUrl({
+        providerCorpId,
+        providerSecret: d.providerSecret,
+        templateId: d.template.suiteId,
+        state,
+      });
+      const ttl = Math.min(expiresInSec > 0 ? expiresInSec * 1000 : DIRECTORY_FLOW_MAX_MS, DIRECTORY_FLOW_MAX_MS);
+      const expiresAt = iso(nowMs() + ttl);
+      await store.createFlow({
+        state,
+        provider: args.provider,
+        kind: "directory",
+        redirect: null,
+        codeChallenge: null,
+        orgId,
+        requestedBy: userId,
+        expiresAt,
+      });
+      return { qrcodeUrl, expiresAt };
+    },
+
+    /**
+     * Re-check the company's 代开发 grant and fill every placeholder name it
+     * can. Org owner/admin only.
+     */
+    async syncDirectory(args: { provider: string; accessToken: string; teamId: string }) {
+      assertProvider(args.provider);
+      directory();
+      const { orgId } = await store.resolveOrgManager(args.accessToken, args.teamId);
+      const binding = await store.bindingForOrg(args.provider, orgId);
+      if (!binding) throw new ApiError(409, "conflict", "connect the organization to its WeCom company first");
+      const app = await checkDirectory(args.provider, binding.tenantId);
+      if (!app) throw new ApiError(409, "conflict", "the WeCom company has not authorized member names yet");
+      const updated = app.namesGranted ? await fillNames(args.provider, binding.tenantId) : 0;
+      return { directory: directoryView(app), updated };
+    },
+
+    /**
      * The provider callback URL (指令回调). GET is WeCom's URL verification
      * (answer the decrypted echostr); POST carries suite_ticket and
      * install / uninstall notices (answer "success").
@@ -452,6 +666,13 @@ export function createSsoService(deps: SsoServiceDeps) {
         if (!encrypt) return { status: 400, text: "missing Encrypt" };
         const xml = openWithAnyKey(config, { signature, timestamp, nonce, encrypt }, receiveIds);
         const infoType = xmlField(xml, "InfoType");
+        const fromDirectoryTemplate =
+          !!config.directory && xmlField(xml, "SuiteId") === config.directory.template.suiteId;
+        if (fromDirectoryTemplate && infoType !== "suite_ticket") {
+          // Answered at once; the WeCom calls behind it run afterwards.
+          background(`代开发 ${infoType}`, () => handleDirectoryEvent("wecom", xml));
+          return { status: 200, text: "success" };
+        }
         if (infoType === "suite_ticket") {
           const suiteId = xmlField(xml, "SuiteId");
           const ticket = xmlField(xml, "SuiteTicket");

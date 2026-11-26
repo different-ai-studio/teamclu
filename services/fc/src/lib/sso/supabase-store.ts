@@ -4,7 +4,7 @@
 // RLS decides whether they can see the team at all.
 import { ApiError } from "../http-utils.js";
 import { REALTIME_TRANSPORT_OPTS } from "../supabase-repo/shared.js";
-import { SsoTenantNotBoundError, type SsoBinding, type SsoFlow, type SsoStore } from "./sso-service.js";
+import { SsoTenantNotBoundError, type SsoBinding, type SsoDirectoryApp, type SsoFlow, type SsoStore } from "./sso-service.js";
 
 export interface SupabaseSsoStoreOptions {
   supabaseUrl: string;
@@ -39,6 +39,18 @@ function bindingFromRow(r: any): SsoBinding {
   };
 }
 
+function directoryAppFromRow(r: any): SsoDirectoryApp {
+  return {
+    provider: r.provider,
+    tenantId: r.tenant_id,
+    permanentCode: r.permanent_code,
+    namesGranted: !!r.names_granted,
+    lastCheckedAt: r.last_checked_at ?? null,
+    lastError: r.last_error ?? null,
+    createdAt: r.created_at,
+  };
+}
+
 function fail(what: string, error: any): never {
   throw new ApiError(500, "internal", `sso ${what} failed: ${error?.message ?? error}`);
 }
@@ -53,6 +65,20 @@ export function createSupabaseSsoStore(options: SupabaseSsoStoreOptions): SsoSto
   });
   const FLOW_COLS = "state, provider, kind, redirect, code_challenge, org_id, requested_by, user_id, expires_at, consumed_at";
   const BINDING_COLS = "provider, tenant_id, org_id, tenant_name, created_at";
+
+  async function consumeFlow(state: string, kind: "install" | "directory") {
+    const { data, error } = await admin
+      .from("sso_flows")
+      .update({ consumed_at: nowIso() })
+      .eq("state", state)
+      .eq("kind", kind)
+      .is("consumed_at", null)
+      .select(FLOW_COLS);
+    if (error) fail(`consume ${kind} flow`, error);
+    return data?.[0] ? flowFromRow(data[0]) : null;
+  }
+
+  const DIRECTORY_COLS = "provider, tenant_id, permanent_code, names_granted, last_checked_at, last_error, created_at";
 
   return {
     async saveSuiteTicket(provider, suiteId, ticket) {
@@ -120,15 +146,11 @@ export function createSupabaseSsoStore(options: SupabaseSsoStoreOptions): SsoSto
     },
 
     async consumeInstallFlow(state) {
-      const { data, error } = await admin
-        .from("sso_flows")
-        .update({ consumed_at: nowIso() })
-        .eq("state", state)
-        .eq("kind", "install")
-        .is("consumed_at", null)
-        .select(FLOW_COLS);
-      if (error) fail("consume install flow", error);
-      return data?.[0] ? flowFromRow(data[0]) : null;
+      return consumeFlow(state, "install");
+    },
+
+    async consumeDirectoryFlow(state) {
+      return consumeFlow(state, "directory");
     },
 
     async sweepExpiredFlows() {
@@ -204,6 +226,71 @@ export function createSupabaseSsoStore(options: SupabaseSsoStoreOptions): SsoSto
     async deleteBinding(provider, tenantId) {
       const { error } = await admin.from("sso_org_bindings").delete().eq("provider", provider).eq("tenant_id", tenantId);
       if (error) fail("delete binding", error);
+    },
+
+    async getDirectoryApp(provider, tenantId) {
+      const { data, error } = await admin
+        .from("sso_directory_apps")
+        .select(DIRECTORY_COLS)
+        .eq("provider", provider)
+        .eq("tenant_id", tenantId)
+        .maybeSingle();
+      if (error) fail("read directory app", error);
+      return data ? directoryAppFromRow(data) : null;
+    },
+
+    async saveDirectoryApp({ provider, tenantId, permanentCode, authorizedBy }) {
+      const { error } = await admin.from("sso_directory_apps").upsert(
+        {
+          provider,
+          tenant_id: tenantId,
+          permanent_code: permanentCode,
+          names_granted: false,
+          last_checked_at: null,
+          last_error: null,
+          authorized_by: authorizedBy,
+          updated_at: nowIso(),
+        },
+        { onConflict: "provider,tenant_id" },
+      );
+      if (error) fail("save directory app", error);
+    },
+
+    async rotateDirectoryAppSecret(provider, tenantId, permanentCode) {
+      const { data, error } = await admin
+        .from("sso_directory_apps")
+        .update({ permanent_code: permanentCode, updated_at: nowIso() })
+        .eq("provider", provider)
+        .eq("tenant_id", tenantId)
+        .select("tenant_id");
+      if (error) fail("rotate directory app secret", error);
+      return (data ?? []).length === 1;
+    },
+
+    async recordDirectoryCheck(provider, tenantId, { namesGranted, lastError }) {
+      const { error } = await admin
+        .from("sso_directory_apps")
+        .update({ names_granted: namesGranted, last_error: lastError, last_checked_at: nowIso(), updated_at: nowIso() })
+        .eq("provider", provider)
+        .eq("tenant_id", tenantId);
+      if (error) fail("record directory check", error);
+    },
+
+    async deleteDirectoryApp(provider, tenantId) {
+      const { error } = await admin.from("sso_directory_apps").delete().eq("provider", provider).eq("tenant_id", tenantId);
+      if (error) fail("delete directory app", error);
+    },
+
+    async identitiesNeedingName(provider, tenantId) {
+      const { data, error } = await admin.rpc("sso_identities_needing_name", { p_provider: provider, p_tenant_id: tenantId });
+      if (error) fail("list identities needing a name", error);
+      return (data ?? []).map((r: any) => ({ subject: String(r.subject), userId: String(r.user_id) }));
+    },
+
+    async applyDirectoryName(userId, name) {
+      const { data, error } = await admin.rpc("sso_apply_directory_name", { p_user_id: userId, p_name: name });
+      if (error) fail("apply directory name", error);
+      return data === true;
     },
 
     async resolveOrgManager(accessToken, teamId) {
