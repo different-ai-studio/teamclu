@@ -281,7 +281,8 @@ impl AppOps<'_> {
         // a failure, and wrote `deploy_error` over it.
         //
         // No answer at all is not a failure: the server may have finished.
-        // That is the one outcome the caller must not retry blindly.
+        // Nor is a gateway timeout (504): the proxy gave up, finalize did not.
+        // Those are the outcomes the caller must not retry blindly.
         self.call(
             Method::Post,
             &app_path(app_id, "/deploy/finalize"),
@@ -291,12 +292,12 @@ impl AppOps<'_> {
         )
         .await
         .map_err(|e| {
-            if e.code == "cloud_unreachable" {
+            if e.code == "cloud_unreachable" || e.code == "http_504" {
                 OpError {
                     kind: crate::ErrorKind::Unknown,
                     code: "deploy_outcome_unknown".to_string(),
                     message: format!("{} — the deploy may or may not have gone live", e.message),
-                    next: Some(crate::step("status")),
+                    next: Some(crate::next_cmd("status")),
                     retryable: false,
                 }
             } else {
@@ -325,7 +326,7 @@ impl AppOps<'_> {
             return Err(OpError::conflict("app_not_ready", format!(
                 "This app is not ready to deploy (provisionStatus={provision}). Its checkout has to be seeded first ({}).",
                 crate::step("checkout reseed")
-            )).with_next(crate::step("checkout reseed")));
+            )).with_next(crate::next_cmd("checkout reseed")));
         }
         let via_gitea = is_gitea_managed(row);
 
@@ -553,6 +554,39 @@ mod tests {
                 expected.as_ref()
             );
         }
+    }
+
+    /// A gateway timeout at finalize is not a failure: finalize may have gone
+    /// on to publish. Unknown, and no `deploy_error` written over it.
+    #[tokio::test]
+    async fn a_gateway_timeout_at_finalize_is_an_unknown_outcome() {
+        let (cloud, daemon) = deploy_world();
+        *daemon.build.lock().unwrap() = Some(Ok(json!({
+            "declaration": { "build": { "kind": "node" } },
+            "revision": "sha256:d",
+            "artifactVerification": { "status": "checked", "revision": "sha256:d", "unknownFiles": [] },
+        })));
+        cloud.fail(
+            Method::Post,
+            "/v1/apps/a1/deploy/finalize",
+            504,
+            "Gateway Timeout",
+        );
+        let host = TestHost;
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let err = ops
+            .deploy(&imported_row(), DeployArgs::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, crate::ErrorKind::Unknown, "{err:?}");
+        assert_eq!(err.next.as_deref(), Some("amuxd app status"));
+        let reported = cloud.calls_to(Method::Patch, "/v1/apps/a1");
+        assert!(
+            reported
+                .iter()
+                .all(|b| b.as_ref().and_then(|b| b.get("fcStatus")) != Some(&json!("deploy_error"))),
+            "{reported:?}"
+        );
     }
 
     #[tokio::test]

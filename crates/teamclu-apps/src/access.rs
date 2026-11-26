@@ -182,7 +182,7 @@ impl AppOps<'_> {
                     .collect();
                 crate::pick_by_name(&pairs, name, "team member or agent", "actor_id")
                     .cloned()
-                    .map_err(|e| e.with_next(crate::step("access ls")))
+                    .map_err(|e| e.with_next(crate::next_cmd("access ls")))
             }
         }
     }
@@ -313,7 +313,7 @@ impl AppOps<'_> {
                     "org_level_unsupported",
                     format!("the whole org can be granted read for now, not {other}; grant write to people or agents one by one"),
                 )
-                .with_next(crate::step("access grant")))
+                .with_next(crate::next_cmd("access grant")))
             }
         };
         let out = self
@@ -416,7 +416,7 @@ impl AppOps<'_> {
                     Value::Array(current_rules(row))
                 ),
             )
-            .with_next(crate::step("gate show")));
+            .with_next(crate::next_cmd("gate show")));
         }
         self.write_gate(
             row,

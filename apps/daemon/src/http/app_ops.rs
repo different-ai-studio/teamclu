@@ -81,7 +81,13 @@ impl Cloud for DaemonCloud {
                 .backend
                 .auth_token()
                 .await
-                .map_err(|e| CloudError::network(format!("no cloud session: {e}")))?;
+                // Nothing was sent: not "the cloud did not answer" (which a
+                // finalize reads as an unknown outcome), but no identity.
+                .map_err(|e| CloudError {
+                    status: 401,
+                    code: "no_cloud_session".to_string(),
+                    message: format!("this daemon has no cloud session: {e}"),
+                })?;
             let mut request = self
                 .http
                 .request(reqwest_method(method), format!("{}{path}", self.base_url))

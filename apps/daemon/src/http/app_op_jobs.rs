@@ -26,6 +26,16 @@ use tokio::sync::watch;
 const KEEP_FOR: chrono::Duration = chrono::Duration::days(7);
 /// The longest one `op_wait` call holds the request open; the CLI loops.
 pub const MAX_WAIT: Duration = Duration::from_secs(30);
+/// How long an ended operation stays in memory, for waiters already
+/// attached; after that it is read from disk like any other.
+const LIVE_GRACE: Duration = Duration::from_secs(10 * 60);
+
+/// Whether `op` is an id this module made (`op_` + 12 hex): anything else —
+/// a path, another team's folder — is not looked up at all.
+fn valid_op_id(op: &str) -> bool {
+    op.strip_prefix("op_")
+        .is_some_and(|hex| hex.len() == 12 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -188,6 +198,10 @@ impl OpStore {
             store.persist(&done);
             tracing::info!(op = %op, state = %done.state, "app operation finished");
             tx.send_replace(done);
+            // Ended: memory only needs it while a waiter could still be
+            // attached; the disk record answers after that.
+            tokio::time::sleep(LIVE_GRACE).await;
+            LIVE.lock().unwrap().remove(&op);
         });
         rec
     }
@@ -195,11 +209,15 @@ impl OpStore {
     /// The record now: live, or from disk (where `running` means the
     /// daemon stopped mid-way).
     pub fn get(&self, op: &str) -> Option<OpRecord> {
+        if !valid_op_id(op) {
+            return None;
+        }
+        let team = self.team_of_dir();
         if let Some(tx) = LIVE.lock().unwrap().get(op) {
             let rec = tx.borrow().clone();
-            return (rec.team_id == self.team_of_dir()).then_some(rec);
+            return (rec.team_id == team).then_some(rec);
         }
-        self.read(op).map(|rec| {
+        self.read(op).filter(|rec| rec.team_id == team).map(|rec| {
             if rec.is_terminal() {
                 rec
             } else {
@@ -217,6 +235,9 @@ impl OpStore {
 
     /// Wait up to `timeout` for the operation to end; the record either way.
     pub async fn wait(&self, op: &str, timeout: Duration) -> Option<OpRecord> {
+        if !valid_op_id(op) {
+            return None;
+        }
         let rx = LIVE.lock().unwrap().get(op).map(|tx| tx.subscribe());
         let Some(mut rx) = rx else {
             return self.get(op);
@@ -248,9 +269,10 @@ impl OpStore {
             }
         }
         let team = self.team_of_dir();
+        let cutoff = chrono::Utc::now() - KEEP_FOR;
         for tx in LIVE.lock().unwrap().values() {
             let rec = tx.borrow().clone();
-            if rec.team_id == team {
+            if rec.team_id == team && (rec.started_at >= cutoff || !rec.is_terminal()) {
                 out.insert(rec.op.clone(), rec);
             }
         }
@@ -339,7 +361,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = OpStore::new(dir.path(), "t1");
         let rec = OpRecord {
-            op: "op_old".into(),
+            op: "op_0123456789ab".into(),
             action: "deploy".into(),
             team_id: "t1".into(),
             app_id: Some("a1".into()),
@@ -351,9 +373,14 @@ mod tests {
             error: None,
         };
         store.persist(&rec);
-        let got = store.get("op_old").unwrap();
+        let got = store.get("op_0123456789ab").unwrap();
         assert_eq!(got.state, "unknown");
         assert_eq!(got.error.unwrap()["exit"], 8);
-        assert!(OpStore::new(dir.path(), "t2").get("op_old").is_none());
+        assert!(OpStore::new(dir.path(), "t2")
+            .get("op_0123456789ab")
+            .is_none());
+        // Not an id this module made: never turned into a path.
+        assert!(store.get("../t1/op_0123456789ab").is_none());
+        assert!(!valid_op_id("op_0123456789ab/../x"));
     }
 }

@@ -237,6 +237,63 @@ pub fn data_row_key(primary_key: &[String], key: &Value) -> Result<String, OpErr
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json))
 }
 
+/// A key value in the type its column has (`information_schema` data_type).
+///
+/// The opaque key is the JSON of the values, so `["10023"]` and `[10023]`
+/// name different rows. A command line only has text, and `--key sku=10023`
+/// parsed as JSON is a number even when `sku` is `text`; going by the
+/// column's type is the only way to get the row that was meant.
+fn key_value_for_column(value: &Value, data_type: Option<&str>) -> Value {
+    let Some(data_type) = data_type else {
+        return value.clone();
+    };
+    let t = data_type.to_ascii_lowercase();
+    let numeric = matches!(
+        t.as_str(),
+        "smallint" | "integer" | "bigint" | "numeric" | "decimal" | "real" | "double precision"
+    );
+    let boolean = t == "boolean";
+    match value {
+        Value::String(s) if numeric => serde_json::from_str::<serde_json::Number>(s.trim())
+            .map(Value::Number)
+            .unwrap_or_else(|_| value.clone()),
+        Value::String(s) if boolean => match s.trim() {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => value.clone(),
+        },
+        Value::Number(n) if !numeric => Value::String(n.to_string()),
+        Value::Bool(b) if !boolean => Value::String(b.to_string()),
+        _ => value.clone(),
+    }
+}
+
+/// `key` (object or array) with each value in its column's type.
+fn typed_key(key: &Value, columns: &[(String, Option<String>)]) -> Value {
+    let type_of = |name: &str| {
+        columns
+            .iter()
+            .find(|(c, _)| c == name)
+            .and_then(|(_, t)| t.as_deref())
+    };
+    match key {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), key_value_for_column(v, type_of(k))))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .zip(columns.iter())
+                .map(|(v, (_, t))| key_value_for_column(v, t.as_deref()))
+                .chain(items.iter().skip(columns.len()).cloned())
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// A `rows` read: page size, cursor, and an optional one-column filter.
 #[derive(Debug, Clone, Default)]
 pub struct RowsQuery {
@@ -619,9 +676,13 @@ impl AppOps<'_> {
         }))
     }
 
-    /// The table's primary key, read from the app's own catalog rather than
-    /// guessed.
-    async fn data_primary_key(&self, app_id: &str, table: &str) -> Result<Vec<String>, OpError> {
+    /// The table's primary-key columns, in order, each with its data type —
+    /// read from the app's own catalog rather than guessed.
+    async fn data_primary_key(
+        &self,
+        app_id: &str,
+        table: &str,
+    ) -> Result<Vec<(String, Option<String>)>, OpError> {
         let tables = self
             .get(
                 &app_path(app_id, "/data/tables"),
@@ -652,7 +713,22 @@ impl AppOps<'_> {
                 format!("Table {table:?} has no primary key, so a single row cannot be addressed."),
             ));
         }
-        Ok(pk)
+        let columns = entry
+            .get("columns")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(pk
+            .into_iter()
+            .map(|name| {
+                let data_type = columns
+                    .iter()
+                    .find(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str()))
+                    .and_then(|c| c.get("dataType").and_then(Value::as_str))
+                    .map(str::to_string);
+                (name, data_type)
+            })
+            .collect())
     }
 
     pub async fn data_rows(
@@ -737,8 +813,9 @@ impl AppOps<'_> {
         let key = match target {
             RowRef::Opaque(opaque) => opaque.clone(),
             RowRef::Key(key) => {
-                let pk = self.data_primary_key(app_id, table).await?;
-                data_row_key(&pk, key)?
+                let columns = self.data_primary_key(app_id, table).await?;
+                let pk: Vec<String> = columns.iter().map(|(c, _)| c.clone()).collect();
+                data_row_key(&pk, &typed_key(key, &columns))?
             }
         };
         Ok(format!(
@@ -798,6 +875,26 @@ impl AppOps<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_value_takes_its_column_s_type() {
+        let columns = vec![
+            ("sku".to_string(), Some("text".to_string())),
+            ("id".to_string(), Some("bigint".to_string())),
+        ];
+        assert_eq!(
+            typed_key(&json!({ "sku": 10023, "id": "42" }), &columns),
+            json!({ "sku": "10023", "id": 42 })
+        );
+        assert_eq!(typed_key(&json!([true, 7]), &columns), json!(["true", 7]));
+        // A value that does not fit the type is left for the server to refuse.
+        assert_eq!(
+            key_value_for_column(&json!("abc"), Some("integer")),
+            json!("abc")
+        );
+        // No catalog type: as given.
+        assert_eq!(key_value_for_column(&json!(5), None), json!(5));
+    }
 
     fn members() -> Vec<(String, String)> {
         vec![

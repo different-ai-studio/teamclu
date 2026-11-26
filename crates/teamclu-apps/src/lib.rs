@@ -72,6 +72,12 @@ pub fn step(command: &str) -> String {
     format!("`amuxd app {command}`")
 }
 
+/// The same step as a bare command, for the machine-readable `next` field
+/// of an error: something an agent can run as is, with no Markdown quoting.
+pub fn next_cmd(command: &str) -> String {
+    format!("amuxd app {command}")
+}
+
 /// Whose permissions a call ran under.
 pub const PRINCIPAL: &str = "this daemon's agent account";
 

@@ -241,7 +241,7 @@ impl AppOps<'_> {
                 "root_prefix",
                 "files rm -r needs a folder, not the storage root",
             )
-            .with_next(crate::step("files purge")));
+            .with_next(crate::next_cmd("files purge")));
         }
         let out = self
             .call(

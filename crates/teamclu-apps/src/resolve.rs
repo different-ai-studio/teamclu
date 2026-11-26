@@ -212,7 +212,7 @@ impl AppOps<'_> {
                 "not_a_checkout",
                 format!("{workspace} is not the checkout of any app in this team — {ask}"),
             )
-            .with_next(crate::step("list"))
+            .with_next(crate::next_cmd("list"))
         })
     }
 

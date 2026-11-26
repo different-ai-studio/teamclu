@@ -1031,7 +1031,7 @@ async fn app_ops_access_and_gate() {
     .await;
     let e = error_of(status, &body, 5);
     assert_eq!(e["code"], "no_such_rule");
-    assert_eq!(e["next"], "`amuxd app gate show`");
+    assert_eq!(e["next"], "amuxd app gate show", "a command, not Markdown");
 
     let (status, body) = app_ops(&app, call("gate_set", "a1", serde_json::json!({}))).await;
     assert_eq!(error_of(status, &body, 2)["code"], "nothing_to_set");

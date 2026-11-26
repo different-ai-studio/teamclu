@@ -803,6 +803,35 @@ fn since_minutes(raw: &str) -> Result<u64, Usage> {
 }
 
 /// All of stdin, or a file; one trailing newline dropped (what `echo` adds).
+/// A secret's value from `--file` or stdin — never an empty one.
+///
+/// An agent's shell has nothing on stdin unless it pipes something, so a
+/// forgotten pipe reads as "" — and an empty value is a valid one to the
+/// platform, which would overwrite the real secret with it and report
+/// success. A terminal on stdin means nothing is coming either.
+fn read_secret(path: Option<&str>, key: &str) -> Result<String, Usage> {
+    use std::io::IsTerminal as _;
+    let pipe_it = Some(format!(
+        "printf %s \"$VALUE\" | amuxd app env set {key} --secret"
+    ));
+    if path.is_none() && std::io::stdin().is_terminal() {
+        return Err(usage(
+            "secret_not_piped",
+            "--secret reads the value from stdin, and nothing is piped in",
+            pipe_it,
+        ));
+    }
+    let value = read_text(path)?;
+    if value.is_empty() {
+        return Err(usage(
+            "empty_secret",
+            "the secret's value is empty — nothing was piped in, or the file is empty; nothing was changed (`env rm` deletes a variable)",
+            pipe_it,
+        ));
+    }
+    Ok(value)
+}
+
 fn read_text(path: Option<&str>) -> Result<String, Usage> {
     use std::io::Read as _;
     let mut text = String::new();
@@ -1036,7 +1065,7 @@ fn group_body(action: &AppAction) -> Result<Option<(&'static str, Value)>, Usage
                         ))
                     }
                     (Some(v), false) => (v.clone(), false),
-                    (None, true) => (read_text(file.as_ref().and_then(|p| p.to_str()))?, true),
+                    (None, true) => (read_secret(file.as_ref().and_then(|p| p.to_str()), key)?, true),
                     (None, false) => {
                         return Err(usage(
                             "missing_value",
@@ -1438,6 +1467,11 @@ fn bounded(mut envelope: Value) -> String {
     if let Some(data) = envelope.get_mut("data") {
         truncated = cap_fields(data);
     }
+    // A failure's message is capped too (a build's stderr can be huge), and
+    // never dropped: the code, `next` and exit are what the caller acts on.
+    if let Some(error) = envelope.get_mut("error") {
+        truncated |= cap_fields(error);
+    }
     if truncated {
         envelope["truncated"] = json!(true);
         envelope["next"] = json!("rerun with -o file:<path> for the full result");
@@ -1452,14 +1486,29 @@ fn bounded(mut envelope: Value) -> String {
         cut -= 1;
     }
     preview.truncate(cut);
-    json!({
+    let mut out = json!({
         "v": 1,
         "ok": envelope["ok"],
         "truncated": true,
         "data_preview": preview,
         "next": "rerun with -o file:<path> for the full result, or narrow it (--limit, --since)",
-    })
-    .to_string()
+    });
+    if envelope["ok"] != true {
+        // The contract's fields only (already capped above), so what is kept
+        // cannot itself be what made the line too long.
+        let e = &envelope["error"];
+        let mut kept = serde_json::Map::new();
+        for field in ["code", "message", "next", "retryable", "kind", "exit", "op"] {
+            if let Some(v) = e.get(field) {
+                kept.insert(field.to_string(), v.clone());
+            }
+        }
+        out["error"] = Value::Object(kept);
+        if let Some(o) = out.as_object_mut() {
+            o.remove("data_preview");
+        }
+    }
+    out.to_string()
 }
 
 /// `-o table`: what a person reads. Arrays of objects become columns,
@@ -1871,7 +1920,7 @@ fn op_outcome(snap: &Value) -> Value {
 }
 
 /// Wait for a running operation to end, telling stderr it is still going.
-async fn wait_op(daemon: &LocalDaemonClient, snap: Value) -> Value {
+async fn wait_op(daemon: &mut LocalDaemonClient, snap: Value) -> Value {
     let op = snap["op"].as_str().unwrap_or_default().to_string();
     let action = snap["action"].as_str().unwrap_or("operation").to_string();
     let mut snap = snap;
@@ -1880,15 +1929,25 @@ async fn wait_op(daemon: &LocalDaemonClient, snap: Value) -> Value {
             "amuxd app: {action} {op} running ({}s) — safe to interrupt; `amuxd app op wait {op}` waits again",
             snap["elapsed_s"].as_i64().unwrap_or(0)
         );
-        let reply = to_envelope(
+        let ask = json!({ "action": "op_wait", "args": { "op": op, "timeoutS": OP_WAIT_SECS } });
+        let mut reply = to_envelope(
             daemon
-                .send(
-                    reqwest::Method::POST,
-                    "/v1/app-ops",
-                    Some(json!({ "action": "op_wait", "args": { "op": op, "timeoutS": OP_WAIT_SECS } })),
-                )
+                .send(reqwest::Method::POST, "/v1/app-ops", Some(ask.clone()))
                 .await,
         );
+        // The session token is short-lived and a build is not: when it
+        // expires mid-wait, trade the root token for a fresh one and ask
+        // again, rather than reading the 401 as a daemon that went away.
+        if reply["error"]["code"] == "daemon_unauthorized" {
+            if let Ok(fresh) = LocalDaemonClient::connect("app-cli").await {
+                *daemon = fresh;
+                reply = to_envelope(
+                    daemon
+                        .send(reqwest::Method::POST, "/v1/app-ops", Some(ask))
+                        .await,
+                );
+            }
+        }
         match op_snapshot(&reply) {
             Some(next) => snap = next.clone(),
             // The daemon went away mid-wait: whatever it was doing stopped
@@ -2021,7 +2080,7 @@ pub fn run(args: AppArgs) -> anyhow::Result<i32> {
     }
     let rt = tokio::runtime::Runtime::new()?;
     let envelope = rt.block_on(async {
-        let daemon = match LocalDaemonClient::connect("app-cli").await {
+        let mut daemon = match LocalDaemonClient::connect("app-cli").await {
             Ok(d) => d,
             Err(e) => return to_envelope(Err(e)),
         };
@@ -2050,7 +2109,7 @@ pub fn run(args: AppArgs) -> anyhow::Result<i32> {
         );
         match op_snapshot(&reply) {
             Some(snap) if waits && !(detach && snap["state"] == "running") => {
-                wait_op(&daemon, snap.clone()).await
+                wait_op(&mut daemon, snap.clone()).await
             }
             _ => reply,
         }
@@ -2510,6 +2569,63 @@ mod tests {
         let v: Value = serde_json::from_str(&huge).unwrap();
         assert_eq!(v["truncated"], true);
         assert!(v["next"].as_str().unwrap().contains("-o file:"));
+    }
+
+    #[test]
+    fn a_failure_is_capped_but_never_loses_its_error() {
+        let long = bounded(error_envelope(
+            "build_failed",
+            &"e".repeat(5000),
+            Some("amuxd app logs"),
+            7,
+            false,
+        ));
+        let v: Value = serde_json::from_str(&long).unwrap();
+        assert!(v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("more bytes"));
+        assert_eq!(v["error"]["code"], "build_failed");
+        assert_eq!(v["error"]["exit"], 7);
+        // Over the whole-output cap: still the error, not a preview of null.
+        let mut huge = error_envelope("build_failed", "x", None, 7, false);
+        huge["error"]["details"] = json!((0..200)
+            .map(|i| json!({"i": i, "m": "y".repeat(1000)}))
+            .collect::<Vec<_>>());
+        let out = bounded(huge);
+        assert!(out.len() <= MAX_OUTPUT_BYTES + 4096, "{}", out.len());
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["error"]["code"], "build_failed");
+        assert!(v.get("data_preview").is_none());
+        assert_eq!(exit_of(&v), 7);
+    }
+
+    #[test]
+    fn an_empty_secret_is_refused_before_anything_is_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty");
+        std::fs::write(&empty, "\n").unwrap();
+        let u = refusal(&[
+            "env",
+            "set",
+            "STRIPE_KEY",
+            "--secret",
+            "--file",
+            empty.to_str().unwrap(),
+        ]);
+        assert_eq!(u.code, "empty_secret");
+        assert!(u.next.unwrap().contains("--secret"));
+        let full = dir.path().join("full");
+        std::fs::write(&full, "sk_live\n").unwrap();
+        let body = body_of(&[
+            "env",
+            "set",
+            "STRIPE_KEY",
+            "--secret",
+            "--file",
+            full.to_str().unwrap(),
+        ]);
+        assert_eq!(body["args"]["value"], "sk_live");
     }
 
     #[test]
