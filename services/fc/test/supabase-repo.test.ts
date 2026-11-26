@@ -1420,6 +1420,10 @@ function createSelectableQuery(table, calls, data, error) {
       calls.push({ table, op: "in", column, values });
       return query;
     },
+    not(column, operator, value) {
+      calls.push({ table, op: "not", column, operator, value });
+      return query;
+    },
     or(expr) {
       calls.push({ table, op: "or", expr });
       return query;
@@ -2583,12 +2587,16 @@ test("apps: typePendingRedeploy is derived from the deployed type", async () => 
   );
 });
 
-test("apps: listApps filters by team_id, orders created_at desc, limits", async () => {
+test("apps: listApps filters by team through app_links, not apps.team_id (P3.1)", async () => {
   const calls: any[] = [];
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] }, calls }));
   await repo.listApps({ teamId: "team-7", limit: 25 });
-  const teamEq = calls.find((c) => c.table === "apps" && c.column === "team_id");
+  const select = calls.find((c) => c.table === "apps" && c.op === "select");
+  assert.match(select?.columns ?? "", /app_links!inner\(team_id\)/);
+  assert.doesNotMatch(select?.columns ?? "", /\bteam_id\b(?!\))/, "apps.team_id is not selected");
+  const teamEq = calls.find((c) => c.table === "apps" && c.column === "app_links.team_id");
   assert.equal(teamEq?.value, "team-7");
+  assert.equal(calls.some((c) => c.table === "apps" && c.column === "team_id"), false);
 });
 
 test("apps: listApps says how the caller is related to each app, owner before invited before team", async () => {
@@ -2601,12 +2609,13 @@ test("apps: listApps says how the caller is related to each app, owner before in
     { ...APP_ROW, id: "team-only", created_by_actor_id: "actor-lin", visibility: "team" },
   ];
   const calls: any[] = [];
-  // The grants are read with the service role, filtered to the caller's actor
-  // in THIS team: the caller-token policy keys on current_member_id(), which is
-  // the user's oldest actor and so hides their grants in any later team.
-  const admin = appsSupabase({
+  // The caller's grants are read by account (app_grants, P3.1), with their own
+  // token; the grantor's account is named as their actor in the app's team.
+  const repo = appsRepo(appsSupabase({
     calls,
     seed: {
+      apps,
+      actors: [{ id: "actor-lin", team_id: "team-1", user_id: "user-lin" }, { id: "actor-x", team_id: "team-1", user_id: "user-x" }],
       app_member_access: [
         { app_id: "mine-granted", member_id: me, permission_level: "admin", granted_by_member_id: "actor-x" },
         { app_id: "team-granted", member_id: me, permission_level: "prompt", granted_by_member_id: "actor-lin" },
@@ -2614,8 +2623,7 @@ test("apps: listApps says how the caller is related to each app, owner before in
         { app_id: "team-only", member_id: "actor-someone-else", permission_level: "admin", granted_by_member_id: "actor-lin" },
       ],
     },
-  });
-  const repo = appsRepo(appsSupabase({ seed: { apps } }), { createServiceRoleClient: () => admin });
+  }));
 
   const items = await repo.listApps({ teamId: "team-1", limit: 100 });
   const byId = Object.fromEntries(items.map((a: any) => [a.id, [a.relationship, a.invitedByActorId]]));
@@ -2627,11 +2635,12 @@ test("apps: listApps says how the caller is related to each app, owner before in
     "personal-granted": ["invited", null],
     "team-only": ["team", null],
   });
-  const memberEq = calls.find((c) => c.table === "app_member_access" && c.column === "member_id");
-  assert.equal(memberEq?.value, me);
+  const mine = calls.find((c) => c.table === "app_grants" && c.column === "principal_user_id");
+  assert.equal(mine?.value, "user-app-1");
+  assert.equal(calls.some((c) => c.table === "app_member_access"), false, "the legacy grant table is not read");
 });
 
-test("apps: listApps still labels every app when the grants cannot be read", async () => {
+test("apps: listApps needs no service role — every TeamClu field is read with the caller's token", async () => {
   const apps = [
     { ...APP_ROW, id: "mine", created_by_actor_id: "actor-app-1", visibility: "personal" },
     { ...APP_ROW, id: "team", created_by_actor_id: "actor-lin", visibility: "team" },
@@ -2653,17 +2662,15 @@ test("apps: listApps still labels every app when the grants cannot be read", asy
 });
 
 test("apps: getApp carries the caller's relationship too", async () => {
-  const admin = appsSupabase({
+  const repo = appsRepo(appsSupabase({
     seed: {
+      apps: [{ ...APP_ROW, created_by_actor_id: "actor-lin" }],
+      actors: [{ id: "actor-lin", team_id: APP_ROW.team_id, user_id: "user-lin" }],
       app_member_access: [
         { app_id: "app-1", member_id: "actor-app-1", permission_level: "prompt", granted_by_member_id: "actor-lin" },
       ],
     },
-  });
-  const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, created_by_actor_id: "actor-lin" }] } }),
-    { createServiceRoleClient: () => admin },
-  );
+  }));
 
   const app = await repo.getApp("app-1");
 
@@ -6601,7 +6608,7 @@ test("getHomeOrgId is null when there is no users row", async () => {
 
 function authInfoRepo({appOrg="org-1", teamOrg="org-1", member=true, rolesError=null, appVisible=true, authRules: authRules = [{path:"/staff",auth:"required",audience:"org"}]}={}) {
  const calls=[];
- const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{app_code:"a-k7m2q9vx4n8p",id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
+ const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{app_code:"a-k7m2q9vx4n8p",id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],app_links:[{app_id:"app",team_id:"team",workspace_id:null,created_by_actor_id:null}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
  return {repo,calls};
 }
 test("auth_info_checks_app_and_catalog_visibility",async()=>{

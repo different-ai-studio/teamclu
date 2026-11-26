@@ -48,6 +48,51 @@ function inheritedAgents(state: any, appId: string) {
   return rows;
 }
 
+/**
+ * The platform tables P2.1's triggers keep in step with the legacy ones
+ * (20261125200000), derived on every read the same way: app_links from the app
+ * row, user grants from app_member_access, org grants from `visibility: team`,
+ * delegations from active agents. Read-only here, as the projection is in the
+ * real database until P3.2. An actor's account is its `user_id`; the caller's
+ * actor (`actorRow`) without one is the signed-in test user.
+ */
+const PROJECTED_TABLES = new Set(["app_links", "app_grants", "app_delegations"]);
+function projectedTables(state: any, actorRow: any, callerUserId: string) {
+  const actor = (id: string | null | undefined) =>
+    !id ? null : (state.actors ?? []).find((a: any) => a.id === id) ?? (actorRow?.id === id ? actorRow : null);
+  const userOf = (id: string | null | undefined): string | null => {
+    if (!id) return null;
+    const a = actor(id);
+    if (a?.user_id) return a.user_id;
+    return actorRow?.id === id ? callerUserId : `user:${id}`;
+  };
+  const level = (l: string) => ({ view: "read", prompt: "write" } as Record<string, string>)[l] ?? l;
+  const apps = state.apps ?? [];
+  return {
+    app_links: apps.map((a: any) => ({
+      app_id: a.id, team_id: a.team_id ?? null, workspace_id: a.workspace_id ?? null,
+      created_by_actor_id: a.created_by_actor_id ?? null,
+    })),
+    app_grants: [
+      ...(state.app_member_access ?? []).map((g: any) => ({
+        app_id: g.app_id, principal_user_id: userOf(g.member_id), principal_org_id: null,
+        level: level(g.permission_level), granted_by_user_id: userOf(g.granted_by_member_id),
+        source: "legacy", legacy_member_id: g.member_id, created_at: g.created_at ?? null,
+      })),
+      ...apps.filter((a: any) => a.visibility === "team").map((a: any) => ({
+        // apps.org_id is NOT NULL in the database; a test row without one is in its team's org.
+        app_id: a.id, principal_user_id: null,
+        principal_org_id: a.org_id ?? (state.teams ?? []).find((t: any) => t.id === a.team_id)?.oid ?? "org-1", level: "read",
+        granted_by_user_id: null, source: "legacy", legacy_member_id: null, created_at: a.created_at ?? null,
+      })),
+    ],
+    app_delegations: (state.agents ?? [])
+      .filter((g: any) => g.status === "active" && g.owner_member_id)
+      .map((g: any) => ({ delegate_user_id: userOf(g.id), principal_user_id: userOf(g.owner_member_id), source_agent_id: g.id }))
+      .filter((d: any) => d.delegate_user_id && d.principal_user_id && d.delegate_user_id !== d.principal_user_id),
+  };
+}
+
 export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [],
   projectSelects = false, appInsertDefaults = { app_code: "a-k7m2q9vx4n8p" }, appInsertId,
   creatorOnlyAppUpdates = false, sharedState,
@@ -91,8 +136,21 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         return actorRow;
       };
       const matchRows = () => {
-        let rows = [...(state[table] ?? [])];
+        let rows = PROJECTED_TABLES.has(table)
+          ? [...(projectedTables(state, actorRow, "user-app-1") as any)[table]]
+          : [...(state[table] ?? [])];
+        // `app_links!inner(team_id)` embedded in an apps select, filtered on
+        // `app_links.team_id`, as PostgREST does.
+        const embedded = Object.entries(ctx.filters).filter(([col]) => col.startsWith("app_links."));
+        if (table === "apps" && embedded.length) {
+          const links = projectedTables(state, actorRow, "user-app-1").app_links;
+          for (const [col, val] of embedded) {
+            const key = col.slice("app_links.".length);
+            rows = rows.filter((r) => links.some((l: any) => l.app_id === r.id && l[key] === val));
+          }
+        }
         for (const [col, val] of Object.entries(ctx.filters)) {
+          if (col.startsWith("app_links.")) continue;
           rows = rows.filter((r) => r[col as string] === val);
         }
         for (const [col, val] of Object.entries(ctx.neqFilters)) rows = rows.filter(r => r[col] !== val);
@@ -126,6 +184,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         },
         insert(row: any) {
           ctx.op = "insert";
+          if (PROJECTED_TABLES.has(table)) throw new Error(`${table} is projected from the legacy tables until P3.2`);
           calls.push({ table, op: "insert", row });
           // mutate state so the inserted row is what subsequent .single() returns
           const inserted = {
@@ -144,6 +203,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         },
         upsert(row: any, options?: any) {
           ctx.op = "upsert";
+          if (PROJECTED_TABLES.has(table)) throw new Error(`${table} is projected from the legacy tables until P3.2`);
           calls.push({ table, op: "upsert", row, options });
           const upserted = { ...row, id: row.id ?? `${table}-id-${(state[table]?.length ?? 0) + 1}` };
           if (!upserted.created_at) upserted.created_at = new Date().toISOString();
@@ -168,6 +228,7 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         },
         delete() {
           ctx.op = "delete";
+          if (PROJECTED_TABLES.has(table)) throw new Error(`${table} is projected from the legacy tables until P3.2`);
           calls.push({ table, op: "delete" });
           return builder;
         },

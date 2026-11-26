@@ -490,6 +490,22 @@ export function makeAppsRepo(host: any) {
     },
 
     /**
+     * Apps as `/v1/apps*` answers them: the platform's fields, the forge's,
+     * and the product's (AppTenantHooks.fields). Every response that carries
+     * an app goes through here (or through list / detail, which add
+     * `decorate`), so no client ever sees one without the product's fields.
+     */
+    async presentApps(rows: any[]) {
+      if (rows.length === 0) return [];
+      const fields = await tenantFactory(this).fields(rows);
+      return rows.map((r: any, i: number) => ({ ...appView(r), ...fields[i] }));
+    },
+
+    async presentApp(row: any) {
+      return (await this.presentApps([row]))[0];
+    },
+
+    /**
      * One page of a team's apps, newest first, and where the next starts.
      *
      * The cursor is made here, from the raw row, not by the route from the
@@ -505,9 +521,10 @@ export function makeAppsRepo(host: any) {
       [scope: string]: unknown;
     }) {
       const tenant = tenantFactory(this);
+      const embed = tenant.listEmbed(scope);
       let query = tenant.scopeList(supabase
         .from("apps")
-        .select(APP_COLUMNS), scope)
+        .select(embed ? `${APP_COLUMNS}, ${embed}` : APP_COLUMNS), scope)
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
         .limit(limit);
@@ -515,11 +532,13 @@ export function makeAppsRepo(host: any) {
       const { data, error } = await query;
       if (error) throw error;
       const rows = data ?? [];
-      const extra = await tenant.decorate(rows);
+      const fields = await tenant.fields(rows);
+      const extra = await tenant.decorate(rows, fields);
       const last = rows.length >= limit ? rows[rows.length - 1] : null;
       return {
         items: rows.map((r: any, i: number) => ({
           ...appView(r),
+          ...fields[i],
           ...extra[i],
         })),
         nextCursor: last ? encodeCursor({ createdAt: String(last.created_at), id: last.id }) : null,
@@ -581,9 +600,11 @@ export function makeAppsRepo(host: any) {
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
-      const [extra] = await tenantFactory(this).decorate([data]);
+      const tenant = tenantFactory(this);
+      const fields = await tenant.fields([data]);
+      const [extra] = await tenant.decorate([data], fields);
       const permission = await this.resolveAppCallerPermissionForApp(data);
-      return { ...appView(data), canManageDeployment: permission?.level === "admin", ...extra,
+      return { ...appView(data), ...fields[0], canManageDeployment: permission?.level === "admin", ...extra,
         originSecurity: projectOriginSecurity(await readAppOriginSecurity(data)) };
     },
 
@@ -655,7 +676,7 @@ export function makeAppsRepo(host: any) {
       // provision, so there is no repo of ours to create and no deploy key to
       // hold. `git_auth_kind` stays null, which is what makes deploy build the
       // workdir as it sits.
-      if (importUrl || localOnly) return appView(row);
+      if (importUrl || localOnly) return this.presentApp(row);
 
       try {
         // Ours to host: the forge creates the repo and says where it lives.
@@ -674,7 +695,7 @@ export function makeAppsRepo(host: any) {
           .single();
         if (updErr) throw updErr;
         await forge.appAccessChanged(row.id);
-        return appView(updated);
+        return this.presentApp(updated);
       } catch (e: unknown) {
         const msg = e instanceof ApiError ? e.message : String((e as Error)?.message ?? e);
         const { data: errored, error: errUpd } = await supabase
@@ -689,7 +710,7 @@ export function makeAppsRepo(host: any) {
           .single();
         if (errUpd) throw errUpd;
         if (e instanceof ApiError) throw e;
-        throw forge.provisionFailed(msg, { app: appView(errored) });
+        throw forge.provisionFailed(msg, { app: await this.presentApp(errored) });
       }
     },
 
@@ -725,7 +746,7 @@ export function makeAppsRepo(host: any) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, org_id, custom_domain, deploy_token, deploy_started_at, visibility",
+          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, org_id, custom_domain, deploy_token, deploy_started_at",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -776,13 +797,18 @@ export function makeAppsRepo(host: any) {
       // The tenant's own fields of the patch (TeamClu: visibility).
       const tenant = tenantFactory(this);
       const tenantSet = tenant.updateColumns(patch);
+      // The product's fields as they stood, to tell whether this changed them.
+      const fieldsBefore: Record<string, unknown> | null = Object.keys(tenantSet).length > 0
+        ? (await tenant.fields([{ ...cur, id: appId }]))[0]
+        : null;
       // Changing who may reach the app is managing access; a delegate may
       // not, here as on the grant routes. Only an actual change counts, so a
       // settings form that echoes the current value back still saves.
-      if ((tenant.accessColumns ?? []).some((col) => col in tenantSet && tenantSet[col] !== (cur as any)?.[col])) {
+      if ((tenant.accessColumns ?? []).some((col) => col in tenantSet && tenantSet[col] !== fieldsBefore?.[col])) {
         this.assertNotInheritedFor(callerPermission, "manage_access");
       }
       Object.assign(set, tenantSet);
+      const tenantBefore = fieldsBefore === null ? null : JSON.stringify(fieldsBefore);
       // Written as-is and nothing else moves: whether the function gets a
       // database is decided at the next finalize (needsDatabase), which also
       // stamps `deployed_type`. Switching away from data_app never drops the
@@ -931,8 +957,12 @@ export function makeAppsRepo(host: any) {
       invalidateAppHosts({ id: appId, slug: cur.slug, appCode: cur.app_code, usesAppCodeDomain: cur.uses_app_code_domain, customDomain: cur.custom_domain });
       // A tenant field that changed may change who reaches the app (TeamClu:
       // visibility is read access for the whole org in the forge too).
-      if (Object.keys(tenantSet).some((k) => tenantSet[k] !== cur[k])) await forge.appAccessChanged(appId);
-      return appView(data);
+      const presented = await this.presentApp(data);
+      if (tenantBefore !== null) {
+        const after = (await tenant.fields([data]))[0];
+        if (JSON.stringify(after) !== tenantBefore) await forge.appAccessChanged(appId);
+      }
+      return presented;
     },
 
     /**
@@ -1253,7 +1283,7 @@ export function makeAppsRepo(host: any) {
         if (updErr) throw updErr;
         if (!row) throw new ApiError(409, "deploy_in_progress", "app deploy state changed before upload handle was issued");
         return {
-          ...appView(row),
+          ...(await this.presentApp(row)),
           // Exactly one of these is set — see startDeploy. The daemon branches
           // on which one it got.
           ossObjectName: r.ossObjectName,
@@ -1448,7 +1478,7 @@ export function makeAppsRepo(host: any) {
         await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: deployToken });
         // The proxy caches fc_endpoint/fc_status per host.
         invalidateAppHosts({ id: appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: row.uses_app_code_domain, customDomain: existing.custom_domain });
-        return appView(row);
+        return this.presentApp(row);
       } catch (e: any) {
         await writer
           .from("apps")
@@ -1848,7 +1878,7 @@ export function makeAppsRepo(host: any) {
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
-      return appView(data);
+      return this.presentApp(data);
     },
 
     /** Forget an imported app's stored token. Idempotent. */
@@ -1864,7 +1894,7 @@ export function makeAppsRepo(host: any) {
       if (error) throw error;
       if (!data) return null;
       await forge.forgetExternalCredential(gate.cur);
-      return appView(data);
+      return this.presentApp(data);
     },
 
     /**

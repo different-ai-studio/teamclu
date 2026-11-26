@@ -3990,9 +3990,9 @@ export function createSupabaseBusinessRepository(options) {
           const admin = await serviceRoleClient("read app workspace context for a seated agent");
           const { data: appRow, error: appErr } = await admin
             .from("apps")
-            .select(`${APP_COLUMNS}, custom_domain, custom_domain_verified_at, storage_bytes, storage_quota_bytes`)
+            .select(`${APP_COLUMNS}, custom_domain, custom_domain_verified_at, storage_bytes, storage_quota_bytes, app_links!inner(team_id)`)
             .eq("id", sessionRow.app_id)
-            .eq("team_id", sessionRow.team_id)
+            .eq("app_links.team_id", sessionRow.team_id)
             .maybeSingle();
           if (appErr) throw appErr;
 
@@ -4012,7 +4012,8 @@ export function createSupabaseBusinessRepository(options) {
             if (envResult.error) throw envResult.error;
             if (cronResult.error) throw cronResult.error;
 
-            const app = appView(appRow);
+            // With TeamClu's fields (visibility), as /v1/apps answers it.
+            const app = await this.presentApp(appRow);
             const customDomainVerified = Boolean(appRow.custom_domain_verified_at);
             const canonicalUrl = customDomainVerified && appRow.custom_domain
               ? `https://${appRow.custom_domain}`

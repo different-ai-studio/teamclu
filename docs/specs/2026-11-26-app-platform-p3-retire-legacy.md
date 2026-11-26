@@ -63,6 +63,17 @@ org 成员关系现在只能这么算（`org_roles_users` 只有角色，不覆�
 | P3.4 删旧（单向） | 删旧列、`app_member_access`、`legacy_member_id`、正反两套触发器、旧函数；`apps_team_slug_uniq` 随列删；改写排行榜、`upgrade_account_to_org`、`guard_team_org_move` 改读 `app_links`；pgTAP 全部改为新形态插入；删 forge 旧列 | 删除 | ❌ |
 | ~~P3.5 独立 schema~~ | 不做（Q5）：表留在 `amux`，靠外键规则 + 边界测试守边界；单独起库留到 P4 | — | — |
 
+### 2.1 P3.1 拆分
+
+写入仍是旧列 + P2.1 触发器；P3.1 只换读取。完成后 FC 里旧列只剩写入方（建 app、PATCH visibility、access 页增删），P3.2 再换。
+
+- **P3.1a 测试假库投影**：`test/fixtures/apps-repository.ts` 像 P2.1 触发器一样，从旧表实时推导 `app_links` / `app_grants` / `app_delegations`。
+- **P3.1b 展示拆分**：平台的 `mapApp` / 选列只含平台列；`teamId` / `visibility` / `workspaceId` / `createdByActorId` / `relationship` / `invitedByActorId` 全部由 `AppTenantHooks.decorate` 给出，覆盖每个返回 App 的接口（不只是列表和详情）。列表按团队过滤改为内嵌 `app_links!inner(team_id)`，`app_links` 加 `authenticated` 的 SELECT 策略：`app_id in (select app_id from caller_apps())`。
+- **P3.1c TeamClu repo**：viewer / access 页 / 成员判断 / access manager / git 凭证改读 `app_links` + `app_grants`（账号 → 该团队的 actor）+ `app_delegations`。
+- **P3.1d forge**：`app-git-access.ts`、`gitea/sync.ts` 改读新模型。
+- **P3.1e 其他读者**：会话 appContext、apps 登录页、vanity、`updateApp` 判断 visibility 是否变化。
+- **P3.1f 守卫**：测试扫描 `src/`，旧列名只能出现在登记过的写入点。
+
 ## 3. 回滚
 
 - P3.1：换回 P2 镜像即可。

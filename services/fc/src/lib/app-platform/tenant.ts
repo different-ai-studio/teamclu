@@ -8,8 +8,9 @@
  * (P2.4b of docs/specs/2026-11-25-app-platform-p2-de-team.md, decision Q6).
  * TeamClu's implementation is `teamclu-apps/tenant.ts`.
  *
- * Until P3 drops the legacy columns, the product's columns still sit on the
- * app row, so several hooks hand back columns for the platform to write.
+ * Until P3.2 the product still writes its own columns on the app row, so
+ * several hooks hand back columns for the platform to write; reads of the
+ * product's fields go through `fields` (P3.1).
  */
 
 export interface AppTenantCreate {
@@ -34,6 +35,12 @@ export interface AppTenantHooks {
   prepareCreate(input: Record<string, any>): Promise<AppTenantCreate>;
 
   /**
+   * Resources to embed in a list's select for `scopeList` to filter on (a
+   * PostgREST embed such as `links!inner(key)`), or null for none.
+   */
+  listEmbed(scope: Record<string, unknown>): string | null;
+
+  /**
    * Narrow a list query by the product's own arguments — every list argument
    * except `limit` and `cursor`. Row security has already limited it to what
    * the caller may see.
@@ -41,10 +48,17 @@ export interface AppTenantHooks {
   scopeList<Q>(query: Q, scope: Record<string, unknown>): Q;
 
   /**
-   * Extra response fields for apps the caller reads, one object per row, in
-   * the same order. Must not fail the read.
+   * The product's fields of each app, one object per row in the same order,
+   * merged into every app the platform answers with. Rows are ones the caller
+   * was allowed to read (or that the platform itself just wrote).
    */
-  decorate(rows: Record<string, any>[]): Promise<Record<string, unknown>[]>;
+  fields(rows: Record<string, any>[]): Promise<Record<string, unknown>[]>;
+
+  /**
+   * Extra fields for apps the caller reads (list, detail): `fields` is what
+   * `fields` returned for the same rows. Must not fail the read.
+   */
+  decorate(rows: Record<string, any>[], fields: Record<string, unknown>[]): Promise<Record<string, unknown>[]>;
 
   /** Columns an update writes for the product's own fields of the patch. */
   updateColumns(patch: Record<string, unknown>): Record<string, unknown>;
@@ -56,7 +70,10 @@ export interface AppTenantHooks {
    */
   readonly accessColumns?: readonly string[];
 
-  /** Extra fields for an app's auth info (`GET /v1/apps/:id/auth-info`). */
+  /**
+   * Extra fields for an app's auth info (`GET /v1/apps/:id/auth-info`); `app`
+   * is the app as the platform answers it, `fields` included.
+   */
   authInfoFields(app: Record<string, any>): Record<string, unknown>;
 
   /**

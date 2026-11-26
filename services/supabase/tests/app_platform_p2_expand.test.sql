@@ -49,10 +49,10 @@ insert into amux.apps (id, team_id, created_by_actor_id, name, slug, type, org_i
 select has_table('amux', 'app_links', 'app_links exists');
 select has_table('amux', 'app_grants', 'app_grants exists');
 select has_table('amux', 'app_delegations', 'app_delegations exists');
-select ok(not has_table_privilege('authenticated', 'amux.app_grants', 'select')
-          and not has_table_privilege('authenticated', 'amux.app_delegations', 'select')
-          and not has_table_privilege('authenticated', 'amux.app_links', 'select'),
-          'signed-in users cannot read the new tables until P2.3 writes their policies');
+-- app_links and app_grants became readable, row by row, in P3.1
+-- (20261127100000, app_platform_p3_read.test.sql); delegations never.
+select ok(not has_table_privilege('authenticated', 'amux.app_delegations', 'select'),
+          'signed-in users cannot read delegations');
 
 -- ── creating an app projects its creator, link and visibility ─────────────
 
