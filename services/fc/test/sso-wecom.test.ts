@@ -445,3 +445,25 @@ test("routes: data callback GET answers the echostr as text", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.body, "4242");
 });
+
+test("WeCom domain-verify file: only allowlisted codes are served", async () => {
+  const { wecomDomainVerifyBody } = await import("../src/lib/sso/domain-verify.js");
+  const env = { WECOM_DOMAIN_VERIFY_CODES: " Mj5k9Hcs4qZf7DjD ,other123" };
+  assert.equal(wecomDomainVerifyBody("WW_verify_Mj5k9Hcs4qZf7DjD.txt", env), "Mj5k9Hcs4qZf7DjD");
+  assert.equal(wecomDomainVerifyBody("WW_verify_attacker1.txt", env), null);
+  assert.equal(wecomDomainVerifyBody("WW_verify_Mj5k9Hcs4qZf7DjD.txt", {}), null);
+  assert.equal(wecomDomainVerifyBody("../WW_verify_Mj5k9Hcs4qZf7DjD.txt", env), null);
+
+  const prev = process.env.WECOM_DOMAIN_VERIFY_CODES;
+  process.env.WECOM_DOMAIN_VERIFY_CODES = "Mj5k9Hcs4qZf7DjD";
+  try {
+    const ok = await handleBusinessApiRequest({ httpMethod: "GET", path: "/WW_verify_Mj5k9Hcs4qZf7DjD.txt", headers: {}, body: null }, routeDeps(null));
+    assert.equal(ok.statusCode, 200);
+    assert.equal(ok.body, "Mj5k9Hcs4qZf7DjD");
+    const no = await handleBusinessApiRequest({ httpMethod: "GET", path: "/WW_verify_someoneElse1.txt", headers: {}, body: null }, routeDeps(null));
+    assert.equal(no.statusCode, 404);
+  } finally {
+    if (prev === undefined) delete process.env.WECOM_DOMAIN_VERIFY_CODES;
+    else process.env.WECOM_DOMAIN_VERIFY_CODES = prev;
+  }
+});

@@ -557,6 +557,9 @@ services:
       WECOM_PROVIDER_CORPID: "${WECOM_PROVIDER_CORPID:-}"
       WECOM_REDIRECT_BASE_URL: "${WECOM_REDIRECT_BASE_URL:-}"
       WECOM_INSTALL_TEST_MODE: "${WECOM_INSTALL_TEST_MODE:-}"
+      # Codes the WeCom console asks to find at /WW_verify_<code>.txt when it
+      # verifies domain ownership, comma-separated (lib/sso/domain-verify.ts).
+      WECOM_DOMAIN_VERIFY_CODES: "${WECOM_DOMAIN_VERIFY_CODES:-}"
       SSO_ALLOWED_REDIRECT_SCHEMES: "${SSO_ALLOWED_REDIRECT_SCHEMES:-}"
       # Desktop download link served by /v1/config/public (iOS onboarding).
       # Empty falls back to the GitHub releases page inside FC.
