@@ -445,6 +445,23 @@ async fn fake_cloud() -> String {
             }),
         )
         .route(
+            "/v1/apps/:id/sessions",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "items": [{ "id": "s1", "title": "改首页", "lastMessageAt": "2026-11-26T08:00:00Z" }],
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/runtime-info",
+            get(|headers: HeaderMap, axum::extract::RawQuery(q): axum::extract::RawQuery| async move {
+                authed(&headers)?;
+                assert_eq!(q.as_deref(), Some("language=node"));
+                Ok::<_, StatusCode>(Json(serde_json::json!({ "currentDeployment": null, "runtimes": ["nodejs20"] })))
+            }),
+        )
+        .route(
             "/v1/apps/:id/env",
             get(|headers: HeaderMap| async move {
                 authed(&headers)?;
@@ -800,6 +817,74 @@ async fn app_ops_long_operations_run_in_the_daemon() {
     )
     .await;
     assert_eq!(error_of(status, &body, 5)["code"], "no_such_op");
+}
+
+/// `runtime`, `sessions` and `checkout where|bind|move` — the app as this
+/// machine sees it.
+#[tokio::test]
+async fn app_ops_runtime_sessions_and_checkout() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, dir) = test_app_inner(Some(Arc::new(backend))).await;
+    let call = |action: &str, args: Value| serde_json::json!({ "action": action, "appId": "a1", "args": args });
+
+    let (status, body) = app_ops(&app, call("sessions", Value::Null)).await;
+    assert_eq!(data_of(status, &body)["sessions"][0]["title"], "改首页");
+
+    let (status, body) = app_ops(
+        &app,
+        call("runtime", serde_json::json!({ "language": "node" })),
+    )
+    .await;
+    let rt = data_of(status, &body);
+    assert_eq!(rt["runtime"]["runtimes"][0], "nodejs20");
+    assert!(rt["this_machine"]["os"].is_string(), "{rt}");
+
+    let (status, body) = app_ops(
+        &app,
+        call("runtime", serde_json::json!({ "language": "cobol" })),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 2)["code"], "invalid_language");
+
+    let folder = dir.path().join("notes-code");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "checkout_bind",
+            serde_json::json!({ "dir": folder.to_str().unwrap() }),
+        ),
+    )
+    .await;
+    let bound = data_of(status, &body);
+    assert_eq!(bound["workdir"], folder.to_str().unwrap());
+
+    let (status, body) = app_ops(&app, call("checkout_where", Value::Null)).await;
+    let here = data_of(status, &body);
+    assert_eq!(here["workdir"], folder.to_str().unwrap());
+    assert_eq!(here["exists"], true);
+
+    // Moving the checkout the caller stands in is refused before anything moves.
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "checkout_move", "appId": "a1",
+            "workspacePath": folder.join("src").to_str().unwrap(),
+            "args": { "dir": dir.path().join("moved").to_str().unwrap() } }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 6)["code"], "moves_own_checkout");
+    assert!(folder.is_dir());
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "checkout_bind",
+            serde_json::json!({ "dir": "/definitely/not/here" }),
+        ),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 5)["code"], "dir_not_found");
 }
 
 /// `amuxd app files`: the daemon lists, signs and deletes; purge needs the

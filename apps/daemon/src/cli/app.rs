@@ -29,9 +29,14 @@ const DEFAULT_LOG_LIMIT: u64 = 50;
 
 #[derive(Args, Debug)]
 pub struct AppArgs {
-    /// json (default, one line), table (for people), or file:<path> (the
-    /// whole result to a file; stdout gets a summary).
-    #[arg(short = 'o', long = "output", global = true, default_value = "json")]
+    /// json (default), table, or file:<path>.
+    #[arg(
+        short = 'o',
+        long = "output",
+        global = true,
+        default_value = "json",
+        hide_default_value = true
+    )]
     pub output: String,
     #[command(subcommand)]
     pub action: AppAction,
@@ -43,7 +48,7 @@ pub struct AppTarget {
     /// The app's id.
     #[arg(long, conflicts_with = "app")]
     pub id: Option<String>,
-    /// The app's name or slug — must match exactly one app in the team.
+    /// The app's name or slug.
     #[arg(long)]
     pub app: Option<String>,
 }
@@ -51,34 +56,46 @@ pub struct AppTarget {
 #[derive(Subcommand, Debug)]
 pub enum AppAction {
     /// Which account these commands act as, and in which team.
+    ///
+    /// Every command acts as this daemon's agent account; what it may do is
+    /// that account's grants on each app.
+    ///
+    /// Example: amuxd app whoami
     Whoami,
-    /// This team's apps visible to this daemon's agent, with the local
-    /// checkout of each one this machine has.
+    /// The team's apps this agent can see, with local checkouts.
+    ///
+    /// Example: amuxd app list -o table
     List,
-    /// Every setting of one app, where its checkout is, what it declares, and
-    /// how far its branch is ahead of what is live.
+    /// One app: settings, checkout, declaration, ahead of live.
+    ///
+    /// Without --id/--app: the app whose checkout this directory is in. Also
+    /// lists the app's running operations. Needs read.
     ///
     /// Example: amuxd app status --app 记账
     Status(AppTarget),
-    /// Create an app and put its code on this machine: a starter template by
-    /// default, or a clone (--from-git), or an existing folder (--from-dir).
+    /// Create an app and put its code on this machine.
+    ///
+    /// A starter template by default, a clone with --from-git, or a folder
+    /// already here with --from-dir.
     ///
     /// Example: amuxd app create 记账 --type data_app
     Create {
         /// The new app's name.
         name: Option<String>,
-        /// static_web (template default), slides, data_app, or imported
-        /// (default for --from-git / --from-dir).
+        /// static_web (default), slides, data_app, imported.
         #[arg(long = "type")]
         app_type: Option<String>,
         #[arg(long = "visibility", hide = true)]
         old_visibility: Option<String>,
-        /// Import this repository instead of starting from a template.
+        /// Import this repository.
         #[arg(long, conflicts_with = "from_dir")]
         from_git: Option<String>,
         /// Use this folder as the app's code, where it is.
         #[arg(long)]
         from_dir: Option<std::path::PathBuf>,
+        /// Template only: no code here yet (`checkout reseed` later).
+        #[arg(long, conflicts_with_all = ["from_git", "from_dir"])]
+        no_checkout: bool,
         #[arg(long = "name", hide = true)]
         old_name: Option<String>,
         #[arg(long = "git-remote", hide = true)]
@@ -86,22 +103,41 @@ pub enum AppAction {
         #[arg(long = "dir", hide = true)]
         old_dir: Option<String>,
     },
-    /// Write the app's code again, for an app whose seed never ran or failed.
+    #[command(hide = true)]
     Reseed(AppTarget),
-    /// Put a team app's code on this machine. Never clones over a checkout
-    /// that is already here.
+    #[command(hide = true)]
     Download(AppTarget),
-    /// Rename the app or change its type. The reply's `notes` say what each
-    /// change does and when it takes effect. Who may work on it: `access`;
-    /// who may open the site: `gate`.
+    /// Runtimes the platform offers and what this machine can build.
+    ///
+    /// Pick a runtime from this, not from memory. Needs read.
+    ///
+    /// Example: amuxd app runtime --language node
+    Runtime {
+        #[command(flatten)]
+        target: AppTarget,
+        /// node, python, go, php or java.
+        #[arg(long)]
+        language: Option<String>,
+    },
+    /// The sessions opened on the app.
+    ///
+    /// Example: amuxd app sessions --app 记账
+    Sessions(AppTarget),
+    /// The app's code directory on this machine.
+    Checkout(Group<CheckoutCmd>),
+    /// Rename the app or change its type.
+    ///
+    /// The reply's `notes` say when each change takes effect. Who may work on
+    /// it: `access`; who may open the site: `gate`. Needs admin.
+    ///
+    /// Example: amuxd app update --name 账本
     Update {
         #[command(flatten)]
         target: AppTarget,
-        /// A new name. The public URL does not change.
+        /// A new name; the URL stays.
         #[arg(long)]
         name: Option<String>,
-        /// static_web, slides, data_app, or imported. Takes effect on the next
-        /// deploy; leaving data_app drops DATABASE_URL from the app.
+        /// static_web, slides, data_app, imported (next deploy).
         #[arg(long = "type")]
         app_type: Option<String>,
         #[arg(long = "visibility", hide = true)]
@@ -115,22 +151,22 @@ pub enum AppAction {
         #[arg(long = "auth-rules", hide = true)]
         old_auth_rules: Option<String>,
     },
-    /// Build the checkout on this machine and publish it. A Gitea-hosted app
-    /// must be committed and pushed first. Needs write on the app. amuxd runs
-    /// it; if this command is killed, `amuxd app op wait <op>` waits again.
+    /// Build the checkout here and publish it.
+    ///
+    /// Commit and push first. amuxd runs it: if this command is killed,
+    /// `amuxd app op wait <op>` waits again. Needs write.
     ///
     /// Example: amuxd app deploy
     Deploy {
-        /// Return the operation id at once instead of waiting.
+        /// Return the operation id at once.
         #[arg(long)]
         detach: bool,
         #[command(flatten)]
         target: AppTarget,
-        /// Confirm that this deploy carries a database migration.
+        /// This deploy carries a database migration.
         #[arg(long)]
         migration: bool,
-        /// Move an app still on its old domain to its app-code domain once
-        /// this deploy succeeds.
+        /// Move to the app-code domain once it succeeds.
         #[arg(long)]
         move_domain: bool,
         #[arg(long = "use-app-code-domain", hide = true)]
@@ -142,10 +178,10 @@ pub enum AppAction {
     Logs {
         #[command(flatten)]
         target: AppTarget,
-        /// How far back: 30m (default), 2h, 1d — at most 7d.
+        /// 30m (default), 2h, 1d — at most 7d.
         #[arg(long)]
         since: Option<String>,
-        /// At most this many entries (default 50, at most 200).
+        /// Default 50, at most 200.
         #[arg(long)]
         limit: Option<u64>,
         /// app (default), request, or all.
@@ -154,52 +190,54 @@ pub enum AppAction {
         /// Only entries containing this text.
         #[arg(long)]
         grep: Option<String>,
-        /// Only entries for this request id.
+        /// Only this request's entries.
         #[arg(long)]
         request_id: Option<String>,
         #[arg(long = "contains", hide = true)]
         old_contains: Option<String>,
     },
-    /// Take the deployed site offline and keep the app, its code and its data.
-    /// A deployed app must be undeployed before it can be deleted. Needs an
-    /// explicit --id or --app.
+    /// Take the site offline; keep the app, code and data.
+    ///
+    /// Needs --id or --app, and admin. Waits like deploy.
+    ///
+    /// Example: amuxd app undeploy --app 记账
     Undeploy {
         #[command(flatten)]
         target: AppTarget,
-        /// Return the operation id at once instead of waiting.
+        /// Return the operation id at once.
         #[arg(long)]
         detach: bool,
     },
-    /// Long operations (deploy, undeploy) amuxd is running or ran.
+    /// Deploys and undeploys amuxd is running or ran.
     Op {
         #[command(subcommand)]
         cmd: OpCmd,
     },
-    /// Delete the app: its site goes offline and its repository is archived.
-    /// Needs an explicit --id or --app, and --yes.
+    /// Delete the app; its repository is archived. No undo.
+    ///
+    /// Undeploy it first. Needs --id or --app, --yes, and admin held directly.
+    ///
+    /// Example: amuxd app delete --app 记账 --yes
     Delete {
         #[command(flatten)]
         target: AppTarget,
-        /// Yes, delete it. There is no undo.
+        /// Yes, delete it.
         #[arg(long)]
         yes: bool,
     },
-    /// Who may work on the app: read, write or admin, per person, per agent,
-    /// or for the whole org.
+    /// Who may work on the app (read / write / admin).
     Access(Group<AccessCmd>),
-    /// Who may open the deployed site: the login wall. Applies from the next
-    /// request; no deploy needed.
+    /// Who may open the deployed site (the login wall).
     Gate(Group<GateCmd>),
-    /// Files the app stored in object storage. Bytes move in this process,
-    /// with its own file permissions.
+    /// Files the app stored in object storage.
     Files(Group<FilesCmd>),
-    /// Environment variables and secrets — live on the next deploy.
+    /// Environment variables and secrets (next deploy).
     Env(Group<EnvCmd>),
-    /// Scheduled HTTP calls the platform makes to the app's own URL.
+    /// HTTP calls the platform makes to the app on a schedule.
     Cron(Group<CronCmd>),
     /// The app's custom domain (self-host only).
     Domain(Group<DomainCmd>),
-    /// The deployed data_app's own database, one row at a time.
+    /// The deployed data_app's database, one row at a time.
     Data(Group<DataCmd>),
 }
 
@@ -209,7 +247,7 @@ pub struct Group<C: Subcommand> {
     /// The app's id.
     #[arg(long, global = true, conflicts_with = "app")]
     pub id: Option<String>,
-    /// The app's name or slug — must match exactly one app in the team.
+    /// The app's name or slug.
     #[arg(long, global = true)]
     pub app: Option<String>,
     #[command(subcommand)]
@@ -218,32 +256,40 @@ pub struct Group<C: Subcommand> {
 
 #[derive(Subcommand, Debug)]
 pub enum AccessCmd {
-    /// Every grant and where it comes from (direct, or inherited from an
-    /// agent's owner), the org-wide level, and who else could be granted.
-    /// Needs admin on the app.
-    Ls,
-    /// Grant a person or an agent a level, or the whole org with --org.
-    /// Needs admin on the app, held directly.
+    /// Grants with their source, the org level, and candidates.
     ///
-    /// Examples: amuxd app access grant 王芳 write
-    ///           amuxd app access grant --org read
+    /// A grant is direct, or inherited from an agent's owner. Needs admin.
+    ///
+    /// Example: amuxd app access ls --app 记账
+    Ls,
+    /// Grant a person or an agent a level, or the whole org.
+    ///
+    /// Needs admin held directly (not through an owner).
+    ///
+    /// Example: amuxd app access grant 王芳 write
+    ///
+    /// Example: amuxd app access grant --org read
     Grant {
-        /// An actor id or a name (`access ls` lists them); with --org, the level.
+        /// Actor id or name; with --org, the level.
         who: String,
         /// read, write or admin.
         level: Option<String>,
-        /// Grant the whole org instead (read only, for now).
+        /// The whole org (read only, for now).
         #[arg(long)]
         org: bool,
     },
-    /// Remove a person's or an agent's own grant, or the org's with --org.
+    /// Remove an actor's own grant, or the org's.
     ///
-    /// Examples: amuxd app access revoke 王芳
-    ///           amuxd app access revoke --org
+    /// Needs admin held directly.
+    ///
+    /// Example: amuxd app access revoke 王芳
+    ///
+    /// Example: amuxd app access revoke --org
     Revoke {
-        /// An actor id or a name.
+        /// Actor id or name.
         #[arg(required_unless_present = "org")]
         who: Option<String>,
+        /// The org's grant.
         #[arg(long, conflicts_with = "who")]
         org: bool,
     },
@@ -251,26 +297,30 @@ pub enum AccessCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum GateCmd {
-    /// The wall as set, the policy each path resolves to, and the org's roles.
+    /// The wall, the policy per path, and the org's roles.
+    ///
+    /// Example: amuxd app gate show
     Show,
-    /// Change only the fields given; --rules-file replaces the whole rule list.
+    /// Change only the fields given.
+    ///
+    /// Applies from the next request, no deploy. Needs admin.
     ///
     /// Example: amuxd app gate set --mode platform --audience org
     Set {
-        /// none (anyone with the URL) or platform (sign-in required).
+        /// none (open) or platform (sign-in).
         #[arg(long)]
         mode: Option<String>,
-        /// any (any signed-in user) or org (members of the app's org).
+        /// any (signed in) or org (org members).
         #[arg(long)]
         audience: Option<String>,
-        /// all (whole site, rules are exceptions) or paths (only rule paths).
+        /// all (rules are exceptions) or paths (only rules).
         #[arg(long)]
         scope: Option<String>,
-        /// A JSON array of {path, auth, audience?, roles?}; `-` for stdin.
+        /// Replace all rules with this JSON array (- = stdin).
         #[arg(long)]
         rules_file: Option<String>,
     },
-    /// Add or replace the rule for one path prefix.
+    /// Add or remove the rule for one path prefix.
     Rule {
         #[command(subcommand)]
         cmd: GateRuleCmd,
@@ -279,7 +329,9 @@ pub enum GateCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum GateRuleCmd {
-    /// Add the rule, or replace the one on the same path.
+    /// Add the rule, or replace the one on that path.
+    ///
+    /// Needs admin.
     ///
     /// Example: amuxd app gate rule add /admin --auth required --audience org
     Add {
@@ -288,27 +340,77 @@ pub enum GateRuleCmd {
         /// required or public.
         #[arg(long)]
         auth: String,
-        /// any or org (with --auth required).
+        /// any or org (with required).
         #[arg(long)]
         audience: Option<String>,
-        /// Org role codes, comma-separated (with --auth required).
+        /// Org role codes, a,b (with required).
         #[arg(long, value_delimiter = ',')]
         roles: Option<Vec<String>>,
     },
     /// Remove the rule on exactly this path.
-    Rm { path: String },
+    ///
+    /// Example: amuxd app gate rule rm /legacy
+    Rm {
+        /// The rule's path, as `gate show` lists it.
+        path: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CheckoutCmd {
+    /// Where this machine's checkout is, if anywhere.
+    ///
+    /// Example: amuxd app checkout where --app 记账
+    Where,
+    /// Put the app's code on this machine.
+    ///
+    /// Never clones over a checkout already here. Needs read.
+    ///
+    /// Example: amuxd app checkout clone --app 记账
+    Clone,
+    /// Move this machine's checkout, whole.
+    ///
+    /// Not the one this command runs in: run it from elsewhere with --app.
+    ///
+    /// Example: amuxd app checkout move ~/code/notes --app 记账
+    Move {
+        /// The new location (absolute, or from here).
+        dir: std::path::PathBuf,
+    },
+    /// Use a folder already here as the app's checkout.
+    ///
+    /// Example: amuxd app checkout bind ~/code/notes --app 记账
+    Bind {
+        /// The folder (absolute, or from here).
+        dir: std::path::PathBuf,
+    },
+    /// Write the code again, when the first seed failed.
+    ///
+    /// Example: amuxd app checkout reseed --app 记账
+    Reseed,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum OpCmd {
     /// The operation now, without waiting.
-    Status { op: String },
-    /// Wait for the operation to end; exits with its outcome (8: unknown —
-    /// check the app before trying again).
+    ///
+    /// Example: amuxd app op status op_3f9a1c2b7d10
+    Status {
+        /// The op_… id deploy printed.
+        op: String,
+    },
+    /// Wait for it to end; exit with its outcome.
+    ///
+    /// Exit 8 means unknown: check the app before trying again.
     ///
     /// Example: amuxd app op wait op_3f9a1c2b7d10
-    Wait { op: String },
+    Wait {
+        /// The op_… id deploy printed.
+        op: String,
+    },
     /// Recent operations of this team, newest first.
+    ///
+    /// Example: amuxd app op list --active
     List {
         /// Only those still running.
         #[arg(long)]
@@ -318,106 +420,148 @@ pub enum OpCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum FilesCmd {
-    /// One folder level (or everything under it with -r), 100 per page.
+    /// One folder level (-r: everything under it).
+    ///
+    /// Example: amuxd app files ls uploads/
     Ls {
         /// A folder prefix, like uploads/.
         prefix: Option<String>,
+        /// Every file under the prefix.
         #[arg(short = 'r', long)]
         recursive: bool,
-        /// The next_cursor of the previous page.
+        /// The previous page's next_cursor.
         #[arg(long)]
         cursor: Option<String>,
+        /// Default and most 100.
         #[arg(long)]
         limit: Option<u64>,
     },
-    /// A signed download link, or the file itself with --to. Never
-    /// overwrites: --to an existing file is refused.
+    /// A signed link, or the file itself with --to.
+    ///
+    /// Never overwrites. Needs read.
     ///
     /// Example: amuxd app files get reports/q3.csv --to ./q3.csv
     Get {
+        /// As `files ls` lists it.
         path: String,
-        /// Save here (a directory keeps the file's name).
+        /// Save here (a directory keeps the name).
         #[arg(long)]
         to: Option<std::path::PathBuf>,
     },
-    /// Upload a local file (at most 512 MiB). PATH ending in / is a folder.
-    /// Needs write on the app.
+    /// Upload a local file, at most 512 MiB.
+    ///
+    /// A PATH ending in / is a folder. Needs write.
     ///
     /// Example: amuxd app files put ./logo.png img/
     Put {
+        /// The local file.
         local: std::path::PathBuf,
+        /// Where to store it (default: its name, at the root).
         path: Option<String>,
-        /// Guessed from the extension when not given.
+        /// Guessed from the extension.
         #[arg(long)]
         content_type: Option<String>,
     },
-    /// Delete a file, or with -r a folder (never the root — that is purge).
+    /// Delete a file, or a folder with -r.
+    ///
+    /// Never the root: that is purge. Needs write.
+    ///
+    /// Example: amuxd app files rm -r tmp/
     Rm {
+        /// A file, or a folder with -r.
         path: String,
+        /// PATH is a folder.
         #[arg(short = 'r', long)]
         recursive: bool,
     },
-    /// Delete every file of the app. Cannot be undone: needs --id or --app,
-    /// and --yes. Needs admin on the app.
+    /// Delete every file of the app. No undo.
+    ///
+    /// Needs --id or --app, --yes, and admin.
+    ///
+    /// Example: amuxd app files purge --app 记账 --yes
     Purge {
+        /// Yes, delete them all.
         #[arg(long)]
         yes: bool,
     },
-    /// Bytes stored, against the quota. --refresh re-measures first.
+    /// Bytes stored, against the quota.
+    ///
+    /// Example: amuxd app files usage --refresh
     Usage {
+        /// Measure again first.
         #[arg(long)]
         refresh: bool,
     },
-    /// Set the storage quota in bytes, or `default` for the deployment's.
-    /// Needs admin on the app.
-    Quota { bytes: String },
+    /// Set the quota in bytes, or `default`.
+    ///
+    /// Needs admin.
+    ///
+    /// Example: amuxd app files quota 1073741824
+    Quota {
+        /// Bytes, or `default`.
+        bytes: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum EnvCmd {
     /// The variables; a secret's value is never shown.
-    Ls,
-    /// Set a variable. A secret's value is read from stdin or --file, never
-    /// from the command line. Needs admin on the app.
     ///
-    /// Examples: amuxd app env set PORT --value 3000
-    ///           printf %s "$TOKEN" | amuxd app env set STRIPE_KEY --secret
+    /// Example: amuxd app env ls
+    Ls,
+    /// Set a variable, or a secret from stdin / --file.
+    ///
+    /// A secret never goes on the command line. Needs admin.
+    ///
+    /// Example: amuxd app env set PORT --value 3000
+    ///
+    /// Example: printf %s "$TOKEN" | amuxd app env set STRIPE_KEY --secret
     Set {
+        /// The variable's name.
         key: String,
-        /// The value of a plain variable.
+        /// A plain variable's value.
         #[arg(long)]
         value: Option<String>,
-        /// A secret: the value comes from stdin, or from --file.
+        /// A secret, read from stdin or --file.
         #[arg(long)]
         secret: bool,
-        /// Read the secret's value from this file.
+        /// Read the secret from this file.
         #[arg(long, requires = "secret")]
         file: Option<std::path::PathBuf>,
     },
-    /// Delete a variable. Needs admin on the app.
-    Rm { key: String },
+    /// Delete a variable.
+    ///
+    /// Needs admin.
+    ///
+    /// Example: amuxd app env rm OLD_KEY
+    Rm {
+        /// The variable's name.
+        key: String,
+    },
 }
 
 /// The schedule fields of `cron add` / `cron edit`.
 #[derive(Args, Debug, Default)]
 pub struct CronSpec {
+    /// The task's name.
     #[arg(long)]
     pub name: Option<String>,
-    /// Five cron fields: "minute hour day-of-month month day-of-week".
+    /// "minute hour day month weekday".
     #[arg(long)]
     pub schedule: Option<String>,
-    /// IANA time zone, e.g. Asia/Shanghai.
+    /// IANA zone, e.g. Asia/Shanghai.
     #[arg(long)]
     pub tz: Option<String>,
     /// GET (default), POST, …
     #[arg(long)]
     pub method: Option<String>,
-    /// The app's own path to call, e.g. /api/nightly.
+    /// The app's own path, e.g. /api/nightly.
     #[arg(long)]
     pub path: Option<String>,
+    /// Give up after this long.
     #[arg(long)]
     pub timeout_ms: Option<u64>,
-    /// JSON with the request's `headers` and `body`.
+    /// JSON with `headers` and `body`.
     #[arg(long)]
     pub file: Option<String>,
 }
@@ -425,34 +569,58 @@ pub struct CronSpec {
 #[derive(Subcommand, Debug)]
 pub enum CronCmd {
     /// The app's scheduled tasks.
+    ///
+    /// Example: amuxd app cron ls
     Ls,
-    /// Add a task. Needs admin on the app.
+    /// Add a task. Needs admin.
     ///
     /// Example: amuxd app cron add --name 对账 --schedule "0 9 * * 1-5" --path /api/reconcile
     Add(CronSpec),
-    /// Change a task's fields (only the ones given). <job>: id or name.
+    /// Change only the fields given. <JOB>: id or name.
+    ///
+    /// Example: amuxd app cron edit 对账 --schedule "0 10 * * *"
     Edit {
+        /// Job id or name.
         job: String,
         #[command(flatten)]
         spec: CronSpec,
     },
+    /// Turn a task on.
+    ///
+    /// Example: amuxd app cron enable 对账
     Enable {
+        /// Job id or name.
         job: String,
     },
+    /// Turn a task off; it keeps its schedule.
+    ///
+    /// Example: amuxd app cron disable 对账
     Disable {
+        /// Job id or name.
         job: String,
     },
     /// Run a task now; the schedule does not move.
+    ///
+    /// Example: amuxd app cron run 对账
     Run {
+        /// Job id or name.
         job: String,
     },
     /// A task's recent runs.
+    ///
+    /// Example: amuxd app cron runs 对账 --limit 5
     Runs {
+        /// Job id or name.
         job: String,
+        /// Default 20.
         #[arg(long)]
         limit: Option<u64>,
     },
+    /// Delete a task.
+    ///
+    /// Example: amuxd app cron rm 对账
     Rm {
+        /// Job id or name.
         job: String,
     },
 }
@@ -460,61 +628,89 @@ pub enum CronCmd {
 #[derive(Subcommand, Debug)]
 pub enum DomainCmd {
     /// The bound domain and whether it is verified.
+    ///
+    /// Example: amuxd app domain show
     Show,
-    /// Bind a hostname; replies with the DNS records to publish. Needs admin.
+    /// Bind a hostname; replies with the DNS records.
+    ///
+    /// Needs admin.
     ///
     /// Example: amuxd app domain set app.example.com
-    Set { host: String },
-    /// Check the DNS records; exit 6 (retryable) while they propagate.
+    Set {
+        /// e.g. app.example.com.
+        host: String,
+    },
+    /// Check DNS; exit 6 (retryable) while it propagates.
+    ///
+    /// Example: amuxd app domain verify
     Verify,
-    /// Unbind the domain; the app stays on its own URL.
+    /// Unbind the domain; the app keeps its own URL.
+    ///
+    /// Example: amuxd app domain rm
     Rm,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum DataCmd {
-    /// The database's tables, with their primary keys.
+    /// The tables, with their primary keys.
+    ///
+    /// Example: amuxd app data tables
     Tables,
-    /// Rows of a table, a page at a time.
+    /// A table's rows, a page at a time.
     ///
     /// Example: amuxd app data rows orders --where status eq paid --limit 10
     Rows {
+        /// The table's name.
         table: String,
-        /// COL OP [VALUE] — op is eq, contains, isNull or notNull.
+        /// COL OP [VALUE]: eq, contains, isNull, notNull.
         #[arg(long = "where", num_args = 2..=3, value_names = ["COL", "OP", "VALUE"])]
         filter: Option<Vec<String>>,
         /// Default 20, at most 100.
         #[arg(long)]
         limit: Option<u64>,
-        /// The next_cursor of the page before.
+        /// The previous page's next_cursor.
         #[arg(long)]
         cursor: Option<String>,
         /// Newest first.
         #[arg(long)]
         desc: bool,
     },
-    /// Insert one row: a JSON object of column → value from --file (or - for
-    /// stdin); {} inserts defaults. Needs admin on the app.
+    /// Insert one row from a JSON object.
+    ///
+    /// {} inserts defaults. Needs admin.
+    ///
+    /// Example: echo '{"sku":"A1"}' | amuxd app data insert items --file -
     Insert {
+        /// The table's name.
         table: String,
+        /// JSON object (- = stdin).
         #[arg(long)]
         file: String,
     },
-    /// Update one row, addressed by its primary key; the patch is a JSON
-    /// object from --file (or -). Needs admin on the app.
+    /// Update one row, by its primary key.
+    ///
+    /// Needs admin.
     ///
     /// Example: echo '{"status":"refunded"}' | amuxd app data update orders --key id=42 --file -
     Update {
+        /// The table's name.
         table: String,
-        /// COL=VALUE, once per primary-key column.
+        /// COL=VALUE, once per key column.
         #[arg(long = "key", required = true)]
         key: Vec<String>,
+        /// JSON patch (- = stdin).
         #[arg(long)]
         file: String,
     },
-    /// Delete one row, addressed by its primary key. Needs admin on the app.
+    /// Delete one row, by its primary key.
+    ///
+    /// Needs admin.
+    ///
+    /// Example: amuxd app data rm orders --key id=42
     Rm {
+        /// The table's name.
         table: String,
+        /// COL=VALUE, once per key column.
         #[arg(long = "key", required = true)]
         key: Vec<String>,
     },
@@ -552,6 +748,24 @@ fn moved(old: &str, new: &str) -> Usage {
         format!("{old} moved out of this command"),
         Some(new.to_string()),
     )
+}
+
+/// A command that moved into a group.
+fn moved_command(old: &str, new: &str) -> Usage {
+    usage(
+        "moved_command",
+        format!("`amuxd app {old}` moved"),
+        Some(new.to_string()),
+    )
+}
+
+/// A local directory argument, absolute against this process's cwd — the
+/// daemon refuses a relative one, and only this side knows the cwd.
+fn absolute(dir: &std::path::Path) -> Result<String, Usage> {
+    Ok(std::path::absolute(dir)
+        .map_err(|e| usage("invalid_dir", e.to_string(), None))?
+        .to_string_lossy()
+        .into_owned())
 }
 
 /// `--visibility` is an org grant now (CLI design Q11).
@@ -685,6 +899,13 @@ fn cron_args(spec: &CronSpec) -> Result<Value, Usage> {
 /// The action and arguments of a resource-group command.
 fn group_body(action: &AppAction) -> Result<Option<(&'static str, Value)>, Usage> {
     Ok(Some(match action {
+        AppAction::Checkout(g) => match &g.cmd {
+            CheckoutCmd::Where => ("checkout_where", json!({})),
+            CheckoutCmd::Clone => ("download", json!({})),
+            CheckoutCmd::Reseed => ("reseed", json!({})),
+            CheckoutCmd::Move { dir } => ("checkout_move", json!({ "dir": absolute(dir)? })),
+            CheckoutCmd::Bind { dir } => ("checkout_bind", json!({ "dir": absolute(dir)? })),
+        },
         AppAction::Files(g) => match &g.cmd {
             FilesCmd::Ls {
                 prefix,
@@ -894,6 +1115,7 @@ fn group_body(action: &AppAction) -> Result<Option<(&'static str, Value)>, Usage
 fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage> {
     if let Some((name, args)) = group_body(action)? {
         let (id, app) = match action {
+            AppAction::Checkout(g) => (&g.id, &g.app),
             AppAction::Files(g) => (&g.id, &g.app),
             AppAction::Access(g) => (&g.id, &g.app),
             AppAction::Gate(g) => (&g.id, &g.app),
@@ -920,7 +1142,8 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
     };
     let mut body = match action {
         AppAction::Whoami | AppAction::List => json!({}),
-        AppAction::Files(_)
+        AppAction::Checkout(_)
+        | AppAction::Files(_)
         | AppAction::Access(_)
         | AppAction::Gate(_)
         | AppAction::Env(_)
@@ -929,7 +1152,19 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
         | AppAction::Data(_) => {
             unreachable!("handled by group_body above")
         }
-        AppAction::Status(t) | AppAction::Reseed(t) | AppAction::Download(t) => target(t),
+        AppAction::Status(t) | AppAction::Sessions(t) => target(t),
+        AppAction::Reseed(_) => return Err(moved_command("reseed", "amuxd app checkout reseed")),
+        AppAction::Download(_) => {
+            return Err(moved_command("download", "amuxd app checkout clone"))
+        }
+        AppAction::Runtime {
+            target: t,
+            language,
+        } => {
+            let mut body = target(t);
+            body["args"] = json!({ "language": language });
+            body
+        }
         AppAction::Update {
             target: t,
             name,
@@ -991,6 +1226,7 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
             old_visibility,
             from_git,
             from_dir,
+            no_checkout,
             old_name,
             old_git_remote,
             old_dir,
@@ -1029,6 +1265,7 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
                 "name": name,
                 "type": app_type,
                 "gitRemoteUrl": from_git,
+                "noCheckout": no_checkout,
                 "localDir": local_dir,
             })
         }
@@ -1080,6 +1317,8 @@ fn action_name(action: &AppAction) -> &'static str {
         AppAction::Create { .. } => "create",
         AppAction::Reseed(_) => "reseed",
         AppAction::Download(_) => "download",
+        AppAction::Runtime { .. } => "runtime",
+        AppAction::Sessions(_) => "sessions",
         AppAction::Update { .. } => "update",
         AppAction::Undeploy { .. } => "undeploy",
         AppAction::Delete { .. } => "delete",
@@ -1090,7 +1329,8 @@ fn action_name(action: &AppAction) -> &'static str {
             OpCmd::List { .. } => "op_list",
         },
         AppAction::Logs { .. } => "logs",
-        AppAction::Files(_)
+        AppAction::Checkout(_)
+        | AppAction::Files(_)
         | AppAction::Access(_)
         | AppAction::Gate(_)
         | AppAction::Env(_)
@@ -1325,6 +1565,29 @@ fn emit(output: &str, envelope: Value) -> i32 {
     exit
 }
 
+/// Every command's help in clap's compact layout: the paragraphs after the
+/// first (details, permission, example) move into `after_help`.
+///
+/// A command with a long description makes clap lay out `--help` with each
+/// option's text on its own line and blank lines between them — twice the
+/// height for the same words, past the 15 lines §5 allows. `after_help`
+/// shows the same text under both `-h` and `--help` without that.
+pub fn compact_help(mut cmd: clap::Command) -> clap::Command {
+    if let Some(long) = cmd.get_long_about().map(|s| s.to_string()) {
+        if let Some((_, rest)) = long.split_once("\n\n") {
+            cmd = cmd.after_help(rest.trim().to_string()).long_about(None);
+        }
+    }
+    let names: Vec<String> = cmd
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .collect();
+    for name in names {
+        cmd = cmd.mut_subcommand(name, compact_help);
+    }
+    cmd
+}
+
 /// A command line clap could not parse. Under `amuxd app` the contract
 /// still holds — one JSON line, exit 2 — because an agent parses it; help,
 /// version and every other subcommand keep clap's own output.
@@ -1342,12 +1605,19 @@ pub fn exit_on_parse_error(e: clap::Error) -> ! {
         e.exit();
     }
     let message = e.render().to_string();
-    let first = message
-        .lines()
+    let mut lines = message.lines().filter(|l| !l.trim().is_empty());
+    let mut first = lines
         .next()
         .unwrap_or("")
         .trim_start_matches("error: ")
         .to_string();
+    // "the following required arguments were not provided:" names them on
+    // the next line.
+    if first.ends_with(':') {
+        if let Some(what) = lines.next() {
+            first = format!("{first} {}", what.trim());
+        }
+    }
     let next = match std::env::args().nth(2) {
         Some(sub) if !sub.starts_with('-') => format!("amuxd app {sub} --help"),
         _ => "amuxd app --help".to_string(),
@@ -2253,5 +2523,94 @@ mod tests {
             &json!({"v":1,"ok":false,"error":{"code":"x","message":"m","next":"amuxd app list"}}),
         );
         assert!(e.contains("next: amuxd app list"));
+    }
+}
+
+#[cfg(test)]
+mod help_contract {
+    //! CLI design §5 (C1): every command's `--help` is short — a sentence,
+    //! the permission it needs, an example — and the group listing fits on
+    //! one line per entry.
+
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[derive(Parser)]
+    #[command(name = "amuxd app")]
+    struct Cli {
+        #[command(flatten)]
+        args: AppArgs,
+    }
+
+    fn root() -> clap::Command {
+        compact_help(Cli::command()).term_width(100)
+    }
+
+    /// What `amuxd app <path> --help` prints.
+    fn help_of(path: &[String]) -> String {
+        let argv = std::iter::once("amuxd app".to_string())
+            .chain(path.iter().cloned())
+            .chain(std::iter::once("--help".to_string()));
+        match root().try_get_matches_from(argv) {
+            Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => e.render().to_string(),
+            other => panic!("{path:?} --help did not print help: {other:?}"),
+        }
+    }
+
+    /// Every visible leaf command as (path, its `--help`, visible options).
+    fn leaves(cmd: &clap::Command, path: Vec<String>, out: &mut Vec<(String, String, usize)>) {
+        let subs: Vec<&clap::Command> = cmd
+            .get_subcommands()
+            .filter(|c| !c.is_hide_set() && c.get_name() != "help")
+            .collect();
+        if subs.is_empty() {
+            let options = cmd.get_arguments().filter(|a| !a.is_hide_set()).count();
+            out.push((format!("app {}", path.join(" ")), help_of(&path), options));
+            return;
+        }
+        for sub in subs {
+            let mut next = path.clone();
+            next.push(sub.get_name().to_string());
+            leaves(sub, next, out);
+        }
+    }
+
+    fn all() -> (clap::Command, Vec<(String, String, usize)>) {
+        let mut cmd = root();
+        cmd.build();
+        let mut out = vec![];
+        leaves(&cmd, vec![], &mut out);
+        (cmd, out)
+    }
+
+    #[test]
+    fn every_command_help_is_short_and_has_an_example() {
+        let (_, leaves) = all();
+        assert!(leaves.len() > 50, "{}", leaves.len());
+        for (path, help, options) in &leaves {
+            assert!(help.contains("Example"), "{path} has no example:\n{help}");
+            for line in help.lines() {
+                let t = line.trim();
+                let bare = (t.starts_with('<') || t.starts_with('[')) && !t.contains("  ");
+                assert!(!bare, "{path}: an argument without a description: {line:?}");
+            }
+            // One line per argument beyond -o/--id/--app/-h is allowed on top.
+            // §5 allows 1–2 examples; the second costs its own paragraph.
+            let examples = help.matches("Example:").count();
+            assert!(examples <= 2, "{path}: {examples} examples");
+            let budget = 15 + options.saturating_sub(4) + 2 * examples.saturating_sub(1);
+            let lines = help.lines().count();
+            assert!(lines <= budget, "{path}: {lines} lines > {budget}:\n{help}");
+        }
+    }
+
+    #[test]
+    fn the_top_level_lists_each_command_on_one_line() {
+        let (mut cmd, _) = all();
+        let help = cmd.render_help().to_string();
+        for line in help.lines() {
+            assert!(line.chars().count() <= 100, "wraps: {line}");
+        }
+        assert!(help.lines().count() <= 35, "{help}");
     }
 }

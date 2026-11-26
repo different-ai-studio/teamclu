@@ -36,6 +36,7 @@ mod daemon;
 mod deploy;
 mod error;
 mod files;
+mod local;
 mod logs;
 mod redact;
 mod resolve;
@@ -67,6 +68,7 @@ pub use files::{
     encode_file_path, guess_content_type, storage_path, upload_destination, FilesQuery,
     MAX_LIST_LIMIT, MAX_UPLOAD_BYTES,
 };
+pub use local::RUNTIME_LANGUAGES;
 pub use logs::LogsArgs;
 pub use redact::{redact_deploy_secrets, redact_url_credentials};
 pub use resolve::{app_owning_path, canonical_path, AppSelector};
@@ -95,6 +97,16 @@ pub enum Surface {
 impl Surface {
     /// How to run `action` of `tool` (`manage_app`, `manage_app_files`, …).
     pub fn step(self, tool: &str, action: &str) -> String {
+        // The verbs that moved or were renamed between the MCP tools and the
+        // CLI's command tree (CLI design §6).
+        let (tool, action) = match (self, tool, action) {
+            (Surface::Cli, "manage_app", "reseed") => ("manage_app_checkout", "reseed"),
+            (Surface::Cli, "manage_app", "download") => ("manage_app_checkout", "clone"),
+            (Surface::Cli, "manage_app_files", "set_quota") => ("manage_app_files", "quota"),
+            (Surface::Mcp, "manage_app_checkout", "clone") => ("manage_app", "download"),
+            (Surface::Mcp, "manage_app_checkout", "reseed") => ("manage_app", "reseed"),
+            other => (other.1, other.2),
+        };
         match self {
             Surface::Mcp => format!("{tool} action \"{action}\""),
             Surface::Cli => {
@@ -226,11 +238,11 @@ mod tests {
         );
         assert_eq!(
             Surface::Cli.step("manage_app", "reseed"),
-            "`amuxd app reseed`"
+            "`amuxd app checkout reseed`"
         );
         assert_eq!(
             Surface::Cli.step("manage_app_files", "set_quota"),
-            "`amuxd app files set-quota`"
+            "`amuxd app files quota`"
         );
     }
 }

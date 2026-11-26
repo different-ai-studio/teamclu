@@ -70,6 +70,20 @@ pub trait LocalDaemon: Send + Sync {
         dir: &str,
     ) -> Result<Value, DaemonError>;
 
+    /// `POST /v1/apps/:id/move-workdir` — `{ workdir }`. A surface that has
+    /// no way to move a checkout keeps the default, which refuses.
+    async fn move_workdir(
+        &self,
+        _app_id: &str,
+        _team_id: &str,
+        _dest: &str,
+    ) -> Result<Value, DaemonError> {
+        Err(DaemonError {
+            unreachable: false,
+            message: "moving a checkout is not available here".to_string(),
+        })
+    }
+
     /// The actor this machine's daemon is — the owner of its workspace rows.
     async fn actor_id(&self) -> Option<String>;
 }

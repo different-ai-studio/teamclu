@@ -62,6 +62,9 @@ pub struct CreateArgs {
     pub app_type: Option<String>,
     pub git_remote_url: Option<String>,
     pub local_dir: Option<String>,
+    /// Create the app and leave its code off this machine (template only):
+    /// `reseed` writes it later.
+    pub no_checkout: bool,
 }
 
 impl CreateArgs {
@@ -89,6 +92,12 @@ impl CreateArgs {
                     ),
                 ));
             }
+        }
+        if self.no_checkout && (self.git_remote_url.is_some() || self.local_dir.is_some()) {
+            return Err(OpError::invalid(
+                "no_checkout_with_source",
+                "--no-checkout only applies to a template app: an import's code is its clone, and a folder is already here",
+            ));
         }
         match (&self.git_remote_url, &self.local_dir) {
             (Some(_), Some(_)) => Err(OpError::invalid(
@@ -439,7 +448,7 @@ impl AppOps<'_> {
     }
 
     /// Whether a folder is a git checkout, and its `origin` when it has one.
-    async fn folder_origin(&self, dir: &str) -> Result<Option<String>, OpError> {
+    pub(crate) async fn folder_origin(&self, dir: &str) -> Result<Option<String>, OpError> {
         match self.daemon.inspect_dir(dir).await {
             Ok(out) if out.get("isGitRepo").and_then(Value::as_bool) == Some(true) => {
                 Ok(row_str(&out, "gitRemoteUrl").map(str::to_string))
@@ -453,7 +462,7 @@ impl AppOps<'_> {
     }
 
     /// Point the app at a directory already on this machine, leaving it in place.
-    async fn bind_workdir(&self, row: &Value, dir: &str) -> Result<String, OpError> {
+    pub(crate) async fn bind_workdir(&self, row: &Value, dir: &str) -> Result<String, OpError> {
         let app_id = row_id(row)?;
         let team_id = row_str(row, "teamId").unwrap_or("");
         match self.daemon.bind_workdir(&app_id, team_id, dir).await {
@@ -485,7 +494,11 @@ impl AppOps<'_> {
             CreateSource::Template => {
                 create_body["type"] = type_or(DEFAULT_TEMPLATE_TYPE);
                 let row = self.post_app(&create_body).await?;
-                let checkout = seed_if_needed(self, &row, false, None).await;
+                let checkout = if args.no_checkout {
+                    json!({ "outcome": "skipped" })
+                } else {
+                    seed_if_needed(self, &row, false, None).await
+                };
                 (row, checkout)
             }
             CreateSource::Remote(url) => {
@@ -567,12 +580,19 @@ impl AppOps<'_> {
             .await
             .unwrap_or(row);
         let outcome = row_str(&checkout, "outcome").unwrap_or("").to_string();
-        let ok = matches!(outcome.as_str(), "seeded" | "bound" | "not_needed");
+        let ok = matches!(
+            outcome.as_str(),
+            "seeded" | "bound" | "not_needed" | "skipped"
+        );
         let surface = self.surface();
         let next = match outcome.as_str() {
             "seeded" | "bound" => format!(
                 "The code is on this machine at checkout.workdir. Edit it there, commit, then deploy with {}.",
                 surface.step("manage_app", "deploy")
+            ),
+            "skipped" => format!(
+                "The app exists with no code anywhere yet. When you want it on this machine, run {}.",
+                surface.step("manage_app_checkout", "reseed")
             ),
             "unreachable" => format!(
                 "Start amuxd, then run {} on this app.",
@@ -919,6 +939,47 @@ mod tests {
         ));
         assert!(!workspace_paths_match("~/apps/a", "/Users/u/work/b"));
         assert!(!workspace_paths_match("~/", "/Users/u"));
+    }
+
+    /// `--no-checkout`: the row is created and nothing is seeded; the reply
+    /// says how to get the code later.
+    #[tokio::test]
+    async fn a_template_app_can_be_created_without_its_code_here() {
+        let cloud = FakeCloud::default();
+        let row = json!({ "id": "a1", "teamId": "t1", "name": "记账", "provisionStatus": "repo_created" });
+        cloud.reply(Method::Post, "/v1/apps", row.clone());
+        cloud.reply(Method::Get, "/v1/apps/a1", row);
+        let daemon = FakeDaemon::default();
+        let host = TestHost(Surface::Cli);
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let out = ops
+            .create(
+                "t1",
+                &CreateArgs {
+                    name: Some("记账".into()),
+                    no_checkout: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["checkout"]["outcome"], "skipped");
+        assert!(daemon.seeds.lock().unwrap().is_empty());
+        assert!(out["next"]
+            .as_str()
+            .unwrap()
+            .contains("`amuxd app checkout reseed`"));
+        assert_eq!(
+            args(|a| {
+                a.no_checkout = true;
+                a.git_remote_url = Some("https://x/r.git".into());
+            })
+            .source()
+            .unwrap_err()
+            .code,
+            "no_checkout_with_source"
+        );
     }
 
     /// A template app: the server answers with a Gitea-managed `repo_created`

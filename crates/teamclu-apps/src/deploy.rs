@@ -680,6 +680,6 @@ mod tests {
         let ops = AppOps::new(&cloud, &daemon, &host);
         let row = json!({ "id": "a1", "provisionStatus": "pending" });
         let err = ops.deploy(&row, DeployArgs::default()).await.unwrap_err();
-        assert!(err.contains("`amuxd app reseed`"), "{err}");
+        assert!(err.contains("`amuxd app checkout reseed`"), "{err}");
     }
 }

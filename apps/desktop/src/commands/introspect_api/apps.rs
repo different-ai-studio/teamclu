@@ -565,6 +565,7 @@ fn create_args(v: &Value) -> teamclu_apps::CreateArgs {
         app_type: str_body_field(v, "type", "type"),
         git_remote_url: str_body_field(v, "git_remote_url", "gitRemoteUrl"),
         local_dir: str_body_field(v, "local_dir", "localDir"),
+        no_checkout: false,
     }
 }
 

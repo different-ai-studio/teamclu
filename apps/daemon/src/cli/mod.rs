@@ -84,9 +84,12 @@ pub enum Commands {
     Config(ConfigArgs),
     /// Manage team-share state for this daemon.
     Team(TeamArgs),
-    /// Create, deploy and inspect TeamClu apps as this daemon's agent account.
-    /// JSON on stdout, exit status 1 on failure — for other agents to drive.
-    /// Needs `amuxd start` to be running.
+    /// Create, deploy and manage TeamClu apps, as this daemon's agent account.
+    ///
+    /// One line of JSON on stdout: {"v":1,"ok":…}. Exit 0 ok, 2 arguments,
+    /// 3 no identity, 4 not allowed, 5 not found or ambiguous, 6 conflict,
+    /// 7 platform/daemon (see `retryable`), 8 outcome unknown — do not retry
+    /// blindly. Needs `amuxd start` running.
     App(app::AppArgs),
     /// Report install status of amuxd / the managed Node / pi / git as JSON.
     Doctor,

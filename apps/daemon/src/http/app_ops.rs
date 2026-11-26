@@ -273,6 +273,27 @@ impl LocalDaemon for InProcessDaemon {
         )
     }
 
+    async fn move_workdir(
+        &self,
+        app_id: &str,
+        team_id: &str,
+        dest: &str,
+    ) -> Result<Value, DaemonError> {
+        to_value(
+            apps::move_app_workdir(
+                self.principal.clone(),
+                State(self.state.clone()),
+                axum::extract::Path(app_id.to_string()),
+                Json(apps::MoveAppWorkdirBody {
+                    team_id: team_id.to_string(),
+                    dest_path: dest.to_string(),
+                }),
+            )
+            .await
+            .map_err(daemon_error)?,
+        )
+    }
+
     async fn actor_id(&self) -> Option<String> {
         let id = self.state.backend.as_ref()?.actor_id().to_string();
         (!id.is_empty()).then_some(id)
@@ -320,6 +341,9 @@ pub struct AppOpsBody {
     pub git_remote_url: Option<String>,
     #[serde(default)]
     pub local_dir: Option<String>,
+    /// create: leave the template's code off this machine.
+    #[serde(default)]
+    pub no_checkout: bool,
     // update
     #[serde(default)]
     pub auth_mode: Option<String>,
@@ -356,8 +380,11 @@ pub struct AppOpsBody {
     pub args: Value,
 }
 
-const READ_ACTIONS: [&str; 18] = [
+const READ_ACTIONS: [&str; 21] = [
     "whoami",
+    "runtime",
+    "sessions",
+    "checkout_where",
     "op_status",
     "op_wait",
     "op_list",
@@ -376,7 +403,9 @@ const READ_ACTIONS: [&str; 18] = [
     "data_tables",
     "data_rows",
 ];
-const WRITE_ACTIONS: [&str; 32] = [
+const WRITE_ACTIONS: [&str; 34] = [
+    "checkout_bind",
+    "checkout_move",
     "files_sign_upload",
     "files_uploaded",
     "files_rm",
@@ -697,6 +726,7 @@ async fn run(
                 app_type: present(&body.app_type),
                 git_remote_url: present(&body.git_remote_url),
                 local_dir: present(&body.local_dir),
+                no_checkout: body.no_checkout,
             };
             ops.create(&team_id, &args).await
         }
@@ -735,6 +765,21 @@ async fn run(
                     Ok(rec.snapshot())
                 }
                 "reseed" => ops.reseed(&row).await,
+                "runtime" => {
+                    ops.runtime_info(&row, arg_str(&body.args, "language").as_deref())
+                        .await
+                }
+                "sessions" => ops.sessions(&row).await,
+                "checkout_where" => ops.checkout_where(&row).await,
+                "checkout_bind" => {
+                    let dir = need_str(&body.args, "dir", "the folder to use (absolute)")?;
+                    ops.checkout_bind(&row, &dir).await
+                }
+                "checkout_move" => {
+                    let dir = need_str(&body.args, "dir", "where to move the checkout (absolute)")?;
+                    ops.checkout_move(&row, &dir, present(&body.workspace_path).as_deref())
+                        .await
+                }
                 "download" => ops.download(&row).await,
                 "update" => ops.update(&row, &update).await,
                 "undeploy" => ops.undeploy(&row).await,
