@@ -899,6 +899,18 @@ class McpBridge {
     });
   }
 
+  /** Run `handler` once the connection closes: the server exited, the remote
+   *  dropped us, or `close()` was called. The SDK clears its transport at that
+   *  point and every later request fails with "Not connected", so the caller
+   *  has to replace this bridge rather than keep using it. */
+  onClose(handler: () => void): void {
+    const previous = this.client.onclose;
+    this.client.onclose = () => {
+      previous?.();
+      handler();
+    };
+  }
+
   async close(): Promise<void> {
     try {
       await this.client.close();
@@ -1049,10 +1061,26 @@ type BridgeEntry = {
   /** `tools` came from the on-disk cache and no live `tools/list` has
    *  confirmed it yet. */
   provisional: boolean;
+  /** The live connection closed after it was made (the server process exited,
+   *  or a remote dropped us). The next tool call reconnects; until then `ready`
+   *  still holds the dead bridge. Without this a server that died once left
+   *  every later call in this host failing with "Not connected" — the entry
+   *  stays in the registry and its signature still matches — until pi restarted. */
+  stale?: boolean;
+  /** Torn down because the server's config changed or it was removed. Never
+   *  reconnects: the replacement entry (if any) owns the server now. */
+  disposed?: boolean;
+  /** A fresh handshake that replaces `ready`; concurrent callers share one. */
+  reconnect?: () => Promise<McpBridge>;
 };
 
 const BRIDGE_REGISTRY: Map<string, BridgeEntry> = ((globalThis as any).__teamcluMcpBridges ??=
   new Map());
+
+/** Each entry's current connection, so a close from a bridge that has since
+ *  been replaced is ignored. Module-local is enough: an entry and the closures
+ *  that read this are created by the same module instance. */
+const live = new WeakMap<BridgeEntry, McpBridge>();
 
 function bridgeSignature(spec: McpServerSpec): string {
   return isRemote(spec)
@@ -1211,6 +1239,46 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
     });
   };
 
+  // `bridge` is now the entry's live connection: follow its tool list, and
+  // mark the entry stale if the connection closes underneath it.
+  const adopt = (entry: BridgeEntry, bridge: McpBridge) => {
+    live.set(entry, bridge);
+    watchToolList(entry, bridge);
+    bridge.onClose(() => {
+      // A close we asked for (dispose), or one from a bridge already replaced.
+      if (entry.disposed || live.get(entry) !== bridge) return;
+      entry.stale = true;
+      mcpTiming(label, "connection closed; the next tool call reconnects");
+    });
+  };
+
+  const armReconnect = (entry: BridgeEntry) => {
+    let inFlight: Promise<McpBridge> | undefined;
+    entry.reconnect = () =>
+      (inFlight ??= (async () => {
+        try {
+          const { bridge, tools } = await handshake(label, spec, sdk);
+          if (entry.disposed) {
+            void bridge.close();
+            throw new Error(`MCP server ${label} is no longer configured`);
+          }
+          entry.tools = tools;
+          entry.provisional = false;
+          entry.ready = Promise.resolve(bridge);
+          entry.stale = false;
+          writeToolCache(label, signature, tools);
+          adopt(entry, bridge);
+          // The restarted server may offer tools the old one did not.
+          const target = WATCH_STATE.target;
+          if (target) registerBridgeTools(target.pi, target.ownTools, label, entry);
+          mcpTiming(label, `reconnected; ${tools.length} tool(s)`);
+          return bridge;
+        } finally {
+          inFlight = undefined;
+        }
+      })());
+  };
+
   const cached = readToolCache(label, signature);
   mcpTiming(label, cached ? "tool cache hit; connecting in the background" : "no tool cache; waiting for the handshake");
   if (cached) {
@@ -1222,6 +1290,7 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
       provisional: true,
     };
     BRIDGE_REGISTRY.set(label, entry);
+    armReconnect(entry);
     // Derived chain, so `entry.ready` keeps its own rejection for awaiting
     // tool calls instead of being swallowed here.
     void pending.then(
@@ -1229,7 +1298,7 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
         entry.tools = tools;
         entry.provisional = false;
         writeToolCache(label, signature, tools);
-        watchToolList(entry, bridge);
+        adopt(entry, bridge);
       },
       (e) => {
         // Drop the entry so the next session retries rather than inheriting a
@@ -1266,7 +1335,8 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
       provisional: false,
     };
     BRIDGE_REGISTRY.set(label, entry);
-    watchToolList(entry, bridge);
+    armReconnect(entry);
+    adopt(entry, bridge);
     return entry;
   }
 
@@ -1280,6 +1350,7 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
   // so keep a failed background handshake from surfacing as unhandled.
   entry.ready.catch(() => {});
   BRIDGE_REGISTRY.set(label, entry);
+    armReconnect(entry);
   mcpTiming(
     label,
     `handshake still running after ${MCP_COLD_START_GRACE_MS}ms; starting the session without its tools`,
@@ -1291,7 +1362,7 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
       entry.tools = tools;
       entry.provisional = false;
       writeToolCache(label, signature, tools);
-      watchToolList(entry, bridge);
+      adopt(entry, bridge);
       // Register on the instance that is live now, as the list_changed path
       // does: the one that started this bridge may belong to an ended session.
       const target = WATCH_STATE.target;
@@ -1308,6 +1379,7 @@ async function ensureBridge(label: string, spec: McpServerSpec, sdk: Sdk): Promi
 }
 
 function disposeEntry(entry: BridgeEntry): void {
+  entry.disposed = true;
   // The connection may still be opening; close it when it lands either way.
   void entry.ready.then(
     (b) => {
@@ -1453,6 +1525,41 @@ function ensureMcpConfigWatcher(): void {
   }
 }
 
+/** The SDK's "no transport" rejection. It is raised before anything is sent,
+ *  so a call that failed this way never reached the server. */
+function isNotConnected(e: unknown): boolean {
+  return e instanceof Error && e.message === "Not connected";
+}
+
+/**
+ * Call `name` on the entry's server, reconnecting first when the last
+ * connection is known to have closed.
+ *
+ * A call that fails with "Not connected" is retried once on a fresh connection:
+ * that error means the request was never sent, so the retry cannot run a tool
+ * twice. Any other failure, including a connection that drops mid-call, is
+ * returned as is. That call may already have done its work on the server,
+ * so only the next call reconnects.
+ */
+async function callBridgeTool(
+  entry: BridgeEntry,
+  name: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<any> {
+  const canReconnect = () => !entry.disposed && entry.reconnect !== undefined;
+  // On a cached start the connection may still be opening; this is the only
+  // place that waits for it, and only when a tool is actually used.
+  const bridge = entry.stale && canReconnect() ? await entry.reconnect!() : await entry.ready;
+  try {
+    return await bridge.callTool(name, args, signal);
+  } catch (e) {
+    if (!isNotConnected(e) || !canReconnect()) throw e;
+    entry.stale = true;
+    return (await entry.reconnect!()).callTool(name, args, signal);
+  }
+}
+
 /** Register (or re-register) every tool a bridge currently exposes. Safe to
  *  call repeatedly: the name a tool gets is stable for its server. */
 function registerBridgeTools(
@@ -1491,10 +1598,7 @@ function registerBridgeTools(
         } catch {
           return sessionContextUnavailableResult();
         }
-        // On a cached start the connection may still be opening; this is the
-        // only place that waits for it, and only when a tool is actually used.
-        const bridge = await entry.ready;
-        const result = await bridge.callTool(tool.name, callParams, signal);
+        const result = await callBridgeTool(entry, tool.name, callParams, signal);
         return { content: toPiContent(result), isError: result?.isError === true };
       },
     });
