@@ -33,4 +33,20 @@ describe("auth-client OAuth", () => {
     expect(String(calledUrl)).toBe("https://cloud.ucar.cc/v1/auth/oauth/exchange");
     expect(JSON.parse(init.body)).toEqual({ code: "CODE", codeVerifier: "VERIFIER" });
   });
+
+  it("routes WeCom through FC's own SSO endpoints", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ access_token: "at", user: { id: "u1" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const client = createAuthClient({ baseUrl: "https://cloud.ucar.cc", fetchImpl });
+    const url = new URL(client.oauthAuthorizeUrl("wecom", "http://127.0.0.1:5123/callback", "CHALLENGE"));
+    expect(url.pathname).toBe("/v1/auth/sso/wecom/authorize");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+
+    await client.exchangeOAuthCode("CODE", "VERIFIER", "wecom");
+    expect(String(fetchImpl.mock.calls[0][0])).toBe("https://cloud.ucar.cc/v1/auth/sso/exchange");
+  });
 });

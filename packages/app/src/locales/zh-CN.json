@@ -590,6 +590,7 @@
     "orContinueWith": "或使用以下方式",
     "signInWithGoogle": "使用 Google 登录",
     "signInWithWechat": "使用微信登录",
+    "signInWithWecom": "使用企业微信登录",
     "oauthWaiting": "请在浏览器中完成登录后返回。",
     "oauthCancel": "取消并换一种方式",
     "signInWithWebSso": "快捷登录",
@@ -3587,6 +3588,15 @@
         "rate_limited": "被限流",
         "invalid": "key 被拒"
       }
+    },
+    "enterpriseSso": {
+      "title": "企业微信登录",
+      "description": "连接你的企业微信企业后，成员可以扫码登录 TeamClu 并自动加入本组织。需要企业微信管理员在浏览器中安装授权。",
+      "waiting": "请在浏览器中由企业微信管理员完成安装授权，完成后回到这里。",
+      "connected": "已连接 {{name}}。企业成员可以用企业微信扫码登录，首次登录会自动加入本组织。",
+      "connect": "连接企业微信",
+      "disconnect": "断开",
+      "confirmDisconnect": "断开后，该企业的成员将无法再用企业微信扫码登录。已有账号保留。确定断开？"
     },
     "teamRoles": {
       "title": "组织角色",

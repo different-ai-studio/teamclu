@@ -31,7 +31,7 @@ describe("resolution without any remote data", () => {
     expect(features.apps).toBe(false);
     expect(features.lockLlmConfig).toBe(false);
     expect(features.auth).toEqual({
-      google: false, wechat: false, phone: false, webSSO: false,
+      google: false, wechat: false, wecom: false, phone: false, webSSO: false,
     });
     expect(Object.values(features.channels).every((v) => v === false)).toBe(true);
   });
@@ -96,6 +96,13 @@ describe("merging", () => {
 
     applyRemoteFeatures("public", { auth: { webSSO: false } });
     expect(getFeatures().auth.webSSO).toBe(false);
+  });
+
+  it("takes auth.wecom from the server, like google", async () => {
+    const { applyRemoteFeatures, getFeatures } = await loadModule();
+    applyRemoteFeatures("public", { auth: { wecom: true } });
+    expect(getFeatures().auth.wecom).toBe(true);
+    expect(getFeatures().auth.google).toBe(false);
   });
 
   it("never lets the server enable the updater flag", async () => {

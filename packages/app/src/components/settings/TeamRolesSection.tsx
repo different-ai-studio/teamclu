@@ -8,6 +8,8 @@ import { useTeamPermissions } from '@/lib/team/team-permissions'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { useFeatures } from '@/lib/config/remote-features'
+import { EnterpriseSsoCard } from './EnterpriseSsoCard'
 import { SectionHeader, SettingCard } from './shared'
 
 const CODE_RE = /^[a-z][a-z0-9_]*$/
@@ -23,6 +25,7 @@ export function TeamRolesSection() {
   const { t } = useTranslation()
   const { canManageTeam } = useTeamPermissions()
   const teamId = useCurrentTeamStore((s) => s.team?.id) ?? null
+  const wecomSignIn = useFeatures().auth.wecom
 
   const [roles, setRoles] = React.useState<OrgRole[] | null>(null)
   const [error, setError] = React.useState<string | null>(null)
@@ -188,6 +191,8 @@ export function TeamRolesSection() {
           </Button>
         )}
       </div>
+
+      {canManageTeam && wecomSignIn && <EnterpriseSsoCard teamId={teamId} />}
 
       {error && (
         <SettingCard>

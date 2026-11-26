@@ -15,6 +15,12 @@
 export interface AuthFeatureFlags {
   google?: boolean;
   wechat?: boolean;
+  /**
+   * WeCom QR sign-in (service-provider app, lib/sso). The flag only shows the
+   * button; the deployment must also carry the WECOM_* env (lib/sso/from-env.ts)
+   * or the routes answer 501.
+   */
+  wecom?: boolean;
   phone?: boolean;
   password?: boolean;
   /**
@@ -130,7 +136,7 @@ export interface FeatureFlags {
 export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   // Mirrors build.config.production.json (in this repo).
   "self-host": {
-    auth: { google: true, wechat: false, phone: false, password: false, webSSO: false },
+    auth: { google: true, wechat: false, wecom: false, phone: false, password: false, webSSO: false },
     // SeaTalk is Copilot 361 only — official TeamClu never shipped it.
     // WeChat over the iPad protocol is self-host only: it needs a protocol
     // server beside the daemon, which only a self-hosted operator runs.
@@ -151,7 +157,7 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   belayo: {
     // Quick sign-in (webSSO) and phone only. Google is off on purpose: it does
     // not work for this deployment's users.
-    auth: { google: false, wechat: false, phone: true, password: false, webSSO: true },
+    auth: { google: false, wechat: false, wecom: false, phone: true, password: false, webSSO: true },
     channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, wechatpad: false, seatalk: false },
     // Entry point only, same as self-host. Creating an app needs GITEA_*, which
     // this deployment now has (its own Gitea, reached over the VPC). Deploying
@@ -172,7 +178,7 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   //
   // SeaTalk is this brand's channel: self-host and belayo keep it off.
   copilot361: {
-    auth: { google: false, wechat: false, phone: false, password: false, webSSO: false },
+    auth: { google: false, wechat: false, wecom: false, phone: false, password: false, webSSO: false },
     channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, wechatpad: false, seatalk: true },
     apps: false,
     lockLlmConfig: false,

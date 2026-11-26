@@ -7921,6 +7921,215 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+  /v1/auth/sso/{provider}/authorize:
+    get:
+      operationId: ssoAuthorize
+      summary: Start enterprise IM sign-in (WeCom QR)
+      description: |
+        Stores a short-lived login flow and redirects the browser to the
+        provider's QR login page (WeCom `wwlogin/sso/login`,
+        `login_type=ServiceApp`). `redirect` must be a loopback http URL or an
+        app custom scheme: the one-time code is delivered there, so a remote
+        redirect would let anyone collect a code for someone else's scan.
+        501 when the provider is not configured on this deployment.
+      tags: [Auth]
+      security: []
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [wecom] } }
+        - { name: redirect, in: query, required: true, schema: { type: string } }
+        - name: code_challenge
+          in: query
+          required: true
+          description: S256 PKCE challenge (base64url, 43 chars).
+          schema: { type: string }
+        - { name: code_challenge_method, in: query, required: false, schema: { type: string, enum: [S256, s256] } }
+        - { name: lang, in: query, required: false, schema: { type: string, enum: [zh, en] } }
+      responses:
+        "302": { description: Redirect to the provider's QR login page }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+  /v1/auth/sso/{provider}/callback:
+    get:
+      operationId: ssoCallback
+      summary: Provider redirect after a scan
+      description: |
+        Resolves the scanning user (WeCom `getuserinfo3rd`), signs them in as
+        their member identity in the org their company is bound to (created on
+        first sign-in, admin_type 2), and redirects to the client's `redirect`
+        with `code` and `state`. Failures redirect there with `error` and
+        `error_description` (`org_not_connected` when the company is not bound,
+        `access_denied` for a non-member or a cancelled scan). An unknown or
+        expired `state` gets an HTML page instead, since there is no redirect to
+        trust.
+      tags: [Auth]
+      security: []
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [wecom] } }
+        - { name: code, in: query, required: false, schema: { type: string } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+      responses:
+        "302": { description: Redirect to the client with `code` or `error` }
+        "400":
+          description: Unknown or expired flow
+          content:
+            text/html: { schema: { type: string } }
+  /v1/auth/sso/exchange:
+    post:
+      operationId: ssoExchange
+      summary: Exchange an enterprise sign-in code for session tokens
+      description: |
+        One-time: the code is burned on first use, including a use with a
+        wrong verifier. Returns the GoTrue session payload, the same shape as
+        `POST /v1/auth/oauth/exchange`.
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, codeVerifier]
+              properties:
+                code: { type: string }
+                codeVerifier: { type: string }
+      responses:
+        "200":
+          description: GoTrue session payload
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
+  /v1/auth/sso/wecom/install-callback:
+    get:
+      operationId: ssoWecomInstallCallback
+      summary: WeCom redirect after a company admin installed the TeamClu app
+      description: |
+        Exchanges `auth_code` for the company's permanent authorization and
+        binds the company (corpid) to the org that started the install
+        (`POST /v1/teams/{teamId}/sso/{provider}/install`). One company binds
+        to one org. Returns an HTML result page.
+      tags: [Auth]
+      security: []
+      parameters:
+        - { name: auth_code, in: query, required: false, schema: { type: string } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Bound, content: { text/html: { schema: { type: string } } } }
+        "400": { description: Unknown or expired install link, content: { text/html: { schema: { type: string } } } }
+        "409": { description: The company is bound to another org, content: { text/html: { schema: { type: string } } } }
+  /v1/auth/sso/wecom/suite-callback:
+    get:
+      operationId: ssoWecomSuiteCallbackVerify
+      summary: WeCom callback URL verification
+      description: Answers the decrypted `echostr` as text/plain. Signature-checked.
+      tags: [Auth]
+      security: []
+      parameters:
+        - { name: msg_signature, in: query, required: true, schema: { type: string } }
+        - { name: timestamp, in: query, required: true, schema: { type: string } }
+        - { name: nonce, in: query, required: true, schema: { type: string } }
+        - { name: echostr, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Decrypted echostr, content: { text/plain: { schema: { type: string } } } }
+        "403": { description: Bad signature or ciphertext, content: { text/plain: { schema: { type: string } } } }
+    post:
+      operationId: ssoWecomSuiteCallback
+      summary: WeCom 指令回调 (suite_ticket, cancel_auth, ...)
+      description: |
+        Encrypted XML from WeCom. Stores `suite_ticket`; `cancel_auth` removes
+        the company's org binding. Answers `success`.
+      tags: [Auth]
+      security: []
+      parameters:
+        - { name: msg_signature, in: query, required: true, schema: { type: string } }
+        - { name: timestamp, in: query, required: true, schema: { type: string } }
+        - { name: nonce, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          text/xml: { schema: { type: string } }
+      responses:
+        "200": { description: "`success`", content: { text/plain: { schema: { type: string } } } }
+        "403": { description: Bad signature or ciphertext, content: { text/plain: { schema: { type: string } } } }
+  /v1/teams/{teamId}/sso/{provider}:
+    get:
+      operationId: getTeamOrgSsoBinding
+      summary: Enterprise sign-in binding of the team's org
+      description: Org owner/admin only.
+      tags: [Auth]
+      parameters:
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [wecom] } }
+      responses:
+        "200":
+          description: Binding status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [configured, binding]
+                properties:
+                  configured:
+                    type: boolean
+                    description: Whether this deployment has the provider configured.
+                  binding:
+                    type: [object, "null"]
+                    properties:
+                      tenantId: { type: string }
+                      tenantName: { type: [string, "null"] }
+                      createdAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteTeamOrgSsoBinding
+      summary: Disconnect the org's company
+      description: Org owner/admin only. Existing identities stay; the company's members can no longer sign in by scan.
+      tags: [Auth]
+      parameters:
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [wecom] } }
+      responses:
+        "200":
+          description: Result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [removed]
+                properties:
+                  removed: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/sso/{provider}/install:
+    post:
+      operationId: startTeamOrgSsoInstall
+      summary: URL for a company admin to install the TeamClu WeCom app
+      description: |
+        Org owner/admin only. Open the returned URL in a browser; a WeCom admin
+        of the company completes the install there, which binds the company to
+        this org (see `GET /v1/auth/sso/wecom/install-callback`). 409 when the
+        org is already bound.
+      tags: [Auth]
+      parameters:
+        - { name: teamId, in: path, required: true, schema: { type: string } }
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [wecom] } }
+      responses:
+        "200":
+          description: Install URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "501": { $ref: "#/components/responses/Error" }
   /v1/apps:
     get:
       operationId: listApps

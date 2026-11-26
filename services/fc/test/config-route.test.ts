@@ -5,6 +5,7 @@ import {
   buildBootstrapConfig,
   buildPublicConfig,
   DEFAULT_DESKTOP_DOWNLOAD_URL,
+  resolveFeatures,
 } from "../src/lib/routes/config.js";
 import { FEATURE_PROFILES } from "../src/lib/feature-profiles.js";
 
@@ -526,6 +527,7 @@ test("belayo offers quick sign-in and phone, never Google", () => {
   assert.deepEqual(FEATURE_PROFILES.belayo.auth, {
     google: false,
     wechat: false,
+    wecom: false,
     phone: true,
     password: false,
     webSSO: true,
@@ -547,5 +549,15 @@ test("partnerConsoleHosts lists WEB_HANDOFF_HOSTS, normalised, and is absent whe
 test("partnerConsoleHosts stays out of the authed bootstrap config", async () => {
   await withEnv({ WEB_HANDOFF_HOSTS: "admin.example.test" }, () => {
     assert.equal("partnerConsoleHosts" in buildBootstrapConfig(), false);
+  });
+});
+
+test("auth.wecom is a remotely settable flag, off in every profile until a deployment opts in", async () => {
+  for (const name of Object.keys(FEATURE_PROFILES)) {
+    assert.equal(FEATURE_PROFILES[name].auth?.wecom, false, name);
+  }
+  await withEnv({ APP_FEATURES_PROFILE: "self-host", APP_FEATURES_JSON: '{"auth":{"wecom":true}}' }, () => {
+    assert.equal(resolveFeatures().auth?.wecom, true);
+    assert.equal(resolveFeatures().auth?.google, true, "other auth flags survive the override");
   });
 });

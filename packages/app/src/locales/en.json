@@ -590,6 +590,7 @@
     "orContinueWith": "or continue with",
     "signInWithGoogle": "Sign in with Google",
     "signInWithWechat": "Sign in with WeChat",
+    "signInWithWecom": "Sign in with WeCom",
     "oauthWaiting": "Finish signing in in your browser, then come back.",
     "oauthCancel": "Cancel and try another way",
     "signInWithWebSso": "Quick sign-in",
@@ -3587,6 +3588,15 @@
         "rate_limited": "throttled",
         "invalid": "key rejected"
       }
+    },
+    "enterpriseSso": {
+      "title": "WeCom sign-in",
+      "description": "Connect your WeCom company so members can scan in to TeamClu and join this organization automatically. A WeCom admin of the company completes the install in the browser.",
+      "waiting": "Have a WeCom admin finish the install in the browser, then come back here.",
+      "connected": "Connected to {{name}}. Company members can sign in by scanning with WeCom; their first sign-in adds them to this organization.",
+      "connect": "Connect WeCom",
+      "disconnect": "Disconnect",
+      "confirmDisconnect": "After disconnecting, members of this company can no longer sign in with WeCom. Existing accounts stay. Disconnect?"
     },
     "teamRoles": {
       "title": "Organization Roles",

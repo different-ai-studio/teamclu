@@ -27,6 +27,7 @@ import { createKnowledgeAclModule } from "@/lib/backend/cloud-api/knowledge-acl"
 import { createDocumentLibrariesModule } from "@/lib/backend/cloud-api/document-libraries";
 import { createTeamEnvSecretsModule } from "@/lib/backend/cloud-api/team-env-secrets";
 import { createOrgRolesModule } from "@/lib/backend/cloud-api/org-roles";
+import { createOrgSsoModule } from "@/lib/backend/cloud-api/org-sso";
 import { createAdminModule } from "@/lib/backend/cloud-api/admin";
 import { createWikiMaintainerModule } from "@/lib/backend/cloud-api/wiki-maintainer";
 
@@ -75,6 +76,7 @@ export function createCloudApiBackend(
     wikiMaintainer: createWikiMaintainerModule(client),
     teamEnvSecrets: createTeamEnvSecretsModule(client),
     orgRoles: createOrgRolesModule(client),
+    orgSso: createOrgSsoModule(client),
     admin: createAdminModule(client),
   };
 }
