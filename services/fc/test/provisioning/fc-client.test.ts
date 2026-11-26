@@ -77,6 +77,14 @@ function fakeClient(overrides: Record<string, any> = {}) {
     async getFunction(name: string) { calls.push(["getFunction", name]); return { body: { functionName: name } }; },
     async createFunction(req: any) { calls.push(["createFunction", req]); return { body: {} }; },
     async updateFunction(name: string, req: any) { calls.push(["updateFunction", name, req]); return { body: {} }; },
+    async createFunctionWithOptions(req: any, _headers: any, runtime: any) {
+      calls.push(["createFunctionRuntime", runtime]);
+      return base.createFunction(req);
+    },
+    async updateFunctionWithOptions(name: string, req: any, _headers: any, runtime: any) {
+      calls.push(["updateFunctionRuntime", runtime]);
+      return base.updateFunction(name, req);
+    },
     async createTrigger(name: string, req: any) { calls.push(["createTrigger", name, req]); return { body: {} }; },
     async updateTrigger(name: string, trig: string, req: any) { calls.push(["updateTrigger", name, trig, req]); return { body: {} }; },
     async getTrigger(name: string, trig: string) { calls.push(["getTrigger", name, trig]); return { body: protectedTrigger() }; },
@@ -96,6 +104,122 @@ test("ensureFunction creates when GetFunction 404s", async () => {
   await ops.ensureFunction("tc-app-1", { declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
   assert.ok(calls.some((c) => c[0] === "createFunction"));
   assert.ok(!calls.some((c) => c[0] === "updateFunction"));
+});
+
+test("a timed-out create only succeeds after GetFunction confirms this deployment and image digest", async () => {
+  const image = "registry.example/apps/a@sha256:" + "a".repeat(64);
+  const notFound = { code: "FunctionNotFound", statusCode: 404 };
+  let submitted: any;
+  let reads = 0;
+  const { client, calls } = fakeClient({
+    getFunction: async () => {
+      if (++reads === 1) throw notFound;
+      return { body: {
+        ...submitted,
+        state: "Active",
+        lastUpdateStatus: "Successful",
+        customContainerConfig: { ...submitted.customContainerConfig, resolvedImageUri: image },
+      } };
+    },
+    createFunctionWithOptions: async (request: any, _headers: any, runtime: any) => {
+      calls.push(["createFunctionWithOptions", request, runtime]);
+      submitted = request.body;
+      throw Object.assign(new Error("connection timed out"), { code: "ConnectTimeout" });
+    },
+  });
+  await makeFcOps(client, OPS_CONFIG).ensureFunction("tc-app-1", {
+    declaration: { build: { kind: "container", output: "." }, start: { port: 8080 } },
+    image, ossObjectName: "", env: { PORT: "8080" },
+  });
+  assert.equal(calls.filter(call => call[0] === "createFunctionWithOptions").length, 1);
+  assert.equal(calls.filter(call => call[0] === "updateFunction").length, 0);
+  assert.ok(reads > 1);
+  const runtime = calls.find(call => call[0] === "createFunctionWithOptions")?.[2];
+  assert.ok(runtime.connectTimeout >= 5000 && runtime.connectTimeout <= 15000);
+  assert.ok(runtime.readTimeout > 10000 && runtime.readTimeout <= 120000);
+});
+
+test("a timed-out update cannot accept an old Active/Successful function", async () => {
+  let reads = 0;
+  const old = { functionName: "tc-app-1", state: "Active", lastUpdateStatus: "Successful",
+    runtime: "custom-container", environmentVariables: { PORT: "8080" },
+    customContainerConfig: { image: "registry.example/apps/a:old", port: 8080 } };
+  const { client } = fakeClient({
+    getFunction: async () => { reads++; return { body: old }; },
+    updateFunctionWithOptions: async () => { throw Object.assign(new Error("read timed out"), { code: "SDK.TimeoutError" }); },
+  });
+  await assert.rejects(() => makeFcOps(client, OPS_CONFIG).ensureFunction("tc-app-1", {
+    declaration: { build: { kind: "container", output: "." }, start: { port: 8080 } },
+    image: "registry.example/apps/a:new", ossObjectName: "", env: { PORT: "8080" },
+  }), /timed out/);
+  assert.ok(reads > 1, "the old function was checked but never accepted");
+});
+
+for (const image of [
+  "registry.example/apps/a@sha256:" + "a".repeat(64),
+  "registry.example/apps/a:latest",
+]) {
+test(`a matching marker cannot reconcile a container write without a matching expected digest (${image.includes("@") ? "different digest" : "tag only"})`, async () => {
+  let submitted: any;
+  const { client } = fakeClient({
+    getFunction: async () => {
+      if (!submitted) throw { code: "FunctionNotFound", statusCode: 404 };
+      return { body: { ...submitted, state: "Active", lastUpdateStatus: "Successful",
+        customContainerConfig: { ...submitted.customContainerConfig,
+          resolvedImageUri: "registry.example/apps/a@sha256:" + "b".repeat(64) } } };
+    },
+    createFunctionWithOptions: async (request: any) => {
+      submitted = request.body;
+      throw Object.assign(new Error("connection timed out"), { code: "ConnectTimeout" });
+    },
+  });
+  await assert.rejects(() => makeFcOps(client, OPS_CONFIG).ensureFunction("tc-app-1", {
+    declaration: { build: { kind: "container", output: "." }, start: { port: 8080 } },
+    image, ossObjectName: "", env: { PORT: "8080" },
+  }), /timed out/);
+});
+}
+
+test("an unclear timed-out write never retries the write", async () => {
+  let writes = 0;
+  let reads = 0;
+  const { client } = fakeClient({
+    getFunction: async () => { reads++; if (reads > 1) throw new Error("provider still processing"); return { body: { functionName: "tc-app-1" } }; },
+    updateFunctionWithOptions: async () => { writes++; throw Object.assign(new Error("read timed out"), { code: "SDK.TimeoutError" }); },
+  });
+  await assert.rejects(() => makeFcOps(client, OPS_CONFIG).ensureFunction("tc-app-1", {
+    declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: { PORT: "9000" },
+  }), /timed out/);
+  assert.equal(writes, 1);
+  assert.ok(reads > 1);
+});
+
+test("a definite FC write failure does not enter reconciliation", async () => {
+  let reads = 0;
+  const { client } = fakeClient({
+    getFunction: async () => { reads++; return { body: { functionName: "tc-app-1" } }; },
+    updateFunctionWithOptions: async () => { throw Object.assign(new Error("invalid image"), { code: "InvalidArgument", statusCode: 400 }); },
+  });
+  await assert.rejects(() => makeFcOps(client, OPS_CONFIG).ensureFunction("tc-app-1", {
+    declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: { PORT: "9000" },
+  }), /invalid image/);
+  assert.equal(reads, 1);
+});
+
+test("a failed status for this write is treated as a definite FC failure", async () => {
+  let submitted: any;
+  const { client } = fakeClient({
+    getFunction: async () => ({ body: submitted
+      ? { ...submitted, functionName: "tc-app-1", state: "Active", lastUpdateStatus: "Failed" }
+      : { functionName: "tc-app-1", state: "Active", lastUpdateStatus: "Successful" } }),
+    updateFunctionWithOptions: async (_name: string, request: any) => {
+      submitted = request.body;
+      throw Object.assign(new Error("read timed out"), { code: "SDK.TimeoutError" });
+    },
+  });
+  await assert.rejects(() => makeFcOps(client, OPS_CONFIG).ensureFunction("tc-app-1", {
+    declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: { PORT: "9000" },
+  }), (error: any) => error.code === "FunctionUpdateFailed");
 });
 
 test("ensureFunction updates code when the function already exists", async () => {

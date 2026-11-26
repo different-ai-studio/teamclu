@@ -4522,6 +4522,23 @@ test("apps: finalizeDeploy wraps finalize failure as 502", async () => {
   );
 });
 
+test("apps: an unresolved FC write timeout keeps the lifecycle fence", async () => {
+  const db = appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } });
+  const repo = appsRepo(db, {
+    readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+    startDeploy: async () => ({ fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+      ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x" }),
+    finalizeDeploy: async () => { throw Object.assign(new Error("FC write timed out"), { code: "ConnectTimeout" }); },
+  });
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(started.deployToken)),
+    (error: any) => error.code === "finalize_failed" && error.statusCode === 502);
+  assert.equal((await repo.getApp("app-1"))?.fcStatus, "deploy_error");
+  const next = await repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION });
+  await assert.rejects(() => repo.deployApp("app-1", { ...APP_DEPLOY, preflightToken: next.token }),
+    (error: any) => error.code === "lifecycle_conflict");
+});
+
 test("apps: listAppSessions returns the session-summary shape", async () => {
   const repo = appsRepo(appsSupabase({
     seed: {

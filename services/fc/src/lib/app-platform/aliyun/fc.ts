@@ -2,6 +2,7 @@ import { appManagedOriginHost, resolveAppFunctionName } from "../../apps-functio
 import { privateFcTriggerUrl, originJwks, ORIGIN_VERSION_HEADER, ORIGIN_VERSION_CLAIM_MAPPING, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../../apps-origin-auth.js";
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
+import { randomBytes } from "node:crypto";
 import { appsRegion } from "../region.js";
 import { appsOpenApiCredentials, type AppsOssProfile } from "./oss.js";
 import { imageForPull, type RegistryPullNetwork } from "../../provisioning/apps-registry.js";
@@ -316,6 +317,82 @@ function runtimeInput(cfg: FcOpsConfig, args: EnsureFunctionArgs, codeLocation: 
 function isNotFound(e: any): boolean {
   return e?.statusCode === 404 || e?.code === "FunctionNotFound" || e?.data?.Code === "FunctionNotFound";
 }
+// Only function writes get longer SDK timeouts. The HTTP transport can still
+// report ConnectTimeout before readTimeout elapses, so reconcile ambiguous
+// writes with up to four reads at the defaults and 3.5 s of backoff.
+const FUNCTION_WRITE_RUNTIME = { connectTimeout: 15_000, readTimeout: 90_000, autoretry: false, maxAttempts: 1 };
+const DEPLOY_MARKER = "TEAMCLU_DEPLOY_MARKER";
+const RECONCILE_DELAYS_MS = [0, 500, 1_000, 2_000];
+
+function ambiguousWriteFailure(error: any): boolean {
+  if (Number(error?.statusCode) >= 400 && Number(error?.statusCode) < 500) return false;
+  return /timeout|timedout|econnreset|econnaborted/i.test(
+    `${String(error?.code ?? "")} ${String(error?.name ?? "")} ${String(error?.message ?? "")}`,
+  );
+}
+
+function containsExpected(observed: any, expected: any): boolean {
+  if (Array.isArray(expected)) {
+    return Array.isArray(observed) && observed.length === expected.length
+      && expected.every((value, index) => containsExpected(observed[index], value));
+  }
+  if (expected && typeof expected === "object") {
+    return observed && typeof observed === "object"
+      && Object.entries(expected).every(([key, value]) => value === undefined || containsExpected(observed[key], value));
+  }
+  return observed === expected;
+}
+
+function functionMatchesWrite(observed: any, expected: any, functionName: string): boolean {
+  if (!observed || observed.functionName !== functionName || observed.state !== "Active"
+    || observed.lastUpdateStatus !== "Successful") return false;
+  if (!containsExpected(observed.environmentVariables, expected.environmentVariables)
+    || observed.environmentVariables?.[DEPLOY_MARKER] !== expected.environmentVariables?.[DEPLOY_MARKER]) return false;
+  for (const field of ["runtime", "internetAccess", "role", "handler", "memorySize", "cpu", "timeout", "diskSize"] as const) {
+    if (expected[field] !== undefined && observed[field] !== expected[field]) return false;
+  }
+  for (const field of ["vpcConfig", "logConfig", "customRuntimeConfig"] as const) {
+    if (expected[field] !== undefined && !containsExpected(observed[field], expected[field])) return false;
+  }
+  if (expected.layers !== undefined && !containsExpected(observed.layers?.map((layer: any) => layer.arn), expected.layers)) return false;
+  if (expected.customContainerConfig) {
+    // FC does not echo registry credentials, and its generated model does not
+    // expose `args`. The marker establishes this write; compare readback fields.
+    const { registryConfig: _secret, args: _unsupported, ...container } = expected.customContainerConfig;
+    if (!containsExpected(observed.customContainerConfig, container)) return false;
+    const resolved = observed.customContainerConfig?.resolvedImageUri;
+    const digest = /@sha256:([a-f0-9]{64})$/i.exec(expected.customContainerConfig.image)?.[1];
+    // A mutable tag alone cannot establish which manifest FC actually pulled.
+    if (!digest || typeof resolved !== "string"
+      || !resolved.toLowerCase().endsWith(`@sha256:${digest.toLowerCase()}`)) return false;
+  }
+  return true;
+}
+
+async function reconcileTimedOutWrite(client: any, functionName: string, expected: any, error: any): Promise<void> {
+  if (!ambiguousWriteFailure(error)) throw error;
+  for (const delay of RECONCILE_DELAYS_MS) {
+    if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+    try {
+      const current = (await client.getFunction(functionName, new $fc.GetFunctionRequest({})))?.body;
+      if (functionMatchesWrite(current, expected, functionName)) return;
+      if (current?.lastUpdateStatus === "Failed" && current.environmentVariables?.[DEPLOY_MARKER] === expected.environmentVariables?.[DEPLOY_MARKER]) {
+        throw Object.assign(new Error("Function Compute reported the attempted function update as failed"), { code: "FunctionUpdateFailed" });
+      }
+    } catch (readError: any) {
+      if (readError?.code === "FunctionUpdateFailed") throw readError;
+      // An unavailable or not-yet-created function is an unclear result, not
+      // permission to issue the same write again.
+    }
+  }
+  // The lifecycle layer recognizes timeout codes and retains its in-flight
+  // fence. Some SDK transports report only a timeout message, so normalize it.
+  if (!/timeout|timedout|econnreset/i.test(String(error?.code ?? ""))) {
+    throw Object.assign(new Error("Function Compute write timed out with an unconfirmed result"), { code: "FunctionWriteTimeout", cause: error });
+  }
+  throw error;
+}
+
 function isAlreadyExists(e: any): boolean {
   return ["AlreadyExists", "TriggerAlreadyExists", "CustomDomainAlreadyExists", "DomainNameAlreadyExists"].includes(e?.code ?? e?.data?.Code);
 }
@@ -555,25 +632,22 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       try { await client.getFunction(functionName, new $fc.GetFunctionRequest({})); }
       catch (e) { if (isNotFound(e)) exists = false; else throw e; }
       if (!exists) {
-        await client.createFunction(new $fc.CreateFunctionRequest({
-          body: new $fc.CreateFunctionInput({
-            functionName,
-            handler: "index.handler",
-            memorySize: 512, cpu: 0.5, timeout: 60, diskSize: 512,
-            role: cfg.role,
-            environmentVariables: args.env,
-            // Runtime, and what it needs to start: the Node layer plus a start
-            // command over the uploaded code, or the app's own image.
-            //
-            // The daemon zips the CONTENTS of the build's output directory, so
-            // the entry is relative to that directory — a `.output/` prefix
-            // here points at a path that is never unpacked and the function
-            // never boots.
-            ...runtimeInput(cfg, args, codeLocation),
-            ...functionNetworkInput(cfg.vpc),
-            ...functionLogInput(cfg.logs?.()),
-          }),
-        }));
+        const body = new $fc.CreateFunctionInput({
+          environmentVariables: { ...args.env, [DEPLOY_MARKER]: randomBytes(16).toString("hex") },
+          functionName,
+          handler: "index.handler",
+          memorySize: 512, cpu: 0.5, timeout: 60, diskSize: 512,
+          role: cfg.role,
+          // The daemon zips the contents of the output directory, so the
+          // start command is relative to that directory.
+          ...runtimeInput(cfg, args, codeLocation),
+          ...functionNetworkInput(cfg.vpc),
+          ...functionLogInput(cfg.logs?.()),
+        });
+        try { await client.createFunctionWithOptions(new $fc.CreateFunctionRequest({
+          body,
+        }), {}, FUNCTION_WRITE_RUNTIME); }
+        catch (error) { await reconcileTimedOutWrite(client, functionName, body, error); }
       } else {
         await this.updateFunctionCode(functionName, args);
       }
@@ -591,14 +665,14 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       // config for the same reason again — the nine functions deployed before
       // it existed have no logs, and a code-only update would leave them with
       // none no matter how many times their owner redeployed.
-      await client.updateFunction(functionName, new $fc.UpdateFunctionRequest({
-        body: new $fc.UpdateFunctionInput({
-          environmentVariables: args.env,
-          ...runtimeInput(cfg, args, codeLocation),
-          ...functionNetworkInput(cfg.vpc),
-          ...functionLogInput(cfg.logs?.()),
-        }),
-      }));
+      const body = new $fc.UpdateFunctionInput({
+        environmentVariables: { ...args.env, [DEPLOY_MARKER]: randomBytes(16).toString("hex") },
+        ...runtimeInput(cfg, args, codeLocation),
+        ...functionNetworkInput(cfg.vpc),
+        ...functionLogInput(cfg.logs?.()),
+      });
+      try { await client.updateFunctionWithOptions(functionName, new $fc.UpdateFunctionRequest({ body }), {}, FUNCTION_WRITE_RUNTIME); }
+      catch (error) { await reconcileTimedOutWrite(client, functionName, body, error); }
     },
     /**
      * Wait until Function Compute can actually serve the function just written.

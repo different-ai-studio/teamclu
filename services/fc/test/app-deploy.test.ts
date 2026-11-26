@@ -101,8 +101,8 @@ for (const [operation, failingMethod, providerCode] of [
 ] as const) {
   test(`publish preserves sanitized ${operation} failure stage (${providerCode})`, async () => {
     const client = {
-      getFunction: async () => ({ body: {} }),
-      updateFunction: async () => ({}),
+      getFunction: async () => ({ body: { state: "Active", lastUpdateStatus: "Successful" } }),
+      updateFunctionWithOptions: async () => ({}),
       createTrigger: async () => ({}),
       getTrigger: async () => ({ body: { triggerConfig: JSON.stringify({ disableURLInternet: true }) } }),
       [failingMethod]: async () => { throw Object.assign(new Error("SECRET request JWKS PEM"), {
