@@ -152,7 +152,7 @@ import {
   enrichActorsWithOrgRoles,
   makeOrgRolesRepo,
 } from "./supabase-repo/org-roles.js";
-import { isLegalStatusTransition } from "./validation/app-status.js";
+import { clientProvisionError, isLegalStatusTransition } from "./validation/app-status.js";
 import { parseAppType } from "./validation/app-type.js";
 import { assertTimeZone, computeNextRun, parseCronExpression } from "./app-cron-schedule.js";
 import { MAX_ENV_VARS_PER_APP, parseEnvKey, parseEnvValue } from "./app-env.js";
@@ -5366,6 +5366,12 @@ export function createSupabaseBusinessRepository(options) {
         name?: string;
         visibility?: string;
         provisionStatus?: string;
+        /**
+         * Why the client moved `provisionStatus` to `error` (deploy key fetch,
+         * daemon seed, local folder). Stored in `provision_error`; ignored for
+         * any other status.
+         */
+        provisionError?: string;
         fcStatus?: string;
         deployError?: string;
         deployToken?: string;
@@ -5531,6 +5537,16 @@ export function createSupabaseBusinessRepository(options) {
         const from = cur?.provision_status ?? "";
         if (isLegalStatusTransition(from, patch.provisionStatus)) {
           set.provision_status = patch.provisionStatus;
+          if (patch.provisionStatus === "error") {
+            // The client reports seed failures here, and they happen on the
+            // user's machine where nothing server-side can see them. Without
+            // the reason the row read `error` with nothing behind it.
+            set.provision_error = clientProvisionError(patch.provisionError);
+          } else if (patch.provisionStatus === "ready" && from === "error") {
+            // A reseed that worked: the old seed failure no longer describes
+            // the app.
+            set.provision_error = null;
+          }
         } else if (set.name === undefined && set.visibility === undefined && set.type === undefined) {
           // A settings edit that carries a stale provisionStatus along is still
           // a settings edit; only a PATCH that is nothing BUT the illegal

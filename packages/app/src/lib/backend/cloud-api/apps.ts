@@ -75,9 +75,11 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
       const page = await client.get<Page<AppSessionRow>>(`/v1/apps/${encodeURIComponent(appId)}/sessions`);
       return page.items;
     },
-    async updateAppProvisionStatus(appId, provisionStatus) {
+    async updateAppProvisionStatus(appId, provisionStatus, provisionError) {
       try {
-        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { provisionStatus });
+        const body: { provisionStatus: string; provisionError?: string } = { provisionStatus };
+        if (provisionStatus === "error" && provisionError?.trim()) body.provisionError = provisionError.trim();
+        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, body);
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;

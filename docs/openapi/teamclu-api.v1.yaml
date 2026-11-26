@@ -8045,6 +8045,9 @@ paths:
                 name: { type: string }
                 visibility: { type: string, enum: [personal, team] }
                 provisionStatus: { type: string, enum: [pending, repo_created, seeding, ready, error] }
+                provisionError:
+                  type: string
+                  description: "Reason stored in the app's `provisionError` alongside `provisionStatus: error` (capped at 2000 characters; a fixed sentence when omitted). Ignored for any other status. Moving `error` to `ready` clears it."
                 fcStatus: { $ref: "#/components/schemas/AppFcStatus" }
                 deployError:
                   type: string
