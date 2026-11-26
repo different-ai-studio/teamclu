@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   toastError: vi.fn(),
   workdirExists: vi.fn(),
   readDir: vi.fn(),
+  reportAppProvisionFailure: vi.fn(),
   encodeWorkspaceId: (workspacePath: string) => {
     const bytes = new TextEncoder().encode(workspacePath);
     let binary = "";
@@ -59,6 +60,10 @@ vi.mock("@/lib/backend", () => ({
       setAppType: mocks.setAppType,
     },
   }),
+}));
+
+vi.mock("@/lib/telemetry/app-provision-report", () => ({
+  reportAppProvisionFailure: mocks.reportAppProvisionFailure,
 }));
 
 vi.mock("@/lib/daemon/daemon-local-client", () => ({
@@ -299,6 +304,27 @@ describe("apps-store", () => {
       visibility: "team",
     });
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["error"]);
+  });
+
+  it("create: a failed seed sends its reason and reports it", async () => {
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({ id: "app-9", provisionStatus: "pending", teamId: "team-1", type: "static_web" }),
+    );
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, s) => appRow({ provisionStatus: s }));
+    mocks.seedDaemonApp.mockResolvedValueOnce(seedResult("failed", { error: "git: program not found" }));
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().create({
+      teamId: "team-1",
+      name: "N",
+      type: "static_web",
+      visibility: "team",
+    });
+    expect(mocks.updateAppProvisionStatus).toHaveBeenCalledWith("app-9", "error", "git: program not found");
+    expect(mocks.reportAppProvisionFailure).toHaveBeenCalledWith("seed", "git: program not found", {
+      appId: "app-9",
+      teamId: "team-1",
+      appType: "static_web",
+    });
   });
 
   it("create: unreachable → no status PATCH (stays pending)", async () => {
@@ -1074,7 +1100,7 @@ describe("apps-store: private repo credentials", () => {
     );
     expect(workdir).toBe("/w/app-1");
     expect(mocks.cloneDaemonApp).toHaveBeenCalled();
-    expect(mocks.updateAppProvisionStatus).toHaveBeenCalledWith("app-1", "ready");
+    expect(mocks.updateAppProvisionStatus).toHaveBeenCalledWith("app-1", "ready", undefined);
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
 

@@ -16,6 +16,7 @@ import i18n from "@/lib/i18n";
 import { usesStoredHttpsCredential } from "@/lib/apps/app-list-helpers";
 import { keepRelationship } from "@/lib/apps/app-relationship";
 import type { AppTypeId } from "@/lib/apps/app-types";
+import { reportAppProvisionFailure, type AppProvisionStage } from "@/lib/telemetry/app-provision-report";
 import type {
   AppRow,
   AppAuthPatch,
@@ -169,13 +170,33 @@ async function toastError(title: string, description?: string): Promise<void> {
  * row in the store. Non-fatal: a failed writeback must never reject the caller
  * (app creation / reseed has already succeeded locally).
  */
-async function patchStatus(set: SetState, appId: string, status: string): Promise<void> {
+async function patchStatus(
+  set: SetState,
+  appId: string,
+  status: string,
+  reason?: string | null,
+): Promise<void> {
   try {
-    const updated = await getBackend().apps.updateAppProvisionStatus(appId, status);
+    const updated = await getBackend().apps.updateAppProvisionStatus(appId, status, reason);
     if (updated) set((s) => ({ items: s.items.map((a) => (a.id === appId ? keepRelationship(a, updated) : a)) }));
   } catch (e) {
     console.warn("app status writeback failed (non-fatal)", e);
   }
+}
+
+/**
+ * A provisioning step on this machine failed: tell Sentry, then write `error`
+ * with the reason. Both halves exist because the failure happens where nothing
+ * server-side can see it — before this the row said `error` and nothing else.
+ */
+async function failProvision(
+  set: SetState,
+  app: Pick<AppRow, "id" | "teamId" | "type">,
+  stage: AppProvisionStage,
+  reason: string | null | undefined,
+): Promise<void> {
+  reportAppProvisionFailure(stage, reason, { appId: app.id, teamId: app.teamId, appType: app.type });
+  await patchStatus(set, app.id, "error", reason);
 }
 
 /**
@@ -431,17 +452,15 @@ async function runSeed(
       deployKeyPem = key?.privateKeyPem ?? null;
       deployKeyId = key?.deployKeyId ?? null;
       if (!deployKeyPem) {
-        await patchStatus(set, app.id, "error");
-        return { outcome: "failed", workdir: null, error: "无法获取 Gitea 部署密钥" };
+        const error = "无法获取 Gitea 部署密钥";
+        await failProvision(set, app, "deploy_key", error);
+        return { outcome: "failed", workdir: null, error };
       }
     } catch (e) {
       console.warn("getGitCredential failed (non-fatal)", e);
-      await patchStatus(set, app.id, "error");
-      return {
-        outcome: "failed",
-        workdir: null,
-        error: e instanceof Error ? e.message : String(e),
-      };
+      const error = e instanceof Error ? e.message : String(e);
+      await failProvision(set, app, "deploy_key", error);
+      return { outcome: "failed", workdir: null, error };
     }
   }
   const cloneCredential =
@@ -499,7 +518,7 @@ async function runSeed(
     }
     await patchStatus(set, app.id, "ready");
   } else if (result.outcome === "failed") {
-    await patchStatus(set, app.id, "error");
+    await failProvision(set, app, "seed", result.error);
   }
   // unreachable → no status change; reseed remains available.
   return result;
@@ -778,11 +797,9 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         const { bindDaemonAppWorkdir } = await import("@/lib/daemon/daemon-local-client");
         await bindDaemonAppWorkdir(row.id, input.teamId, adoptLocalDir.trim());
       } catch (e) {
-        await patchStatus(set, row.id, "error");
-        await toastError(
-          "无法使用这个目录",
-          e instanceof Error ? e.message : String(e),
-        );
+        const reason = e instanceof Error ? e.message : String(e);
+        await failProvision(set, row, "adopt_dir", reason);
+        await toastError("无法使用这个目录", reason);
         return get().items.find((a) => a.id === row.id) ?? row;
       }
     }

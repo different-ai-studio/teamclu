@@ -12,6 +12,7 @@ import {
 } from "../src/lib/supabase-repo.js";
 import { DEFAULT_MESSAGE_LIST_LIMIT } from "../src/lib/routing-utils.js";
 import { preflightAppDeploy } from "../src/lib/provisioning/app-deploy-preflight.js";
+import { CLIENT_PROVISION_ERROR_FALLBACK } from "../src/lib/validation/app-status.js";
 
 test("createSupabaseBusinessRepository creates caller-scoped Supabase client", async () => {
   const calls = [];
@@ -3667,6 +3668,51 @@ test("apps: updateApp advances provisionStatus through a legal transition", asyn
   }));
   const result = await repo.updateApp("app-1", { provisionStatus: "seeding" });
   assert.equal(result?.provisionStatus, "seeding");
+});
+
+test("apps: updateApp stores the client's reason with provisionStatus error", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({
+    seed: { apps: [{ ...APP_ROW, provision_status: "repo_created" }] },
+    calls,
+  }));
+  await repo.updateApp("app-1", { provisionStatus: "error", provisionError: "  git: command not found  " });
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update");
+  assert.equal(upd.at(-1).row.provision_status, "error");
+  assert.equal(upd.at(-1).row.provision_error, "git: command not found");
+});
+
+test("apps: a client error with no reason still says something", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({
+    seed: { apps: [{ ...APP_ROW, provision_status: "pending" }] },
+    calls,
+  }));
+  await repo.updateApp("app-1", { provisionStatus: "error" });
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update");
+  assert.equal(upd.at(-1).row.provision_error, CLIENT_PROVISION_ERROR_FALLBACK);
+});
+
+test("apps: a reseed that reaches ready clears the old seed failure", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({
+    seed: { apps: [{ ...APP_ROW, provision_status: "error", provision_error: "git: command not found" }] },
+    calls,
+  }));
+  await repo.updateApp("app-1", { provisionStatus: "ready" });
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update");
+  assert.equal(upd.at(-1).row.provision_error, null);
+});
+
+test("apps: provisionError is ignored unless the status is error", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({
+    seed: { apps: [{ ...APP_ROW, provision_status: "pending" }] },
+    calls,
+  }));
+  await repo.updateApp("app-1", { provisionStatus: "ready", provisionError: "stale" });
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update");
+  assert.equal("provision_error" in upd.at(-1).row, false);
 });
 
 test("apps: updateApp rejects an illegal provisionStatus jump", async () => {

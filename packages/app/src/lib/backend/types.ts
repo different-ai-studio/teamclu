@@ -1622,7 +1622,15 @@ export interface AppsBackend {
   }): Promise<AppRow>;
   getApp(appId: string): Promise<AppRow | null>;
   listAppSessions(appId: string): Promise<AppSessionRow[]>;
-  updateAppProvisionStatus(appId: string, provisionStatus: string): Promise<AppRow | null>;
+  /**
+   * Report the seed lifecycle the desktop drives. `provisionError` is why an
+   * `error` happened; the server stores it so the row says what went wrong.
+   */
+  updateAppProvisionStatus(
+    appId: string,
+    provisionStatus: string,
+    provisionError?: string | null,
+  ): Promise<AppRow | null>;
   /** Rename an app (PATCH name). Returns null on 404. */
   renameApp(appId: string, name: string): Promise<AppRow | null>;
   /**
