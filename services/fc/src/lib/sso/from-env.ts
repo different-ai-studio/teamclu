@@ -9,6 +9,8 @@
 //   WECOM_LOGIN_SUITE_ID / _SECRET        the provider's 登录授权 suite, if it is
 //                                         not the same app (optional)
 //   WECOM_CALLBACK_TOKEN / _AES_KEY       指令回调 Token + EncodingAESKey
+//   WECOM_LOGIN_CALLBACK_TOKEN / _AES_KEY 登录授权 page's own pair, if it differs
+//                                         from the app's (optional)
 //   WECOM_PROVIDER_CORPID                 provider CorpID (optional; accepted as
 //                                         a callback receiveId)
 //   WECOM_REDIRECT_BASE_URL               public origin registered as the trusted
@@ -38,10 +40,15 @@ export function readWecomSsoConfig(env: Env): WecomSsoConfig | null {
   }
   const loginSuiteId = env.WECOM_LOGIN_SUITE_ID?.trim();
   const loginSuiteSecret = env.WECOM_LOGIN_SUITE_SECRET?.trim();
+  const loginCallbackToken = env.WECOM_LOGIN_CALLBACK_TOKEN?.trim();
+  const loginCallbackAesKey = env.WECOM_LOGIN_CALLBACK_AES_KEY?.trim();
   return {
     suite: { suiteId, suiteSecret },
     loginSuite: loginSuiteId && loginSuiteSecret ? { suiteId: loginSuiteId, suiteSecret: loginSuiteSecret } : undefined,
     callback: { token, encodingAesKey },
+    loginCallback: loginCallbackToken && loginCallbackAesKey
+      ? { token: loginCallbackToken, encodingAesKey: loginCallbackAesKey }
+      : undefined,
     providerCorpId: env.WECOM_PROVIDER_CORPID?.trim() || undefined,
     redirectBaseUrl: env.WECOM_REDIRECT_BASE_URL?.trim() || undefined,
     installTestMode: env.WECOM_INSTALL_TEST_MODE === "1" || env.WECOM_INSTALL_TEST_MODE === "true",

@@ -26,6 +26,7 @@ import crypto from "crypto";
 import { ApiError } from "../http-utils.js";
 import {
   openWecomCallback,
+  verifyWecomSignature,
   xmlField,
   WecomCryptoError,
   type WecomCryptoConfig,
@@ -103,6 +104,11 @@ export interface WecomSsoConfig {
   /** The provider's 登录授权 suite used as the QR login appid. Defaults to `suite`. */
   loginSuite?: WecomSuite;
   callback: WecomCryptoConfig;
+  /**
+   * The 登录授权 page's own Token + EncodingAESKey, when it does not reuse the
+   * app's. The suite callback accepts a message signed with either pair.
+   */
+  loginCallback?: WecomCryptoConfig;
   /** Provider CorpID, accepted as a callback receiveId besides the suite ids. */
   providerCorpId?: string;
   /** Public origin WeCom redirects back to; must match the trusted domain. */
@@ -120,6 +126,23 @@ export interface SsoServiceDeps {
   allowedRedirectSchemes?: string[];
   nowMs?: () => number;
   randomToken?: () => string;
+}
+
+/**
+ * Open a callback with the app's key pair, falling back to the 登录授权 pair.
+ * Only a signature mismatch moves on to the next pair; a message whose
+ * signature verifies but fails to decrypt is rejected outright.
+ */
+function openWithAnyKey(
+  config: WecomSsoConfig,
+  args: { signature: string; timestamp: string; nonce: string; encrypt: string },
+  receiveIds: string[] | "any",
+): string {
+  const keys = config.loginCallback ? [config.callback, config.loginCallback] : [config.callback];
+  for (const key of keys) {
+    if (verifyWecomSignature(key, args)) return openWecomCallback(key, args, receiveIds);
+  }
+  throw new WecomCryptoError("signature mismatch");
 }
 
 function defaultRandomToken(): string {
@@ -422,12 +445,12 @@ export function createSsoService(deps: SsoServiceDeps) {
       try {
         if (args.method === "GET") {
           const echostr = args.query.get("echostr") ?? "";
-          const plain = openWecomCallback(config.callback, { signature, timestamp, nonce, encrypt: echostr }, receiveIds);
+          const plain = openWithAnyKey(config, { signature, timestamp, nonce, encrypt: echostr }, receiveIds);
           return { status: 200, text: plain };
         }
         const encrypt = xmlField(args.body, "Encrypt");
         if (!encrypt) return { status: 400, text: "missing Encrypt" };
-        const xml = openWecomCallback(config.callback, { signature, timestamp, nonce, encrypt }, receiveIds);
+        const xml = openWithAnyKey(config, { signature, timestamp, nonce, encrypt }, receiveIds);
         const infoType = xmlField(xml, "InfoType");
         if (infoType === "suite_ticket") {
           const suiteId = xmlField(xml, "SuiteId");

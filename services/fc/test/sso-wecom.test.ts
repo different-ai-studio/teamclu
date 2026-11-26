@@ -18,6 +18,7 @@ import {
   type SsoBinding,
   type SsoFlow,
   type SsoStore,
+  type WecomSsoConfig,
 } from "../src/lib/sso/sso-service.js";
 import { readWecomSsoConfig } from "../src/lib/sso/from-env.js";
 import { handleBusinessApiRequest } from "../src/lib/business-api.js";
@@ -162,13 +163,13 @@ function fakeWecomFetch(calls: string[] = []) {
   };
 }
 
-function service(mem = memoryStore(), calls: string[] = []) {
+function service(mem = memoryStore(), calls: string[] = [], extra: Partial<WecomSsoConfig> = {}) {
   mem.tickets.set("wecom:wwsuite", "TICKET");
   let n = 0;
   const svc = createSsoService({
     store: mem.store,
     wecom: {
-      config: { suite: SUITE, callback: CB, redirectBaseUrl: "https://api.example.test", installTestMode: true },
+      config: { suite: SUITE, callback: CB, redirectBaseUrl: "https://api.example.test", installTestMode: true, ...extra },
       client: createWecomClient({ fetchImpl: fakeWecomFetch(calls) as any, loadSuiteTicket: (s) => mem.store.loadSuiteTicket("wecom", s) }),
     },
     refreshSession: async (rt) => ({ access_token: `at-for-${rt}`, refresh_token: "rt2", user: { id: "u" } }),
@@ -320,6 +321,20 @@ test("suite callback: URL verification echoes the decrypted echostr", async () =
   assert.deepEqual(await svc.handleSuiteCallback({ method: "GET", query: q, body: "" }), { status: 200, text: "12345" });
   q.set("msg_signature", "f".repeat(40));
   assert.equal((await svc.handleSuiteCallback({ method: "GET", query: q, body: "" })).status, 403);
+});
+
+test("suite callback: accepts the 登录授权 page's own key pair when configured", async () => {
+  const LOGIN_CB = { token: "login-token", encodingAesKey: "b".repeat(43) };
+  const echostr = encryptWecomMessage(LOGIN_CB, "67890", "wwloginsuite");
+  const q = new URLSearchParams({ timestamp: "1", nonce: "n", echostr, msg_signature: wecomSignature(LOGIN_CB.token, "1", "n", echostr) });
+  // Without the second pair the login page's verification is refused...
+  assert.equal((await service().svc.handleSuiteCallback({ method: "GET", query: q, body: "" })).status, 403);
+  // ...with it, answered; the app's own pair keeps working alongside.
+  const { svc } = service(undefined, [], { loginCallback: LOGIN_CB });
+  assert.deepEqual(await svc.handleSuiteCallback({ method: "GET", query: q, body: "" }), { status: 200, text: "67890" });
+  const appEcho = encryptWecomMessage(CB, "12345", "wwsuite");
+  const q2 = new URLSearchParams({ timestamp: "1", nonce: "n", echostr: appEcho, msg_signature: wecomSignature(CB.token, "1", "n", appEcho) });
+  assert.deepEqual(await svc.handleSuiteCallback({ method: "GET", query: q2, body: "" }), { status: 200, text: "12345" });
 });
 
 test("suite callback: suite_ticket is stored, cancel_auth unbinds", async () => {

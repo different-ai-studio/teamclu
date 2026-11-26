@@ -101,7 +101,7 @@ by another until it is disconnected.
    and its trusted / 登录授权 domain and install redirect domain to the API
    host. Configure 登录授权 if it is a separate suite.
 2. Set `WECOM_SUITE_ID`, `WECOM_SUITE_SECRET`, `WECOM_CALLBACK_TOKEN` and
-   `WECOM_CALLBACK_AES_KEY`, plus the optional `WECOM_LOGIN_SUITE_*`,
+   `WECOM_CALLBACK_AES_KEY`, plus the optional `WECOM_LOGIN_SUITE_*`, `WECOM_LOGIN_CALLBACK_TOKEN` / `_AES_KEY` (the 登录授权 page's own key pair, if it does not reuse the app's),
    `WECOM_PROVIDER_CORPID`, `WECOM_REDIRECT_BASE_URL` and
    `WECOM_INSTALL_TEST_MODE=1` while the app is unpublished. Both deploy
    targets carry these keys.
