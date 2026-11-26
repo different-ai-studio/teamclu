@@ -411,9 +411,11 @@ export function createSsoService(deps: SsoServiceDeps) {
       body: string;
     }): Promise<{ text: string; status: number }> {
       const { config } = wecom();
-      const receiveIds = [config.suite.suiteId, config.loginSuite?.suiteId, config.providerCorpId].filter(
-        (s): s is string => !!s,
-      );
+      // Any receiveId: the 登录授权 suite signs with its own SuiteID, which is
+      // only known after the console saves this URL. The signature over our
+      // Token is what authenticates the caller, so a ticket is stored for any
+      // SuiteId that arrives signed.
+      const receiveIds = "any" as const;
       const signature = args.query.get("msg_signature") ?? "";
       const timestamp = args.query.get("timestamp") ?? "";
       const nonce = args.query.get("nonce") ?? "";
@@ -430,7 +432,7 @@ export function createSsoService(deps: SsoServiceDeps) {
         if (infoType === "suite_ticket") {
           const suiteId = xmlField(xml, "SuiteId");
           const ticket = xmlField(xml, "SuiteTicket");
-          if (suiteId && ticket && receiveIds.includes(suiteId)) {
+          if (suiteId && ticket) {
             await store.saveSuiteTicket("wecom", suiteId, ticket);
           }
         } else if (infoType === "cancel_auth") {

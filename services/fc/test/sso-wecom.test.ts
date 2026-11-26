@@ -333,10 +333,16 @@ test("suite callback: suite_ticket is stored, cancel_auth unbinds", async () => 
   await svc.handleSuiteCallback({ method: "POST", query: c.query, body: c.body });
   assert.equal(mem.bindings.size, 0);
 
-  // A ticket for a suite we do not run is ignored even when well signed.
-  const foreign = signedCallback("<xml><SuiteId>wwother</SuiteId><InfoType>suite_ticket</InfoType><SuiteTicket>X</SuiteTicket></xml>");
-  await svc.handleSuiteCallback({ method: "POST", query: foreign.query, body: foreign.body });
-  assert.equal(mem.tickets.has("wecom:wwother"), false);
+  // The 登录授权 suite signs with its own SuiteID (unknown until the console
+  // saves the URL); a well-signed ticket for it is stored too.
+  const login = signedCallback("<xml><SuiteId>wwloginsuite</SuiteId><InfoType>suite_ticket</InfoType><SuiteTicket>LT</SuiteTicket></xml>", "wwloginsuite");
+  await svc.handleSuiteCallback({ method: "POST", query: login.query, body: login.body });
+  assert.equal(mem.tickets.get("wecom:wwloginsuite"), "LT");
+  // ...but not one signed with another Token.
+  const forged = signedCallback("<xml><SuiteId>wwforged</SuiteId><InfoType>suite_ticket</InfoType><SuiteTicket>F</SuiteTicket></xml>");
+  forged.query.set("msg_signature", wecomSignature("someone-elses-token", "1", "n", forged.encrypt));
+  assert.equal((await svc.handleSuiteCallback({ method: "POST", query: forged.query, body: forged.body })).status, 403);
+  assert.equal(mem.tickets.has("wecom:wwforged"), false);
 });
 
 test("no suite_ticket yet → 503 naming the callback", async () => {
@@ -428,10 +434,6 @@ test("data callback: verifies any customer corpid as receiveId, rejects bad sign
   assert.deepEqual(await svc.handleDataCallback({ method: "POST", query: ev.query, body: ev.body }), { status: 200, text: "success" });
   ev.query.set("msg_signature", "0".repeat(40));
   assert.equal((await svc.handleDataCallback({ method: "POST", query: ev.query, body: ev.body })).status, 403);
-  // The suite callback still refuses a customer corpid.
-  const echo2 = encryptWecomMessage(CB, "1", "wwSomeCustomer");
-  const q2 = new URLSearchParams({ timestamp: "1", nonce: "n", echostr: echo2, msg_signature: wecomSignature(CB.token, "1", "n", echo2) });
-  assert.equal((await svc.handleSuiteCallback({ method: "GET", query: q2, body: "" })).status, 403);
 });
 
 test("routes: data callback GET answers the echostr as text", async () => {
