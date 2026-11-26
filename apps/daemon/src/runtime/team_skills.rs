@@ -509,17 +509,23 @@ fn working_copy_dir(slug: &str) -> Option<PathBuf> {
 /// Mirror the cache into `~/.agents/skills` when that working copy is not a
 /// local draft. Personal / foreign packs are left alone.
 fn sync_working_copy_from_cache(team_id: &str, slug: &str, cache: &Path) {
-    if !cache.is_dir() {
-        return;
-    }
     let Some(work) = working_copy_dir(slug) else {
         return;
     };
+    sync_working_copy_into(team_id, slug, cache, &work);
+}
+
+/// [`sync_working_copy_from_cache`] with the working-copy directory passed in,
+/// so it can be exercised against a temp dir instead of the real home.
+fn sync_working_copy_into(team_id: &str, slug: &str, cache: &Path, work: &Path) {
+    if !cache.is_dir() {
+        return;
+    }
     if work.is_dir() {
-        if is_dirty_pack(&work) {
+        if is_dirty_pack(work) {
             return;
         }
-        match read_origin(&work) {
+        match read_origin(work) {
             Some(origin)
                 if origin.registry != SOURCE_TEAM
                     || origin
@@ -532,8 +538,18 @@ fn sync_working_copy_from_cache(team_id: &str, slug: &str, cache: &Path) {
             None => return,
             Some(_) => {}
         }
+        // Already the cached pack: same version, same files. This runs for
+        // every installed team skill on every reconcile tick (10 minutes), and
+        // the copy used to happen regardless — swapping identical files and
+        // rewriting `origin.json` in place. `~/.agents/skills` is a watched
+        // global skill root, so each pointless write recorded a Skills refresh
+        // for *every* workspace and restarted their idle agent runtimes (and
+        // their MCP bridges) every ten minutes, with nothing having changed.
+        if working_copy_matches_cache(work, cache) {
+            return;
+        }
     }
-    if let Err(e) = commit_staged_pack(&work, cache) {
+    if let Err(e) = commit_staged_pack(work, cache) {
         tracing::warn!(
             team_id,
             slug,
@@ -541,6 +557,31 @@ fn sync_working_copy_from_cache(team_id: &str, slug: &str, cache: &Path) {
             "failed to sync team skill working copy from cache"
         );
     }
+}
+
+/// True when `work` already holds exactly what `cache` would put there.
+///
+/// Called only on a clean working copy (`is_dirty_pack` is false), so its files
+/// match its own `origin.json` manifest; comparing the two manifests therefore
+/// compares the bytes on disk. A manifest-less origin (packs from before
+/// manifests existed) never matches, so those keep being refreshed as before.
+/// mtime is ignored: it records when a file was written, not what is in it.
+fn working_copy_matches_cache(work: &Path, cache: &Path) -> bool {
+    let (Some(work), Some(cache)) = (read_origin(work), read_origin(cache)) else {
+        return false;
+    };
+    if work.installed_version != cache.installed_version || work.team_id != cache.team_id {
+        return false;
+    }
+    let (Some(have), Some(want)) = (work.files.as_ref(), cache.files.as_ref()) else {
+        return false;
+    };
+    have.len() == want.len()
+        && have.iter().all(|(path, file)| {
+            want.get(path).is_some_and(|w| {
+                w.sha256 == file.sha256 && w.size == file.size && w.exec == file.exec
+            })
+        })
 }
 
 fn remove_working_copy_if_ours(team_id: &str, slug: &str) {
@@ -705,6 +746,109 @@ mod tests {
         let path = dir.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
+    }
+
+    /// A cache pack as `install` leaves it: files plus an `origin.json` whose
+    /// manifest describes them.
+    fn cache_pack(dir: &Path, version: &str, body: &str) {
+        write(dir, "SKILL.md", body);
+        let files = build_manifest_for(dir, &["SKILL.md".to_string()]).unwrap();
+        write_origin(
+            dir,
+            &SkillOrigin {
+                version: ORIGIN_VERSION,
+                registry: SOURCE_TEAM.to_string(),
+                slug: "deploy-check".into(),
+                installed_version: version.into(),
+                installed_at: 1,
+                team_id: Some("team-a".into()),
+                files: Some(files),
+            },
+        )
+        .unwrap();
+    }
+
+    /// Mark the working copy's `origin.json` with a field the comparison
+    /// ignores, so a rewrite (which copies the cache's record) is visible.
+    fn stamp_working_copy(work: &Path) {
+        let mut origin = read_origin(work).unwrap();
+        origin.installed_at = 999;
+        write_origin(work, &origin).unwrap();
+    }
+
+    #[test]
+    fn an_unchanged_working_copy_is_not_rewritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache/deploy-check");
+        let work = tmp.path().join("work/deploy-check");
+        cache_pack(&cache, "2", "body v2\n");
+
+        sync_working_copy_into("team-a", "deploy-check", &cache, &work);
+        assert_eq!(
+            std::fs::read_to_string(work.join("SKILL.md")).unwrap(),
+            "body v2\n"
+        );
+        stamp_working_copy(&work);
+
+        // The next reconcile tick: nothing changed, so nothing is written —
+        // a write here is a watched-root event that restarts every runtime.
+        sync_working_copy_into("team-a", "deploy-check", &cache, &work);
+        assert_eq!(read_origin(&work).unwrap().installed_at, 999);
+    }
+
+    #[test]
+    fn a_new_cached_version_still_reaches_the_working_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache/deploy-check");
+        let work = tmp.path().join("work/deploy-check");
+        cache_pack(&cache, "2", "body v2\n");
+        sync_working_copy_into("team-a", "deploy-check", &cache, &work);
+
+        cache_pack(&cache, "3", "body v3\n");
+        sync_working_copy_into("team-a", "deploy-check", &cache, &work);
+
+        assert_eq!(read_origin(&work).unwrap().installed_version, "3");
+        assert_eq!(
+            std::fs::read_to_string(work.join("SKILL.md")).unwrap(),
+            "body v3\n"
+        );
+    }
+
+    #[test]
+    fn same_version_with_different_files_is_still_copied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache/deploy-check");
+        let work = tmp.path().join("work/deploy-check");
+        cache_pack(&cache, "2", "body v2\n");
+        sync_working_copy_into("team-a", "deploy-check", &cache, &work);
+
+        // The cache is a remote snapshot and always wins on a clean copy, even
+        // when the version number did not move.
+        cache_pack(&cache, "2", "body v2, re-uploaded\n");
+        sync_working_copy_into("team-a", "deploy-check", &cache, &work);
+
+        assert_eq!(
+            std::fs::read_to_string(work.join("SKILL.md")).unwrap(),
+            "body v2, re-uploaded\n"
+        );
+    }
+
+    #[test]
+    fn a_locally_edited_working_copy_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache/deploy-check");
+        let work = tmp.path().join("work/deploy-check");
+        cache_pack(&cache, "2", "body v2\n");
+        sync_working_copy_into("team-a", "deploy-check", &cache, &work);
+
+        write(&work, "SKILL.md", "my local edit\n");
+        cache_pack(&cache, "3", "body v3\n");
+        sync_working_copy_into("team-a", "deploy-check", &cache, &work);
+
+        assert_eq!(
+            std::fs::read_to_string(work.join("SKILL.md")).unwrap(),
+            "my local edit\n"
+        );
     }
 
     #[test]
