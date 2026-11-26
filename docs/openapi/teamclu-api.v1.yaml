@@ -8054,6 +8054,40 @@ paths:
       responses:
         "200": { description: "`success`", content: { text/plain: { schema: { type: string } } } }
         "403": { description: Bad signature or ciphertext, content: { text/plain: { schema: { type: string } } } }
+  /v1/auth/sso/wecom/data-callback:
+    get:
+      operationId: ssoWecomDataCallbackVerify
+      summary: WeCom data callback (数据回调) URL verification
+      description: |
+        Answers the decrypted `echostr` as text/plain. Signature-checked; the
+        receiveId may be any customer company's corpid.
+      tags: [Auth]
+      security: []
+      parameters:
+        - { name: msg_signature, in: query, required: true, schema: { type: string } }
+        - { name: timestamp, in: query, required: true, schema: { type: string } }
+        - { name: nonce, in: query, required: true, schema: { type: string } }
+        - { name: echostr, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Decrypted echostr, content: { text/plain: { schema: { type: string } } } }
+        "403": { description: Bad signature or ciphertext, content: { text/plain: { schema: { type: string } } } }
+    post:
+      operationId: ssoWecomDataCallback
+      summary: WeCom data callback events
+      description: Contact and user events from customer companies. Signature-checked and acknowledged; sign-in uses none of them.
+      tags: [Auth]
+      security: []
+      parameters:
+        - { name: msg_signature, in: query, required: true, schema: { type: string } }
+        - { name: timestamp, in: query, required: true, schema: { type: string } }
+        - { name: nonce, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          text/xml: { schema: { type: string } }
+      responses:
+        "200": { description: "`success`", content: { text/plain: { schema: { type: string } } } }
+        "403": { description: Bad signature or ciphertext, content: { text/plain: { schema: { type: string } } } }
   /v1/teams/{teamId}/sso/{provider}:
     get:
       operationId: getTeamOrgSsoBinding

@@ -68,6 +68,11 @@ Provider callback (指令回调) `GET|POST /v1/auth/sso/wecom/suite-callback`:
 URL verification, `suite_ticket` (stored; needed for every
 `suite_access_token`), and `cancel_auth` (deletes the binding).
 
+Data callback (数据回调) `GET|POST /v1/auth/sso/wecom/data-callback`: contact
+and user events from each customer company, signed with that company's corpid
+as the receiveId. Sign-in uses none of them; the endpoint only verifies the
+signature and acknowledges, so the console stops flagging the URL.
+
 ## Data (migration `20261126120000_enterprise_sso.sql`)
 
 All service_role only.

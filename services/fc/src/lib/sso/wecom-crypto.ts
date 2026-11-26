@@ -94,15 +94,17 @@ export function encryptWecomMessage(
 /**
  * Verify and decrypt one callback payload. Throws WecomCryptoError on a bad
  * signature, a bad ciphertext, or a receiveId outside `acceptReceiveIds`.
+ * `acceptReceiveIds: "any"` is for data callbacks, which carry each customer
+ * company's corpid: the signature over our Token is what authenticates them.
  */
 export function openWecomCallback(
   cfg: WecomCryptoConfig,
   args: { signature: string; timestamp: string; nonce: string; encrypt: string },
-  acceptReceiveIds: string[],
+  acceptReceiveIds: string[] | "any",
 ): string {
   if (!verifyWecomSignature(cfg, args)) throw new WecomCryptoError("signature mismatch");
   const { message, receiveId } = decryptWecomMessage(cfg, args.encrypt);
-  if (!acceptReceiveIds.includes(receiveId)) {
+  if (acceptReceiveIds !== "any" && !acceptReceiveIds.includes(receiveId)) {
     throw new WecomCryptoError(`unexpected receiveId ${JSON.stringify(receiveId)}`);
   }
   return message;

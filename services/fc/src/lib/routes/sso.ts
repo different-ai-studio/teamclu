@@ -74,6 +74,17 @@ export function registerSso(router) {
     return text(out.status, out.text);
   });
 
+  router.get("/v1/auth/sso/wecom/data-callback", { auth: "none", noStore: true }, async (ctx) => {
+    const out = await sso(ctx).handleDataCallback({ method: "GET", query: ctx.query, body: "" });
+    return text(out.status, out.text);
+  });
+
+  router.post("/v1/auth/sso/wecom/data-callback", { auth: "none", rawBody: true, maxBodyBytes: 64 * 1024 }, async (ctx) => {
+    const body = ctx.rawBody ? Buffer.from(ctx.rawBody).toString("utf8") : "";
+    const out = await sso(ctx).handleDataCallback({ method: "POST", query: ctx.query, body });
+    return text(out.status, out.text);
+  });
+
   router.get("/v1/auth/sso/:provider/callback", { auth: "none", noStore: true }, async (ctx) => {
     const provider = decodeURIComponent(ctx.params.provider);
     const out = await sso(ctx).handleLoginCallback({

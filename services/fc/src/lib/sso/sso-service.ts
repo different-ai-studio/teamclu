@@ -450,6 +450,39 @@ export function createSsoService(deps: SsoServiceDeps) {
         throw e;
       }
     },
+
+    /**
+     * The data callback URL (数据回调): contact and user events from each
+     * customer company. Sign-in uses none of them; this only answers WeCom's URL
+     * verification and acknowledges events so the console stops reporting the
+     * URL as unresponsive. Signature-checked; any receiveId (customer corpid).
+     */
+    async handleDataCallback(args: {
+      method: "GET" | "POST";
+      query: URLSearchParams;
+      body: string;
+    }): Promise<{ text: string; status: number }> {
+      const { config } = wecom();
+      const signature = args.query.get("msg_signature") ?? "";
+      const timestamp = args.query.get("timestamp") ?? "";
+      const nonce = args.query.get("nonce") ?? "";
+      try {
+        if (args.method === "GET") {
+          const echostr = args.query.get("echostr") ?? "";
+          return { status: 200, text: openWecomCallback(config.callback, { signature, timestamp, nonce, encrypt: echostr }, "any") };
+        }
+        const encrypt = xmlField(args.body, "Encrypt");
+        if (!encrypt) return { status: 400, text: "missing Encrypt" };
+        openWecomCallback(config.callback, { signature, timestamp, nonce, encrypt }, "any");
+        return { status: 200, text: "success" };
+      } catch (e) {
+        if (e instanceof WecomCryptoError) {
+          console.error("sso: rejected WeCom data callback:", e.message);
+          return { status: 403, text: "forbidden" };
+        }
+        throw e;
+      }
+    },
   };
 }
 

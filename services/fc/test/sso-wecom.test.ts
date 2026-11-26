@@ -418,3 +418,30 @@ test("routes: binding status needs a bearer; unconfigured deployment is 501", as
   }, routeDeps(null));
   assert.equal(off.statusCode, 501);
 });
+
+test("data callback: verifies any customer corpid as receiveId, rejects bad signatures", async () => {
+  const { svc } = service();
+  const echostr = encryptWecomMessage(CB, "777", "wwSomeCustomer");
+  const q = new URLSearchParams({ timestamp: "1", nonce: "n", echostr, msg_signature: wecomSignature(CB.token, "1", "n", echostr) });
+  assert.deepEqual(await svc.handleDataCallback({ method: "GET", query: q, body: "" }), { status: 200, text: "777" });
+  const ev = signedCallback("<xml><Event>change_contact</Event></xml>", "wwSomeCustomer");
+  assert.deepEqual(await svc.handleDataCallback({ method: "POST", query: ev.query, body: ev.body }), { status: 200, text: "success" });
+  ev.query.set("msg_signature", "0".repeat(40));
+  assert.equal((await svc.handleDataCallback({ method: "POST", query: ev.query, body: ev.body })).status, 403);
+  // The suite callback still refuses a customer corpid.
+  const echo2 = encryptWecomMessage(CB, "1", "wwSomeCustomer");
+  const q2 = new URLSearchParams({ timestamp: "1", nonce: "n", echostr: echo2, msg_signature: wecomSignature(CB.token, "1", "n", echo2) });
+  assert.equal((await svc.handleSuiteCallback({ method: "GET", query: q2, body: "" })).status, 403);
+});
+
+test("routes: data callback GET answers the echostr as text", async () => {
+  const { svc } = service();
+  const echostr = encryptWecomMessage(CB, "4242", "wwSomeCustomer");
+  const res = await handleBusinessApiRequest({
+    httpMethod: "GET", path: "/v1/auth/sso/wecom/data-callback",
+    queryParameters: { timestamp: "1", nonce: "n", echostr, msg_signature: wecomSignature(CB.token, "1", "n", echostr) },
+    headers: {}, body: null,
+  }, routeDeps(svc));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body, "4242");
+});
