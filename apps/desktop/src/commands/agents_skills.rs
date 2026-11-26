@@ -261,10 +261,12 @@ fn patch_config_file(path: &Path, agents_skills: &str) -> Result<bool, String> {
     Ok(changed)
 }
 
-/// Create `~/.agents/skills` and register it in OpenCode + Claude `skills.paths`.
+/// Create `~/.agents/skills` and register it in Claude's `skills.paths`:
+/// `~/.claude/settings.json`, and `{workspace}/.claude/settings.json` when set.
 ///
-/// - OpenCode: `{workspace}/opencode.json` when `workspace_path` is set
-/// - Claude: `~/.claude/settings.json`, and `{workspace}/.claude/settings.json` when set
+/// No OpenCode config is written any more — neither the workspace's
+/// `opencode.json` nor the user's own `~/.config/opencode/opencode.json`. No
+/// OpenCode runtime ships, and the latter is a file the user owns.
 #[tauri::command]
 pub fn ensure_agents_skills_paths(workspace_path: Option<String>) -> Result<String, String> {
     let agents = agents_skills_dir()?;
@@ -278,9 +280,8 @@ pub fn ensure_agents_skills_paths(workspace_path: Option<String>) -> Result<Stri
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        // Workspace `opencode.json` used to get `~/.agents/skills` prepended here.
-        // The working copy now lives there exclusively; the hosted cache is not
-        // a runtime path. Claude still needs the member root registered.
+        // Claude needs the member root registered; the hosted cache is not a
+        // runtime path.
         let claude_ws = Path::new(ws).join(".claude").join("settings.json");
         if patch_config_file(&claude_ws, &agents_str)? {
             touched.push(claude_ws.display().to_string());
@@ -291,12 +292,6 @@ pub fn ensure_agents_skills_paths(workspace_path: Option<String>) -> Result<Stri
     let claude_global = home.join(".claude").join("settings.json");
     if patch_config_file(&claude_global, &agents_str)? {
         touched.push(claude_global.display().to_string());
-    }
-
-    // Also register in the user-level OpenCode config when present/creatable.
-    let opencode_global = home.join(".config").join("opencode").join("opencode.json");
-    if patch_config_file(&opencode_global, &agents_str)? {
-        touched.push(opencode_global.display().to_string());
     }
 
     Ok(format!(
@@ -318,7 +313,7 @@ mod tests {
     #[test]
     fn adds_skills_paths_idempotently() {
         let dir = tempdir().unwrap();
-        let cfg = dir.path().join("opencode.json");
+        let cfg = dir.path().join("settings.json");
         std::fs::write(&cfg, "{}\n").unwrap();
         assert!(patch_config_file(&cfg, "/tmp/.agents/skills").unwrap());
         assert!(!patch_config_file(&cfg, "/tmp/.agents/skills").unwrap());
@@ -330,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_agents_skills_paths_does_not_write_workspace_opencode_json() {
+    fn ensure_agents_skills_paths_writes_no_opencode_config() {
         let home = tempdir().unwrap();
         let ws = tempdir().unwrap();
         let opencode = ws.path().join("opencode.json");
@@ -350,6 +345,10 @@ mod tests {
         assert!(
             v.get("skills").is_none(),
             "workspace opencode.json must not gain a member skills.paths entry"
+        );
+        assert!(
+            !home.path().join(".config/opencode/opencode.json").exists(),
+            "the user's own OpenCode config is not ours to write"
         );
     }
 

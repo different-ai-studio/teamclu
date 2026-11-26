@@ -3187,7 +3187,7 @@
         "blockerEnvLayerOverride": "Higher-priority layers override earlier values for: {{keys}}",
         "blockerTeamSecretMissing": "Team encrypted env files exist but no team secret is configured on this machine",
         "blockerMissingExpectedEnvKeys": "Expected env keys are missing from the resolved snapshot: {{keys}}",
-        "blockerMcpPlaceholderUnresolved": "opencode.json still references unresolved placeholders: {{keys}}",
+        "blockerMcpPlaceholderUnresolved": "Workspace MCP config still references unresolved placeholders: {{keys}}",
         "blockerEnvNotServed": "Resolved keys are missing from the running agent host: {{keys}}"
       },
       "injection": {

@@ -152,7 +152,7 @@ function runtimeModelsToConfigured(disconnectedIds: Set<string>): ConfiguredProv
  * Union the daemon snapshot with models observed on live runtimes.
  *
  * The team provider is the exception: its model list is owned by the cloud and
- * materialized into `opencode.json` by the daemon, so the daemon snapshot is the
+ * materialized into `providers.json` by the daemon, so the daemon snapshot is the
  * only authority on *membership*. Runtime state arrives over a retained MQTT
  * topic, which replays the model list a runtime was spawned with — unioning that
  * in would resurrect models the team has since dropped, and no refresh could
@@ -438,8 +438,8 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
         trimmedKey,
         `API key for provider ${providerId}`,
       )
-      // Daemon-backed OpenCode reads literal apiKey from opencode.json; it does
-      // not resolve desktop ${ref} placeholders from the personal secret store.
+      // The daemon stores the literal apiKey in providers.json; it does not
+      // resolve desktop ${ref} placeholders from the personal secret store.
       await putDaemonDeviceProviderAuth(providerId, { api_key: trimmedKey })
       set((state) => {
         const newDisconnected = new Set(state._disconnectedIds)

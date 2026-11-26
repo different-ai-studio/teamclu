@@ -46,9 +46,7 @@ pub(crate) fn get_teamclu_json_path(workspace_path: &str) -> String {
 pub(crate) fn read_teamclu_json(workspace_path: &str) -> Result<serde_json::Value, String> {
     let path = get_teamclu_json_path(workspace_path);
     if !Path::new(&path).exists() {
-        return Ok(serde_json::json!({
-            "$schema": "https://opencode.ai/config.json"
-        }));
+        return Ok(serde_json::json!({}));
     }
     let content = std::fs::read_to_string(&path).map_err(|e| {
         format!(

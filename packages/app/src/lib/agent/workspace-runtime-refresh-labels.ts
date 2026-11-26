@@ -17,8 +17,6 @@ export function formatRuntimeRefreshChangeKinds(kinds: string[]): string {
         return 'provider catalog'
       case 'permissions':
         return 'permissions'
-      case 'opencode_json':
-        return 'OpenCode config'
       default:
         return kind.replace(/_/g, ' ')
     }

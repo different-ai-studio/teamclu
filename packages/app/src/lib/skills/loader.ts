@@ -1,5 +1,4 @@
 import { readDir, readTextFile, exists } from '@tauri-apps/plugin-fs'
-import { collectTeamSkillPaths } from '@/lib/team/team-skill-paths'
 import { frontmatterString } from '@/lib/skills/frontmatter'
 import { homeDir } from '@tauri-apps/api/path'
 import type { SkillWithSource, SkillSource } from '@/lib/skills/types'
@@ -96,8 +95,6 @@ async function loadSkillsFromDir(
 
 // ─── Multi-Source Loader ────────────────────────────────────────────────────
 
-export { collectTeamSkillPaths, readConfigSkillPaths } from '@/lib/team/team-skill-paths'
-
 /**
  * Every skill directory scanned for the current workspace/user context, in the
  * daemon's resolution order — highest precedence first.
@@ -119,13 +116,7 @@ export async function getSkillDirectories(workspacePath: string | null): Promise
   dirs.add(`${home}/.agents/skills`)
   // rank 3
   if (workspacePath) dirs.add(`${workspacePath}/.agents/skills`)
-  // rank 4
-  if (workspacePath) {
-    for (const dirPath of await collectTeamSkillPaths(workspacePath)) {
-      dirs.add(dirPath)
-    }
-  }
-  // rank 5
+  // rank 5 (rank 4 was config-declared team roots, gone with opencode.json)
   dirs.add(`${home}/.claude/skills`)
 
   return Array.from(dirs)
@@ -146,9 +137,6 @@ export async function getSkillDirectories(workspacePath: string | null): Promise
  * Global paths (user-level):
  * 3. `~/.claude/skills/`          → source: 'global-claude'
  * 4. `~/.agents/skills/`          → source: 'global-agent'
- *
- * Dynamic paths (from `opencode.json` `skills.paths`):
- * 5+. Each configured path → source: 'team'
  *
  * Same-name skills are resolved by priority — workspace > global.
  */
@@ -206,24 +194,6 @@ export async function loadAllSkills(
   const globalAgentDir = `${home.replace(/\/$/, '')}/.agents/skills`
   const globalAgentSkills = await loadSkillsFromDir(globalAgentDir, 'global-agent')
   for (const s of globalAgentSkills) pushSkill(labelled(s, true))
-
-  // ============ Dynamic paths from opencode.json ============
-
-  // 5+. Configured skill paths (`opencode.json` → `skills.paths`)
-  if (workspacePath) {
-    const configPaths = await collectTeamSkillPaths(workspacePath)
-    for (const dirPath of configPaths) {
-      const skills = await loadSkillsFromDir(dirPath, 'team')
-      // Determine if path is global (starts with ~/ or absolute home path)
-      const normalizedDirPath = dirPath.replace(/\\/g, '/')
-      const normalizedHome = home.replace(/\\/g, '/')
-      const isGlobalPath =
-        normalizedDirPath.startsWith(normalizedHome) ||
-        normalizedDirPath.includes('.claude') ||
-        normalizedDirPath.includes('.agents')
-      for (const s of skills) pushSkill(labelled(s, isGlobalPath))
-    }
-  }
 
   // Deduplicate by filename with priority:
   // claude > global-agent > shared > team > global-claude
@@ -317,7 +287,7 @@ export function getSourceDirHint(source: SkillSource): string {
     case 'shared':
       return '.agents/skills/'
     case 'team':
-      return 'opencode.json → skills.paths'
+      return ''
     case 'builtin':
       return i18n.t('skills.builtinPath', { app: appDisplayName })
     case 'personal':

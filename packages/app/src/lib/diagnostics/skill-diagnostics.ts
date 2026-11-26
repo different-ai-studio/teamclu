@@ -7,7 +7,7 @@ import {
   getDaemonRolesSkillsState,
   getDaemonRuntime,
 } from '@/lib/daemon/daemon-local-client'
-import { collectTeamSkillPaths, globalTeamShareDir, TEAM_SHARE_LINK_DIR } from '@/lib/team/team-skill-paths'
+import { globalTeamShareDir, TEAM_SHARE_LINK_DIR } from '@/lib/team/team-skill-paths'
 import { TEAMCLU_DIR } from '@/lib/config/build-config'
 import { isTauri } from '@/lib/utils'
 
@@ -261,18 +261,6 @@ export async function runSkillsDiagnostics(workspacePath: string): Promise<Skill
         ? 'No team share link found. Team skills from teamclu-team/ will not appear.'
         : undefined,
   })
-
-  const configuredPaths = await collectTeamSkillPaths(workspacePath)
-  for (const configPath of configuredPaths) {
-    const pathExists = await exists(configPath)
-    checks.push({
-      id: `config-path:${configPath}`,
-      label: 'Configured skill path',
-      status: pathExists ? 'ok' : 'fail',
-      detail: configPath,
-      hint: pathExists ? undefined : 'Path from teamclu.json / opencode.json does not exist or is inaccessible.',
-    })
-  }
 
   const skillDirs = await getSkillDirectories(workspacePath)
   for (const dirPath of skillDirs) {

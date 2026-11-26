@@ -8,14 +8,6 @@ import { buildConfig, TEAMCLU_DIR } from '@/lib/config/build-config'
 const TEAMCLU_GITIGNORE_ENTRIES = [
   `# ${buildConfig.app.name} system directories`,
   `${TEAMCLU_DIR}/`,
-  // Machine-local runtime config, not project content: the daemon materializes
-  // it per machine (absolute binary paths, a local introspect port), so a
-  // committed copy is churn at best and, on pre-#742 installs, a provider API
-  // key in the history at worst.
-  //
-  // Note for an existing repo: git keeps tracking a file it already tracks —
-  // `git rm --cached opencode.json` is what actually stops it.
-  'opencode.json',
 ]
 
 /**

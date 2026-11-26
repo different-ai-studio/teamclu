@@ -181,10 +181,10 @@ pi 的 README 明确写着「**No MCP.** … or build an extension that adds MCP
 
 关键设计：
 
-- **服务器清单同源**：仍是 workspace `opencode.json` 的 `mcp` 表（团队 + inherent + 用户三处合并的 SSOT）。daemon 的 `pi_server_spec`（`pi_rpc/mod.rs`）把它归一成两种形状塞进 `TEAMCLU_MCP_SERVERS`：`{type:"local", command, environment}` / `{type:"remote", url, headers}`。`amuxd-remote-tools` 走自己的 `TEAMCLU_REMOTE_TOOLS_CMD`（要带 socket 参数）。
+- **服务器清单同源**：daemon 把 device（`~/.amuxd/mcp.json`）+ 团队 + workspace 三层合并（`team_mcp::load_merged_mcp`），`pi_server_spec`（`pi_rpc/mod.rs`）归一成两种形状塞进 `TEAMCLU_MCP_SERVERS`：`{type:"local", command, environment}` / `{type:"remote", url, headers}`；同一张表写进 `state/workspaces/<key>/mcp.effective.json`，extension 监听它（`TEAMCLU_MCP_CONFIG_PATH`）。`amuxd-remote-tools` 走自己的 `TEAMCLU_REMOTE_TOOLS_CMD`（要带 socket 参数）。
 - **两种 transport 都支持**：local 走 `StdioClientTransport`，remote 先试 streamable HTTP，被拒再退 SSE——与 opencode 原生加载的集合对齐。
 - **SDK 带来的能力**：`tools/list` 翻页、`notifications/tools/list_changed` 运行时增量注册、`AbortSignal` 透传取消、image 结果按 `ImageContent` 原样回传。
-- **进程内共享**：bridge 注册表挂在 `globalThis`，按 (label, spec 签名) 复用；`tools/list` 结果落盘缓存（`TEAMCLU_MCP_TOOL_CACHE_DIR`），冷启动不必等最慢的那个 npx server。config 文件有 watcher，改 `mcp` 表无需重启 pi。
+- **进程内共享**：bridge 注册表挂在 `globalThis`，按 (label, spec 签名) 复用；`tools/list` 结果落盘缓存（`TEAMCLU_MCP_TOOL_CACHE_DIR`），冷启动不必等最慢的那个 npx server。effective 文件有 watcher，任何一层 MCP 变化都无需重启 pi。
 - **工具名**：默认原样注册，只有真撞名才给后来者加 `<server>_` 前缀，先到先得。
 
 **安装**：SDK 不是可选项——没有它就没有 remote-tools、没有任何团队工具。`pi_install::mcp_sdk` 把 `@modelcontextprotocol/sdk` 装进 extension 物化目录（`<cache>/pi/extensions/node_modules`，pi 会从 extension 同级目录解析裸导入），版本与 pi 一起锁在 `apps/daemon/pi.lock.json` 的 `mcpSdkVersion`，并计入 `doctor().satisfied`。官方 registry 不通时退到 OSS 镜像。

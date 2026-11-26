@@ -17,9 +17,10 @@
 #   - Cloud account / team data (Supabase / Cloud API)
 #   - Workspace content outside `.<brand>/` and the team-drive symlink
 #   - The workspace directory itself — unless --purge-workspaces, which removes
-#     the whole directory when it carries a workspace marker (opencode.json /
-#     teamclu.json / teamclaw.json, a `.<brand>` dir, a team-drive link, or
-#     `knowledge/`)
+#     the whole directory when it carries a workspace marker (teamclu.json /
+#     teamclaw.json, a `.<brand>` dir, a team-drive link, or `knowledge/`).
+#     `opencode.json` is not one: the app stopped writing it, and a directory
+#     holding one may be the user's own OpenCode project.
 #
 # Covers the amuxd home-layout v2 (`docs/architecture/amuxd-home-layout-v2.md`):
 #   - white-label daemon homes `~/.amuxd-<brand>` next to the official `~/.amuxd`
@@ -819,7 +820,7 @@ looks_like_workspace() {
   local ws="$1"
   local short_name link_name
   [[ -d "$ws" ]] || return 1
-  [[ -f "$ws/opencode.json" || -f "$ws/teamclaw.json" || -f "$ws/teamclu.json" ]] && return 0
+  [[ -f "$ws/teamclaw.json" || -f "$ws/teamclu.json" ]] && return 0
   [[ -d "$ws/knowledge" ]] && return 0
   for link_name in "${TEAM_SHARED_LINK_NAMES[@]}"; do
     [[ -e "$ws/$link_name" || -L "$ws/$link_name" ]] && return 0

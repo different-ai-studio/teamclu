@@ -19,7 +19,6 @@ const mockLoadRolesSkillsWorkspaceStateFromFs = vi.fn(async () => ({
 }))
 const mockGetDaemonRolesSkillsState = vi.fn(async () => null)
 const mockGetDaemonRuntime = vi.fn(async () => null)
-const mockCollectTeamSkillPaths = vi.fn(async () => [])
 const mockGlobalTeamShareDir = vi.fn(async () => null)
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
@@ -45,7 +44,6 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
 }))
 
 vi.mock('@/lib/team/team-skill-paths', () => ({
-  collectTeamSkillPaths: (...args: unknown[]) => mockCollectTeamSkillPaths(...args),
   globalTeamShareDir: (...args: unknown[]) => mockGlobalTeamShareDir(...args),
   TEAM_SHARE_LINK_DIR: 'teamclu-team',
 }))
@@ -99,7 +97,6 @@ describe('runSkillsDiagnostics', () => {
         last_error: null,
       },
     })
-    mockCollectTeamSkillPaths.mockResolvedValue([])
     mockGlobalTeamShareDir.mockResolvedValue(null)
   })
 
