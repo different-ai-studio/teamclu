@@ -35,6 +35,7 @@ mod cloud;
 mod daemon;
 mod deploy;
 mod error;
+mod files;
 mod logs;
 mod redact;
 mod resolve;
@@ -62,6 +63,10 @@ pub use deploy::{
     return_git_credential, DeployArgs, GitCredential,
 };
 pub use error::{ErrorKind, OpError};
+pub use files::{
+    encode_file_path, guess_content_type, storage_path, upload_destination, FilesQuery,
+    MAX_LIST_LIMIT, MAX_UPLOAD_BYTES,
+};
 pub use logs::LogsArgs;
 pub use redact::{redact_deploy_secrets, redact_url_credentials};
 pub use resolve::{app_owning_path, canonical_path, AppSelector};

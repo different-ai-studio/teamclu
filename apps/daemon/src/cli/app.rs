@@ -178,6 +178,9 @@ pub enum AppAction {
     /// Who may open the deployed site: the login wall. Applies from the next
     /// request; no deploy needed.
     Gate(Group<GateCmd>),
+    /// Files the app stored in object storage. Bytes move in this process,
+    /// with its own file permissions.
+    Files(Group<FilesCmd>),
     /// Environment variables and secrets — live on the next deploy.
     Env(Group<EnvCmd>),
     /// Scheduled HTTP calls the platform makes to the app's own URL.
@@ -282,6 +285,63 @@ pub enum GateRuleCmd {
     },
     /// Remove the rule on exactly this path.
     Rm { path: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FilesCmd {
+    /// One folder level (or everything under it with -r), 100 per page.
+    Ls {
+        /// A folder prefix, like uploads/.
+        prefix: Option<String>,
+        #[arg(short = 'r', long)]
+        recursive: bool,
+        /// The next_cursor of the previous page.
+        #[arg(long)]
+        cursor: Option<String>,
+        #[arg(long)]
+        limit: Option<u64>,
+    },
+    /// A signed download link, or the file itself with --to. Never
+    /// overwrites: --to an existing file is refused.
+    ///
+    /// Example: amuxd app files get reports/q3.csv --to ./q3.csv
+    Get {
+        path: String,
+        /// Save here (a directory keeps the file's name).
+        #[arg(long)]
+        to: Option<std::path::PathBuf>,
+    },
+    /// Upload a local file (at most 512 MiB). PATH ending in / is a folder.
+    /// Needs write on the app.
+    ///
+    /// Example: amuxd app files put ./logo.png img/
+    Put {
+        local: std::path::PathBuf,
+        path: Option<String>,
+        /// Guessed from the extension when not given.
+        #[arg(long)]
+        content_type: Option<String>,
+    },
+    /// Delete a file, or with -r a folder (never the root — that is purge).
+    Rm {
+        path: String,
+        #[arg(short = 'r', long)]
+        recursive: bool,
+    },
+    /// Delete every file of the app. Cannot be undone: needs --id or --app,
+    /// and --yes. Needs admin on the app.
+    Purge {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Bytes stored, against the quota. --refresh re-measures first.
+    Usage {
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Set the storage quota in bytes, or `default` for the deployment's.
+    /// Needs admin on the app.
+    Quota { bytes: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -596,6 +656,50 @@ fn cron_args(spec: &CronSpec) -> Result<Value, Usage> {
 /// The action and arguments of a resource-group command.
 fn group_body(action: &AppAction) -> Result<Option<(&'static str, Value)>, Usage> {
     Ok(Some(match action {
+        AppAction::Files(g) => match &g.cmd {
+            FilesCmd::Ls {
+                prefix,
+                recursive,
+                cursor,
+                limit,
+            } => (
+                "files_ls",
+                json!({ "prefix": prefix, "recursive": recursive, "after": cursor, "limit": limit }),
+            ),
+            FilesCmd::Get { path, .. } => ("files_url", json!({ "path": path })),
+            FilesCmd::Put {
+                local,
+                path,
+                content_type,
+            } => {
+                let upload = Upload::check(local, path.as_deref(), content_type.as_deref())?;
+                (
+                    "files_sign_upload",
+                    json!({ "path": upload.dest, "contentType": upload.content_type }),
+                )
+            }
+            FilesCmd::Rm {
+                path,
+                recursive: true,
+            } => ("files_rm_r", json!({ "prefix": path })),
+            FilesCmd::Rm { path, .. } => ("files_rm", json!({ "path": path })),
+            FilesCmd::Purge { yes } => ("files_purge", json!({ "confirm": yes })),
+            FilesCmd::Usage { refresh } => ("files_usage", json!({ "refresh": refresh })),
+            FilesCmd::Quota { bytes } => {
+                let bytes =
+                    match bytes.trim() {
+                        "default" => Value::Null,
+                        n => json!(n.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                            usage(
+                        "invalid_quota",
+                        format!("quota takes a positive number of bytes or `default` (got {n:?})"),
+                        Some("amuxd app files quota 1073741824".to_string()),
+                    )
+                        })?),
+                    };
+                ("files_quota", json!({ "bytes": bytes }))
+            }
+        },
         AppAction::Access(g) => match &g.cmd {
             AccessCmd::Ls => ("access_ls", json!({})),
             AccessCmd::Grant { who, level, org } => match (org, level) {
@@ -761,6 +865,7 @@ fn group_body(action: &AppAction) -> Result<Option<(&'static str, Value)>, Usage
 fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage> {
     if let Some((name, args)) = group_body(action)? {
         let (id, app) = match action {
+            AppAction::Files(g) => (&g.id, &g.app),
             AppAction::Access(g) => (&g.id, &g.app),
             AppAction::Gate(g) => (&g.id, &g.app),
             AppAction::Env(g) => (&g.id, &g.app),
@@ -786,7 +891,8 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
     };
     let mut body = match action {
         AppAction::Whoami | AppAction::List => json!({}),
-        AppAction::Access(_)
+        AppAction::Files(_)
+        | AppAction::Access(_)
         | AppAction::Gate(_)
         | AppAction::Env(_)
         | AppAction::Cron(_)
@@ -944,7 +1050,8 @@ fn action_name(action: &AppAction) -> &'static str {
         AppAction::Delete { .. } => "delete",
         AppAction::Deploy { .. } => "deploy",
         AppAction::Logs { .. } => "logs",
-        AppAction::Access(_)
+        AppAction::Files(_)
+        | AppAction::Access(_)
         | AppAction::Gate(_)
         | AppAction::Env(_)
         | AppAction::Cron(_)
@@ -1213,6 +1320,272 @@ pub fn exit_on_parse_error(e: clap::Error) -> ! {
 }
 
 /// Run one command; returns the process exit status.
+/// A local file checked for `files put` before anything is signed.
+#[derive(Debug)]
+struct Upload {
+    local: std::path::PathBuf,
+    dest: String,
+    content_type: String,
+}
+
+impl Upload {
+    fn check(
+        local: &std::path::Path,
+        path: Option<&str>,
+        content_type: Option<&str>,
+    ) -> Result<Self, Usage> {
+        let local =
+            std::path::absolute(local).map_err(|e| usage("invalid_path", e.to_string(), None))?;
+        let meta = std::fs::metadata(&local).map_err(|e| {
+            usage(
+                "unreadable_file",
+                format!("cannot read {}: {e}", local.display()),
+                None,
+            )
+        })?;
+        if !meta.is_file() {
+            return Err(usage(
+                "not_a_file",
+                format!("{} is not a file", local.display()),
+                None,
+            ));
+        }
+        if meta.len() > teamclu_apps::MAX_UPLOAD_BYTES {
+            return Err(usage(
+                "file_too_large",
+                format!(
+                    "{} is {} bytes; files put sends at most {}",
+                    local.display(),
+                    meta.len(),
+                    teamclu_apps::MAX_UPLOAD_BYTES
+                ),
+                None,
+            ));
+        }
+        let file_name = local
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| usage("invalid_path", "the local file has no usable name", None))?
+            .to_string();
+        Ok(Self {
+            dest: teamclu_apps::upload_destination(path, &file_name),
+            content_type: content_type
+                .map(str::to_string)
+                .unwrap_or_else(|| teamclu_apps::guess_content_type(&file_name).to_string()),
+            local,
+        })
+    }
+}
+
+/// Where `files get --to` saves: a directory receives the file under its own
+/// name; an existing file is refused rather than overwritten.
+fn download_destination(to: &std::path::Path, remote: &str) -> Result<std::path::PathBuf, Value> {
+    let mut dest = std::path::absolute(to)
+        .map_err(|e| error_envelope("invalid_path", &e.to_string(), None, 2, false))?;
+    if dest.is_dir() {
+        let name = remote
+            .rsplit('/')
+            .find(|seg| !seg.is_empty())
+            .ok_or_else(|| {
+                error_envelope("invalid_path", "the path has no file name", None, 2, false)
+            })?;
+        dest = dest.join(name);
+    }
+    if dest.exists() {
+        return Err(error_envelope(
+            "destination_exists",
+            &format!(
+                "{} already exists — choose another --to, or remove it first",
+                dest.display()
+            ),
+            None,
+            6,
+            false,
+        ));
+    }
+    Ok(dest)
+}
+
+/// A transfer the storage refused or dropped. The signed URL is never quoted:
+/// it carries the signature, and an error is what ends up in a transcript.
+fn storage_failure(what: &str, detail: String) -> Value {
+    error_envelope(
+        "storage_failed",
+        &format!("{what} failed: {detail}"),
+        None,
+        7,
+        true,
+    )
+}
+
+/// Stream a signed URL into `dest` through a sibling temp file, so a transfer
+/// that fails halfway leaves nothing under the name that was asked for.
+async fn fetch_to_file(url: &str, dest: &std::path::Path) -> Result<u64, Value> {
+    use std::io::Write as _;
+    let local = |e: std::io::Error, p: &std::path::Path| {
+        error_envelope(
+            "local_write_failed",
+            &format!("cannot write {}: {e}", p.display()),
+            None,
+            7,
+            false,
+        )
+    };
+    let mut resp = reqwest::get(url)
+        .await
+        .map_err(|e| storage_failure("Download", e.without_url().to_string()))?;
+    if !resp.status().is_success() {
+        return Err(storage_failure(
+            "Download",
+            format!("storage answered HTTP {}", resp.status()),
+        ));
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| local(e, parent))?;
+    }
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".to_string());
+    let tmp = dest.with_file_name(format!(".{name}.part"));
+    let mut file = std::fs::File::create(&tmp).map_err(|e| local(e, &tmp))?;
+    let mut written = 0u64;
+    let result: Result<(), Value> = async {
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| storage_failure("Download", e.without_url().to_string()))?
+        {
+            file.write_all(&chunk).map_err(|e| local(e, &tmp))?;
+            written += chunk.len() as u64;
+        }
+        file.sync_all().map_err(|e| local(e, &tmp))
+    }
+    .await;
+    drop(file);
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, dest).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        local(e, dest)
+    })?;
+    Ok(written)
+}
+
+/// PUT the file to the signed URL. The content type was signed into it, so
+/// the PUT carries exactly that; the length is explicit because an empty
+/// body otherwise goes out without one and storage answers 411.
+async fn put_file(url: &str, upload: &Upload) -> Result<u64, Value> {
+    let bytes = std::fs::read(&upload.local).map_err(|e| {
+        error_envelope(
+            "unreadable_file",
+            &format!("cannot read {}: {e}", upload.local.display()),
+            None,
+            2,
+            false,
+        )
+    })?;
+    let size = bytes.len() as u64;
+    let resp = reqwest::Client::new()
+        .put(url)
+        .header(reqwest::header::CONTENT_TYPE, &upload.content_type)
+        .header(reqwest::header::CONTENT_LENGTH, size)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| storage_failure("Upload", e.without_url().to_string()))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        let snippet: String = text.chars().take(300).collect();
+        return Err(storage_failure(
+            "Upload",
+            format!("storage answered HTTP {status}: {snippet}"),
+        ));
+    }
+    Ok(size)
+}
+
+/// The data of a successful envelope, or the envelope itself to print.
+fn ok_data(envelope: Value) -> Result<Value, Value> {
+    if envelope["ok"] == true {
+        Ok(envelope["data"].clone())
+    } else {
+        Err(envelope)
+    }
+}
+
+fn success(data: Value) -> Value {
+    json!({ "v": 1, "ok": true, "data": data })
+}
+
+/// `files get --to`: sign on the daemon, fetch here.
+async fn files_get_to(daemon: &LocalDaemonClient, body: Value, dest: std::path::PathBuf) -> Value {
+    let run = async {
+        let signed = ok_data(to_envelope(
+            daemon
+                .send(reqwest::Method::POST, "/v1/app-ops", Some(body))
+                .await,
+        ))?;
+        let url = signed["url"].as_str().ok_or_else(|| {
+            error_envelope(
+                "unexpected_response",
+                "the daemon returned no download link",
+                None,
+                7,
+                false,
+            )
+        })?;
+        let bytes = fetch_to_file(url, &dest).await?;
+        Ok::<_, Value>(success(json!({
+            "action": "files_get",
+            "app_id": signed["app_id"],
+            "path": signed["path"],
+            "saved_to": dest.display().to_string(),
+            "bytes": bytes,
+        })))
+    };
+    run.await.unwrap_or_else(|e| e)
+}
+
+/// `files put`: sign on the daemon, PUT from here, then tell the daemon it
+/// landed.
+async fn files_put(daemon: &LocalDaemonClient, body: Value, upload: Upload) -> Value {
+    let run = async {
+        let signed = ok_data(to_envelope(
+            daemon
+                .send(reqwest::Method::POST, "/v1/app-ops", Some(body.clone()))
+                .await,
+        ))?;
+        let url = signed["url"].as_str().ok_or_else(|| {
+            error_envelope(
+                "unexpected_response",
+                "the daemon returned no upload link",
+                None,
+                7,
+                false,
+            )
+        })?;
+        let bytes = put_file(url, &upload).await?;
+        let mut done = body;
+        done["action"] = json!("files_uploaded");
+        // Only a notification: the file is already stored.
+        let _ = daemon
+            .send(reqwest::Method::POST, "/v1/app-ops", Some(done))
+            .await;
+        Ok::<_, Value>(success(json!({
+            "action": "files_put",
+            "app_id": signed["app_id"],
+            "path": signed["path"],
+            "bytes": bytes,
+            "content_type": upload.content_type,
+        })))
+    };
+    run.await.unwrap_or_else(|e| e)
+}
+
 pub fn run(args: AppArgs) -> anyhow::Result<i32> {
     let cwd = std::env::current_dir()
         .ok()
@@ -1226,14 +1599,54 @@ pub fn run(args: AppArgs) -> anyhow::Result<i32> {
             ))
         }
     };
+    // The two transfers: the daemon signs, the bytes move here.
+    let mut download = None;
+    let mut upload = None;
+    if let AppAction::Files(g) = &args.action {
+        match &g.cmd {
+            FilesCmd::Get { path, to: Some(to) } => match download_destination(to, path) {
+                Ok(dest) => download = Some(dest),
+                Err(envelope) => return Ok(emit(&args.output, envelope)),
+            },
+            FilesCmd::Put {
+                local,
+                path,
+                content_type,
+            } => {
+                // Checked once already by request_body; it cannot fail now
+                // unless the file changed in between.
+                match Upload::check(local, path.as_deref(), content_type.as_deref()) {
+                    Ok(u) => upload = Some(u),
+                    Err(u) => {
+                        return Ok(emit(
+                            &args.output,
+                            error_envelope(u.code, &u.message, u.next.as_deref(), 2, false),
+                        ))
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
     let rt = tokio::runtime::Runtime::new()?;
-    let outcome = rt.block_on(async {
-        let daemon = LocalDaemonClient::connect("app-cli").await?;
-        daemon
-            .send(reqwest::Method::POST, "/v1/app-ops", Some(body))
-            .await
+    let envelope = rt.block_on(async {
+        let daemon = match LocalDaemonClient::connect("app-cli").await {
+            Ok(d) => d,
+            Err(e) => return to_envelope(Err(e)),
+        };
+        if let Some(dest) = download {
+            return files_get_to(&daemon, body, dest).await;
+        }
+        if let Some(upload) = upload {
+            return files_put(&daemon, body, upload).await;
+        }
+        to_envelope(
+            daemon
+                .send(reqwest::Method::POST, "/v1/app-ops", Some(body))
+                .await,
+        )
     });
-    Ok(emit(&args.output, to_envelope(outcome)))
+    Ok(emit(&args.output, envelope))
 }
 
 #[cfg(test)]
@@ -1337,6 +1750,140 @@ mod tests {
         assert_eq!(
             body_of(&["gate", "rule", "rm", "/legacy"])["args"],
             json!({"path":"/legacy"})
+        );
+    }
+
+    #[test]
+    fn files_commands_map_to_their_actions() {
+        let ls = body_of(&["files", "ls", "uploads/", "-r", "--app", "记账"]);
+        assert_eq!(ls["action"], "files_ls");
+        assert_eq!(ls["args"]["recursive"], true);
+        assert_eq!(
+            body_of(&["files", "rm", "a/", "-r"])["action"],
+            "files_rm_r"
+        );
+        assert_eq!(
+            body_of(&["files", "rm", "a.txt"])["args"],
+            json!({"path":"a.txt"})
+        );
+        assert_eq!(
+            body_of(&["files", "purge", "--id", "a1"])["args"],
+            json!({"confirm": false})
+        );
+        assert_eq!(
+            body_of(&["files", "quota", "default"])["args"],
+            json!({"bytes": null})
+        );
+        assert_eq!(refusal(&["files", "quota", "0"]).code, "invalid_quota");
+        assert_eq!(
+            body_of(&["files", "get", "a.txt", "--to", "/tmp/x"])["action"],
+            "files_url"
+        );
+    }
+
+    #[test]
+    fn files_put_checks_the_local_file_before_signing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("logo.png");
+        std::fs::write(&file, b"png").unwrap();
+        let body = body_of(&["files", "put", file.to_str().unwrap(), "img/"]);
+        assert_eq!(body["action"], "files_sign_upload");
+        assert_eq!(
+            body["args"],
+            json!({"path":"img/logo.png","contentType":"image/png"})
+        );
+        let missing = dir.path().join("nope.png");
+        assert_eq!(
+            refusal(&["files", "put", missing.to_str().unwrap()]).code,
+            "unreadable_file"
+        );
+        assert_eq!(
+            refusal(&["files", "put", dir.path().to_str().unwrap()]).code,
+            "not_a_file"
+        );
+    }
+
+    #[test]
+    fn a_download_never_overwrites_and_fills_in_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            download_destination(dir.path(), "reports/q3.csv").unwrap(),
+            dir.path().join("q3.csv")
+        );
+        std::fs::write(dir.path().join("q3.csv"), b"x").unwrap();
+        let e = download_destination(dir.path(), "reports/q3.csv").unwrap_err();
+        assert_eq!(e["error"]["code"], "destination_exists");
+        assert_eq!(e["error"]["exit"], 6);
+    }
+
+    /// A storage bucket that takes signed PUTs and serves GETs, recording the
+    /// headers each PUT carried.
+    async fn fake_storage() -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<(String, String, usize)>>>,
+    ) {
+        use axum::{body::Bytes, http::HeaderMap, http::StatusCode, routing::get, Router};
+        let puts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = puts.clone();
+        let router = Router::new()
+            .route(
+                "/obj",
+                get(|| async { Bytes::from_static(b"hello,csv") }).put(
+                    move |headers: HeaderMap, body: Bytes| {
+                        let seen = seen.clone();
+                        async move {
+                            let h =
+                                |k: &str| headers.get(k).map(|v| v.to_str().unwrap().to_string());
+                            let Some(length) = h("content-length") else {
+                                return StatusCode::LENGTH_REQUIRED;
+                            };
+                            seen.lock().unwrap().push((
+                                h("content-type").unwrap_or_default(),
+                                length,
+                                body.len(),
+                            ));
+                            StatusCode::OK
+                        }
+                    },
+                ),
+            )
+            .route("/denied", get(|| async { StatusCode::FORBIDDEN }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (format!("http://{addr}"), puts)
+    }
+
+    #[tokio::test]
+    async fn transfers_move_the_bytes_and_never_quote_the_signed_url() {
+        let (base, puts) = fake_storage().await;
+        let dir = tempfile::tempdir().unwrap();
+
+        let dest = dir.path().join("q3.csv");
+        assert_eq!(
+            fetch_to_file(&format!("{base}/obj"), &dest).await.unwrap(),
+            9
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"hello,csv");
+
+        let e = fetch_to_file(
+            &format!("{base}/denied?Signature=secret"),
+            &dir.path().join("x"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e["error"]["code"], "storage_failed");
+        assert!(!e.to_string().contains("secret"), "{e}");
+        assert!(!dir.path().join("x").exists() && !dir.path().join(".x.part").exists());
+
+        let empty = dir.path().join("empty.txt");
+        std::fs::write(&empty, b"").unwrap();
+        let upload = Upload::check(&empty, None, None).unwrap();
+        assert_eq!(put_file(&format!("{base}/obj"), &upload).await.unwrap(), 0);
+        assert_eq!(
+            puts.lock().unwrap().last().unwrap(),
+            &("text/plain".to_string(), "0".to_string(), 0),
+            "an empty file still carries its length"
         );
     }
 

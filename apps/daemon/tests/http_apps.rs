@@ -403,6 +403,35 @@ async fn fake_cloud() -> String {
             ),
         )
         .route(
+            "/v1/apps/:id/storage/objects",
+            get(|headers: HeaderMap, axum::extract::RawQuery(q): axum::extract::RawQuery| async move {
+                authed(&headers)?;
+                assert_eq!(q.as_deref(), Some("limit=100&prefix=uploads%2F&delimiter=%2F"));
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "folders": ["uploads/2026/"],
+                    "items": [{ "path": "uploads/a.png", "size": 3 }],
+                    "nextCursor": null, "canWrite": true,
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/storage/sign-upload",
+            axum::routing::post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+                authed(&headers)?;
+                assert_eq!(body, serde_json::json!({ "path": "img/logo.png", "contentType": "image/png" }));
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "path": "img/logo.png", "url": "https://bucket.test/put?sig", "expiresIn": 600,
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/storage/purge",
+            axum::routing::post(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({ "deleted": 7 })))
+            }),
+        )
+        .route(
             "/v1/apps/:id/env",
             get(|headers: HeaderMap| async move {
                 authed(&headers)?;
@@ -701,6 +730,54 @@ async fn app_ops_resource_groups() {
     )
     .await;
     assert_eq!(data_of(status, &body)["action"], "delete_row");
+}
+
+/// `amuxd app files`: the daemon lists, signs and deletes; purge needs the
+/// app named outright and --yes.
+#[tokio::test]
+async fn app_ops_files() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "files_ls", "appId": "a1", "args": { "prefix": "uploads/" } }),
+    )
+    .await;
+    let ls = data_of(status, &body);
+    assert_eq!(ls["files"][0]["path"], "uploads/a.png");
+    assert_eq!(ls["folders"][0], "uploads/2026/");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "files_sign_upload", "appId": "a1",
+            "args": { "path": "img/logo.png", "contentType": "image/png" } }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["url"], "https://bucket.test/put?sig");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "files_purge", "workspacePath": "/nowhere",
+            "args": { "confirm": true } }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 2)["code"], "explicit_app_required");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "files_purge", "appId": "a1", "args": {} }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 2)["code"], "confirmation_required");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "files_purge", "appId": "a1", "args": { "confirm": true } }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["deleted"], 7);
 }
 
 /// `amuxd app access` / `gate`: grants by name, the org grant as visibility,

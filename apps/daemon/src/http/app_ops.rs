@@ -32,8 +32,9 @@ use axum::{extract::State, Json};
 use serde::Deserialize;
 use serde_json::Value;
 use teamclu_apps::{
-    AppOps, AppSelector, Cloud, CloudError, CreateArgs, CronFields, DaemonError, GateRule, GateSet,
-    Host, LocalDaemon, LogsArgs, Method, Named, OpError, RowRef, RowsQuery, Surface, UpdateArgs,
+    AppOps, AppSelector, Cloud, CloudError, CreateArgs, CronFields, DaemonError, FilesQuery,
+    GateRule, GateSet, Host, LocalDaemon, LogsArgs, Method, Named, OpError, RowRef, RowsQuery,
+    Surface, UpdateArgs,
 };
 
 use super::apps;
@@ -350,8 +351,11 @@ pub struct AppOpsBody {
     pub args: Value,
 }
 
-const READ_ACTIONS: [&str; 12] = [
+const READ_ACTIONS: [&str; 15] = [
     "whoami",
+    "files_ls",
+    "files_url",
+    "files_usage",
     "access_ls",
     "gate_show",
     "list",
@@ -364,7 +368,13 @@ const READ_ACTIONS: [&str; 12] = [
     "data_tables",
     "data_rows",
 ];
-const WRITE_ACTIONS: [&str; 26] = [
+const WRITE_ACTIONS: [&str; 32] = [
+    "files_sign_upload",
+    "files_uploaded",
+    "files_rm",
+    "files_rm_r",
+    "files_purge",
+    "files_quota",
     "access_grant",
     "access_revoke",
     "gate_set",
@@ -584,6 +594,18 @@ async fn run(
                 "delete cannot be undone, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory",
             ))
         }
+        "files_purge" if !selector.is_explicit() => {
+            return Err(OpError::invalid(
+                "explicit_app_required",
+                "files purge deletes every file of the app and cannot be undone, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory",
+            ))
+        }
+        "files_purge" if body.args.get("confirm").and_then(Value::as_bool) != Some(true) => {
+            return Err(OpError::invalid(
+                "confirmation_required",
+                "files purge deletes every file the app stored and cannot be undone. Pass --yes to purge.",
+            ))
+        }
         "delete" if !body.confirm => {
             return Err(OpError::invalid(
                 "confirmation_required",
@@ -647,6 +669,56 @@ async fn resource(
     args: &Value,
 ) -> Result<Value, OpError> {
     match action {
+        "files_ls" => {
+            let q = FilesQuery {
+                prefix: arg_str(args, "prefix"),
+                recursive: args
+                    .get("recursive")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                after: arg_str(args, "after"),
+                limit: args.get("limit").and_then(Value::as_u64),
+            };
+            ops.files_list(row, &q).await
+        }
+        "files_url" => {
+            ops.files_url(row, &need_str(args, "path", "a file path")?)
+                .await
+        }
+        "files_sign_upload" => {
+            let path = need_str(args, "path", "where to store the file")?;
+            let content_type = need_str(args, "contentType", "the upload's content type")?;
+            ops.files_sign_upload(row, &path, &content_type).await
+        }
+        "files_uploaded" => ops.files_uploaded(row),
+        "files_rm" => {
+            ops.files_delete(row, &need_str(args, "path", "a file path")?)
+                .await
+        }
+        "files_rm_r" => {
+            ops.files_delete_folder(row, &need_str(args, "prefix", "a folder")?)
+                .await
+        }
+        "files_purge" => ops.files_purge(row).await,
+        "files_usage" => {
+            let refresh = args
+                .get("refresh")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            ops.files_usage(row, refresh).await
+        }
+        "files_quota" => {
+            let bytes = match args.get("bytes") {
+                Some(Value::Null) | None => None,
+                Some(v) => Some(v.as_u64().ok_or_else(|| {
+                    OpError::invalid(
+                        "invalid_quota",
+                        "a quota is a positive number of bytes, or `default`",
+                    )
+                })?),
+            };
+            ops.files_set_quota(row, bytes).await
+        }
         "access_ls" => ops.access_list(row).await,
         "access_grant" => {
             let level = need_str(args, "level", "a level: read, write or admin")?;
