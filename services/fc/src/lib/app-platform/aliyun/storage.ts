@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { appFilesPrefix, appStorageBucket, defaultStorageQuotaBytes } from "../../provisioning/app-files.js";
 import {
@@ -184,6 +184,36 @@ export async function assumeAppStorageRole(
 }
 
 // ---------------------------------------------------------------------------
+// OSS's batch delete (DeleteMultipleObjects) refuses a request without
+// `Content-MD5`: "MissingArgument: Missing Some Required Arguments". AWS SDK v3
+// sent one until 3.729; since then a checksum-required operation gets a
+// flexible checksum (CRC32) instead, which OSS does not read — so every folder
+// delete and every purge failed with HTTP 500. Measured 2026-11-26 against the
+// self-host bucket with this SDK (3.1173): as built, MissingArgument; with
+// this middleware, deleted.
+// ---------------------------------------------------------------------------
+
+export const contentMd5Middleware =
+  (next: (args: any) => Promise<any>) =>
+  async (args: any): Promise<any> => {
+    const request = args?.request;
+    const body = request?.body;
+    if (request?.headers && (typeof body === "string" || body instanceof Uint8Array)) {
+      request.headers["content-md5"] = createHash("md5").update(body).digest("base64");
+    }
+    return next(args);
+  };
+
+function withContentMd5<T>(command: T): T {
+  (command as any).middlewareStack?.add(contentMd5Middleware, {
+    step: "build",
+    name: "ossContentMd5",
+    override: true,
+  });
+  return command;
+}
+
+// ---------------------------------------------------------------------------
 // The bound operations the repository calls. Built once at startup with the
 // apps OSS profile, mirroring `makeAppDataOps` for the data browser: the
 // repository stays free of endpoints and credentials, and a deployment with no
@@ -301,7 +331,9 @@ export function makeAppStorageOps(
         );
         const keys = (out.Contents ?? []).map((o: any) => ({ Key: o.Key }));
         if (keys.length > 0) {
-          await s3.send(new C.DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: keys, Quiet: true } }));
+          await s3.send(
+            withContentMd5(new C.DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: keys, Quiet: true } })),
+          );
           deleted += keys.length;
         }
         if (!out.IsTruncated) break;
