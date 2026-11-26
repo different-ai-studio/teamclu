@@ -28,7 +28,7 @@ describe('RuntimeRefreshWorkspaceBanner', () => {
     useWorkspaceRuntimeRefreshStore.setState({
       refresh: {
         status: 'pending',
-        change_kinds: ['opencode_json'],
+        change_kinds: ['skills'],
         recommended_action: 'none',
         auto_apply_blocked_by_active_runtime: false,
         last_detected_at: '2026-06-03T00:00:00Z',
@@ -62,7 +62,7 @@ describe('RuntimeRefreshWorkspaceBanner', () => {
   })
 
   it('keeps the generic title for other failures', () => {
-    useWorkspaceRuntimeRefreshStore.setState(failedRefresh('invalid opencode.json: expected value'))
+    useWorkspaceRuntimeRefreshStore.setState(failedRefresh('invalid teamclu.json: expected value'))
 
     render(<RuntimeRefreshWorkspaceBanner />)
     expect(screen.getByText('Runtime refresh failed')).toBeInTheDocument()

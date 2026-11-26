@@ -289,7 +289,6 @@ impl DaemonServer {
                 managed_llm: self.managed_llm.clone(),
                 actor_id: self.config.actor.id.clone(),
                 actor_name: self.config.actor.name.clone(),
-                refresh_coordinator: self.refresh_coordinator.clone(),
             },
             logical_to_acp: Arc::new(AsyncMutex::new(HashMap::new())),
             team_id: team_id.clone(),

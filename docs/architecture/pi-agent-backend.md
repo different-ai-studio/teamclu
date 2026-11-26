@@ -35,7 +35,7 @@ first-wins，workspace A 的 env 会粘进 B 的进程）。会话文件仍只�
 | 流式事件 | SSE：`message.part.delta` 等 | stdout 事件：`message_update`（text/thinking delta）、`tool_execution_start/update/end`、`agent_end`，全部带 `sessionId` |
 | 权限审批 | 内建 `permission.asked` / reply 端点 | **无内建**——TeamClu pi extension 拦截工具执行，经 `extension_ui_request(confirm)` ↔ `extension_ui_response` 与宿主交互；host 模式下 uiContext 按会话闭包，请求天然归属正确会话 |
 | question 工具 | 内建 | extension 注册 `question` 工具，经带 `teamclu.question=` 标记的 `select` dialog 走同一 UI 通道，amuxd 译成 `question_asked` |
-| MCP | 内建（`opencode.json` 的 `mcp` 表） | **无内建**——extension 用官方 `@modelcontextprotocol/sdk` 做客户端，桥接同一张 `mcp` 表（local stdio + remote streamable HTTP/SSE），host 进程内共享一份 |
+| MCP | 内建（workspace `opencode.json` 的 `mcp` 表，已删除） | **无内建**——extension 用官方 `@modelcontextprotocol/sdk` 做客户端，桥接同一张 `mcp` 表（local stdio + remote streamable HTTP/SSE），host 进程内共享一份 |
 | 模型 | `/config/providers` 目录 | `get_available_models`（host 级）/ `set_model`（会话级）；自定义 provider 用 `registerProvider` |
 | 取消 | per-session abort 端点 | `abort {sessionId}`，只中断该会话 |
 | slash 命令 | 静态表（`builtin_commands.rs`） | 运行时 `get_commands` 真实列表，attach 时以 `AvailableCommands` 事件上报 |
@@ -88,10 +88,14 @@ pi 官方明确不做 MCP（README：「**No MCP.** … or build an extension th
 MCP support」），所以 **TeamClu extension 本身就是 MCP 客户端**，基于官方
 `@modelcontextprotocol/sdk`：
 
-- **服务器清单同源**：仍是 workspace `opencode.json` 的 `mcp` 表（团队 +
-  inherent + 用户三处合并的 SSOT）。daemon 的 `pi_server_spec`
-  （`pi_rpc/mod.rs`）把它归一成两种形状塞进 `TEAMCLU_MCP_SERVERS`：
+- **服务器清单同源**：daemon 把 device（`~/.amuxd/mcp.json`）+ 团队 + workspace
+  三层合并（`team_mcp::load_merged_mcp`，与设置页同一份），`pi_server_spec`
+  （`pi_rpc/mod.rs`）归一成两种形状塞进 `TEAMCLU_MCP_SERVERS`：
   `{type:"local", command, environment}` / `{type:"remote", url, headers}`。
+  同一张表同时写进 `~/.amuxd/teams/<id>/state/workspaces/<key>/mcp.effective.json`，
+  `TEAMCLU_MCP_CONFIG_PATH` 指向它；任何一层变化 daemon 都会重写，extension 监听它热更新。
+  （以前监听的是 workspace `opencode.json`——只是三层中的一层，任何写入都会把
+  device/团队 server（包括 teamclu-introspect）当成已删除关掉。）
   `amuxd-remote-tools` 走自己的 `TEAMCLU_REMOTE_TOOLS_CMD`（要带 socket 参数）。
 - **两种 transport 都支持**：local 走 `StdioClientTransport`，remote 先试
   streamable HTTP，被拒再退 SSE——与 opencode 原生加载的集合对齐。

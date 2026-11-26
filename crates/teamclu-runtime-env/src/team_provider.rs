@@ -2,7 +2,7 @@ use std::path::Path;
 
 use tracing::info;
 
-use crate::opencode_config::OpencodeConfigStore;
+use crate::config_store::{ConfigStore, ConfigStoreError};
 use crate::storage_namespace::{brand_short_name_from_env, resolve_workspace_config_path};
 use crate::DEFAULT_TEAM_REPO_DIR;
 
@@ -41,7 +41,10 @@ pub const TEAM_MODEL_TIERS: [&str; 3] = ["default", "pro", "max"];
 ///
 /// `None` leaves the cloud URL in place, which is right for callers that have
 /// no proxy to offer (tests, and any process without an HTTP listener).
-fn runtime_facing_base_url<'a>(provider: &'a ManagedLlmProvider, proxy_base: Option<&'a str>) -> &'a str {
+fn runtime_facing_base_url<'a>(
+    provider: &'a ManagedLlmProvider,
+    proxy_base: Option<&'a str>,
+) -> &'a str {
     proxy_base.unwrap_or(&provider.base_url)
 }
 
@@ -53,7 +56,7 @@ pub struct ManagedLlmModel {
 }
 
 /// The team's managed (shared) LLM provider, sourced from the cloud API rather
-/// than a disk file. Materialized into amuxd's global `opencode.json` as
+/// than a disk file. Materialized into the active team's `providers.json` as
 /// `provider.team`.
 #[derive(Debug, Clone)]
 pub struct ManagedLlmProvider {
@@ -95,12 +98,12 @@ pub fn resolve_shared_dir_name(workspace: &Path) -> String {
         .unwrap_or_else(|| DEFAULT_TEAM_REPO_DIR.to_string())
 }
 
-fn map_store_err(e: crate::opencode_config::OpencodeConfigError) -> anyhow::Error {
+fn map_store_err(e: ConfigStoreError) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
 
-fn map_mutate_err(e: anyhow::Error) -> crate::opencode_config::OpencodeConfigError {
-    crate::opencode_config::OpencodeConfigError::Parse(e.to_string())
+fn map_mutate_err(e: anyhow::Error) -> ConfigStoreError {
+    ConfigStoreError::Parse(e.to_string())
 }
 
 /// Apply `provider.team` reconciliation in-memory (no write). Returns whether the
@@ -116,16 +119,9 @@ pub fn mutate_team_provider(
 
     let obj = config
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("opencode.json root is not an object"))?;
+        .ok_or_else(|| anyhow::anyhow!("providers.json root is not an object"))?;
 
-    if obj.get("$schema").is_none() && obj.is_empty() {
-        obj.insert(
-            "$schema".to_string(),
-            serde_json::json!("https://opencode.ai/config.json"),
-        );
-    }
-
-    let has_team_in_opencode = obj
+    let has_team_entry = obj
         .get("provider")
         .and_then(|p| p.as_object())
         .map(|p| p.contains_key("team"))
@@ -154,7 +150,7 @@ pub fn mutate_team_provider(
             };
             // Preserve an already-resolved credential so this reconcile (which
             // runs on every provider read, including after wake) does not
-            // clobber it with a placeholder and break a live opencode serve.
+            // clobber it with a placeholder and break every pi host using it.
             //
             // Two values are NOT worth preserving, and both are rewritten by
             // `sync_global_team_provider` right after this:
@@ -187,19 +183,19 @@ pub fn mutate_team_provider(
                 changed = true;
                 info!(
                     base_url = %provider.base_url,
-                    "Wrote provider.team to opencode.json (synced from cloud managed LLM)"
+                    "Wrote provider.team to providers.json (synced from cloud managed LLM)"
                 );
             }
         }
         ManagedLlmState::Disabled => {
-            if has_team_in_opencode {
+            if has_team_entry {
                 if let Some(providers) = obj.get_mut("provider").and_then(|p| p.as_object_mut()) {
                     providers.remove("team");
                     if providers.is_empty() {
                         obj.remove("provider");
                     }
                     changed = true;
-                    info!("Removed stale provider.team from opencode.json (managed LLM disabled)");
+                    info!("Removed stale provider.team from providers.json (managed LLM disabled)");
                 }
             }
         }
@@ -209,9 +205,9 @@ pub fn mutate_team_provider(
     Ok(changed)
 }
 
-/// Read `provider.team` from amuxd's active-team OpenCode config, if present.
+/// Read `provider.team` from the active team's `providers.json`, if present.
 pub fn read_global_team_provider() -> Option<serde_json::Value> {
-    let json = OpencodeConfigStore::load_global().ok()?;
+    let json = ConfigStore::load_providers().ok()?;
     json.get("provider")
         .and_then(|provider| provider.get("team"))
         .filter(|team| team.is_object())
@@ -261,7 +257,7 @@ pub fn managed_llm_provider_from_disk_team(team: &serde_json::Value) -> Option<M
 ///
 /// Cold cloud fetches / empty TTL caches often yield [`ManagedLlmState::Unknown`],
 /// which omits `TEAMCLU_TEAM_PROVIDER` from the spawn env. A later successful
-/// fetch then injects the key and flips the OpenCode host fingerprint.
+/// fetch then injects the key and flips the pi host fingerprint.
 /// When the active-team config already has `provider.team`, reconstruct `Enabled` from it so the
 /// first attach matches a subsequent confirmed cloud answer with the same data.
 pub fn stabilize_managed_llm_for_spawn(
@@ -310,7 +306,7 @@ pub fn team_provider_env_payload(
     .to_string()
 }
 
-/// Reconcile `provider.team` in the active-team OpenCode config against the
+/// Reconcile `provider.team` in the active team's `providers.json` against the
 /// cloud-sourced managed LLM.
 ///
 /// Returns whether the on-disk config was rewritten. External callers should prefer
@@ -323,38 +319,8 @@ pub fn ensure_global_team_provider(
     if matches!(state, ManagedLlmState::Unknown) {
         return Ok(false);
     }
-    OpencodeConfigStore::apply_global(|config| {
+    ConfigStore::apply_providers(|config| {
         mutate_team_provider(config, state, proxy_base).map_err(map_mutate_err)
-    })
-    .map_err(map_store_err)
-}
-
-/// Remove the legacy workspace-local copy of TeamClu's reserved `provider.team`.
-///
-/// The entry used to live in every `<workspace>/opencode.json`. Keeping one
-/// around would make a disabled global provider silently fall back to stale
-/// workspace models, so every spawn clears it during the global-config
-/// migration. Other workspace providers are left untouched.
-pub fn remove_legacy_workspace_team_provider(workspace: &Path) -> anyhow::Result<bool> {
-    OpencodeConfigStore::apply(workspace, |config| {
-        let Some(root) = config.as_object_mut() else {
-            return Err(crate::opencode_config::OpencodeConfigError::Parse(
-                "opencode.json root is not an object".to_string(),
-            ));
-        };
-        let Some(providers) = root
-            .get_mut("provider")
-            .and_then(|value| value.as_object_mut())
-        else {
-            return Ok(false);
-        };
-        if providers.remove("team").is_none() {
-            return Ok(false);
-        }
-        if providers.is_empty() {
-            root.remove("provider");
-        }
-        Ok(true)
     })
     .map_err(map_store_err)
 }
@@ -406,7 +372,7 @@ mod tests {
     fn global_config_path(home: &TempDir) -> std::path::PathBuf {
         home.path()
             .join("teams/team-test/state")
-            .join(crate::opencode_config::OPENCODE_JSON)
+            .join("providers.json")
     }
 
     #[test]
@@ -455,7 +421,7 @@ mod tests {
     #[test]
     fn ensure_global_team_provider_preserves_a_live_resolved_token() {
         // Reconcile runs on every provider read. Overwriting a resolved
-        // credential with the placeholder would break a live opencode serve
+        // credential with the placeholder would break every pi host using it
         // mid-session, so a real token has to survive.
         let (_lock, dir, _home) = global_config_dir();
         let resolved = "tok_live_session";

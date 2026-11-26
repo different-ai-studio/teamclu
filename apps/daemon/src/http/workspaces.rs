@@ -282,7 +282,7 @@ async fn reconcile_team_provider(state: &HttpState) {
     if team_id.trim().is_empty() {
         return;
     }
-    let config_path = teamclu_runtime_env::opencode_config::global_opencode_config_path();
+    let config_path = teamclu_runtime_env::config_store::providers_config_path();
     let before = std::fs::read(&config_path).ok();
     managed_llm.reconcile_global(team_id.trim()).await;
     let after = std::fs::read(config_path).ok();
@@ -629,14 +629,6 @@ async fn catalog_probe_context(
         return CatalogProbeRoute::Device;
     };
     let actor_name = catalog_actor_name(state, backend.actor_id());
-    if let Some(refresh) = state.runtime_refresh.as_ref() {
-        crate::runtime::refresh::refresh_watch::suppress_for_workspace_path(
-            refresh,
-            workspace_path,
-            &crate::runtime::refresh::INTERNAL_OPENCODE_KINDS,
-            crate::runtime::refresh::INTERNAL_WRITE_SUPPRESS,
-        );
-    }
     assemble_catalog_probe_context(
         workspace_id,
         workspace_path,
@@ -878,9 +870,8 @@ pub async fn get_mcp(
     Path(workspace_id): Path<String>,
 ) -> Result<Json<HashMap<String, McpServerConfig>>, HttpError> {
     require_scope(&principal, "workspace:read")?;
-    let wpath = workspace_path_or_404(&workspace_id).await?;
-    crate::runtime::supervisor::ensure_inherent_mcp(&wpath).map_err(map_control_err)?;
-    crate::config::team_mcp::prune_materialised_team_mcp(&wpath).map_err(map_control_err)?;
+    let _wpath = workspace_path_or_404(&workspace_id).await?;
+    crate::runtime::supervisor::ensure_device_mcp_layer();
     let store = resolve_store(&state)?;
     let servers = store.get_mcp(&workspace_id).map_err(map_control_err)?;
     Ok(Json(servers))
@@ -897,13 +888,11 @@ pub async fn put_mcp(
     Json(body): Json<HashMap<String, McpServerConfig>>,
 ) -> Result<Json<ApplyResponse>, HttpError> {
     require_scope(&principal, "workspace:write")?;
-    let wpath = workspace_path_or_404(&workspace_id).await?;
+    let _wpath = workspace_path_or_404(&workspace_id).await?;
     let store = resolve_store(&state)?;
     let outcome = store
         .put_mcp(&workspace_id, body)
         .map_err(map_control_err)?;
-    // PUT replaces the full map; re-seed built-in entries the UI always shows.
-    crate::runtime::supervisor::ensure_inherent_mcp(&wpath).map_err(map_control_err)?;
     Ok(apply_ok(outcome))
 }
 
@@ -922,8 +911,7 @@ pub async fn get_mcp_tools(
 ) -> Result<Json<crate::mcp_probe::McpToolsResponse>, HttpError> {
     require_scope(&principal, "workspace:read")?;
     let wpath = workspace_path_or_404(&workspace_id).await?;
-    crate::runtime::supervisor::ensure_inherent_mcp(&wpath).map_err(map_control_err)?;
-    crate::config::team_mcp::prune_materialised_team_mcp(&wpath).map_err(map_control_err)?;
+    crate::runtime::supervisor::ensure_device_mcp_layer();
     let store = resolve_store(&state)?;
     let servers = store.get_mcp(&workspace_id).map_err(map_control_err)?;
     let response =
@@ -939,26 +927,19 @@ pub struct MaterializeTeamMcpResponse {
 
 /// `POST /v1/workspaces/:id/mcp/materialize-team`
 ///
-/// No longer materialises anything: every runtime reads team MCP from
-/// `~/.amuxd/teams/<id>/cloud/mcp.json` directly. The route stays, and now does
-/// the inverse — clearing team copies an older build wrote into this
-/// workspace's `opencode.json`, where they would outrank the team's own file
-/// and freeze those servers at the version that was copied.
-///
-/// Kept rather than removed so a desktop that still calls it keeps working; it
-/// reports what it removed under the old field name.
+/// A no-op kept so a desktop that still calls it keeps working. Team MCP is
+/// read from `~/.amuxd/teams/<id>/cloud/mcp.json` directly, and the workspace
+/// MCP layer is daemon-owned, so there are no copies left to add or prune.
 pub async fn materialize_team_mcp(
     principal: Principal,
     Path(workspace_id): Path<String>,
 ) -> Result<Json<MaterializeTeamMcpResponse>, HttpError> {
     require_scope(&principal, "workspace:write")?;
-    let wpath = workspace_path_or_404(&workspace_id).await?;
-    crate::runtime::supervisor::ensure_inherent_mcp(&wpath).map_err(map_control_err)?;
-    let outcome =
-        crate::config::team_mcp::prune_materialised_team_mcp(&wpath).map_err(map_control_err)?;
+    let _wpath = workspace_path_or_404(&workspace_id).await?;
+    crate::runtime::supervisor::ensure_device_mcp_layer();
     Ok(Json(MaterializeTeamMcpResponse {
-        changed: outcome.changed,
-        added_count: outcome.removed_count,
+        changed: false,
+        added_count: 0,
     }))
 }
 

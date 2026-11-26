@@ -113,7 +113,7 @@ export const useTeamModeStore = create<TeamModeState>((set, get) => ({
     {
       // The cloud (`GET /v1/teams/:id/workspace-config` → `llm`) is the sole
       // source of truth for the team's shared model list. The daemon materializes
-      // `opencode.json`'s `provider.team` directly from the cloud too, so there is
+      // `providers.json`'s `provider.team` directly from the cloud too, so there is
       // no longer a `_meta/provider.json` mirror to read here.
       if (cloudLlm && cloudLlm.baseUrl && cloudLlm.models.length > 0) {
         const teamModels = cloudLlm.models
@@ -137,7 +137,7 @@ export const useTeamModeStore = create<TeamModeState>((set, get) => ({
 
   applyTeamModel: async (_workspacePath: string, force?: boolean) => {
     // Refresh in-memory state from the cloud (source of truth). The daemon owns
-    // the on-disk `opencode.json` `provider.team`, materialized directly from the
+    // the on-disk `providers.json` `provider.team`, materialized directly from the
     // same cloud config — we never read or write it from here.
     const cloudLlm = await fetchCloudTeamLlm()
     if (cloudLlm && cloudLlm.baseUrl && cloudLlm.models.length > 0) {

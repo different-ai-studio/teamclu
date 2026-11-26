@@ -15,14 +15,18 @@
  *   every other tool it is the tool name. A pattern ending in " *" is a
  *   prefix match on the first word(s); otherwise exact string equality.
  *
- * - `TEAMCLU_MCP_SERVERS` — JSON object of the workspace's other MCP servers,
- *   normalized by `pi_server_spec` (`pi_rpc/mod.rs`) into the two shapes
- *   opencode understands:
+ * - `TEAMCLU_MCP_SERVERS` — JSON object of every MCP server this workspace
+ *   gets (device, team and workspace layers, merged by amuxd), normalized by
+ *   `pi_server_spec` (`pi_rpc/mod.rs`) into two shapes:
  *       { "<name>": { "type": "local",  "command": [...], "environment": {…} } }
  *       { "<name>": { "type": "remote", "url": "…",       "headers": {…} } }
  *
- * - `TEAMCLU_MCP_CONFIG_PATH` — the `opencode.json` that payload came from,
- *   watched so an edit re-bridges without restarting pi.
+ * - `TEAMCLU_MCP_CONFIG_PATH` — `mcp.effective.json`: the same merged map as a
+ *   file (`{ "mcp": { … } }`), rewritten by amuxd whenever any layer changes and
+ *   watched so a change re-bridges without restarting pi. It is the whole set,
+ *   never one layer of it: the workspace's old `opencode.json`, which this used
+ *   to watch, held only the workspace layer, so every write to it disposed the
+ *   device and team servers (teamclu-introspect among them).
  *
  * - `TEAMCLU_MCP_TOOL_CACHE_DIR` — where each server's `tools/list` result is
  *   cached, so session startup does not wait on a cold connection.
@@ -39,8 +43,7 @@
  * extension is the MCP client, built on the
  * official `@modelcontextprotocol/sdk`, which `amuxd pi install` installs into
  * this file's directory (`pi_install::mcp_sdk`). Local (stdio) and remote
- * (streamable HTTP, falling back to SSE) servers are both supported, matching
- * what opencode loads natively.
+ * (streamable HTTP, falling back to SSE) servers are both supported.
  *
  * ## Permission flow
  *
@@ -1400,14 +1403,12 @@ function disposeRemovedBridges(configured: Set<string>): void {
 }
 
 /**
- * Read the workspace MCP config the same way amuxd does when it builds
- * `TEAMCLU_MCP_SERVERS` (`pi_server_spec` in `pi_rpc/mod.rs`): skip the
- * stale `amuxd-remote-tools` entry and `enabled: false`; a `type: "remote"`
- * entry needs a URL, anything else needs a non-empty string `command` array.
- *
- * Kept deliberately in sync with the Rust side — the env payload is a snapshot
- * of this file at spawn, so a watcher re-reading it must apply the same rules
- * or a reload would bridge servers the initial pass rejected.
+ * Read the effective MCP file amuxd writes next to `TEAMCLU_MCP_SERVERS`. Its
+ * entries were already normalized by `pi_server_spec` (`pi_rpc/mod.rs`); the
+ * same rules are applied again — skip the stale `amuxd-remote-tools` entry and
+ * `enabled: false`; a `type: "remote"` entry needs a URL, anything else needs a
+ * non-empty string `command` array — so a hand-edited or older file cannot
+ * bridge a server the initial pass would have rejected.
  *
  * Returns `null` when the file cannot be read or parsed, which the caller must
  * treat as "no information" rather than "no servers". Editors save atomically
@@ -1499,7 +1500,8 @@ function ensureMcpConfigWatcher(): void {
   const base = path.basename(configPath);
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    fs.watch(dir, (_event, filename) => {
+    // Not persistent: the watch alone must not keep a host process alive.
+    fs.watch(dir, { persistent: false }, (_event, filename) => {
       // A rename fires for the temp file too; only the real name matters.
       if (filename && filename !== base) return;
       if (timer) clearTimeout(timer);
@@ -2340,9 +2342,8 @@ export default async function (pi: ExtensionAPI) {
   });
 
   // -- MCP bridges (pi has no native MCP) -----------------------------------
-  // The workspace's MCP servers (from opencode.json `mcp`), bridged so
-  //    pi gets the same tools opencode loads natively — local and remote alike,
-  //    normalized by amuxd into:
+  // Every MCP server this workspace gets (device, team, workspace — merged
+  //    by amuxd), local and remote alike, normalized into:
   //    { "<name>": { "type": "local",  "command": [...], "environment": {…} } }
   //    { "<name>": { "type": "remote", "url": "…",       "headers": {…} } }
   // Point the config watcher at this session's instance BEFORE bridging, and

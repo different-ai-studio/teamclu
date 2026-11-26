@@ -150,7 +150,7 @@ Daemon 组装 spawn env 时：
 1. `load_personal_env()` → **整份** blob（不按 workspace 过滤）
 2. 加载 team env
 3. `resolve_runtime_env` 合并 + 生成 uppercase / 去点 alias
-4. 物化 `opencode.json` 的 `provider.team` 等
+4. 物化 `state/providers.json` 的 `provider.team`
 5. 交给 workspace 对应的 `opencode serve` generation / 其它 runtime；env 在
    **spawn 时冻结**
 
@@ -223,7 +223,7 @@ Agent 工具侧的 `load_agent_env_listings` 使用同一套 personal 合并逻�
 | Resolved scopes | personal / team / system 计数 | 合并后层数 |
 | Environment revision / generation | requested vs workspace current generation | pending/starting → 需 Reload 或等待 rolling replacement |
 | Per-key injection | active / pending / host_shadowed … | pending 通常要 reload + 新 session |
-| Unresolved opencode placeholders | `opencode.json` 里 `${KEY}` | 缺 key 时 MCP/provider 可能失败 |
+| Unresolved MCP placeholders | workspace MCP 层（`state/workspaces/<key>/mcp.json`）里的 `${KEY}` | 缺 key 时 MCP 可能失败 |
 | Host environment override | 进程环境与 personal 同名 | amuxd 进程 env 会挡住注入 |
 
 ### 整体状态（前端 rollup）
@@ -246,7 +246,7 @@ Agent 工具侧的 `load_agent_env_listings` 使用同一套 personal 合并逻�
 | 诊断显示 pending/starting · revision 不一致 | 当前 workspace 正在请求或启动新 generation | 等待 rolling replacement；active 旧 session 可继续完成 |
 | 白标读不到个人变量 | amuxd 未带 `TEAMCLU_BRAND_SHORT_NAME` | 确认桌面 managed spawn 路径；重启桌面 |
 | Host shadowed | 启动 amuxd 的 shell 里已有同名 env | 从启动环境 unset，或换 TeamClu key 名 |
-| `opencode.json` 仍显示 `${QWEN_API_KEY}` | blob/team 都没有该 key | 在设置里配置，或去掉 MCP 引用 |
+| workspace MCP 配置仍显示 `${QWEN_API_KEY}` | blob/team 都没有该 key | 在设置里配置，或去掉 MCP 引用 |
 
 ---
 

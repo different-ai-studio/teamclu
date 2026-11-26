@@ -3,23 +3,19 @@
 //! These four servers are identical for every workspace on the machine:
 //! `teamclu-introspect` (the bundled sidecar), `playwright`, `chrome-control`
 //! and `open-computer-use` (the `npx` tools). They used to be materialized into every
-//! `<workspace>/opencode.json`, which meant N copies of the same thing, each
+//! `<workspace>/opencode.json` (since removed), which meant N copies of the same thing, each
 //! carrying **this** machine's absolute binary paths — so opening the same repo
 //! on another machine rewrote the file, and a committed copy churned forever.
 //!
-//! Shape is opencode's own `{ "mcp": { name: { type, enabled, command: [...] } } }`,
-//! not the Cursor `mcpServers` shape the *team* file uses. Two reasons: the
-//! Cursor shape has nowhere to put `enabled` (playwright ships disabled), and
-//! every consumer already parses this shape for the workspace file — the device
-//! file is just a second path through the same code.
+//! Shape is `{ "mcp": { name: { type, enabled, command: [...] } } }`, the same
+//! shape as the workspace MCP layer (`teamclu_runtime_env::config_store`), not
+//! the Cursor `mcpServers` shape the *team* file uses: the Cursor shape has
+//! nowhere to put `enabled` (playwright ships disabled), and every consumer
+//! already parses this one.
 //!
-//! Read by the MCP merge path on spawn and in settings:
-//! - `team_mcp::load_merged_mcp` — the settings UI's merged view
-//! - `runtime/pi_rpc` — pi, via `TEAMCLU_MCP_SERVERS`
-//!
-//! `teamclu-introspect` is deliberately NOT here: its argv carries
-//! `--workspace <abs path>`, so it is the one inherent server that is genuinely
-//! per-workspace and stays in the workspace config.
+//! Read by the MCP merge path (`team_mcp::load_merged_mcp`): the settings UI's
+//! merged view, and pi's `TEAMCLU_MCP_SERVERS` / `mcp.effective.json`. A change
+//! here is pushed to running pi hosts by `pi_rpc::refresh_effective_mcp`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

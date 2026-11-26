@@ -201,7 +201,7 @@ tombstone）。同步读取端只需在候选目录列表里加一项。
   secrets 为空时短路不写 overlay。→ 必须区分「团队确实没有 env」和「拉取失败」，
   后者用缓存兜底，缓存也没有时 fail closed。
 - **`managed_llm` 的内存 TTL 缓存不足以照抄**：它是进程内的，daemon 重启即空；
-  它没事是因为真正的持久产物是磁盘上的 `opencode.json`，而团队 env 每次 spawn
+  它没事是因为真正的持久产物是磁盘上的 `providers.json`（原 `opencode.json`），而团队 env 每次 spawn
   现解现注。→ 缓存必须落盘。
 
 另外 `refresh_watch.rs` 对 `.mcp/` 和 `_secrets/` 的监听是 `RefreshChangeKind::Mcp`

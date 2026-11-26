@@ -32,7 +32,7 @@
 //! Note the in-memory TTL cache used by [`crate::runtime::managed_llm`] is not
 //! sufficient here: it is process-local and empty after every daemon restart.
 //! That is survivable for managed LLM because its durable artifact is
-//! `opencode.json` on disk; team env has no such artifact — it is decrypted and
+//! `providers.json` on disk; team env has no such artifact — it is decrypted and
 //! injected fresh on every spawn.
 
 use std::collections::HashMap;
@@ -108,6 +108,11 @@ pub async fn apply_team_cloud_outcome(
     log_team_cloud_outcome(team_id, outcome);
     if !outcome.changed() {
         return;
+    }
+    if outcome.mcp_changed {
+        // Running pi hosts watch their effective MCP file and re-bridge in
+        // place, so a team install/uninstall reaches them without a restart.
+        crate::runtime::pi_rpc::refresh_effective_mcp(None);
     }
     let Some(refresh) = refresh else {
         return;

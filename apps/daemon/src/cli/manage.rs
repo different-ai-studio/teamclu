@@ -12,7 +12,7 @@ use super::daemon_http::LocalDaemonClient;
 
 use crate::backend::TeamSkillRow;
 use crate::config::{
-    encode_workspace_path, DaemonConfig, OpenCodeCompatStore, ProviderAuthRequest,
+    encode_workspace_path, DaemonConfig, LocalControlStore, ProviderAuthRequest,
     ProviderModelConfig, WorkspaceControlStore,
 };
 use crate::sync::oss::state::LocalSyncState;
@@ -362,7 +362,7 @@ fn install_pi_interactive(theme: &ColorfulTheme) -> anyhow::Result<()> {
 fn llm_menu(theme: &ColorfulTheme) -> anyhow::Result<()> {
     let workspace = pick_workspace(theme)?;
     let ws_id = encode_workspace_path(&workspace)?;
-    let store = OpenCodeCompatStore::new();
+    let store = LocalControlStore::new();
 
     loop {
         let choice = Select::with_theme(theme)
@@ -371,7 +371,6 @@ fn llm_menu(theme: &ColorfulTheme) -> anyhow::Result<()> {
                 "List providers",
                 "Add / update provider",
                 "Remove provider",
-                "Set default model",
                 "Back",
             ])
             .default(0)
@@ -392,9 +391,6 @@ fn llm_menu(theme: &ColorfulTheme) -> anyhow::Result<()> {
                             p.models.join(", ")
                         );
                     }
-                }
-                if let Some(model) = read_default_model(&workspace)? {
-                    println!("Default model: {model}");
                 }
             }
             1 => {
@@ -468,29 +464,6 @@ fn llm_menu(theme: &ColorfulTheme) -> anyhow::Result<()> {
                     store.delete_provider_auth(&ws_id, id)?;
                     println!("✓ Removed '{id}'.");
                 }
-            }
-            3 => {
-                let providers = store.get_providers(&ws_id)?;
-                if providers.is_empty() {
-                    println!("Configure a provider first.");
-                    continue;
-                }
-                let mut options: Vec<String> = Vec::new();
-                for p in &providers {
-                    for m in &p.models {
-                        options.push(format!("{}/{}", p.id, m));
-                    }
-                }
-                if options.is_empty() {
-                    println!("No models on configured providers.");
-                    continue;
-                }
-                let idx = Select::with_theme(theme)
-                    .with_prompt("Default model")
-                    .items(&options)
-                    .interact()?;
-                set_default_model(&workspace, &options[idx])?;
-                println!("✓ Default model set to {}.", options[idx]);
             }
             _ => break,
         }
@@ -925,7 +898,7 @@ fn print_workspace_llm_summary(workspace: &Path, indent: &str) {
     let Ok(ws_id) = encode_workspace_path(workspace) else {
         return;
     };
-    let store = OpenCodeCompatStore::new();
+    let store = LocalControlStore::new();
     match store.get_providers(&ws_id) {
         Ok(providers) if providers.is_empty() => {
             println!("{indent}LLM: no providers");
@@ -939,9 +912,6 @@ fn print_workspace_llm_summary(workspace: &Path, indent: &str) {
                 })
                 .collect();
             println!("{indent}LLM providers: {}", names.join(", "));
-            if let Ok(Some(model)) = read_default_model(workspace) {
-                println!("{indent}default model: {model}");
-            }
         }
         Err(e) => println!("{indent}LLM: error ({e})"),
     }
@@ -964,27 +934,6 @@ fn resolve_team_id(explicit: Option<String>) -> anyhow::Result<String> {
         .ok_or_else(|| {
             anyhow::anyhow!("no team_id in {}.\nRun `amuxd init` first.", path.display())
         })
-}
-
-fn read_default_model(workspace: &Path) -> anyhow::Result<Option<String>> {
-    let cfg = teamclu_runtime_env::opencode_config::OpencodeConfigStore::load(workspace)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(cfg.get("model").and_then(|v| v.as_str()).map(str::to_owned))
-}
-
-fn set_default_model(workspace: &Path, model: &str) -> anyhow::Result<()> {
-    let model = model.trim().to_string();
-    teamclu_runtime_env::opencode_config::OpencodeConfigStore::apply(workspace, |cfg| {
-        let obj = cfg.as_object_mut().ok_or_else(|| {
-            teamclu_runtime_env::opencode_config::OpencodeConfigError::Parse(
-                "opencode.json root is not an object".into(),
-            )
-        })?;
-        obj.insert("model".to_owned(), serde_json::Value::String(model.clone()));
-        Ok(true)
-    })
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(())
 }
 
 fn prompt_optional_secret(theme: &ColorfulTheme, prompt: &str) -> anyhow::Result<Option<String>> {

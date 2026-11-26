@@ -121,7 +121,10 @@ daemon.toml  device-id  mcp.json  teams/  run/  logs/  cache/  bin/
             ├── team.toml              # 团队级配置（§4.3）
             ├── secret.key             # 本团队主密钥，0600
             ├── secrets.enc            # 团队密钥 + channels 凭证
-            ├── opencode.json          # 团队 provider 配置（managed LLM 物化）
+            ├── providers.json         # provider：managed LLM 的 provider.team + 用户自配
+            ├── workspaces/<key>/      # key = sha256(workspace 绝对路径) 前 16 位
+            │   ├── mcp.json           # 该 workspace 自己的 MCP 层
+            │   └── mcp.effective.json # device+团队+workspace 合并结果，pi extension 监听
             ├── cloud/
             │   ├── mcp.json           # 本机已 Install 的团队 MCP（Cursor mcpServers）
             │   └── _secrets/          # 团队 env 密文缓存

@@ -2,7 +2,7 @@
  * Shared types and helpers for provider IDs.
  *
  * LLM providers are persisted via the daemon workspace-control API — do not
- * read or write `opencode.json` from the desktop webview.
+ * read or write the daemon's `providers.json` from the desktop webview.
  */
 
 // Model configuration for custom provider
@@ -19,7 +19,7 @@ interface CustomModelConfig {
   }
 }
 
-// Shape of a custom provider entry in opencode.json
+// Shape of a custom provider entry
 export interface CustomProviderConfig {
   name: string
   baseURL: string

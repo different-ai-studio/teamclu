@@ -3187,7 +3187,7 @@
         "blockerEnvLayerOverride": "更高优先级层覆盖了以下 key 的值: {{keys}}",
         "blockerTeamSecretMissing": "存在团队加密 env 文件，但本机未配置团队密钥",
         "blockerMissingExpectedEnvKeys": "以下期望 env key 未出现在解析快照中: {{keys}}",
-        "blockerMcpPlaceholderUnresolved": "opencode.json 仍引用未解析占位符: {{keys}}",
+        "blockerMcpPlaceholderUnresolved": "工作区 MCP 配置仍引用未解析占位符: {{keys}}",
         "blockerEnvNotServed": "以下 key 已解析但未进入运行中的 agent host: {{keys}}"
       },
       "injection": {

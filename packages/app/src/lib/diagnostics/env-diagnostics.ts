@@ -218,7 +218,7 @@ export function formatEnvActivationBlocker(
     case 'mcp_placeholder_unresolved':
       return t('settings.envVars.diag.blockerMcpPlaceholderUnresolved', {
         keys: detail ?? '',
-        defaultValue: `opencode.json still references unresolved placeholders: ${detail ?? ''}`,
+        defaultValue: `Workspace MCP config still references unresolved placeholders: ${detail ?? ''}`,
       })
     case 'env_not_served':
       return t('settings.envVars.diag.blockerEnvNotServed', {

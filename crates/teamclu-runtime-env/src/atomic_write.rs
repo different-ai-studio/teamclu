@@ -1,6 +1,6 @@
-//! Atomic file writes for shared config files (notably `opencode.json`).
+//! Atomic file writes for shared config files (see `config_store`).
 //!
-//! `opencode.json` has many independent writers spread across the daemon, the
+//! These config files have many independent writers spread across the daemon, the
 //! runtime-env crate, and the desktop process. A plain `std::fs::write` opens
 //! with `O_TRUNC`, but the byte stream is written at the fd's own offset — so
 //! two concurrent writers of different lengths can leave the shorter object
@@ -19,26 +19,26 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Registry of per-`opencode.json` write locks, keyed by the config file path.
+/// Registry of per-file config write locks, keyed by the config file path.
 #[allow(clippy::type_complexity)]
-static OPENCODE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+static CONFIG_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 
-/// Get the shared write lock for one `opencode.json` path.
+/// Get the shared write lock for one config file path.
 ///
-/// All in-process writers of a given workspace's `opencode.json` do their whole
+/// All in-process writers of a given config file do their whole
 /// read-modify-write under this lock, so concurrent amuxd tasks (a runtime
 /// spawn and an HTTP `GET /providers` reconcile, say) serialize instead of
 /// clobbering each other's edits. Atomic writes stop *corruption*; this lock
 /// stops *lost updates*. Callers hold the returned guard across read AND write:
 ///
 /// ```ignore
-/// let lock = opencode_write_lock(&config_path);
+/// let lock = config_write_lock(&config_path);
 /// let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
 /// // ... read_json_object(&config_path) ... mutate ... atomic_write(&config_path, ...)
 /// ```
-pub fn opencode_write_lock(config_path: &Path) -> Arc<Mutex<()>> {
+pub fn config_write_lock(config_path: &Path) -> Arc<Mutex<()>> {
     let key = config_path.to_string_lossy().into_owned();
-    let registry = OPENCODE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let registry = CONFIG_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = registry.lock().unwrap_or_else(|e| e.into_inner());
     map.entry(key)
         .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -52,7 +52,7 @@ pub fn opencode_write_lock(config_path: &Path) -> Arc<Mutex<()>> {
 /// the temp file is best-effort removed and the original `path` is untouched.
 ///
 /// On unix the file is created owner-only (0600). These files carry
-/// credentials — the team `opencode.json` holds the live AI-gateway token — and
+/// credentials — the team `providers.json` holds the live AI-gateway token — and
 /// the rename replaces the target's inode, so the mode set here is the mode the
 /// final file has, whatever the previous file's was.
 pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn replaces_the_target_with_the_new_content() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("opencode.json");
+        let path = dir.path().join("config.json");
         std::fs::write(&path, "a much longer previous body").unwrap();
         atomic_write(&path, "new").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
@@ -116,7 +116,7 @@ mod tests {
     fn written_file_is_owner_only_even_over_a_world_readable_one() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("opencode.json");
+        let path = dir.path().join("config.json");
         std::fs::write(&path, "{}").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         atomic_write(&path, r#"{"apiKey":"secret"}"#).unwrap();

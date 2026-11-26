@@ -169,12 +169,12 @@ fn mcp_inventory(team_id: &str) -> Vec<crate::proto::teamclu::AgentMcpInventoryI
     use crate::proto::teamclu::AgentMcpInventoryItem;
     let workspace = crate::config::global_team_store::default_workspace_dir(team_id);
     // Seed the device file first, the way the sibling HTTP read path does
-    // (`get_mcp` calls `ensure_inherent_mcp`). Without it this list reports
+    // (`get_mcp` calls `ensure_device_mcp_layer`). Without it this list reports
     // whatever a previous runtime spawn happened to have written: a machine
     // whose device file predates `teamclu-introspect` moving there would show
     // no introspect until something *else* triggered a spawn. Idempotent, and a
     // no-op once the entries are present.
-    crate::runtime::supervisor::ensure_device_mcp_for_inventory();
+    crate::runtime::supervisor::ensure_device_mcp_layer();
     // The merged view, not `scan_team_mcp`: device (`~/.amuxd/mcp.json`), team,
     // and workspace layers with provenance stamped on each entry.
     //
@@ -1955,11 +1955,12 @@ mod agent_management_tests {
 
         let workspace = crate::config::global_team_store::default_workspace_dir(team_id);
         std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(
-            workspace.join("opencode.json"),
-            r#"{"mcp":{"my-own":{"type":"local","command":["node","server.js"]}}}"#,
-        )
-        .unwrap();
+        let own: std::collections::HashMap<
+            String,
+            crate::config::workspace_control::McpServerConfig,
+        > = serde_json::from_str(r#"{"my-own":{"type":"local","command":["node","server.js"]}}"#)
+            .unwrap();
+        crate::config::team_mcp::write_persisted_mcp(&workspace, &own).unwrap();
 
         let items = mcp_inventory(team_id);
         let by_name: std::collections::HashMap<_, _> =

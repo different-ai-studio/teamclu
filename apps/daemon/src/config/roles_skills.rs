@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 
 use teamclu_types::skill_frontmatter::parse_frontmatter;
 
-use super::global_team_store::TEAM_LINK_NAME;
 use super::workspace_control::WorkspaceControlError;
 
 // ── DTOs (camelCase JSON for the frontend) ───────────────────────────────────
@@ -262,99 +261,26 @@ pub(crate) fn load_skills_from_dir(
     Ok(skills)
 }
 
-fn onboarded_team_id() -> Option<String> {
-    super::DaemonConfig::load(&super::DaemonConfig::default_path())
-        .ok()
-        .and_then(|cfg| {
-            cfg.team_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_owned)
-        })
-}
-
-fn remap_team_skill_path(workspace_path: &Path, path: PathBuf, team_id: &str) -> PathBuf {
-    let link_root = workspace_path.join(TEAM_LINK_NAME);
-    if path.is_dir() {
-        return path;
-    }
-    if path.starts_with(&link_root) {
-        let rel = path.strip_prefix(&link_root).unwrap_or(path.as_path());
-        return super::global_team_store::resolve_team_dir(workspace_path, team_id).join(rel);
-    }
-    path
-}
-
-/// Team skill directory roots for a workspace (config paths + default team
-/// share + the registry install dir).
+/// Team skill directory roots for a workspace: the registry install dir.
 ///
 /// `~/.agents/skills` is where the team skills registry installs packages, and
 /// it has to be in here rather than only in `load_all_skills`: this list is the
 /// sole input to the `.claude/skills/` symlink bridge
-/// (`runtime::claude_skills`), and `teamclu-team/skills` no longer receives
-/// anything — file sync carries documents only. Without this, registry-installed
-/// team skills reach OpenCode (via `skills.paths`) but are invisible to Claude
-/// Code, and an empty list makes the bridge prune every team symlink it had.
-pub fn team_skill_roots(workspace_path: &Path) -> Vec<PathBuf> {
-    let mut roots = collect_team_skill_paths(workspace_path);
-    // Hosted `cloud/skills` is a remote snapshot cache, not a runtime root.
-    // OpenCode loads `~/.agents/skills` only; putting the cache on
-    // `skills.paths` made the agent (and the Skills list) prefer it over the
-    // working copy, so drafts landed in a directory the next reconcile could
-    // overwrite.
+/// (`runtime::claude_skills`), and an empty list makes the bridge prune every
+/// team symlink it had. The hosted `cloud/skills` is a remote snapshot cache,
+/// not a runtime root.
+///
+/// Config-declared roots (`skills.paths` in the workspace's `opencode.json`)
+/// went away with that file.
+pub fn team_skill_roots(_workspace_path: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
     if let Some(home) = dirs::home_dir() {
         let registry_dir = home.join(".agents/skills");
-        if registry_dir.is_dir() && !roots.contains(&registry_dir) {
+        if registry_dir.is_dir() {
             roots.push(registry_dir);
         }
     }
     roots
-}
-
-fn collect_team_skill_paths(workspace_path: &Path) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = Vec::new();
-    let mut seen = HashSet::new();
-    let team_id = onboarded_team_id();
-
-    let mut push = |path: PathBuf| {
-        let resolved = team_id
-            .as_deref()
-            .map(|id| remap_team_skill_path(workspace_path, path.clone(), id))
-            .unwrap_or(path);
-        if resolved.is_dir() && seen.insert(resolved.clone()) {
-            paths.push(resolved);
-        }
-    };
-
-    // `opencode.json` is the only config consulted for `skills.paths`.
-    //
-    // It is also the only one anything writes: the desktop's
-    // `ensure_agents_skills_paths` registers `~/.agents/skills` in
-    // `<ws>/opencode.json`, `.claude/settings.json` and `~/.claude/settings.json`
-    // — never in a brand config. The three brand files this used to read
-    // (`.teamclu/teamclu.json`, `.teamclu/teamclaw.json`, `teamclu.json`) had no
-    // writer, so parsing them only widened the surface a hand-edited file could
-    // pull skills in from.
-    for extra in read_json_paths(workspace_path, "opencode.json", "/skills/paths") {
-        push(extra);
-    }
-
-    // The team-share drive's own `skills/` used to be a root here. It no longer
-    // has a writer: `skills/` is in the OSS sync's RETIRED_PREFIXES (it moved to
-    // the skills registry), so nothing has landed there since that migration.
-    //
-    // Dropping it is a real behaviour change on machines that synced skills
-    // *before* the migration — the retirement stopped the syncing but never
-    // deleted anything, so those files are still on disk and were still being
-    // scanned. They stop reaching agents now, which is the point: a pack the
-    // registry has since superseded is exactly the "quietly running a version
-    // the team retired" case the registry exists to end.
-    //
-    // Config-declared `/skills/paths` entries pointing into the team drive are
-    // untouched — those are somebody's explicit choice, not a default.
-
-    paths
 }
 
 /// Every root scanned for skills, in one place so the ranks can be read — and
@@ -374,7 +300,7 @@ fn skill_dir_specs(workspace_path: &Path, home: &Path) -> Vec<SkillDirSpec> {
     let home_str = home.to_string_lossy();
     let home_trimmed = home_str.trim_end_matches('/');
 
-    let mut specs: Vec<SkillDirSpec> = vec![
+    let specs: Vec<SkillDirSpec> = vec![
         SkillDirSpec {
             path: workspace_path.join(".claude/skills"),
             source: "claude",
@@ -407,14 +333,6 @@ fn skill_dir_specs(workspace_path: &Path, home: &Path) -> Vec<SkillDirSpec> {
             rank: 5,
         },
     ];
-
-    for extra in collect_team_skill_paths(workspace_path) {
-        specs.push(SkillDirSpec {
-            path: extra,
-            source: "team",
-            rank: 4,
-        });
-    }
 
     specs
 }
@@ -1109,25 +1027,16 @@ mod tests {
         assert_eq!(state.metrics.roles_count, 0);
     }
 
-    /// Bundle naming for a team root. Declared via `opencode.json` rather than
-    /// the team drive's own `skills/`, which is no longer a root — see
-    /// `collect_team_skill_paths`.
+    /// Bundle naming: a skill nested one level down (`<bundle>/<skill>`) is
+    /// invoked as `bundle/skill`.
     #[test]
-    fn scan_finds_nested_team_bundle_skills() {
+    fn scan_finds_nested_bundle_skills() {
         let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path();
 
-        let team_root = ws.join("team-skills");
+        let team_root = ws.join(".agents/skills");
         std::fs::create_dir_all(&team_root).unwrap();
-        std::fs::write(
-            ws.join("opencode.json"),
-            format!(
-                r#"{{"skills":{{"paths":["{}"]}}}}"#,
-                team_root.to_string_lossy()
-            ),
-        )
-        .unwrap();
 
         let bundle_dir = team_root.join("superpowers/brainstorming");
         std::fs::create_dir_all(&bundle_dir).unwrap();
@@ -1142,12 +1051,11 @@ mod tests {
             .skills
             .iter()
             .find(|skill| skill.filename == "brainstorming")
-            .expect("nested team bundle skill");
+            .expect("nested bundle skill");
         assert_eq!(
             team_skill.invocation_name.as_deref(),
             Some("superpowers/brainstorming")
         );
-        assert_eq!(team_skill.source.as_deref(), Some("team"));
     }
 
     /// The team drive's `skills/` is deliberately NOT a root any more.
@@ -1163,7 +1071,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path();
 
-        let team_skill_dir = ws.join(TEAM_LINK_NAME).join("skills/shared-skill");
+        let team_skill_dir = ws
+            .join(super::super::global_team_store::TEAM_LINK_NAME)
+            .join("skills/shared-skill");
         std::fs::create_dir_all(&team_skill_dir).unwrap();
         std::fs::write(
             team_skill_dir.join("SKILL.md"),
@@ -1311,23 +1221,11 @@ mod tests {
     #[test]
     fn a_duplicated_slug_resolves_by_root_rank_not_by_scan_order() {
         let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
-        // `.claude/skills` (rank 1) outranks `.agents/skills` (3), which
-        // outranks a config-declared team path (4) — regardless of the order the
-        // specs happen to be listed in. Ordering used to be derived from the
-        // source label, and since every dot-prefixed root was relabelled `local`
-        // they all tied, leaving the winner to array position.
+        // `.claude/skills` (rank 1) outranks `.agents/skills` (3) — regardless
+        // of the order the specs happen to be listed in. Ordering used to be
+        // derived from the source label, and since every dot-prefixed root was
+        // relabelled `local` they all tied, leaving the winner to array position.
         let ws = tempfile::tempdir().unwrap();
-        let team_root = ws.path().join("team-skills");
-        std::fs::create_dir_all(&team_root).unwrap();
-        std::fs::write(
-            ws.path().join("opencode.json"),
-            format!(
-                r#"{{"skills":{{"paths":["{}"]}}}}"#,
-                team_root.to_string_lossy()
-            ),
-        )
-        .unwrap();
-        seed_skill(ws.path(), "team-skills", "dup", "team");
         seed_skill(ws.path(), ".agents/skills", "dup", "agents");
         let expected = seed_skill(ws.path(), ".claude/skills", "dup", "claude");
 

@@ -7,8 +7,10 @@
 //! fallback before the daemon has a valid cloud cache. Once that cache exists,
 //! it is authoritative — including when it is empty after an uninstall.
 //!
-//! Merged at read time with workspace `opencode.json` entries. On name
-//! collision the workspace layer wins (user local override).
+//! Merged at read time with the device layer (`~/.amuxd/mcp.json`) under it
+//! and the workspace's own layer (`<state>/workspaces/<key>/mcp.json`, see
+//! `teamclu_runtime_env::config_store`) over it. On name collision the
+//! workspace layer wins (user local override).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -55,10 +57,6 @@ pub(crate) struct CursorMcpServer {
     pub env: Option<HashMap<String, String>>,
     pub url: Option<String>,
     pub headers: Option<HashMap<String, String>>,
-}
-
-fn io_err(e: std::io::Error) -> WorkspaceControlError {
-    WorkspaceControlError::Io(e.to_string())
 }
 
 fn parse_err(e: serde_json::Error) -> WorkspaceControlError {
@@ -217,19 +215,32 @@ fn scan_team_mcp_dir_into(mcp_dir: &Path, out: &mut HashMap<String, McpServerCon
     }
 }
 
+/// The workspace's own MCP layer. Missing reads as empty.
 pub fn read_persisted_mcp(
     workspace: &Path,
 ) -> Result<HashMap<String, McpServerConfig>, WorkspaceControlError> {
-    let path = workspace.join("opencode.json");
-    if !path.exists() {
-        return Ok(HashMap::new());
-    }
-    let content = std::fs::read_to_string(&path).map_err(io_err)?;
-    let json: serde_json::Value = serde_json::from_str(&content).map_err(parse_err)?;
+    let json = teamclu_runtime_env::config_store::ConfigStore::load_workspace_mcp(workspace)
+        .map_err(|e| WorkspaceControlError::Parse(e.to_string()))?;
     Ok(json
         .get("mcp")
         .and_then(|value| serde_json::from_value(value.clone()).ok())
         .unwrap_or_default())
+}
+
+/// Replace the workspace's own MCP layer with `servers`.
+pub fn write_persisted_mcp(
+    workspace: &Path,
+    servers: &HashMap<String, McpServerConfig>,
+) -> Result<bool, WorkspaceControlError> {
+    let value = serde_json::to_value(servers).map_err(parse_err)?;
+    teamclu_runtime_env::config_store::ConfigStore::apply_workspace_mcp(workspace, |config| {
+        if config.get("mcp") == Some(&value) {
+            return Ok(false);
+        }
+        config["mcp"] = value;
+        Ok(true)
+    })
+    .map_err(|e| WorkspaceControlError::Io(e.to_string()))
 }
 
 fn configs_equal(a: &McpServerConfig, b: &McpServerConfig) -> bool {
@@ -264,7 +275,7 @@ fn with_source(mut cfg: McpServerConfig, source: McpSource) -> McpServerConfig {
     cfg
 }
 
-/// Merge team + workspace layers. Workspace `opencode.json` wins on conflicts.
+/// Merge team + workspace layers. The workspace layer wins on conflicts.
 pub fn merge_mcp_layers(
     team: &HashMap<String, McpServerConfig>,
     persisted: &HashMap<String, McpServerConfig>,
@@ -292,10 +303,30 @@ pub fn load_merged_mcp(
     // collide in practice (the device names are ours), but if a team ever ships
     // a server called `playwright` the team's definition is the one that should
     // win — it is the deliberate choice, ours is a default.
+    let persisted = read_persisted_mcp(workspace)?;
+    Ok(merge_mcp_layers(&shared_mcp_layers(workspace), &persisted))
+}
+
+/// [`load_merged_mcp`] for a runtime: an unreadable workspace layer is logged
+/// and treated as empty, so the device and team servers still reach the agent.
+/// Failing the whole merge would hand pi no MCP servers at all.
+pub fn load_merged_mcp_lossy(workspace: &Path) -> HashMap<String, McpServerConfig> {
+    let persisted = read_persisted_mcp(workspace).unwrap_or_else(|e| {
+        tracing::warn!(
+            workspace = %workspace.display(),
+            error = %e,
+            "workspace MCP config unreadable; using device and team servers only"
+        );
+        HashMap::new()
+    });
+    merge_mcp_layers(&shared_mcp_layers(workspace), &persisted)
+}
+
+/// Device servers with the team's over them.
+fn shared_mcp_layers(workspace: &Path) -> HashMap<String, McpServerConfig> {
     let mut overlay = super::device_mcp::load_device_mcp();
     overlay.extend(scan_team_mcp(workspace));
-    let persisted = read_persisted_mcp(workspace)?;
-    Ok(merge_mcp_layers(&overlay, &persisted))
+    overlay
 }
 
 /// Split a PUT body into (workspace-owned, device-owned).
@@ -340,156 +371,6 @@ pub fn filter_put_body(
             (name, cfg)
         })
         .collect()
-}
-
-/// Result of reconciling a workspace's `opencode.json` against the team set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PruneTeamMcpOutcome {
-    /// Whether `opencode.json` was rewritten.
-    pub changed: bool,
-    /// Leftover team copies removed.
-    pub removed_count: usize,
-}
-
-/// Remove team MCP entries an older build copied into `opencode.json`.
-///
-/// Team servers used to be *materialised* into every workspace's config so the
-/// runtimes could see them. They are now read straight from
-/// `~/.amuxd/teams/<id>/cloud/mcp.json` by all four, which makes those copies
-/// worse than redundant: a workspace entry outranks the team's, so a leftover
-/// copy silently pins that server at whatever the team shipped the day it was
-/// written, and no team update can ever reach the machine again.
-///
-/// Only byte-identical copies go. An entry that differs from the team's is a
-/// deliberate local override — the one thing the workspace layer exists for —
-/// and outranking the team is exactly what it should keep doing.
-/// Move device-scoped MCP entries out of a workspace `opencode.json`.
-///
-/// Same failure mode as the team prune above, one layer down: these four servers
-/// are now written once per machine (`~/.amuxd/mcp.json`), and a workspace copy
-/// outranks it — so a leftover copy pins this workspace to whatever binary path
-/// and enable-flag were current the day it was written. Reinstall the app and
-/// `amuxd-send` in that copy points at a binary that no longer exists.
-///
-/// A copy whose settings differ from the device file is carried over before it
-/// is dropped, so a `chrome-control` the user had disabled in this workspace
-/// ends up disabled machine-wide rather than silently re-enabled. Anything that
-/// matches is just removed.
-pub fn prune_device_mcp(workspace: &Path) -> Result<PruneTeamMcpOutcome, WorkspaceControlError> {
-    let device = super::device_mcp::load_device_mcp();
-    let mut carry_over: HashMap<String, McpServerConfig> = HashMap::new();
-    let mut removed_count = 0usize;
-
-    let changed =
-        teamclu_runtime_env::opencode_config::OpencodeConfigStore::apply(workspace, |json| {
-            let Some(obj) = json.as_object_mut() else {
-                return Ok(false);
-            };
-            let Some(mcp_obj) = obj.get_mut("mcp").and_then(|m| m.as_object_mut()) else {
-                return Ok(false);
-            };
-
-            let names: Vec<String> = mcp_obj
-                .keys()
-                .filter(|name| super::device_mcp::is_device_scoped(name))
-                .cloned()
-                .collect();
-
-            for name in &names {
-                if let Some(raw) = mcp_obj.remove(name) {
-                    removed_count += 1;
-                    // Only a *user* difference is worth carrying.
-                    // `teamclu-introspect` bakes an absolute binary path into
-                    // its argv, which differs on every reinstall, and older
-                    // copies still carry the `--workspace` of wherever they were
-                    // written. The device file's copy is the fresh one, so never
-                    // let a stale local copy win — carrying one back would
-                    // reintroduce exactly the pinning the device layer removes.
-                    if name == "teamclu-introspect" {
-                        continue;
-                    }
-                    if let Ok(local) = serde_json::from_value::<McpServerConfig>(raw) {
-                        let differs = device
-                            .get(name)
-                            .map(|current| !configs_equal(current, &local))
-                            .unwrap_or(true);
-                        if differs {
-                            carry_over.insert(name.clone(), local);
-                        }
-                    }
-                }
-            }
-            Ok(removed_count > 0)
-        })
-        .map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-
-    if !carry_over.is_empty() {
-        super::device_mcp::put_device_entries(carry_over)?;
-    }
-
-    Ok(PruneTeamMcpOutcome {
-        changed,
-        removed_count,
-    })
-}
-
-pub fn prune_materialised_team_mcp(
-    workspace: &Path,
-) -> Result<PruneTeamMcpOutcome, WorkspaceControlError> {
-    prune_materialised_team_mcp_entries(workspace, &scan_team_mcp(workspace))
-}
-
-/// The applying half, taking the team map explicitly so it is testable without
-/// a daemon config dir.
-pub fn prune_materialised_team_mcp_entries(
-    workspace: &Path,
-    team: &HashMap<String, McpServerConfig>,
-) -> Result<PruneTeamMcpOutcome, WorkspaceControlError> {
-    if team.is_empty() {
-        return Ok(PruneTeamMcpOutcome {
-            changed: false,
-            removed_count: 0,
-        });
-    }
-
-    let mut removed_count = 0usize;
-    let changed =
-        teamclu_runtime_env::opencode_config::OpencodeConfigStore::apply(workspace, |json| {
-            let Some(obj) = json.as_object_mut() else {
-                return Ok(false);
-            };
-            let Some(mcp_obj) = obj.get_mut("mcp").and_then(|m| m.as_object_mut()) else {
-                return Ok(false);
-            };
-
-            let stale: Vec<String> = mcp_obj
-                .iter()
-                .filter(|(name, raw)| {
-                    if is_inherent(name) {
-                        return false;
-                    }
-                    let Some(team_cfg) = team.get(name.as_str()) else {
-                        return false;
-                    };
-                    serde_json::from_value::<McpServerConfig>((*raw).clone())
-                        .map(|local| configs_equal(&local, team_cfg))
-                        .unwrap_or(false)
-                })
-                .map(|(name, _)| name.clone())
-                .collect();
-
-            for name in &stale {
-                mcp_obj.remove(name);
-                removed_count += 1;
-            }
-            Ok(removed_count > 0)
-        })
-        .map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-
-    Ok(PruneTeamMcpOutcome {
-        changed,
-        removed_count,
-    })
 }
 
 #[cfg(test)]
@@ -699,103 +580,5 @@ mod tests {
         let filtered = filter_put_body(ws.path(), body);
         assert!(!filtered.contains_key("team-srv"));
         assert!(filtered.contains_key("custom"));
-    }
-
-    #[test]
-    fn pruning_drops_a_leftover_team_copy_but_keeps_a_real_override() {
-        // The migration. An older build copied every team server into this file;
-        // the runtimes now read the team's own file, so a copy that still
-        // matches is dead weight that would outrank the source forever. A copy
-        // the user changed is the local override the workspace layer is for.
-        let ws = tempfile::tempdir().unwrap();
-        std::fs::write(
-            ws.path().join("opencode.json"),
-            r#"{"mcp":{
-                "copied":{"type":"local","enabled":true,"command":["npx","team"]},
-                "overridden":{"type":"local","enabled":true,"command":["npx","mine"]},
-                "mine-only":{"type":"local","enabled":true,"command":["npx","solo"]}
-            }}"#,
-        )
-        .unwrap();
-
-        let mut team = HashMap::new();
-        team.insert("copied".to_owned(), local_cfg(&["npx", "team"]));
-        team.insert("overridden".to_owned(), local_cfg(&["npx", "team"]));
-
-        let outcome = prune_materialised_team_mcp_entries(ws.path(), &team).unwrap();
-        assert!(outcome.changed);
-        assert_eq!(outcome.removed_count, 1);
-
-        let persisted = read_persisted_mcp(ws.path()).unwrap();
-        assert!(
-            !persisted.contains_key("copied"),
-            "an unmodified copy of the team entry is removed"
-        );
-        assert_eq!(
-            persisted.get("overridden").unwrap().command,
-            vec!["npx", "mine"],
-            "a changed entry is a deliberate override and stays"
-        );
-        assert_eq!(
-            persisted.get("mine-only").unwrap().command,
-            vec!["npx", "solo"],
-            "a server the team never had is untouched"
-        );
-    }
-
-    #[test]
-    fn pruning_leaves_an_inherent_server_alone_even_if_the_team_ships_one() {
-        let ws = tempfile::tempdir().unwrap();
-        std::fs::write(
-            ws.path().join("opencode.json"),
-            r#"{"mcp":{"playwright":{"type":"local","enabled":true,"command":["npx","pw"]}}}"#,
-        )
-        .unwrap();
-        let mut team = HashMap::new();
-        team.insert("playwright".to_owned(), local_cfg(&["npx", "pw"]));
-
-        let outcome = prune_materialised_team_mcp_entries(ws.path(), &team).unwrap();
-
-        assert!(!outcome.changed);
-        assert!(read_persisted_mcp(ws.path())
-            .unwrap()
-            .contains_key("playwright"));
-    }
-
-    /// `prune_device_mcp` carries a workspace copy back into the device file when
-    /// it differs — which is right for a server a user actually configured, and
-    /// wrong for the two whose argv is machine state. Introspect's copies also
-    /// pin `--workspace`, so carrying one back would make every workspace on the
-    /// machine introspect a directory the user has not opened.
-    #[test]
-    fn a_workspace_copy_of_introspect_is_dropped_rather_than_carried_to_the_device_file() {
-        let home = tempfile::tempdir().unwrap();
-        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
-        std::fs::write(
-            super::super::device_mcp::device_mcp_file(),
-            r#"{"mcp":{"teamclu-introspect":{"type":"local","enabled":true,"command":["/current/teamclu-introspect","--api-port","13144"]}}}"#,
-        )
-        .unwrap();
-
-        let workspace = tempfile::tempdir().unwrap();
-        std::fs::write(
-            workspace.path().join("opencode.json"),
-            r#"{"mcp":{"teamclu-introspect":{"type":"local","enabled":true,"command":["/old/bundle/teamclu-introspect","--workspace","/some/other/repo","--api-port","13144"]}}}"#,
-        )
-        .unwrap();
-
-        let outcome = prune_device_mcp(workspace.path()).unwrap();
-        assert_eq!(
-            outcome.removed_count, 1,
-            "the workspace copy must be removed"
-        );
-
-        let device = super::super::device_mcp::load_device_mcp();
-        let command = device["teamclu-introspect"].command.join(" ");
-        assert!(
-            !command.contains("--workspace"),
-            "the stale workspace-pinned copy won: {command}"
-        );
-        assert!(command.starts_with("/current/"), "got {command}");
     }
 }

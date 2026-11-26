@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::opencode_config::OpencodeConfigStore;
+use crate::config_store::ConfigStore;
 use crate::personal_secrets::is_internal_personal_blob_key;
 use crate::resolved_env::{EnvOverrideKind, EnvScope, ResolvedEnvSnapshot};
 
@@ -164,12 +164,16 @@ pub fn find_unresolved_config_placeholders(
     workspace: &Path,
     bindings: &HashMap<String, String>,
 ) -> Vec<UnresolvedConfigPlaceholder> {
-    let Some(content) = OpencodeConfigStore::load_raw(workspace).ok().flatten() else {
+    // The workspace's own MCP layer: the only config a user edits per workspace
+    // that can carry `${KEY}` placeholders. Only its `mcp` map — the
+    // `workspace` breadcrumb is a path, not config.
+    let Some(mcp) = ConfigStore::load_workspace_mcp(workspace)
+        .ok()
+        .and_then(|config| config.get("mcp").cloned())
+    else {
         return Vec::new();
     };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return Vec::new();
-    };
+    let json = serde_json::json!({ "mcp": mcp });
 
     let mut out = Vec::new();
     collect_placeholders_in_value(&json, "", bindings, &mut out);
@@ -454,20 +458,22 @@ mod tests {
     }
 
     #[test]
-    fn finds_unresolved_mcp_placeholder_in_opencode_json() {
-        let dir = tempfile::TempDir::new().unwrap();
+    fn finds_unresolved_mcp_placeholder_in_the_workspace_mcp_layer() {
+        let _lock = crate::test_util::home_env_lock();
+        let home = tempfile::TempDir::new().unwrap();
+        let _home = crate::test_util::AmuxdHomeGuard::set(home.path());
         fs::write(
-            dir.path().join("opencode.json"),
-            r#"{
-  "mcp": {
-    "github": {
-      "environment": {
-        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
-      }
-    }
-  }
-}"#,
+            home.path().join("daemon.toml"),
+            "active_team = \"team-a\"\n",
         )
+        .unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        ConfigStore::apply_workspace_mcp(dir.path(), |config| {
+            config["mcp"] = serde_json::json!({
+                "github": { "environment": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" } }
+            });
+            Ok(true)
+        })
         .unwrap();
 
         let bindings = HashMap::from([("API_KEY".to_string(), "set".to_string())]);

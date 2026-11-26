@@ -126,10 +126,6 @@ pub struct GatewaySpawnEnv {
     pub managed_llm: Arc<crate::runtime::managed_llm::ManagedLlmResolver>,
     pub actor_id: String,
     pub actor_name: String,
-    /// Suppresses the refresh watcher for the `opencode.json` writes this
-    /// assembly performs, so materializing `provider.team` does not surface as
-    /// a spurious "OpenCode config changed" banner in the desktop UI.
-    pub refresh_coordinator: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
 }
 
 pub struct AmuxdAgentHandle {
@@ -352,8 +348,8 @@ impl AmuxdAgentHandle {
     }
 
     /// Build the runtime environment for a gateway spawn: team secrets,
-    /// `tc_api_key`, and the team LLM provider materialized into the
-    /// workspace's `opencode.json` — the same assembly a desktop session runs
+    /// `tc_api_key`, and the team LLM provider materialized into the active
+    /// team's `providers.json` — the same assembly a desktop session runs
     /// (`Daemon::assemble_spawn_runtime_env_for_worktree`).
     ///
     /// A genuinely unscoped gateway may use a bare environment. Once a
@@ -407,21 +403,7 @@ impl AmuxdAgentHandle {
         } else {
             teamclu_runtime_env::ManagedLlmState::Unknown
         };
-        // Suppress immediately before the sync disk writes, never before the
-        // awaits above: the managed-LLM fetch can outlast the suppress window
-        // and the `opencode.json` rewrite would leak as a Pending banner.
-        if let Some(ref refresh) = self.spawn_env.refresh_coordinator {
-            crate::runtime::refresh::refresh_watch::suppress_for_workspace_path(
-                refresh,
-                std::path::Path::new(worktree),
-                &crate::runtime::refresh::INTERNAL_OPENCODE_KINDS,
-                crate::runtime::refresh::INTERNAL_WRITE_SUPPRESS,
-            );
-        }
-        crate::runtime::supervisor::materialize_inherent_mcp_for_spawn(std::path::Path::new(
-            worktree,
-        ))
-        .map_err(|e| AgentError::Create(format!("materialize inherent gateway MCP config: {e}")))?;
+        crate::runtime::supervisor::ensure_device_mcp_layer();
 
         // This resolver is also what the desktop spawn path uses. Pi consumes
         // the provider descriptor from `TEAMCLU_TEAM_PROVIDER`, whose
@@ -433,9 +415,8 @@ impl AmuxdAgentHandle {
         let ai_proxy_base =
             env_team_id.and_then(|team_id| self.spawn_env.managed_llm.ai_proxy_base(team_id));
 
-        let spawn_env = crate::runtime::env_assembly::assemble_spawn_runtime_env_for_execution(
+        let spawn_env = crate::runtime::env_assembly::assemble_spawn_runtime_env(
             &workspace.workspace_root,
-            std::path::Path::new(worktree),
             env_team_id,
             &self.spawn_env.actor_id,
             &self.spawn_env.actor_name,
@@ -2095,7 +2076,6 @@ pub(crate) mod tests {
                 )),
                 actor_id: "actor-test".to_string(),
                 actor_name: "Test Agent".to_string(),
-                refresh_coordinator: None,
             },
             logical_to_acp: Arc::new(Mutex::new(HashMap::new())),
             team_id: "team-test".to_string(),

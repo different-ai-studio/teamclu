@@ -70,8 +70,6 @@ const DEBT: &[&str] = &[
     "crates/teamclu-gateway/src/lib.rs",
     "crates/teamclu-runtime-env/src/active_session.rs",
     "crates/teamclu-runtime-env/src/env_catalog.rs",
-    "crates/teamclu-runtime-env/src/opencode_config.rs",
-    "crates/teamclu-runtime-env/src/team_provider_sync.rs",
     "packages/app/src/components/settings/__tests__/GeneralSectionDefaultPermission.test.tsx",
     "packages/app/src/components/settings/__tests__/GeneralSectionSmallWindow.test.tsx",
     "packages/app/src/components/settings/__tests__/SettingsNavigation.test.tsx",

@@ -204,9 +204,7 @@ pub fn classify_change_path(
     });
 
     for workspace in workspaces {
-        let kind = if path == workspace.workspace_path.join("opencode.json") {
-            Some(RefreshChangeKind::OpencodeJson)
-        } else if is_workspace_config_path(path, &workspace.workspace_path) {
+        let kind = if is_workspace_config_path(path, &workspace.workspace_path) {
             Some(RefreshChangeKind::TeamcluConfig)
         } else if path.starts_with(workspace.workspace_path.join(TEAM_LINK_NAME).join(".mcp")) {
             Some(RefreshChangeKind::Mcp)
@@ -253,10 +251,6 @@ struct WatchRoot {
 fn watch_roots(workspaces: &[WatchedWorkspace], home: Option<&Path>) -> Vec<WatchRoot> {
     let mut roots = Vec::new();
     for workspace in workspaces {
-        roots.push(WatchRoot {
-            path: workspace.workspace_path.join("opencode.json"),
-            recursive: false,
-        });
         let brand_cfg = brand_workspace_config(&workspace.workspace_path);
         let legacy_cfg = legacy_workspace_config(&workspace.workspace_path);
         roots.push(WatchRoot {
@@ -353,7 +347,7 @@ async fn record_classified_changes(
 /// OS watcher, deduped by path.
 ///
 /// OS watchers (FSEvents / inotify / ReadDirectoryChangesW) watch *directories*,
-/// so a non-recursive file root (`opencode.json`, `teamclu.json`) is covered by
+/// so a non-recursive file root (`teamclu.json`) is covered by
 /// watching its parent directory shallowly — this also survives atomic saves
 /// (write-temp + rename) that would break a watch pinned to the file's inode.
 /// Only directories that currently exist are returned; missing roots are armed
@@ -554,10 +548,6 @@ mod tests {
                 RefreshChangeKind::Skills,
             ),
             (
-                Path::new("/tmp/ws-1/opencode.json"),
-                RefreshChangeKind::OpencodeJson,
-            ),
-            (
                 Path::new("/tmp/ws-1/.teamclu/teamclu.json"),
                 RefreshChangeKind::TeamcluConfig,
             ),
@@ -723,15 +713,13 @@ mod tests {
 
         coordinator.suppress_workspace_watch(
             &workspace_id,
-            &[RefreshChangeKind::OpencodeJson],
+            &[RefreshChangeKind::Skills],
             Duration::from_secs(5),
         );
 
-        std::fs::write(
-            dir.path().join("opencode.json"),
-            r#"{"$schema":"https://opencode.ai/config.json"}"#,
-        )
-        .unwrap();
+        let skill = dir.path().join(".claude/skills/demo/SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(&skill, "---\nname: demo\n---\n").unwrap();
 
         record_classified_changes(
             &coordinator,
@@ -739,77 +727,12 @@ mod tests {
             &mut debounce,
             &workspaces,
             None,
-            &dir.path().join("opencode.json"),
+            &skill,
             Instant::now(),
         )
         .await;
 
         assert!(coordinator.workspace_state(&workspace_id).await.is_none());
-    }
-
-    /// Spawn env assembly awaits managed-LLM longer than a short suppress window.
-    /// Suppressing *before* that await lets the window expire; the subsequent
-    /// opencode.json write is recorded as Pending. Suppressing *after* the await
-    /// (immediately before disk writes) covers the write — the production order
-    /// in `assemble_spawn_runtime_env_for_worktree`.
-    #[tokio::test]
-    async fn suppress_after_await_covers_opencode_write_unlike_suppress_before_await() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = workspace_runtime_id(dir.path());
-        let workspaces = vec![WatchedWorkspace::new(
-            workspace_id.clone(),
-            dir.path().to_path_buf(),
-            None,
-        )];
-        let opencode = dir.path().join("opencode.json");
-        let content = r#"{"$schema":"https://opencode.ai/config.json"}"#;
-
-        // --- buggy order: suppress → await past window → write ---
-        let leaky = RuntimeRefreshCoordinator::new();
-        let mut debounce = RefreshDebounce::new(Duration::from_millis(1));
-        leaky.suppress_workspace_watch(
-            &workspace_id,
-            &[RefreshChangeKind::OpencodeJson],
-            Duration::from_millis(30),
-        );
-        tokio::time::sleep(Duration::from_millis(45)).await;
-        std::fs::write(&opencode, content).unwrap();
-        record_classified_changes(
-            &leaky,
-            None,
-            &mut debounce,
-            &workspaces,
-            None,
-            &opencode,
-            Instant::now(),
-        )
-        .await;
-        let leaked = leaky.workspace_state(&workspace_id).await.unwrap();
-        assert!(leaked
-            .change_kinds
-            .contains(&RefreshChangeKind::OpencodeJson));
-
-        // --- fixed order: await → suppress → write ---
-        let covered = RuntimeRefreshCoordinator::new();
-        let mut debounce = RefreshDebounce::new(Duration::from_millis(1));
-        tokio::time::sleep(Duration::from_millis(45)).await;
-        covered.suppress_workspace_watch(
-            &workspace_id,
-            &[RefreshChangeKind::OpencodeJson],
-            Duration::from_secs(5),
-        );
-        std::fs::write(&opencode, content).unwrap();
-        record_classified_changes(
-            &covered,
-            None,
-            &mut debounce,
-            &workspaces,
-            None,
-            &opencode,
-            Instant::now(),
-        )
-        .await;
-        assert!(covered.workspace_state(&workspace_id).await.is_none());
     }
 
     #[tokio::test]
@@ -888,12 +811,11 @@ mod tests {
             Some(&RecursiveMode::Recursive),
             "existing skills dir should be watched recursively"
         );
-        // `opencode.json` (a file root) is covered by its parent (the workspace
-        // root) watched shallowly, since the workspace root exists.
-        assert_eq!(
-            targets.get(ws),
-            Some(&RecursiveMode::NonRecursive),
-            "workspace root should be watched non-recursively for config files"
+        // No config file lives in the workspace root any more, so the root
+        // itself is not watched.
+        assert!(
+            !targets.contains_key(ws),
+            "workspace root has no config file to watch"
         );
         // A skill root that does not exist is not armed.
         assert!(
