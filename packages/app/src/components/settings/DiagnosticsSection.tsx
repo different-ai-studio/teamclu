@@ -5,12 +5,14 @@ import {
   LifeBuoy,
   Loader2,
   Play,
+  RotateCw,
   Copy,
   Download,
   ExternalLink,
   CheckCircle2,
   AlertTriangle,
   XCircle,
+  ChevronRight,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -86,7 +88,7 @@ function CheckRow({
           <button
             type="button"
             onClick={() => onOpenHint(check.hintSection!)}
-            className="text-[12px] text-coral hover:underline mt-0.5"
+            className="mt-0.5 text-[12px] text-foreground underline-offset-2 hover:underline"
           >
             前往相关设置 →
           </button>
@@ -127,6 +129,10 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
   const [activeTab, setActiveTab] = React.useState<SymptomTab | 'all'>('model')
   const [confirmAction, setConfirmAction] = React.useState<Extract<RemediationId, 'relogin' | 'reset_daemon'> | null>(null)
   const [showWizard, setShowWizard] = React.useState(false)
+  // A developer tool, not part of "what is wrong and how do I fix it". Closed
+  // by default and unmounted while closed, so its console subscription and the
+  // 2s disk-log poll only run when someone is actually looking at it.
+  const [consoleOpen, setConsoleOpen] = React.useState(false)
   const autoRanForSession = React.useRef<string | null>(null)
 
   const runDiagnostics = React.useCallback(async () => {
@@ -245,13 +251,9 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
       }
       if (id === 'retry_diagnose') {
         void runDiagnostics()
-        return
-      }
-      if (id === 'export_report') {
-        void handleExportZip()
       }
     },
-    [handleExportZip, openSettings, runDiagnostics, t],
+    [openSettings, runDiagnostics, t],
   )
 
   const handleConfirmRemediate = React.useCallback(async () => {
@@ -329,57 +331,64 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
         }
       />
 
-      {!focusSessionId && <LiveDebugConsole />}
-
       <SettingCard>
-        <p className="text-[13px] text-muted-foreground mb-4">
-          {t(
-            'settings.diagnostics.privacyNote',
-            '运行后会收集版本、连接状态与最近日志（已脱敏），数据不会自动上传。',
-          )}
-        </p>
-        <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={runDiagnostics} disabled={running} className="gap-2">
-            {running ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {t('settings.diagnostics.running', '正在诊断…')}
-              </>
-            ) : (
-              <>
-                <Play className="h-4 w-4" />
-                {t('settings.diagnostics.run', '运行诊断')}
-              </>
-            )}
-          </Button>
-          {report && !focusSessionId && (
-            <span className="text-[12px] font-mono text-faint">
-              {t('settings.diagnostics.summary', '{{ok}} 通过 · {{warn}} 警告 · {{fail}} 失败', {
-                ok: report.summary.ok,
-                warn: report.summary.warn,
-                fail: report.summary.fail,
-              })}
-              {' · '}
-              {new Date(report.generatedAt).toLocaleTimeString(undefined, {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </span>
-          )}
-        </div>
+        {report ? (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2.5">
+              {statusDot(
+                report.summary.fail > 0 ? 'fail' : report.summary.warn > 0 ? 'warn' : 'ok',
+              )}
+              <div className="min-w-0">
+                {!focusSessionId && (
+                  <p className="text-[13px] font-semibold text-foreground">
+                    {t('settings.diagnostics.summary', '{{ok}} 通过 · {{warn}} 警告 · {{fail}} 失败', {
+                      ok: report.summary.ok,
+                      warn: report.summary.warn,
+                      fail: report.summary.fail,
+                    })}
+                  </p>
+                )}
+                <p className="font-mono text-[11px] text-faint">
+                  {t('settings.diagnostics.lastRun', '运行于 {{time}}', {
+                    time: new Date(report.generatedAt).toLocaleTimeString(undefined, {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    }),
+                  })}
+                </p>
+              </div>
+            </div>
+            <Button variant="outline" size="sm" onClick={runDiagnostics} disabled={running} className="gap-2">
+              {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
+              {running
+                ? t('settings.diagnostics.running', '正在诊断…')
+                : t('settings.diagnostics.rerun', '重新诊断')}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="min-w-0 flex-1 text-[12.5px] text-muted-foreground">
+              {t(
+                'settings.diagnostics.privacyNote',
+                '运行后会收集版本、连接状态与最近日志（已脱敏），数据不会自动上传。',
+              )}
+            </p>
+            <Button onClick={runDiagnostics} disabled={running} className="gap-2">
+              {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              {running
+                ? t('settings.diagnostics.running', '正在诊断…')
+                : t('settings.diagnostics.run', '运行诊断')}
+            </Button>
+          </div>
+        )}
       </SettingCard>
 
       {report && (
         <>
+          {/* What needs a decision comes first; the evidence follows. */}
           <AuthSyncBanner findings={displayFindings} onRemediate={handleRemediate} />
-          {focusSessionId && (
-            <p className="text-[12px] text-muted-foreground">
-              {t(
-                'settings.diagnostics.sessionFocus',
-                '消息回复已限定到当前会话。模型、实时通道与下方检查是全局环境。',
-              )}
-            </p>
-          )}
+          <DaemonResetRemediationCard report={report} />
+
           <SettingCard>
             <div role="tablist" className="mb-4 flex flex-wrap gap-1 rounded-[10px] bg-panel p-1">
               {SYMPTOM_TABS.map((tab) => {
@@ -416,9 +425,6 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
             </div>
             {activeTab === 'all' ? (
               <div>
-                <h4 className="mb-2 text-[13px] font-semibold">
-                  {t('settings.diagnostics.results', '检查结果')}
-                </h4>
                 {report.checks.map((check) => (
                   <CheckRow key={check.id} check={check} onOpenHint={handleOpenHint} />
                 ))}
@@ -435,18 +441,17 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
             )}
           </SettingCard>
 
-          <DaemonResetRemediationCard report={report} />
-
           <SettingCard>
-            <h4 className="text-[13px] font-semibold mb-3">
+            <h4 className="text-[13px] font-semibold">
               {t('settings.diagnostics.exportTitle', '导出与反馈')}
             </h4>
-            <DiagnosticUpload report={report} disabled={running || exporting} />
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" onClick={handleCopy} className="gap-2">
-                <Copy className="h-4 w-4" />
-                {t('settings.diagnostics.copyReport', '复制诊断报告')}
-              </Button>
+            <p className="mb-3 mt-1 text-[12px] text-muted-foreground">
+              {t(
+                'settings.diagnostics.exportDescription',
+                '自己解决不了时，把诊断包交给支持人员：上传后提供回执，或导出 zip 自行发送。',
+              )}
+            </p>
+            <DiagnosticUpload report={report} disabled={running || exporting}>
               <Button
                 variant="outline"
                 size="sm"
@@ -461,14 +466,42 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
                 )}
                 {t('settings.diagnostics.exportZip', '导出 zip 包')}
               </Button>
+              <Button variant="outline" size="sm" onClick={handleCopy} className="gap-2">
+                <Copy className="h-4 w-4" />
+                {t('settings.diagnostics.copyReport', '复制诊断报告')}
+              </Button>
               <Button variant="outline" size="sm" onClick={handleReportIssue} className="gap-2">
                 <ExternalLink className="h-4 w-4" />
                 {t('settings.diagnostics.reportIssue', '在 GitHub 报告问题')}
               </Button>
-            </div>
+            </DiagnosticUpload>
           </SettingCard>
         </>
       )}
+
+      {!focusSessionId &&
+        (consoleOpen ? (
+          <LiveDebugConsole onCollapse={() => setConsoleOpen(false)} />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConsoleOpen(true)}
+            className="flex w-full items-center gap-3 rounded-[14px] border border-border bg-paper px-5 py-3.5 text-left transition-colors hover:bg-background"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-semibold text-foreground">
+                {t('settings.diagnostics.liveConsole.title', '实时调试台')}
+              </p>
+              <p className="mt-0.5 text-[12px] text-muted-foreground">
+                {t(
+                  'settings.diagnostics.liveConsole.description',
+                  '查看 Console 输出、运行状态与磁盘日志，无需 Web Inspector。',
+                )}
+              </p>
+            </div>
+            <ChevronRight className="h-4 w-4 shrink-0 text-faint" />
+          </button>
+        ))}
 
       <AlertDialog open={Boolean(confirmAction)} onOpenChange={(open) => !open && setConfirmAction(null)}>
         <AlertDialogContent>

@@ -82,7 +82,7 @@ function ConclusionCard({
             <button
               type="button"
               onClick={() => onOpenHint(finding.hintSection!)}
-              className="mt-1 text-[12px] text-coral hover:underline"
+              className="mt-1 text-[12px] text-foreground underline-offset-2 hover:underline"
             >
               {t('settings.diagnostics.openHintSection', '前往相关设置 →')}
             </button>
@@ -229,13 +229,18 @@ export function AuthSyncBanner({
         <div
           key={item.code}
           className={cn(
-            'flex items-start gap-2 rounded-[10px] border border-border-soft bg-panel px-3 py-2',
+            'flex items-start gap-2.5 rounded-[14px] border border-border bg-paper px-5 py-3.5',
           )}
         >
           {statusIcon(item.status)}
           <div className="min-w-0 flex-1">
             <p className="text-[13px] font-medium text-foreground">{item.title}</p>
             <p className="text-[12px] text-muted-foreground">{item.message}</p>
+            {/* With export gone from the row, a finding that has no button must
+                still say what to do next — the banner used to drop it. */}
+            {item.nextAction && (
+              <p className="mt-0.5 text-[12px] text-ink-2">{item.nextAction}</p>
+            )}
             <RemediationButtons finding={item} onRemediate={onRemediate} />
           </div>
         </div>

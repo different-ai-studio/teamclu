@@ -2076,6 +2076,8 @@
       "sessionDescription": "Message delivery is scoped to this session. Model and realtime checks are environment-wide, not session-specific.",
       "privacyNote": "Collects version, connection status, and recent logs (redacted). Nothing is uploaded automatically.",
       "run": "Run Diagnostics",
+      "rerun": "Run again",
+      "lastRun": "Ran at {{time}}",
       "running": "Running diagnostics…",
       "runComplete": "Diagnostics complete",
       "symptomNoConclusion": "No conclusion for this symptom yet. Run diagnostics first.",
@@ -2086,11 +2088,10 @@
       "evidenceHeading": "Evidence",
       "runFailed": "Diagnostics failed: {{message}}",
       "summary": "{{ok}} passed · {{warn}} warnings · {{fail}} failed",
-      "results": "Check Results",
       "upload": {
-        "action": "Upload diagnostic ZIP",
+        "action": "Upload to support",
         "uploading": "Generating and uploading…",
-        "description": "Send the same ZIP as local export to private support storage (up to 10 MiB, available for 7 days). Local export remains available.",
+        "unavailable": "This server does not accept diagnostic uploads. Export the ZIP and send it to support instead.",
         "confirmTitle": "Upload diagnostics to support?",
         "consent": "This uploads the same package as local export: diagnostic results, app/platform and connection information, runtime snapshots, browser console output, and recent app/daemon/ACP logs. Existing export redaction rules apply, but logs may still contain personal data, paths, or content. You can export locally to inspect it first. The package is stored privately for 7 days; only you and authorized platform support operators can request a short-lived download link. A receipt alone does not grant access. Continue only if you agree to share this information.",
         "confirm": "Agree and upload",
@@ -2102,6 +2103,7 @@
         "failed": "Upload failed: {{message}} You can retry or export the ZIP locally."
       },
       "exportTitle": "Export & Feedback",
+      "exportDescription": "If you cannot fix it yourself, hand the diagnostic package to support: upload it and share the receipt, or export the ZIP and send it.",
       "copyReport": "Copy Diagnostic Report",
       "copyFailed": "Copy failed",
       "exportZip": "Export ZIP Bundle",
@@ -2113,7 +2115,6 @@
       "desktopOnlyDetail": "One-click diagnostics requires the TeamClu Desktop client. Install it and try again.",
       "openFromError": "Open Diagnostics",
       "openFromSidebar": "Run diagnostics",
-      "sessionFocus": "Message delivery is limited to this session. Model, realtime, and the checks below are environment-wide.",
       "tab": {
         "model": "Model",
         "send": "Replies",
