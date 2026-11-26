@@ -136,7 +136,9 @@ export interface FeatureFlags {
 export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   // Mirrors build.config.production.json (in this repo).
   "self-host": {
-    auth: { google: true, wechat: false, wecom: false, phone: false, password: false, webSSO: false },
+    // wecom: offered only where WECOM_SUITE_ID is set (see routes/config.ts),
+    // so a self-hosted install without a WeCom provider app never shows it.
+    auth: { google: true, wechat: false, wecom: true, phone: false, password: false, webSSO: false },
     // SeaTalk is Copilot 361 only — official TeamClu never shipped it.
     // WeChat over the iPad protocol is self-host only: it needs a protocol
     // server beside the daemon, which only a self-hosted operator runs.

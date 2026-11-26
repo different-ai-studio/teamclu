@@ -499,9 +499,10 @@ test("every shipped profile survives sanitization intact — no silently dropped
   // A typo in a profile (`teamSharebrowser`, `webSso`) is dropped by the
   // allowlist and the deployment then serves a flag nobody notices is missing.
   // Round-tripping each profile through the real resolver catches that here
-  // instead of in production.
+  // instead of in production. WECOM_SUITE_ID is set so the WeCom-configured
+  // gate (tested on its own below) passes auth.wecom through unchanged.
   for (const [name, profile] of Object.entries(FEATURE_PROFILES)) {
-    withEnv({ APP_FEATURES_PROFILE: name, APP_FEATURES_JSON: undefined }, () => {
+    withEnv({ APP_FEATURES_PROFILE: name, APP_FEATURES_JSON: undefined, WECOM_SUITE_ID: "wwsuite" }, () => {
       const served = {
         ...(buildPublicConfig().features ?? {}),
         ...(buildBootstrapConfig().features ?? {}),
@@ -552,12 +553,18 @@ test("partnerConsoleHosts stays out of the authed bootstrap config", async () =>
   });
 });
 
-test("auth.wecom is a remotely settable flag, off in every profile until a deployment opts in", async () => {
+test("auth.wecom: on for self-host only, and only advertised where WeCom is configured", async () => {
   for (const name of Object.keys(FEATURE_PROFILES)) {
-    assert.equal(FEATURE_PROFILES[name].auth?.wecom, false, name);
+    assert.equal(FEATURE_PROFILES[name].auth?.wecom, name === "self-host", name);
   }
-  await withEnv({ APP_FEATURES_PROFILE: "self-host", APP_FEATURES_JSON: '{"auth":{"wecom":true}}' }, () => {
-    assert.equal(resolveFeatures().auth?.wecom, true);
-    assert.equal(resolveFeatures().auth?.google, true, "other auth flags survive the override");
+  await withEnv({ APP_FEATURES_PROFILE: "self-host", APP_FEATURES_JSON: undefined, WECOM_SUITE_ID: undefined }, () => {
+    assert.equal(buildPublicConfig().features?.auth?.wecom, false, "no provider app → no button");
+    assert.equal(buildPublicConfig().features?.auth?.google, true, "other auth flags untouched");
+  });
+  await withEnv({ APP_FEATURES_PROFILE: "self-host", APP_FEATURES_JSON: undefined, WECOM_SUITE_ID: "wwsuite" }, () => {
+    assert.equal(buildPublicConfig().features?.auth?.wecom, true);
+  });
+  await withEnv({ APP_FEATURES_PROFILE: "belayo", APP_FEATURES_JSON: '{"auth":{"wecom":true}}', WECOM_SUITE_ID: "wwsuite" }, () => {
+    assert.equal(resolveFeatures().auth?.wecom, true, "a deployment can still opt in by override");
   });
 });
