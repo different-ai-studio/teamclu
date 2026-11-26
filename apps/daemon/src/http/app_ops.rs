@@ -124,6 +124,10 @@ impl Cloud for DaemonCloud {
         }
         unreachable!("app-ops cloud retry loop exhausted")
     }
+
+    async fn pause(&self, duration: Duration) {
+        tokio::time::sleep(duration).await;
+    }
 }
 
 // ─── Daemon: this process ───────────────────────────────────────────────────

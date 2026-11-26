@@ -78,6 +78,21 @@ pub fn next_cmd(command: &str) -> String {
     format!("amuxd app {command}")
 }
 
+/// The declaration every deploy reads, at the app's root.
+pub const DECLARATION_FILE: &str = "teamclu.app.json";
+
+/// What to do about a checkout with no [`DECLARATION_FILE`] — said by
+/// `create` when the folder it took has none, and by `deploy` when it stops
+/// on one. A static site is the common case and needs no hand-written server.
+pub fn missing_declaration_hint() -> String {
+    format!(
+        "Deploy needs a {DECLARATION_FILE} at the app's root with build + start blocks. For a static site, create the app with {} instead: it comes with public/ (put the files there) and a ready declaration. Otherwise {} lists the runtimes; a Node server looks like {}.",
+        step("create <name> --type static_web"),
+        step("runtime"),
+        r#"{"build":{"kind":"node","output":".output"},"start":{"fcRuntime":"custom.debian10","command":["node"],"args":["server/index.mjs"],"port":9000}}"#
+    )
+}
+
 /// Whose permissions a call ran under.
 pub const PRINCIPAL: &str = "this daemon's agent account";
 

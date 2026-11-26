@@ -519,6 +519,9 @@ pub enum EnvCmd {
     Set {
         /// The variable's name.
         key: String,
+        /// A plain variable's value (same as --value).
+        #[arg(value_name = "VALUE", conflicts_with = "value")]
+        positional_value: Option<String>,
         /// A plain variable's value.
         #[arg(long)]
         value: Option<String>,
@@ -1052,11 +1055,12 @@ fn group_body(action: &AppAction) -> Result<Option<(&'static str, Value)>, Usage
             EnvCmd::Ls => ("env_list", json!({})),
             EnvCmd::Set {
                 key,
+                positional_value,
                 value,
                 secret,
                 file,
             } => {
-                let (value, secret) = match (value, secret) {
+                let (value, secret) = match (value.as_ref().or(positional_value.as_ref()), secret) {
                     (Some(_), true) => {
                         return Err(usage(
                             "secret_on_command_line",
@@ -1637,12 +1641,96 @@ pub fn compact_help(mut cmd: clap::Command) -> clap::Command {
     cmd
 }
 
+/// `amuxd app --app 记账 status`: the app named before the command. Clap
+/// takes `--id` / `--app` only after it (or after a group's name), so move
+/// them there — after the first word that is not a flag or `-o`'s value.
+/// Anything else is left as typed.
+pub fn normalize_app_args(args: Vec<String>) -> Vec<String> {
+    if args.get(1).map(String::as_str) != Some("app") {
+        return args;
+    }
+    let mut moved = Vec::new();
+    let mut rest = Vec::new();
+    let mut i = 2;
+    let mut sub = None;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--app" || a == "--id" {
+            moved.push(a.clone());
+            if let Some(v) = args.get(i + 1) {
+                moved.push(v.clone());
+            }
+            i += 2;
+        } else if a.starts_with("--app=") || a.starts_with("--id=") {
+            moved.push(a.clone());
+            i += 1;
+        } else if a == "-o" || a == "--output" {
+            rest.extend(args[i..(i + 2).min(args.len())].iter().cloned());
+            i += 2;
+        } else if a.starts_with('-') {
+            rest.push(a.clone());
+            i += 1;
+        } else {
+            sub = Some(i);
+            break;
+        }
+    }
+    let (Some(sub), false) = (sub, moved.is_empty()) else {
+        return args;
+    };
+    let mut out = args[..2].to_vec();
+    out.extend(rest);
+    out.push(args[sub].clone());
+    out.extend(moved);
+    out.extend(args[sub + 1..].iter().cloned());
+    out
+}
+
+/// `amuxd app status 记账`: a stray word where an app's name was meant. When
+/// the same line with `--app <word>` parses, that line is the next step.
+fn name_as_app_flag(e: &clap::Error, args: &[String]) -> Option<String> {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if e.kind() != ErrorKind::UnknownArgument {
+        return None;
+    }
+    let ContextValue::String(word) = e.get(ContextKind::InvalidArg)? else {
+        return None;
+    };
+    if word.starts_with('-') {
+        return None;
+    }
+    let at = args.iter().skip(2).position(|a| a == word)? + 2;
+    let mut fixed = args.to_vec();
+    fixed.splice(at..=at, ["--app".to_string(), word.clone()]);
+    let parses = <crate::cli::Cli as clap::CommandFactory>::command()
+        .try_get_matches_from(&fixed)
+        .is_ok();
+    parses.then(|| {
+        fixed[1..]
+            .iter()
+            .map(|a| shell_word(a))
+            .fold("amuxd".to_string(), |acc, a| acc + " " + &a)
+    })
+}
+
+/// `a` as one shell word: bare when it is plain, else single-quoted.
+fn shell_word(a: &str) -> String {
+    if !a.is_empty()
+        && a.chars()
+            .all(|c| !c.is_whitespace() && !"'\"$`\\|&;<>()*?[]{}!#~".contains(c))
+    {
+        a.to_string()
+    } else {
+        format!("'{}'", a.replace('\'', "'\\''"))
+    }
+}
+
 /// A command line clap could not parse. Under `amuxd app` the contract
 /// still holds — one JSON line, exit 2 — because an agent parses it; help,
 /// version and every other subcommand keep clap's own output.
-pub fn exit_on_parse_error(e: clap::Error) -> ! {
+pub fn exit_on_parse_error(e: clap::Error, args: &[String]) -> ! {
     use clap::error::ErrorKind;
-    let under_app = std::env::args().nth(1).as_deref() == Some("app");
+    let under_app = args.get(1).map(String::as_str) == Some("app");
     if !under_app
         || matches!(
             e.kind(),
@@ -1667,10 +1755,10 @@ pub fn exit_on_parse_error(e: clap::Error) -> ! {
             first = format!("{first} {}", what.trim());
         }
     }
-    let next = match std::env::args().nth(2) {
+    let next = name_as_app_flag(&e, args).unwrap_or_else(|| match args.get(2) {
         Some(sub) if !sub.starts_with('-') => format!("amuxd app {sub} --help"),
         _ => "amuxd app --help".to_string(),
-    };
+    });
     println!(
         "{}",
         error_envelope("invalid_arguments", &first, Some(&next), 2, false)
@@ -2120,6 +2208,67 @@ pub fn run(args: AppArgs) -> anyhow::Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn an_app_named_before_the_command_is_moved_after_it() {
+        assert_eq!(
+            normalize_app_args(argv(&[
+                "amuxd", "app", "--app", "记账", "env", "set", "K", "v"
+            ])),
+            argv(&["amuxd", "app", "env", "--app", "记账", "set", "K", "v"])
+        );
+        assert_eq!(
+            normalize_app_args(argv(&["amuxd", "app", "-o", "table", "--id=a1", "status"])),
+            argv(&["amuxd", "app", "-o", "table", "status", "--id=a1"])
+        );
+        for untouched in [
+            argv(&["amuxd", "app", "status", "--app", "x"]),
+            argv(&["amuxd", "app", "--app", "x"]),
+            argv(&["amuxd", "status", "--app", "x"]),
+        ] {
+            assert_eq!(normalize_app_args(untouched.clone()), untouched);
+        }
+        let moved = normalize_app_args(argv(&[
+            "amuxd", "app", "--app", "x", "env", "set", "K", "v",
+        ]));
+        assert!(<crate::cli::Cli as clap::CommandFactory>::command()
+            .try_get_matches_from(&moved)
+            .is_ok());
+    }
+
+    #[test]
+    fn a_stray_name_suggests_the_same_line_with_app() {
+        let suggest = |words: &[&str]| {
+            let args = argv(words);
+            let e = <crate::cli::Cli as clap::CommandFactory>::command()
+                .try_get_matches_from(&args)
+                .unwrap_err();
+            name_as_app_flag(&e, &args)
+        };
+        assert_eq!(
+            suggest(&["amuxd", "app", "status", "记账"]).as_deref(),
+            Some("amuxd app status --app 记账")
+        );
+        assert_eq!(
+            suggest(&["amuxd", "app", "logs", "my app"]).as_deref(),
+            Some("amuxd app logs --app 'my app'")
+        );
+        // whoami takes no app: nothing to suggest.
+        assert_eq!(suggest(&["amuxd", "app", "whoami", "x"]), None);
+    }
+
+    #[test]
+    fn env_set_takes_a_plain_value_positionally() {
+        let parse = |words: &[&str]| {
+            <crate::cli::Cli as clap::CommandFactory>::command().try_get_matches_from(argv(words))
+        };
+        assert!(parse(&["amuxd", "app", "env", "set", "GREETING", "hi"]).is_ok());
+        assert!(parse(&["amuxd", "app", "env", "set", "GREETING", "hi", "--value", "x"]).is_err());
+    }
     use clap::Parser;
 
     #[derive(Parser)]

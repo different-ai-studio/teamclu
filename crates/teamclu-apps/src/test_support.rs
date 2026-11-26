@@ -1,6 +1,6 @@
 //! In-memory stand-ins for the three seams, for this crate's flow tests.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -14,6 +14,10 @@ use crate::{Cloud, CloudError, DaemonError, Host, LocalDaemon, Method};
 #[derive(Default)]
 pub struct FakeCloud {
     replies: Mutex<HashMap<(Method, String), Result<Value, CloudError>>>,
+    /// Replies given in turn; the last one then answers every later call.
+    sequences: Mutex<HashMap<(Method, String), VecDeque<Value>>>,
+    /// How many times a flow paused before polling again.
+    pub pauses: Mutex<usize>,
     pub calls: Mutex<Vec<(Method, String, Option<Value>)>>,
 }
 
@@ -23,6 +27,13 @@ impl FakeCloud {
             .lock()
             .unwrap()
             .insert((method, path.to_string()), Ok(body));
+    }
+
+    pub fn reply_in_turn(&self, method: Method, path: &str, bodies: Vec<Value>) {
+        self.sequences
+            .lock()
+            .unwrap()
+            .insert((method, path.to_string()), bodies.into());
     }
 
     pub fn fail(&self, method: Method, path: &str, status: u16, body: &str) {
@@ -56,6 +67,21 @@ impl Cloud for FakeCloud {
             .lock()
             .unwrap()
             .push((method, path.to_string(), body.cloned()));
+        if let Some(queue) = self
+            .sequences
+            .lock()
+            .unwrap()
+            .get_mut(&(method, path.to_string()))
+        {
+            let next = if queue.len() > 1 {
+                queue.pop_front()
+            } else {
+                queue.front().cloned()
+            };
+            if let Some(body) = next {
+                return Ok(body);
+            }
+        }
         self.replies
             .lock()
             .unwrap()
@@ -68,6 +94,10 @@ impl Cloud for FakeCloud {
                         .as_bytes(),
                 ))
             })
+    }
+
+    async fn pause(&self, _duration: Duration) {
+        *self.pauses.lock().unwrap() += 1;
     }
 }
 

@@ -141,6 +141,29 @@ enum DeployHandle {
     Push(Value),
 }
 
+/// The daemon could not read the checkout's declaration. A missing file gets
+/// the way to make one; anything else (bad JSON, a legacy shape) the daemon's
+/// own words, which name the field at fault.
+fn declaration_error(e: &crate::DaemonError) -> OpError {
+    let text = daemon_error_text(e);
+    if text.contains(&format!("{} is required", crate::DECLARATION_FILE)) {
+        return OpError::conflict(
+            "declaration_missing",
+            format!(
+                "The checkout has no {}. {}",
+                crate::DECLARATION_FILE,
+                crate::missing_declaration_hint()
+            ),
+        )
+        .with_next(crate::next_cmd("runtime"));
+    }
+    OpError::conflict(
+        "declaration_unreadable",
+        format!("Could not read the app's build + start declaration: {text}"),
+    )
+    .with_next(crate::next_cmd("runtime"))
+}
+
 impl AppOps<'_> {
     /// The checkout's required build-and-start declaration.
     async fn app_manifest(&self, app_id: &str, team_id: &str) -> Result<Value, OpError> {
@@ -152,10 +175,7 @@ impl AppOps<'_> {
                 if e.unreachable {
                     OpError::daemon_down("The local amuxd is not reachable, so the app's build + start declaration cannot be read.")
                 } else {
-                    OpError::conflict("declaration_unreadable", format!(
-                        "Could not read the app's build + start declaration: {}",
-                        daemon_error_text(&e)
-                    ))
+                    declaration_error(&e)
                 }
             })?;
         if out.get("declaration").is_none() {
@@ -554,6 +574,27 @@ mod tests {
                 expected.as_ref()
             );
         }
+    }
+
+    #[test]
+    fn a_missing_declaration_names_the_static_template_and_runtime() {
+        let err = declaration_error(&DaemonError {
+            unreachable: false,
+            message: "teamclu.app.json is required; add e.g. {}".into(),
+        });
+        assert_eq!(err.code, "declaration_missing");
+        assert!(
+            err.contains("`amuxd app create <name> --type static_web`"),
+            "{err:?}"
+        );
+        assert!(!err.contains("docs/specs"), "{err:?}");
+        assert_eq!(err.next.as_deref(), Some("amuxd app runtime"));
+        let bad = declaration_error(&DaemonError {
+            unreachable: false,
+            message: "invalid teamclu.app.json: expected value at line 1".into(),
+        });
+        assert_eq!(bad.code, "declaration_unreadable");
+        assert!(bad.contains("line 1"));
     }
 
     /// A gateway timeout at finalize is not a failure: finalize may have gone

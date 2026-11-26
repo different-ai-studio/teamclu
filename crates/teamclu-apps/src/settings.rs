@@ -8,6 +8,14 @@ use serde_json::{json, Map, Value};
 use crate::row::{app_brief, app_path, app_settings, row_id, row_str, APP_TYPES};
 use crate::{AppOps, Method};
 
+/// How long `undeploy` follows the uninstall before answering "still running".
+const UNDEPLOY_WAIT: Duration = Duration::from_secs(300);
+const UNDEPLOY_POLL: Duration = Duration::from_secs(3);
+
+fn undeploy_finished(operation: &Value) -> bool {
+    matches!(operation["status"].as_str(), Some("succeeded" | "failed"))
+}
+
 /// An `update` call: every setting an operator may change, all optional.
 ///
 /// Only those: status fields are the deploy's to write, and `runtime` is
@@ -213,6 +221,12 @@ impl AppOps<'_> {
     /// `undeploy` — take the deployed site down and keep everything else: the
     /// app, its code, sessions and data. A deployed app has to be uninstalled
     /// this way before [`AppOps::delete`] will take it.
+    ///
+    /// The Cloud API only accepts the uninstall and runs it in the background
+    /// (trigger, domain, function, artifact), so this follows the app's
+    /// `undeployOperation` until it succeeds or fails — the caller (and an
+    /// agent) gets the outcome, not a promise to go and poll. Past
+    /// [`UNDEPLOY_WAIT`] it answers "not yet complete" with the step to check.
     pub async fn undeploy(&self, row: &Value) -> Result<Value, OpError> {
         let app_id = row_id(row)?;
         let result = self
@@ -224,21 +238,53 @@ impl AppOps<'_> {
                 "Uninstalling the deployment (needs admin on it)",
             )
             .await?;
-        self.host.app_changed(&result["app"]);
-        let complete = result["operation"]["status"].as_str() == Some("succeeded");
+        let mut app = result["app"].clone();
+        let mut operation = result["operation"].clone();
+        let mut waited = Duration::ZERO;
+        while !undeploy_finished(&operation) && waited < UNDEPLOY_WAIT {
+            self.cloud.pause(UNDEPLOY_POLL).await;
+            waited += UNDEPLOY_POLL;
+            // A failed read is not a failed uninstall: try again next round.
+            if let Ok(fresh) = self.get(&app_path(&app_id, ""), "Reading the app").await {
+                if fresh["undeployOperation"].is_object() {
+                    operation = fresh["undeployOperation"].clone();
+                }
+                app = fresh;
+            }
+        }
+        self.host.app_changed(&app);
+        let status = operation["status"].as_str().unwrap_or("");
+        if status == "failed" {
+            let reason = operation["error"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| operation["error"]["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "no reason given".to_string());
+            return Err(OpError::upstream(
+                "undeploy_failed",
+                format!(
+                    "Uninstalling the deployment failed: {reason}. Steps so far: {}",
+                    operation["steps"]
+                ),
+            )
+            .with_next(crate::next_cmd(&format!("undeploy --id {app_id}")))
+            .retryable());
+        }
+        let complete = status == "succeeded";
         let note = if complete {
             "Deployment uninstalled. App, code, sessions and user data were retained.".to_string()
         } else {
             format!(
-                "Uninstall accepted, not yet complete. Read {} to verify cleanup progress; do not claim success until the operation succeeds.",
+                "Uninstall still running after {}s. Read {} to verify cleanup progress; do not claim success until undeploy_operation.status is succeeded.",
+                UNDEPLOY_WAIT.as_secs(),
                 crate::step("status")
             )
         };
         Ok(json!({
             "ok": true,
             "action": "undeploy",
-            "app": app_brief(&result["app"]),
-            "operation": result["operation"],
+            "app": app_brief(&app),
+            "operation": operation,
             "complete": complete,
             "note": note,
         }))
@@ -422,12 +468,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn undeploy_says_whether_cleanup_finished() {
+    async fn undeploy_waits_for_the_uninstall_to_finish() {
+        let cloud = FakeCloud::default();
+        cloud.reply(
+            Method::Post,
+            "/v1/apps/a1/undeploy",
+            json!({ "app": { "id": "a1", "fcStatus": "uninstalling" }, "operation": { "status": "pending" } }),
+        );
+        cloud.reply_in_turn(
+            Method::Get,
+            "/v1/apps/a1",
+            vec![
+                json!({ "id": "a1", "fcStatus": "uninstalling", "undeployOperation": { "status": "running" } }),
+                json!({ "id": "a1", "fcStatus": "uninstalled", "undeployOperation": { "status": "succeeded" } }),
+            ],
+        );
+        let daemon = FakeDaemon::default();
+        let host = TestHost;
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let out = ops.undeploy(&json!({ "id": "a1" })).await.unwrap();
+        assert_eq!(out["complete"], true);
+        assert_eq!(out["app"]["fc_status"], "uninstalled");
+        assert_eq!(*cloud.pauses.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn undeploy_that_never_finishes_says_so_and_names_status() {
         let cloud = FakeCloud::default();
         cloud.reply(
             Method::Post,
             "/v1/apps/a1/undeploy",
             json!({ "app": { "id": "a1", "fcStatus": "uninstalling" }, "operation": { "status": "running" } }),
+        );
+        cloud.reply(
+            Method::Get,
+            "/v1/apps/a1",
+            json!({ "id": "a1", "fcStatus": "uninstalling", "undeployOperation": { "status": "running" } }),
         );
         let daemon = FakeDaemon::default();
         let host = TestHost;
@@ -435,7 +511,29 @@ mod tests {
         let out = ops.undeploy(&json!({ "id": "a1" })).await.unwrap();
         assert_eq!(out["complete"], false);
         assert!(out["note"].as_str().unwrap().contains("`amuxd app status`"));
-        assert_eq!(out["app"]["fc_status"], "uninstalling");
+        assert_eq!(*cloud.pauses.lock().unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn a_failed_undeploy_is_an_error_that_can_be_retried() {
+        let cloud = FakeCloud::default();
+        cloud.reply(
+            Method::Post,
+            "/v1/apps/a1/undeploy",
+            json!({ "app": { "id": "a1" }, "operation": { "status": "pending" } }),
+        );
+        cloud.reply(
+            Method::Get,
+            "/v1/apps/a1",
+            json!({ "id": "a1", "undeployOperation": { "status": "failed", "error": "DeleteFunction throttled" } }),
+        );
+        let daemon = FakeDaemon::default();
+        let host = TestHost;
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let err = ops.undeploy(&json!({ "id": "a1" })).await.unwrap_err();
+        assert_eq!(err.code, "undeploy_failed");
+        assert!(err.retryable && err.contains("throttled"), "{err:?}");
+        assert_eq!(err.next.as_deref(), Some("amuxd app undeploy --id a1"));
     }
 
     #[tokio::test]

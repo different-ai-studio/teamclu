@@ -750,8 +750,8 @@ const VALID_CODE_FC_RUNTIMES: &[&str] = &[
 ];
 const CONTAINER_FC_RUNTIME: &str = "custom-container";
 
-pub const ERR_LEGACY_MANIFEST: &str = r#"teamclu.app.json uses legacy runtime/entry; replace it with build+start, e.g. {"build":{"kind":"node","output":".output"},"start":{"fcRuntime":"custom.debian10","command":["node"],"args":["server/index.mjs"],"port":9000}} (see docs/specs/2026-09-11-fc-runtime-passthrough-design.md)"#;
-pub const ERR_MISSING_MANIFEST: &str = r#"teamclu.app.json is required; add e.g. {"build":{"kind":"node","output":".output"},"start":{"fcRuntime":"custom.debian10","command":["node"],"args":["server/index.mjs"],"port":9000}} (see docs/specs/2026-09-11-fc-runtime-passthrough-design.md)"#;
+pub const ERR_LEGACY_MANIFEST: &str = r#"teamclu.app.json uses legacy runtime/entry; replace it with build+start, e.g. {"build":{"kind":"node","output":".output"},"start":{"fcRuntime":"custom.debian10","command":["node"],"args":["server/index.mjs"],"port":9000}}"#;
+pub const ERR_MISSING_MANIFEST: &str = r#"teamclu.app.json is required; add e.g. {"build":{"kind":"node","output":".output"},"start":{"fcRuntime":"custom.debian10","command":["node"],"args":["server/index.mjs"],"port":9000}}"#;
 
 fn default_output() -> String {
     DEFAULT_OUTPUT.to_string()
@@ -2048,7 +2048,9 @@ mod tests {
             err.contains(r#""build""#) && err.contains(r#""start""#),
             "{err}"
         );
-        assert!(err.contains("fc-runtime-passthrough-design.md"), "{err}");
+        // The reader is an agent in an app checkout: a repo-internal spec path
+        // is nothing it can open.
+        assert!(!err.contains("docs/specs"), "{err}");
     }
 
     #[test]

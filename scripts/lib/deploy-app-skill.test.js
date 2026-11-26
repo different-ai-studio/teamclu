@@ -39,5 +39,6 @@ test('uninstall guidance requires explicit intent, an explicit app and verified 
   for (const contract of ['user explicitly requests', 'explicit app ID or name', '--app', 'uploaded files', 'amuxd app status', 'operator reconciliation', 'real-account verification as pending']) {
     assert.ok(section.includes(contract), `missing uninstall contract: ${contract}`);
   }
-  assert.match(section, /accepted operation is not a completed uninstall/);
+  assert.match(section, /waits for the uninstall itself/);
+  assert.match(section, /`complete: false`/);
 });

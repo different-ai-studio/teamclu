@@ -584,28 +584,18 @@ impl AppOps<'_> {
             outcome.as_str(),
             "seeded" | "bound" | "not_needed" | "skipped"
         );
-        let next = match outcome.as_str() {
-            "seeded" | "bound" => format!(
-                "The code is on this machine at checkout.workdir. Edit it there, commit, then deploy with {}.",
-                crate::step("deploy")
-            ),
-            "skipped" => format!(
-                "The app exists with no code anywhere yet. When you want it on this machine, run {}.",
-                crate::step("checkout reseed")
-            ),
-            "unreachable" => format!(
-                "Start amuxd, then run {} on this app.",
-                crate::step("checkout reseed")
-            ),
-            "failed" => format!(
-                "The app exists but has no code yet. Fix the cause above, then run {} on this app.",
-                crate::step("checkout reseed")
-            ),
-            _ => format!(
-                "Check the app with {}.",
-                crate::step("status")
-            ),
-        };
+        // A template seeds its own declaration; a folder the caller brought
+        // may have none, and the deploy would be the first to say so.
+        let declared = args
+            .local_dir
+            .as_deref()
+            .and(row_str(&checkout, "workdir"))
+            .map(|w| {
+                std::path::Path::new(w)
+                    .join(crate::DECLARATION_FILE)
+                    .is_file()
+            });
+        let next = create_next(&outcome, declared);
         Ok(json!({
             "ok": ok,
             "action": "create",
@@ -763,6 +753,38 @@ impl AppOps<'_> {
         bind_workspace_fields(self, row, &workdir, &mut report).await;
         self.host.app_changed(row);
         Ok(report)
+    }
+}
+
+/// What to do after `create`, by checkout outcome. `declared` is whether a
+/// folder the caller brought has a declaration (`None` for a template).
+fn create_next(outcome: &str, declared: Option<bool>) -> String {
+    match outcome {
+        "seeded" | "bound" if declared == Some(false) => format!(
+            "The code is on this machine at checkout.workdir, but it has no {} yet, so a deploy would stop. {}",
+            crate::DECLARATION_FILE,
+            crate::missing_declaration_hint()
+        ),
+        "seeded" | "bound" => format!(
+            "The code is on this machine at checkout.workdir. Edit it there, commit, then deploy with {}.",
+            crate::step("deploy")
+        ),
+        "skipped" => format!(
+            "The app exists with no code anywhere yet. When you want it on this machine, run {}.",
+            crate::step("checkout reseed")
+        ),
+        "unreachable" => format!(
+            "Start amuxd, then run {} on this app.",
+            crate::step("checkout reseed")
+        ),
+        "failed" => format!(
+            "The app exists but has no code yet. Fix the cause above, then run {} on this app.",
+            crate::step("checkout reseed")
+        ),
+        _ => format!(
+            "Check the app with {}.",
+            crate::step("status")
+        ),
     }
 }
 
@@ -982,6 +1004,18 @@ mod tests {
     /// A template app: the server answers with a Gitea-managed `repo_created`
     /// row, the seed pushes the template with a minted key, and the key goes
     /// back afterwards.
+    #[test]
+    fn a_brought_folder_without_a_declaration_is_told_how_to_get_one() {
+        let next = create_next("seeded", Some(false));
+        assert!(next.contains("teamclu.app.json"), "{next}");
+        assert!(
+            next.contains("`amuxd app create <name> --type static_web`"),
+            "{next}"
+        );
+        assert!(create_next("seeded", Some(true)).contains("`amuxd app deploy`"));
+        assert!(create_next("seeded", None).contains("`amuxd app deploy`"));
+    }
+
     #[tokio::test]
     async fn a_template_app_is_created_seeded_and_bound() {
         let cloud = FakeCloud::default();

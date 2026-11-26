@@ -77,6 +77,10 @@ pub trait Cloud: Send + Sync {
         body: Option<&Value>,
         timeout: Option<Duration>,
     ) -> Result<Value, CloudError>;
+
+    /// Wait before polling the Cloud API again. A seam so the flows stay
+    /// runtime-agnostic and their tests do not really sleep.
+    async fn pause(&self, duration: Duration);
 }
 
 /// What to do about a failure, when the status or code alone does not say.
