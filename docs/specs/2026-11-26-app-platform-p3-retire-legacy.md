@@ -4,7 +4,7 @@
 前置：P2（`2026-11-25-app-platform-p2-de-team.md`，PR #2016）。P2 结束时，平台读写的都是 org + 账号模型，
 但写入的源头仍是旧列，由 P2.1 的触发器投影到新表。
 
-**状态：草案，§5 的问题待拍板。**
+**状态：2026-11-26 七个问题全部按推荐拍板（§5）。P3.5 不做。**
 
 ## 0. 目标与约束
 
@@ -61,7 +61,7 @@ org 成员关系现在只能这么算（`org_roles_users` 只有角色，不覆�
 | P3.2 写切换 | FC 直接写新表：建 app 写 `created_by_user_id`、`app_links`、org 授权；access 页写 `app_grants`；agent 委托由 agents 触发器维护（保留）。旧列改为可空、不再写；**反向触发器**把新表写回旧列，让 P3.1 镜像回滚后仍然正确 | 改可空、反向触发器、换 INSERT 策略 | ✅（靠反向触发器） |
 | P3.3 forge 表（原 P1.5） | `amux.app_forge_repos(app_id, kind, remote_url, auth_kind)` 归 TeamClu；`git_commit_sha` → 通用 `apps.deployed_revision`。读新列、旧列回填，先双写 | 新表 + 回填 + 新列 | ✅ |
 | P3.4 删旧（单向） | 删旧列、`app_member_access`、`legacy_member_id`、正反两套触发器、旧函数；`apps_team_slug_uniq` 随列删；改写排行榜、`upgrade_account_to_org`、`guard_team_org_move` 改读 `app_links`；pgTAP 全部改为新形态插入；删 forge 旧列 | 删除 | ❌ |
-| P3.5 独立 schema | 平台表搬到 `app_platform` | 见 Q5 | — |
+| ~~P3.5 独立 schema~~ | 不做（Q5）：表留在 `amux`，靠外键规则 + 边界测试守边界；单独起库留到 P4 | — | — |
 
 ## 3. 回滚
 
@@ -74,6 +74,14 @@ org 成员关系现在只能这么算（`org_roles_users` 只有角色，不覆�
 - 每步：pgTAP（从零重建）+ FC 全量 + self-host 回滚演练（新旧结果逐对比较）+ self-host E2E（自带 / app 35 / 容器 20）。
 - P3.1、P3.2 额外比对：对每个 (用户, app)，新旧代码路径给出的 `/v1/apps` 响应字段一致（`teamId`、`visibility`、`relationship`、`invitedByActorId`、access 页行）。
 
-## 5. 待拍板
+## 5. 决定（2026-11-26，全部按推荐）
 
-见会话中的问题列表；拍板后补到这里。
+| # | 问题 | 决定 |
+|---|---|---|
+| Q1 | `/v1` 字段 | 保持不变，`teamId` / `visibility` / `workspaceId` / `createdByActorId` / `relationship` / `invitedByActorId` 由 TeamClu 层从 `app_links` / `app_grants` 推导；客户端不改 |
+| Q2 | 写切换能否回滚 | 能：P3.2 加反向触发器（新表 → 旧列），P3.4 一并删除 |
+| Q3 | 删旧的节奏 | P3.4 单独一个 PR；P2 和 P3.1–P3.3 在 belayo 跑满一周再合。开发和整体测试照常一起做 |
+| Q4 | access 接口 | `/v1/apps/:id/access` 仍按 actor id；存成 `app_grants`（账号），TeamClu 层换算；agent 的授权 = 它账号的授权；git 访问、Gitea 同步改问新模型，继承改读 `app_delegations` |
+| Q5 | 独立 schema | 不搬（P3.5 取消）。表留在 `amux`，边界靠「平台表不指向 TeamClu 表」+ `tenant-boundary.test.ts`；单独起库留到 P4 |
+| Q6 | 别的功能读 `apps.team_id` | 排行榜、`upgrade_account_to_org`、`guard_team_org_move` 在 P3.4 改读 `app_links.team_id` |
+| Q7 | org 成员判定 | 判定方式不变，收进 `amux.caller_org_ids()`，其他平台函数都调它 |
