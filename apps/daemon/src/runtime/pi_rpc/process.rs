@@ -705,9 +705,12 @@ impl PiProcessPool {
         // PATH led by the managed Node: `#!/usr/bin/env node` shims (npx-run
         // MCP servers, npm helpers) resolve to the same Node pi runs on, not
         // to whatever the user's shell would have found.
+        // And `amuxd` itself in front, for `amuxd app …` (P2.5).
         cmd.env(
             "PATH",
-            crate::runtime::well_known_bin::augmented_path_led_by(launch.node.parent()),
+            crate::runtime::agent_bin::with_agent_bin(
+                crate::runtime::well_known_bin::augmented_path_led_by(launch.node.parent()),
+            ),
         );
         for (k, v) in env.extra_env.iter() {
             if env.force_env_override || std::env::var_os(k).is_none() {

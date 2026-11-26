@@ -1,9 +1,9 @@
-//! `amuxd app …` — create, deploy and inspect TeamClu apps from a shell, so an
-//! agent amuxd did not start (Claude Code, Codex, a CI script) can publish one.
+//! `amuxd app …` — how agents create, deploy and manage TeamClu apps: the
+//! agents amuxd runs, and any other (Claude Code, Codex, a CI script).
 //!
-//! A thin client: every command is one `POST /v1/app-ops` to the running
-//! daemon (`http::app_ops`), which runs the same flows as the desktop's
-//! `manage_app` tool on the daemon's own agent account.
+//! A thin client: every command is a `POST /v1/app-ops` to the running daemon
+//! (`http::app_ops`), which runs the `teamclu-apps` flows on the daemon's own
+//! agent account. The bytes of `files get|put` move here, in this process.
 //!
 //! The output is a contract (docs/specs/2026-11-24-amuxd-app-cli-design.md
 //! §2.2–2.3): one line of JSON, `{"v":1,"ok":true,"data":…}` or

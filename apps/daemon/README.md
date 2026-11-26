@@ -122,43 +122,48 @@ amuxd channel unbind <platform>
 amuxd channel reload              # make a running daemon re-read channel config
 ```
 
-## Apps from the command line (for other agents)
+## Apps from the command line
 
-`amuxd app` creates, deploys and inspects TeamClu apps, so an agent amuxd did
-not start — Claude Code, Codex, a CI job — can publish one. It needs
-`amuxd start` to be running and acts as **this daemon's agent account**: the
-apps it creates belong to that agent, which can change, deploy and delete them.
-A teammate's team app it can list, inspect and download, but not deploy; a
-teammate's personal app it cannot see at all. Per-app access in TeamClu is
-granted to members, never to an agent.
+`amuxd app` is how agents create, deploy and manage TeamClu apps — the agents
+amuxd runs, and any other (Claude Code, Codex, a CI job). It needs
+`amuxd start` to be running and acts as **this daemon's agent account**. What
+it may do is that account's grants on each app, and nothing else decides:
+apps it creates are its own; an app someone granted it reaches it at that
+level; its owner's apps reach it at the owner's level, up to deploy (never
+delete, never managing access). There is no approval prompt — without the
+grant a command exits 4 and says what is missing.
 
-Every command prints JSON on stdout. A failure prints
-`{"ok": false, "error": "…"}` and exits 1; the error names the next command to
-run where there is one.
+Every command prints one line of JSON, `{"v":1,"ok":true,"data":…}` or
+`{"v":1,"ok":false,"error":{code,message,next,retryable,…}}`, and exits with
+what happened: 0 done, 2 arguments, 3 no identity, 4 not allowed, 5 not found
+or ambiguous, 6 conflict, 7 platform or daemon (see `retryable`), 8 outcome
+unknown — check before retrying. `-o table` is for people; `amuxd app --help`
+and `amuxd app <command> --help` are short and carry examples.
 
 ```bash
-amuxd app list                                   # this team's apps, with local checkouts
-amuxd app create --name 记账                      # starter template (static_web)
-amuxd app create --name site --dir ./site        # an existing folder, used in place
-amuxd app create --name api --git-remote <url>   # import a repository
+amuxd app list -o table                          # this team's apps, with local checkouts
+amuxd app create 记账                             # starter template (static_web)
+amuxd app create site --from-dir ./site          # an existing folder, used in place
 amuxd app status                                 # the app whose checkout cwd is in
-amuxd app deploy --app 记账                       # build here, publish
-amuxd app deploy --app 记账 --use-app-code-domain # and move it to its app-code domain
-amuxd app logs --id <app-id> --since 10 --kind all
-amuxd app reseed --id <app-id>                   # re-write code that never got seeded
-amuxd app download --app 记账                     # a teammate's app, onto this machine
-amuxd app update --id <app-id> --visibility team --auth-mode platform
-amuxd app undeploy --id <app-id>                 # site offline; app, code and data kept
-amuxd app delete --id <app-id> --yes             # after undeploy; repository archived
+amuxd app runtime --language node                # runtimes on offer, and this machine's tools
+amuxd app deploy                                 # build here, publish; waits
+amuxd app op wait <op>                           # pick a cut-off wait up again
+amuxd app logs --since 10m --grep error
+printf %s "$KEY" | amuxd app env set STRIPE_KEY --secret
+amuxd app access grant 王芳 write                 # who may work on it
+amuxd app gate rule add /admin --auth required --audience org   # who may open the site
+amuxd app checkout clone --app 记账               # a teammate's app, onto this machine
+amuxd app undeploy --app 记账                     # site offline; app, code and data kept
+amuxd app delete --app 记账 --yes                 # after undeploy; repository archived
 ```
 
 With neither `--id` nor `--app`, a command acts on the app whose checkout the
-current directory is in — except `undeploy` and `delete`, which need the app
-named (`delete` also `--yes`). A deployed app is undeployed before it can be
-deleted. A Gitea-hosted app deploys its pushed `HEAD`, so
-commit and push before `deploy`; pass `--migration` when the deploy carries a
-database migration. There is no approval prompt — whoever can run
-this as the daemon's user can drive the daemon outright already.
+current directory is in — except `undeploy`, `delete` and `files purge`, which
+need the app named (`delete` and `purge` also `--yes`). A Gitea-hosted app
+deploys its pushed `HEAD`, so commit and push before `deploy`; pass
+`--migration` when the deploy carries a database migration. `deploy` and
+`undeploy` run inside amuxd: killing the command does not stop them, and
+`--detach` returns the operation id at once.
 
-The flows are `crates/teamclu-apps`, the same code the desktop's `manage_app`
-MCP tool runs (as the signed-in user, with an approval dialog for deploys).
+The flows are `crates/teamclu-apps`, served at `/v1/app-ops`
+(`src/http/app_ops.rs`); long operations are `src/http/app_op_jobs.rs`.

@@ -7,13 +7,13 @@ description: Use when implementing TeamClu platform sign-in, organization-role a
 
 Platform login and application-owned login are separate. Keep an applicant's mock SMS session if requested; do not replace it with platform login. Platform login runs at the gateway, not in a new employee password system.
 
-Before changing login permissions, call `manage_app auth_info` for the selected app. Use its organization, organization-scoped active role **codes**, raw rules, and effective policies. If discovery fails or the organization is unconfigured, report that and stop role configuration; an unavailable catalog is not an empty catalog.
+Before changing login permissions, run `amuxd app gate show` for the selected app. Use its organization, organization-scoped active role **codes**, raw rules, and effective policies. If discovery fails or the organization is unconfigured, report that and stop role configuration; an unavailable catalog is not an empty catalog.
 
-Choose the intended required audience explicitly: `roles: []` admits any signed-in user; `audience: "org"` with no `roles` admits any current or future active organization role; a nonempty `roles` array admits one of those selected codes. Explicit `roles` wins over rule audience, then the app default. Preserve untouched raw rules, including inherited defaults, when replacing the full list. Do not add a fixed User ID allowlist for organization-role permissions. The gateway checks current active organization roles on each matching request; do not rebuild that decision with an app-side member list. App code consumes the trusted platform identity on gateway-protected requests. App creators and collaborators do not automatically pass the site's role check; `manage_app_access` manages collaborators, not visitors.
+Choose the intended required audience explicitly: `roles: []` admits any signed-in user; `audience: "org"` with no `roles` admits any current or future active organization role; a nonempty `roles` array admits one of those selected codes. Explicit `roles` wins over rule audience, then the app default. Change one path at a time with `amuxd app gate rule add|rm`, which leaves the other rules as they are; when replacing the full list with `gate set --rules-file`, preserve untouched raw rules, including inherited defaults. Do not add a fixed User ID allowlist for organization-role permissions. The gateway checks current active organization roles on each matching request; do not rebuild that decision with an app-side member list. App code consumes the trusted platform identity on gateway-protected requests. App creators and collaborators do not automatically pass the site's role check; `amuxd app access` manages collaborators, not visitors.
 
 Check page URLs and the **actual data endpoints** separately. Longest matching path prefix wins; a protected page does not protect an unmatched data request. Public and employee flows may share Server Functions: inspect their actual routes and checks, and preserve public access rather than locking the shared prefix wholesale. No particular employee endpoint path is required.
 
-Use the existing permission update tool and native approval, then call `auth_info` again to compare persisted raw rules and effective audiences with the intent. Verify public and restricted requests, including a visitor without a matching role. A rejected update leaves the previous policy in place; do not report success from a proposed patch or bypass approval. These access checks do not authorize publishing or changing role assignments.
+Apply the change with `amuxd app gate set` or `gate rule add|rm` (it takes effect on the next request, no deploy), then run `amuxd app gate show` again to compare persisted raw rules and effective audiences with the intent. Verify public and restricted requests, including a visitor without a matching role. A refused update (exit 4: this agent account lacks admin on the app) leaves the previous policy in place; tell the user who has to grant it, and do not report success from a proposed patch. These access checks do not authorize publishing or changing role assignments.
 
 ## Identity is not authorization
 
@@ -23,7 +23,7 @@ Use the existing permission update tool and native approval, then call `auth_inf
 
 ## Employee endpoint example
 
-Protect `/staff` and `/api/staff` with the same intended role codes, discovered through `auth_info`, before publishing. `/api/staff` is a path prefix; protect all employee reads and mutations below it. Public applicant endpoints stay separate. Do not lock the shared `/_serverFn` prefix when it also serves applicants, and do not leave employee Server Functions exposed there. Inspect the actual request URLs.
+Protect `/staff` and `/api/staff` with the same intended role codes, discovered through `amuxd app gate show`, before publishing. `/api/staff` is a path prefix; protect all employee reads and mutations below it. Public applicant endpoints stay separate. Do not lock the shared `/_serverFn` prefix when it also serves applicants, and do not leave employee Server Functions exposed there. Inspect the actual request URLs.
 
 For the TanStack Start data template, an employee read route can use this shape in `src/routes/api.staff.applications.ts`:
 
@@ -53,6 +53,6 @@ Adapt the table and returned columns to the app schema. The front end fetches th
 
 ## Verification and limits
 
-Use local tests for missing identity, input/ownership checks, and applicant isolation; test mocks do not prove production role admission. Read `auth_info` after policy changes to verify saved rules and effective policy for page and employee endpoint paths. An anonymous live request to employee data must not return data; test spoofed identity headers through the gateway without real credentials. Check available origin-security status, and report unknown bypass protection rather than assuming it.
+Use local tests for missing identity, input/ownership checks, and applicant isolation; test mocks do not prove production role admission. Read `amuxd app gate show` after policy changes to verify saved rules and effective policy for page and employee endpoint paths. An anonymous live request to employee data must not return data; test spoofed identity headers through the gateway without real credentials. Check available origin-security status, and report unknown bypass protection rather than assuming it.
 
 Real-account sign-in requires an available account and authorized interactive access. If the agent cannot sign in, mark real sign-in, role admission and rejection, logout, and request checks after role changes as "pending acceptance" and provide manual test steps. Do not report mock tests or policy readback as successful real-account sign-in acceptance.

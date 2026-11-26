@@ -4083,7 +4083,7 @@ export function createSupabaseBusinessRepository(options) {
           }
         } catch (error) {
           // App context is useful but must never take the session identity
-          // prompt down with it. The agent can still use manage_app status.
+          // prompt down with it. The agent can still run `amuxd app status`.
           console.warn(`[session-roster] app context unavailable for ${sessionId}: ${String(error)}`);
         }
       }

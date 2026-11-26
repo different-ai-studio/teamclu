@@ -10,14 +10,16 @@ test('deploy-app skill keeps discovery metadata to a trigger and covers the depl
   const skill = readFileSync(skillPath, 'utf8');
   const description = skill.match(/^description: (.+)$/m)?.[1];
   assert.match(description ?? '', /^Use when /);
-  assert.doesNotMatch(description ?? '', /status|runtime_info|commit|push|verify/i);
-  const gates = ['manage_app status', 'manage_app runtime_info', 'manage_app deploy', 'migration', 'selected', 'linux/x86_64', 'clean', 'remote HEAD', 'native approval', 'live'];
+  assert.doesNotMatch(description ?? '', /status|runtime|commit|push|verify/i);
+  const gates = ['amuxd app status', 'amuxd app runtime --language', 'amuxd app deploy', '--migration', 'op wait', 'Exit 8', 'exit 4', 'migration', 'selected', 'linux/x86_64', 'clean', 'remote HEAD', 'live'];
   for (const gate of gates) assert.ok(skill.includes(gate), `missing ${gate} gate`);
   assert.match(skill, /dirty.{0,100}checkout/is);
   assert.match(skill, /unknown.{0,100}(stop|block|test)/is);
   assert.match(skill, /new app.{0,100}TeamClu-deployable/is);
   assert.match(skill, /pinned live configuration/is);
   assert.match(skill, /data\/auth behavior/is);
+  // P2.5: the MCP tools and their native approval are gone.
+  assert.doesNotMatch(skill, /manage_app|native approval|native confirmation/);
 });
 
 test('starter templates point to the inherent skill and retain their own artifact contract', () => {
@@ -30,11 +32,11 @@ test('starter templates point to the inherent skill and retain their own artifac
   }
 });
 
-test('uninstall guidance requires explicit intent, confirmation and verified completion in English', () => {
+test('uninstall guidance requires explicit intent, an explicit app and verified completion in English', () => {
   const skill = readFileSync(skillPath, 'utf8');
   const section = skill.split('## Uninstalling a deployment')[1] ?? '';
   assert.doesNotMatch(skill, /[\u4e00-\u9fff]/);
-  for (const contract of ['user explicitly requests', 'explicit app ID or name', 'native confirmation', 'uploaded files', 'manage_app status', 'operator reconciliation', 'real-account verification as pending']) {
+  for (const contract of ['user explicitly requests', 'explicit app ID or name', '--app', 'uploaded files', 'amuxd app status', 'operator reconciliation', 'real-account verification as pending']) {
     assert.ok(section.includes(contract), `missing uninstall contract: ${contract}`);
   }
   assert.match(section, /accepted operation is not a completed uninstall/);

@@ -845,7 +845,7 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
         .and_then(|start| start.get("entry"))
         .is_some()
     {
-        anyhow::bail!("{MANIFEST_FILE} start.entry is no longer supported; declare start.fcRuntime, start.command, start.args and start.layers explicitly. Call manage_app runtime_info for available choices");
+        anyhow::bail!("{MANIFEST_FILE} start.entry is no longer supported; declare start.fcRuntime, start.command, start.args and start.layers explicitly. Run `amuxd app runtime` for available choices");
     }
 
     let output_was_omitted = value
@@ -927,7 +927,7 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
             );
         }
         if declaration.start.args.is_none() || declaration.start.layers.is_none() {
-            anyhow::bail!("{MANIFEST_FILE} code apps require explicit start.args and start.layers; use [] for none and call manage_app runtime_info for available choices");
+            anyhow::bail!("{MANIFEST_FILE} code apps require explicit start.args and start.layers; use [] for none and run `amuxd app runtime` for available choices");
         }
     }
     if declaration
@@ -2825,7 +2825,7 @@ mod tests {
         .unwrap();
         let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
         assert!(
-            err.contains("start.entry") && err.contains("runtime_info"),
+            err.contains("start.entry") && err.contains("amuxd app runtime"),
             "{err}"
         );
     }

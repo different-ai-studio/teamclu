@@ -1,8 +1,7 @@
 //! `POST /v1/app-ops` — the app control plane, as `amuxd app …` drives it.
 //!
-//! The flows themselves are `teamclu-apps`, the same crate the desktop's
-//! `manage_app` MCP tool runs. What this module adds is how amuxd plugs into
-//! it:
+//! The flows themselves are `teamclu-apps`. What this module adds is how
+//! amuxd plugs into them:
 //!
 //! - **Cloud** — the daemon's own agent account ([`DaemonCloud`]). Apps it
 //!   creates are created by that agent, which administers them. Anyone

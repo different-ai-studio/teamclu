@@ -90,7 +90,7 @@ export function resolveLayers(
 ): string[] {
   if (layers === undefined) {
     if (isContainerKind(kind)) return [];
-    throw new ApiError(400, "validation_failed", "start.layers is required for non-container apps — choose explicit layer versions from manage_app runtime_info, or use [] for none");
+    throw new ApiError(400, "validation_failed", "start.layers is required for non-container apps — choose explicit layer versions from `amuxd app runtime`, or use [] for none");
   }
   if (layers.length === 0) return [];
   return layers.map((raw) => {
@@ -212,7 +212,7 @@ function parseBuild(raw: unknown): AppBuildSpec {
 function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
   const s = requireObject(raw, "start");
   if (Object.prototype.hasOwnProperty.call(s, "entry")) {
-    throw new ApiError(400, "validation_failed", "start.entry is no longer supported. Declare start.fcRuntime, start.command, start.args and start.layers explicitly; call manage_app runtime_info for available choices.");
+    throw new ApiError(400, "validation_failed", "start.entry is no longer supported. Declare start.fcRuntime, start.command, start.args and start.layers explicitly; run `amuxd app runtime` for available choices.");
   }
   if (!isContainerKind(build.kind) && s.port === undefined) {
     throw new ApiError(400, "validation_failed", "start.port is required for non-container apps");
@@ -276,7 +276,7 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
   }
   const args = parseStringArray(s.args, "start.args", { required: true }) ?? [];
   if (layers === undefined) {
-    throw new ApiError(400, "validation_failed", "start.layers is required for non-container apps — choose explicit layer versions from manage_app runtime_info, or use [] for none");
+    throw new ApiError(400, "validation_failed", "start.layers is required for non-container apps — choose explicit layer versions from `amuxd app runtime`, or use [] for none");
   }
   return {
     fcRuntime: fcRuntimeRaw,

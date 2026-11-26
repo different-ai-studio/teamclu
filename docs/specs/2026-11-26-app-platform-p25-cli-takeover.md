@@ -44,8 +44,8 @@
 | **S1 CLI 契约底座** | `{"v":1,"ok",…}` 外层、错误 `code/message/next/retryable`、退出码表（0、2–8，9 不再使用）、输出上限和截断游标、`-o table`、`-o file:`、`whoami`（说明当前是哪个账号、在哪个团队）、`--help` 规范；现有 9 条命令按 Q7 改参数（`--visibility` → `access --org`、`--auth-*` → `gate`、`--git-remote/--dir` → `--from-git/--from-dir`、`--since`）；CLI 契约测试 | — | 中 |
 | **S2 补齐命令** | `teamclu-apps` 增加 access / gate / env / data / files / cron / domain / runtime / sessions / `checkout move\|bind`，挂到 `/v1/app-ops` 和 CLI。桌面 `settings.rs` / `data.rs` / `files.rs` 的逻辑搬进 crate。可拆成 S2a（只读 + env / cron / data / domain）、S2b（files，CLI 进程里直接传字节）、S2c（access / gate） | S1 | 大 |
 | **S3 长操作** | deploy / undeploy 由 amuxd 在后台执行，CLI 只等待；CLI 被杀不影响操作，`op status / wait / list`、`--detach`、退出码 8 表示「结果未知、不要重试」 | S1 | 中 |
-| **S4 切换文案** | 系统提示词一行；`deploy-app` / `app-auth` skill、`app-deploy-prompt.ts`、locale、`app_build.rs` / `app-runtime-spec.ts` 里的错误文案改成 `amuxd app`；`teamclu-apps` 的 `Surface` 统一为 CLI；更新钉住文案的测试 | S2 | 小 |
-| **S5 删除** | 删 `teamclu-introspect` 的 `manage_app*`、桌面 `introspect_api/apps*`、app 相关确认弹窗（`confirm.rs` 里 app 的部分和 `confirm/app_domain*`，保留 `mcp_servers_replace`）、`caller.rs` 里 app 路由的条目 | S4 | 中（主要是删） |
+| **S4 切换文案** | 系统提示词一行；`deploy-app` / `app-auth` skill、`app-deploy-prompt.ts`、locale、`app_build.rs` / `app-runtime-spec.ts` 里的错误文案改成 `amuxd app`；agent host 的 PATH 最前面放 daemon 自己的 `amuxd`（桌面版的 amuxd 只在 app 包里，原来 agent 找不到）；更新钉住文案的测试 | S2 | 小 |
+| **S5 删除** | 删 `teamclu-introspect` 的 `manage_app*`、桌面 `introspect_api/apps*`、app 相关确认弹窗（`confirm.rs` 里 app 的部分和 `confirm/app_domain*`，保留 `mcp_servers_replace`）、`caller.rs` 里 app 路由的条目；`teamclu-apps` 的 `Surface` 只剩 CLI（MCP 调用方删掉之后才能删，从 S4 挪过来） | S4 | 中（主要是删） |
 
 不可逆操作的防手滑规则保留，它们不是审批：`undeploy`、`delete`、`files purge` 必须显式指定 app（不按当前目录推断），`delete` / `purge` 要带 `--yes`。
 
