@@ -432,6 +432,19 @@ async fn fake_cloud() -> String {
             }),
         )
         .route(
+            "/v1/apps/:id/undeploy",
+            axum::routing::post(|headers: HeaderMap, Path(id): Path<String>| async move {
+                authed(&headers)?;
+                // a2 is slow: the CLI's first reply comes back while it runs.
+                if id == "a2" {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "app": row(&id), "operation": { "status": "succeeded" },
+                })))
+            }),
+        )
+        .route(
             "/v1/apps/:id/env",
             get(|headers: HeaderMap| async move {
                 authed(&headers)?;
@@ -730,6 +743,63 @@ async fn app_ops_resource_groups() {
     )
     .await;
     assert_eq!(data_of(status, &body)["action"], "delete_row");
+}
+
+/// Long operations run in the daemon: a quick one answers within the grace
+/// second, a slow one answers `running` and `op_wait` sees it end.
+#[tokio::test]
+async fn app_ops_long_operations_run_in_the_daemon() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "undeploy", "appId": "a1" }),
+    )
+    .await;
+    let quick = data_of(status, &body);
+    assert_eq!(quick["state"], "succeeded", "{quick}");
+    assert_eq!(quick["result"]["complete"], true);
+    assert_eq!(quick["app"]["id"], "a1");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "undeploy", "appId": "a2" }),
+    )
+    .await;
+    let slow = data_of(status, &body);
+    assert_eq!(slow["state"], "running");
+    let op = slow["op"].as_str().unwrap().to_string();
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "status", "appId": "a2" }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["active_ops"][0]["op"], op.as_str());
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "op_wait", "args": { "op": op, "timeoutS": 10 } }),
+    )
+    .await;
+    let ended = data_of(status, &body);
+    assert_eq!(ended["state"], "succeeded");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "op_list", "args": { "active": false } }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["ops"].as_array().unwrap().len(), 2);
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "op_status", "args": { "op": "op_nope" } }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 5)["code"], "no_such_op");
 }
 
 /// `amuxd app files`: the daemon lists, signs and deletes; purge needs the

@@ -116,10 +116,14 @@ pub enum AppAction {
         old_auth_rules: Option<String>,
     },
     /// Build the checkout on this machine and publish it. A Gitea-hosted app
-    /// must be committed and pushed first. Needs write on the app.
+    /// must be committed and pushed first. Needs write on the app. amuxd runs
+    /// it; if this command is killed, `amuxd app op wait <op>` waits again.
     ///
     /// Example: amuxd app deploy
     Deploy {
+        /// Return the operation id at once instead of waiting.
+        #[arg(long)]
+        detach: bool,
         #[command(flatten)]
         target: AppTarget,
         /// Confirm that this deploy carries a database migration.
@@ -162,6 +166,14 @@ pub enum AppAction {
     Undeploy {
         #[command(flatten)]
         target: AppTarget,
+        /// Return the operation id at once instead of waiting.
+        #[arg(long)]
+        detach: bool,
+    },
+    /// Long operations (deploy, undeploy) amuxd is running or ran.
+    Op {
+        #[command(subcommand)]
+        cmd: OpCmd,
     },
     /// Delete the app: its site goes offline and its repository is archived.
     /// Needs an explicit --id or --app, and --yes.
@@ -285,6 +297,23 @@ pub enum GateRuleCmd {
     },
     /// Remove the rule on exactly this path.
     Rm { path: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum OpCmd {
+    /// The operation now, without waiting.
+    Status { op: String },
+    /// Wait for the operation to end; exits with its outcome (8: unknown —
+    /// check the app before trying again).
+    ///
+    /// Example: amuxd app op wait op_3f9a1c2b7d10
+    Wait { op: String },
+    /// Recent operations of this team, newest first.
+    List {
+        /// Only those still running.
+        #[arg(long)]
+        active: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -945,7 +974,12 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
             body["type"] = json!(app_type);
             body
         }
-        AppAction::Undeploy { target: t } => target(t),
+        AppAction::Undeploy { target: t, .. } => target(t),
+        AppAction::Op { cmd } => match cmd {
+            OpCmd::Status { op } => json!({ "action": "op_status", "args": { "op": op } }),
+            OpCmd::Wait { op } => json!({ "action": "op_wait", "args": { "op": op } }),
+            OpCmd::List { active } => json!({ "action": "op_list", "args": { "active": active } }),
+        },
         AppAction::Delete { target: t, yes } => {
             let mut body = target(t);
             body["confirm"] = json!(yes);
@@ -1000,6 +1034,7 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
         }
         AppAction::Deploy {
             target: t,
+            detach: _,
             migration,
             move_domain,
             old_use_app_code_domain,
@@ -1049,6 +1084,11 @@ fn action_name(action: &AppAction) -> &'static str {
         AppAction::Undeploy { .. } => "undeploy",
         AppAction::Delete { .. } => "delete",
         AppAction::Deploy { .. } => "deploy",
+        AppAction::Op { cmd } => match cmd {
+            OpCmd::Status { .. } => "op_status",
+            OpCmd::Wait { .. } => "op_wait",
+            OpCmd::List { .. } => "op_list",
+        },
         AppAction::Logs { .. } => "logs",
         AppAction::Files(_)
         | AppAction::Access(_)
@@ -1521,6 +1561,87 @@ fn success(data: Value) -> Value {
     json!({ "v": 1, "ok": true, "data": data })
 }
 
+/// How long one `op_wait` asks the daemon to hold the request.
+const OP_WAIT_SECS: u64 = 25;
+
+/// Whether a reply's data is an operation snapshot (`{op, state, …}`).
+fn op_snapshot(envelope: &Value) -> Option<&Value> {
+    let data = envelope.get("data")?;
+    (envelope["ok"] == true && data["op"].is_string() && data["state"].is_string()).then_some(data)
+}
+
+/// An operation that ended, as the envelope of the command that started it:
+/// the flow's own result or error, with the operation id added.
+fn op_outcome(snap: &Value) -> Value {
+    let op = snap["op"].clone();
+    match snap["state"].as_str() {
+        Some("succeeded") => {
+            let mut data = snap["result"].clone();
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("op".into(), op);
+            }
+            success(data)
+        }
+        _ => {
+            let mut error = snap["error"].clone();
+            if !error.is_object() {
+                error = error_envelope(
+                    "outcome_unknown",
+                    "the operation ended without saying how",
+                    None,
+                    8,
+                    false,
+                )["error"]
+                    .clone();
+            }
+            error["op"] = op;
+            json!({ "v": 1, "ok": false, "error": error })
+        }
+    }
+}
+
+/// Wait for a running operation to end, telling stderr it is still going.
+async fn wait_op(daemon: &LocalDaemonClient, snap: Value) -> Value {
+    let op = snap["op"].as_str().unwrap_or_default().to_string();
+    let action = snap["action"].as_str().unwrap_or("operation").to_string();
+    let mut snap = snap;
+    while snap["state"] == "running" {
+        eprintln!(
+            "amuxd app: {action} {op} running ({}s) — safe to interrupt; `amuxd app op wait {op}` waits again",
+            snap["elapsed_s"].as_i64().unwrap_or(0)
+        );
+        let reply = to_envelope(
+            daemon
+                .send(
+                    reqwest::Method::POST,
+                    "/v1/app-ops",
+                    Some(json!({ "action": "op_wait", "args": { "op": op, "timeoutS": OP_WAIT_SECS } })),
+                )
+                .await,
+        );
+        match op_snapshot(&reply) {
+            Some(next) => snap = next.clone(),
+            // The daemon went away mid-wait: whatever it was doing stopped
+            // with it, at a point nobody saw.
+            None => {
+                let mut e = error_envelope(
+                    "outcome_unknown",
+                    &format!(
+                        "lost the daemon while waiting for {action} {op}: {}",
+                        reply["error"]["message"].as_str().unwrap_or("no answer")
+                    ),
+                    Some(&format!("amuxd app op status {op}")),
+                    8,
+                    false,
+                );
+                e["error"]["op"] = json!(op);
+                return e;
+            }
+        }
+    }
+    op_outcome(&snap)
+}
+
 /// `files get --to`: sign on the daemon, fetch here.
 async fn files_get_to(daemon: &LocalDaemonClient, body: Value, dest: std::path::PathBuf) -> Value {
     let run = async {
@@ -1640,11 +1761,29 @@ pub fn run(args: AppArgs) -> anyhow::Result<i32> {
         if let Some(upload) = upload {
             return files_put(&daemon, body, upload).await;
         }
-        to_envelope(
+        let reply = to_envelope(
             daemon
                 .send(reqwest::Method::POST, "/v1/app-ops", Some(body))
                 .await,
-        )
+        );
+        let detach = matches!(
+            args.action,
+            AppAction::Deploy { detach: true, .. } | AppAction::Undeploy { detach: true, .. }
+        );
+        let waits = matches!(
+            args.action,
+            AppAction::Deploy { .. }
+                | AppAction::Undeploy { .. }
+                | AppAction::Op {
+                    cmd: OpCmd::Wait { .. }
+                }
+        );
+        match op_snapshot(&reply) {
+            Some(snap) if waits && !(detach && snap["state"] == "running") => {
+                wait_op(&daemon, snap.clone()).await
+            }
+            _ => reply,
+        }
     });
     Ok(emit(&args.output, envelope))
 }
@@ -1885,6 +2024,45 @@ mod tests {
             &("text/plain".to_string(), "0".to_string(), 0),
             "an empty file still carries its length"
         );
+    }
+
+    #[test]
+    fn op_commands_and_detach_map_to_their_bodies() {
+        assert_eq!(
+            body_of(&["op", "wait", "op_1"]),
+            json!({ "action": "op_wait", "args": { "op": "op_1" } })
+        );
+        assert_eq!(body_of(&["op", "list", "--active"])["args"]["active"], true);
+        assert_eq!(body_of(&["deploy", "--detach"])["action"], "deploy");
+        assert_eq!(
+            body_of(&["undeploy", "--id", "a1", "--detach"])["appId"],
+            "a1"
+        );
+    }
+
+    #[test]
+    fn an_ended_operation_answers_as_the_command_that_started_it() {
+        let ok = op_outcome(&json!({
+            "op": "op_1", "state": "succeeded", "result": { "action": "deploy", "url": "https://x" },
+        }));
+        assert_eq!(ok["data"]["url"], "https://x");
+        assert_eq!(ok["data"]["op"], "op_1");
+        assert_eq!(exit_of(&ok), 0);
+
+        let failed = op_outcome(&json!({
+            "op": "op_2", "state": "failed",
+            "error": { "code": "deploy_locked", "exit": 6, "message": "busy" },
+        }));
+        assert_eq!(exit_of(&failed), 6);
+        assert_eq!(failed["error"]["op"], "op_2");
+
+        let unknown = op_outcome(&json!({
+            "op": "op_3", "state": "unknown",
+            "error": { "code": "daemon_restarted", "exit": 8, "message": "?" },
+        }));
+        assert_eq!(exit_of(&unknown), 8);
+        assert!(op_snapshot(&json!({"ok":true,"data":{"op":"op_1","state":"running"}})).is_some());
+        assert!(op_snapshot(&json!({"ok":true,"data":{"action":"deploy"}})).is_none());
     }
 
     #[test]

@@ -37,6 +37,7 @@ use teamclu_apps::{
     Surface, UpdateArgs,
 };
 
+use super::app_op_jobs::{OpStore, MAX_WAIT};
 use super::apps;
 use super::auth::{require_scope, Principal};
 use super::errors::HttpError;
@@ -292,9 +293,13 @@ impl Host for CliHost {
 
 /// One call. `action` picks the flow; the rest are its arguments, all
 /// optional at this layer so the flow's own validation is the one answer.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppOpsBody {
+    /// Set by the daemon itself when it runs a long operation in the
+    /// background; never read from a request.
+    #[serde(skip)]
+    pub background: bool,
     pub action: String,
     #[serde(default)]
     pub app_id: Option<String>,
@@ -351,8 +356,11 @@ pub struct AppOpsBody {
     pub args: Value,
 }
 
-const READ_ACTIONS: [&str; 15] = [
+const READ_ACTIONS: [&str; 18] = [
     "whoami",
+    "op_status",
+    "op_wait",
+    "op_list",
     "files_ls",
     "files_url",
     "files_usage",
@@ -515,6 +523,20 @@ pub async fn app_ops(
     Ok(Json(envelope(run(principal, state, &action, &body).await)))
 }
 
+/// [`run`] with owned arguments, for a background operation.
+fn run_owned(
+    principal: Principal,
+    state: HttpState,
+    action: String,
+    body: AppOpsBody,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, OpError>> + Send>> {
+    Box::pin(async move { run(principal, state, &action, &body).await })
+}
+
+fn row_id_of(row: &Value) -> Option<String> {
+    row.get("id").and_then(Value::as_str).map(str::to_string)
+}
+
 async fn run(
     principal: Principal,
     state: HttpState,
@@ -536,6 +558,56 @@ async fn run(
         )
         .with_next("amuxd init"));
     }
+    // Long operations' records live under the daemon's run directory, next
+    // to its token file, one folder per team.
+    let store = OpStore::new(
+        state
+            .config
+            .token_file
+            .clone()
+            .unwrap_or_else(crate::config::DaemonConfig::http_token_path)
+            .parent()
+            .unwrap_or(std::path::Path::new(".")),
+        &team_id,
+    );
+    match action {
+        "op_status" | "op_wait" => {
+            let op = need_str(&body.args, "op", "an operation id (op_…)")?;
+            let rec = if action == "op_wait" {
+                let secs = body.args.get("timeoutS").and_then(Value::as_u64);
+                let timeout = secs
+                    .map(Duration::from_secs)
+                    .unwrap_or(MAX_WAIT)
+                    .min(MAX_WAIT);
+                store.wait(&op, timeout).await
+            } else {
+                store.get(&op)
+            };
+            return rec.map(|r| r.snapshot()).ok_or_else(|| {
+                OpError::not_found(
+                    "no_such_op",
+                    format!(
+                        "no operation {op:?} on this daemon in this team (records are kept 7 days)"
+                    ),
+                )
+                .with_next("amuxd app op list")
+            });
+        }
+        "op_list" => {
+            let active = body
+                .args
+                .get("active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let ops: Vec<Value> = store
+                .list(active, 20)
+                .iter()
+                .map(|r| r.snapshot())
+                .collect();
+            return Ok(serde_json::json!({ "action": "op_list", "ops": ops }));
+        }
+        _ => {}
+    }
     if action == "whoami" {
         // CLI design §2.5, without the agent / person split (P2.5 decision):
         // every command acts as this daemon's agent account, and the platform
@@ -554,6 +626,7 @@ async fn run(
         base_url,
         http: state.http_client.clone(),
     };
+    let background_principal = principal.clone();
     let daemon = InProcessDaemon {
         state: state.clone(),
         principal,
@@ -631,7 +704,35 @@ async fn run(
             let row = ops.resolve_app(&team_id, &selector).await?;
             match action {
                 "status" => {
-                    Ok(serde_json::json!({ "action": "status", "app": ops.status(&row).await }))
+                    let active = row_id_of(&row)
+                        .map(|id| store.active_on(&id))
+                        .unwrap_or_default();
+                    Ok(serde_json::json!({
+                        "action": "status",
+                        "app": ops.status(&row).await,
+                        "active_ops": active,
+                    }))
+                }
+                // Checked and resolved here, run in the background: the CLI
+                // only waits, and dying does not stop the operation.
+                "deploy" | "undeploy" if !body.background => {
+                    let mut bg = body.clone();
+                    bg.background = true;
+                    bg.app_id = row_id_of(&row);
+                    let rec = store.start(
+                        action,
+                        &team_id,
+                        bg.app_id.clone(),
+                        row.get("name").and_then(Value::as_str).map(str::to_string),
+                        run_owned(background_principal, state.clone(), action.to_string(), bg),
+                    );
+                    // A failure that comes at once (a lock held, nothing
+                    // committed) is answered at once.
+                    let rec = store
+                        .wait(&rec.op, Duration::from_secs(1))
+                        .await
+                        .unwrap_or(rec);
+                    Ok(rec.snapshot())
                 }
                 "reseed" => ops.reseed(&row).await,
                 "download" => ops.download(&row).await,
