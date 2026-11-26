@@ -4,6 +4,7 @@
  * rejections and a non-zero exit code despite all assertions passing.
  */
 import '@testing-library/jest-dom'
+import { afterEach } from 'vitest'
 
 // --- i18n bootstrap ---------------------------------------------------------
 // Initialize the shared i18n singleton (and bind it to react-i18next) for every
@@ -143,3 +144,13 @@ if (typeof window !== 'undefined') {
     unregisterListener: () => {},
   }
 }
+
+// --- shared daemon /v1/info reading ------------------------------------------
+// `lib/daemon/daemon-info.ts` reuses one `/v1/info` answer for a short window
+// and keeps it on globalThis. Tests drive that endpoint through mocked
+// `fetch`, so an answer left over from the previous test would be handed to
+// the next one. Dropped by key, without importing the module, so a test's
+// `vi.mock` of it is unaffected.
+afterEach(() => {
+  delete (globalThis as Record<string, unknown>).__teamcluDaemonInfoCache
+})

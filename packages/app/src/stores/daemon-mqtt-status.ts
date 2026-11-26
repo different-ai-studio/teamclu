@@ -1,9 +1,12 @@
 import * as React from 'react'
 import { create } from 'zustand'
 import { noteLocalDaemonSignals } from '@/lib/agent/agent-device-reachability'
-import { getDaemonMqttConnected } from '@/lib/daemon/daemon-agent-admin'
+import { getDaemonMqttConnected, getLocalDaemonActorId } from '@/lib/daemon/daemon-agent-admin'
 import { onDaemonProbeRequested } from '@/lib/daemon/daemon-probe-signal'
-import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
+import {
+  getKnownLocalDaemonActorId,
+  noteLocalDaemonActorId,
+} from '@/lib/daemon/local-daemon-identity'
 import { QUICK_CHAT_DAEMON_PROBE_INTERVAL_MS } from '@/lib/session/session-agent-probe'
 
 const DAEMON_MQTT_STARTUP_SETTLE_MS = 15_000
@@ -37,9 +40,22 @@ export const useDaemonMqttStatusStore = create<DaemonMqttStatusState>((set) => (
   setConnected: (connected) => set({ connected }),
   refresh: async () => {
     const connected = await getDaemonMqttConnected()
+    await noteActorIdFromSameRead()
     publishMqttStatus(connected)
   },
 }))
+
+/**
+ * Keep the known local actor id current from the read this poll just made.
+ * `/v1/info` carries both fields and `readDaemonInfo` reuses the answer, so
+ * this costs no request — and it is what lets the chat pill drop its own
+ * 30-second identity timer. Only a real id is noted: an unreachable daemon
+ * must not clear what is known.
+ */
+async function noteActorIdFromSameRead(): Promise<void> {
+  const actorId = await getLocalDaemonActorId()
+  if (actorId) noteLocalDaemonActorId(actorId)
+}
 
 let subscriberCount = 0
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -84,6 +100,7 @@ function publishMqttStatus(connected: boolean | null): void {
 
 async function pollDuringStartup(generation: number): Promise<void> {
   const connected = await getDaemonMqttConnected()
+  await noteActorIdFromSameRead()
   if (generation !== pollingGeneration) return
   if (startupSettling && connected !== true && Date.now() < startupDeadline) {
     // HTTP becomes ready before the daemon finishes its first MQTT CONNACK.

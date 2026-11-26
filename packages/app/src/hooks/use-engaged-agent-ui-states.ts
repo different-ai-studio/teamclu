@@ -385,7 +385,13 @@ export function useEngagedAgentUiStates(
       noteLocalDaemonActorId(id)
     }
     void load()
-    const interval = setInterval(() => void load(), 30_000)
+    // Only while no local daemon identity is known yet (the daemon was not up
+    // when this mounted). Once it is, the shared MQTT status poll — which this
+    // hook subscribes to below — keeps it current from the same `/v1/info`
+    // read; a second timer here was a separate request every 30s per mount.
+    const interval = setInterval(() => {
+      if (!getKnownLocalDaemonActorId()) void load()
+    }, 30_000)
     return () => {
       cancelled = true
       clearInterval(interval)

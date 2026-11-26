@@ -4,11 +4,14 @@ const getDaemonMqttConnected = vi.hoisted(() => vi.fn<() => Promise<boolean | nu
 const probeListeners = vi.hoisted(() => new Set<() => void>())
 
 const noteLocalDaemonSignals = vi.hoisted(() => vi.fn())
+const getLocalDaemonActorId = vi.hoisted(() => vi.fn(async () => 'actor-1' as string | null))
+const noteLocalDaemonActorId = vi.hoisted(() => vi.fn())
 
-vi.mock('@/lib/daemon/daemon-agent-admin', () => ({ getDaemonMqttConnected }))
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({ getDaemonMqttConnected, getLocalDaemonActorId }))
 vi.mock('@/lib/agent/agent-device-reachability', () => ({ noteLocalDaemonSignals }))
 vi.mock('@/lib/daemon/local-daemon-identity', () => ({
   getKnownLocalDaemonActorId: () => 'actor-1',
+  noteLocalDaemonActorId,
 }))
 vi.mock('@/lib/daemon/daemon-probe-signal', () => ({
   onDaemonProbeRequested: (fn: () => void) => {
@@ -45,6 +48,24 @@ describe('daemon-mqtt-status store', () => {
     const state = useDaemonMqttStatusStore.getState()
     expect(state.connected).toBe(true)
     expect(state.uiConnected).toBe(true)
+    release()
+  })
+
+  it('keeps the local actor id current from the same /v1/info read', async () => {
+    // The chat pill dropped its own 30s identity timer in favour of this.
+    noteLocalDaemonActorId.mockClear()
+    const release = subscribeDaemonMqttStatus()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(noteLocalDaemonActorId).toHaveBeenCalledWith('actor-1')
+    release()
+  })
+
+  it('never clears the known actor id when the daemon is unreachable', async () => {
+    noteLocalDaemonActorId.mockClear()
+    getLocalDaemonActorId.mockResolvedValueOnce(null)
+    const release = subscribeDaemonMqttStatus()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(noteLocalDaemonActorId).not.toHaveBeenCalled()
     release()
   })
 
