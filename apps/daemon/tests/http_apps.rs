@@ -361,6 +361,79 @@ async fn fake_cloud() -> String {
             }),
         )
         .route(
+            "/v1/apps/:id/env",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "canWrite": true,
+                    "items": [{ "key": "STRIPE_KEY", "isSecret": true, "value": null }],
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/env/:key",
+            axum::routing::put(
+                |headers: HeaderMap, Path((_, key)): Path<(String, String)>, Json(body): Json<Value>| async move {
+                    authed(&headers)?;
+                    let secret = body["isSecret"] == true;
+                    Ok::<_, StatusCode>(Json(serde_json::json!({
+                        "key": key, "isSecret": secret,
+                        "value": if secret { Value::Null } else { body["value"].clone() },
+                    })))
+                },
+            ),
+        )
+        .route(
+            "/v1/apps/:id/cron-jobs",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "items": [{ "id": "11111111-1111-1111-1111-111111111111", "name": "nightly", "enabled": true }],
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/cron-jobs/:job/run",
+            axum::routing::post(
+                |headers: HeaderMap, Path((_, job)): Path<(String, String)>| async move {
+                    authed(&headers)?;
+                    assert_eq!(job, "11111111-1111-1111-1111-111111111111");
+                    Ok::<_, StatusCode>(Json(serde_json::json!({ "status": "succeeded", "responseStatus": 200 })))
+                },
+            ),
+        )
+        .route(
+            "/v1/apps/:id/custom-domain/verify",
+            axum::routing::post(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>((
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({ "error": { "code": "dns_not_visible", "message": "TXT record not found" } })),
+                ))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/data/tables",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "items": [{ "name": "orders", "primaryKey": ["tenant", "id"] }],
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/data/tables/:table/rows/:key",
+            axum::routing::delete(
+                |headers: HeaderMap, Path((_, table, key)): Path<(String, String, String)>| async move {
+                    authed(&headers)?;
+                    assert_eq!(table, "orders");
+                    // ["acme",42], unpadded base64url, in the catalog's key order.
+                    assert_eq!(key, "WyJhY21lIiw0Ml0");
+                    Ok::<_, StatusCode>(StatusCode::NO_CONTENT)
+                },
+            ),
+        )
+        .route(
             "/v1/apps/:id/logs",
             get(|headers: HeaderMap| async move {
                 authed(&headers)?;
@@ -449,8 +522,11 @@ async fn app_ops_refusals_carry_the_cli_next_step() {
     assert!(message.contains("never been deployed"), "{message}");
     assert!(message.contains("`amuxd app deploy`"), "{message}");
 
-    let (status, body) =
-        app_ops(&app, serde_json::json!({ "action": "status", "appName": "nope" })).await;
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "status", "appName": "nope" }),
+    )
+    .await;
     assert_eq!(error_of(status, &body, 5)["code"], "app_not_found");
 
     let (status, body) = app_ops(&app, serde_json::json!({ "action": "publish" })).await;
@@ -520,4 +596,67 @@ async fn app_ops_update_and_the_delete_guards() {
     )
     .await;
     assert_eq!(data_of(status, &body)["action"], "delete");
+}
+
+/// The resource groups run on the same envelope: env, cron by name, a domain
+/// whose DNS is not visible yet, a row addressed by its primary key.
+#[tokio::test]
+async fn app_ops_resource_groups() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "env_list", "appId": "a1" }),
+    )
+    .await;
+    let env = data_of(status, &body);
+    assert_eq!(env["variables"][0]["key"], "STRIPE_KEY");
+    assert_eq!(env["variables"][0]["value"], Value::Null);
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "env_set", "appId": "a1",
+            "args": { "key": "STRIPE_KEY", "value": "sk_live", "isSecret": true } }),
+    )
+    .await;
+    let set = data_of(status, &body);
+    assert_eq!(
+        set["variable"]["value"],
+        Value::Null,
+        "a secret is never echoed"
+    );
+    assert!(set["note"].as_str().unwrap().contains("`amuxd app deploy`"));
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "cron_run", "appId": "a1", "args": { "job": "nightly" } }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["outcome"]["status"], "succeeded");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "cron_run", "appId": "a1", "args": { "job": "weekly" } }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 5)["code"], "no_such_name");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "domain_verify", "appId": "a1" }),
+    )
+    .await;
+    let e = error_of(status, &body, 6);
+    assert_eq!(e["code"], "dns_not_visible");
+    assert_eq!(e["retryable"], true);
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "data_delete", "appId": "a1",
+            "args": { "table": "orders", "key": { "id": 42, "tenant": "acme" } } }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["action"], "delete_row");
 }

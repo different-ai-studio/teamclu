@@ -29,14 +29,21 @@ pub struct UpdateArgs {
     pub auth_rules: Option<Value>,
 }
 
-fn one_of(field: &str, value: &Option<String>, allowed: &[&str]) -> Result<Option<String>, OpError> {
+fn one_of(
+    field: &str,
+    value: &Option<String>,
+    allowed: &[&str],
+) -> Result<Option<String>, OpError> {
     match value {
         None => Ok(None),
         Some(value) if allowed.contains(&value.as_str()) => Ok(Some(value.clone())),
-        Some(value) => Err(OpError::invalid(&format!("invalid_{field}"), format!(
-            "{field} must be one of: {} (got {value:?})",
-            allowed.join(", ")
-        ))),
+        Some(value) => Err(OpError::invalid(
+            &format!("invalid_{field}"),
+            format!(
+                "{field} must be one of: {} (got {value:?})",
+                allowed.join(", ")
+            ),
+        )),
     }
 }
 
@@ -67,9 +74,12 @@ impl UpdateArgs {
             patch.insert("authScope".into(), json!(scope));
         }
         if let Some(rules) = &self.auth_rules {
-            let list = rules
-                .as_array()
-                .ok_or_else(|| OpError::invalid("invalid_auth_rules", "auth_rules must be an array of {path, auth, audience?, roles?}"))?;
+            let list = rules.as_array().ok_or_else(|| {
+                OpError::invalid(
+                    "invalid_auth_rules",
+                    "auth_rules must be an array of {path, auth, audience?, roles?}",
+                )
+            })?;
             for rule in list {
                 let path = rule.get("path").and_then(Value::as_str).unwrap_or("");
                 let auth = rule.get("auth").and_then(Value::as_str).unwrap_or("");

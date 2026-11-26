@@ -12,8 +12,9 @@
 //!   can create and publish apps.
 //!
 //! Covered so far: list, status, create, reseed, download, update, deploy,
-//! logs and delete. The desktop's other app tools (access, env, cron, domain,
-//! data, files, move_workdir) are still only in the desktop.
+//! logs, delete, and the app's env, cron jobs, custom domain and data rows
+//! (`resources.rs`). Access, files and move_workdir are still only in the
+//! desktop (P2.5 S2 of docs/specs/2026-11-26-app-platform-p25-cli-takeover.md).
 //!
 //! What a deploy or a create *is* — which calls, in which order, what goes
 //! back to the cloud when a leg fails — lives here once. Each surface supplies
@@ -36,6 +37,7 @@ mod error;
 mod logs;
 mod redact;
 mod resolve;
+mod resources;
 mod row;
 mod settings;
 mod status;
@@ -53,14 +55,15 @@ pub use checkout::{
 };
 pub use cloud::{explain, Cloud, CloudError, Method};
 pub use daemon::{daemon_error_text, DaemonError, LocalDaemon, DAEMON_DOWN};
-pub use error::{ErrorKind, OpError};
 pub use deploy::{
     deploy_failure_request, mint_git_credential, require_artifact_verification,
     return_git_credential, DeployArgs, GitCredential,
 };
+pub use error::{ErrorKind, OpError};
 pub use logs::LogsArgs;
 pub use redact::{redact_deploy_secrets, redact_url_credentials};
 pub use resolve::{app_owning_path, canonical_path, AppSelector};
+pub use resources::{data_row_key, pick_by_name, CronFields, Named, RowRef, RowsQuery};
 pub use row::{
     add_checkout_snapshot, app_brief, app_path, app_settings, describe_code_version,
     is_gitea_managed, items_of, row_id, row_str, APP_TYPES,
@@ -189,6 +192,18 @@ impl<'a> AppOps<'a> {
 
     pub async fn post(&self, path: &str, body: &Value, what: &str) -> Result<Value, OpError> {
         self.call(Method::Post, path, Some(body), None, what).await
+    }
+
+    pub async fn put(&self, path: &str, body: &Value, what: &str) -> Result<Value, OpError> {
+        self.call(Method::Put, path, Some(body), None, what).await
+    }
+
+    pub async fn patch(&self, path: &str, body: &Value, what: &str) -> Result<Value, OpError> {
+        self.call(Method::Patch, path, Some(body), None, what).await
+    }
+
+    pub async fn del(&self, path: &str, what: &str) -> Result<Value, OpError> {
+        self.call(Method::Delete, path, None, None, what).await
     }
 }
 

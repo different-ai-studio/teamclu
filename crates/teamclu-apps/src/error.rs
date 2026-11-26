@@ -260,8 +260,8 @@ mod tests {
 
     #[test]
     fn the_envelope_error_names_its_exit_status() {
-        let e = OpError::not_found("app_not_found", "No app named \"x\"")
-            .with_next("amuxd app list");
+        let e =
+            OpError::not_found("app_not_found", "No app named \"x\"").with_next("amuxd app list");
         let j = e.to_json();
         assert_eq!(j["code"], "app_not_found");
         assert_eq!(j["exit"], 5);

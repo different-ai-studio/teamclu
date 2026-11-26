@@ -48,7 +48,10 @@ pub async fn mint_git_credential(ops: &AppOps<'_>, app_id: &str) -> Result<GitCr
         .unwrap_or_default()
         .to_string();
     if remote_url.is_empty() || private_key_pem.trim().is_empty() {
-        return Err(OpError::upstream("git_credential_unavailable", "Could not mint a Gitea deploy credential for this app."));
+        return Err(OpError::upstream(
+            "git_credential_unavailable",
+            "Could not mint a Gitea deploy credential for this app.",
+        ));
     }
     Ok(GitCredential {
         remote_url,
@@ -156,7 +159,9 @@ impl AppOps<'_> {
                 }
             })?;
         if out.get("declaration").is_none() {
-            return Err(OpError::from("The daemon returned no build + start declaration."));
+            return Err(OpError::from(
+                "The daemon returned no build + start declaration.",
+            ));
         }
         Ok(out)
     }
@@ -220,9 +225,15 @@ impl AppOps<'_> {
         }
         let build = build.map_err(|e| {
             if e.unreachable {
-                OpError::daemon_down("The local amuxd is not connected, so nothing can build this app.")
+                OpError::daemon_down(
+                    "The local amuxd is not connected, so nothing can build this app.",
+                )
             } else {
-                OpError::new(crate::ErrorKind::Conflict, "build_failed", format!("Daemon build failed: {}", daemon_error_text(&e)))
+                OpError::new(
+                    crate::ErrorKind::Conflict,
+                    "build_failed",
+                    format!("Daemon build failed: {}", daemon_error_text(&e)),
+                )
             }
         })?;
         let declaration = build
@@ -330,8 +341,12 @@ impl AppOps<'_> {
                     "Reading the repository HEAD",
                 )
                 .await?;
-            let sha = row_str(&head, "sha")
-                .ok_or_else(|| OpError::conflict("no_repo_head", "The app's Gitea repo has no HEAD — commit and push before deploying."))?;
+            let sha = row_str(&head, "sha").ok_or_else(|| {
+                OpError::conflict(
+                    "no_repo_head",
+                    "The app's Gitea repo has no HEAD — commit and push before deploying.",
+                )
+            })?;
             git_commit_sha = Some(sha.to_string());
         }
 

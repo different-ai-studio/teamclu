@@ -150,15 +150,6 @@ impl AppApi {
         self.call(Method::PUT, path, Some(body), None, what).await
     }
 
-    pub(super) async fn patch(
-        &self,
-        path: &str,
-        body: &Value,
-        what: &str,
-    ) -> Result<Value, String> {
-        self.call(Method::PATCH, path, Some(body), None, what).await
-    }
-
     pub(super) async fn delete(&self, path: &str, what: &str) -> Result<Value, String> {
         self.call(Method::DELETE, path, None, None, what).await
     }
@@ -715,7 +706,10 @@ async fn deploy_to_completion(
     };
     tauri::async_runtime::spawn(async move {
         let host = DesktopHost::new(&app, &api);
-        app_ops(&api, &host).deploy(&row, args).await.map_err(String::from)
+        app_ops(&api, &host)
+            .deploy(&row, args)
+            .await
+            .map_err(String::from)
     })
     .await
     .map_err(|e| format!("The deploy task stopped unexpectedly: {e}"))?

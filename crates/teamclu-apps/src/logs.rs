@@ -32,9 +32,10 @@ impl LogsArgs {
         let limit = self.limit.unwrap_or(100).clamp(1, 200);
         let kind = self.kind.clone().unwrap_or_else(|| "app".to_string());
         if !matches!(kind.as_str(), "app" | "request" | "all") {
-            return Err(OpError::invalid("invalid_kind", format!(
-                "Unknown kind: {kind} (expected app, request or all)"
-            )));
+            return Err(OpError::invalid(
+                "invalid_kind",
+                format!("Unknown kind: {kind} (expected app, request or all)"),
+            ));
         }
         let mut query = format!("?sinceMinutes={since_minutes}&limit={limit}&kind={kind}");
         if let Some(contains) = &self.contains {
@@ -56,10 +57,13 @@ impl AppOps<'_> {
         let app_id = row_id(row)?;
         let fc_status = row_str(row, "fcStatus").unwrap_or("");
         if fc_status.is_empty() || fc_status == "not_deployed" {
-            return Err(OpError::conflict("app_not_deployed", format!(
+            return Err(OpError::conflict(
+                "app_not_deployed",
+                format!(
                 "This app has never been deployed, so it has no logs yet. Deploy it first ({}).",
                 self.surface().step("manage_app", "deploy")
-            )));
+            ),
+            ));
         }
         let q = args.query()?;
         let out = self

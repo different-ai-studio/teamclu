@@ -162,17 +162,23 @@ impl AppOps<'_> {
             .collect();
         match matches.len() {
             1 => Ok(matches[0].clone()),
-            0 => Err(OpError::not_found("app_not_found", format!(
-                "No app named {:?} in this team. Apps: {}",
-                name,
-                Value::Array(apps.iter().map(app_brief).collect())
-            ))),
-            n => Err(OpError::not_found("app_ambiguous", format!(
-                "{:?} matches {} apps — pass the app id instead. Matches: {}",
-                name,
-                n,
-                Value::Array(matches.iter().map(|a| app_brief(a)).collect())
-            ))),
+            0 => Err(OpError::not_found(
+                "app_not_found",
+                format!(
+                    "No app named {:?} in this team. Apps: {}",
+                    name,
+                    Value::Array(apps.iter().map(app_brief).collect())
+                ),
+            )),
+            n => Err(OpError::not_found(
+                "app_ambiguous",
+                format!(
+                    "{:?} matches {} apps — pass the app id instead. Matches: {}",
+                    name,
+                    n,
+                    Value::Array(matches.iter().map(|a| app_brief(a)).collect())
+                ),
+            )),
         }
     }
 
@@ -191,7 +197,10 @@ impl AppOps<'_> {
             self.surface().step("manage_app", "list")
         );
         let workspace = selector.workspace_path.as_deref().ok_or_else(|| {
-            OpError::invalid("no_app_named", format!("No app named, and no working directory to resolve one from — {ask}"))
+            OpError::invalid(
+                "no_app_named",
+                format!("No app named, and no working directory to resolve one from — {ask}"),
+            )
         })?;
         let apps: Vec<(String, PathBuf)> = self
             .local_app_workdirs(team_id)
@@ -200,8 +209,11 @@ impl AppOps<'_> {
             .map(|(id, dir)| (id, canonical_path(&dir)))
             .collect();
         app_owning_path(&canonical_path(workspace), &apps).ok_or_else(|| {
-            OpError::not_found("not_a_checkout", format!("{workspace} is not the checkout of any app in this team — {ask}"))
-                .with_next(self.surface().step("manage_app", "list"))
+            OpError::not_found(
+                "not_a_checkout",
+                format!("{workspace} is not the checkout of any app in this team — {ask}"),
+            )
+            .with_next(self.surface().step("manage_app", "list"))
         })
     }
 

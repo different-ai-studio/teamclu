@@ -32,8 +32,8 @@ use axum::{extract::State, Json};
 use serde::Deserialize;
 use serde_json::Value;
 use teamclu_apps::{
-    AppOps, AppSelector, Cloud, CloudError, CreateArgs, DaemonError, Host, LocalDaemon, LogsArgs,
-    Method, OpError, Surface, UpdateArgs,
+    AppOps, AppSelector, Cloud, CloudError, CreateArgs, CronFields, DaemonError, Host, LocalDaemon,
+    LogsArgs, Method, Named, OpError, RowRef, RowsQuery, Surface, UpdateArgs,
 };
 
 use super::apps;
@@ -344,12 +344,110 @@ pub struct AppOpsBody {
     pub contains: Option<String>,
     #[serde(default)]
     pub request_id: Option<String>,
+    /// The arguments of the resource groups (env, cron, domain, data), as
+    /// the CLI parsed them.
+    #[serde(default)]
+    pub args: Value,
 }
 
-const READ_ACTIONS: [&str; 4] = ["whoami", "list", "status", "logs"];
-const WRITE_ACTIONS: [&str; 7] = [
-    "create", "reseed", "download", "update", "deploy", "undeploy", "delete",
+const READ_ACTIONS: [&str; 10] = [
+    "whoami",
+    "list",
+    "status",
+    "logs",
+    "env_list",
+    "cron_list",
+    "cron_runs",
+    "domain_show",
+    "data_tables",
+    "data_rows",
 ];
+const WRITE_ACTIONS: [&str; 21] = [
+    "create",
+    "reseed",
+    "download",
+    "update",
+    "deploy",
+    "undeploy",
+    "delete",
+    "env_set",
+    "env_delete",
+    "cron_create",
+    "cron_update",
+    "cron_delete",
+    "cron_run",
+    "cron_enable",
+    "cron_disable",
+    "domain_set",
+    "domain_verify",
+    "domain_remove",
+    "data_insert",
+    "data_update",
+    "data_delete",
+];
+
+fn is_write(action: &str) -> bool {
+    WRITE_ACTIONS.contains(&action)
+}
+
+/// A string argument of a resource group, trimmed; `None` when absent or empty.
+fn arg_str(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// A string argument that must be there.
+fn need_str(args: &Value, key: &str, what: &str) -> Result<String, OpError> {
+    arg_str(args, key).ok_or_else(|| OpError::invalid("missing_argument", format!("needs {what}")))
+}
+
+/// `job`: a job id when it looks like one, otherwise a name that must match
+/// exactly one job.
+fn named_job(args: &Value) -> Result<Named, OpError> {
+    let job = need_str(args, "job", "a job id or name")?;
+    let is_uuid = job.len() == 36 && job.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    Ok(if is_uuid {
+        Named::Id(job)
+    } else {
+        Named::Name(job)
+    })
+}
+
+fn cron_fields(args: &Value) -> CronFields {
+    CronFields {
+        name: arg_str(args, "name"),
+        schedule: arg_str(args, "schedule"),
+        timezone: arg_str(args, "timezone"),
+        method: arg_str(args, "method"),
+        path: arg_str(args, "path"),
+        headers: args.get("headers").filter(|h| !h.is_null()).cloned(),
+        body: match args.get("body") {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(Value::String(s)) => Some(Some(s.clone())),
+            // An object is what a caller reaches for when it means a JSON body.
+            Some(other) => Some(Some(other.to_string())),
+        },
+        timeout_ms: args.get("timeoutMs").and_then(Value::as_u64),
+        enabled: args.get("enabled").and_then(Value::as_bool),
+    }
+}
+
+fn row_ref(args: &Value) -> Result<RowRef, OpError> {
+    if let Some(opaque) = arg_str(args, "rowKey") {
+        return Ok(RowRef::Opaque(opaque));
+    }
+    match args.get("key") {
+        Some(key) if key.is_object() || key.is_array() => Ok(RowRef::Key(key.clone())),
+        _ => Err(OpError::invalid(
+            "missing_argument",
+            "needs the row's primary-key columns (--key COL=VAL …)",
+        )),
+    }
+}
 
 /// A non-empty, trimmed string.
 fn present(v: &Option<String>) -> Option<String> {
@@ -373,7 +471,7 @@ pub async fn app_ops(
     Json(body): Json<AppOpsBody>,
 ) -> Result<Json<Value>, HttpError> {
     let action = body.action.trim().to_string();
-    if WRITE_ACTIONS.contains(&action.as_str()) {
+    if is_write(&action) {
         require_scope(&principal, "workspace:write")?;
     } else if READ_ACTIONS.contains(&action.as_str()) {
         require_scope(&principal, "workspace:read")?;
@@ -398,8 +496,10 @@ async fn run(
     body: &AppOpsBody,
 ) -> Result<Value, OpError> {
     let Some(backend) = state.backend.clone() else {
-        return Err(OpError::upstream("daemon_not_onboarded", "this daemon has no cloud backend")
-            .with_next("amuxd init"));
+        return Err(
+            OpError::upstream("daemon_not_onboarded", "this daemon has no cloud backend")
+                .with_next("amuxd init"),
+        );
     };
     let team_id = backend.team_id().to_string();
     let base_url = backend.cloud_base_url().unwrap_or_default();
@@ -517,8 +617,113 @@ async fn run(
                     };
                     ops.logs(&row, &args).await
                 }
-                other => unreachable!("action {other} passed the allow-list"),
+                _ => resource(&ops, &row, action, &body.args).await,
             }
         }
+    }
+}
+
+/// The resource groups: env, cron, domain, data (P2.5 S2a).
+async fn resource(
+    ops: &AppOps<'_>,
+    row: &Value,
+    action: &str,
+    args: &Value,
+) -> Result<Value, OpError> {
+    match action {
+        "env_list" => ops.env_list(row).await,
+        "env_set" => {
+            let key = need_str(args, "key", "the variable name")?;
+            // Empty is a real value; only a missing one is refused.
+            let value = args.get("value").and_then(Value::as_str).ok_or_else(|| {
+                OpError::invalid(
+                    "missing_argument",
+                    "needs a value (an empty string is allowed)",
+                )
+            })?;
+            let secret = args
+                .get("isSecret")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            ops.env_set(row, &key, value, secret).await
+        }
+        "env_delete" => {
+            ops.env_delete(row, &need_str(args, "key", "the variable name")?)
+                .await
+        }
+        "cron_list" => ops.cron_list(row).await,
+        "cron_create" => ops.cron_create(row, &cron_fields(args)).await,
+        "cron_update" => {
+            ops.cron_update(row, &named_job(args)?, &cron_fields(args))
+                .await
+        }
+        "cron_enable" | "cron_disable" => {
+            let fields = CronFields {
+                enabled: Some(action == "cron_enable"),
+                ..Default::default()
+            };
+            ops.cron_update(row, &named_job(args)?, &fields).await
+        }
+        "cron_delete" => ops.cron_delete(row, &named_job(args)?).await,
+        "cron_run" => ops.cron_run(row, &named_job(args)?).await,
+        "cron_runs" => {
+            ops.cron_runs(
+                row,
+                &named_job(args)?,
+                args.get("limit").and_then(Value::as_u64),
+            )
+            .await
+        }
+        "domain_show" => ops.domain_show(row),
+        "domain_set" => {
+            ops.domain_set(
+                row,
+                &need_str(args, "domain", "a hostname, like app.example.com")?,
+            )
+            .await
+        }
+        "domain_verify" => ops.domain_verify(row).await,
+        "domain_remove" => ops.domain_remove(row).await,
+        "data_tables" => ops.data_tables(row).await,
+        "data_rows" => {
+            let table = need_str(args, "table", "a table name")?;
+            let filter = match (arg_str(args, "filterColumn"), arg_str(args, "filterOp")) {
+                (Some(column), Some(op)) => Some((column, op, arg_str(args, "filterValue"))),
+                (None, None) => None,
+                _ => {
+                    return Err(OpError::invalid(
+                        "invalid_filter",
+                        "a filter needs a column and an op (eq, contains, isNull, notNull)",
+                    ))
+                }
+            };
+            let q = RowsQuery {
+                limit: args.get("limit").and_then(Value::as_u64),
+                after: arg_str(args, "after"),
+                direction: arg_str(args, "direction"),
+                filter,
+            };
+            ops.data_rows(row, &table, &q).await
+        }
+        "data_insert" => {
+            let table = need_str(args, "table", "a table name")?;
+            ops.data_insert(row, &table, args.get("values").unwrap_or(&Value::Null))
+                .await
+        }
+        "data_update" => {
+            let table = need_str(args, "table", "a table name")?;
+            ops.data_update(
+                row,
+                &table,
+                &row_ref(args)?,
+                args.get("patch").unwrap_or(&Value::Null),
+            )
+            .await
+        }
+        "data_delete" => {
+            let table = need_str(args, "table", "a table name")?;
+            ops.data_delete(row, &table, &row_ref(args)?).await
+        }
+        other => unreachable!("action {other} passed the allow-list"),
     }
 }

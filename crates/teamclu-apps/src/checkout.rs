@@ -73,17 +73,21 @@ impl CreateArgs {
         }
         if let Some(visibility) = &self.visibility {
             if !matches!(visibility.as_str(), "personal" | "team") {
-                return Err(OpError::invalid("invalid_visibility", format!(
-                    "visibility must be personal or team (got {visibility:?})"
-                )));
+                return Err(OpError::invalid(
+                    "invalid_visibility",
+                    format!("visibility must be personal or team (got {visibility:?})"),
+                ));
             }
         }
         if let Some(app_type) = &self.app_type {
             if !APP_TYPES.contains(&app_type.as_str()) {
-                return Err(OpError::invalid("invalid_type", format!(
-                    "type must be one of: {} (got {app_type:?})",
-                    APP_TYPES.join(", ")
-                )));
+                return Err(OpError::invalid(
+                    "invalid_type",
+                    format!(
+                        "type must be one of: {} (got {app_type:?})",
+                        APP_TYPES.join(", ")
+                    ),
+                ));
             }
         }
         match (&self.git_remote_url, &self.local_dir) {
@@ -95,9 +99,10 @@ impl CreateArgs {
             (None, Some(dir)) if Path::new(dir).is_absolute() => {
                 Ok(CreateSource::LocalDir(dir.clone()))
             }
-            (None, Some(dir)) => Err(OpError::invalid("relative_dir", format!(
-                "the local directory must be an absolute path (got {dir:?})"
-            ))),
+            (None, Some(dir)) => Err(OpError::invalid(
+                "relative_dir",
+                format!("the local directory must be an absolute path (got {dir:?})"),
+            )),
             (None, None) => Ok(CreateSource::Template),
         }
     }
@@ -491,10 +496,13 @@ impl AppOps<'_> {
                 if row_str(&checkout, "outcome") == Some("failed") {
                     self.discard_created_app(&row).await;
                     self.host.app_changed(&row);
-                    return Err(OpError::upstream("clone_failed", format!(
-                        "Cloning {url} failed, so the app was not kept: {}",
-                        row_str(&checkout, "error").unwrap_or("unknown failure")
-                    )));
+                    return Err(OpError::upstream(
+                        "clone_failed",
+                        format!(
+                            "Cloning {url} failed, so the app was not kept: {}",
+                            row_str(&checkout, "error").unwrap_or("unknown failure")
+                        ),
+                    ));
                 }
                 (row, checkout)
             }
@@ -502,7 +510,10 @@ impl AppOps<'_> {
                 // Checked before any row exists: a folder that is not there, or
                 // a daemon that cannot look at it, should not leave an app behind.
                 if !Path::new(dir).is_dir() {
-                    return Err(OpError::not_found("dir_not_found", format!("{dir} is not a directory on this machine")));
+                    return Err(OpError::not_found(
+                        "dir_not_found",
+                        format!("{dir} is not a directory on this machine"),
+                    ));
                 }
                 let origin = self.folder_origin(dir).await?;
                 create_body["type"] = type_or(IMPORTED_TYPE);
@@ -592,10 +603,13 @@ impl AppOps<'_> {
         let report = run_seed(self, row, false, None).await;
         self.host.app_changed(row);
         if row_str(&report, "outcome") != Some("seeded") {
-            return Err(OpError::upstream("reseed_failed", format!(
-                "reseed did not complete: {}",
-                row_str(&report, "error").unwrap_or("unknown failure")
-            )));
+            return Err(OpError::upstream(
+                "reseed_failed",
+                format!(
+                    "reseed did not complete: {}",
+                    row_str(&report, "error").unwrap_or("unknown failure")
+                ),
+            ));
         }
         Ok(json!({
             "ok": true,
@@ -662,7 +676,10 @@ impl AppOps<'_> {
             Some(
                 mint_git_credential(self, &app_id)
                     .await
-                    .map_err(|e| OpError { message: format!("No access to this app's repository: {e}"), ..e })?,
+                    .map_err(|e| OpError {
+                        message: format!("No access to this app's repository: {e}"),
+                        ..e
+                    })?,
             )
         } else {
             None

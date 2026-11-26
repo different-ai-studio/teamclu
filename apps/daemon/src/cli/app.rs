@@ -179,6 +179,174 @@ pub enum AppAction {
         #[arg(long)]
         yes: bool,
     },
+    /// Environment variables and secrets — live on the next deploy.
+    Env(Group<EnvCmd>),
+    /// Scheduled HTTP calls the platform makes to the app's own URL.
+    Cron(Group<CronCmd>),
+    /// The app's custom domain (self-host only).
+    Domain(Group<DomainCmd>),
+    /// The deployed data_app's own database, one row at a time.
+    Data(Group<DataCmd>),
+}
+
+/// A resource group: which app (before or after the verb), then the verb.
+#[derive(Args, Debug)]
+pub struct Group<C: Subcommand> {
+    /// The app's id.
+    #[arg(long, global = true, conflicts_with = "app")]
+    pub id: Option<String>,
+    /// The app's name or slug — must match exactly one app in the team.
+    #[arg(long, global = true)]
+    pub app: Option<String>,
+    #[command(subcommand)]
+    pub cmd: C,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EnvCmd {
+    /// The variables; a secret's value is never shown.
+    Ls,
+    /// Set a variable. A secret's value is read from stdin or --file, never
+    /// from the command line. Needs admin on the app.
+    ///
+    /// Examples: amuxd app env set PORT --value 3000
+    ///           printf %s "$TOKEN" | amuxd app env set STRIPE_KEY --secret
+    Set {
+        key: String,
+        /// The value of a plain variable.
+        #[arg(long)]
+        value: Option<String>,
+        /// A secret: the value comes from stdin, or from --file.
+        #[arg(long)]
+        secret: bool,
+        /// Read the secret's value from this file.
+        #[arg(long, requires = "secret")]
+        file: Option<std::path::PathBuf>,
+    },
+    /// Delete a variable. Needs admin on the app.
+    Rm { key: String },
+}
+
+/// The schedule fields of `cron add` / `cron edit`.
+#[derive(Args, Debug, Default)]
+pub struct CronSpec {
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Five cron fields: "minute hour day-of-month month day-of-week".
+    #[arg(long)]
+    pub schedule: Option<String>,
+    /// IANA time zone, e.g. Asia/Shanghai.
+    #[arg(long)]
+    pub tz: Option<String>,
+    /// GET (default), POST, …
+    #[arg(long)]
+    pub method: Option<String>,
+    /// The app's own path to call, e.g. /api/nightly.
+    #[arg(long)]
+    pub path: Option<String>,
+    #[arg(long)]
+    pub timeout_ms: Option<u64>,
+    /// JSON with the request's `headers` and `body`.
+    #[arg(long)]
+    pub file: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CronCmd {
+    /// The app's scheduled tasks.
+    Ls,
+    /// Add a task. Needs admin on the app.
+    ///
+    /// Example: amuxd app cron add --name 对账 --schedule "0 9 * * 1-5" --path /api/reconcile
+    Add(CronSpec),
+    /// Change a task's fields (only the ones given). <job>: id or name.
+    Edit {
+        job: String,
+        #[command(flatten)]
+        spec: CronSpec,
+    },
+    Enable {
+        job: String,
+    },
+    Disable {
+        job: String,
+    },
+    /// Run a task now; the schedule does not move.
+    Run {
+        job: String,
+    },
+    /// A task's recent runs.
+    Runs {
+        job: String,
+        #[arg(long)]
+        limit: Option<u64>,
+    },
+    Rm {
+        job: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DomainCmd {
+    /// The bound domain and whether it is verified.
+    Show,
+    /// Bind a hostname; replies with the DNS records to publish. Needs admin.
+    ///
+    /// Example: amuxd app domain set app.example.com
+    Set { host: String },
+    /// Check the DNS records; exit 6 (retryable) while they propagate.
+    Verify,
+    /// Unbind the domain; the app stays on its own URL.
+    Rm,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DataCmd {
+    /// The database's tables, with their primary keys.
+    Tables,
+    /// Rows of a table, a page at a time.
+    ///
+    /// Example: amuxd app data rows orders --where status eq paid --limit 10
+    Rows {
+        table: String,
+        /// COL OP [VALUE] — op is eq, contains, isNull or notNull.
+        #[arg(long = "where", num_args = 2..=3, value_names = ["COL", "OP", "VALUE"])]
+        filter: Option<Vec<String>>,
+        /// Default 20, at most 100.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// The next_cursor of the page before.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Newest first.
+        #[arg(long)]
+        desc: bool,
+    },
+    /// Insert one row: a JSON object of column → value from --file (or - for
+    /// stdin); {} inserts defaults. Needs admin on the app.
+    Insert {
+        table: String,
+        #[arg(long)]
+        file: String,
+    },
+    /// Update one row, addressed by its primary key; the patch is a JSON
+    /// object from --file (or -). Needs admin on the app.
+    ///
+    /// Example: echo '{"status":"refunded"}' | amuxd app data update orders --key id=42 --file -
+    Update {
+        table: String,
+        /// COL=VALUE, once per primary-key column.
+        #[arg(long = "key", required = true)]
+        key: Vec<String>,
+        #[arg(long)]
+        file: String,
+    },
+    /// Delete one row, addressed by its primary key. Needs admin on the app.
+    Rm {
+        table: String,
+        #[arg(long = "key", required = true)]
+        key: Vec<String>,
+    },
 }
 
 fn parse_json(raw: &str) -> Result<Value, String> {
@@ -194,7 +362,11 @@ struct Usage {
 }
 
 fn usage(code: &'static str, message: impl Into<String>, next: Option<String>) -> Usage {
-    Usage { code, message: message.into(), next }
+    Usage {
+        code,
+        message: message.into(),
+        next,
+    }
 }
 
 /// A flag that was renamed (Q7: no aliases): say what it is called now.
@@ -213,9 +385,7 @@ fn since_minutes(raw: &str) -> Result<u64, Usage> {
         usage(
             "invalid_since",
             format!("--since takes a duration like 30m, 2h or 1d (got {raw:?})"),
-            raw.parse::<u64>()
-                .ok()
-                .map(|n| format!("--since {n}m")),
+            raw.parse::<u64>().ok().map(|n| format!("--since {n}m")),
         )
     };
     let (num, unit) = raw.split_at(raw.find(|c: char| !c.is_ascii_digit()).ok_or_else(bad)?);
@@ -230,8 +400,213 @@ fn since_minutes(raw: &str) -> Result<u64, Usage> {
     Ok(minutes.max(1))
 }
 
+/// All of stdin, or a file; one trailing newline dropped (what `echo` adds).
+fn read_text(path: Option<&str>) -> Result<String, Usage> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    match path {
+        None | Some("-") => {
+            std::io::stdin().read_to_string(&mut text).map_err(|e| {
+                usage(
+                    "unreadable_input",
+                    format!("could not read stdin: {e}"),
+                    None,
+                )
+            })?;
+        }
+        Some(path) => {
+            text = std::fs::read_to_string(path).map_err(|e| {
+                usage(
+                    "unreadable_input",
+                    format!("could not read {path}: {e}"),
+                    None,
+                )
+            })?;
+        }
+    }
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+    Ok(text)
+}
+
+/// A JSON object from a file, or from stdin for `-`.
+fn read_json_object(path: &str) -> Result<Value, Usage> {
+    let text = read_text(Some(path))?;
+    let value: Value = serde_json::from_str(&text).map_err(|e| {
+        usage(
+            "invalid_json",
+            format!("{path} is not valid JSON: {e}"),
+            None,
+        )
+    })?;
+    if !value.is_object() {
+        return Err(usage(
+            "invalid_json",
+            format!("{path} must hold a JSON object"),
+            None,
+        ));
+    }
+    Ok(value)
+}
+
+/// `COL=VALUE` pairs → an object; a value that parses as JSON (a number,
+/// true, null) is sent as that, anything else as text.
+fn key_columns(pairs: &[String]) -> Result<Value, Usage> {
+    let mut out = serde_json::Map::new();
+    for pair in pairs {
+        let (col, val) = pair.split_once('=').ok_or_else(|| {
+            usage(
+                "invalid_key",
+                format!("--key takes COL=VALUE (got {pair:?})"),
+                None,
+            )
+        })?;
+        let val = serde_json::from_str::<Value>(val)
+            .ok()
+            .filter(|v| !v.is_object() && !v.is_array())
+            .unwrap_or_else(|| json!(val));
+        out.insert(col.trim().to_string(), val);
+    }
+    Ok(Value::Object(out))
+}
+
+fn cron_args(spec: &CronSpec) -> Result<Value, Usage> {
+    let mut args = json!({
+        "name": spec.name,
+        "schedule": spec.schedule,
+        "timezone": spec.tz,
+        "method": spec.method,
+        "path": spec.path,
+        "timeoutMs": spec.timeout_ms,
+    });
+    if let Some(file) = &spec.file {
+        let request = read_json_object(file)?;
+        for key in ["headers", "body"] {
+            if let Some(v) = request.get(key) {
+                args[key] = v.clone();
+            }
+        }
+    }
+    Ok(args)
+}
+
+/// The action and arguments of a resource-group command.
+fn group_body(action: &AppAction) -> Result<Option<(&'static str, Value)>, Usage> {
+    Ok(Some(match action {
+        AppAction::Env(g) => match &g.cmd {
+            EnvCmd::Ls => ("env_list", json!({})),
+            EnvCmd::Set {
+                key,
+                value,
+                secret,
+                file,
+            } => {
+                let (value, secret) = match (value, secret) {
+                    (Some(_), true) => {
+                        return Err(usage(
+                            "secret_on_command_line",
+                            "a secret's value never goes on the command line — pipe it in or use --file",
+                            Some(format!("printf %s \"$VALUE\" | amuxd app env set {key} --secret")),
+                        ))
+                    }
+                    (Some(v), false) => (v.clone(), false),
+                    (None, true) => (read_text(file.as_ref().and_then(|p| p.to_str()))?, true),
+                    (None, false) => {
+                        return Err(usage(
+                            "missing_value",
+                            "env set needs --value V, or --secret with the value on stdin",
+                            Some(format!("amuxd app env set {key} --value <value>")),
+                        ))
+                    }
+                };
+                (
+                    "env_set",
+                    json!({ "key": key, "value": value, "isSecret": secret }),
+                )
+            }
+            EnvCmd::Rm { key } => ("env_delete", json!({ "key": key })),
+        },
+        AppAction::Cron(g) => match &g.cmd {
+            CronCmd::Ls => ("cron_list", json!({})),
+            CronCmd::Add(spec) => ("cron_create", cron_args(spec)?),
+            CronCmd::Edit { job, spec } => {
+                let mut args = cron_args(spec)?;
+                args["job"] = json!(job);
+                ("cron_update", args)
+            }
+            CronCmd::Enable { job } => ("cron_enable", json!({ "job": job })),
+            CronCmd::Disable { job } => ("cron_disable", json!({ "job": job })),
+            CronCmd::Run { job } => ("cron_run", json!({ "job": job })),
+            CronCmd::Runs { job, limit } => ("cron_runs", json!({ "job": job, "limit": limit })),
+            CronCmd::Rm { job } => ("cron_delete", json!({ "job": job })),
+        },
+        AppAction::Domain(g) => match &g.cmd {
+            DomainCmd::Show => ("domain_show", json!({})),
+            DomainCmd::Set { host } => ("domain_set", json!({ "domain": host })),
+            DomainCmd::Verify => ("domain_verify", json!({})),
+            DomainCmd::Rm => ("domain_remove", json!({})),
+        },
+        AppAction::Data(g) => match &g.cmd {
+            DataCmd::Tables => ("data_tables", json!({})),
+            DataCmd::Rows {
+                table,
+                filter,
+                limit,
+                cursor,
+                desc,
+            } => {
+                let mut args = json!({
+                    "table": table,
+                    "limit": limit.unwrap_or(20),
+                    "after": cursor,
+                    "direction": if *desc { Some("desc") } else { None },
+                });
+                if let Some(parts) = filter {
+                    args["filterColumn"] = json!(parts[0]);
+                    args["filterOp"] = json!(parts[1]);
+                    args["filterValue"] = json!(parts.get(2));
+                }
+                ("data_rows", args)
+            }
+            DataCmd::Insert { table, file } => (
+                "data_insert",
+                json!({ "table": table, "values": read_json_object(file)? }),
+            ),
+            DataCmd::Update { table, key, file } => (
+                "data_update",
+                json!({ "table": table, "key": key_columns(key)?, "patch": read_json_object(file)? }),
+            ),
+            DataCmd::Rm { table, key } => (
+                "data_delete",
+                json!({ "table": table, "key": key_columns(key)? }),
+            ),
+        },
+        _ => return Ok(None),
+    }))
+}
+
 /// The JSON body for one action.
 fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage> {
+    if let Some((name, args)) = group_body(action)? {
+        let (id, app) = match action {
+            AppAction::Env(g) => (&g.id, &g.app),
+            AppAction::Cron(g) => (&g.id, &g.app),
+            AppAction::Domain(g) => (&g.id, &g.app),
+            AppAction::Data(g) => (&g.id, &g.app),
+            _ => unreachable!("group_body answered for a group"),
+        };
+        return Ok(json!({
+            "action": name,
+            "appId": id,
+            "appName": app,
+            "workspacePath": cwd,
+            "args": args,
+        }));
+    }
     let target = |t: &AppTarget| {
         json!({
             "appId": t.id,
@@ -241,6 +616,9 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
     };
     let mut body = match action {
         AppAction::Whoami | AppAction::List => json!({}),
+        AppAction::Env(_) | AppAction::Cron(_) | AppAction::Domain(_) | AppAction::Data(_) => {
+            unreachable!("handled by group_body above")
+        }
         AppAction::Status(t) | AppAction::Reseed(t) | AppAction::Download(t) => target(t),
         AppAction::Update {
             target: t,
@@ -282,7 +660,10 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
                 return Err(usage(
                     "renamed_argument",
                     "the name is now positional: amuxd app create <name>",
-                    Some(format!("amuxd app create {:?}", old_name.as_deref().unwrap_or(""))),
+                    Some(format!(
+                        "amuxd app create {:?}",
+                        old_name.as_deref().unwrap_or("")
+                    )),
                 ));
             }
             if old_git_remote.is_some() {
@@ -362,11 +743,20 @@ fn action_name(action: &AppAction) -> &'static str {
         AppAction::Delete { .. } => "delete",
         AppAction::Deploy { .. } => "deploy",
         AppAction::Logs { .. } => "logs",
+        AppAction::Env(_) | AppAction::Cron(_) | AppAction::Domain(_) | AppAction::Data(_) => {
+            unreachable!("a resource group's action comes from group_body")
+        }
     }
 }
 
 /// A failure envelope built on this side of the daemon.
-pub fn error_envelope(code: &str, message: &str, next: Option<&str>, exit: i32, retryable: bool) -> Value {
+pub fn error_envelope(
+    code: &str,
+    message: &str,
+    next: Option<&str>,
+    exit: i32,
+    retryable: bool,
+) -> Value {
     let kind = match exit {
         2 => "invalid",
         3 => "unauthenticated",
@@ -423,7 +813,10 @@ fn exit_of(envelope: &Value) -> i32 {
     if envelope["ok"] == true {
         return 0;
     }
-    envelope["error"]["exit"].as_i64().map(|n| n as i32).unwrap_or(7)
+    envelope["error"]["exit"]
+        .as_i64()
+        .map(|n| n as i32)
+        .unwrap_or(7)
 }
 
 /// Strings longer than [`MAX_FIELD_BYTES`] cut; true when anything was.
@@ -493,9 +886,10 @@ fn table(envelope: &Value) -> String {
         return out;
     }
     let data = &envelope["data"];
-    let rows = data
-        .as_array()
-        .or_else(|| data.as_object().and_then(|m| m.values().find_map(Value::as_array)));
+    let rows = data.as_array().or_else(|| {
+        data.as_object()
+            .and_then(|m| m.values().find_map(Value::as_array))
+    });
     if let Some(rows) = rows.filter(|r| r.iter().all(Value::is_object) && !r.is_empty()) {
         let mut cols: Vec<String> = Vec::new();
         for row in rows {
@@ -508,7 +902,13 @@ fn table(envelope: &Value) -> String {
         let mut out = cols.join("\t");
         for row in rows {
             out.push('\n');
-            out.push_str(&cols.iter().map(|c| cell(&row[c])).collect::<Vec<_>>().join("\t"));
+            out.push_str(
+                &cols
+                    .iter()
+                    .map(|c| cell(&row[c]))
+                    .collect::<Vec<_>>()
+                    .join("\t"),
+            );
         }
         return out;
     }
@@ -542,7 +942,13 @@ fn emit(output: &str, envelope: Value) -> i32 {
                     Err(e) => {
                         println!(
                             "{}",
-                            error_envelope("output_unwritable", &format!("could not write {path}: {e}"), None, 2, false)
+                            error_envelope(
+                                "output_unwritable",
+                                &format!("could not write {path}: {e}"),
+                                None,
+                                2,
+                                false
+                            )
                         );
                         return 2;
                     }
@@ -572,16 +978,31 @@ fn emit(output: &str, envelope: Value) -> i32 {
 pub fn exit_on_parse_error(e: clap::Error) -> ! {
     use clap::error::ErrorKind;
     let under_app = std::env::args().nth(1).as_deref() == Some("app");
-    if !under_app || matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand) {
+    if !under_app
+        || matches!(
+            e.kind(),
+            ErrorKind::DisplayHelp
+                | ErrorKind::DisplayVersion
+                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        )
+    {
         e.exit();
     }
     let message = e.render().to_string();
-    let first = message.lines().next().unwrap_or("").trim_start_matches("error: ").to_string();
+    let first = message
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("error: ")
+        .to_string();
     let next = match std::env::args().nth(2) {
         Some(sub) if !sub.starts_with('-') => format!("amuxd app {sub} --help"),
         _ => "amuxd app --help".to_string(),
     };
-    println!("{}", error_envelope("invalid_arguments", &first, Some(&next), 2, false));
+    println!(
+        "{}",
+        error_envelope("invalid_arguments", &first, Some(&next), 2, false)
+    );
     std::process::exit(2);
 }
 
@@ -642,7 +1063,10 @@ mod tests {
         assert_eq!(body["appId"], Value::Null);
         assert_eq!(body["migrationIntent"], false);
         assert_eq!(body["useAppCodeDomain"], false);
-        assert_eq!(body_of(&["deploy", "--move-domain"])["useAppCodeDomain"], true);
+        assert_eq!(
+            body_of(&["deploy", "--move-domain"])["useAppCodeDomain"],
+            true
+        );
     }
 
     #[test]
@@ -684,7 +1108,13 @@ mod tests {
         let relative = body_of(&["create", "site", "--from-dir", "site"]);
         assert!(std::path::Path::new(relative["localDir"].as_str().unwrap()).is_absolute());
         assert!(Harness::try_parse_from([
-            "app", "create", "x", "--from-dir", "/d", "--from-git", "u"
+            "app",
+            "create",
+            "x",
+            "--from-dir",
+            "/d",
+            "--from-git",
+            "u"
         ])
         .is_err());
     }
@@ -718,6 +1148,100 @@ mod tests {
     }
 
     #[test]
+    fn a_group_names_its_app_before_or_after_the_verb() {
+        let before = body_of(&["env", "--app", "记账", "ls"]);
+        assert_eq!(before["action"], "env_list");
+        assert_eq!(before["appName"], "记账");
+        let after = body_of(&["cron", "runs", "nightly", "--limit", "5", "--id", "a1"]);
+        assert_eq!(after["action"], "cron_runs");
+        assert_eq!(after["appId"], "a1");
+        assert_eq!(after["args"], json!({ "job": "nightly", "limit": 5 }));
+        assert_eq!(
+            body_of(&["domain", "set", "app.example.com"])["args"]["domain"],
+            "app.example.com"
+        );
+    }
+
+    #[test]
+    fn a_secret_never_comes_from_the_command_line() {
+        let u = refusal(&["env", "set", "STRIPE_KEY", "--secret", "--value", "sk_live"]);
+        assert_eq!(u.code, "secret_on_command_line");
+        assert!(u.next.unwrap().contains("--secret"));
+        assert_eq!(refusal(&["env", "set", "K"]).code, "missing_value");
+        let plain = body_of(&["env", "set", "PORT", "--value", "3000"]);
+        assert_eq!(
+            plain["args"],
+            json!({ "key": "PORT", "value": "3000", "isSecret": false })
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("secret");
+        std::fs::write(&file, "sk_live\n").unwrap();
+        let secret = body_of(&[
+            "env",
+            "set",
+            "STRIPE_KEY",
+            "--secret",
+            "--file",
+            file.to_str().unwrap(),
+        ]);
+        assert_eq!(secret["args"]["value"], "sk_live");
+        assert_eq!(secret["args"]["isSecret"], true);
+    }
+
+    #[test]
+    fn data_rows_take_a_filter_and_rows_are_addressed_by_their_key() {
+        let rows = body_of(&[
+            "data", "rows", "orders", "--where", "status", "eq", "paid", "--desc",
+        ]);
+        assert_eq!(rows["args"]["filterColumn"], "status");
+        assert_eq!(rows["args"]["filterValue"], "paid");
+        assert_eq!(rows["args"]["direction"], "desc");
+        assert_eq!(rows["args"]["limit"], 20);
+        let nulls = body_of(&["data", "rows", "orders", "--where", "paid_at", "isNull"]);
+        assert_eq!(nulls["args"]["filterValue"], Value::Null);
+        let rm = body_of(&[
+            "data",
+            "rm",
+            "orders",
+            "--key",
+            "tenant=acme",
+            "--key",
+            "id=42",
+        ]);
+        assert_eq!(rm["args"]["key"], json!({ "tenant": "acme", "id": 42 }));
+        assert_eq!(
+            refusal(&["data", "rm", "orders", "--key", "id"]).code,
+            "invalid_key"
+        );
+    }
+
+    #[test]
+    fn cron_edit_carries_only_the_fields_given_and_the_request_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("req.json");
+        std::fs::write(
+            &file,
+            r#"{"headers":{"x-secret":"s"},"body":{"kind":"daily"}}"#,
+        )
+        .unwrap();
+        let edit = body_of(&[
+            "cron",
+            "edit",
+            "对账",
+            "--tz",
+            "Asia/Shanghai",
+            "--file",
+            file.to_str().unwrap(),
+        ]);
+        assert_eq!(edit["action"], "cron_update");
+        assert_eq!(edit["args"]["job"], "对账");
+        assert_eq!(edit["args"]["timezone"], "Asia/Shanghai");
+        assert_eq!(edit["args"]["schedule"], Value::Null);
+        assert_eq!(edit["args"]["headers"]["x-secret"], "s");
+        assert_eq!(body_of(&["cron", "disable", "x"])["action"], "cron_disable");
+    }
+
+    #[test]
     fn each_failure_exits_with_the_status_its_envelope_names() {
         assert_eq!(exit_of(&json!({"v":1,"ok":true,"data":{}})), 0);
         assert_eq!(exit_of(&json!({"v":1,"ok":false,"error":{"exit":5}})), 5);
@@ -736,7 +1260,9 @@ mod tests {
         let v: Value = serde_json::from_str(&long).unwrap();
         assert_eq!(v["truncated"], true);
         assert!(v["data"]["msg"].as_str().unwrap().contains("more bytes"));
-        let rows: Vec<Value> = (0..200).map(|i| json!({"i": i, "m": "y".repeat(1000)})).collect();
+        let rows: Vec<Value> = (0..200)
+            .map(|i| json!({"i": i, "m": "y".repeat(1000)}))
+            .collect();
         let huge = bounded(json!({"v":1,"ok":true,"data":rows}));
         assert!(huge.len() <= MAX_OUTPUT_BYTES);
         let v: Value = serde_json::from_str(&huge).unwrap();
@@ -746,10 +1272,14 @@ mod tests {
 
     #[test]
     fn a_table_is_columns_for_rows_and_lines_for_an_object() {
-        let t = table(&json!({"v":1,"ok":true,"data":{"apps":[{"name":"a","id":"1"},{"name":"b","id":"2"}]}}));
+        let t = table(
+            &json!({"v":1,"ok":true,"data":{"apps":[{"name":"a","id":"1"},{"name":"b","id":"2"}]}}),
+        );
         assert_eq!(t.lines().count(), 3);
         assert!(t.starts_with("name\tid"));
-        let e = table(&json!({"v":1,"ok":false,"error":{"code":"x","message":"m","next":"amuxd app list"}}));
+        let e = table(
+            &json!({"v":1,"ok":false,"error":{"code":"x","message":"m","next":"amuxd app list"}}),
+        );
         assert!(e.contains("next: amuxd app list"));
     }
 }

@@ -8813,6 +8813,7 @@ name = "teamclu-apps"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "serde_json",
  "tokio",
  "urlencoding",

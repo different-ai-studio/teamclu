@@ -9,6 +9,7 @@ edition = "2021"
 # a different bearer. They plug in through `Cloud` and `LocalDaemon`.
 [dependencies]
 async-trait = "0.1"
+base64 = "0.22"
 serde_json = "1"
 urlencoding = "2"
 
