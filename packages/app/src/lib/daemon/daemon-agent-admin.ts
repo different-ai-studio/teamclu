@@ -1,5 +1,4 @@
 import * as React from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { getBackend } from '@/lib/backend'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import {
@@ -56,19 +55,9 @@ function normalizeAgentTypes(value: unknown): string[] {
  * for the local routing identity.
  */
 export async function getLocalDaemonActorId(): Promise<string | null> {
-  const { isTauri } = await import('@/lib/utils')
-  if (!isTauri()) return null
-  try {
-    const info = await invoke<{ base_url: string } | null>('get_daemon_http_info')
-    if (!info?.base_url) return null
-    const resp = await fetch(`${info.base_url}/v1/info`)
-    if (!resp.ok) return null
-    const body: { actor_id?: string } = await resp.json()
-    const actorId = body.actor_id?.trim()
-    return actorId || null
-  } catch {
-    return null
-  }
+  const { readDaemonInfo } = await import('./daemon-info')
+  const actorId = (await readDaemonInfo())?.actor_id?.trim()
+  return actorId || null
 }
 
 let inFlight: { teamId: string | null; promise: Promise<string | null> } | null = null
@@ -114,35 +103,16 @@ export function useLocalDaemonActorId(): string | null {
  * Returns null outside Tauri or when the daemon is unreachable.
  */
 export async function getDaemonVersion(): Promise<string | null> {
-  const { isTauri } = await import('@/lib/utils')
-  if (!isTauri()) return null
-  try {
-    const info = await invoke<{ base_url: string } | null>('get_daemon_http_info')
-    if (!info?.base_url) return null
-    const resp = await fetch(`${info.base_url}/v1/info`)
-    if (!resp.ok) return null
-    const body: { version?: string } = await resp.json()
-    const version = body.version?.trim()
-    return version || null
-  } catch {
-    return null
-  }
+  const { readDaemonInfo } = await import('./daemon-info')
+  const version = (await readDaemonInfo())?.version?.trim()
+  return version || null
 }
 
 /** Returns the daemon's current MQTT connected state from `/v1/info`, or null if the daemon is unreachable. */
 export async function getDaemonMqttConnected(): Promise<boolean | null> {
-  const { isTauri } = await import('@/lib/utils')
-  if (!isTauri()) return null
-  try {
-    const info = await invoke<{ base_url: string } | null>('get_daemon_http_info')
-    if (!info?.base_url) return null
-    const resp = await fetch(`${info.base_url}/v1/info`)
-    if (!resp.ok) return null
-    const body: { mqtt_connected?: boolean } = await resp.json()
-    return body.mqtt_connected ?? null
-  } catch {
-    return null
-  }
+  const { readDaemonInfo } = await import('./daemon-info')
+  const connected = (await readDaemonInfo())?.mqtt_connected
+  return typeof connected === 'boolean' ? connected : null
 }
 
 type ConnectedAgentListRow = {

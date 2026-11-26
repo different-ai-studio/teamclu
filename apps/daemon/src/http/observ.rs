@@ -7,7 +7,7 @@
 
 use axum::{
     body::Body,
-    http::{header, HeaderName, HeaderValue, Request},
+    http::{header, HeaderName, HeaderValue, Method, Request},
     middleware::Next,
     response::Response,
 };
@@ -30,6 +30,31 @@ fn new_request_id() -> String {
     (0..26)
         .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
         .collect()
+}
+
+/// A routine poll slower than this is still logged at INFO: a status check
+/// that takes a second is itself worth seeing.
+const ROUTINE_POLL_SLOW_MS: u64 = 1_000;
+
+/// Status reads the desktop asks on a timer, many times a minute, for the
+/// whole life of the app: the cron change counters (every 3s), the identity /
+/// MQTT read, the health check, a workspace's runtime state.
+///
+/// At INFO they were ~40 of every minute's log lines. The desktop's diagnostic
+/// bundle keeps only the last 500 lines of this log, so a report covered nine
+/// minutes of polling and none of what the user was reporting. A successful,
+/// fast one goes to DEBUG; a failing or slow one is logged as before.
+fn is_routine_poll(method: &Method, path: &str) -> bool {
+    if method != Method::GET {
+        return false;
+    }
+    match path {
+        "/v1/cron/status" | "/v1/info" | "/v1/healthz" => true,
+        _ => path
+            .strip_prefix("/v1/workspaces/")
+            .and_then(|rest| rest.strip_suffix("/runtime"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/')),
+    }
 }
 
 /// Middleware: install or echo a request id, and log a single structured
@@ -61,6 +86,8 @@ pub async fn request_id_layer(mut req: Request<Body>, next: Next) -> Response {
         tracing::error!(request_id = %id, %method, %uri, status, elapsed_ms, "http request");
     } else if status >= 400 {
         tracing::warn!(request_id = %id, %method, %uri, status, elapsed_ms, "http request");
+    } else if is_routine_poll(&method, uri.path()) && elapsed_ms < ROUTINE_POLL_SLOW_MS {
+        tracing::debug!(request_id = %id, %method, %uri, status, elapsed_ms, "http request");
     } else {
         tracing::info!(request_id = %id, %method, %uri, status, elapsed_ms, "http request");
     }
@@ -94,5 +121,37 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a.len(), 26);
         assert!(a.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn routine_polls_are_the_timer_driven_status_reads() {
+        for path in [
+            "/v1/cron/status",
+            "/v1/info",
+            "/v1/healthz",
+            "/v1/workspaces/L1VzZXJzL21l/runtime",
+        ] {
+            assert!(is_routine_poll(&Method::GET, path), "{path}");
+        }
+    }
+
+    #[test]
+    fn everything_else_stays_at_info() {
+        // Writes to the same paths, and reads that are not polls.
+        assert!(!is_routine_poll(&Method::POST, "/v1/info"));
+        assert!(!is_routine_poll(
+            &Method::POST,
+            "/v1/workspaces/abc/runtime"
+        ));
+        for path in [
+            "/v1/rpc",
+            "/v1/cron/jobs",
+            "/v1/workspaces/abc/skills",
+            "/v1/workspaces//runtime",
+            "/v1/workspaces/a/b/runtime",
+            "/v1/workspaces/abc/runtime/extra",
+        ] {
+            assert!(!is_routine_poll(&Method::GET, path), "{path}");
+        }
     }
 }

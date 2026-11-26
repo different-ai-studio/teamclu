@@ -13,6 +13,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useAuthStore } from '@/stores/auth-store'
 import { isTauri, openExternalUrl } from '@/lib/utils'
 import { textToBase64Url } from '@/lib/base64'
+import { readDaemonInfo } from './daemon-info'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
 
@@ -254,20 +255,10 @@ type DaemonCloudAuthStatus = 'ok' | 'expired' | 'unknown'
  * shape problem degrades to `'unknown'` (never throws).
  */
 export async function fetchDaemonCloudAuthStatus(): Promise<DaemonCloudAuthStatus> {
-  if (!isTauri()) return 'unknown'
-  const info = await readDaemonHttpInfo()
-  if (!info) return 'unknown'
-  try {
-    const resp = await fetch(`${info.base_url}/v1/info`)
-    if (!resp.ok) return 'unknown'
-    const data: { cloud_auth?: { status?: string } } = await resp.json()
-    const status = data.cloud_auth?.status
-    if (status === 'expired') return 'expired'
-    if (status === 'ok') return 'ok'
-    return 'unknown'
-  } catch {
-    return 'unknown'
-  }
+  const status = (await readDaemonInfo())?.cloud_auth?.status
+  if (status === 'expired') return 'expired'
+  if (status === 'ok') return 'ok'
+  return 'unknown'
 }
 
 /**
@@ -282,18 +273,9 @@ export async function fetchDaemonCloudAuthStatus(): Promise<DaemonCloudAuthStatu
  * that already has one.
  */
 export async function fetchDaemonDeviceId(): Promise<string | null> {
-  if (!isTauri()) return null
-  const info = await readDaemonHttpInfo()
-  if (!info) return null
-  try {
-    const resp = await fetch(`${info.base_url}/v1/info`)
-    if (!resp.ok) return null
-    const data: { device_id?: unknown } = await resp.json()
-    const deviceId = typeof data.device_id === 'string' ? data.device_id.trim() : ''
-    return deviceId || null
-  } catch {
-    return null
-  }
+  const raw = (await readDaemonInfo())?.device_id
+  const deviceId = typeof raw === 'string' ? raw.trim() : ''
+  return deviceId || null
 }
 
 // ─── Authenticated fetch ──────────────────────────────────────────────────────

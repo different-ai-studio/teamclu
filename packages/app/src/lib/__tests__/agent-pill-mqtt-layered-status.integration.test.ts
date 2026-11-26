@@ -24,10 +24,14 @@ import {
 
 const getDaemonMqttConnected = vi.hoisted(() => vi.fn<() => Promise<boolean | null>>())
 
-vi.mock('@/lib/daemon/daemon-agent-admin', () => ({ getDaemonMqttConnected }))
+vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
+  getDaemonMqttConnected,
+  getLocalDaemonActorId: async () => 'local-agent',
+}))
 vi.mock('@/lib/agent/agent-device-reachability', () => ({ noteLocalDaemonSignals: vi.fn() }))
 vi.mock('@/lib/daemon/local-daemon-identity', () => ({
   getKnownLocalDaemonActorId: () => 'local-agent',
+  noteLocalDaemonActorId: () => {},
 }))
 vi.mock('@/lib/daemon/daemon-probe-signal', () => ({
   onDaemonProbeRequested: () => () => {},
