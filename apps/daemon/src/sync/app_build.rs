@@ -1279,25 +1279,31 @@ fn build_image(
         anyhow::bail!("{ERR_NO_DOCKERFILE}: {}", build.dockerfile);
     }
     run_docker(
-        &[
-            "buildx",
-            "build",
-            "--platform",
-            FC_PLATFORM,
-            "--file",
-            &build.dockerfile,
-            "--tag",
-            target.image,
-            // Into the local image store, which is what `docker push` reads.
-            "--load",
-            &build.context,
-        ],
+        &build_image_args(build, target),
         workdir,
         None,
         IMAGE_BUILD_TIMEOUT,
         ERR_IMAGE_BUILD_TIMEOUT,
     )?;
     Ok(())
+}
+
+fn build_image_args<'a>(build: &'a AppBuildSpec, target: &'a ImagePushTarget<'_>) -> [&'a str; 11] {
+    [
+        "buildx",
+        "build",
+        "--platform",
+        FC_PLATFORM,
+        // FC rejects the unknown/unknown OCI index entry created by Buildx provenance.
+        "--provenance=false",
+        "--file",
+        &build.dockerfile,
+        "--tag",
+        target.image,
+        // Into the local image store, which is what `docker push` reads.
+        "--load",
+        &build.context,
+    ]
 }
 
 /// Push the built image with credentials that touch nothing of the user's.
@@ -2460,6 +2466,39 @@ mod tests {
             .to_string();
         assert!(err.starts_with(ERR_NO_DOCKERFILE), "{err}");
         assert!(err.contains("deploy/Dockerfile"), "{err}");
+    }
+
+    #[test]
+    fn fc_container_build_disables_provenance_and_keeps_amd64_local_load() {
+        let build = AppBuildSpec {
+            kind: "container".into(),
+            output: ".output".into(),
+            command: None,
+            dockerfile: "deploy/Dockerfile".into(),
+            context: "app".into(),
+        };
+        let target = ImagePushTarget {
+            image: "registry.example.com/ns/app:sha",
+            registry: "registry.example.com",
+            username: "u",
+            password: "p",
+        };
+        assert_eq!(
+            build_image_args(&build, &target),
+            [
+                "buildx",
+                "build",
+                "--platform",
+                "linux/amd64",
+                "--provenance=false",
+                "--file",
+                "deploy/Dockerfile",
+                "--tag",
+                "registry.example.com/ns/app:sha",
+                "--load",
+                "app",
+            ]
+        );
     }
 
     #[test]
