@@ -49,7 +49,7 @@ export function deletedAppRepoName(appId: string): string {
 }
 
 /**
- * `apps.git_auth_kind` for a repo this deployment provisioned on Gitea and
+ * The repo record's auth kind (`app_forge_repos.auth_kind`) for a repo this deployment provisioned on Gitea and
  * holds a deploy key for. Null means the app was imported from a remote we
  * have no credential for — its deploys build the workdir as it sits.
  */

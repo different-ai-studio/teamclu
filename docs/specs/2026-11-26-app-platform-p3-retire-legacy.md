@@ -59,7 +59,7 @@ org 成员关系现在只能这么算（`org_roles_users` 只有角色，不覆�
 |---|---|---|---|
 | P3.1 读切换 | TeamClu 层剩下的旧读取全部改读新表：列表经 `app_links`；`relationship` / `invitedByActorId` / access 页经 `app_grants` + actor↔账号映射；git 访问和 Gitea 同步改问 `caller_app_access` 或 `app_grants`；agent 继承改读 `app_delegations`；`visibility` 由 org 授权推导。`APP_COLUMNS` 拆开 | 无（或只加函数） | ✅ 写入仍是旧列 + 触发器 |
 | P3.2 写两边 | FC 写旧列之后直接写新表：建 app 写 `created_by_user_id`、`app_links`、org 授权；PATCH visibility 同步 org 授权；access 页写 `app_grants`。触发器保留，新表这一步在 P3.4 前多为空操作 | 无 | ✅（旧列照写） |
-| P3.3 forge 表（原 P1.5） | `amux.app_forge_repos(app_id, kind, remote_url, auth_kind)` 归 TeamClu；`git_commit_sha` → 通用 `apps.deployed_revision`。读新列、旧列回填，先双写 | 新表 + 回填 + 新列 | ✅ |
+| P3.3 forge 表（原 P1.5） | `amux.app_forge_repos(app_id, remote_url, auth_kind)` 归 TeamClu；`git_commit_sha` → 通用 `apps.deployed_revision`。读新列、旧列回填，先双写 | 新表 + 回填 + 新列 | ✅ |
 | P3.4 删旧（单向） | 删旧列、`app_member_access`、`legacy_member_id`、正反两套触发器、旧函数；`apps_team_slug_uniq` 随列删；改写排行榜、`upgrade_account_to_org`、`guard_team_org_move` 改读 `app_links`；pgTAP 全部改为新形态插入；删 forge 旧列 | 删除 | ❌ |
 | ~~P3.5 独立 schema~~ | 不做（Q5）：表留在 `amux`，靠外键规则 + 边界测试守边界；单独起库留到 P4 | — | — |
 
@@ -88,6 +88,21 @@ org 成员关系现在只能这么算（`org_roles_users` 只有角色，不覆�
 - `AppTenantHooks.updated(row, patch)`：PATCH 改 visibility 后 TeamClu 同步 org 授权。
 - access 页：授权 / 撤销同时写 `app_grants`（按账号）；写之前读原级别也改读 `app_grants`。`legacy-reads` 守卫的 `app_member_access` 计数 3 → 2。
 - 测试：FC `dual-write.test.ts`（4 条）；pgTAP `app_platform_p3_dual_write.test.sql`（10 条）在真实触发器下按 FC 的顺序写，确认每一步都落在投影上、不报错不覆盖。
+
+### 2.4 P3.3 实施记录（2026-11-26）
+
+- 迁移 `20261127200000`：
+  - 新表 `amux.app_forge_repos(app_id, remote_url, auth_kind)`，归 TeamClu forge。没有照草案加 `kind` 列：`auth_kind` 已经能区分 Gitea 托管和导入，再加一列只是重复。belayo 上还有 5 行旧值 `pat`，原样搬过来。
+  - `apps.deployed_revision` 替代 `git_commit_sha`，含义不变，是客户端报上来的上次部署版本，平台不解释它。
+  - 在 P3.4 删旧列之前，两个触发器把旧列投影到新表和新列，P3.3 之前的 FC 镜像照样能用；两者都已回填一遍。
+  - 读权限：看得见 app 就看得见它的仓库，和原来的 `apps.git_remote_url` 一样；写只走 service role。
+- forge 钩子：
+  - `AppLifecycleHooks` 新增 `repos(client, ids)` 和 `recordImportedRepo`。
+  - `provisionRepo` 和外部凭证的存、清，都由 forge 自己写记录。
+  - 平台读 app 时用 `withRepos` 把 forge 记录附到行上，再交给 forge 钩子和 `mapApp`。`APP_COLUMNS` 不再含三个 git 列。
+- TeamClu 一侧：Gitea 同步、deploy key 过期清扫、git 凭证、撤销 deploy key 都改读 `app_forge_repos`。`noTeamCluForge` 也记录导入的仓库；平台的 `noForge` 不记录，所以这种部署下导入 app 的 `gitRemoteUrl` 为 null。
+- 双写：建 app（导入、Gitea 建仓）、存凭证、清凭证、finalize 都是旧列和新位置一起写。`legacy-reads` 守卫把三个 git 列也纳入检查，并加了一条：`APP_COLUMNS` 里不许出现旧列。
+- 测试：pgTAP `app_platform_p3_forge.test.sql`（16 条）覆盖投影、显式值优先、读权限；FC `forge-dual-write.test.ts`（4 条）和 finalize 一条。
 
 ## 3. 回滚
 

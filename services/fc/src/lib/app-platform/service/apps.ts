@@ -367,6 +367,24 @@ export function makeAppsRepo(host: any) {
     return userId;
   }
 
+  /**
+   * Rows with where their code lives attached — `git_remote_url` /
+   * `git_auth_kind`, the `AppRepoRow` fields — from the forge's record, read
+   * with `client` (the caller's by default: these are rows it just read). The
+   * repo is not on the app row (P3.3).
+   */
+  async function withRepos<T extends { id: string }>(rows: T[], client: any = supabase): Promise<T[]> {
+    if (rows.length === 0) return rows;
+    const repos = await forge.repos(client, rows.map((r) => r.id));
+    return rows.map((r) => {
+      const repo = repos.get(r.id);
+      return { ...r, git_remote_url: repo?.remoteUrl ?? null, git_auth_kind: repo?.authKind ?? null };
+    });
+  }
+  async function withRepo<T extends { id: string }>(row: T, client?: any): Promise<T> {
+    return (await withRepos([row], client))[0];
+  }
+
   /** amux.caller_app_access, which this code cannot run without (P2.2). */
   async function callerAccess(appId: string) {
     const access = await callCallerAppAccess(supabase, appId);
@@ -497,6 +515,7 @@ export function makeAppsRepo(host: any) {
      */
     async presentApps(rows: any[]) {
       if (rows.length === 0) return [];
+      rows = await withRepos(rows);
       const fields = await tenantFactory(this).fields(rows);
       return rows.map((r: any, i: number) => ({ ...appView(r), ...fields[i] }));
     },
@@ -531,7 +550,7 @@ export function makeAppsRepo(host: any) {
       if (cursor?.createdAt) query = applyKeysetCursor(query, "created_at", cursor.createdAt, cursor.id);
       const { data, error } = await query;
       if (error) throw error;
-      const rows = data ?? [];
+      const rows = await withRepos((data ?? []) as any[]);
       const fields = await tenant.fields(rows);
       const extra = await tenant.decorate(rows, fields);
       const last = rows.length >= limit ? rows[rows.length - 1] : null;
@@ -593,13 +612,14 @@ export function makeAppsRepo(host: any) {
     async getApp(appId: string) {
       // RLS returns nothing (PGRST116 on .single()) when the app is not
       // visible to the caller; surface that as null so the route 404s.
-      const { data, error } = await supabase
+      const { data: found, error } = await supabase
         .from("apps")
         .select(APP_COLUMNS)
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
-      if (!data) return null;
+      if (!found) return null;
+      const data = await withRepo(found);
       const tenant = tenantFactory(this);
       const fields = await tenant.fields([data]);
       const [extra] = await tenant.decorate([data], fields);
@@ -679,12 +699,15 @@ export function makeAppsRepo(host: any) {
 
       // Both import paths stop here: the app's code lives somewhere we did not
       // provision, so there is no repo of ours to create and no deploy key to
-      // hold. `git_auth_kind` stays null, which is what makes deploy build the
-      // workdir as it sits.
+      // hold. Its auth kind stays null, which is what makes deploy build the
+      // workdir as it sits. The forge records where an import lives (P3.3;
+      // the legacy column above is projected there too until P3.4).
+      if (importUrl) await forge.recordImportedRepo(row.id, importUrl);
       if (importUrl || localOnly) return this.presentApp(row);
 
       try {
-        // Ours to host: the forge creates the repo and says where it lives.
+        // Ours to host: the forge creates the repo, records it, and says
+        // where it lives; the legacy columns follow until P3.4.
         const repo = await forge.provisionRepo(row);
         const { data: updated, error: updErr } = await supabase
           .from("apps")
@@ -1124,11 +1147,12 @@ export function makeAppsRepo(host: any) {
     },
 
     async preflightAppDeploy(appId: string, input: { revision?: string; gitCommitSha?: string; declaration?: unknown; migrationIntent?: boolean }) {
-      const { data: existing, error } = await supabase.from("apps")
-        .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, provision_status, git_auth_kind, git_remote_url, fc_status, deploy_started_at, deploy_token, deploy_attempt_id")
+      const { data: found, error } = await supabase.from("apps")
+        .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, provision_status, deployed_revision, fc_status, deploy_started_at, deploy_token, deploy_attempt_id")
         .eq("id", appId).maybeSingle();
       if (error) throw error;
-      if (!existing) return null;
+      if (!found) return null;
+      const existing = await withRepo(found);
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return null;
       const target = appFunctionTargetFromRow(existing);
@@ -1213,13 +1237,14 @@ export function makeAppsRepo(host: any) {
       const declaredBuildKind = declaration.build.kind;
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
-      const { data: existing, error: selErr } = await supabase
+      const { data: found, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind, git_remote_url")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, deployed_revision")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
-      if (!existing) return null;
+      if (!found) return null;
+      const existing = await withRepo(found);
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return null;
       if (!input?.preflightToken || existing.deploy_token !== input.preflightToken) {
@@ -1331,13 +1356,14 @@ export function makeAppsRepo(host: any) {
       const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
       // visible to the caller → surface null so the route 404s.
-      const { data: existing, error: selErr } = await supabase
+      const { data: found, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, deploy_use_app_code_domain, org_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, git_auth_kind")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, deploy_use_app_code_domain, org_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, deployed_revision")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
-      if (!existing) return null;
+      if (!found) return null;
+      const existing = await withRepo(found);
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return null;
       if (!existing.deploy_token || existing.deploy_token !== deployToken) {
@@ -1436,7 +1462,8 @@ export function makeAppsRepo(host: any) {
             fc_status: "live",
             uses_app_code_domain: usesAppCodeDomain,
             fc_endpoint: r.fcEndpoint,
-            ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
+            // Both until P3.4 drops git_commit_sha (an older FC reads it).
+            ...(gitCommitSha ? { deployed_revision: gitCommitSha, git_commit_sha: gitCommitSha } : {}),
             // What is now running, as opposed to what the deploy set out to
             // build. They differ when an app's declaration changed mid-deploy.
             runtime: declaration.build.kind,
@@ -1634,7 +1661,7 @@ export function makeAppsRepo(host: any) {
     async getAppRuntimeInfo(appId: string, language?: AppLanguage) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, type, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, artifact_verification, git_commit_sha, env_deployed_at, updated_at, undeploy_operation")
+        .select("id, slug, app_code, function_naming_mode, type, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, artifact_verification, deployed_revision, env_deployed_at, updated_at, undeploy_operation")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -1663,7 +1690,7 @@ export function makeAppsRepo(host: any) {
         currentDeployment = {
           runtime: app.runtime ?? null,
           startSpec: app.start_spec ?? null,
-          commit: app.git_commit_sha ?? null,
+          commit: app.deployed_revision ?? null,
           artifactVerification: app.artifact_verification ?? null,
           deployedAt: app.env_deployed_at ?? null,
           functionName: app.fc_function_name ?? null,
@@ -1841,13 +1868,14 @@ export function makeAppsRepo(host: any) {
      * that `apps_update_if_creator` would otherwise refuse.
      */
     async authorizeAppGitCredentialWrite(appId: string): Promise<{ cur: any; writer: any } | null> {
-      const { data: cur, error } = await supabase
+      const { data: found, error } = await supabase
         .from("apps")
-        .select("id, git_remote_url, git_auth_kind")
+        .select("id")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
-      if (!cur) return null;
+      if (!found) return null;
+      const cur = await withRepo(found);
       const permission = await this.resolveAppCallerPermissionForApp(cur);
       if (permission?.level !== "admin") return null;
       if (forge.hostsRepo(cur)) {
@@ -1867,10 +1895,12 @@ export function makeAppsRepo(host: any) {
     /**
      * Store (or replace) the token for an imported app's http(s) repo.
      *
-     * The secret is written before the row names it, and deleted only after the
-     * row stops naming it (clearAppGitHttpsCredential), so a row that says
+     * The secret is written before anything names it, and deleted only after
+     * nothing does (clearAppGitHttpsCredential), so an auth kind that says
      * `https_token` always has a secret behind it. The other order leaves a
-     * window in which every fetch reads "no credential".
+     * window in which every fetch reads "no credential". The forge records
+     * the auth kind on its repo record; `git_auth_kind` is written here too
+     * until P3.4.
      */
     async setAppGitHttpsCredential(appId: string, input: unknown) {
       const gate = await this.authorizeAppGitCredentialWrite(appId);
@@ -1911,13 +1941,14 @@ export function makeAppsRepo(host: any) {
      * buy a number nothing reads. The panel asks for it; the deploy does not.
      */
     async getAppGitHead(appId: string, opts: { compare?: boolean } = {}) {
-      const { data: existing, error: selErr } = await supabase
+      const { data: found, error: selErr } = await supabase
         .from("apps")
-        .select("id, git_auth_kind, git_commit_sha, git_remote_url")
+        .select("id, deployed_revision")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
-      if (!existing) return null;
+      if (!found) return null;
+      const existing = await withRepo(found);
       // Null for a repo this deployment does not host: "we cannot see the
       // branch" is a legitimate, permanent state for an imported app.
       return forge.repoHead(existing, { compare: opts.compare === true });
@@ -2542,15 +2573,16 @@ export function makeAppsRepo(host: any) {
     },
 
     async deleteApp(appId: string) {
-      const { data: existing, error: selErr } = await supabase
+      const { data: found, error: selErr } = await supabase
         .from("apps")
         .select(
-          "id, slug, name, app_code, function_naming_mode, uses_app_code_domain, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, custom_domain",
+          "id, slug, name, app_code, function_naming_mode, uses_app_code_domain, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, custom_domain",
         )
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
-      if (!existing) return false;
+      if (!found) return false;
+      const existing = await withRepo(found);
 
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return false;

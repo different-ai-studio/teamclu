@@ -55,10 +55,11 @@ function inheritedAgents(state: any, appId: string) {
  * delegations from active agents. Derived here, as the projection is in the
  * real database until P3.4. Writes to them are recorded in `calls` and
  * otherwise ignored: P3.2's direct writes only settle what the projection
- * already holds. An actor's account is its `user_id`; the caller's actor
+ * already holds. app_forge_repos is P3.3's, from git_remote_url /
+ * git_auth_kind (20261127200000). An actor's account is its `user_id`; the caller's actor
  * (`actorRow`) without one is the signed-in test user.
  */
-const PROJECTED_TABLES = new Set(["app_links", "app_grants", "app_delegations"]);
+const PROJECTED_TABLES = new Set(["app_links", "app_grants", "app_delegations", "app_forge_repos"]);
 /** An actor's account: its `user_id`, the caller's actor's the signed-in user, else a stand-in. */
 function accountOf(state: any, actorRow: any, callerUserId: string, id: string | null | undefined): string | null {
   if (!id) return null;
@@ -88,6 +89,9 @@ function projectedTables(state: any, actorRow: any, callerUserId: string) {
         granted_by_user_id: null, source: "legacy", legacy_member_id: null, created_at: a.created_at ?? null,
       })),
     ],
+    app_forge_repos: apps.filter((a: any) => a.git_remote_url).map((a: any) => ({
+      app_id: a.id, remote_url: a.git_remote_url, auth_kind: a.git_auth_kind ?? null,
+    })),
     app_delegations: (state.agents ?? [])
       .filter((g: any) => g.status === "active" && g.owner_member_id)
       .map((g: any) => ({ delegate_user_id: userOf(g.id), principal_user_id: userOf(g.owner_member_id), source_agent_id: g.id }))
@@ -170,10 +174,19 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
       };
       // Older repository tests intentionally read complete rows. Integration opts in
       // to projection so an omitted identity column cannot silently survive a select.
-      // apps.created_by_user_id is P2.1's BEFORE trigger's, from the creating actor.
-      const derive = (row: any) => table === "apps" && row && row.created_by_user_id === undefined
-        ? { ...row, created_by_user_id: accountOf(state, actorRow, "user-app-1", row.created_by_actor_id) }
-        : row;
+      // apps.created_by_user_id is P2.1's BEFORE trigger's, from the creating
+      // actor; apps.deployed_revision is P3.3's, from git_commit_sha.
+      const derive = (row: any) => {
+        if (table !== "apps" || !row) return row;
+        let out = row;
+        if (out.created_by_user_id === undefined) {
+          out = { ...out, created_by_user_id: accountOf(state, actorRow, "user-app-1", out.created_by_actor_id) };
+        }
+        if (out.deployed_revision === undefined && out.git_commit_sha !== undefined) {
+          out = { ...out, deployed_revision: out.git_commit_sha };
+        }
+        return out;
+      };
       const project = (raw: any) => {
         const row = derive(raw);
         return !projectSelects || !row || !ctx.columns || ctx.columns === "*" ? row

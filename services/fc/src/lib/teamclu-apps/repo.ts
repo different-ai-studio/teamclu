@@ -22,6 +22,7 @@ import {
 } from "../app-permission.js";
 import { appIso, chunkedIn } from "../supabase-repo/shared.js";
 import { readTeamAppAccess } from "./team-app-access.js";
+import { readForgeRepos } from "./forge-repos.js";
 import { readUserGrantLevel, removeUserGrant, setUserGrant } from "../app-platform/grants.js";
 import { appAccessRecipientUserId, publishAppAccessChanged, type AppAccessGrantee } from "../app-access-notify.js";
 import type { TeamCluForge } from "./forge.js";
@@ -78,8 +79,11 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
     });
   }
 
-  /** The forge columns of an app the credential paths act on. */
-  const APP_GIT_COLUMNS = "id, git_remote_url, git_auth_kind";
+  /** An app row with its repo attached from the forge's record (P3.3), with `client`'s rights. */
+  async function withForgeRepo<T extends { id: string }>(client: any, app: T) {
+    const repo = (await readForgeRepos(client, [app.id])).get(app.id);
+    return { ...app, git_remote_url: repo?.remoteUrl ?? null, git_auth_kind: repo?.authKind ?? null };
+  }
 
   /** An app's team (app_links), with `client`'s rights. */
   async function appTeamId(client: any, appId: string): Promise<string | null> {
@@ -105,13 +109,13 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
     const admin = await serviceRoleClient("read app for agent git credential");
     const { data, error } = await admin
       .from("apps")
-      .select(APP_GIT_COLUMNS)
+      .select("id")
       .eq("id", appId)
       .maybeSingle();
     if (error) throw error;
     if (!data) return null;
     const teamId = await appTeamId(admin, appId);
-    return teamId ? { app: data, teamId } : null;
+    return teamId ? { app: await withForgeRepo(admin, data), teamId } : null;
   }
 
   /**
@@ -357,12 +361,13 @@ export function makeTeamCluAppsRepo(host: TeamCluAppsHost) {
     async resolveAppGitCredentialActor(
       appId: string,
     ): Promise<{ actorId: string; app: Record<string, any>; readOnly: boolean } | null> {
-      const { data: visible, error: selErr } = await supabase
+      const { data: found, error: selErr } = await supabase
         .from("apps")
-        .select(APP_GIT_COLUMNS)
+        .select("id")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
+      const visible = found ? await withForgeRepo(supabase, found) : null;
       // Team and visibility as TeamClu reads them: the app's link, and whether
       // it carries an org grant (`visibility: team`), both with the caller's token.
       const fields = visible

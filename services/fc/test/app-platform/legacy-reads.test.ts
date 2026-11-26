@@ -4,7 +4,10 @@
  * it: apps.team_id / created_by_actor_id / workspace_id / visibility,
  * app_member_access, and the actor-keyed inheritance functions.
  *
- * What is left are the writes, until P3.2 moves them: TeamClu's create
+ * P3.3 adds the forge columns (git_remote_url / git_auth_kind, now the
+ * forge's app_forge_repos; git_commit_sha, now apps.deployed_revision).
+ *
+ * What is left are the writes, kept until P3.4 beside the new ones: TeamClu's create
  * (`writeColumns`) and PATCH (`updateColumns`) write the app row's legacy
  * columns as insert/update objects, which this scan does not look at, and the
  * access tab writes app_member_access (WRITE_POINTS: its upsert and delete).
@@ -16,7 +19,10 @@ import { test } from "node:test";
 import { stripComments } from "./strip-comments.js";
 
 const SRC = join(import.meta.dirname, "../../src");
-const LEGACY_APP_COLUMNS = ["team_id", "created_by_actor_id", "workspace_id", "visibility"];
+const LEGACY_APP_COLUMNS = [
+  "team_id", "created_by_actor_id", "workspace_id", "visibility",
+  "git_remote_url", "git_auth_kind", "git_commit_sha",
+];
 const LEGACY_FUNCTIONS = ["app_inherited_agents", "agent_inherited_app_level", "actor_has_app_access", "caller_has_app_grant"];
 /** file → how many `app_member_access` references it may hold (the access tab's writes). */
 const WRITE_POINTS: Record<string, number> = { "lib/teamclu-apps/repo.ts": 2 };
@@ -47,6 +53,12 @@ test("no select or filter on amux.apps names a legacy column", () => {
     }
   }
   assert.deepEqual(hits, []);
+});
+
+test("the platform's shared app columns name no legacy column", async () => {
+  const { APP_COLUMNS } = await import("../../src/lib/supabase-repo/shared.js");
+  const named = APP_COLUMNS.split(",").map((c: string) => c.trim());
+  assert.deepEqual(named.filter((c: string) => LEGACY_APP_COLUMNS.includes(c)), []);
 });
 
 test("app_member_access is touched only by the access tab's writes", () => {

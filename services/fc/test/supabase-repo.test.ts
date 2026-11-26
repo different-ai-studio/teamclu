@@ -3329,6 +3329,7 @@ test("apps: git head compares against the deployed commit only when asked", asyn
   const managed = {
     ...APP_ROW,
     created_by_actor_id: "actor-app-1",
+    git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
     git_auth_kind: "gitea_deploy_key",
     git_commit_sha: "deadbee",
   };
@@ -3358,6 +3359,7 @@ test("apps: a deployed commit that IS the head needs no forge round trip", async
   const managed = {
     ...APP_ROW,
     created_by_actor_id: "actor-app-1",
+    git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
     git_auth_kind: "gitea_deploy_key",
     git_commit_sha: "abc123",
   };
@@ -3377,6 +3379,7 @@ test("apps: an app that never deployed reports an unknown distance, not zero", a
   const managed = {
     ...APP_ROW,
     created_by_actor_id: "actor-app-1",
+    git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
     git_auth_kind: "gitea_deploy_key",
     git_commit_sha: null,
   };
@@ -4277,6 +4280,22 @@ test("redeploy retains the legacy function name from preflight through finalize"
   assert.equal(started.fcFunctionName, "legacy-fn");
   await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
   assert.equal(finalizedName, "legacy-fn");
+});
+
+test("finalize records the deployed revision in deployed_revision and, until P3.4, git_commit_sha", async () => {
+  // P3.3: the platform's own column, written alongside the one an older FC reads.
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+    startDeploy: async (input: any) => ({ fcFunctionName: "fn", fcRegion: input.region,
+      ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put" }),
+    finalizeDeploy: async () => ({ fcEndpoint: "https://new.fcapp.run" }),
+  });
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const app: any = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+  const live = calls.find((c) => c.table === "apps" && c.op === "update" && c.row.fc_status === "live");
+  assert.equal(live?.row.deployed_revision, APP_SHA);
+  assert.equal(live?.row.git_commit_sha, APP_SHA);
+  assert.equal(app.gitCommitSha, APP_SHA, "the response field reads deployed_revision");
 });
 
 test("apps: deployApp wraps startDeploy failure as 502", async () => {

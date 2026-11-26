@@ -10,7 +10,7 @@ import { ApiError } from "../http-utils.js";
  * deploy key to: the machines that clone the repo and the agents that pull it.
  */
 
-/** `apps.git_auth_kind` for an imported http(s) repo with a stored token. */
+/** The repo record's auth kind (`app_forge_repos.auth_kind`) for an imported http(s) repo with a stored token. */
 export const GIT_HTTPS_AUTH_KIND = "https_token";
 
 /**
