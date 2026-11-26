@@ -3,7 +3,7 @@
 - 父 spec：`2026-11-24-app-platform-infra-decoupling-design.md` §7（CLI 规范 C1–C10、审批 §7.5、退役清单 §7.6）。
 - 命令树：`2026-11-24-amuxd-app-cli-design.md`（Q1–Q23 已拍板）。
 - 平台侧依赖：P2（PR #2016，Delegation、`caller_app_access`）、P3（`app_links` / `app_grants` / `app_forge_repos`）。
-- **状态：2026-11-26 已拍板（§4），开始实施。**
+- **状态：2026-11-26 已拍板（§4）；S1–S5 已在 `task/app-platform-p25` 实现（未合并）。self-host 联调（§5 最后两条）待做。**
 - **2026-11-26 决定：不做审批。** 有权限就执行，没权限就拒绝，由平台的权限判断（`caller_app_access`）决定。
   父 spec §7.5 和 CLI 设计 §2.6 / Q5、Q17–Q23 里的审批部分作废。
 

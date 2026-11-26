@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use crate::row::{app_brief, app_path, app_settings, row_id, row_str, APP_TYPES};
-use crate::{AppOps, Method, Surface};
+use crate::{AppOps, Method};
 
 /// An `update` call: every setting an operator may change, all optional.
 ///
@@ -110,7 +110,7 @@ fn needs_database(app_type: &str) -> bool {
 
 /// What an operator needs to hear about the change they just made — the
 /// consequences that are not visible on the row itself.
-pub fn update_notes(surface: Surface, before: &Value, patch: &Value, after: &Value) -> Vec<String> {
+pub fn update_notes(before: &Value, patch: &Value, after: &Value) -> Vec<String> {
     let mut notes = Vec::new();
 
     if patch.get("name").is_some() {
@@ -126,10 +126,7 @@ pub fn update_notes(surface: Surface, before: &Value, patch: &Value, after: &Val
         if needs_database(prev) && !needs_database(next) {
             notes.push(format!(
                 "WARNING: from the next deploy on this app has no database — DATABASE_URL disappears from it, and code that uses the database will fail. The data is kept, and comes back if the type is set to data_app again. {} already reports no database. Type was {prev}.",
-                match surface {
-                    Surface::Mcp => "manage_app_data",
-                    Surface::Cli => "Its data API",
-                }
+                crate::step("data tables")
             ));
         } else if !needs_database(prev) && needs_database(next) {
             notes.push(
@@ -145,7 +142,7 @@ pub fn update_notes(surface: Surface, before: &Value, patch: &Value, after: &Val
         if after.get("typePendingRedeploy").and_then(Value::as_bool) == Some(true) {
             notes.push(format!(
                 "The running app still has the old type; deploy ({}) for it to take effect.",
-                surface.step("manage_app", "deploy")
+                crate::step("deploy")
             ));
         }
     }
@@ -157,7 +154,7 @@ pub fn update_notes(surface: Surface, before: &Value, patch: &Value, after: &Val
         notes.push(if visibility == "personal" {
             format!(
                 "Only the creator and members granted access ({}) see this app now. The local daemon cannot see it either unless it created it, so agents it runs lose sight of it.",
-                surface.step("manage_app_access", "grant")
+                crate::step("access grant")
             )
         } else {
             "Everyone on the team can see this app now.".to_string()
@@ -192,10 +189,6 @@ pub fn update_notes(surface: Surface, before: &Value, patch: &Value, after: &Val
 impl AppOps<'_> {
     /// `update` — every setting on the row in one PATCH, the way the control
     /// panel saves a field: name, type, visibility and the login wall.
-    ///
-    /// Approval of an exposure change, where a surface asks for one, is the
-    /// caller's to obtain before this runs: it needs the row and the patch,
-    /// and nothing here has changed yet.
     pub async fn update(&self, row: &Value, args: &UpdateArgs) -> Result<Value, OpError> {
         let patch = args.patch()?;
         let app_id = row_id(row)?;
@@ -213,7 +206,7 @@ impl AppOps<'_> {
             "ok": true,
             "action": "update",
             "app": app_settings(&updated),
-            "notes": update_notes(self.surface(), row, &patch, &updated),
+            "notes": update_notes(row, &patch, &updated),
         }))
     }
 
@@ -238,7 +231,7 @@ impl AppOps<'_> {
         } else {
             format!(
                 "Uninstall accepted, not yet complete. Read {} to verify cleanup progress; do not claim success until the operation succeeds.",
-                self.surface().step("manage_app", "status")
+                crate::step("status")
             )
         };
         Ok(json!({
@@ -363,29 +356,21 @@ mod tests {
     fn leaving_data_app_warns_that_the_database_goes_away_on_deploy() {
         let before = json!({ "type": "data_app" });
         let after = json!({ "type": "static_web", "typePendingRedeploy": true });
-        let notes = update_notes(
-            Surface::Mcp,
-            &before,
-            &json!({ "type": "static_web" }),
-            &after,
-        )
-        .join("\n");
+        let notes = update_notes(&before, &json!({ "type": "static_web" }), &after).join("\n");
         assert!(
             notes.contains("WARNING") && notes.contains("DATABASE_URL"),
             "{notes}"
         );
         assert!(notes.contains("data is kept"), "{notes}");
-        assert!(notes.contains("manage_app action \"deploy\""), "{notes}");
+        assert!(notes.contains("`amuxd app deploy`"), "{notes}");
 
         // Legacy rows store an unrecognised type, which IS a data app.
         let legacy = json!({ "type": "fullstack_tanstack_postgres" });
-        let notes =
-            update_notes(Surface::Cli, &legacy, &json!({ "type": "slides" }), &after).join("\n");
+        let notes = update_notes(&legacy, &json!({ "type": "slides" }), &after).join("\n");
         assert!(notes.contains("WARNING"), "{notes}");
         assert!(notes.contains("`amuxd app deploy`"), "{notes}");
 
         let notes = update_notes(
-            Surface::Mcp,
             &json!({ "type": "static_web" }),
             &json!({ "type": "data_app" }),
             &json!({ "type": "data_app" }),
@@ -398,7 +383,6 @@ mod tests {
     #[test]
     fn a_login_change_says_it_is_live_without_a_deploy() {
         let notes = update_notes(
-            Surface::Mcp,
             &json!({ "authMode": "platform" }),
             &json!({ "authMode": "none" }),
             &json!({ "authMode": "none" }),
@@ -417,7 +401,7 @@ mod tests {
             json!({ "id": "a1", "name": "账本", "visibility": "team" }),
         );
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let out = ops
             .update(
@@ -446,7 +430,7 @@ mod tests {
             json!({ "app": { "id": "a1", "fcStatus": "uninstalling" }, "operation": { "status": "running" } }),
         );
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let out = ops.undeploy(&json!({ "id": "a1" })).await.unwrap();
         assert_eq!(out["complete"], false);
@@ -464,7 +448,7 @@ mod tests {
             r#"{"code":"app_uninstall_required","message":"Uninstall the deployment successfully before deleting this app."}"#,
         );
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let err = ops.delete(&json!({ "id": "a1" })).await.unwrap_err();
         assert!(err.contains("`amuxd app undeploy`"), "{err}");
@@ -475,7 +459,7 @@ mod tests {
         let cloud = FakeCloud::default();
         cloud.reply(Method::Delete, "/v1/apps/a1", Value::Null);
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let out = ops
             .delete(&json!({ "id": "a1", "name": "记账" }))

@@ -9,16 +9,8 @@
 //   POST /mcp-put           — replace workspace MCP map (daemon)
 //   POST /session-archive   — archive a cloud session (PATCH archivedAt)
 //   POST /session-participants — list/add/remove a session's participants
-//   POST /app-manage        — an app's settings, deploy, logs, delete
-//   POST /app-access        — who on the team may work on an app
-//   POST /app-data          — browse and edit a deployed app's own database
-//   POST /app-files         — an app's stored files
-//   POST /app-env           — an app's environment variables and secrets
-//   POST /app-cron          — an app's cloud scheduled tasks
-//   POST /app-domain        — an app's custom domain
 //
-// The app routes live in `introspect_api/apps.rs`, which maps each one onto
-// the app control panel surface it mirrors.
+// Apps are not here: agents manage them with `amuxd app` (P2.5).
 //
 // Served by axum. STR-10: this used to be a raw `TcpStream` with hand-rolled
 // request parsing — a fixed 64 KiB header read, a `\r\n\r\n` scan, a
@@ -49,7 +41,6 @@
 // agent included — so a call that changes something must also come from an
 // agent host amuxd spawned: see `introspect_api/caller.rs`.
 
-mod apps;
 mod caller;
 mod confirm;
 mod publication;
@@ -339,26 +330,6 @@ fn router(app: AppHandle, token: Arc<str>, verifier: caller::CallerVerifier) -> 
             post_route!(handle_session_participants),
         )
         .route("/session-archive", post_route!(handle_session_archive))
-        // Hand-wired rather than `post_route!`: the deploy gate scopes a
-        // remembered approval to the agent host that asked, so this one handler
-        // needs the caller the gate vouched for.
-        .route(
-            "/app-manage",
-            axum::routing::post(
-                |State(app): State<AppHandle>,
-                 caller: Option<axum::Extension<caller::AgentCaller>>,
-                 body: Bytes| async move {
-                    let caller = caller.map(|axum::Extension(caller)| caller);
-                    handler_response(apps::handle_app_manage(&app, caller.as_ref(), &body).await)
-                },
-            ),
-        )
-        .route("/app-access", post_route!(apps::handle_app_access))
-        .route("/app-data", post_route!(apps::handle_app_data))
-        .route("/app-files", post_route!(apps::handle_app_files))
-        .route("/app-env", post_route!(apps::handle_app_env))
-        .route("/app-cron", post_route!(apps::handle_app_cron))
-        .route("/app-domain", post_route!(apps::handle_app_domain))
         .fallback(not_found)
         .with_state(app)
         // Inside the bearer gate, so an unauthenticated request never costs a

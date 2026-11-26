@@ -6,15 +6,13 @@
 //! says which of a handful of things went wrong. [`ErrorKind`] is that
 //! handful; the exit status is a function of it alone.
 //!
-//! The MCP surface only ever showed the sentence, so `Display` is the
-//! sentence and nothing else: what the desktop prints does not change.
+//! `Display` is the sentence and nothing else.
 
 use std::fmt;
 
 use serde_json::{json, Value};
 
 use crate::cloud::{explain, CloudError};
-use crate::Surface;
 
 /// What went wrong, as far as the caller's next move is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,7 +135,7 @@ impl OpError {
 
     /// A failed Cloud API call: the kind from the status, the server's code,
     /// and the sentence [`explain`] has always given.
-    pub fn from_cloud(surface: Surface, what: &str, e: &CloudError) -> Self {
+    pub fn from_cloud(what: &str, e: &CloudError) -> Self {
         let kind = match e.status {
             0 => ErrorKind::Upstream,
             400 | 422 => ErrorKind::Invalid,
@@ -157,7 +155,7 @@ impl OpError {
         Self {
             kind,
             code,
-            message: explain(surface, what, e),
+            message: explain(what, e),
             next: None,
             retryable: matches!(e.status, 0 | 429 | 502 | 503 | 504),
         }
@@ -184,8 +182,7 @@ impl fmt::Display for OpError {
 
 impl std::error::Error for OpError {}
 
-/// The sentence alone, for a surface that only ever showed one (the
-/// desktop's MCP tools): `?` there keeps answering exactly what it did.
+/// The sentence alone, for a caller that only reports one.
 impl From<OpError> for String {
     fn from(e: OpError) -> Self {
         e.message
@@ -233,18 +230,17 @@ mod tests {
             409,
             br#"{"error":{"code":"app_not_deployed","message":"x"}}"#,
         );
-        let op = OpError::from_cloud(Surface::Cli, "Reading logs", &e);
+        let op = OpError::from_cloud("Reading logs", &e);
         assert_eq!(op.kind, ErrorKind::Conflict);
         assert_eq!(op.code, "app_not_deployed");
-        assert_eq!(op.to_string(), explain(Surface::Cli, "Reading logs", &e));
+        assert_eq!(op.to_string(), explain("Reading logs", &e));
         assert!(!op.retryable);
     }
 
     #[test]
     fn statuses_map_to_kinds_and_only_transient_ones_are_retryable() {
-        let kind = |status: u16| {
-            OpError::from_cloud(Surface::Cli, "x", &CloudError::from_response(status, b"{}"))
-        };
+        let kind =
+            |status: u16| OpError::from_cloud("x", &CloudError::from_response(status, b"{}"));
         assert_eq!(kind(401).kind, ErrorKind::Unauthenticated);
         assert_eq!(kind(403).kind, ErrorKind::Forbidden);
         assert_eq!(kind(404).kind, ErrorKind::NotFound);
@@ -253,7 +249,7 @@ mod tests {
         assert!(!kind(500).retryable);
         assert!(kind(503).retryable);
         assert_eq!(kind(404).code, "http_404");
-        let unreachable = OpError::from_cloud(Surface::Cli, "x", &CloudError::network("dns"));
+        let unreachable = OpError::from_cloud("x", &CloudError::network("dns"));
         assert_eq!(unreachable.code, "cloud_unreachable");
         assert!(unreachable.retryable);
     }

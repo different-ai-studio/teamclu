@@ -33,7 +33,7 @@ use serde_json::Value;
 use teamclu_apps::{
     AppOps, AppSelector, Cloud, CloudError, CreateArgs, CronFields, DaemonError, FilesQuery,
     GateRule, GateSet, Host, LocalDaemon, LogsArgs, Method, Named, OpError, RowRef, RowsQuery,
-    Surface, UpdateArgs,
+    UpdateArgs,
 };
 
 use super::app_op_jobs::{OpStore, MAX_WAIT};
@@ -303,11 +303,7 @@ impl LocalDaemon for InProcessDaemon {
 
 struct CliHost;
 
-impl Host for CliHost {
-    fn surface(&self) -> Surface {
-        Surface::Cli
-    }
-}
+impl Host for CliHost {}
 
 // ─── The route ──────────────────────────────────────────────────────────────
 

@@ -2,8 +2,9 @@
 //!
 //! The bearer gate (SEC-1, in the parent module) proves a caller can read a file
 //! this OS user owns. Every program the user runs can — including another coding
-//! agent, such as Codex, opened on an app's checkout, which found the sidecar in
-//! `~/.amuxd/mcp.json` and published an app with it.
+//! agent, such as Codex, which found the sidecar in `~/.amuxd/mcp.json` and
+//! once published an app with it (app tools have since left this API for
+//! `amuxd app`).
 //!
 //! So a call that changes something, or reads MCP config (which carries
 //! credentials), must also present the runtime-context token amuxd gave the agent
@@ -40,20 +41,6 @@ pub(crate) enum RouteAccess {
 pub(crate) fn route_access(path: &str) -> RouteAccess {
     use RouteAccess::*;
     match path {
-        "/app-manage" => ReadActions(&[
-            "list",
-            "status",
-            "auth_info",
-            "runtime_info",
-            "sessions",
-            "logs",
-        ]),
-        "/app-access" => ReadActions(&["list"]),
-        "/app-data" => ReadActions(&["tables", "rows"]),
-        "/app-files" => ReadActions(&["usage", "list", "download_url"]),
-        "/app-env" => ReadActions(&["list"]),
-        "/app-cron" => ReadActions(&["list", "runs"]),
-        "/app-domain" => ReadActions(&["get"]),
         "/session-participants" => ReadActions(&["list", "list_candidates"]),
         // `/mcp-get` only reads, but what it returns is MCP config — API keys in
         // `environment`, bearer headers — so it stays agent-only.
@@ -234,8 +221,8 @@ pub(crate) async fn caller_gate(
         None => CallerRejection::NotAnAgent,
         Some(caller) => match verifier(caller.clone()).await {
             Ok(()) => {
-                // Handlers that scope something to *who* asked need the caller,
-                // and only this gate knows it has been vouched for. Carrying it
+                // A handler that scopes something to *who* asked needs the
+                // caller, and only this gate knows it has been vouched for. Carrying it
                 // as an extension means an unverified request cannot produce
                 // one: nothing else in the router inserts it.
                 let mut request = request;
@@ -275,23 +262,23 @@ mod tests {
             RouteAccess::AgentOnly => false,
             RouteAccess::ReadActions(reads) => is_read_action(body.as_bytes(), reads),
         };
-        assert!(reads("/app-manage", r#"{"action":"list"}"#));
-        assert!(reads("/app-manage", r#"{"action":" logs "}"#));
-        assert!(reads("/app-data", r#"{"action":"rows"}"#));
+        assert!(reads("/session-participants", r#"{"action":"list"}"#));
+        assert!(reads(
+            "/session-participants",
+            r#"{"action":" list_candidates "}"#
+        ));
 
-        // What the Codex session did: create, then deploy.
-        assert!(!reads("/app-manage", r#"{"action":"create"}"#));
-        assert!(!reads("/app-manage", r#"{"action":"deploy"}"#));
-        assert!(!reads("/app-data", r#"{"action":"update_row"}"#));
-        assert!(!reads("/app-data", r#"{"action":"insert_row"}"#));
+        assert!(!reads("/session-participants", r#"{"action":"add"}"#));
+        assert!(!reads("/session-participants", r#"{"action":"remove"}"#));
         // No action, a body that does not parse, a route with no reads.
-        assert!(!reads("/app-manage", "{}"));
-        assert!(!reads("/app-manage", "not json"));
+        assert!(!reads("/session-participants", "{}"));
+        assert!(!reads("/session-participants", "not json"));
         assert!(!reads("/mcp-put", r#"{"action":"list"}"#));
         // MCP config carries credentials.
         assert!(!reads("/mcp-get", "{}"));
-        // A route nobody classified fails closed.
-        assert!(!reads("/app-something-new", r#"{"action":"list"}"#));
+        // A route nobody classified fails closed — the retired app routes too.
+        assert!(!reads("/something-new", r#"{"action":"list"}"#));
+        assert!(!reads("/app-manage", r#"{"action":"list"}"#));
     }
 
     fn caller_headers(token: &str, generation: &str, backend: &str) -> HeaderMap {
@@ -343,7 +330,7 @@ mod tests {
         // Echo the body so a test sees what reached the handler.
         let echo = post(|body: Bytes| async move { body });
         Router::new()
-            .route("/app-manage", echo.clone())
+            .route("/session-participants", echo.clone())
             .route("/mcp-put", echo)
             .layer(axum::middleware::from_fn_with_state(verifier, caller_gate))
     }
@@ -372,11 +359,13 @@ mod tests {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    const ROUTE: &str = "/session-participants";
+
     #[tokio::test]
     async fn a_read_needs_no_caller_and_asks_nobody() {
         let (verifier, asked) = stub_verifier(|| Err(CallerRejection::UnknownAgent));
-        let body = r#"{"action":"status"}"#;
-        let (status, echoed) = call(guarded_router(verifier), "/app-manage", body, None).await;
+        let body = r#"{"action":"list","session_id":"s1"}"#;
+        let (status, echoed) = call(guarded_router(verifier), ROUTE, body, None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             echoed, body,
@@ -386,41 +375,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auth_info_reads_without_a_mutation_caller_but_updates_still_require_one() {
-        let (verifier, asked) = stub_verifier(|| Err(CallerRejection::UnknownAgent));
-        let body = r#"{"action":"auth_info","app_id":"app-1"}"#;
-        let (status, echoed) = call(guarded_router(verifier), "/app-manage", body, None).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(echoed, body);
-        assert_eq!(asked.load(Ordering::SeqCst), 0);
-        for action in ["update", "deploy"] {
-            let (verifier, _) = stub_verifier(|| Ok(()));
-            let body = serde_json::json!({"action":action, "app_id":"app-1"}).to_string();
-            let (status, _) = call(guarded_router(verifier), "/app-manage", &body, None).await;
-            assert_eq!(status, StatusCode::FORBIDDEN, "{action}");
-        }
-    }
-
-    #[tokio::test]
-    async fn runtime_info_needs_no_agent_caller() {
-        let (verifier, asked) = stub_verifier(|| Err(CallerRejection::UnknownAgent));
-        let body = r#"{"action":"runtime_info","app_id":"app-1"}"#;
-        let (status, echoed) = call(guarded_router(verifier), "/app-manage", body, None).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(echoed, body);
-        assert_eq!(asked.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn a_sidecar_started_outside_an_agent_cannot_deploy() {
+    async fn a_sidecar_started_outside_an_agent_cannot_change_anything() {
         let (verifier, asked) = stub_verifier(|| Ok(()));
-        let (status, message) = call(
-            guarded_router(verifier),
-            "/app-manage",
-            r#"{"action":"deploy"}"#,
-            None,
-        )
-        .await;
+        let (status, message) =
+            call(guarded_router(verifier), ROUTE, r#"{"action":"add"}"#, None).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(message.contains("nothing was done"), "{message}");
         assert_eq!(asked.load(Ordering::SeqCst), 0);
@@ -429,10 +387,10 @@ mod tests {
     #[tokio::test]
     async fn a_verified_agent_gets_through_with_its_body() {
         let (verifier, asked) = stub_verifier(|| Ok(()));
-        let body = r#"{"action":"deploy","app_id":"a1"}"#;
+        let body = r#"{"action":"add","session_id":"s1","actor_id":"a1"}"#;
         let (status, echoed) = call(
             guarded_router(verifier),
-            "/app-manage",
+            ROUTE,
             body,
             Some(caller_headers("rtctx_a", "pi-1", "pi")),
         )
@@ -444,14 +402,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_verified_caller_reaches_the_handler_and_an_unverified_one_never_does() {
-        // The deploy gate scopes a remembered approval to the host that asked,
-        // so it has to be able to tell. Only this middleware inserts the
-        // extension, which is what makes its presence proof of verification.
+        // Only this middleware inserts the extension, which is what makes its
+        // presence proof of verification.
         let seen: Arc<std::sync::Mutex<Option<AgentCaller>>> = Arc::default();
         let captured = seen.clone();
         let router = Router::new()
             .route(
-                "/app-manage",
+                ROUTE,
                 post(
                     move |caller: Option<axum::Extension<AgentCaller>>, _body: Bytes| {
                         let captured = captured.clone();
@@ -470,8 +427,8 @@ mod tests {
 
         let (status, _) = call(
             router.clone(),
-            "/app-manage",
-            r#"{"action":"deploy"}"#,
+            ROUTE,
+            r#"{"action":"remove"}"#,
             Some(caller_headers("rtctx_a", "pi-1", "pi")),
         )
         .await;
@@ -485,7 +442,7 @@ mod tests {
 
         // A read needs no caller, and must not arrive carrying one.
         *seen.lock().unwrap() = None;
-        let (status, _) = call(router, "/app-manage", r#"{"action":"list"}"#, None).await;
+        let (status, _) = call(router, ROUTE, r#"{"action":"list"}"#, None).await;
         assert_eq!(status, StatusCode::OK);
         assert!(seen.lock().unwrap().is_none());
     }

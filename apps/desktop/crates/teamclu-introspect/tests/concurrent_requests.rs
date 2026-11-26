@@ -26,10 +26,10 @@ fn reply_to_desktop_request(mut stream: TcpStream) {
         .as_str()
         .unwrap()
         .to_string();
-    if action == "status" {
+    if action == "list" {
         thread::sleep(Duration::from_millis(350));
     }
-    let response = json!({"action": action, "app": {"id": "fixture"}}).to_string();
+    let response = json!({"action": action, "items": []}).to_string();
     write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -41,7 +41,7 @@ fn reply_to_desktop_request(mut stream: TcpStream) {
 }
 
 #[test]
-fn recovery_read_completes_before_a_blocked_tool_call() {
+fn a_fast_call_completes_before_a_slow_one() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
@@ -77,11 +77,14 @@ fn recovery_read_completes_before_a_blocked_tool_call() {
         .spawn()
         .unwrap();
     let stdin = child.stdin.as_mut().unwrap();
-    for (id, action) in [(1, "status"), (2, "deploy_status")] {
+    // A slow desktop call must not hold the one after it: each request runs
+    // on its own task.
+    let session = "11111111-2222-4333-8444-555555555555";
+    for (id, action) in [(1, "list"), (2, "list_candidates")] {
         writeln!(
             stdin,
             "{}",
-            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"manage_app","arguments":{"action":action,"app_id":"fixture"}}})
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"manage_participants","arguments":{"action":action,"session_id":session}}})
         )
         .unwrap();
     }
@@ -101,7 +104,7 @@ fn recovery_read_completes_before_a_blocked_tool_call() {
     assert_eq!(replies.len(), 2);
     assert_eq!(
         replies[0]["id"], 2,
-        "recovery read waited behind the slow request"
+        "the fast call waited behind the slow one"
     );
     assert_eq!(replies[1]["id"], 1);
 }

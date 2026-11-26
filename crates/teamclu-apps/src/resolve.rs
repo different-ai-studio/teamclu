@@ -15,8 +15,7 @@ use crate::AppOps;
 pub struct AppSelector {
     pub app_id: Option<String>,
     pub app_name: Option<String>,
-    /// The directory the caller is working in: an MCP sidecar's
-    /// `--workspace`, a CLI's current directory.
+    /// The directory the caller is working in: the CLI's current directory.
     pub workspace_path: Option<String>,
 }
 
@@ -194,7 +193,7 @@ impl AppOps<'_> {
     ) -> Result<String, OpError> {
         let ask = format!(
             "name the app by id or name, or run {} to see this team's apps",
-            self.surface().step("manage_app", "list")
+            crate::step("list")
         );
         let workspace = selector.workspace_path.as_deref().ok_or_else(|| {
             OpError::invalid(
@@ -213,7 +212,7 @@ impl AppOps<'_> {
                 "not_a_checkout",
                 format!("{workspace} is not the checkout of any app in this team — {ask}"),
             )
-            .with_next(self.surface().step("manage_app", "list"))
+            .with_next(crate::step("list"))
         })
     }
 
@@ -238,7 +237,7 @@ impl AppOps<'_> {
 mod tests {
     use super::*;
     use crate::test_support::{FakeCloud, FakeDaemon, TestHost};
-    use crate::{Method, Surface};
+    use crate::Method;
 
     fn checkouts(pairs: &[(&str, &str)]) -> Vec<(String, PathBuf)> {
         pairs
@@ -290,7 +289,7 @@ mod tests {
             json!({ "items": [{ "id": "a2", "name": "Two" }], "nextCursor": null }),
         );
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let apps = ops.list_team_apps("t1").await.unwrap();
         let ids: Vec<_> = apps.iter().map(|a| a["id"].as_str().unwrap()).collect();
@@ -310,7 +309,7 @@ mod tests {
             ]}),
         );
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
 
         let one = AppSelector {
@@ -347,7 +346,7 @@ mod tests {
             r#"{"error":{"code":"not_found","message":"app not found"}}"#,
         );
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let err = ops
             .resolve_app(
@@ -368,10 +367,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_name_and_no_checkout_says_how_to_name_one_on_this_surface() {
+    async fn no_name_and_no_checkout_says_how_to_name_one() {
         let cloud = FakeCloud::default();
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let err = ops
             .resolve_app(

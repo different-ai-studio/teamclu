@@ -70,8 +70,8 @@ pub trait LocalDaemon: Send + Sync {
         dir: &str,
     ) -> Result<Value, DaemonError>;
 
-    /// `POST /v1/apps/:id/move-workdir` — `{ workdir }`. A surface that has
-    /// no way to move a checkout keeps the default, which refuses.
+    /// `POST /v1/apps/:id/move-workdir` — `{ workdir }`. An implementation
+    /// that cannot move a checkout keeps the default, which refuses.
     async fn move_workdir(
         &self,
         _app_id: &str,

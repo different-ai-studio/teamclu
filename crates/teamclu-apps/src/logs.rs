@@ -61,7 +61,7 @@ impl AppOps<'_> {
                 "app_not_deployed",
                 format!(
                 "This app has never been deployed, so it has no logs yet. Deploy it first ({}).",
-                self.surface().step("manage_app", "deploy")
+                crate::step("deploy")
             ),
             ));
         }

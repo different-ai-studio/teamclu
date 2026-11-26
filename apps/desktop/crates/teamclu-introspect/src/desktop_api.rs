@@ -15,7 +15,7 @@
 //! Any program running as this user can read that file too, so calls also
 //! carry the agent host this sidecar runs under ([`caller_headers`]). The
 //! desktop checks those with amuxd, and refuses a call that changes something
-//! (a deploy, an MCP config edit) without them — which is every call from a
+//! (an MCP config edit, a session archive) without them — which is every call from a
 //! copy of the sidecar that another agent, such as Codex, started itself.
 
 use serde_json::Value;

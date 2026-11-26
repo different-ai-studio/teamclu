@@ -1,7 +1,7 @@
 //! The app as this machine sees it: where its checkout is (`checkout where`),
 //! pointing it at a folder (`checkout bind`) or moving it (`checkout move`),
 //! what this machine can build (`runtime`), and the sessions opened on it
-//! (`sessions`). Moved here from the desktop's `manage_app` so `amuxd app`
+//! (`sessions`). Moved here from the desktop's MCP handlers so `amuxd app`
 //! answers the same way (P2.5 S2).
 
 use std::path::Path;
@@ -79,8 +79,8 @@ impl AppOps<'_> {
         if !exists {
             out["next"] = json!(format!(
                 "No checkout on this machine yet: {} puts the code here, {} uses a folder that already has it.",
-                self.surface().step("manage_app_checkout", "clone"),
-                self.surface().step("manage_app_checkout", "bind"),
+                crate::step("checkout clone"),
+                crate::step("checkout bind"),
             ));
         }
         Ok(out)

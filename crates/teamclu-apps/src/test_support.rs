@@ -7,7 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::{Cloud, CloudError, DaemonError, Host, LocalDaemon, Method, Surface};
+use crate::{Cloud, CloudError, DaemonError, Host, LocalDaemon, Method};
 
 /// Canned replies by exact `(method, path)`; anything else is a 404. Every
 /// request is recorded with its body.
@@ -136,11 +136,6 @@ impl LocalDaemon for FakeDaemon {
     }
 }
 
-pub struct TestHost(pub Surface);
+pub struct TestHost;
 
-#[async_trait]
-impl Host for TestHost {
-    fn surface(&self) -> Surface {
-        self.0
-    }
-}
+impl Host for TestHost {}

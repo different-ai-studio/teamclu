@@ -5,8 +5,7 @@
 //! Permission tiers are the server's to enforce and are only named in each
 //! failure's "what was being done", so a 404 the API returns for "not
 //! allowed" reads as the permission it probably is. Moved here from the
-//! desktop's `introspect_api/apps/{settings,data}.rs` so `amuxd app env|cron|
-//! domain|data` and the desktop answer the same way (P2.5 S2a).
+//! desktop's MCP handlers (P2.5 S2a), which have since been removed.
 
 use std::time::Duration;
 
@@ -262,7 +261,7 @@ impl AppOps<'_> {
     fn env_not_live(&self) -> String {
         format!(
             "Not live yet: the environment is baked into the function, so the app sees this on its next deploy ({}).",
-            self.surface().step("manage_app", "deploy")
+            crate::step("deploy")
         )
     }
 
@@ -509,7 +508,7 @@ impl AppOps<'_> {
         let hint = (bound.is_some() && !verified).then(|| {
             format!(
                 "Not served until verified. To see the DNS records again, run {} with the same domain — it keeps the token and any verification.",
-                self.surface().step("manage_app_domain", "set")
+                crate::step("domain set")
             )
         });
         Ok(json!({
@@ -539,7 +538,7 @@ impl AppOps<'_> {
         out["app_id"] = json!(app_id);
         out["next"] = json!(format!(
             "Publish these DNS records at the domain's DNS provider, then run {}. The domain is not served until verify succeeds.",
-            self.surface().step("manage_app_domain", "verify")
+            crate::step("domain verify")
         ));
         Ok(out)
     }
@@ -571,7 +570,7 @@ impl AppOps<'_> {
                 message: format!(
                     "{} — DNS changes can take a while to propagate; verify again later. {} with the same domain shows the records to publish.",
                     e.message,
-                    self.surface().step("manage_app_domain", "set")
+                    crate::step("domain set")
                 ),
                 retryable: true,
                 ..e

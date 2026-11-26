@@ -387,7 +387,7 @@ pub async fn run_seed(
             "outcome": "unreachable",
             "error": format!(
                 "{DAEMON_DOWN} The app stays pending; run {} once amuxd is up.",
-                ops.surface().step("manage_app", "reseed")
+                crate::step("checkout reseed")
             ),
         }),
         Err(e) => {
@@ -584,27 +584,26 @@ impl AppOps<'_> {
             outcome.as_str(),
             "seeded" | "bound" | "not_needed" | "skipped"
         );
-        let surface = self.surface();
         let next = match outcome.as_str() {
             "seeded" | "bound" => format!(
                 "The code is on this machine at checkout.workdir. Edit it there, commit, then deploy with {}.",
-                surface.step("manage_app", "deploy")
+                crate::step("deploy")
             ),
             "skipped" => format!(
                 "The app exists with no code anywhere yet. When you want it on this machine, run {}.",
-                surface.step("manage_app_checkout", "reseed")
+                crate::step("checkout reseed")
             ),
             "unreachable" => format!(
                 "Start amuxd, then run {} on this app.",
-                surface.step("manage_app", "reseed")
+                crate::step("checkout reseed")
             ),
             "failed" => format!(
                 "The app exists but has no code yet. Fix the cause above, then run {} on this app.",
-                surface.step("manage_app", "reseed")
+                crate::step("checkout reseed")
             ),
             _ => format!(
                 "Check the app with {}.",
-                surface.step("manage_app", "status")
+                crate::step("status")
             ),
         };
         Ok(json!({
@@ -647,7 +646,6 @@ impl AppOps<'_> {
 /// only says whether the creator's own clone worked, and the repository is
 /// there to fetch either way. Same rule as `ensureAppCheckout`.
 fn download_allowed(
-    surface: crate::Surface,
     provision_status: &str,
     gitea_managed: bool,
     has_remote: bool,
@@ -657,7 +655,7 @@ fn download_allowed(
     }
     Err(OpError::conflict("nothing_to_download", format!(
         "This app's code has not been written anywhere yet (provision_status {provision_status:?}), so there is nothing to download. Run {} on it first.",
-        surface.step("manage_app", "reseed")
+        crate::step("checkout reseed")
     )))
 }
 
@@ -671,7 +669,6 @@ impl AppOps<'_> {
         let app_id = row_id(row)?;
         let status = row_str(row, "provisionStatus").unwrap_or("");
         download_allowed(
-            self.surface(),
             status,
             is_gitea_managed(row),
             row_str(row, "gitRemoteUrl").is_some(),
@@ -773,7 +770,7 @@ impl AppOps<'_> {
 mod tests {
     use super::*;
     use crate::test_support::{FakeCloud, FakeDaemon, TestHost};
-    use crate::{DaemonError, Surface};
+    use crate::DaemonError;
 
     fn args(f: impl FnOnce(&mut CreateArgs)) -> CreateArgs {
         let mut a = CreateArgs {
@@ -835,7 +832,7 @@ mod tests {
 
     #[test]
     fn an_import_downloads_whatever_its_status_but_a_hosted_repo_must_be_ready() {
-        let ok = |status, gitea, remote| download_allowed(Surface::Mcp, status, gitea, remote);
+        let ok = |status, gitea, remote| download_allowed(status, gitea, remote);
         assert!(ok("ready", true, true).is_ok());
         for status in ["pending", "repo_created", "error"] {
             // A hosted repo short of ready was never seeded and would clone empty.
@@ -871,7 +868,7 @@ mod tests {
         *daemon.seed.lock().unwrap() = Some(Ok(
             json!({ "status": "ready", "workdir": "/nonexistent-checkout/a1" }),
         ));
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let row = json!({ "id": "a1", "teamId": "t1", "provisionStatus": "ready", "gitAuthKind": "gitea_deploy_key" });
 
@@ -901,7 +898,7 @@ mod tests {
         *daemon.seed.lock().unwrap() = Some(Ok(
             json!({ "status": "ready", "workdir": "/nonexistent-checkout/a1" }),
         ));
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let row = json!({ "id": "a1", "teamId": "t1", "provisionStatus": "ready", "gitAuthKind": "gitea_deploy_key" });
 
@@ -950,7 +947,7 @@ mod tests {
         cloud.reply(Method::Post, "/v1/apps", row.clone());
         cloud.reply(Method::Get, "/v1/apps/a1", row);
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let out = ops
             .create(
@@ -1010,7 +1007,7 @@ mod tests {
         let daemon = FakeDaemon::default();
         *daemon.seed.lock().unwrap() =
             Some(Ok(json!({ "status": "seeded", "workdir": "/apps/a1" })));
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
 
         let out = ops
@@ -1054,7 +1051,7 @@ mod tests {
         cloud.reply(Method::Patch, "/v1/apps/a2", json!({}));
         let daemon = FakeDaemon::default();
         *daemon.seed.lock().unwrap() = Some(Err(DaemonError::failed("repository not found")));
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
 
         let err = ops

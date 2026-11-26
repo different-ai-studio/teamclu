@@ -1,8 +1,8 @@
 //! The files an app stored in object storage (the control panel's 应用附件).
 //!
 //! Only metadata and signed URLs pass through here. The bytes of an upload or
-//! a download move in the process that asked — `amuxd app files get|put`, or
-//! the desktop's MCP sidecar — under that process's own file permissions: the
+//! a download move in the process that asked — `amuxd app files get|put` —
+//! under that process's own file permissions: the
 //! daemon is not the agent, and reading or writing a path an agent named is
 //! not something it should do on the agent's behalf.
 
@@ -241,7 +241,7 @@ impl AppOps<'_> {
                 "root_prefix",
                 "files rm -r needs a folder, not the storage root",
             )
-            .with_next(self.surface().step("manage_app_files", "purge")));
+            .with_next(crate::step("files purge")));
         }
         let out = self
             .call(

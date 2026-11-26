@@ -296,7 +296,7 @@ impl AppOps<'_> {
                     kind: crate::ErrorKind::Unknown,
                     code: "deploy_outcome_unknown".to_string(),
                     message: format!("{} — the deploy may or may not have gone live", e.message),
-                    next: Some(self.surface().step("manage_app", "status")),
+                    next: Some(crate::step("status")),
                     retryable: false,
                 }
             } else {
@@ -324,8 +324,8 @@ impl AppOps<'_> {
         if provision != "ready" {
             return Err(OpError::conflict("app_not_ready", format!(
                 "This app is not ready to deploy (provisionStatus={provision}). Its checkout has to be seeded first ({}).",
-                self.surface().step("manage_app", "reseed")
-            )).with_next(self.surface().step("manage_app", "reseed")));
+                crate::step("checkout reseed")
+            )).with_next(crate::step("checkout reseed")));
         }
         let via_gitea = is_gitea_managed(row);
 
@@ -389,13 +389,8 @@ impl AppOps<'_> {
         let preflight_token = row_str(&preflight, "token").ok_or("preflight returned no token")?;
         let mut build_started = false;
         let result = async {
-            let switch_domain = self
-                .host
-                .approve_deploy(row, &preflight["preview"])
-                .await
-                .map_err(|m| OpError::conflict("deploy_declined", m))?;
             // Absent keeps whatever domain the app is on; only a yes is sent.
-            if switch_domain || args.use_app_code_domain {
+            if args.use_app_code_domain {
                 start_body["useAppCodeDomain"] = json!(true);
             }
             start_body["preflightToken"] = json!(preflight_token);
@@ -469,7 +464,7 @@ impl AppOps<'_> {
 mod tests {
     use super::*;
     use crate::test_support::{FakeCloud, FakeDaemon, TestHost};
-    use crate::{DaemonError, Surface};
+    use crate::DaemonError;
 
     #[test]
     fn approval_cancellation_only_withdraws_preflight() {
@@ -547,7 +542,7 @@ mod tests {
                 build["migrations"] = m;
             }
             *daemon.build.lock().unwrap() = Some(Ok(build));
-            let host = TestHost(Surface::Cli);
+            let host = TestHost;
             let ops = AppOps::new(&cloud, &daemon, &host);
             ops.deploy(&imported_row(), DeployArgs::default())
                 .await
@@ -568,7 +563,7 @@ mod tests {
             "revision": "sha256:d",
             "artifactVerification": { "status": "checked", "revision": "sha256:d", "unknownFiles": [] },
         })));
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
 
         let out = ops
@@ -606,7 +601,7 @@ mod tests {
             "revision": "sha256:d",
             "artifactVerification": { "status": "checked", "revision": "sha256:d", "unknownFiles": [] },
         })));
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let args = DeployArgs {
             use_app_code_domain: true,
@@ -624,7 +619,7 @@ mod tests {
         *daemon.build.lock().unwrap() = Some(Err(DaemonError::failed(
             "PUT https://oss/put?Signature=s returned 403",
         )));
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
 
         let err = ops
@@ -639,44 +634,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refused_approval_only_withdraws_the_preflight() {
-        struct Refuses;
-        #[async_trait::async_trait]
-        impl crate::Host for Refuses {
-            fn surface(&self) -> Surface {
-                Surface::Mcp
-            }
-            async fn approve_deploy(&self, _: &Value, _: &Value) -> Result<bool, String> {
-                Err("The user declined.".to_string())
-            }
-        }
-        let (cloud, daemon) = deploy_world();
-        cloud.reply(Method::Delete, "/v1/apps/a1/deploy/preflight", json!({}));
-        let ops = AppOps::new(&cloud, &daemon, &Refuses);
-
-        let err = ops
-            .deploy(&imported_row(), DeployArgs::default())
-            .await
-            .unwrap_err();
-        assert_eq!(err.to_string(), "The user declined.");
-        assert_eq!(err.code, "deploy_declined");
-        assert!(cloud
-            .calls_to(Method::Post, "/v1/apps/a1/deploy")
-            .is_empty());
-        assert_eq!(
-            cloud
-                .calls_to(Method::Delete, "/v1/apps/a1/deploy/preflight")
-                .len(),
-            1
-        );
-        assert!(daemon.builds.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn an_unseeded_app_is_refused_with_this_surface_s_next_step() {
+    async fn an_unseeded_app_is_refused_with_the_next_step() {
         let cloud = FakeCloud::default();
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let row = json!({ "id": "a1", "provisionStatus": "pending" });
         let err = ops.deploy(&row, DeployArgs::default()).await.unwrap_err();

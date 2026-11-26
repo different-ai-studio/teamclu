@@ -5,8 +5,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::Surface;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Method {
     Get,
@@ -82,23 +80,23 @@ pub trait Cloud: Send + Sync {
 }
 
 /// What to do about a failure, when the status or code alone does not say.
-fn hint(surface: Surface, e: &CloudError) -> Option<String> {
+fn hint(e: &CloudError) -> Option<String> {
     match e.code.as_str() {
         "app_has_no_database" => Some(format!(
             "only data_app apps have a database — {} can change the type, which takes effect on the next deploy",
-            surface.step("manage_app", "update")
+            crate::step("update")
         )),
         "app_not_deployed" => Some(format!(
             "deploy it first ({})",
-            surface.step("manage_app", "deploy")
+            crate::step("deploy")
         )),
         "app_uninstall_required" => Some(format!(
             "uninstall the deployment with {} and wait for it to finish, then delete",
-            surface.step("manage_app", "undeploy")
+            crate::step("undeploy")
         )),
         "app_storage_quota_exceeded" => Some(format!(
             "the app is over its storage quota — delete files, or raise it with {}",
-            surface.step("manage_app_files", "set_quota")
+            crate::step("files quota")
         )),
         "env_key_reserved" => {
             Some("the platform sets this variable itself; use another name".to_string())
@@ -109,16 +107,16 @@ fn hint(surface: Surface, e: &CloudError) -> Option<String> {
             // exist, so the agent is told it could be either.
             404 => Some(format!(
                 "the Cloud API answers 404 both when it does not exist and when {} lacks the permission this needs",
-                surface.principal()
+                crate::PRINCIPAL
             )),
-            401 => Some(surface.reauth().to_string()),
+            401 => Some(crate::REAUTH.to_string()),
             _ => None,
         },
     }
 }
 
 /// One sentence for a failed call: what was being done, and the server's reply.
-pub fn explain(surface: Surface, what: &str, e: &CloudError) -> String {
+pub fn explain(what: &str, e: &CloudError) -> String {
     if e.status == 0 {
         return format!(
             "{what} failed: could not reach the Cloud API ({})",
@@ -134,7 +132,7 @@ pub fn explain(surface: Surface, what: &str, e: &CloudError) -> String {
         out.push_str(": ");
         out.push_str(&e.message);
     }
-    if let Some(hint) = hint(surface, e) {
+    if let Some(hint) = hint(e) {
         out.push_str(" — ");
         out.push_str(&hint);
     }
@@ -152,7 +150,7 @@ mod tests {
             br#"{"error":{"code":"app_has_no_database","message":"this app type has no database"}}"#,
         );
         assert_eq!(e.code, "app_has_no_database");
-        let text = explain(Surface::Mcp, "Listing tables", &e);
+        let text = explain("Listing tables", &e);
         assert!(
             text.contains("409 app_has_no_database: this app type has no database"),
             "{text}"
@@ -169,8 +167,11 @@ mod tests {
             404,
             br#"{"error":{"code":"not_found","message":"app not found"}}"#,
         );
-        assert!(explain(Surface::Mcp, "Deleting the app", &e).contains("lacks the permission"));
-        assert!(explain(Surface::Cli, "Deleting the app", &e).contains("agent account"));
+        let text = explain("Deleting the app", &e);
+        assert!(
+            text.contains("lacks the permission") && text.contains("agent account"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -186,7 +187,6 @@ mod tests {
             409,
             br#"{"error":{"code":"app_not_deployed","message":"x"}}"#,
         );
-        assert!(explain(Surface::Cli, "Reading logs", &e).contains("`amuxd app deploy`"));
-        assert!(explain(Surface::Mcp, "Reading logs", &e).contains("manage_app action \"deploy\""));
+        assert!(explain("Reading logs", &e).contains("`amuxd app deploy`"));
     }
 }
