@@ -130,6 +130,22 @@ describe('actor-presence-store', () => {
     expect(Object.keys(useActorPresenceStore.getState().byActorId)).toHaveLength(0)
   })
 
+  it('drops a legacy desktop last-will without a decode warning', async () => {
+    const { useActorPresenceStore } = await import('../actor-presence-store')
+    await acquireActorPresenceStoreForTest('team-1')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    // What older desktops leave retained under their random client id.
+    envelopeHandler!({
+      topic: 'amux/team-1/teamclu-ad103c7a-f27eaed0/state',
+      bytes: Array.from(new TextEncoder().encode('{"status":"offline"}')),
+    })
+
+    expect(Object.keys(useActorPresenceStore.getState().byActorId)).toHaveLength(0)
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
   it('shares one subscription across same-team owners until the final release', async () => {
     const { acquireActorPresenceStore, useActorPresenceStore } = await import('../actor-presence-store')
     const a = acquireActorPresenceStore('team-1', 'owner-a')

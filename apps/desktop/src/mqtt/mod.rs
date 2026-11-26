@@ -1,7 +1,6 @@
 pub mod client;
 pub mod dock_attention;
 pub mod tls;
-pub mod topics;
 
 pub use client::{ClientConfig, MqttClient};
 

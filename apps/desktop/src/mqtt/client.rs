@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rumqttc::{
-    AsyncClient, ConnectReturnCode, Event, EventLoop, LastWill, MqttOptions, Outgoing, Packet, QoS,
-    Request, SubAck, Subscribe, SubscribeFilter, SubscribeReasonCode, Transport,
+    AsyncClient, ConnectReturnCode, Event, EventLoop, MqttOptions, Outgoing, Packet, QoS, Request,
+    SubAck, Subscribe, SubscribeFilter, SubscribeReasonCode, Transport,
 };
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -81,18 +81,14 @@ fn build_mqtt_options(cfg: &ClientConfig, clean_session: bool) -> MqttOptions {
         opts.set_transport(Transport::tls_with_config(super::tls::default_tls_config()));
     }
 
-    if !clean_session {
-        let lwt_topic = super::topics::actor_state(&cfg.team_id, &cfg.client_id);
-        let lwt_payload = serde_json::json!({"status":"offline"})
-            .to_string()
-            .into_bytes();
-        opts.set_last_will(LastWill::new(
-            lwt_topic,
-            lwt_payload,
-            QoS::AtLeastOnce,
-            true,
-        ));
-    }
+    // No last will. This client used to register a retained JSON
+    // `{"status":"offline"}` on `amux/{team}/{client_id}/state`. That is the
+    // actor-presence topic, whose payload everywhere else is a protobuf
+    // `ActorPresence`, and `client_id` is random per connection — so every
+    // unclean disconnect left a new retained, undecodable message on a fake
+    // "actor" topic that every client then received and failed to decode on
+    // each connect. Nothing ever read it; member presence does not come from
+    // here.
 
     opts
 }
@@ -655,6 +651,27 @@ mod tests {
             &MqttOptions::new("c", "localhost", 1883),
             now
         ));
+    }
+
+    #[test]
+    fn the_desktop_connection_registers_no_last_will() {
+        // A will here published retained JSON onto the actor-presence topic
+        // under a random per-connection client id; see build_mqtt_options.
+        let cfg = ClientConfig {
+            broker_url: Some("wss://mqtt.example.com/mqtt".into()),
+            broker_host: "mqtt.example.com".into(),
+            broker_port: 1883,
+            client_id: "teamclu-abcd1234-ef567890".into(),
+            username: "actor".into(),
+            password: "token".into(),
+            team_id: "team-1".into(),
+            use_tls: true,
+        };
+        for clean_session in [false, true] {
+            assert!(build_mqtt_options(&cfg, clean_session)
+                .last_will()
+                .is_none());
+        }
     }
 
     #[test]
