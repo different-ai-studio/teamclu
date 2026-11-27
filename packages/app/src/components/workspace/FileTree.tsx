@@ -829,8 +829,8 @@ export function FileTree({
   const handleImportLocal = useCallback(async (targetDir: string) => {
     if (!isTauri()) return;
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
-      const picked = await open({ multiple: true, directory: false });
+      const { safeOpenDialog } = await import('@/lib/workspace/safe-open-dialog');
+      const picked = await safeOpenDialog({ multiple: true, directory: false });
       const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
       if (paths.length === 0) return;
 

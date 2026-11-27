@@ -98,8 +98,8 @@ export function SessionWorkspacePicker({ agentId }: SessionWorkspacePickerProps)
   const browse = () =>
     bind(BROWSE, async () => {
       if (!teamId) return null
-      const { open } = await import('@tauri-apps/plugin-dialog')
-      const selected = await open({
+      const { safeOpenDialog } = await import('@/lib/workspace/safe-open-dialog')
+      const selected = await safeOpenDialog({
         directory: true,
         multiple: false,
         title: t('fileExplorer.browseWorkspaceTitle', '选择工作目录'),

@@ -263,8 +263,8 @@ export function NewSessionDialog() {
     if (!teamId || !localAgentId) return
     setWorkspaceBusy(true)
     try {
-      const { open: openDialog } = await import('@tauri-apps/plugin-dialog')
-      const selected = await openDialog({
+      const { safeOpenDialog } = await import('@/lib/workspace/safe-open-dialog')
+      const selected = await safeOpenDialog({
         directory: true,
         multiple: false,
         title: t('chat.newSessionDialog.workspaceBrowse', '选择工作目录'),

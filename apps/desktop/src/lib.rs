@@ -488,6 +488,7 @@ pub fn run() {
             commands::introspect_auth::clear_introspect_auth,
             commands::show_in_folder,
             commands::safe_dialog::safe_save_dialog,
+            commands::safe_dialog::safe_open_dialog,
             commands::acp_debug_log::acp_debug_append_log,
             commands::acp_debug_log::acp_debug_log_directory,
             commands::acp_debug_log::acp_debug_reveal_log,

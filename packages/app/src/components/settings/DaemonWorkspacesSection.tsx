@@ -183,8 +183,8 @@ export function DaemonWorkspacesSection() {
     if (!team?.id || !agent?.id || saving) return
     let picked: string | null = null
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog')
-      const selected = await open({
+      const { safeOpenDialog } = await import('@/lib/workspace/safe-open-dialog')
+      const selected = await safeOpenDialog({
         directory: true,
         multiple: false,
         defaultPath: currentWorkspacePath ?? undefined,

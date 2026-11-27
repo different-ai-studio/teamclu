@@ -46,8 +46,8 @@ vi.mock('@/lib/utils', async () => {
   return { ...actual, isTauri: () => true }
 })
 
-vi.mock('@tauri-apps/plugin-dialog', () => ({
-  open: (...args: unknown[]) => pickDirMock(...args),
+vi.mock('@/lib/workspace/safe-open-dialog', () => ({
+  safeOpenDialog: (...args: unknown[]) => pickDirMock(...args),
 }))
 
 beforeEach(() => {

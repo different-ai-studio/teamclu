@@ -148,8 +148,8 @@ export function CreateAppView() {
     setPicking(true)
     setError(null)
     try {
-      const { open: openDialog } = await import('@tauri-apps/plugin-dialog')
-      const selected = await openDialog({
+      const { safeOpenDialog } = await import('@/lib/workspace/safe-open-dialog')
+      const selected = await safeOpenDialog({
         directory: true,
         multiple: false,
         title: t('apps.sourceLocalPick', '选择一个 git 目录'),
