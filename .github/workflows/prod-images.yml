@@ -98,7 +98,9 @@ jobs:
       group: prod-image-${{ matrix.image }}-${{ github.sha }}
       cancel-in-progress: false
     env:
-      IMAGE: ghcr.io/different-ai-studio/${{ matrix.image }}
+      ACR_REGISTRY: registry.cn-hangzhou.aliyuncs.com
+      IMAGE: ${{ matrix.service == 'db-migrate' && format('ghcr.io/different-ai-studio/{0}', matrix.image) || format('registry.cn-hangzhou.aliyuncs.com/teamclu/{0}', matrix.image) }}
+      ACK_IMAGE: ${{ matrix.service == 'db-migrate' && format('ghcr.io/different-ai-studio/{0}', matrix.image) || format('registry-vpc.cn-hangzhou.aliyuncs.com/teamclu/{0}', matrix.image) }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -114,11 +116,21 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v4
+      - name: Sign in to GHCR for the migration image
+        if: matrix.service == 'db-migrate'
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign in to ACR for runtime images
+        if: matrix.service != 'db-migrate'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.PROD_ACR_USERNAME }}
+          password: ${{ secrets.PROD_ACR_PASSWORD }}
 
       - name: Select publication tag
         id: tag
@@ -154,6 +166,9 @@ jobs:
           file: ${{ matrix.service == 'db-migrate' && format('{0}/psql-image/Dockerfile', runner.temp) || matrix.dockerfile }}
           platforms: linux/amd64
           push: true
+          # Legacy ACR Personal rejects OCI attestation manifests.
+          provenance: ${{ matrix.service == 'db-migrate' && 'mode=max' || 'false' }}
+          sbom: false
           tags: ${{ steps.tag.outputs.reference }}
           labels: |
             org.opencontainers.image.source=https://github.com/different-ai-studio/teamclu
@@ -162,6 +177,7 @@ jobs:
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
 
       - name: Verify digest and write release artifact
+        shell: bash
         env:
           DIGEST: ${{ steps.existing.outputs.digest || steps.publish.outputs.digest }}
           SERVICE: ${{ matrix.service }}
@@ -170,9 +186,14 @@ jobs:
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           published=$(docker buildx imagetools inspect "$TAG_REF" --format '{{.Manifest.Digest}}')
           test "$published" = "$DIGEST"
-          ref="$IMAGE@$DIGEST"
+          ref="$ACK_IMAGE@$DIGEST"
+          if [[ "$SERVICE" != db-migrate ]]; then
+            docker logout "$ACR_REGISTRY"
+            docker buildx imagetools inspect --raw "$IMAGE@$DIGEST" |
+              jq -e '(.config.digest | type == "string") and (.layers | type == "array")' >/dev/null
+          fi
           mkdir "$RUNNER_TEMP/release"
-          jq -n --arg commit "$GITHUB_SHA" --arg image "$IMAGE" --arg digest "$DIGEST" \
+          jq -n --arg commit "$GITHUB_SHA" --arg image "$ACK_IMAGE" --arg digest "$DIGEST" \
             --arg ref "$ref" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             '{source_commit: $commit, image: $image, digest: $digest, image_ref: $ref, platform: "linux/amd64", build_run: $run}' \
             > "$RUNNER_TEMP/release/image.json"
