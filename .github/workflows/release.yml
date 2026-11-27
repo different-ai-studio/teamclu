@@ -72,6 +72,9 @@ jobs:
     # tauri build. Every cargo invocation in this job now shares one sccache.
     env:
       SCCACHE_GHA_ENABLED: "true"
+      # .dSYM next to each binary for the Sentry symbol upload; the shipped
+      # binary is unchanged (see release-oss.yml).
+      CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
     steps:
@@ -344,6 +347,15 @@ jobs:
       - name: Verify Wiki maintenance resources in the macOS app
         run: node scripts/check-wiki-maintainer-bundle.js --target ${{ matrix.target }}
 
+      - name: Upload debug symbols to Sentry
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+          REL="$TARGET_DIR/${{ matrix.target }}/release"
+          ./scripts/sentry-upload-debug-files.sh \
+            "$REL/teamclu.dSYM" "$REL/amuxd.dSYM" "$REL/teamclu-introspect.dSYM"
+
   # Windows job uploads artifacts to the same GitHub Release created by macOS job
   release-windows:
     needs: verify-version-bump
@@ -361,6 +373,8 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
+      # Emit the .pdb for the Sentry symbol upload (see release-oss.yml).
+      CARGO_PROFILE_RELEASE_STRIP: none
     steps:
       - uses: actions/checkout@v7
 
@@ -539,6 +553,18 @@ jobs:
           prerelease: false
           # Windows: NSIS installer, no p2p feature (avoids wmi/windows-core conflicts)
           args: "--bundles nsis -- --no-default-features"
+
+      - name: Upload debug symbols to Sentry
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+          REL="$TARGET_DIR/release"
+          ./scripts/sentry-upload-debug-files.sh \
+            "$REL/teamclu.exe" "$REL/teamclu.pdb" \
+            "$REL/amuxd.exe" "$REL/amuxd.pdb" \
+            "$REL/teamclu-introspect.exe" "$REL/teamclu_introspect.pdb"
 
       # Best effort: an empty URL just skips the smoke job.
       - name: Resolve the published installer URL

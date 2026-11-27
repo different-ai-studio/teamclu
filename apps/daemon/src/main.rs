@@ -32,6 +32,7 @@ mod sync;
 mod team_link;
 mod team_shared_env;
 mod teamclu;
+mod telemetry;
 #[cfg(test)]
 mod test_brand_env;
 #[cfg(test)]
@@ -103,6 +104,10 @@ fn main() -> anyhow::Result<()> {
                 log_max_bytes,
                 log_keep,
             );
+            // Before the subscriber, so the panic hook and the `error!` layer
+            // below report from the first line on. Held for the whole run:
+            // dropping it flushes what is still queued.
+            let _sentry_guard = telemetry::init();
             {
                 use std::io::IsTerminal;
                 use tracing_subscriber::layer::SubscriberExt;
@@ -129,7 +134,9 @@ fn main() -> anyhow::Result<()> {
                         tracing_subscriber::fmt::layer()
                             .with_ansi(false)
                             .with_writer(file_log),
-                    );
+                    )
+                    // No-op when telemetry is off (no client bound).
+                    .with(telemetry::tracing_layer());
                 if std::io::stdout().is_terminal() {
                     registry.with(tracing_subscriber::fmt::layer()).init();
                 } else {

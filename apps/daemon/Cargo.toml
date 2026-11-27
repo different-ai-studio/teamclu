@@ -41,6 +41,10 @@ teamclu-binpath = { path = "../../crates/teamclu-binpath" }
 # Utilities
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Error reporting (src/telemetry.rs). No default features: the bundled
+# transport is reqwest 0.13 + native-tls; telemetry.rs sends through the
+# daemon's own reqwest 0.12 + rustls client instead.
+sentry = { version = "0.47.0", default-features = false, features = ["backtrace", "contexts", "panic", "debug-images", "tracing"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 # Daemon-owned cron (ADR-0010): expression parsing and IANA timezones.

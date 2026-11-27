@@ -97,6 +97,10 @@ jobs:
       # rustc target only so teamclu/copilot361 share deps and beta.N→N+1
       # still hits. Objects are target-specific, so the target MUST be in the key.
       SCCACHE_GHA_VERSION: release-oss-1.97.1-${{ matrix.target }}
+      # Collect each binary's DWARF into a .dSYM next to it, for the Sentry
+      # symbol upload after the bundle. The shipped binary is unchanged:
+      # `strip = "debuginfo"` still strips it, and the dSYM is written first.
+      CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
     steps:
       - uses: actions/checkout@v7
         with:
@@ -216,6 +220,8 @@ jobs:
 
       - name: Build all (parallel)
         env:
+          # Hidden sourcemaps for the Sentry upload below (vite.config.ts).
+          SENTRY_SOURCEMAPS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && '1' || '' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -293,6 +299,13 @@ jobs:
           ls -lh apps/desktop/binaries/
           sccache --show-stats || true
 
+      # Before the bundle packs packages/app/dist: injects debug ids, uploads
+      # the maps, then deletes them so they never ship.
+      - name: Upload frontend sourcemaps to Sentry
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: ./scripts/sentry-upload-sourcemaps.sh packages/app/dist
+
       - name: Sign nested Mach-O in bundled sidecars (notarization)
         shell: bash
         run: ./scripts/sign-macos-bundle-binaries.sh apps/desktop/binaries
@@ -327,6 +340,15 @@ jobs:
 
       - name: Verify Wiki maintenance resources in the macOS app
         run: node scripts/check-wiki-maintainer-bundle.js --target ${{ matrix.target }}
+
+      - name: Upload debug symbols to Sentry
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+          REL="$TARGET_DIR/${{ matrix.target }}/release"
+          ./scripts/sentry-upload-debug-files.sh \
+            "$REL/teamclu.dSYM" "$REL/amuxd.dSYM" "$REL/teamclu-introspect.dSYM"
 
       - name: Upload installers to OSS + emit updater fragment
         env:
@@ -483,6 +505,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       # See build-macos: stable key by target so brands + nightly bumps share deps.
       SCCACHE_GHA_VERSION: release-oss-1.97.1-x86_64-pc-windows-msvc
+      # `strip = "debuginfo"` makes MSVC link with /DEBUG:NONE, so no .pdb is
+      # written and Sentry shows `<unknown>` frames (TEAMCLU-RUST-V). The PDB is
+      # a separate file; the shipped .exe only gains its path.
+      CARGO_PROFILE_RELEASE_STRIP: none
     steps:
       - uses: actions/checkout@v7
         with:
@@ -603,6 +629,8 @@ jobs:
       # hides frontend+introspect under it.
       - name: Build frontend + sidecars (parallel)
         shell: bash
+        env:
+          SENTRY_SOURCEMAPS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && '1' || '' }}
         run: |
           mkdir -p apps/desktop/binaries
 
@@ -632,6 +660,12 @@ jobs:
           ls -lh apps/desktop/binaries/ || ls -lh apps/desktop/binaries
           sccache --show-stats || true
 
+      - name: Upload frontend sourcemaps to Sentry
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: ./scripts/sentry-upload-sourcemaps.sh packages/app/dist
+
       - name: Finalize tauri.conf.json (version from tag + frontend prebuilt + OSS updater endpoint)
         shell: bash
         env:
@@ -657,6 +691,18 @@ jobs:
           DEVICE_JWT_SECRET: ${{ secrets.DEVICE_JWT_SECRET }}
         with:
           args: "--bundles nsis -- --no-default-features"
+
+      - name: Upload debug symbols to Sentry
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+          REL="$TARGET_DIR/release"
+          ./scripts/sentry-upload-debug-files.sh \
+            "$REL/teamclu.exe" "$REL/teamclu.pdb" \
+            "$REL/amuxd.exe" "$REL/amuxd.pdb" \
+            "$REL/teamclu-introspect.exe" "$REL/teamclu_introspect.pdb"
 
       - name: Upload installer to OSS + emit updater fragment
         id: upload-installer

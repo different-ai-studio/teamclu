@@ -295,7 +295,12 @@ export default defineConfig({
     // the bare `TAURI_DEBUG` this used to read is a Tauri v1 name that v2 never
     // sets — so this had been permanently false and no debug build has shipped
     // a sourcemap since the v2 upgrade.
-    sourcemap: isTauriDevRun,
+    //
+    // Release CI sets SENTRY_SOURCEMAPS=1: 'hidden' writes the maps without a
+    // `sourceMappingURL` comment, scripts/sentry-upload-sourcemaps.sh uploads
+    // them to Sentry and deletes them before the bundle step, so they never
+    // ship inside the app.
+    sourcemap: isTauriDevRun ? true : process.env.SENTRY_SOURCEMAPS === '1' ? 'hidden' : false,
     // Chunk splitting strategy (Vite 8 / Rolldown requires manualChunks as a function)
     rollupOptions: {
       // tauri-plugin-mcp is dev-only (linked from .tauri-plugin-mcp/, gitignored).
