@@ -524,6 +524,10 @@
     "quitAndStopAgent": "Quit and stop Agent"
   },
   "auth": {
+    "gateHold": {
+      "loading": "Opening your workspace…",
+      "daemon": "Starting this machine's service for this account…"
+    },
     "errors": {
       "invalidCredentials": "Incorrect email or password.",
       "emailNotConfirmed": "This email address has not been verified yet.",

@@ -41,7 +41,16 @@ pub struct HttpHandle {
     /// Windows and when the socket could not be bound.
     cloud_token_socket_join: Option<JoinHandle<()>>,
     cloud_token_socket_shutdown: Option<oneshot::Sender<()>>,
+    /// Ends the long-lived responses (SSE) when shutdown begins.
+    streams_shutdown: super::state::ShutdownSignal,
 }
+
+/// How long [`HttpHandle::shutdown`] lets in-flight requests finish before it
+/// drops the listener task. The SSE streams end on their own at shutdown, so
+/// this only bounds a request that is genuinely slow; the desktop supervisor
+/// SIGKILLs amuxd after 8 s, and every second here is a second the account
+/// switch shows a blank window.
+const HTTP_GRACEFUL_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl HttpHandle {
     #[allow(dead_code)]
@@ -58,10 +67,20 @@ impl HttpHandle {
         if let Some(join) = self.cloud_token_socket_join.take() {
             let _ = join.await;
         }
+        self.streams_shutdown.trigger();
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
-        let _ = (&mut self.join).await;
+        if tokio::time::timeout(HTTP_GRACEFUL_SHUTDOWN, &mut self.join)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                timeout_ms = HTTP_GRACEFUL_SHUTDOWN.as_millis() as u64,
+                "http listener: connections still open after graceful shutdown timeout; dropping them"
+            );
+            self.join.abort();
+        }
     }
 }
 
@@ -402,6 +421,7 @@ pub async fn spawn_with_refresh_watch_registry(
     }
 
     spawn_reapers(state.clone());
+    let streams_shutdown = state.shutdown.clone();
     let mut app: Router = routes::build(state);
     if let Some(layer) = cors_layer {
         app = app.layer(layer);
@@ -433,6 +453,7 @@ pub async fn spawn_with_refresh_watch_registry(
         runtime_context_shutdown,
         cloud_token_socket_join,
         cloud_token_socket_shutdown,
+        streams_shutdown,
     })
 }
 
@@ -821,6 +842,51 @@ mod tests {
         assert!(saw_finished, "SSE stream must publish turn_finished");
         drop(stream_resp);
         handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_ends_open_sse_streams_instead_of_waiting_for_them() {
+        // An SSE subscriber never hangs up on its own (the desktop keeps
+        // `/v1/live/events` open for the app's lifetime). Graceful shutdown
+        // used to wait on it until the supervisor SIGKILLed amuxd, which made
+        // every account switch sit on a blank window for ~8 s.
+        let (handle, client, base, session_token) = boot().await;
+        let resp: serde_json::Value = client
+            .post(format!("{base}/v1/sessions"))
+            .bearer_auth(&session_token)
+            .json(&serde_json::json!({"agent_type":"stub"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let session_id = resp["session_id"].as_str().unwrap().to_string();
+        let mut stream_resp = client
+            .get(format!(
+                "{base}/v1/sessions/{session_id}/stream?access_token={session_token}"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(stream_resp.status().is_success());
+
+        let started = std::time::Instant::now();
+        handle.shutdown().await;
+        let took = started.elapsed();
+        // Well under HTTP_GRACEFUL_SHUTDOWN: the stream ended by itself rather
+        // than being cut off by the timeout.
+        assert!(
+            took < HTTP_GRACEFUL_SHUTDOWN / 2,
+            "shutdown waited {took:?} on an open SSE stream"
+        );
+
+        // The client sees the stream end, so it can reconnect to the next daemon.
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while let Ok(Some(_)) = stream_resp.chunk().await {}
+        })
+        .await;
+        assert!(ended.is_ok(), "SSE stream still open after shutdown");
     }
 
     #[tokio::test]

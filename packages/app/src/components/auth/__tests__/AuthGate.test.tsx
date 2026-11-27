@@ -228,6 +228,7 @@ beforeEach(() => {
 describe("AuthGate", () => {
   it("keeps the shell blocked while an authenticated onboarding operation is loading", async () => {
     authState.loading = true;
+    const skeleton = addStartupSkeleton();
 
     const { container } = render(
       <AuthGate>
@@ -235,10 +236,27 @@ describe("AuthGate", () => {
       </AuthGate>,
     );
 
-    // Loading gates now render nothing (the static #skeleton shows through #root
-    // in the real app) instead of a Lobster spinner — the shell stays blocked.
+    // On cold start loading gates render nothing: the static #skeleton shows
+    // through #root — the shell stays blocked.
     await waitFor(() => expect(screen.queryByText("App shell")).not.toBeInTheDocument());
     expect(container).toBeEmptyDOMElement();
+    skeleton.remove();
+  });
+
+  it("shows progress instead of a blank window when a loading gate holds after the skeleton is gone", async () => {
+    // After a sign-out the startup skeleton was removed long ago; signing in
+    // as another account waits on team restore and a daemon restart, and a
+    // bare null here was a white window for ~10 s.
+    authState.loading = true;
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    expect(await screen.findByTestId("auth-gate-hold")).toBeInTheDocument();
+    expect(screen.queryByText("App shell")).not.toBeInTheDocument();
   });
 
   it("keeps desktop onboarding mounted while an unauthenticated action is loading", async () => {
@@ -1114,6 +1132,7 @@ describe("AuthGate", () => {
       }),
     );
 
+    const skeleton = addStartupSkeleton();
     const { container } = render(
       <AuthGate>
         <div>App shell</div>
@@ -1121,7 +1140,7 @@ describe("AuthGate", () => {
     );
 
     // Bootstrap is ready from cache, but myTeams is still loading — must keep
-    // returning null so the static #skeleton covers the empty #root.
+    // rendering nothing so the static #skeleton covers the empty #root.
     await waitFor(() => expect(backendMock.teams.listAllMyTeams).toHaveBeenCalled());
     expect(screen.queryByText("App shell")).not.toBeInTheDocument();
     expect(container).toBeEmptyDOMElement();
@@ -1134,5 +1153,14 @@ describe("AuthGate", () => {
     await nameTheTeam();
     await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
     expect(removeStartupSkeletonMock).toHaveBeenCalled();
+    skeleton.remove();
   });
 });
+
+/** The static startup skeleton index.html carries until the first real UI. */
+function addStartupSkeleton(): HTMLElement {
+  const el = document.createElement("div");
+  el.id = "skeleton";
+  document.body.appendChild(el);
+  return el;
+}

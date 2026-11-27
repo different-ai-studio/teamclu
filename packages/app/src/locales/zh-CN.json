@@ -524,6 +524,10 @@
     "quitAndStopAgent": "退出并停止 Agent"
   },
   "auth": {
+    "gateHold": {
+      "loading": "正在进入工作区…",
+      "daemon": "正在为这个账号启动本机服务…"
+    },
     "errors": {
       "invalidCredentials": "邮箱或密码错误。",
       "emailNotConfirmed": "该邮箱尚未验证。",

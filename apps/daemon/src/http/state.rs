@@ -8,7 +8,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::backend::Backend;
 use crate::config::workspace_control::WorkspaceControlStore;
@@ -133,6 +133,39 @@ pub struct AutoUpdateStatus {
     pub check_interval_minutes: Option<u64>,
 }
 
+/// Fired once when the listener starts shutting down. Long-lived responses
+/// (the SSE streams) end on it, so axum's graceful shutdown is not left
+/// waiting on a connection that would otherwise stay open until the client
+/// hangs up — the desktop's `/v1/live/events` never does, which held every
+/// daemon exit for the supervisor's full stop timeout.
+#[derive(Clone)]
+pub struct ShutdownSignal(Arc<watch::Sender<bool>>);
+
+impl ShutdownSignal {
+    pub fn new() -> Self {
+        Self(Arc::new(watch::channel(false).0))
+    }
+
+    pub fn trigger(&self) {
+        self.0.send_replace(true);
+    }
+
+    /// Resolves once [`Self::trigger`] has been called (at once if it already
+    /// was). Owns its receiver, so it can be handed to `take_until`.
+    pub fn triggered(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mut rx = self.0.subscribe();
+        async move {
+            let _ = rx.wait_for(|fired| *fired).await;
+        }
+    }
+}
+
+impl Default for ShutdownSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone)]
 pub struct HttpState {
     pub config: Arc<HttpConfig>,
@@ -214,6 +247,8 @@ pub struct HttpState {
     /// Daemon-owned cron (`/v1/cron/*`). `None` in focused tests — the
     /// routes then return 503.
     pub cron: Option<crate::cron::CronService>,
+    /// See [`ShutdownSignal`]. `HttpHandle::shutdown` fires it.
+    pub shutdown: ShutdownSignal,
 }
 
 impl HttpState {
@@ -266,6 +301,7 @@ impl HttpState {
             session_prompt: None,
             session_attach: None,
             cron: None,
+            shutdown: ShutdownSignal::new(),
         }
     }
 
