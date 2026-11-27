@@ -10,11 +10,12 @@ remains compatible with its database at deployment time.
 ## One-time enrollment
 
 1. Review and merge the TeamClu publishing changes and the independent
-   `db-migrations` Application and AppProject in `teamclu-k8s` through their PRs.
-   Enroll the Application in Hangzhou Argo CD using the approved GitOps
-   bootstrap. Confirm `argocd/db-migrations` targets `teamclu-prod`, renders the
-   empty overlay at the reviewed Git revision, and uses manual Sync with prune
-   disabled. Enrollment has no release Job.
+   `db-migrations` Application in `teamclu-k8s` through their PRs. Enroll the
+   Application in Hangzhou Argo CD using the approved GitOps bootstrap.
+   Confirm `argocd/db-migrations` uses the existing workload AppProject,
+   targets `teamclu-prod`, and renders the empty overlay at the reviewed Git
+   revision. Auto Sync is enabled and prune is disabled. Enrollment has no
+   release Job.
 2. Confirm the existing `cloud-api-db-migrate-psql` Secret in `teamclu-prod` has
    `PGUSER` and `PGPASSWORD` keys for `teamclu_migration_runner`. Check only
    the keys, without printing their values. Confirm private RDS connectivity,
@@ -98,10 +99,11 @@ a batch against the live ledger before deciding which files are pending.
 
    Review the digest, mounted checksums, Job name, target, runtime identity,
    deadline, Secret references and allowed private IPs in the rendered output.
-   Use a dedicated preflight Job with the same release inputs as apply. Obtain
-   separate reviewed Git revisions for each mode before syncing.
+   Use a dedicated preflight Job with the same release inputs as apply. Prepare
+   separate reviewed GitOps PRs for preflight and apply, in that order. Leave
+   each PR unmerged until its execution window is open.
 
-## Sync the database and verify the ledger
+## Merge the database release and verify the ledger
 
 1. Schedule the approved release window. The DBA grants the dedicated login
    the scoped ability to assume `teamclu_migration_owner` and insert ledger
@@ -109,24 +111,26 @@ a batch against the live ledger before deciding which files are pending.
    revoke the temporary grants and when. Confirm the live identity, private
    connection, predecessor ledger, and prior Job state. Record the observed
    TLS status alongside the approved RDS connection settings.
-2. In the Hangzhou Argo CD control plane, manually Sync only
-   `db-migrations` at the full, reviewed `teamclu-k8s` commit SHA, with prune
-   disabled. Verify the sync result reports that SHA and the expected Job.
-   Wait for preflight Job `Complete` and check the logs. Reconfirm the
-   predecessor and apply the reviewed `apply` revision using the same method,
-   with a distinct Job name. Only one apply Job may run at a time.
+2. Merge the preflight PR during the approved window. Argo CD automatically
+   reconciles `db-migrations` from GitOps `main`. Verify the live operation
+   selected the expected manifest and wait for the preflight Job to finish.
+   Check the logs and reconfirm the predecessor. Merge the reviewed apply
+   PR during the approved window, with the same inputs and a distinct Job
+   name. Merging this PR releases production SQL. Keep one database release
+   in flight at a time and avoid auto-merge on migration PRs.
 
-   With an authenticated Hangzhou Argo CLI and the approved SHA and Job name:
+   From an authenticated Hangzhou ACK context, use the expected Job name:
 
    ```sh
-   argocd app sync db-migrations --revision "$GITOPS_SHA" --prune=false
+   kubectl -n argocd get application db-migrations \
+     -o jsonpath='{.status.operationState.syncResult.revision}{"\n"}'
    kubectl -n teamclu-prod wait --for=condition=complete "job/$JOB" --timeout=8m
    kubectl -n teamclu-prod logs "job/$JOB" -c migrate
    ```
 
-   With ACK Workbench access, use the authorized Argo operation entry point
-   for the same revision if the CLI session is unavailable. Inspect the
-   Application's operation result and the Job independently.
+   Record the merge SHA and the revision Argo observed. If another commit
+   advanced `main` before reconciliation, confirm the migration manifests
+   at the observed revision match the reviewed release before proceeding.
 3. Require `Complete=True` for the exact apply Job. Save the Job name, UID,
    image ID and logs. Independently read back every selected filename and the
    final count and digest on the RDS primary. Verify the expected schema
@@ -147,7 +151,7 @@ A file's SQL and filename insert commit in one transaction. Earlier successful
 files can remain committed if a later file fails. Read the ledger and compare
 the applied prefix before opening another permission window. For a transient
 failure, retain the exact digest, approved batch and predecessor values, and
-Sync a new reviewed attempt after the previous Job is terminal. The runner
+merge a new reviewed attempt after the previous Job is terminal. The runner
 skips recorded files and rejects drift outside the approved prefix. Stop if
 correction requires changing migration contents or acknowledging unexpected
 commits. Use a new reviewed forward-fix plan. Treat a database restore as a

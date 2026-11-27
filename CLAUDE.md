@@ -280,7 +280,8 @@ it still releases as before.
 
 ## Deployment — Cloud API environments
 
-The Hangzhou production release uses GHCR and manual Argo CD Sync on ACK.
+The Hangzhou production release uses GHCR and Argo CD on ACK. The independent
+database Application syncs automatically when a migration release is merged.
 See [Hangzhou production releases](docs/release/hangzhou-production.md) for the
 independent database release and application rollout.
 
