@@ -14,6 +14,7 @@ import { probeDaemonHttp, invalidateDaemonConnection } from "@/lib/daemon/daemon
 import { useDaemonOnboardingStore } from "@/stores/daemon-onboarding";
 import { getSkillDirectories, loadAllSkills } from "@/lib/skills/loader";
 import { DEFAULT_WORKSPACE_PATH } from "@/lib/config/build-config";
+import { workspacePathAvailableHere } from "@/lib/workspace/path-available-here";
 import { daemonPortFileDisplayPath } from "@/lib/daemon/daemon-paths";
 import { markStartup } from "@/lib/telemetry/startup-perf";
 import { SKILLS_CHANGED_EVENT } from "@/lib/skills/changed-event";
@@ -89,13 +90,11 @@ export function useWorkspaceInit() {
             if (savedPath) {
               let canRestore = true;
 
+              // Not the fs plugin's `exists`: it is scope-gated and its errors
+              // used to fall through to "restore anyway", so a folder from
+              // another machine survived every restart. See #1579.
               if (isTauri()) {
-                try {
-                  const { exists } = await import("@tauri-apps/plugin-fs");
-                  canRestore = await exists(savedPath);
-                } catch (error) {
-                  console.warn("[App] Failed to validate saved workspace:", error);
-                }
+                canRestore = await workspacePathAvailableHere(savedPath);
               }
 
               if (canRestore) {
