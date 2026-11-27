@@ -254,10 +254,10 @@ mod execution_context_tests {
         }
 
         // Without an id the folder really is ambiguous, and the error says why.
-        let err = assembler
-            .assemble(&path, None, None, false, None)
-            .await
-            .unwrap_err();
+        let err = match assembler.assemble(&path, None, None, false, None).await {
+            Ok(_) => panic!("a folder two rows claim must not resolve without an id"),
+            Err(err) => err,
+        };
         assert!(err.contains("ws-old") && err.contains("ws-new"), "{err}");
     }
 
