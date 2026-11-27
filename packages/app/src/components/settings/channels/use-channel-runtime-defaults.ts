@@ -57,7 +57,7 @@ export function useChannelRuntimeDefaults(): ChannelRuntimeDefaults {
       try {
         gatewayModel = (await loadGatewayModel())?.trim() || null
       } catch {
-        gatewayModel = null
+        // No gateway model: keep the null above.
       }
       let defaultBackend = 'pi'
       try {
