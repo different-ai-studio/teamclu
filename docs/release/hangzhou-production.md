@@ -21,13 +21,12 @@ remains compatible with its database at deployment time.
    the keys, without printing their values. Confirm private RDS connectivity,
    ACK DNS and the migration NetworkPolicy scope. Keep production connection
    settings in private GitOps and credentials in the existing Secret.
-3. On initial publication, confirm the GHCR package
-   `teamclu-prod-db-migrate` is Public in package settings. Have a package admin
-   set visibility if needed. From Hangzhou ACK, run an image-pull smoke test
-   in `atlas-accept` by digest, using the same architecture as the prod Job and
-   no database credentials or registry Secret. Verify the pod's image ID and
-   run `psql --version`. Use the DB Job only after the exact digest pulls.
-   [GHCR package visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
+3. Confirm the Hangzhou ACR Personal repository
+   `teamclu/teamclu-prod-db-migrate` is public. From Hangzhou ACK, run an
+   image-pull smoke test in `atlas-accept` by digest using the ACR VPC
+   hostname, the prod Job architecture, and no database or registry
+   credentials. Verify the pod's image ID and run `psql --version`.
+   Use the DB Job only after the exact digest pulls.
 
 ## Build images
 
@@ -38,10 +37,11 @@ image. Top-level SQL changes in `services/supabase/migrations/` or changes in
 `deploy/db-migrate-psql/` publish the psql migration image. When both inputs
 change, both builds use the same `main` commit. Use **Run workflow** on `main`
 to publish current inputs on demand, including AI Gateway and amuxd. This
-workflow builds and pushes to GHCR and has no cluster or database access.
+workflow publishes to `registry.cn-hangzhou.aliyuncs.com/teamclu` using
+the existing GitHub Actions ACR credentials. It has no cluster or database access.
 
 Each matrix entry uploads `prod-release-<image-name>-<source-commit>`. Download
-`image.json` and record its `image_ref` (the GHCR digest reference),
+`image.json` and record its `image_ref` (the ACR VPC digest reference),
 `source_commit` and `build_run`. The DB artifact also includes
 `migrations.sha256`, read back from the published image and compared with the
 build checkout. Treat those records as inputs to the release plan. Preserve
