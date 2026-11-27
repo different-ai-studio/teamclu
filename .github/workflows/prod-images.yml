@@ -1,15 +1,91 @@
 name: Publish production images
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      image:
+        description: Images to build from the selected main commit
+        type: choice
+        options: [all, cloud-api, db-migrate, ai-gateway, amuxd]
+        default: all
 
 permissions:
   contents: read
 
 jobs:
-  publish:
-    name: Publish ${{ matrix.image }}
+  plan:
     if: github.repository == 'different-ai-studio/teamclu' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Select images
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          SELECTED: ${{ inputs.image }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          images = {
+              "cloud-api": ("services/fc", "services/fc/Dockerfile"),
+              "db-migrate": (".", "deploy/db-migrate-psql/Dockerfile"),
+              "ai-gateway": ("services/ai-gateway", "services/ai-gateway/Dockerfile"),
+              "amuxd": (".", "deploy/self-host/amuxd/Dockerfile"),
+          }
+          if os.environ["EVENT"] == "push":
+              before = os.environ["BEFORE"]
+              if before == "0" * 40:
+                  selected = ["cloud-api", "db-migrate"]
+              else:
+                  subprocess.run(
+                      ["git", "fetch", "--no-tags", "--depth=1", "origin", before],
+                      check=True,
+                  )
+                  changed = subprocess.check_output([
+                      "git", "diff", "--no-renames", "--name-only", "-z", before, "HEAD",
+                  ]).split(b"\0")
+                  selected = []
+                  if any(path.startswith(b"services/fc/") for path in changed):
+                      selected.append("cloud-api")
+                  if any(
+                      path.startswith(b"deploy/db-migrate-psql/")
+                      or (path.startswith(b"services/supabase/migrations/")
+                          and path.count(b"/") == 3 and path.endswith(b".sql"))
+                      for path in changed
+                  ):
+                      selected.append("db-migrate")
+          else:
+              requested = os.environ["SELECTED"] or "all"
+              selected = list(images) if requested == "all" else [requested]
+
+          matrix = [
+              {"service": service, "image": "teamclu-prod-" + service,
+               "context": images[service][0], "dockerfile": images[service][1]}
+              for service in selected
+          ]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print("matrix=" + json.dumps({"include": matrix}), file=output)
+              print("publish=" + str(bool(matrix)).lower(), file=output)
+          PY
+
+  publish:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    name: Publish ${{ matrix.image }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -17,23 +93,24 @@ jobs:
       packages: write
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - image: teamclu-prod-cloud-api
-            context: services/fc
-            dockerfile: services/fc/Dockerfile
-          - image: teamclu-prod-ai-gateway
-            context: services/ai-gateway
-            dockerfile: services/ai-gateway/Dockerfile
-          - image: teamclu-prod-amuxd
-            context: .
-            dockerfile: deploy/self-host/amuxd/Dockerfile
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    concurrency:
+      group: prod-image-${{ matrix.image }}-${{ github.sha }}
+      cancel-in-progress: false
     env:
       IMAGE: ghcr.io/different-ai-studio/${{ matrix.image }}
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Stage psql migration image
+        if: matrix.service == 'db-migrate'
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          sh deploy/db-migrate-psql/stage-image.sh "$RUNNER_TEMP/psql-image"
+          (cd "$RUNNER_TEMP/psql-image/migrations" && sha256sum -c migrations.sha256)
 
       - uses: docker/setup-buildx-action@v4
 
@@ -43,25 +120,83 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Select publication tag
+        id: tag
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          tag="$GITHUB_SHA"
+          if [[ "$SERVICE" == db-migrate ]]; then
+            tag="$tag-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          fi
+          printf 'reference=%s:%s\n' "$IMAGE" "$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check for an existing service commit tag
+        if: matrix.service != 'db-migrate'
+        id: existing
+        env:
+          TAG_REF: ${{ steps.tag.outputs.reference }}
+        run: |
+          if digest=$(docker buildx imagetools inspect "$TAG_REF" --format '{{.Manifest.Digest}}' 2>"$RUNNER_TEMP/inspect-error"); then
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          elif ! grep -Eiq 'manifest unknown|not found' "$RUNNER_TEMP/inspect-error"; then
+            cat "$RUNNER_TEMP/inspect-error" >&2
+            exit 1
+          fi
+
       - name: Build and publish
+        if: steps.existing.outputs.digest == ''
         id: publish
         uses: docker/build-push-action@v7
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
+          context: ${{ matrix.service == 'db-migrate' && format('{0}/psql-image', runner.temp) || matrix.context }}
+          file: ${{ matrix.service == 'db-migrate' && format('{0}/psql-image/Dockerfile', runner.temp) || matrix.dockerfile }}
           platforms: linux/amd64
           push: true
-          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          tags: ${{ steps.tag.outputs.reference }}
           labels: |
             org.opencontainers.image.source=https://github.com/different-ai-studio/teamclu
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
 
-      - name: Record published digest
+      - name: Verify digest and write release artifact
         env:
-          DIGEST: ${{ steps.publish.outputs.digest }}
+          DIGEST: ${{ steps.existing.outputs.digest || steps.publish.outputs.digest }}
+          SERVICE: ${{ matrix.service }}
+          TAG_REF: ${{ steps.tag.outputs.reference }}
         run: |
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          printf '%s@%s\n' "$IMAGE" "$DIGEST" | tee -a "$GITHUB_STEP_SUMMARY"
-          printf '\nFor a new package, set visibility to Public in GHCR package settings before the anonymous ACK pull test.\n' >> "$GITHUB_STEP_SUMMARY"
+          published=$(docker buildx imagetools inspect "$TAG_REF" --format '{{.Manifest.Digest}}')
+          test "$published" = "$DIGEST"
+          ref="$IMAGE@$DIGEST"
+          mkdir "$RUNNER_TEMP/release"
+          jq -n --arg commit "$GITHUB_SHA" --arg image "$IMAGE" --arg digest "$DIGEST" \
+            --arg ref "$ref" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{source_commit: $commit, image: $image, digest: $digest, image_ref: $ref, platform: "linux/amd64", build_run: $run}' \
+            > "$RUNNER_TEMP/release/image.json"
+          printf '`%s` from `%s`\n' "$ref" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$SERVICE" == db-migrate ]]; then
+            # Pull by digest and read the index from the published image itself.
+            docker pull --platform linux/amd64 "$ref"
+            docker run --rm --platform linux/amd64 --read-only --entrypoint /bin/sh "$ref" -ec '
+              test "$(id -u):$(id -g)" = 70:70
+              psql --version
+              cd migrations
+              sha256sum -c migrations.sha256 >/dev/null
+            '
+            container=$(docker create --platform linux/amd64 "$ref")
+            trap 'docker rm -v "$container" >/dev/null' EXIT
+            docker cp "$container:/opt/teamclu/db-migrate/migrations/migrations.sha256" "$RUNNER_TEMP/release/migrations.sha256"
+            cmp "$RUNNER_TEMP/psql-image/migrations/migrations.sha256" "$RUNNER_TEMP/release/migrations.sha256"
+            printf '\nFor a new package, set visibility to Public in GHCR before the anonymous ACK pull test.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload immutable image metadata and SQL index
+        uses: actions/upload-artifact@v7
+        with:
+          name: prod-release-${{ matrix.image }}-${{ github.sha }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          overwrite: true

@@ -278,9 +278,13 @@ handles that: after the debounce it checks whether HEAD carries an `ios-v*` tag 
 stands down if so, leaving the tag's run to publish. A main push with no tag behind
 it still releases as before.
 
-## Deployment — two environments, two Cloud API targets
+## Deployment — Cloud API environments
 
-There are two environments:
+The Hangzhou production release uses GHCR and manual Argo CD Sync on ACK.
+See [Hangzhou production releases](docs/release/hangzhou-production.md) for the
+independent database release and application rollout.
+
+The other Cloud API environments are:
 
 - **self-host** is the Docker Compose test environment and stays on Caddy;
 - **Belayo** is the hosted environment. Its production Cloud API runs on
@@ -290,8 +294,8 @@ Do not collapse the two environments or share proxy certificate files between
 them. Align their application contract instead: environment keys, internal
 ports, URL behaviour, health checks, immutable images, and smoke tests.
 
-`services/fc/` is the Cloud API service, and it supports **two deploy targets**
-from the same source:
+`services/fc/` is the Cloud API service, and its self-host and Belayo deploy targets
+share the same source:
 
 - **self-host test** — built as a container by
   `deploy/self-host/docker-compose.yml` (`build: context: ../../services/fc`).
