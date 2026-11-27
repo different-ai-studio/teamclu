@@ -401,6 +401,81 @@ describe("Session + Messages", { skip: !E2E }, () => {
   });
 });
 
+// ── Suite 3b: Linking a session to an app (#1885) ──────────────────────────
+
+describe("Session ↔ app link", { skip: !E2E }, () => {
+  // Local-only apps: no Gitea repo is provisioned, so this suite does not
+  // depend on the forge. Both are deleted at the end.
+  const appIds: string[] = [];
+
+  async function createLocalApp(name: string): Promise<string | null> {
+    const { status, body } = await fcFetch("/v1/apps", {
+      method: "POST",
+      token: state.accessToken,
+      body: JSON.stringify({ teamId: state.teamId, name, type: "imported", localOnly: true }),
+    });
+    // A team created outside an org cannot hold apps; that is createApp's own
+    // contract, not this link's.
+    if (status === 409 && body?.error?.code === "team_has_no_org") return null;
+    assert.equal(status, 201, `createApp failed (${status}): ${JSON.stringify(body)}`);
+    appIds.push(body.id);
+    return body.id;
+  }
+
+  test("POST /v1/sessions/:id/app links the session; the app lists it; relinking is a no-op; another app is 409", async (t) => {
+    assert.ok(state.sessionId, "the session suite must have created a session");
+    const appId = await createLocalApp(`e2e-link-${Date.now()}`);
+    if (!appId) {
+      t.skip("team has no org — apps cannot be created here");
+      return;
+    }
+
+    const link = (id: string) =>
+      fcFetch(`/v1/sessions/${state.sessionId}/app`, {
+        method: "POST",
+        token: state.accessToken,
+        body: JSON.stringify({ appId: id }),
+      });
+
+    const first = await link(appId);
+    assert.equal(first.status, 204, `link failed (${first.status}): ${JSON.stringify(first.body)}`);
+
+    const listed = await fcFetch(`/v1/apps/${appId}/sessions`, { token: state.accessToken });
+    assert.equal(listed.status, 200, `listAppSessions failed: ${JSON.stringify(listed.body)}`);
+    assert.ok(
+      listed.body.items.some((s: any) => s.id === state.sessionId),
+      `session ${state.sessionId} not in the app's sessions: ${JSON.stringify(listed.body)}`,
+    );
+
+    const again = await link(appId);
+    assert.equal(again.status, 204, `relink to the same app must be a no-op: ${JSON.stringify(again.body)}`);
+
+    const otherId = await createLocalApp(`e2e-link-other-${Date.now()}`);
+    assert.ok(otherId);
+    const moved = await link(otherId!);
+    assert.equal(moved.status, 409, `linking to a second app must be refused: ${JSON.stringify(moved.body)}`);
+    assert.equal(moved.body?.error?.code, "session_already_linked");
+  });
+
+  test("POST /v1/sessions/:id/app is 404 for an app that does not exist", async () => {
+    const { status } = await fcFetch(`/v1/sessions/${state.sessionId}/app`, {
+      method: "POST",
+      token: state.accessToken,
+      body: JSON.stringify({ appId: "00000000-0000-4000-8000-000000000000" }),
+    });
+    // The session already has an app from the test above, which is answered
+    // first; on a run where that test skipped, the unknown app is a 404.
+    assert.ok(status === 404 || status === 409, `expected 404/409, got ${status}`);
+  });
+
+  test("cleanup: delete the apps", async () => {
+    for (const id of appIds) {
+      const { status } = await fcFetch(`/v1/apps/${id}`, { method: "DELETE", token: state.accessToken });
+      assert.ok(status === 200 || status === 204, `deleteApp ${id} answered ${status}`);
+    }
+  });
+});
+
 // ── Suite 4: Storage ───────────────────────────────────────────────────────
 
 describe("Storage", { skip: !E2E }, () => {

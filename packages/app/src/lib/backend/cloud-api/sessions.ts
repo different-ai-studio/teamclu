@@ -184,6 +184,9 @@ export function createSessionsModule(client: CloudApiClient): SessionsBackend {
     async archiveSession(sessionId, archivedAt) {
       await client.patch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { archivedAt });
     },
+    async linkApp(sessionId, appId) {
+      await client.post(`/v1/sessions/${encodeURIComponent(sessionId)}/app`, { appId });
+    },
     async getSessionParticipants(sessionId): Promise<SessionParticipant[]> {
       const out = await client.get<{
         items: Array<{

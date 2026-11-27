@@ -16,6 +16,7 @@ import { extractUITreeFromResponse } from "@/lib/dynamic-ui/generator";
 import { parseStreamingUITree } from "@/lib/dynamic-ui/streaming";
 import { lazyNamed } from "@/lib/lazy-component";
 import { ToolCallCard } from "./ToolCallCard";
+import { AppLinkPrompt } from "./AppLinkPrompt";
 import { CompactionRow } from "./CompactionRow";
 import { StreamMarkdown } from "./StreamMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -851,6 +852,9 @@ export const ChatMessage = React.memo(function ChatMessage({
           ))}
         </div>
       )}
+
+      {/* An agent created an app in this turn: offer to link the session (#1885) */}
+      {!isUser && !latestMessage.isStreaming && <AppLinkPrompt message={latestMessage} />}
 
       {/* Token usage summary for assistant messages */}
       {!isUser && !latestMessage.isStreaming && latestMessage.tokens && !tokenGroupInfo?.hideTokenUsage && (

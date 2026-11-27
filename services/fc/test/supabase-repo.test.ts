@@ -5165,6 +5165,93 @@ function seatMoveFixture({
   return { repo, seatWrites };
 }
 
+// A session could only be given an app at create; one in which an agent then
+// built an app stayed apart from it (#1885). The link is authorized in the
+// repository and written through the service role.
+function sessionLinkFixture({
+  session = {},
+  seated = true,
+  apps = [{ id: "app-1", team_id: "team-1", created_by_actor_id: "agent-1" }],
+  appVisible = true,
+}: any = {}) {
+  const sessionRow = { id: "sess-1", team_id: "team-1", app_id: null, source: "user", ...session };
+  const participants = seated ? [{ session_id: "sess-1", actor_id: "member-1" }] : [];
+  const actorRow = { id: "member-1" };
+  const caller = appsSupabase({
+    actorRow,
+    seed: { sessions: [sessionRow], apps: appVisible ? apps : [] },
+  });
+  const adminCalls: any[] = [];
+  const admin = appsSupabase({
+    actorRow,
+    calls: adminCalls,
+    seed: { sessions: [sessionRow], session_participants: participants, apps },
+  });
+  const repo = appsRepo(caller, { createServiceRoleClient: () => admin });
+  const sessionWrites = () => adminCalls.filter((c) => c.table === "sessions" && c.op === "update");
+  return { repo, sessionWrites };
+}
+
+test("linkSessionApp sets app_id when a seated member links an app they can see", async () => {
+  const { repo, sessionWrites } = sessionLinkFixture();
+  await repo.linkSessionApp("sess-1", { appId: "app-1" });
+  assert.equal(sessionWrites().length, 1);
+  assert.equal(sessionWrites()[0].row.app_id, "app-1");
+});
+
+test("linkSessionApp to the app the session already has changes nothing", async () => {
+  const { repo, sessionWrites } = sessionLinkFixture({ session: { app_id: "app-1" } });
+  await repo.linkSessionApp("sess-1", { appId: "app-1" });
+  assert.equal(sessionWrites().length, 0);
+});
+
+test("linkSessionApp refuses a session that already has another app", async () => {
+  const { repo, sessionWrites } = sessionLinkFixture({ session: { app_id: "app-other" } });
+  await assert.rejects(
+    () => repo.linkSessionApp("sess-1", { appId: "app-1" }),
+    (e: any) => e.statusCode === 409 && e.code === "session_already_linked",
+  );
+  assert.equal(sessionWrites().length, 0);
+});
+
+test("linkSessionApp refuses a channel session", async () => {
+  const { repo, sessionWrites } = sessionLinkFixture({ session: { source: "gateway" } });
+  await assert.rejects(
+    () => repo.linkSessionApp("sess-1", { appId: "app-1" }),
+    (e: any) => e.statusCode === 409 && e.code === "session_not_linkable",
+  );
+  assert.equal(sessionWrites().length, 0);
+});
+
+test("linkSessionApp refuses a caller who is not seated in the session", async () => {
+  const { repo, sessionWrites } = sessionLinkFixture({ seated: false });
+  await assert.rejects(
+    () => repo.linkSessionApp("sess-1", { appId: "app-1" }),
+    (e: any) => e.statusCode === 403,
+  );
+  assert.equal(sessionWrites().length, 0);
+});
+
+test("linkSessionApp treats an app the caller cannot see as absent", async () => {
+  const { repo, sessionWrites } = sessionLinkFixture({ appVisible: false });
+  await assert.rejects(
+    () => repo.linkSessionApp("sess-1", { appId: "app-1" }),
+    (e: any) => e.statusCode === 404,
+  );
+  assert.equal(sessionWrites().length, 0);
+});
+
+test("linkSessionApp refuses an app from another team", async () => {
+  const { repo, sessionWrites } = sessionLinkFixture({
+    apps: [{ id: "app-1", team_id: "team-2", created_by_actor_id: "agent-1" }],
+  });
+  await assert.rejects(
+    () => repo.linkSessionApp("sess-1", { appId: "app-1" }),
+    (e: any) => e.statusCode === 409 && e.code === "app_in_other_team",
+  );
+  assert.equal(sessionWrites().length, 0);
+});
+
 test("setParticipantWorkspace moves the seat when the agent's owner asks", async () => {
   const { repo, seatWrites } = seatMoveFixture();
   await repo.setParticipantWorkspace("sess-1", "agent-1", { workspaceId: "ws-app" });

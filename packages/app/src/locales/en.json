@@ -805,6 +805,14 @@
     "todo": {
       "stackSummary": "{{count}} tasks · {{completed}} done"
     },
+    "appLink": {
+      "prompt": "Created the app “{{name}}”. Link this session to it? The session will move under the app and the file tree will switch to the app's folder.",
+      "link": "Link",
+      "linking": "Linking…",
+      "dismiss": "Not now",
+      "linked": "Linked to the app “{{name}}”",
+      "failed": "Could not link: {{message}}"
+    },
     "toolCall": {
       "status": {
         "running": "Running",

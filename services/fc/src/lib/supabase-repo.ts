@@ -4240,6 +4240,89 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     /**
+     * Link an existing session to an app (`sessions.app_id`), so it appears
+     * under the app and its agent can be seated on the app's checkout. A
+     * session could only be given an app when it was created; one in which an
+     * agent then built an app stayed apart from it (#1885).
+     *
+     * The sessions UPDATE policy lets any team member write any column, with
+     * no word on the app, so the write goes through the service role after the
+     * checks this link needs: the caller is a member seated in the session, the
+     * app is one they can see (RLS on their own token) and sits in the
+     * session's team, and the session is a regular one with no app yet. The
+     * conditional update makes a concurrent link lose cleanly. Linking to the
+     * app it already has changes nothing.
+     */
+    async linkSessionApp(sessionId, { appId }) {
+      const { data: session, error: sessionErr } = await supabase
+        .from("sessions")
+        .select("id, team_id, app_id, source")
+        .eq("id", sessionId)
+        .maybeSingle();
+      if (sessionErr) throw sessionErr;
+      if (!session) throw new ApiError(404, "not_found", "session not found");
+      if (session.app_id === appId) return;
+      if (session.app_id) {
+        throw new ApiError(409, "session_already_linked", "this session already belongs to an app");
+      }
+      if ((session.source ?? "user") !== "user") {
+        throw new ApiError(409, "session_not_linkable", "only a regular session can be linked to an app");
+      }
+      const teamId = String(session.team_id);
+      const callerActorId = await requireCallerTeamMemberActor(teamId);
+      const admin = await serviceRoleClient("link a session to an app");
+
+      const { data: seat, error: seatErr } = await admin
+        .from("session_participants")
+        .select("actor_id")
+        .eq("session_id", sessionId)
+        .eq("actor_id", callerActorId)
+        .maybeSingle();
+      if (seatErr) throw seatErr;
+      if (!seat) {
+        throw new ApiError(403, "forbidden", "only a member of the session can link it to an app");
+      }
+
+      // Visibility on the caller's own token: an app they cannot see is not
+      // theirs to link, and reads as absent.
+      const { data: app, error: appErr } = await supabase
+        .from("apps")
+        .select("id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (appErr) throw appErr;
+      if (!app) throw new ApiError(404, "not_found", "app not found");
+      const { data: link, error: linkErr } = await supabase
+        .from("app_links")
+        .select("team_id")
+        .eq("app_id", appId)
+        .maybeSingle();
+      if (linkErr) throw linkErr;
+      if (!link || String(link.team_id) !== teamId) {
+        throw new ApiError(409, "app_in_other_team", "the app is not in this session's team");
+      }
+
+      const { data: updated, error: updErr } = await admin
+        .from("sessions")
+        .update({ app_id: appId, updated_at: new Date().toISOString() })
+        .eq("id", sessionId)
+        .is("app_id", null)
+        .select("id")
+        .maybeSingle();
+      if (updErr) throw updErr;
+      if (updated) return;
+      // Someone linked it between the read and the write.
+      const { data: now, error: nowErr } = await admin
+        .from("sessions")
+        .select("app_id")
+        .eq("id", sessionId)
+        .maybeSingle();
+      if (nowErr) throw nowErr;
+      if (now?.app_id === appId) return;
+      throw new ApiError(409, "session_already_linked", "this session already belongs to an app");
+    },
+
+    /**
      * Take someone out of a session.
      *
      * The table has no DELETE policy, so this used to run on the caller's token
