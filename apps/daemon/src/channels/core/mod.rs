@@ -1129,16 +1129,32 @@ impl Core {
 /// expose a device path without helping a gateway user resolve the failure.
 fn gateway_turn_failure_notice(error: &CoreError) -> String {
     let rendered = error.to_string();
+    // An empty team wallet or a used-up member quota arrives as the gateway's
+    // raw 402 JSON. Say what happened and who can fix it instead: a retry
+    // cannot help, and the JSON means nothing to a WeCom user.
+    let locale = teamclu_gateway::i18n::locale();
+    match crate::runtime::credit_error::detect(&rendered) {
+        Some(crate::runtime::credit_error::CreditErrorKind::InsufficientCredits) => {
+            return teamclu_gateway::i18n::t(
+                teamclu_gateway::i18n::MsgKey::TeamCreditsExhausted,
+                locale,
+            );
+        }
+        Some(crate::runtime::credit_error::CreditErrorKind::QuotaExceeded) => {
+            return teamclu_gateway::i18n::t(
+                teamclu_gateway::i18n::MsgKey::MemberQuotaExceeded,
+                locale,
+            );
+        }
+        None => {}
+    }
     let detail = rendered
         .strip_prefix("turn: ")
         .unwrap_or(&rendered)
         .split_once("\n\n")
         .map(|(head, _)| head)
         .unwrap_or_else(|| rendered.strip_prefix("turn: ").unwrap_or(&rendered));
-    teamclu_gateway::i18n::t(
-        teamclu_gateway::i18n::MsgKey::TurnFailed(detail),
-        teamclu_gateway::i18n::locale(),
-    )
+    teamclu_gateway::i18n::t(teamclu_gateway::i18n::MsgKey::TurnFailed(detail), locale)
 }
 
 /// Shape the turn's result for one channel.

@@ -1137,7 +1137,12 @@
     "turnFailed": {
       "failedTitle": "本轮失败",
       "statusLabel": "provider error",
-      "description": "模型服务在产出回复前报错，本轮工作没有完成。"
+      "description": "模型服务在产出回复前报错，本轮工作没有完成。",
+      "notRunTitle": "本轮未执行",
+      "insufficientCreditsLabel": "团队余额已用完",
+      "insufficientCreditsDescription": "团队 AI 余额已用完，本轮没有执行。充值后立即恢复。",
+      "quotaExceededLabel": "个人额度已用完",
+      "quotaExceededDescription": "你本周期的个人 AI 额度已用完，本轮没有执行。"
     },
     "unsupportedNativeSkill": {
       "failedTitle": "技能未创建",
@@ -1416,6 +1421,17 @@
     "quotaExceeded": "额度已用尽",
     "modelTimeout": "模型无响应",
     "providerError": "模型服务异常",
+    "insufficientCreditsTitle": "团队 AI 余额已用完",
+    "insufficientCreditsBody": "团队 AI 余额已用完，本轮没有执行。重试或切换模型都没有用，所有模型共用同一个团队余额。充值后立即恢复，不需要重启。",
+    "insufficientCreditsAction": "去充值",
+    "insufficientCreditsContact": "请联系团队所有者充值。",
+    "insufficientCreditsContactNamed": "请联系团队所有者充值：{{names}}",
+    "memberQuotaExceededTitle": "个人 AI 额度已用完",
+    "memberQuotaExceededBody": "你本周期的个人 AI 额度已用完，本轮没有执行。团队余额没有问题，需要调高你的个人额度。",
+    "memberQuotaAction": "调整额度",
+    "memberQuotaContact": "请联系团队所有者调高你的额度。",
+    "memberQuotaContactNamed": "请联系团队所有者调高你的额度：{{names}}",
+    "creditOwnerNameSeparator": "、",
     "rateLimited": "请求频率受限",
     "serverError": "服务器错误",
     "serviceNotice": "服务提示",

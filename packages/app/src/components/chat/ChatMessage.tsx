@@ -746,16 +746,33 @@ export const ChatMessage = React.memo(function ChatMessage({
             aria-hidden
           />
           <span className="font-semibold">
-            {t("chat.turnFailed.failedTitle", "Turn failed")}
+            {message.turnFailureReason
+              ? t("chat.turnFailed.notRunTitle", "Turn not run")
+              : t("chat.turnFailed.failedTitle", "Turn failed")}
           </span>
           <span className="font-mono text-[11px] text-faint">
-            · {t("chat.turnFailed.statusLabel", "provider error")}
+            ·{" "}
+            {message.turnFailureReason === "insufficient_credits"
+              ? t("chat.turnFailed.insufficientCreditsLabel", "team balance used up")
+              : message.turnFailureReason === "quota_exceeded"
+                ? t("chat.turnFailed.quotaExceededLabel", "quota used up")
+                : t("chat.turnFailed.statusLabel", "provider error")}
           </span>
           <p className="mt-0.5 w-full text-[12.5px] leading-[1.55] text-muted-foreground">
-            {t(
-              "chat.turnFailed.description",
-              "The model provider errored out before a reply was produced. The work was not completed.",
-            )}
+            {message.turnFailureReason === "insufficient_credits"
+              ? t(
+                  "chat.turnFailed.insufficientCreditsDescription",
+                  "The team's AI balance was used up, so this turn did not run. It works again as soon as credits are added.",
+                )
+              : message.turnFailureReason === "quota_exceeded"
+                ? t(
+                    "chat.turnFailed.quotaExceededDescription",
+                    "Your personal AI quota for this period was used up, so this turn did not run.",
+                  )
+                : t(
+                    "chat.turnFailed.description",
+                    "The model provider errored out before a reply was produced. The work was not completed.",
+                  )}
           </p>
         </div>
       ) : null}

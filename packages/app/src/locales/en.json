@@ -1137,7 +1137,12 @@
     "turnFailed": {
       "failedTitle": "Turn failed",
       "statusLabel": "provider error",
-      "description": "The model provider errored out before a reply was produced. The work was not completed."
+      "description": "The model provider errored out before a reply was produced. The work was not completed.",
+      "notRunTitle": "Turn not run",
+      "insufficientCreditsLabel": "team balance used up",
+      "insufficientCreditsDescription": "The team's AI balance was used up, so this turn did not run. It works again as soon as credits are added.",
+      "quotaExceededLabel": "quota used up",
+      "quotaExceededDescription": "Your personal AI quota for this period was used up, so this turn did not run."
     },
     "unsupportedNativeSkill": {
       "failedTitle": "Skill not created",
@@ -1416,6 +1421,17 @@
     "quotaExceeded": "Quota Exceeded",
     "modelTimeout": "Model Not Responding",
     "providerError": "Provider Error",
+    "insufficientCreditsTitle": "Team AI balance is used up",
+    "insufficientCreditsBody": "The team's AI balance is used up, so this turn was not run. Retrying or switching models will not help — every model draws on the same team balance. It works again as soon as credits are added, no restart needed.",
+    "insufficientCreditsAction": "Add credits",
+    "insufficientCreditsContact": "Ask a team owner to add credits.",
+    "insufficientCreditsContactNamed": "Ask a team owner to add credits: {{names}}",
+    "memberQuotaExceededTitle": "Your AI quota is used up",
+    "memberQuotaExceededBody": "Your personal AI quota for this period is used up, so this turn was not run. The team balance is fine; your own limit needs raising.",
+    "memberQuotaAction": "Adjust quotas",
+    "memberQuotaContact": "Ask a team owner to raise your limit.",
+    "memberQuotaContactNamed": "Ask a team owner to raise your limit: {{names}}",
+    "creditOwnerNameSeparator": ", ",
     "rateLimited": "Rate Limited",
     "serverError": "Server Error",
     "serviceNotice": "Service Notice",

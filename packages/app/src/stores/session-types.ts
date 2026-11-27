@@ -224,6 +224,9 @@ export interface Message {
     | null;
   /** Structured native skill violations when turnStatus is unsupported-directory. */
   nativeSkillViolations?: { slug: string; root: string; path?: string }[];
+  /** Daemon `metadata.failure_reason` when turnStatus is failed: the AI gateway
+   *  refused the turn for credits (empty team wallet / member quota). */
+  turnFailureReason?: "insufficient_credits" | "quota_exceeded" | null;
   /** Historical turn: process parts omitted until user expands collapsible. */
   processDeferred?: boolean;
   /** Lightweight process summary while {@link processDeferred} is true. */

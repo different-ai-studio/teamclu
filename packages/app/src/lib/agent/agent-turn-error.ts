@@ -1,4 +1,11 @@
 import type { TFunction } from 'i18next'
+import {
+  creditErrorNameForReason,
+  detectCreditErrorReason,
+  INSUFFICIENT_CREDITS_ERROR_NAME,
+  QUOTA_EXCEEDED_ERROR_NAME,
+  type CreditErrorReason,
+} from '@/lib/agent/credit-error'
 
 /** User-initiated turn cancel (opencode abort) — not a fault. */
 export const TURN_INTERRUPTED_ERROR_NAME = 'TurnInterrupted'
@@ -55,6 +62,12 @@ export function classifyAgentTurnErrorName(
   if (lower === 'model stalled' || lower === 'model provider not responding') {
     return 'AgentTimeoutError'
   }
+  // Before the generic provider error: an empty wallet is not something a
+  // retry or another model can fix, so it gets its own banner.
+  const creditReason = detectCreditErrorReason(raw, detail)
+  if (creditReason) {
+    return creditErrorNameForReason(creditReason)
+  }
   if (lower === 'model provider error') {
     return 'ProviderError'
   }
@@ -67,6 +80,35 @@ export function classifyAgentTurnErrorName(
     return 'RetryError'
   }
   return 'AgentError'
+}
+
+/** User-facing sentence for a gateway credit refusal — replaces the raw 402 JSON. */
+export function localizeCreditErrorMessage(reason: CreditErrorReason, t: TFunction): string {
+  return reason === 'insufficient_credits'
+    ? t(
+        'errors.insufficientCreditsBody',
+        "The team's AI balance is used up, so this turn was not run. It works again as soon as credits are added — no restart needed.",
+      )
+    : t(
+        'errors.memberQuotaExceededBody',
+        'Your personal AI quota for this period is used up, so this turn was not run. A team owner can raise your limit.',
+      )
+}
+
+/**
+ * Display text for a daemon turn error. Credit refusals come back as a plain
+ * sentence with no raw detail; everything else keeps the provider's words.
+ */
+export function agentTurnErrorDisplay(
+  message: string | undefined,
+  detail: string | undefined,
+  t: TFunction,
+): { message: string; detail: string } {
+  const creditReason = detectCreditErrorReason(message, detail)
+  if (creditReason) {
+    return { message: localizeCreditErrorMessage(creditReason, t), detail: '' }
+  }
+  return { message: localizeAgentTurnErrorMessage(message, t), detail: (detail ?? '').trim() }
 }
 
 /** Localize known daemon turn-error messages; pass through anything else. */
@@ -108,6 +150,8 @@ export function isPersistentSessionTurnError(errorName: string | undefined): boo
     case 'RetryError':
     case 'AgentTimeoutError':
     case 'ProviderError':
+    case INSUFFICIENT_CREDITS_ERROR_NAME:
+    case QUOTA_EXCEEDED_ERROR_NAME:
       return true
     default:
       return false

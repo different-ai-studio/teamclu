@@ -9,6 +9,7 @@ pub mod backend;
 pub mod backend_session_metadata;
 pub mod context_registry;
 pub mod context_service;
+pub mod credit_error;
 pub mod env_assembly;
 pub mod execution_context;
 pub mod gateway_token;

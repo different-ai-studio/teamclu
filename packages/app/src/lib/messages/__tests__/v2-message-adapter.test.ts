@@ -893,6 +893,35 @@ describe("adaptTeamcluMessages", () => {
     expect(result?.[0]?.parts ?? []).toEqual([]);
   });
 
+  it("carries the daemon's credit failure_reason on a failed AGENT_REPLY", () => {
+    const result = adaptTeamcluMessages([
+      tmsg({
+        kind: MessageKind.AGENT_REPLY,
+        content:
+          "[Turn failed] The model provider returned an error before this turn produced an answer.",
+        turnId: "t-credits",
+        metadataJson: JSON.stringify({
+          turn_status: "failed",
+          failure_reason: "insufficient_credits",
+        }),
+      }),
+    ]);
+    expect(result?.[0]?.turnStatus).toBe("failed");
+    expect(result?.[0]?.turnFailureReason).toBe("insufficient_credits");
+  });
+
+  it("leaves turnFailureReason unset for an ordinary failure", () => {
+    const result = adaptTeamcluMessages([
+      tmsg({
+        kind: MessageKind.AGENT_REPLY,
+        content: "[Turn failed] x",
+        turnId: "t-plain-fail",
+        metadataJson: JSON.stringify({ turn_status: "failed" }),
+      }),
+    ]);
+    expect(result?.[0]?.turnFailureReason).toBeUndefined();
+  });
+
   it("keeps generated prose on a failed AGENT_REPLY and still marks it failed", () => {
     const prose = "I got as far as reading the config…";
     const result = adaptTeamcluMessages([

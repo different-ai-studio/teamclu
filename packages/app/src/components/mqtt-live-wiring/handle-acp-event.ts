@@ -2,7 +2,7 @@ import { AgentStatus } from "@/lib/proto/amux_pb";
 import type { Question, QuestionOption } from "@/stores/session-types";
 import { agentStreamKey, isTurnOpeningStatusChange, normalizeToolResultEvent, normalizeToolUseEvent, shouldPatchFlushedToolEvent, streamEntryHasVisibleContent } from "@/lib/stream/live-agent-stream";
 import { bufferStreamDelta, flushStreamDeltasFor} from "@/lib/stream/stream-delta-buffer";
-import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, isStalePiExtensionCtxError, localizeAgentTurnErrorMessage } from "@/lib/agent/agent-turn-error";
+import { agentTurnErrorDisplay, classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, isStalePiExtensionCtxError } from "@/lib/agent/agent-turn-error";
 import { patchPersistedToolResult, patchPersistedToolUse, syncStreamingToolOutputsFromLocalCache } from "@/lib/stream/streaming-persist";
 import { streamActorIdFromLiveEvent } from "@/lib/daemon/teamclu-events";
 import { getFlushedTurn, noteTurnOpened } from "@/lib/stream/flushed-turn-registry";
@@ -430,15 +430,20 @@ export function handleAcpEvent(
                 } else {
                   // ACP error is not agent_settled. Leave the dock up; the
                   // session error alert carries the message.
-                  const localizedMessage = localizeAgentTurnErrorMessage(er.message, t);
+                  // Credit refusals (empty team wallet / member quota) come
+                  // back as a readable sentence; the raw 402 JSON is dropped.
+                  const { message: localizedMessage, detail } = agentTurnErrorDisplay(
+                    er.message,
+                    er.details,
+                    t,
+                  );
                   useV2StreamingStore.getState().setError(
                     sid,
                     actorId,
                     localizedMessage,
-                    er.details ?? "",
+                    detail,
                   );
                   {
-                    const detail = (er.details ?? "").trim();
                     const errorName = classifyAgentTurnErrorName(er.message, er.details);
                     useSessionStore.getState().setSessionErrorEvent({
                       sessionId: sid,

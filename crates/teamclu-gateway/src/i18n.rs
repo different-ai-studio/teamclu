@@ -115,6 +115,12 @@ pub enum MsgKey<'a> {
     /// daemon's user-actionable cause (for example, a missing model key), not
     /// a generic transport status.
     TurnFailed(&'a str),
+    /// The AI gateway refused the turn because the team's credit balance is
+    /// exhausted (`insufficient_credits`). Fixed by a top-up, not a retry.
+    TeamCreditsExhausted,
+    /// The AI gateway refused the turn because this member's own quota for the
+    /// period is used up (`quota_exceeded`). Fixed by raising the limit.
+    MemberQuotaExceeded,
 
     // === Unknown command ===
     UnknownCommand(&'a str),
@@ -373,6 +379,12 @@ pub fn t(key: MsgKey, locale: Locale) -> String {
 
         (TurnFailed(detail), En) => format!("Request failed: {detail}"),
         (TurnFailed(detail), ZhCN) => format!("请求失败：{detail}"),
+
+        (TeamCreditsExhausted, En) => "The team's AI balance is used up, so this request was not run. Ask a team owner to add credits in Settings → Billing; it works again right after, no restart needed.".into(),
+        (TeamCreditsExhausted, ZhCN) => "团队 AI 余额已用完，本轮没有执行。请联系团队所有者在「设置 → 账单」充值，充值后立即恢复，不需要重启。".into(),
+
+        (MemberQuotaExceeded, En) => "Your personal AI quota for this period is used up, so this request was not run. Ask a team owner to raise your limit in Settings → Token Usage.".into(),
+        (MemberQuotaExceeded, ZhCN) => "你本周期的个人 AI 额度已用完，本轮没有执行。请联系团队所有者在「设置 → Token 用量」调高你的额度。".into(),
 
         // === Unknown command ===
         (UnknownCommand(cmd), En) => format!("Unknown command: {}\nType /help for available commands.", cmd),

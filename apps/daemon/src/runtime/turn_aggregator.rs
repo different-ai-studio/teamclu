@@ -24,7 +24,9 @@
 //!   - `{"turn_status":"approval_timeout"}` — idle detach with pending approval
 //!   - `{"turn_status":"idle_timeout"}` — idle detach without pending approval
 //!   - `{"turn_status":"failed"}` — the model provider errored out
-//!     (host/extension noise is *not* this; see `AcpErrorKind::SideChannel`)
+//!     (host/extension noise is *not* this; see `AcpErrorKind::SideChannel`).
+//!     Adds `"failure_reason": "insufficient_credits" | "quota_exceeded"` when
+//!     the AI gateway refused the turn for credits (`runtime::credit_error`).
 //!   - `{"turn_status":"no_final_reply"}` — Idle with no final prose
 //!     (frontends hide the English notice and render a localized strip)
 //!   - `{"turn_status":"skill_created_in_unsupported_directory", ...}` —
@@ -122,6 +124,20 @@ an answer. The work was not completed. Do not treat it as done and do not \
 invent a summary; if it still matters, the user can retry or switch models.";
 
 const FAILED_REPLY_METADATA_JSON: &str = r#"{"turn_status":"failed"}"#;
+
+/// `{"turn_status":"failed"}`, plus `failure_reason` when the cause is one
+/// the user can act on — today the gateway credit refusals, so clients can say
+/// "top up" instead of "retry or switch models" even after a reload.
+fn failed_reply_metadata(reason: Option<&str>) -> String {
+    match reason {
+        Some(reason) => serde_json::json!({
+            "turn_status": "failed",
+            "failure_reason": reason,
+        })
+        .to_string(),
+        None => FAILED_REPLY_METADATA_JSON.to_string(),
+    }
+}
 
 fn is_turn_abort_error(err: &amux::AcpError) -> bool {
     let message = err.message.to_ascii_lowercase();
@@ -235,6 +251,9 @@ pub struct TurnAggregator {
     /// meanings to the model: one is "the user stopped you", the other is
     /// "the call failed".
     turn_failed: bool,
+    /// Why the provider failed, when the cause is one the user can act on
+    /// (`credit_error` codes). Written to `metadata.failure_reason`.
+    turn_failure_reason: Option<&'static str>,
     /// pi aborted a tool mid-flight (`tool_execution_end` with an abort-shaped
     /// summary) without emitting assistant `stopReason: "aborted"`.
     turn_saw_abort_tool_result: bool,
@@ -347,6 +366,11 @@ impl TurnAggregator {
                         self.ensure_turn_started();
                         self.turn_had_activity = true;
                         self.turn_failed = true;
+                        if let Some(kind) = crate::runtime::credit_error::detect(&err.details)
+                            .or_else(|| crate::runtime::credit_error::detect(&err.message))
+                        {
+                            self.turn_failure_reason = Some(kind.code());
+                        }
                     }
                 }
             }
@@ -363,6 +387,7 @@ impl TurnAggregator {
                     self.turn_had_reply = false;
                     self.turn_was_interrupted = false;
                     self.turn_failed = false;
+                    self.turn_failure_reason = None;
                     self.turn_saw_abort_tool_result = false;
                     self.tool_names.clear();
                     self.turn_attachments.clear();
@@ -379,6 +404,7 @@ impl TurnAggregator {
                         // `"toolUse"`; the abort lives only in the tool result.
                         self.turn_was_interrupted = true;
                         self.turn_failed = false;
+                        self.turn_failure_reason = None;
                     }
                     let ended_badly = self.turn_was_interrupted
                         || self.turn_failed
@@ -395,20 +421,23 @@ impl TurnAggregator {
                         let (notice, metadata) = if self.turn_detach_approval_timeout {
                             (
                                 APPROVAL_TIMEOUT_AGENT_REPLY_CONTENT,
-                                APPROVAL_TIMEOUT_REPLY_METADATA_JSON,
+                                APPROVAL_TIMEOUT_REPLY_METADATA_JSON.to_string(),
                             )
                         } else if self.turn_detach_idle_timeout {
                             (
                                 IDLE_TIMEOUT_AGENT_REPLY_CONTENT,
-                                IDLE_TIMEOUT_REPLY_METADATA_JSON,
+                                IDLE_TIMEOUT_REPLY_METADATA_JSON.to_string(),
                             )
                         } else if self.turn_was_interrupted {
                             (
                                 INTERRUPTED_AGENT_REPLY_CONTENT,
-                                INTERRUPTED_REPLY_METADATA_JSON,
+                                INTERRUPTED_REPLY_METADATA_JSON.to_string(),
                             )
                         } else {
-                            (FAILED_AGENT_REPLY_CONTENT, FAILED_REPLY_METADATA_JSON)
+                            (
+                                FAILED_AGENT_REPLY_CONTENT,
+                                failed_reply_metadata(self.turn_failure_reason),
+                            )
                         };
                         let prose = std::mem::take(&mut self.reply_buf);
                         let content = if prose.trim().is_empty() {
@@ -416,7 +445,7 @@ impl TurnAggregator {
                         } else {
                             prose
                         };
-                        out.push(self.emit_agent_reply(content, metadata.to_string(), true));
+                        out.push(self.emit_agent_reply(content, metadata, true));
                         self.turn_had_reply = true;
                     } else {
                         // Non-empty Idle prose → one cloud-final AgentReply.
@@ -442,6 +471,7 @@ impl TurnAggregator {
                     self.turn_had_reply = false;
                     self.turn_was_interrupted = false;
                     self.turn_failed = false;
+                    self.turn_failure_reason = None;
                     self.turn_saw_abort_tool_result = false;
                     self.turn_detach_idle_timeout = false;
                     self.turn_detach_approval_timeout = false;
@@ -766,6 +796,42 @@ mod tests {
             "extension noise must not stamp the answer as a provider failure: {}",
             emitted[0].metadata_json
         );
+    }
+
+    #[test]
+    fn a_credit_refusal_names_its_reason_and_does_not_leak_into_the_next_turn() {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        agg.ingest(&amux::AcpEvent {
+            event: Some(amux::acp_event::Event::Error(amux::AcpError {
+                message: "model provider error".into(),
+                details: r#"402: {"code":"insufficient_credits","message":"the team's credit balance is exhausted"}"#.into(),
+            })),
+            model: String::new(),
+        });
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        let md: serde_json::Value = serde_json::from_str(&emitted[0].metadata_json).unwrap();
+        assert_eq!(md["turn_status"], "failed");
+        assert_eq!(md["failure_reason"], "insufficient_credits");
+
+        // A later ordinary provider failure carries no stale reason.
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        agg.ingest(&provider_error());
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted[0].metadata_json, r#"{"turn_status":"failed"}"#);
     }
 
     #[test]
