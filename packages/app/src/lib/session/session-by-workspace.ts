@@ -1,17 +1,5 @@
-import { loadSessionWorkspacesForTeam, type SessionWorkspaceRow } from "@/lib/cache/local-cache";
-import {
-  loadViewerWorkspaceContext,
-  resolveSessionWorkspaceForViewer,
-} from "@/lib/session/session-viewer-workspace";
+import { resolveSessionWorkspaceForViewer } from "@/lib/session/session-viewer-workspace";
 import { workspacePathsMatch } from "@/stores/session-utils";
-
-async function loadViewerSessionWorkspaceRows(
-  teamId: string,
-): Promise<SessionWorkspaceRow[]> {
-  const viewer = await loadViewerWorkspaceContext(teamId);
-  if (!viewer.memberId) return [];
-  return loadSessionWorkspacesForTeam(teamId, viewer.memberId);
-}
 
 /**
  * Viewer-scoped local path for a session. Only adopts workspaces tied to the
@@ -95,25 +83,4 @@ async function workspacePathAvailableHere(path: string): Promise<boolean> {
     console.warn("[session] could not check session workspace path:", error);
     return false;
   }
-}
-
-/**
- * Resolve the set of session ids that belong to a workspace for the current
- * viewer, reading ONLY the local libsql `session_viewer_workspace` table.
- */
-export async function loadSessionIdsForWorkspace(
-  teamId: string,
-  target: { workspaceId: string | null; path: string },
-): Promise<Set<string>> {
-  const rows = await loadViewerSessionWorkspaceRows(teamId);
-  const ids = new Set<string>();
-  for (const r of rows) {
-    const byId = !!target.workspaceId && r.workspaceId === target.workspaceId;
-    const byPath =
-      !!r.workspacePath &&
-      !!target.path &&
-      workspacePathsMatch(r.workspacePath, target.path);
-    if (byId || byPath) ids.add(r.sessionId);
-  }
-  return ids;
 }

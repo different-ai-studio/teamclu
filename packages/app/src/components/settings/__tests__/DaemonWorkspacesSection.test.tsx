@@ -97,6 +97,18 @@ vi.mock('../shared', () => ({
 vi.mock('@/components/ui/button', () => ({
   Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
 }))
+// Radix renders into a portal and needs pointer APIs jsdom lacks; a plain
+// conditional stand-in is enough to drive the confirm step.
+vi.mock('@/components/ui/alert-dialog', () => ({
+  AlertDialog: ({ open, children }: any) => (open ? <div role="alertdialog">{children}</div> : null),
+  AlertDialogContent: ({ children }: any) => <div>{children}</div>,
+  AlertDialogHeader: ({ children }: any) => <div>{children}</div>,
+  AlertDialogFooter: ({ children }: any) => <div>{children}</div>,
+  AlertDialogTitle: ({ children }: any) => <h2>{children}</h2>,
+  AlertDialogDescription: ({ children }: any) => <p>{children}</p>,
+  AlertDialogCancel: ({ children }: any) => <button>{children}</button>,
+  AlertDialogAction: ({ children, ...props }: any) => <button {...props}>{children}</button>,
+}))
 vi.mock('@/components/ui/input', () => ({
   Input: (props: any) => <input {...props} />,
 }))
@@ -122,6 +134,7 @@ describe('DaemonWorkspacesSection', () => {
     rpcAddWorkspace.mockClear()
     setAgentDefaultWorkspace.mockClear()
     setWorkspace.mockClear()
+    updateDaemonWorkspace.mockClear()
     listDaemonWorkspaces.mockResolvedValue([])
     workspaceState.workspacePath = null
   })
@@ -205,5 +218,39 @@ describe('DaemonWorkspacesSection', () => {
 
     await screen.findByText('other')
     expect(screen.queryByRole('button', { name: 'Open' })).toBeNull()
+  })
+
+  // Archiving a workspace archives its sessions too; it used to happen on one
+  // click with nothing said, and a customer read it as lost chat history.
+  it('archiving a workspace asks first and says its sessions go with it', async () => {
+    listDaemonWorkspaces.mockResolvedValue([
+      {
+        id: 'ws-new',
+        teamId: 'team-1',
+        agentId: 'agent-1',
+        createdByMemberId: null,
+        name: 'TeamClu',
+        path: 'C:/Users/me/TeamClu',
+        archived: false,
+        createdAt: '',
+        updatedAt: '',
+      },
+    ] as never)
+
+    render(<DaemonWorkspacesSection />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Archive/ }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog.textContent).toMatch(/Restoring the workspace/)
+    expect(updateDaemonWorkspace).not.toHaveBeenCalled()
+
+    const confirm = Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent === 'Archive')!
+    fireEvent.click(confirm)
+
+    await waitFor(() =>
+      expect(updateDaemonWorkspace).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: 'ws-new', archived: true }),
+      ),
+    )
   })
 })

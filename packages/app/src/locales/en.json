@@ -2460,6 +2460,9 @@
       "resetIncomplete": "Reset did not take effect: this machine is still bound to team {{teamId}}. Check {{path}}."
     },
     "daemonWorkspaces": {
+      "archiveConfirmTitle": "Archive workspace \"{{name}}\"?",
+      "archiveConfirmDescription": "Sessions in this workspace are archived with it and leave the session list. Restoring the workspace from Archived below brings them back.",
+      "archiveConfirmAction": "Archive",
       "current": "Open",
       "open": "Open",
       "opened": "Opened {{name}}",
