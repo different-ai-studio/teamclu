@@ -33,6 +33,14 @@ export async function lifecycleRpc(client: any, name: string, args: Record<strin
     if (error) {
         if (error.code === '55000' && error.message?.includes('provider_outcome_unknown'))
             throw new ApiError(409, 'provider_outcome_unknown', 'Provider outcome unknown; operator reconciliation is required before retry or redeploy.');
+        // begin_app_lifecycle raises 55000 for more than one reason, and the
+        // exception text says which. Reading every one as "another operation
+        // is active" told an undeploy of a never-deployed app to wait for an
+        // operation that did not exist.
+        if (error.code === '55000' && error.message?.includes('not_deployed'))
+            throw new ApiError(409, 'app_not_deployed', 'the app has never been deployed; there is nothing to undeploy');
+        if (error.code === '55000' && error.message?.includes('deploy_token_mismatch'))
+            throw new ApiError(409, 'deploy_token_mismatch', 'this deploy no longer owns the app; start a new deploy');
         if (error.code === '55000')
             throw new ApiError(409, 'lifecycle_conflict', 'another deployment lifecycle operation is active');
         if (error.code === 'P0002')

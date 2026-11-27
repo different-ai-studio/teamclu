@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
+import { lifecycleRpc } from '../src/lib/app-lifecycle.js';
 const app = '00000000-0000-0000-0000-000000000001';
 async function db() {
  const pg = new PGlite();
@@ -161,4 +162,35 @@ test('completed uninstall keeps immutable naming mode and exact code cleanup sna
   const row=(await pg.query<any>('select * from amux.apps')).rows[0];
   assert.equal(row.fc_status,'uninstalled');assert.equal(row.function_naming_mode,'app_code');assert.equal(row.fc_function_name,'a-p35cg2kk6bh3');
  }finally{await pg.close();}
+});
+
+// lifecycleRpc over the real SQL: each 55000 the function raises reaches the
+// client as what it is, not all of them as "another operation is active".
+const rpcClient = (pg: PGlite) => ({
+ async rpc(name: string, args: Record<string, unknown>) {
+  try {
+   const r = await pg.query<any>(`select amux.${name}($1,$2,$3) as out`, [args.p_app_id, args.p_kind, args.p_token ?? null]);
+   return { data: r.rows[0].out, error: null };
+  } catch (e: any) { return { data: null, error: { code: e.code, message: e.message } }; }
+ },
+});
+test('undeploying a never-deployed app says so, not that an operation is active', async()=>{
+ const pg=await db(); try {
+ await pg.query(`update amux.apps set fc_status=null,fc_endpoint=null,fc_function_name=null,deploy_token=null where id=$1`,[app]);
+ await assert.rejects(lifecycleRpc(rpcClient(pg),'begin_app_lifecycle',{p_app_id:app,p_kind:'undeploy',p_token:null}),
+  (e:any)=>e.statusCode===409 && e.code==='app_not_deployed');
+ } finally {await pg.close();}
+});
+test('a deploy whose token no longer owns the app is told so', async()=>{
+ const pg=await db(); try {
+ await assert.rejects(lifecycleRpc(rpcClient(pg),'begin_app_lifecycle',{p_app_id:app,p_kind:'deploy',p_token:'stale'}),
+  (e:any)=>e.statusCode===409 && e.code==='deploy_token_mismatch');
+ } finally {await pg.close();}
+});
+test('a real conflict is still lifecycle_conflict', async()=>{
+ const pg=await db(); try {
+ await pg.query(`select amux.begin_app_lifecycle($1,'deploy','preflight')`,[app]);
+ await assert.rejects(lifecycleRpc(rpcClient(pg),'begin_app_lifecycle',{p_app_id:app,p_kind:'undeploy',p_token:null}),
+  (e:any)=>e.statusCode===409 && e.code==='lifecycle_conflict');
+ } finally {await pg.close();}
 });
