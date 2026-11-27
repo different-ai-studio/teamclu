@@ -40,7 +40,7 @@ const updateDaemonWorkspace = vi.hoisted(() => vi.fn(async () => ({})))
 const rpcAddWorkspace = vi.hoisted(() => vi.fn(async () => ({ accepted: true })))
 
 const dialogOpen = vi.fn()
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: (...a: unknown[]) => dialogOpen(...a) }))
+vi.mock('@/lib/workspace/safe-open-dialog', () => ({ safeOpenDialog: (...a: unknown[]) => dialogOpen(...a) }))
 
 vi.mock('@/lib/daemon/teamclu-rpc', () => ({
   addWorkspace: rpcAddWorkspace,

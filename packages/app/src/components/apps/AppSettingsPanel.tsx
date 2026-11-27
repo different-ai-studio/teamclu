@@ -430,8 +430,8 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
   const handleMovePickFolder = async () => {
     if (!isTauri()) return
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog')
-      const selected = await open({
+      const { safeOpenDialog } = await import('@/lib/workspace/safe-open-dialog')
+      const selected = await safeOpenDialog({
         directory: true,
         multiple: false,
         title: t('apps.controlPanel.moveDirectoryPick', '选择新的应用目录'),

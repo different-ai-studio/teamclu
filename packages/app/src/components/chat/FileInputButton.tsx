@@ -35,8 +35,8 @@ export function FileInputButton({ onFilesSelected, onLocalPaths }: FileInputButt
     }
 
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const selected = await open({
+      const { safeOpenDialog } = await import("@/lib/workspace/safe-open-dialog");
+      const selected = await safeOpenDialog({
         multiple: true,
         title: t("chat.selectFiles", "Select files"),
       });

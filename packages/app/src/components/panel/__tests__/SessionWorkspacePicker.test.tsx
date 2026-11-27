@@ -19,7 +19,7 @@ vi.mock('react-i18next', () => ({
 
 vi.mock('sonner', () => ({ toast: { error: mocks.toastError } }))
 
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.openDialog }))
+vi.mock('@/lib/workspace/safe-open-dialog', () => ({ safeOpenDialog: mocks.openDialog }))
 
 vi.mock('@/lib/daemon/daemon-workspaces', () => ({
   listDaemonWorkspaces: mocks.listDaemonWorkspaces,

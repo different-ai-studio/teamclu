@@ -13,8 +13,8 @@ vi.mock('@/lib/config/platform', () => ({
 }))
 
 const openDialog = vi.fn()
-vi.mock('@tauri-apps/plugin-dialog', () => ({
-  open: (...args: unknown[]) => openDialog(...args),
+vi.mock('@/lib/workspace/safe-open-dialog', () => ({
+  safeOpenDialog: (...args: unknown[]) => openDialog(...args),
 }))
 
 const readFile = vi.fn()
