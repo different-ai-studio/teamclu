@@ -150,7 +150,7 @@ export function KnowledgeConflictResolver({ path }: { path: string }) {
     <div className="flex h-full min-h-0 flex-col">
       <div
         className="flex items-start gap-3 border-b border-border px-4 py-3"
-        data-tauri-drag-region
+        data-tauri-drag-region="deep"
       >
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
         <div className="min-w-0 flex-1">

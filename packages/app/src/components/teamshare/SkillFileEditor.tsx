@@ -160,7 +160,7 @@ export function SkillFileEditor({ slug, rel }: { slug: string; rel: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3" data-tauri-drag-region>
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3" data-tauri-drag-region="deep">
         <Button
           type="button"
           variant="ghost"

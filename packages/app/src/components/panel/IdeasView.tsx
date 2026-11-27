@@ -596,7 +596,7 @@ export function IdeasView() {
 
   return (
     <div className="flex h-full min-w-0 flex-col border-r border-border bg-background">
-      <div className="border-b border-border px-4 py-3" data-tauri-drag-region>
+      <div className="border-b border-border px-4 py-3" data-tauri-drag-region="deep">
         <div className="flex items-center gap-2">
           {sidebarCollapsed && (
             <div className="flex items-center gap-1 shrink-0">

@@ -42,7 +42,7 @@ function CreatePane({ section }: { section: 'mcp' | 'env' }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
-      <div className="flex items-center gap-3 border-b border-border px-5 py-3" data-tauri-drag-region>
+      <div className="flex items-center gap-3 border-b border-border px-5 py-3" data-tauri-drag-region="deep">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           <Icon className="h-[17px] w-[17px]" />
         </span>

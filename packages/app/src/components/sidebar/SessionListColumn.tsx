@@ -1085,7 +1085,7 @@ export function SessionListColumn({
           'flex min-w-0 items-center justify-between gap-1 py-3',
           compactHeader ? 'px-2' : 'px-3.5',
         )}
-        data-tauri-drag-region
+        data-tauri-drag-region="deep"
       >
         {sidebarCollapsed && (
           <div className="flex shrink-0 items-center gap-1">

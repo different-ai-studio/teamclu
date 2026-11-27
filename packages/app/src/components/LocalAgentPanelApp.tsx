@@ -54,7 +54,7 @@ export function LocalAgentPanelApp() {
     <div className="flex h-screen flex-col overflow-hidden bg-paper" data-testid="local-agent-panel">
       <header
         className="flex h-12 shrink-0 flex-row items-center gap-2 border-b border-border bg-paper px-2"
-        data-tauri-drag-region
+        data-tauri-drag-region="deep"
       >
         <TrafficLights />
         <div className="min-w-0 flex-1">
