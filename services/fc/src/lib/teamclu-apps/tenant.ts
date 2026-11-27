@@ -152,6 +152,29 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
               console.warn(`[apps] initial grant to ${actorId} on ${row.id} skipped: ${String((e as Error)?.message ?? e)}`);
             }
           }
+          // An agent's app is its owner's too. `amuxd app create` runs as the
+          // daemon's own agent account, so the app's creator is the agent's
+          // user, and delegation only runs owner → agent: without this grant
+          // the person whose agent built the app could not see it — not in
+          // the app list, and not to link the session that built it (#1885).
+          // Admin, the level the creator itself holds. Best-effort like the
+          // grants above: a refusal must not undo a created app.
+          if (resolved.actorType === "agent") {
+            try {
+              const { data: agent, error: agentErr } = await admin
+                .from("agents")
+                .select("owner_member_id")
+                .eq("id", createdByActorId)
+                .maybeSingle();
+              if (agentErr) throw agentErr;
+              const ownerId = agent?.owner_member_id;
+              if (typeof ownerId === "string" && ownerId && ownerId !== createdByActorId) {
+                await repo.setAppAccess(row.id, ownerId, "admin");
+              }
+            } catch (e) {
+              console.warn(`[apps] owner grant on agent-created ${row.id} skipped: ${String((e as Error)?.message ?? e)}`);
+            }
+          }
         },
       };
     },
