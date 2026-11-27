@@ -18,7 +18,7 @@ import { readExtensionDiagnosticsOptIn } from '@/lib/extension/page-access'
 import { ensureBundledAmuxdCurrent } from '@/lib/daemon/daemon-version-upgrade'
 import { installConsoleCapture, redactSentryBreadcrumb } from '@/lib/diagnostics/console-capture'
 import { markStartup } from '@/lib/telemetry/startup-perf'
-import { removeStartupSkeleton } from './lib/utils'
+import { isTauri, removeStartupSkeleton } from './lib/utils'
 
 markStartup('main:start')
 
@@ -197,6 +197,12 @@ createRoot(document.getElementById('root')!).render(
     </ErrorBoundary>
   </StrictMode>,
 )
+
+// Prove to the Rust watchdog that the main window's renderer is alive, so a
+// freeze can be reported from outside the frozen page (ui_watchdog.rs).
+if (isTauri() && panelMode !== 'local-agent') {
+  void import('./lib/telemetry/ui-heartbeat').then((m) => m.startUiHeartbeat())
+}
 
 // Backstop: the skeleton is normally handed off by AuthGate/App once real UI is
 // ready (see removeStartupSkeleton call sites). If startup wedges before any of

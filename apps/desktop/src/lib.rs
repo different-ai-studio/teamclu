@@ -25,6 +25,7 @@ pub mod sentry_utils;
 pub mod soft_log;
 #[cfg(test)]
 pub mod test_home;
+mod ui_watchdog;
 mod webview_recovery;
 
 /// Every startup file of `shell` that can change PATH.
@@ -489,6 +490,7 @@ pub fn run() {
             commands::show_in_folder,
             commands::safe_dialog::safe_save_dialog,
             commands::safe_dialog::safe_open_dialog,
+            ui_watchdog::ui_heartbeat,
             commands::acp_debug_log::acp_debug_append_log,
             commands::acp_debug_log::acp_debug_log_directory,
             commands::acp_debug_log::acp_debug_reveal_log,
@@ -687,6 +689,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             let setup_t0 = std::time::Instant::now();
+            ui_watchdog::spawn(app.handle().clone());
 
             // Collect the login-shell PATH before anything below spawns a child
             // process (the amuxd supervisor, further down, is the first). The
