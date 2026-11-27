@@ -1535,3 +1535,30 @@ mod object_key_tests {
         assert_eq!(safe_object_name("中文"), "file");
     }
 }
+
+#[test]
+fn credit_refusals_reach_the_channel_as_a_readable_notice() {
+    let empty_wallet = CoreError::Turn(
+        r#"agent turn failed: 402: {"code":"insufficient_credits","message":"the team's credit balance is exhausted"}"#
+            .into(),
+    );
+    let notice = gateway_turn_failure_notice(&empty_wallet);
+    assert_eq!(
+        notice,
+        gw_i18n::t(GwMsgKey::TeamCreditsExhausted, gw_i18n::locale())
+    );
+    assert!(!notice.contains("insufficient_credits"));
+
+    let quota = CoreError::Turn(
+        r#"agent turn failed: 402: {"code":"quota_exceeded","message":"member quota reached"}"#
+            .into(),
+    );
+    assert_eq!(
+        gateway_turn_failure_notice(&quota),
+        gw_i18n::t(GwMsgKey::MemberQuotaExceeded, gw_i18n::locale())
+    );
+
+    // Anything else keeps the runtime's own words.
+    let other = CoreError::Turn("agent turn failed: 400 You're out of extra usage.".into());
+    assert!(gateway_turn_failure_notice(&other).contains("out of extra usage"));
+}

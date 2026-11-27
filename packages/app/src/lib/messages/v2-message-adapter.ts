@@ -22,6 +22,7 @@ import {
   agentReplyAttachmentsFromTurnReplies,
 } from "@/lib/attachments/agent-reply-attachments";
 import { agentReplyTextsEquivalent } from "@/lib/agent/agent-reply-text";
+import { parseCreditErrorReason, type CreditErrorReason } from "@/lib/agent/credit-error";
 
 function kindToRole(kind: MessageKind): SdkMessage["role"] {
   switch (kind) {
@@ -98,6 +99,7 @@ function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
                 ? "no_final_reply"
                 : undefined,
     nativeSkillViolations,
+    turnFailureReason: failed ? turnFailureReasonFromReplies([m]) : undefined,
     parts: displayContent
       ? [
           {
@@ -157,6 +159,16 @@ function isUnsupportedNativeSkillReply(m: TeamcluMessage): boolean {
 function isFailedReply(m: TeamcluMessage): boolean {
   if (parseMetadata(m).turn_status === "failed") return true;
   return isAgentFacingFailedNotice(m.content ?? "");
+}
+
+/** Daemon `metadata.failure_reason` on a failed AGENT_REPLY (gateway credit refusal). */
+function turnFailureReasonFromReplies(replies: TeamcluMessage[]): CreditErrorReason | undefined {
+  for (const reply of replies) {
+    if (!isFailedReply(reply)) continue;
+    const reason = parseCreditErrorReason(parseMetadata(reply).failure_reason);
+    if (reason) return reason;
+  }
+  return undefined;
 }
 
 function parseNativeSkillViolations(
@@ -548,6 +560,8 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
   }
   const turnStatus = turnStatusFromReplies(uniqueReplies);
   const nativeSkillViolations = nativeSkillViolationsFromReplies(uniqueReplies);
+  const turnFailureReason =
+    turnStatus === "failed" ? turnFailureReasonFromReplies(uniqueReplies) : undefined;
   const replyText = uniqueReplies
     .map((r) => displayContentForReply(r))
     .filter((text) => text.trim().length > 0)
@@ -595,6 +609,7 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
         turnId: group[0]?.turnId?.trim() || undefined,
         turnStatus,
         nativeSkillViolations,
+        turnFailureReason,
         timestamp: new Date(Number(group[0].createdAt) * 1000),
       },
       uniqueReplies,
@@ -634,6 +649,7 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
           turnId: group[0]?.turnId?.trim() || undefined,
           turnStatus,
           nativeSkillViolations,
+          turnFailureReason,
           timestamp: new Date(Number(group[0].createdAt) * 1000),
         },
         uniqueReplies,
@@ -703,6 +719,7 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
       turnId: group[0]?.turnId?.trim() || undefined,
       turnStatus,
       nativeSkillViolations,
+      turnFailureReason,
       timestamp: new Date(Number(group[0].createdAt) * 1000),
     },
     uniqueReplies,
@@ -834,6 +851,8 @@ function buildDeferredProcessTurnSdkMessage(group: TeamcluMessage[]): SdkMessage
 
   const turnStatus = turnStatusFromReplies(uniqueReplies);
   const nativeSkillViolations = nativeSkillViolationsFromReplies(uniqueReplies);
+  const turnFailureReason =
+    turnStatus === "failed" ? turnFailureReasonFromReplies(uniqueReplies) : undefined;
   const finalParts = extractFinalTextPartsForDeferredTurn(group);
   const finalText = finalParts
     .map((p) => p.text || p.content || "")
@@ -864,6 +883,7 @@ function buildDeferredProcessTurnSdkMessage(group: TeamcluMessage[]): SdkMessage
       turnId,
       turnStatus,
       nativeSkillViolations,
+      turnFailureReason,
       timestamp: new Date(Number(group[0].createdAt) * 1000),
       processDeferred: true,
       processMeta,

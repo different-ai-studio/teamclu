@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  agentTurnErrorDisplay,
   classifyAgentTurnErrorName,
   formatAgentTurnErrorDisplayMessage,
   isAgentTurnAbortError,
@@ -113,5 +114,42 @@ describe('isQuotaLikeAgentMessage', () => {
         'No output from the model for 120s — the provider may be unreachable or overloaded.',
       ),
     ).toBe(false)
+  })
+})
+
+describe('gateway credit refusals', () => {
+  const emptyWallet =
+    '402: {"code":"insufficient_credits","message":"the team\'s credit balance is exhausted"}'
+  const memberQuota = '402: {"code":"quota_exceeded","message":"member quota reached"}'
+
+  it('classifies them apart from a generic provider error', () => {
+    expect(classifyAgentTurnErrorName('model provider error', emptyWallet)).toBe(
+      'InsufficientCreditsError',
+    )
+    expect(classifyAgentTurnErrorName('model provider error', memberQuota)).toBe(
+      'QuotaExceededError',
+    )
+    expect(classifyAgentTurnErrorName('model provider error', '500 upstream boom')).toBe(
+      'ProviderError',
+    )
+  })
+
+  it('keeps them on screen until dismissed', () => {
+    expect(isPersistentSessionTurnError('InsufficientCreditsError')).toBe(true)
+    expect(isPersistentSessionTurnError('QuotaExceededError')).toBe(true)
+  })
+
+  it('replaces the raw 402 JSON with a sentence and drops the detail', () => {
+    const shown = agentTurnErrorDisplay('model provider error', emptyWallet, t)
+    expect(shown.detail).toBe('')
+    expect(shown.message).not.toContain('insufficient_credits')
+    expect(shown.message).not.toMatch(/retry or switch/i)
+    expect(shown.message).toContain('balance')
+  })
+
+  it('leaves other provider errors as they were', () => {
+    const shown = agentTurnErrorDisplay('model provider error', '500 upstream boom', t)
+    expect(shown.detail).toBe('500 upstream boom')
+    expect(shown.message).toContain('retry or switch models')
   })
 })

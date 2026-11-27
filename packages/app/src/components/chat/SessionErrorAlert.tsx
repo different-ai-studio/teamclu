@@ -7,7 +7,9 @@ import {
   isQuotaLikeAgentMessage,
   TURN_INTERRUPTED_ERROR_NAME,
 } from '@/lib/agent/agent-turn-error'
+import { creditErrorReasonForName, detectCreditErrorReason } from '@/lib/agent/credit-error'
 import type { SessionErrorEvent } from '@/stores/session-types'
+import { CreditErrorAlert } from './CreditErrorAlert'
 
 interface SessionErrorAlertProps {
   error: SessionErrorEvent | string
@@ -59,6 +61,14 @@ export function SessionErrorAlert({ error, onDismiss, onRetry }: SessionErrorAle
   }
 
   if (!errorMessage && !errorName) return null
+
+  // Gateway credit refusal: a retry or another model cannot help, so it gets
+  // its own notice with the way out instead of the provider's raw 402 JSON.
+  const creditReason =
+    creditErrorReasonForName(errorName) ?? detectCreditErrorReason(errorMessage)
+  if (creditReason) {
+    return <CreditErrorAlert reason={creditReason} onDismiss={onDismiss} />
+  }
 
   const isLongMessage = errorMessage.length > 150
 
