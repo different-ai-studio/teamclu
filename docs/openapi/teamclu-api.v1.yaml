@@ -8450,7 +8450,8 @@ paths:
         cleanup of deployment resources. Retains code, sessions, files, database,
         login policy and scheduled-job definitions. A 202 is acceptance, not completion.
         Repeat requests return the same operation; failed cleanup may be retried.
-        An active deployment or deletion returns 409.
+        An active deployment or deletion returns 409 `lifecycle_conflict`; an app
+        that was never deployed returns 409 `app_not_deployed`.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
@@ -8467,7 +8468,7 @@ paths:
               schema: { $ref: "#/components/schemas/AppUndeployResult" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: Conflicting lifecycle operation or unresolved provider outcome
+          description: Conflicting lifecycle operation (`lifecycle_conflict`), never deployed (`app_not_deployed`) or unresolved provider outcome (`provider_outcome_unknown`)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
