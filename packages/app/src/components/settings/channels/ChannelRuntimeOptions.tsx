@@ -94,7 +94,7 @@ export function ChannelRuntimeOptions({
             >
               {!modelValue && (
                 <option value="">
-                  {t('settings.channels.runtime.modelPiDefault', 'Pi default model')}
+                  {t('settings.channels.runtime.modelUnset', 'Select a model')}
                 </option>
               )}
               {groupModelsByProvider(modelChoices).map((group) =>
@@ -121,7 +121,7 @@ export function ChannelRuntimeOptions({
               onChange={(event) => onChange({ model: event.target.value || undefined })}
               placeholder={
                 inheritedModel ||
-                t('settings.channels.runtime.modelPiDefault', 'Pi default model')
+                t('settings.channels.runtime.modelUnset', 'Select a model')
               }
               className={fieldClass}
             />
@@ -129,7 +129,7 @@ export function ChannelRuntimeOptions({
           <p className="text-[11px] text-muted-foreground">
             {t(
               'settings.channels.runtime.modelHint',
-              'Prefilled from the gateway model, or pi’s own default when that is unset. A later change applies to new sessions.',
+              'Prefilled from the gateway model, or the model a new chat session uses when that is unset. A later change applies to new sessions.',
             )}
           </p>
         </div>

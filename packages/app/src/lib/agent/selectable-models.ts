@@ -48,15 +48,24 @@ async function loadTeamModels(teamId: string): Promise<SelectableModel[]> {
     }))
 }
 
-export async function loadSelectableModels(teamId: string): Promise<SelectableModel[]> {
+export interface SelectableModelCatalog {
+  models: SelectableModel[]
+  /** Catalog default backend, else the first option's backend, else `pi`. */
+  defaultBackend: string
+}
+
+export async function loadSelectableModelCatalog(
+  teamId: string | null,
+): Promise<SelectableModelCatalog> {
   const [deviceResult, teamResult] = await Promise.allSettled([
     loadDeviceModelOptions(teamId),
-    loadTeamModels(teamId),
+    teamId ? loadTeamModels(teamId) : Promise.resolve([] as SelectableModel[]),
   ])
   const models: SelectableModel[] = []
   const seen = new Set<string>()
-  if (deviceResult.status === 'fulfilled') {
-    for (const option of deviceResult.value.options) {
+  const device = deviceResult.status === 'fulfilled' ? deviceResult.value : null
+  if (device) {
+    for (const option of device.options) {
       const id = option.id?.trim()
       if (!id || seen.has(id)) continue
       seen.add(id)
@@ -80,5 +89,12 @@ export async function loadSelectableModels(teamId: string): Promise<SelectableMo
       throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason))
     }
   }
-  return models
+  return {
+    models,
+    defaultBackend: device?.defaultBackend ?? device?.options[0]?.backend ?? 'pi',
+  }
+}
+
+export async function loadSelectableModels(teamId: string): Promise<SelectableModel[]> {
+  return (await loadSelectableModelCatalog(teamId)).models
 }

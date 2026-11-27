@@ -33,5 +33,24 @@ describe('ChannelRuntimeOptions model picker', () => {
     const anthropic = document.querySelector('optgroup[label="anthropic"]')
     expect(team?.textContent).toContain('标准')
     expect(anthropic?.textContent).toContain('Claude Sonnet')
+    expect(screen.queryByRole('option', { name: 'Pi default model' })).toBeNull()
+  })
+
+  it('selects the session default instead of leaving the model unset', () => {
+    render(
+      <ChannelRuntimeOptions
+        models={models}
+        workspaces={[]}
+        inheritedWorkspaceId={null}
+        inheritedModel="team/glm-4.6"
+        onChange={() => {}}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced options' }))
+
+    expect(screen.getByRole('combobox')).toHaveValue('team/glm-4.6')
+    expect(screen.queryByRole('option', { name: 'Pi default model' })).toBeNull()
+    expect(screen.queryByRole('option', { name: 'Select a model' })).toBeNull()
   })
 })
