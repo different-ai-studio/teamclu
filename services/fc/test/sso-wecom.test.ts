@@ -135,6 +135,7 @@ function memoryStore(opts: { managerOrg?: string | null } = {}) {
       return null;
     },
     async bindingForTenant(p, t) { return bindings.get(`${p}:${t}`) ?? null; },
+    async listBindings(p) { return [...bindings.values()].filter((b) => b.provider === p); },
     async saveBinding(b) {
       bindings.set(`${b.provider}:${b.tenantId}`, { ...b, createdAt: "2026-11-26T00:00:00Z" });
     },
@@ -143,9 +144,15 @@ function memoryStore(opts: { managerOrg?: string | null } = {}) {
       directoryApps.delete(`${p}:${t}`); // FK cascade
     },
     async getDirectoryApp(p, t) { return directoryApps.get(`${p}:${t}`) ?? null; },
-    async saveDirectoryApp({ provider, tenantId, permanentCode, authorizedBy }) {
+    async directoryAppForAuthCorp(p, c) {
+      for (const a of directoryApps.values()) {
+        if (a.provider === p && (a.authCorpId ?? a.tenantId) === c) return a;
+      }
+      return null;
+    },
+    async saveDirectoryApp({ provider, tenantId, authCorpId, permanentCode, authorizedBy }) {
       directoryApps.set(`${provider}:${tenantId}`, {
-        provider, tenantId, permanentCode, authorizedBy,
+        provider, tenantId, authCorpId, permanentCode, authorizedBy,
         namesGranted: false, lastCheckedAt: null, lastError: null, createdAt: "2026-11-27T00:00:00Z",
       });
     },
@@ -187,9 +194,18 @@ const directoryWorld = {
   permissionsError: null as null | number,
   directoryNames: { "open-1": "张三", "open-2": "李四" } as Record<string, string>,
   authUrlStates: [] as string[],
-  permanentCodes: { AUTH: "DIRSECRET", RESET: "DIRSECRET2", "AUTH-OTHER": "OTHERSECRET" } as Record<string, string>,
+  permanentCodes: { AUTH: "DIRSECRET", RESET: "DIRSECRET2", "AUTH-OTHER": "OTHERSECRET", "AUTH-STRANGER": "DIRSECRET3" } as Record<string, string>,
   echoState: null as string | null,
+  // The 代开发 app sees encrypted open corpids (`wp…`) while sign-in holds
+  // plaintext ones, as on WeCom after the 2022 ID upgrade. false = the same id.
+  encryptedCorpIds: true,
+  gettokenCorpIds: [] as string[],
 };
+
+/** The corpid the fake WeCom gives the 代开发 app for a plaintext corpid. */
+function directoryCorp(plain: string) {
+  return directoryWorld.encryptedCorpIds ? plain.replace(/^ww/, "wp") : plain;
+}
 
 function fakeWecomFetch(calls: string[] = []) {
   return async (url: any, init?: any) => {
@@ -216,12 +232,22 @@ function fakeWecomFetch(calls: string[] = []) {
       return json({
         errcode: 0,
         permanent_code: code,
-        auth_corp_info: { corpid: body.auth_code === "AUTH-OTHER" ? "wwOther" : "wwCorp", corp_name: "示例公司" },
+        auth_corp_info: {
+          corpid: directoryCorp(body.auth_code === "AUTH-OTHER" ? "wwOther" : body.auth_code === "AUTH-STRANGER" ? "wwStranger" : "wwCorp"),
+          corp_name: "示例公司",
+        },
         ...(directoryWorld.echoState ? { state: directoryWorld.echoState } : {}),
       });
     }
+    if (u.pathname.endsWith("/service/corpid_to_opencorpid")) {
+      assert.equal(u.searchParams.get("provider_access_token"), "PAT");
+      const body = JSON.parse(init.body);
+      assert.match(body.corpid, /^ww/, "only plaintext corpids are converted");
+      return json({ errcode: 0, open_corpid: body.corpid.replace(/^ww/, "wp") });
+    }
     if (u.pathname.endsWith("/cgi-bin/gettoken")) {
       const secret = u.searchParams.get("corpsecret");
+      if (secret?.startsWith("DIRSECRET")) directoryWorld.gettokenCorpIds.push(u.searchParams.get("corpid")!);
       if (!secret?.startsWith("DIRSECRET")) return json({ errcode: 40001, errmsg: "invalid credential" });
       return json({ errcode: 0, access_token: `CAT-${secret}`, expires_in: 7200 });
     }
@@ -591,6 +617,8 @@ function resetDirectoryWorld() {
   directoryWorld.permissionsError = null;
   directoryWorld.authUrlStates = [];
   directoryWorld.echoState = null;
+  directoryWorld.encryptedCorpIds = true;
+  directoryWorld.gettokenCorpIds = [];
 }
 
 function boundStore(orgId = "org-1") {
@@ -655,7 +683,9 @@ test("directory: authorizing fills every placeholder name, and later sign-ins ge
   await authorizeDirectory(svc, pending);
   const app = mem.directoryApps.get("wecom:wwCorp")!;
   assert.equal(app.permanentCode, "DIRSECRET");
+  assert.equal(app.authCorpId, "wpCorp", "kept under the binding, with the 代开发 app's own corpid");
   assert.equal(app.authorizedBy, "admin-user");
+  assert.deepEqual([...new Set(directoryWorld.gettokenCorpIds)], ["wpCorp"], "the 代开发 app's calls use its own corpid");
   assert.equal(app.namesGranted, true);
   assert.equal(mem.names.get(alice), "张三", "the placeholder is replaced");
   assert.equal(mem.names.get(chose), "自己起的名", "a chosen name is kept");
@@ -676,20 +706,55 @@ test("directory: authorizing fills every placeholder name, and later sign-ins ge
   assert.equal(status.directory?.namesGranted, true);
 });
 
-test("directory: an authorization without a live link, or from another org's company, is ignored", async () => {
+test("directory: the binding decides the org; a link cannot attach another org's company", async () => {
   resetDirectoryWorld();
   const mem = boundStore();
   mem.bindings.set("wecom:wwOther", { provider: "wecom", tenantId: "wwOther", orgId: "org-2", tenantName: null, createdAt: "", permanentCode: null });
   const pending: Promise<unknown>[] = [];
   const { svc } = service(mem, [], DIRECTORY, pending);
 
+  await authorizeDirectory(svc, pending, "AUTH-OTHER");
+  assert.equal(mem.directoryApps.size, 0, "org-1's link cannot attach org-2's company");
+
+  const stranger = templateEvent("<InfoType>create_auth</InfoType><AuthCode>AUTH-STRANGER</AuthCode>");
+  await svc.handleSuiteCallback({ method: "POST", query: stranger.query, body: stranger.body });
+  await Promise.all(pending.splice(0));
+  assert.equal(mem.directoryApps.size, 0, "a company bound to no org is ignored");
+
+  // Authorized from the WeCom console (no state, or a stale one): the
+  // company's own binding is enough.
   const stray = templateEvent("<InfoType>create_auth</InfoType><AuthCode>AUTH</AuthCode><State>unknownstate</State>");
   assert.equal((await svc.handleSuiteCallback({ method: "POST", query: stray.query, body: stray.body })).text, "success");
   await Promise.all(pending.splice(0));
-  assert.equal(mem.directoryApps.size, 0, "no live link → nothing stored");
+  const app = mem.directoryApps.get("wecom:wwCorp")!;
+  assert.equal(app.authCorpId, "wpCorp");
+  assert.equal(app.authorizedBy, null);
+  assert.equal(app.namesGranted, true);
+});
 
-  await authorizeDirectory(svc, pending, "AUTH-OTHER");
-  assert.equal(mem.directoryApps.size, 0, "org-1's link cannot attach org-2's company");
+test("directory: a company whose sign-in and 代开发 corpids are the same still matches", async () => {
+  resetDirectoryWorld();
+  directoryWorld.encryptedCorpIds = false;
+  const mem = boundStore();
+  const pending: Promise<unknown>[] = [];
+  const calls: string[] = [];
+  const { svc } = service(mem, calls, DIRECTORY, pending);
+  await authorizeDirectory(svc, pending);
+  assert.equal(mem.directoryApps.get("wecom:wwCorp")?.authCorpId, "wwCorp");
+  assert.ok(!calls.some((c) => c.endsWith("/corpid_to_opencorpid")), "no conversion needed");
+});
+
+test("directory: reset_permanent_code adopts an authorization that was never kept", async () => {
+  resetDirectoryWorld();
+  const mem = boundStore();
+  const pending: Promise<unknown>[] = [];
+  const { svc } = service(mem, [], DIRECTORY, pending);
+  const reset = templateEvent("<InfoType>reset_permanent_code</InfoType><AuthCode>RESET</AuthCode>");
+  await svc.handleSuiteCallback({ method: "POST", query: reset.query, body: reset.body });
+  await Promise.all(pending.splice(0));
+  const app = mem.directoryApps.get("wecom:wwCorp")!;
+  assert.equal(app.permanentCode, "DIRSECRET2");
+  assert.equal(app.authCorpId, "wpCorp");
 });
 
 test("directory: without the 「姓名」 grant nothing is filled; change_auth after the grant fills", async () => {
@@ -707,7 +772,7 @@ test("directory: without the 「姓名」 grant nothing is filled; change_auth a
   assert.equal(mem.names.has(alice), false);
 
   directoryWorld.permissions = ["contact:sensitive:user_name"];
-  const change = templateEvent("<InfoType>change_auth</InfoType><AuthCorpId>wwCorp</AuthCorpId>");
+  const change = templateEvent("<InfoType>change_auth</InfoType><AuthCorpId>wpCorp</AuthCorpId>");
   await svc.handleSuiteCallback({ method: "POST", query: change.query, body: change.body });
   await Promise.all(pending.splice(0));
   assert.equal(mem.directoryApps.get("wecom:wwCorp")!.namesGranted, true);
@@ -738,7 +803,7 @@ test("directory: reset_permanent_code rotates the secret; the template's cancel_
   await Promise.all(pending.splice(0));
   assert.equal(mem.directoryApps.get("wecom:wwCorp")!.permanentCode, "DIRSECRET2");
 
-  const cancel = templateEvent("<InfoType>cancel_auth</InfoType><AuthCorpId>wwCorp</AuthCorpId>");
+  const cancel = templateEvent("<InfoType>cancel_auth</InfoType><AuthCorpId>wpCorp</AuthCorpId>");
   await svc.handleSuiteCallback({ method: "POST", query: cancel.query, body: cancel.body });
   await Promise.all(pending.splice(0));
   assert.equal(mem.directoryApps.size, 0, "the names app is gone");

@@ -42,6 +42,7 @@ import {
   wecomInstallUrl,
   wecomLoginUrl,
   type WecomClient,
+  type WecomDirectoryAuth,
   type WecomSuite,
 } from "./wecom-client.js";
 
@@ -75,7 +76,14 @@ export interface SsoBinding {
 
 export interface SsoDirectoryApp {
   provider: string;
+  /** The company's sign-in binding (sso_org_bindings.tenant_id). */
   tenantId: string;
+  /**
+   * The corpid WeCom gives the 代开发 app for this company — often the
+   * encrypted open corpid (`wp…`) while tenantId is plaintext (`ww…`). Used
+   * for the app's API calls and its callbacks. null = same as tenantId.
+   */
+  authCorpId: string | null;
   permanentCode: string;
   namesGranted: boolean;
   lastCheckedAt: string | null;
@@ -104,6 +112,7 @@ export interface SsoStore {
   mintSession(userId: string): Promise<string>;
   bindingForOrg(provider: string, orgId: string): Promise<SsoBinding | null>;
   bindingForTenant(provider: string, tenantId: string): Promise<SsoBinding | null>;
+  listBindings(provider: string): Promise<SsoBinding[]>;
   saveBinding(args: {
     provider: string;
     tenantId: string;
@@ -114,8 +123,16 @@ export interface SsoStore {
   }): Promise<void>;
   deleteBinding(provider: string, tenantId: string): Promise<void>;
   getDirectoryApp(provider: string, tenantId: string): Promise<SsoDirectoryApp | null>;
+  /** The authorization whose 代开发 corpid (or, when unset, tenant id) is this. */
+  directoryAppForAuthCorp(provider: string, authCorpId: string): Promise<SsoDirectoryApp | null>;
   /** Insert or replace a company's 代开发 authorization (names unchecked again). */
-  saveDirectoryApp(args: { provider: string; tenantId: string; permanentCode: string; authorizedBy: string | null }): Promise<void>;
+  saveDirectoryApp(args: {
+    provider: string;
+    tenantId: string;
+    authCorpId: string;
+    permanentCode: string;
+    authorizedBy: string | null;
+  }): Promise<void>;
   /** Replace the secret of an existing authorization. False if there is none. */
   rotateDirectoryAppSecret(provider: string, tenantId: string, permanentCode: string): Promise<boolean>;
   recordDirectoryCheck(provider: string, tenantId: string, result: { namesGranted: boolean; lastError: string | null }): Promise<void>;
@@ -302,7 +319,7 @@ export function createSsoService(deps: SsoServiceDeps) {
     let namesGranted = false;
     let lastError: string | null = null;
     try {
-      const permissions = await client.directoryPermissions(tenantId, app.permanentCode);
+      const permissions = await client.directoryPermissions(app.authCorpId ?? tenantId, app.permanentCode);
       namesGranted = permissions.includes(WECOM_NAME_PERMISSION);
       if (!namesGranted) lastError = "「姓名」权限未授予";
     } catch (e: any) {
@@ -328,7 +345,7 @@ export function createSsoService(deps: SsoServiceDeps) {
       // companies authorized after the 2022 ID upgrade (document/path/97104).
       let name: string | null;
       try {
-        name = await client.directoryName(tenantId, app.permanentCode, subject);
+        name = await client.directoryName(app.authCorpId ?? tenantId, app.permanentCode, subject);
       } catch (e: any) {
         console.error(`sso: user/get for a ${tenantId} member failed:`, e?.message ?? e);
         continue;
@@ -336,6 +353,62 @@ export function createSsoService(deps: SsoServiceDeps) {
       if (name && (await store.applyDirectoryName(userId, name.slice(0, 64)))) updated++;
     }
     return updated;
+  }
+
+  /**
+   * The bound company a 代开发 corpid belongs to. The binding may hold the
+   * plaintext corpid while the 代开发 app gets the encrypted open corpid, so a
+   * binding matches when its tenant id equals the corpid or converts to it.
+   * `orgId` narrows the search to that org's binding (the QR link's flow).
+   */
+  async function bindingForDirectoryCorp(provider: string, authCorpId: string, orgId: string | null): Promise<SsoBinding | null> {
+    const { client, directory: d, providerCorpId } = directory();
+    const direct = await store.bindingForTenant(provider, authCorpId);
+    if (direct) return !orgId || direct.orgId === orgId ? direct : null;
+    const candidates = orgId
+      ? [await store.bindingForOrg(provider, orgId)].filter((b): b is SsoBinding => !!b)
+      : await store.listBindings(provider);
+    for (const b of candidates) {
+      let open: string;
+      try {
+        open = await client.openCorpId({ providerCorpId, providerSecret: d.providerSecret, corpId: b.tenantId });
+      } catch (e: any) {
+        console.error(`sso: corpid_to_opencorpid for ${b.tenantId} failed:`, e?.message ?? e);
+        continue;
+      }
+      if (open === authCorpId) return b;
+    }
+    return null;
+  }
+
+  /**
+   * Keep a company's 代开发 authorization: find the bound company it belongs
+   * to, store its secret, check names and fill them. A live QR flow ties it to
+   * the requesting org and records who asked; without one (authorized from
+   * the WeCom console, or a flow that expired) the company's own binding is
+   * enough, since only that company's admin can authorize it.
+   */
+  async function adoptDirectoryAuth(provider: string, auth: WecomDirectoryAuth, state: string | null): Promise<void> {
+    const flow = state ? await store.consumeDirectoryFlow(state) : null;
+    const liveFlow = flow && flow.orgId && Date.parse(flow.expiresAt) > nowMs() ? flow : null;
+    const binding = await bindingForDirectoryCorp(provider, auth.corpId, liveFlow?.orgId ?? null);
+    if (!binding) {
+      console.error(
+        `sso: 代开发 authorization from ${auth.corpId} matches no ${liveFlow ? "binding of the requesting org" : "bound company"}; ignored`,
+      );
+      return;
+    }
+    await store.saveDirectoryApp({
+      provider,
+      tenantId: binding.tenantId,
+      authCorpId: auth.corpId,
+      permanentCode: auth.permanentCode,
+      authorizedBy: liveFlow?.requestedBy ?? null,
+    });
+    const { client } = wecom();
+    client.forgetCorpToken(auth.corpId);
+    const app = await checkDirectory(provider, binding.tenantId);
+    if (app?.namesGranted) await fillNames(provider, binding.tenantId);
   }
 
   /** A 代开发 template callback (create_auth / change_auth / reset_permanent_code / cancel_auth). */
@@ -347,34 +420,29 @@ export function createSsoService(deps: SsoServiceDeps) {
       const authCode = xmlField(xml, "AuthCode");
       if (!authCode) return;
       const auth = await client.directoryPermanentAuth(d.template, authCode);
-      const state = xmlField(xml, "State") || auth.state;
-      const flow = state ? await store.consumeDirectoryFlow(state) : null;
-      if (!flow || !flow.orgId || Date.parse(flow.expiresAt) <= nowMs()) {
-        console.error(`sso: 代开发 authorization from ${auth.corpId} has no live TeamClu link; ignored`);
-        return;
-      }
-      const binding = await store.bindingForTenant(provider, auth.corpId);
-      if (!binding || binding.orgId !== flow.orgId) {
-        console.error(`sso: 代开发 authorization from ${auth.corpId} is not the company bound to the requesting org; ignored`);
-        return;
-      }
-      await store.saveDirectoryApp({ provider, tenantId: auth.corpId, permanentCode: auth.permanentCode, authorizedBy: flow.requestedBy });
-      const app = await checkDirectory(provider, auth.corpId);
-      if (app?.namesGranted) await fillNames(provider, auth.corpId);
+      await adoptDirectoryAuth(provider, auth, xmlField(xml, "State") || auth.state);
     } else if (infoType === "reset_permanent_code") {
       const authCode = xmlField(xml, "AuthCode");
       if (!authCode) return;
       const auth = await client.directoryPermanentAuth(d.template, authCode);
       client.forgetCorpToken(auth.corpId);
-      if (await store.rotateDirectoryAppSecret(provider, auth.corpId, auth.permanentCode)) {
-        await checkDirectory(provider, auth.corpId);
+      const app = await store.directoryAppForAuthCorp(provider, auth.corpId);
+      if (app && (await store.rotateDirectoryAppSecret(provider, app.tenantId, auth.permanentCode))) {
+        await checkDirectory(provider, app.tenantId);
+      } else if (!app) {
+        // An authorization we never kept (e.g. dropped before this fix): a
+        // reset from the provider console hands over a fresh secret.
+        await adoptDirectoryAuth(provider, auth, null);
       }
     } else if (infoType === "change_auth" && corpIdFromXml) {
-      const app = await checkDirectory(provider, corpIdFromXml);
-      if (app?.namesGranted) await fillNames(provider, corpIdFromXml);
+      const app = await store.directoryAppForAuthCorp(provider, corpIdFromXml);
+      if (!app) return;
+      const checked = await checkDirectory(provider, app.tenantId);
+      if (checked?.namesGranted) await fillNames(provider, app.tenantId);
     } else if (infoType === "cancel_auth" && corpIdFromXml) {
       // Only the names app goes; the company still signs in.
-      await store.deleteDirectoryApp(provider, corpIdFromXml);
+      const app = await store.directoryAppForAuthCorp(provider, corpIdFromXml);
+      if (app) await store.deleteDirectoryApp(provider, app.tenantId);
       client.forgetCorpToken(corpIdFromXml);
     }
   }

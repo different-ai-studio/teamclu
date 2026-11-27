@@ -96,6 +96,7 @@ the routes answer 501.
 | Column | Notes |
 |---|---|
 | provider, tenant_id | PK; FK to `sso_org_bindings` (cascade on unbind) |
+| auth_corp_id | the corpid WeCom gives the 代开发 app (unique per provider; null = tenant_id). See below |
 | permanent_code | the company's 代开发 secret |
 | names_granted | last result of `agent/get_permissions` |
 | last_checked_at, last_error | why names are not readable yet (not granted, app still 开发中, …) |
@@ -129,13 +130,30 @@ pgTAP: `064_sso_directory_names.sql`.
 - **Callbacks.** Messages whose `SuiteId` is the template are answered
   `success` at once; the WeCom calls run in the background, because WeCom
   allows 1000 ms.
-  - `create_auth`: consume the `directory` flow named by `State` (or the
-    state echoed by `get_permanent_code`), exchange the code, and store the
-    secret only if the corp is the flow org's bound company. Otherwise log and
-    ignore. Then check the grant, and fill names if it is there.
+  - `create_auth`: exchange the code, then find the bound company the
+    returned corpid belongs to (see *Matching corpids*). If `State` (or the
+    state echoed by `get_permanent_code`) names a live `directory` flow, only
+    that org's binding may match, and the flow's requester is recorded.
+    Without a live flow — the admin authorized from the WeCom console, or the
+    link expired — any binding may match: only the company's own admin can
+    authorize, and the binding already ties the company to its org. No match
+    → log and ignore. Then check the grant, and fill names if it is there.
   - `change_auth`: re-check, and fill names if granted.
-  - `reset_permanent_code`: exchange the new code, replace the secret, re-check.
+  - `reset_permanent_code`: exchange the new code, replace the secret,
+    re-check. With no stored authorization it is adopted like `create_auth`
+    without a flow (a reset from the provider console recovers one that was
+    dropped).
   - `cancel_auth`: delete the directory app only. The company keeps signing in.
+  - Template callbacks name the company by the 代开发 corpid (`AuthCorpId`),
+    so the row is found by `auth_corp_id`.
+- **Matching corpids.** A binding made by the sign-in app can hold the
+  plaintext corpid (`ww…`) while the 代开发 app gets the encrypted open corpid
+  (`wp…`) for the same company — seen on self-host on 2026-11-27, where the
+  first authorization was dropped because the two were compared by equality.
+  A binding matches when its tenant id equals the 代开发 corpid or
+  `service/corpid_to_opencorpid` (provider token) converts it to that corpid.
+  The row stays keyed by the binding's tenant id, which identities use;
+  `auth_corp_id` is what the 代开发 app's own calls (`gettoken`) use.
   - The template's `suite_ticket` is stored like any other suite's.
 - **Company token.** `gettoken(corpid, permanent_code)`, cached per company
   until 5 minutes before expiry; dropped on rotation or cancel.

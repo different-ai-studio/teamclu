@@ -43,6 +43,7 @@ function directoryAppFromRow(r: any): SsoDirectoryApp {
   return {
     provider: r.provider,
     tenantId: r.tenant_id,
+    authCorpId: r.auth_corp_id ?? null,
     permanentCode: r.permanent_code,
     namesGranted: !!r.names_granted,
     lastCheckedAt: r.last_checked_at ?? null,
@@ -78,7 +79,7 @@ export function createSupabaseSsoStore(options: SupabaseSsoStoreOptions): SsoSto
     return data?.[0] ? flowFromRow(data[0]) : null;
   }
 
-  const DIRECTORY_COLS = "provider, tenant_id, permanent_code, names_granted, last_checked_at, last_error, created_at";
+  const DIRECTORY_COLS = "provider, tenant_id, auth_corp_id, permanent_code, names_granted, last_checked_at, last_error, created_at";
 
   return {
     async saveSuiteTicket(provider, suiteId, ticket) {
@@ -196,6 +197,12 @@ export function createSupabaseSsoStore(options: SupabaseSsoStoreOptions): SsoSto
       return data?.[0] ? bindingFromRow(data[0]) : null;
     },
 
+    async listBindings(provider) {
+      const { data, error } = await admin.from("sso_org_bindings").select(BINDING_COLS).eq("provider", provider);
+      if (error) fail("list bindings", error);
+      return (data ?? []).map(bindingFromRow);
+    },
+
     async bindingForTenant(provider, tenantId) {
       const { data, error } = await admin
         .from("sso_org_bindings")
@@ -239,11 +246,25 @@ export function createSupabaseSsoStore(options: SupabaseSsoStoreOptions): SsoSto
       return data ? directoryAppFromRow(data) : null;
     },
 
-    async saveDirectoryApp({ provider, tenantId, permanentCode, authorizedBy }) {
+    async directoryAppForAuthCorp(provider, authCorpId) {
+      // Interpolated into a PostgREST filter: corpids are letters, digits, - and _.
+      if (!/^[A-Za-z0-9_-]+$/.test(authCorpId)) return null;
+      const { data, error } = await admin
+        .from("sso_directory_apps")
+        .select(DIRECTORY_COLS)
+        .eq("provider", provider)
+        .or(`auth_corp_id.eq.${authCorpId},and(auth_corp_id.is.null,tenant_id.eq.${authCorpId})`)
+        .limit(1);
+      if (error) fail("read directory app", error);
+      return data?.[0] ? directoryAppFromRow(data[0]) : null;
+    },
+
+    async saveDirectoryApp({ provider, tenantId, authCorpId, permanentCode, authorizedBy }) {
       const { error } = await admin.from("sso_directory_apps").upsert(
         {
           provider,
           tenant_id: tenantId,
+          auth_corp_id: authCorpId,
           permanent_code: permanentCode,
           names_granted: false,
           last_checked_at: null,

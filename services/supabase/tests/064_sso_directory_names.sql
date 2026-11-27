@@ -2,7 +2,7 @@
 -- account's placeholder name, and only that.
 begin;
 
-select plan(13);
+select plan(15);
 
 create or replace function pg_temp.raises_sqlstate(p_sql text, p_expected_sqlstate text)
 returns boolean language plpgsql as $$
@@ -66,8 +66,17 @@ select ok(
   'an account that is not an SSO identity is refused');
 
 -- Unbinding the company drops its directory app.
-insert into amux.sso_directory_apps (provider, tenant_id, permanent_code)
-values ('wecom', 'wwcorpD', 'secret');
+insert into amux.sso_directory_apps (provider, tenant_id, permanent_code, auth_corp_id)
+values ('wecom', 'wwcorpD', 'secret', 'wpcorpD');
+select is(
+  (select tenant_id from amux.sso_directory_apps where provider = 'wecom' and auth_corp_id = 'wpcorpD'), 'wwcorpD',
+  'the 代开发 corpid is kept beside the binding''s tenant id');
+select ok(
+  pg_temp.raises_sqlstate(
+    $$insert into amux.sso_org_bindings (provider, tenant_id, org_id) values ('wecom', 'wwcorpE', '64aa0000-0000-4000-8000-000000000001');
+      insert into amux.sso_directory_apps (provider, tenant_id, permanent_code, auth_corp_id) values ('wecom', 'wwcorpE', 's', 'wpcorpD')$$,
+    '23505'),
+  'one 代开发 corpid belongs to one company');
 delete from amux.sso_org_bindings where provider = 'wecom' and tenant_id = 'wwcorpD';
 select is(
   (select count(*)::int from amux.sso_directory_apps where tenant_id = 'wwcorpD'), 0,
