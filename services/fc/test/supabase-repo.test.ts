@@ -1498,6 +1498,90 @@ test("patchWorkspace without archived:true never touches sessions", async () => 
   );
 });
 
+test("patchWorkspace stamps archived sessions with the workspace row's own updated_at", async () => {
+  const tableCalls = [];
+  const repo = createRepo(fakeSupabase({
+    tableCalls,
+    tableData: {
+      workspaces: [{ id: "ws-1", team_id: "team-1", name: "Repo", path: "/repo", archived: true, updated_at: "2026-11-26T10:32:45.034123+00:00" }],
+      session_participants: [{ session_id: "session-1" }],
+    },
+  }));
+
+  await repo.patchWorkspace("ws-1", { archived: true });
+
+  const update = tableCalls.find((c) => c.table === "sessions" && c.op === "update");
+  assert.equal(update?.row.archived_at, "2026-11-26T10:32:45.034123+00:00");
+});
+
+test("patchWorkspace restoring a workspace brings back the sessions its archive took", async () => {
+  const tableCalls = [];
+  const repo = createRepo(fakeSupabase({
+    tableCalls,
+    tableData: {
+      // What the pre-UPDATE read sees: still archived, stamped at the archive.
+      workspaces: [{ id: "ws-1", team_id: "team-1", name: "Repo", path: "/repo", archived: true, updated_at: "2026-11-26T10:32:45.034123+00:00" }],
+      session_participants: [{ session_id: "session-1" }, { session_id: "session-2" }],
+    },
+  }));
+
+  await repo.patchWorkspace("ws-1", { archived: false });
+
+  const update = tableCalls.find((c) => c.table === "sessions" && c.op === "update");
+  assert.equal(update?.row.archived_at, null);
+  assert.deepEqual(
+    tableCalls.find((c) => c.table === "sessions" && c.op === "update.in")?.values,
+    ["session-1", "session-2"],
+  );
+  assert.deepEqual(
+    tableCalls.find((c) => c.table === "sessions" && c.op === "update.eq"),
+    { table: "sessions", op: "update.eq", column: "archived_at", value: "2026-11-26T10:32:45.034123+00:00" },
+    "only sessions archived at the workspace's archive instant come back",
+  );
+});
+
+test("patchWorkspace archived:false on a live workspace never touches sessions", async () => {
+  const tableCalls = [];
+  const repo = createRepo(fakeSupabase({
+    tableCalls,
+    tableData: {
+      workspaces: [{ id: "ws-1", team_id: "team-1", name: "Repo", path: "/repo", archived: false, updated_at: "2026-11-26T10:00:00+00:00" }],
+      session_participants: [{ session_id: "session-1" }],
+    },
+  }));
+
+  await repo.patchWorkspace("ws-1", { archived: false });
+
+  assert.ok(tableCalls.every((c) => c.table !== "sessions" && c.table !== "session_participants"));
+});
+
+test("patchWorkspace moves path_key with path so the unique index sees the new folder", async () => {
+  const tableCalls = [];
+  const repo = createRepo(fakeSupabase({
+    tableCalls,
+    tableData: { workspaces: [{ id: "ws-1", team_id: "team-1", name: "Repo", path: "C:/Users/a/TeamClu" }] },
+  }));
+
+  await repo.patchWorkspace("ws-1", { path: "C:\\Users\\a\\TeamClu\\" });
+
+  const update = tableCalls.find((c) => c.table === "workspaces" && c.op === "update");
+  assert.equal(update?.row.path, "C:/Users/a/TeamClu");
+  assert.equal(update?.row.path_key, "C:/Users/a/TeamClu");
+});
+
+test("patchWorkspace without a path leaves path and path_key alone", async () => {
+  const tableCalls = [];
+  const repo = createRepo(fakeSupabase({
+    tableCalls,
+    tableData: { workspaces: [{ id: "ws-1", team_id: "team-1", name: "Renamed", path: "/repo" }] },
+  }));
+
+  await repo.patchWorkspace("ws-1", { name: "Renamed" });
+
+  const update = tableCalls.find((c) => c.table === "workspaces" && c.op === "update");
+  assert.ok(!("path" in update.row) && !("path_key" in update.row));
+});
+
 // --- Actor directory ---
 
 test("listTeamActors selects actor_directory columns without removed agent_kind", async () => {
@@ -4802,6 +4886,42 @@ test("upsertWorkspace reuses archived row with the same name instead of insertin
   assert.equal(upsert?.row.archived, false);
   assert.equal(upsert?.row.path, "/tmp/legacy-new");
   assert.equal(out.id, "ws-archived");
+});
+
+// Re-adding a folder (or a daemon registering its default) revives the
+// archived row. That brought the folder back but left the chats archived — on a
+// customer's PC it read as lost history (2026-11-27).
+test("upsertWorkspace reviving an archived row brings back the sessions its archive took", async () => {
+  const archivedAt = "2026-11-26T10:32:45.034123+00:00";
+  const state: any = {
+    apps: [], actors: [], app_member_access: [], app_env_vars: [], app_secrets: [], app_cron_jobs: [],
+    teams: [{ id: "team-1", oid: "org-1" }], agents: [], agent_member_access: [], session_read_markers: [],
+    workspaces: [{
+      id: "ws-archived", team_id: "team-b", name: "TeamClu", path: "C:/Users/a/TeamClu",
+      path_key: "C:/Users/a/TeamClu", agent_id: "agent-1", archived: true, updated_at: archivedAt,
+    }],
+    session_participants: [
+      { session_id: "s-took", workspace_id: "ws-archived" },
+      { session_id: "s-by-hand", workspace_id: "ws-archived" },
+    ],
+    sessions: [
+      { id: "s-took", archived_at: archivedAt },
+      { id: "s-by-hand", archived_at: "2026-11-26T08:20:44.957+00:00" },
+    ],
+  };
+  const repo = appsRepo(appsSupabase({ sharedState: state }));
+
+  await repo.upsertWorkspace({
+    teamId: "team-b",
+    name: "TeamClu",
+    path: "C:/Users/a/TeamClu",
+    agentId: "agent-1",
+    archived: false,
+  });
+
+  const byId = Object.fromEntries(state.sessions.map((r: any) => [r.id, r.archived_at]));
+  assert.equal(byId["s-took"], null, "the session archived with the workspace comes back");
+  assert.equal(byId["s-by-hand"], "2026-11-26T08:20:44.957+00:00", "one archived by hand stays archived");
 });
 
 test("upsertWorkspace disambiguates name when same agent already has that name at another path", async () => {

@@ -1,17 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { loadSessionWorkspacesForTeam } = vi.hoisted(() => ({
-  loadSessionWorkspacesForTeam: vi.fn(),
+const { resolveSessionWorkspaceForViewer } = vi.hoisted(() => ({
+  resolveSessionWorkspaceForViewer: vi.fn(),
 }));
-const { loadViewerWorkspaceContext, resolveSessionWorkspaceForViewer } =
-  vi.hoisted(() => ({
-    loadViewerWorkspaceContext: vi.fn(),
-    resolveSessionWorkspaceForViewer: vi.fn(),
-  }));
 
-vi.mock("@/lib/cache/local-cache", () => ({ loadSessionWorkspacesForTeam }));
 vi.mock("@/lib/session/session-viewer-workspace", () => ({
-  loadViewerWorkspaceContext,
   resolveSessionWorkspaceForViewer,
 }));
 
@@ -34,84 +27,10 @@ const { invoke } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 import {
-  loadSessionIdsForWorkspace,
   resolveSessionWorkspacePath,
   sessionBelongsToWorkspace,
   switchToSessionWorkspaceIfNeeded,
 } from "@/lib/session/session-by-workspace";
-
-const viewerCtx = {
-  memberId: "member-a",
-  localDaemonAgentId: "agent-local",
-  ownedAgentIds: new Set(["agent-local"]),
-  localWorkspacesByCloudId: new Map(),
-};
-
-describe("loadSessionIdsForWorkspace", () => {
-  beforeEach(() => {
-    loadSessionWorkspacesForTeam.mockReset();
-    loadViewerWorkspaceContext.mockReset();
-    loadViewerWorkspaceContext.mockResolvedValue(viewerCtx);
-  });
-
-  it("matches by workspaceId exactly for the current viewer", async () => {
-    loadSessionWorkspacesForTeam.mockResolvedValue([
-      {
-        sessionId: "s1",
-        teamId: "teamA",
-        viewerMemberId: "member-a",
-        agentId: "agent-local",
-        workspaceId: "ws1",
-        workspacePath: "/p/1",
-        updatedAt: "2026-06-01T00:00:00Z",
-      },
-      {
-        sessionId: "s2",
-        teamId: "teamA",
-        viewerMemberId: "member-a",
-        agentId: "agent-local",
-        workspaceId: "ws2",
-        workspacePath: "/p/2",
-        updatedAt: "2026-06-01T00:00:00Z",
-      },
-    ]);
-    const ids = await loadSessionIdsForWorkspace("teamA", {
-      workspaceId: "ws1",
-      path: "/p/1",
-    });
-    expect(loadSessionWorkspacesForTeam).toHaveBeenCalledWith("teamA", "member-a");
-    expect([...ids]).toEqual(["s1"]);
-  });
-
-  it("falls back to path match when workspaceId is null", async () => {
-    loadSessionWorkspacesForTeam.mockResolvedValue([
-      {
-        sessionId: "s1",
-        teamId: "teamA",
-        viewerMemberId: "member-a",
-        agentId: "agent-local",
-        workspaceId: null,
-        workspacePath: "/Users/me/proj/",
-        updatedAt: "2026-06-01T00:00:00Z",
-      },
-    ]);
-    const ids = await loadSessionIdsForWorkspace("teamA", {
-      workspaceId: null,
-      path: "/Users/me/proj",
-    });
-    expect([...ids]).toEqual(["s1"]);
-  });
-
-  it("returns empty set when viewer has no member id", async () => {
-    loadViewerWorkspaceContext.mockResolvedValue({ ...viewerCtx, memberId: null });
-    const ids = await loadSessionIdsForWorkspace("teamA", {
-      workspaceId: "ws1",
-      path: "/p/1",
-    });
-    expect(ids.size).toBe(0);
-    expect(loadSessionWorkspacesForTeam).not.toHaveBeenCalled();
-  });
-});
 
 describe("resolveSessionWorkspacePath", () => {
   beforeEach(() => resolveSessionWorkspaceForViewer.mockReset());

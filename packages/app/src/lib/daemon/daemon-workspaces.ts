@@ -69,20 +69,18 @@ export async function createDaemonWorkspace(input: {
   return mapWorkspace(data)
 }
 
-async function archiveSessionsForWorkspace(
-  teamId: string,
-  target: { workspaceId: string; path: string | null },
-): Promise<void> {
-  const { loadSessionIdsForWorkspace } = await import('@/lib/session/session-by-workspace')
-  const sessionIds = await loadSessionIdsForWorkspace(teamId, {
-    workspaceId: target.workspaceId,
-    path: target.path ?? '',
-  })
-  if (sessionIds.size === 0) return
-
+// Archiving a workspace archives its sessions, and restoring it brings back the
+// ones that archive took — both inside the Cloud API (PATCH /v1/workspaces/:id),
+// stamped with one instant so the restore can tell them from sessions archived
+// by hand. This used to archive them a second time from here, one PATCH per
+// session with its own timestamp, which overwrote that instant and left the
+// restore nothing to match. All that is left to do here is pull the change
+// into the local cache and repaint the list.
+async function refreshSessionsAfterWorkspaceChange(teamId: string): Promise<void> {
+  const { syncSessionsForTeam } = await import('@/lib/sync/session-sync')
+  await syncSessionsForTeam(teamId)
   const { useSessionListStore } = await import('@/stores/session-list-store')
-  const archiveSession = useSessionListStore.getState().archiveSession
-  await Promise.all([...sessionIds].map((sessionId) => archiveSession(sessionId)))
+  await useSessionListStore.getState().load()
 }
 
 export async function updateDaemonWorkspace(input: {
@@ -94,15 +92,10 @@ export async function updateDaemonWorkspace(input: {
   const data = await getBackend().workspaces.updateDaemonWorkspace(input)
   const workspace = mapWorkspace(data)
 
-  if (input.archived) {
-    try {
-      await archiveSessionsForWorkspace(workspace.teamId, {
-        workspaceId: workspace.id,
-        path: workspace.path ?? input.path ?? null,
-      })
-    } catch (err) {
-      console.warn('[daemon-workspaces] failed to archive linked sessions:', err)
-    }
+  if (workspace.teamId) {
+    void refreshSessionsAfterWorkspaceChange(workspace.teamId).catch((err) => {
+      console.warn('[daemon-workspaces] failed to refresh sessions after workspace change:', err)
+    })
   }
 
   return workspace

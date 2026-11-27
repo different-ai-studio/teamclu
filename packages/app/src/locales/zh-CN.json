@@ -2460,6 +2460,9 @@
       "resetIncomplete": "重置未生效：本机仍绑定在团队 {{teamId}} 上。请查看 {{path}}。"
     },
     "daemonWorkspaces": {
+      "archiveConfirmTitle": "归档工作区「{{name}}」？",
+      "archiveConfirmDescription": "这个工作区里的会话会一起归档，从会话列表中隐藏。之后在下方「已归档」里恢复工作区，这些会话会一并回来。",
+      "archiveConfirmAction": "归档",
       "current": "当前",
       "open": "打开",
       "opened": "已切换到 {{name}}",

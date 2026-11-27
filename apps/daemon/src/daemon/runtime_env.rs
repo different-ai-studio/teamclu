@@ -213,6 +213,55 @@ mod execution_context_tests {
     }
 
     #[tokio::test]
+    async fn explicit_workspace_id_assembles_when_a_duplicate_row_claims_its_folder() {
+        // A customer's Windows PC registered `C:/Users/Administrator/TeamClu`
+        // twice under the same agent; every session then failed with
+        // "ambiguous or invalid workspace". A session that names its
+        // workspace id must not care how many other rows claim the folder.
+        let amuxd_home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(amuxd_home.path());
+        let workspace = tempfile::tempdir().unwrap();
+        let worktree = workspace.path().join(".worktrees/session-1");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let path = workspace.path().to_string_lossy().into_owned();
+        let backend = Arc::new(MockBackend::default());
+        for id in ["ws-old", "ws-new"] {
+            backend.state().workspaces_by_id.insert(
+                id.into(),
+                WorkspaceRow {
+                    id: id.into(),
+                    team_id: "team-a".into(),
+                    path: Some(path.clone()),
+                    archived: false,
+                    agent_id: Some("actor-a".into()),
+                },
+            );
+        }
+        let assembler = assembler(backend, "team-a", "actor-a");
+
+        for (directory, id) in [
+            (&path, "ws-new"),
+            (&worktree.to_string_lossy().into_owned(), "ws-old"),
+        ] {
+            let context = assembler
+                .assemble(directory, None, Some(id), false, None)
+                .await
+                .unwrap_or_else(|e| panic!("{id} in {directory}: {e}"));
+            assert_eq!(
+                context.isolation_domain,
+                IsolationDomainKey::Workspace(id.into())
+            );
+        }
+
+        // Without an id the folder really is ambiguous, and the error says why.
+        let err = assembler
+            .assemble(&path, None, None, false, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("ws-old") && err.contains("ws-new"), "{err}");
+    }
+
+    #[tokio::test]
     async fn unscoped_gateway_resume_recreates_daemon_scratch_directory() {
         let backend = Arc::new(MockBackend::default());
         let assembler = assembler(backend, "team-a", "actor-a");
@@ -451,53 +500,57 @@ impl ExecutionContextAssembler {
         permission: Option<PermissionPolicy>,
     ) -> Result<ExecutionContext, String> {
         let team_id = self.team_id.as_deref();
-        let workspace = if let Some(workspace_id) =
-            workspace_id_hint.filter(|id| !id.trim().is_empty())
-        {
+        let explicit_workspace_id = workspace_id_hint.filter(|id| !id.trim().is_empty());
+        let workspace = if let Some(workspace_id) = explicit_workspace_id {
+            // Named outright, so the id decides: other rows claiming the same
+            // folder (a duplicate registration, or another machine using the
+            // same default path) cannot make it ambiguous.
             let resolved = self
                 .workspace_resolver
                 .resolve(workspace_id)
                 .await
                 .map_err(|e| format!("workspace identity resolution failed: {e}"))?;
-            let identity = self
-                .workspace_resolver
-                .resolve_identity_for_path(Path::new(&resolved.path), resolved.team_id.as_deref())
-                .await
-                .map_err(|e| format!("workspace identity resolution failed: {e}"))?
+            crate::config::WorkspaceResolver::identity_for_id(workspace_id, &resolved)
                 .ok_or_else(|| {
                     format!(
-                        "workspace identity resolution failed: ambiguous or invalid workspace {workspace_id}"
+                        "workspace identity resolution failed: workspace {workspace_id} points at {}, which is not a folder on this machine",
+                        resolved.path
                     )
-                })?;
-            if identity.workspace_id != workspace_id {
-                return Err(format!(
-                    "workspace identity mismatch: expected {workspace_id}, resolved {}",
-                    identity.workspace_id
-                ));
-            }
-            identity
+                })?
         } else if let Some(root) = workspace_root_hint.filter(|root| !root.trim().is_empty()) {
-            self.workspace_resolver
+            match self
+                .workspace_resolver
                 .resolve_identity_for_path(Path::new(root), team_id)
                 .await
                 .map_err(|e| format!("workspace identity resolution failed: {e}"))?
-                .ok_or_else(|| {
-                    format!(
-                        "workspace identity resolution failed for parent root {}",
-                        Path::new(root).display()
-                    )
-                })?
+            {
+                Some(identity) => identity,
+                None => {
+                    return Err(format!(
+                        "workspace identity resolution failed for parent root: {}",
+                        self.workspace_resolver
+                            .describe_unresolved_path(Path::new(root), team_id)
+                            .await
+                    ))
+                }
+            }
         } else if !working_directory.trim().is_empty() {
-            self.workspace_resolver
+            match self
+                .workspace_resolver
                 .resolve_identity_for_path(Path::new(working_directory), team_id)
                 .await
                 .map_err(|e| format!("workspace identity resolution failed: {e}"))?
-                .ok_or_else(|| {
-                    format!(
-                        "workspace identity resolution failed for working directory {}",
-                        Path::new(working_directory).display()
-                    )
-                })?
+            {
+                Some(identity) => identity,
+                None => {
+                    return Err(format!(
+                        "workspace identity resolution failed for working directory: {}",
+                        self.workspace_resolver
+                            .describe_unresolved_path(Path::new(working_directory), team_id)
+                            .await
+                    ))
+                }
+            }
         } else {
             self.workspace_resolver
                 .resolve_default_workspace(team_id, &self.actor_id)
@@ -516,21 +569,35 @@ impl ExecutionContextAssembler {
             .workspace_resolver
             .resolve_identity_for_path(&working_directory, workspace.team_id.as_deref())
             .await
-            .map_err(|e| format!("workspace identity resolution failed: {e}"))?
-            .ok_or_else(|| {
-                format!(
+            .map_err(|e| format!("workspace identity resolution failed: {e}"))?;
+        match execution_workspace {
+            Some(execution) if execution.workspace_id == workspace.workspace_id => {}
+            // An explicitly named workspace whose folder another row also
+            // claims: the path lookup may pick that other row (or none), but
+            // it is the same folder, so the named id stands.
+            Some(execution)
+                if explicit_workspace_id.is_some()
+                    && same_directory(&execution.workspace_root, &workspace.workspace_root) => {}
+            Some(execution) => {
+                return Err(format!(
+                    "working directory {} resolves to workspace {}, not hinted workspace {}",
+                    working_directory.display(),
+                    execution.workspace_id,
+                    workspace.workspace_id
+                ));
+            }
+            None if explicit_workspace_id.is_some()
+                && crate::config::WorkspaceResolver::root_owns_path(
+                    &workspace.workspace_root,
+                    &working_directory,
+                ) => {}
+            None => {
+                return Err(format!(
                     "working directory {} does not belong to resolved workspace {}",
                     working_directory.display(),
                     workspace.workspace_id
-                )
-            })?;
-        if execution_workspace.workspace_id != workspace.workspace_id {
-            return Err(format!(
-                "working directory {} resolves to workspace {}, not hinted workspace {}",
-                working_directory.display(),
-                execution_workspace.workspace_id,
-                workspace.workspace_id
-            ));
+                ));
+            }
         }
         let mut spawn_env = self.assemble_workspace_execution_env(&workspace).await?;
         spawn_env.is_gateway = is_gateway;
@@ -571,6 +638,13 @@ impl ExecutionContextAssembler {
                 .as_deref(),
         )
         .map_err(|e| format!("assemble_runtime_env failed: {e}"))
+    }
+}
+
+fn same_directory(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 

@@ -2,6 +2,16 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { AlertCircle, Archive, ArrowLeftRight, CheckCircle2, FolderOpen, Loader2, Plus, RefreshCw, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useWorkspaceStore } from '@/stores/workspace'
 import {
@@ -269,6 +279,10 @@ export function DaemonWorkspacesSection() {
     }
   }
 
+  // Archiving takes the workspace's sessions with it (they come back when the
+  // workspace is restored), so it asks first rather than vanishing a chat list.
+  const [archiveTarget, setArchiveTarget] = React.useState<DaemonWorkspace | null>(null)
+
   const handleArchive = async (workspace: DaemonWorkspace, archived: boolean) => {
     setSaving(true)
     setError(null)
@@ -395,7 +409,7 @@ export function DaemonWorkspacesSection() {
                     settingDefault={false}
                     saving={saving}
                     onOpen={() => handleOpenWorkspace(defaultWorkspace)}
-                    onArchive={() => handleArchive(defaultWorkspace, true)}
+                    onArchive={() => setArchiveTarget(defaultWorkspace)}
                     t={t}
                   />
                 ) : (
@@ -425,7 +439,7 @@ export function DaemonWorkspacesSection() {
                             ? () => handleSetDefault(workspaceAgentId, workspace.id, workspace.path ?? '')
                             : undefined
                         }
-                        onArchive={() => handleArchive(workspace, true)}
+                        onArchive={() => setArchiveTarget(workspace)}
                         t={t}
                       />
                       )
@@ -457,6 +471,33 @@ export function DaemonWorkspacesSection() {
         </SettingCard>
       )}
 
+      <AlertDialog open={archiveTarget !== null} onOpenChange={(open) => { if (!open) setArchiveTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('settings.daemonWorkspaces.archiveConfirmTitle', 'Archive workspace "{{name}}"?', { name: archiveTarget?.name ?? '' })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                'settings.daemonWorkspaces.archiveConfirmDescription',
+                'Sessions in this workspace are archived with it and leave the session list. Restoring the workspace from Archived below brings them back.',
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel', 'Cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const target = archiveTarget
+                setArchiveTarget(null)
+                if (target) void handleArchive(target, true)
+              }}
+            >
+              {t('settings.daemonWorkspaces.archiveConfirmAction', 'Archive')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

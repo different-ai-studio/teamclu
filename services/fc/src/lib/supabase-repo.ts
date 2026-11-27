@@ -553,21 +553,28 @@ async function findUniqueWorkspaceName(
   }
 }
 
-async function archiveSessionsForWorkspace(supabase, workspaceId) {
+async function loadWorkspaceSessionIds(supabase, workspaceId): Promise<string[]> {
   const { data: participants, error: rtError } = await supabase
     .from("session_participants")
     .select("session_id")
     .eq("workspace_id", workspaceId);
   if (rtError) throw rtError;
 
-  const sessionIds = [...new Set(
+  return [...new Set<string>(
     (participants ?? [])
       .map((row) => row.session_id)
       .filter((id) => typeof id === "string" && id.length > 0),
   )];
+}
+
+// `archivedAt` is the workspace row's own `updated_at` from the archiving
+// UPDATE when there is one: stamping the sessions with that exact instant is
+// what lets restoring the workspace find the sessions this archive took with
+// it (restoreSessionsForWorkspace) and leave ones archived on their own alone.
+async function archiveSessionsForWorkspace(supabase, workspaceId, archivedAt: string = new Date().toISOString()) {
+  const sessionIds = await loadWorkspaceSessionIds(supabase, workspaceId);
   if (sessionIds.length === 0) return;
 
-  const archivedAt = new Date().toISOString();
   // Chunked like every other `.in()` here, but this one is an UPDATE: a failure
   // partway leaves earlier chunks archived. Safe because the statement is
   // idempotent (`.is("archived_at", null)` skips rows a retry already touched),
@@ -578,6 +585,28 @@ async function archiveSessionsForWorkspace(supabase, workspaceId) {
       .update({ archived_at: archivedAt, updated_at: archivedAt })
       .in("id", chunk)
       .is("archived_at", null);
+    if (error) throw error;
+    return [];
+  });
+}
+
+// The inverse of archiveSessionsForWorkspace. Archiving a workspace used to be
+// one-way for its sessions: restoring the workspace brought the folder back but
+// left every chat in it archived, and no client has an unarchive-session
+// control, so to the user the history was simply gone (a customer, 2026-11-26).
+// Only sessions stamped with the archive's exact instant come back; a session
+// archived by hand before or after keeps its own timestamp and stays archived.
+async function restoreSessionsForWorkspace(supabase, workspaceId, archivedAt: string) {
+  const sessionIds = await loadWorkspaceSessionIds(supabase, workspaceId);
+  if (sessionIds.length === 0) return;
+
+  const restoredAt = new Date().toISOString();
+  await chunkedIn(sessionIds, async (chunk) => {
+    const { error } = await supabase
+      .from("sessions")
+      .update({ archived_at: null, updated_at: restoredAt })
+      .in("id", chunk)
+      .eq("archived_at", archivedAt);
     if (error) throw error;
     return [];
   });
@@ -2757,16 +2786,20 @@ export function createSupabaseBusinessRepository(options) {
 
       let createdByMemberIdForRow = createdByMemberId;
       let agentIdForRow = agentId;
+      let archivedAtBeforeRevive: string | null = null;
       if (targetId) {
         const { data: existing, error: existingErr } = await supabase
           .from("workspaces")
-          .select("agent_id, created_by_member_id")
+          .select("agent_id, created_by_member_id, archived, updated_at")
           .eq("id", targetId)
           .maybeSingle();
         if (existingErr) throw existingErr;
         if (existing?.agent_id) agentIdForRow = existing.agent_id;
         if (createdByMemberId === null && existing?.created_by_member_id) {
           createdByMemberIdForRow = existing.created_by_member_id;
+        }
+        if (existing?.archived === true && typeof existing.updated_at === "string") {
+          archivedAtBeforeRevive = existing.updated_at;
         }
       }
 
@@ -2787,6 +2820,12 @@ export function createSupabaseBusinessRepository(options) {
         .select(WORKSPACE_COLUMNS)
         .single();
       if (error) throw error;
+      // Re-adding a folder (by hand, or a daemon registering its default)
+      // revives the archived row for it. That is a restore too: bring back the
+      // sessions the archive took, as patchWorkspace does.
+      if (archivedAtBeforeRevive && row.archived === false && targetId) {
+        await restoreSessionsForWorkspace(supabase, targetId, archivedAtBeforeRevive);
+      }
       return mapWorkspace(data);
     },
 
@@ -2807,9 +2846,35 @@ export function createSupabaseBusinessRepository(options) {
       const row: any = {};
       if (patch.name !== undefined) row.name = patch.name;
       if (patch.archived !== undefined) row.archived = patch.archived;
-      if (patch.slug !== undefined) row.path = patch.slug;
-      if (patch.path !== undefined) row.path = patch.path;
+      // `path_key` is the workspace's identity: the partial unique index on
+      // (team_id, path_key) is what keeps two live rows off one folder. A PATCH
+      // that moved `path` alone left `path_key` behind, so a row could be
+      // repointed at a folder another live row already held and the index
+      // never saw it — the daemon then refused every session there as
+      // "ambiguous or invalid workspace". Normalize the same way the upsert
+      // does and move both; a collision now fails as 409 duplicate_key.
+      const rawPath = patch.path !== undefined ? patch.path : patch.slug;
+      if (rawPath !== undefined) {
+        const normalizedPath = normalizeWorkspacePath(rawPath);
+        row.path = normalizedPath;
+        row.path_key = normalizedPath;
+      }
       if (patch.agentId !== undefined) row.agent_id = patch.agentId;
+      // Restoring needs the instant the workspace was archived, which is the
+      // row's updated_at as it stands now (the archive stamped its sessions
+      // with it). Read it before the UPDATE moves it.
+      let archivedAtBeforeRestore: string | null = null;
+      if (patch.archived === false) {
+        const { data: before, error: beforeErr } = await supabase
+          .from("workspaces")
+          .select("archived, updated_at")
+          .eq("id", workspaceId)
+          .maybeSingle();
+        if (beforeErr) throw beforeErr;
+        if (before?.archived === true && typeof before.updated_at === "string") {
+          archivedAtBeforeRestore = before.updated_at;
+        }
+      }
       const { data, error } = await supabase
         .from("workspaces")
         .update(row)
@@ -2821,7 +2886,9 @@ export function createSupabaseBusinessRepository(options) {
         throw error;
       }
       if (patch.archived === true) {
-        await archiveSessionsForWorkspace(supabase, workspaceId);
+        await archiveSessionsForWorkspace(supabase, workspaceId, data?.updated_at ?? undefined);
+      } else if (archivedAtBeforeRestore) {
+        await restoreSessionsForWorkspace(supabase, workspaceId, archivedAtBeforeRestore);
       }
       return mapWorkspace(data);
     },
