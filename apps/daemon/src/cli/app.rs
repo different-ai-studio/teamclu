@@ -1569,7 +1569,7 @@ fn table(envelope: &Value) -> String {
 }
 
 /// Write `envelope` the way `-o` asks; the exit status it stands for.
-fn emit(output: &str, envelope: Value) -> i32 {
+pub(crate) fn emit(output: &str, envelope: Value) -> i32 {
     let exit = exit_of(&envelope);
     match output {
         "json" => println!("{}", bounded(envelope)),
@@ -1730,15 +1730,18 @@ fn shell_word(a: &str) -> String {
 /// version and every other subcommand keep clap's own output.
 pub fn exit_on_parse_error(e: clap::Error, args: &[String]) -> ! {
     use clap::error::ErrorKind;
-    let under_app = args.get(1).map(String::as_str) == Some("app");
-    if !under_app
-        || matches!(
-            e.kind(),
-            ErrorKind::DisplayHelp
-                | ErrorKind::DisplayVersion
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-        )
-    {
+    // Every agent-facing command tree keeps the JSON contract on a bad line.
+    let tree = args
+        .get(1)
+        .map(String::as_str)
+        .filter(|t| matches!(*t, "app" | "cron" | "skill" | "role"));
+    let Some(tree) = tree else { e.exit() };
+    if matches!(
+        e.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
         e.exit();
     }
     let message = e.render().to_string();
@@ -1755,9 +1758,14 @@ pub fn exit_on_parse_error(e: clap::Error, args: &[String]) -> ! {
             first = format!("{first} {}", what.trim());
         }
     }
-    let next = name_as_app_flag(&e, args).unwrap_or_else(|| match args.get(2) {
-        Some(sub) if !sub.starts_with('-') => format!("amuxd app {sub} --help"),
-        _ => "amuxd app --help".to_string(),
+    let suggested = if tree == "app" {
+        name_as_app_flag(&e, args)
+    } else {
+        None
+    };
+    let next = suggested.unwrap_or_else(|| match args.get(2) {
+        Some(sub) if !sub.starts_with('-') => format!("amuxd {tree} {sub} --help"),
+        _ => format!("amuxd {tree} --help"),
     });
     println!(
         "{}",

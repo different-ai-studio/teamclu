@@ -29,8 +29,247 @@ pub fn run(args: ChannelArgs, config_path: &Path) -> anyhow::Result<()> {
         ChannelAction::Reload => {
             reload()?;
         }
+        ChannelAction::Show { platform, output } => {
+            let code = super::envelope::emit(&output, show(platform.as_deref()));
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        ChannelAction::Set {
+            platform,
+            config_file,
+            output,
+        } => {
+            let code = super::envelope::emit(&output, set(&platform, &config_file));
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
     }
     Ok(())
+}
+
+const PLATFORMS: &[&str] = &[
+    "discord",
+    "wecom",
+    "feishu",
+    "kook",
+    "wechat",
+    "wechatpad",
+    "email",
+    "seatalk",
+];
+
+/// The active team's `[channels]` from team.toml, as JSON, or the envelope
+/// to print instead.
+fn team_channels() -> Result<serde_json::Map<String, serde_json::Value>, serde_json::Value> {
+    use super::envelope::error_envelope;
+    let team = crate::config::layout::active_team();
+    if team == crate::config::layout::UNCLAIMED_TEAM {
+        return Err(error_envelope(
+            "not_onboarded",
+            "this daemon is not onboarded to a team, so it has no channels",
+            Some("amuxd init <invite-url>"),
+            3,
+            false,
+        ));
+    }
+    let path = crate::config::team_config::path_for(&team);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(error_envelope(
+                "config_unreadable",
+                &format!("read {}: {e}", path.display()),
+                None,
+                7,
+                false,
+            ))
+        }
+    };
+    let doc: toml::Value = toml::from_str(&text).map_err(|e| {
+        error_envelope(
+            "config_unreadable",
+            &format!("parse {}: {e}", path.display()),
+            None,
+            7,
+            false,
+        )
+    })?;
+    let channels = doc
+        .get("channels")
+        .cloned()
+        .unwrap_or(toml::Value::Table(Default::default()));
+    match serde_json::to_value(channels) {
+        Ok(serde_json::Value::Object(map)) => Ok(map),
+        _ => Ok(serde_json::Map::new()),
+    }
+}
+
+/// Names of the stored credentials, asked of the running daemon (it holds
+/// the key to the secret store). Empty when it does not answer.
+fn stored_secret_keys() -> Vec<String> {
+    let sock = DaemonConfig::sock_path();
+    super::sock::sock_roundtrip(&sock, "channel-secret-keys")
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v["keys"].as_array().cloned())
+        .map(|keys| {
+            keys.into_iter()
+                .filter_map(|k| k.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn unknown_platform(platform: &str) -> serde_json::Value {
+    super::envelope::error_envelope(
+        "unknown_platform",
+        &format!(
+            "unknown channel {platform:?}; one of {}",
+            PLATFORMS.join(", ")
+        ),
+        None,
+        2,
+        false,
+    )
+}
+
+/// Every channel's section (or one), each with the credentials stored for it.
+fn show(platform: Option<&str>) -> serde_json::Value {
+    use serde_json::json;
+    if let Some(p) = platform.filter(|p| !PLATFORMS.contains(p)) {
+        return unknown_platform(p);
+    }
+    let channels = match team_channels() {
+        Ok(c) => c,
+        Err(envelope) => return envelope,
+    };
+    let secrets = stored_secret_keys();
+    let entry = |name: &str, config: &serde_json::Value| {
+        let prefix = format!("channels.{name}.");
+        let set: Vec<String> = secrets
+            .iter()
+            .filter_map(|k| k.strip_prefix(&prefix).map(str::to_owned))
+            .collect();
+        json!({ "platform": name, "config": config, "secretsSet": set })
+    };
+    match platform {
+        Some(p) => match channels.get(p) {
+            Some(config) => super::envelope::success(entry(p, config)),
+            None => super::envelope::error_envelope(
+                "not_configured",
+                &format!("channel {p} is not configured"),
+                Some("amuxd channel show"),
+                5,
+                false,
+            ),
+        },
+        None => {
+            let list: Vec<serde_json::Value> = channels
+                .iter()
+                .filter(|(name, v)| v.is_object() && PLATFORMS.contains(&name.as_str()))
+                .map(|(name, v)| entry(name, v))
+                .collect();
+            let mut data = json!({ "channels": list });
+            if let Some(model) = channels.get("model") {
+                data["model"] = model.clone();
+            }
+            super::envelope::success(data)
+        }
+    }
+}
+
+/// `patch` merged over `current`, one level deep: a field in the patch
+/// replaces the field, others stay. A credential left out stays stored
+/// (the daemon reads an empty credential as "keep").
+fn merged(
+    current: Option<&serde_json::Value>,
+    patch: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    let mut out = current
+        .and_then(|c| c.as_object().cloned())
+        .unwrap_or_default();
+    out.extend(patch);
+    serde_json::Value::Object(out)
+}
+
+fn set(platform: &str, config_file: &str) -> serde_json::Value {
+    use super::envelope::{error_envelope, success, unreachable};
+    if !PLATFORMS.contains(&platform) {
+        return unknown_platform(platform);
+    }
+    let patch = match super::envelope::read_json_object(config_file) {
+        Ok(p) => p,
+        Err(u) => return u.envelope(),
+    };
+    let channels = match team_channels() {
+        Ok(c) => c,
+        Err(envelope) => return envelope,
+    };
+    let line = serde_json::json!({
+        "cmd": "channel-set",
+        "platform": platform,
+        "config": merged(channels.get(platform), patch),
+    });
+    let sock = DaemonConfig::sock_path();
+    let raw = match super::sock::sock_roundtrip(&sock, &line.to_string()) {
+        Ok(raw) => raw,
+        Err(e) => return unreachable(e),
+    };
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(reply) if reply["ok"] == true => {
+            success(serde_json::json!({ "platform": platform, "saved": true }))
+        }
+        Ok(reply) => error_envelope(
+            "invalid_config",
+            reply["error"]
+                .as_str()
+                .unwrap_or("the daemon refused the config"),
+            Some("amuxd channel show <platform>"),
+            2,
+            false,
+        ),
+        Err(_) if raw.trim().is_empty() => error_envelope(
+            "daemon_too_old",
+            "the running amuxd does not answer channel-set",
+            Some("restart amuxd so it runs this version"),
+            7,
+            false,
+        ),
+        Err(e) => unreachable(e),
+    }
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_patch_replaces_its_fields_and_keeps_the_rest() {
+        let current = json!({ "enabled": true, "bot_id": "b1", "bots": [{ "bot_id": "x" }] });
+        let patch = json!({ "enabled": false, "secret": "s" })
+            .as_object()
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            merged(Some(&current), patch),
+            json!({ "enabled": false, "bot_id": "b1", "bots": [{ "bot_id": "x" }], "secret": "s" })
+        );
+        let patch = json!({ "enabled": true }).as_object().cloned().unwrap();
+        assert_eq!(merged(None, patch), json!({ "enabled": true }));
+    }
+
+    #[test]
+    fn unknown_platforms_are_refused_before_anything_is_read() {
+        assert_eq!(show(Some("slack"))["error"]["exit"], 2);
+        assert_eq!(
+            set("slack", "/nonexistent")["error"]["code"],
+            "unknown_platform"
+        );
+    }
 }
 
 fn list(cfg: &DaemonConfig) {

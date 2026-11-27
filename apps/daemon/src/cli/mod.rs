@@ -2,15 +2,19 @@ pub mod app;
 pub mod channel;
 pub mod clear;
 pub mod config_cmd;
+pub mod cron;
 pub mod daemon_http;
 pub mod doctor;
+pub mod envelope;
 pub mod git_account;
 pub mod git_credential;
 pub mod git_ssh;
 pub mod manage;
 pub mod process;
+pub mod role;
 pub mod service;
 pub mod setup;
+pub mod skill;
 pub mod sock;
 pub mod team_secrets;
 pub mod test_client;
@@ -91,6 +95,21 @@ pub enum Commands {
     /// 7 platform/daemon (see `retryable`), 8 outcome unknown — do not retry
     /// blindly. Needs `amuxd start` running.
     App(app::AppArgs),
+    /// Scheduled jobs: list, create, pause, resume, delete, run now, runs.
+    ///
+    /// Same JSON contract as `amuxd app`. Jobs live in this daemon, which
+    /// runs them unattended. Needs `amuxd start` running.
+    Cron(cron::CronArgs),
+    /// Personal skills (~/.agents/skills) and installed team Skill drafts.
+    ///
+    /// Same JSON contract as `amuxd app`. A skill is a folder: write it, then
+    /// `create`/`update --from-dir`. Needs `amuxd start` running.
+    Skill(skill::SkillArgs),
+    /// This workspace's agent roles: list, create or replace from a ROLE.md,
+    /// delete.
+    ///
+    /// Same JSON contract as `amuxd app`. Needs `amuxd start` running.
+    Role(role::RoleArgs),
     /// Report install status of amuxd / the managed Node / pi / git as JSON.
     Doctor,
     /// Install or repair the managed pi runtime: the pinned Node.js, then pi
@@ -168,6 +187,22 @@ pub enum TeamAction {
     /// (ADR-0008). Sync itself does not need it. It is user-held and has no
     /// server-side copy, so a headless install can only be handed one here.
     Secrets(TeamSecretsArgs),
+    /// Sync the team's shared folder (knowledge, documents) now: upload local
+    /// changes, download remote ones, and report what happened.
+    ///
+    /// One line of JSON, like `amuxd app`. Needs `amuxd start` running.
+    ///
+    /// Example: amuxd team sync
+    Sync {
+        /// json (default), table, or file:<path>.
+        #[arg(
+            short = 'o',
+            long = "output",
+            default_value = "json",
+            hide_default_value = true
+        )]
+        output: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -253,6 +288,49 @@ pub enum ChannelAction {
     Test { platform: String },
     /// Signal a running amuxd to re-read channel config.
     Reload,
+    /// One channel's settings as JSON (or every channel's), for agents.
+    ///
+    /// From the team's team.toml, which holds no credentials: `secretsSet`
+    /// names the credentials that are stored. Same JSON contract as
+    /// `amuxd app`.
+    ///
+    /// Example: amuxd channel show wecom
+    Show {
+        /// discord, wecom, feishu, kook, wechat, wechatpad, email, seatalk.
+        platform: Option<String>,
+        /// json (default), table, or file:<path>.
+        #[arg(
+            short = 'o',
+            long = "output",
+            default_value = "json",
+            hide_default_value = true
+        )]
+        output: String,
+    },
+    /// Change a channel's settings, for agents: a JSON object of fields is
+    /// merged over the current ones and saved by the running daemon, which
+    /// reloads the channel.
+    ///
+    /// Credentials go in the same object; they are stored encrypted, never in
+    /// team.toml. Pass the object on stdin (`--config-file -`) so a secret
+    /// never sits on a command line. `{"enabled": false}` turns a channel
+    /// off. Field names are those `amuxd channel show` prints.
+    ///
+    /// Example: echo '{"enabled":true}' | amuxd channel set wecom --config-file -
+    Set {
+        platform: String,
+        /// JSON object of fields to change (`-` for stdin).
+        #[arg(long)]
+        config_file: String,
+        /// json (default), table, or file:<path>.
+        #[arg(
+            short = 'o',
+            long = "output",
+            default_value = "json",
+            hide_default_value = true
+        )]
+        output: String,
+    },
 }
 
 #[derive(Args, Debug)]

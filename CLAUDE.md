@@ -116,15 +116,16 @@ nowhere else; this describes what exists, it decides nothing):
   offline reads. Commands are `local_cache_*`, all gated on the current team.
 - **Introspect API** — `commands/introspect_api.rs`: a loopback HTTP server on
   `127.0.0.1:13144` that the `teamclu-introspect` MCP sidecar calls for WeCom
-  sends, team sync, env vars, workspace MCP config, and session archive /
-  participants / export. Requests carry a per-launch bearer token;
+  sends, env vars, and session archive / participants / export. Requests carry a per-launch bearer token;
   the module header documents the token file and the rejection rules. Calls
   that change state must also come from an agent host amuxd spawned (checked
   against `/internal/runtime-context/verify`; see `introspect_api/caller.rs`).
-  Replacing MCP servers waits for a native approval dialog that times out when
-  nobody is at this machine (`introspect_api/confirm.rs`). Apps are not here:
-  agents manage them with `amuxd app` (daemon `/v1/app-ops`), where the
-  platform's grants alone decide — no dialog.
+  Agents cannot change workspace MCP config at all (the tool and its
+  approval dialog were removed). Apps are not here: agents manage them with
+  `amuxd app` (daemon `/v1/app-ops`), where the platform's grants alone
+  decide — no dialog. Cron jobs, skills, roles, channels and team sync are not
+  sidecar tools either: `amuxd cron`, `amuxd skill`, `amuxd role`,
+  `amuxd channel show|set`, `amuxd team sync`.
 
 **Daemon-owned cron** (ADR-0010): scheduler, storage, execution and delivery
 live in `apps/daemon/src/cron/`, served at `/v1/cron/*` (`http/cron.rs`). Jobs
@@ -132,10 +133,10 @@ are stored team-scoped at `~/.amuxd/teams/<id>/cron/` (`jobs.json` +
 `runs/<job>.jsonl`); a workspace job carries `workspacePath`, a global job does
 not. Unattended runs default to full access in the daemon. The desktop's
 `commands/cron/` is a thin proxy for the settings page plus a one-shot import of
-the job files it used to store (renamed `*.migrated` afterwards). The
-`teamclu-introspect` sidecar's `manage_cron_job` and `get_my_capabilities` call
-the daemon's `/v1/cron/*` directly, so agents manage jobs with no desktop
-running. Jobs made while the daemon is unclaimed are adopted into the team's
+the job files it used to store (renamed `*.migrated` afterwards). Agents
+manage jobs with the `amuxd cron` CLI (`apps/daemon/src/cli/cron.rs`), and the
+`teamclu-introspect` sidecar's `get_my_capabilities` reads `/v1/cron/*`
+directly, so neither needs a desktop running. Jobs made while the daemon is unclaimed are adopted into the team's
 store on first load. A headless daemon runs its jobs; a job's model pin is
 checked against the workspace catalog.
 

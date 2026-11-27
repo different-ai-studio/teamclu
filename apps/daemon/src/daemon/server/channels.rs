@@ -1040,7 +1040,23 @@ impl DaemonServer {
     /// of a `channel-save` sock message) into `daemon.toml`, update the
     /// in-memory `self.config`, and reload the channel manager so the change
     /// takes effect immediately. Errors are logged but never crash the daemon.
+    /// `channel-save` from the desktop settings page: fire and forget, so a
+    /// failure can only be logged.
     pub(crate) async fn save_channel_config(&mut self, platform: &str, config_json: &str) {
+        if let Err(e) = self.try_save_channel_config(platform, config_json).await {
+            error!("channel-save: {e}");
+        }
+    }
+
+    /// Replace `[channels.<platform>]` with `config_json` (one of the
+    /// per-platform config structs), persist it to team.toml — credentials go
+    /// to the team's secret store, and an empty credential keeps the stored
+    /// one — and reload the channel manager. `Err` says why nothing changed.
+    pub(crate) async fn try_save_channel_config(
+        &mut self,
+        platform: &str,
+        config_json: &str,
+    ) -> Result<(), String> {
         let parsed: Result<(), String> = (|| -> Result<(), String> {
             match platform {
                 "discord" => {
@@ -1090,20 +1106,16 @@ impl DaemonServer {
             Ok(())
         })();
 
-        if let Err(e) = parsed {
-            error!("channel-save: {e}");
-            return;
-        }
+        parsed?;
 
         // Channels are team-scoped: the structure lands in team.toml and the
         // credentials in the team's secret store, never in daemon.toml.
-        if let Err(e) = crate::config::team_config::persist_from(&self.config) {
-            error!("channel-save: failed to persist team.toml: {e:?}");
-            return;
-        }
+        crate::config::team_config::persist_from(&self.config)
+            .map_err(|e| format!("failed to persist team.toml: {e:?}"))?;
 
         info!("channel-save: persisted {platform}, reloading channel manager");
         self.reload_channels().await;
+        Ok(())
     }
 
     /// Persist the gateway-wide model (`channels.model`) and reload channels so

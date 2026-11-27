@@ -4,14 +4,16 @@ use std::path::Path;
 
 use super::workspace_control::WorkspaceControlError;
 
-pub const SKILL_CREATION_POLICY_VERSION: &str = "2026-08-28-v1";
+pub const SKILL_CREATION_POLICY_VERSION: &str = "2026-11-27-v2";
 
 pub const SKILL_CREATION_POLICY: &str = r#"TeamClu skill creation policy:
-- To create a normal reusable skill, call manage_skills with action=create.
+- Skills are managed with `amuxd skill` (start with `amuxd skill --help`).
+- To create a normal reusable skill, write its folder (SKILL.md plus files) anywhere,
+  e.g. /tmp/<slug>, then run `amuxd skill create <slug> --from-dir <folder>`.
 - New normal skills are stored under ~/.agents/skills/<slug>/.
 - Do not create normal skills under .opencode/skills, .pi/skills, or .claude/skills.
-- Do not overwrite an existing or built-in skill with manage_skills.
-- To edit an installed team Skill, use manage_team_skills get_draft/update_draft.
+- Do not overwrite an existing or built-in skill.
+- To edit an installed team Skill, use `amuxd skill team draft show|push`.
   Draft edits stay on this machine until published from the team Skills page.
   Tell the user: new sessions use the draft; other members are unaffected until publish.
 - Role-specific skills must continue through the role-management workflow."#;
@@ -19,7 +21,7 @@ pub const SKILL_CREATION_POLICY: &str = r#"TeamClu skill creation policy:
 const POLICY_REL: &str = "instructions/skill-creation-policy.txt";
 
 pub fn append_policy_to_prompt(base: &str) -> String {
-    if base.contains("manage_skills with action=create") {
+    if base.contains("TeamClu skill creation policy:") {
         return base.to_string();
     }
     if base.trim().is_empty() {
@@ -49,7 +51,7 @@ mod tests {
     #[test]
     fn append_policy_is_idempotent() {
         let once = append_policy_to_prompt("Hello");
-        assert!(once.contains("manage_skills"));
+        assert!(once.contains("amuxd skill create"));
         assert_eq!(once, append_policy_to_prompt(&once));
     }
 

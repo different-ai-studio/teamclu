@@ -783,7 +783,7 @@ export const ChatMessage = React.memo(function ChatMessage({
           <p className="mt-0.5 w-full text-[12.5px] leading-[1.55] text-muted-foreground">
             {t(
               "chat.unsupportedNativeSkill.description",
-              "A skill was written under a native agent directory instead of through manage_skills. Remove the native copy and recreate with manage_skills action=create.",
+              "A skill was written under a native agent directory instead of through `amuxd skill`. Remove the native copy and recreate with `amuxd skill create`.",
             )}
           </p>
           {(message.nativeSkillViolations ?? []).map((v) => (

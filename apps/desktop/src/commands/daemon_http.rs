@@ -19,7 +19,6 @@ use crate::daemon_client::{self as daemon, wire, RequestSpec, NO_BODY};
 
 const WORKSPACE_READ: &[&str] = &["workspace:read"];
 const WORKSPACE_WRITE: &[&str] = &["workspace:write"];
-const WORKSPACE_READ_WRITE: &[&str] = &["workspace:read", "workspace:write"];
 
 fn amuxd_dir() -> std::path::PathBuf {
     super::amuxd_home_dir()
@@ -99,31 +98,6 @@ pub async fn list_local_daemon_workspaces() -> Result<Vec<LocalDaemonWorkspace>,
             is_default: w.is_default,
         })
         .collect())
-}
-
-fn encode_workspace_id(workspace_path: &str) -> String {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    URL_SAFE_NO_PAD.encode(workspace_path.as_bytes())
-}
-
-/// `GET /v1/workspaces/:id/mcp` — merged MCP map for the workspace.
-pub async fn get_mcp_via_daemon(workspace_path: &str) -> Result<serde_json::Value, String> {
-    let ws_id = encode_workspace_id(workspace_path);
-    let path = format!("/v1/workspaces/{ws_id}/mcp");
-    Ok(daemon::call_discovered(RequestSpec::get(&path, WORKSPACE_READ_WRITE), NO_BODY).await?)
-}
-
-/// `PUT /v1/workspaces/:id/mcp` — replace workspace MCP map. Returns `{ outcome }`.
-pub async fn put_mcp_via_daemon(
-    workspace_path: &str,
-    servers: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let ws_id = encode_workspace_id(workspace_path);
-    let path = format!("/v1/workspaces/{ws_id}/mcp");
-    Ok(
-        daemon::call_discovered(RequestSpec::put(&path, WORKSPACE_READ_WRITE), Some(servers))
-            .await?,
-    )
 }
 
 /// Local fast-path RPC: POST the given `teamclu.RpcRequest` protobuf bytes

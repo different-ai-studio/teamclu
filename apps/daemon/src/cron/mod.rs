@@ -380,8 +380,8 @@ impl CronService {
 
     // ---------- MCP ----------
 
-    /// The agent-facing surface (`teamclu-introspect`'s `manage_cron_job`
-    /// tool, which calls `/v1/cron/manage` itself). Same store as the settings page, so
+    /// The agent-facing surface (`amuxd cron`, which calls
+    /// `/v1/cron/manage`). Same store as the settings page, so
     /// a job an agent creates shows up there.
     pub async fn mcp_manage(&self, body: &serde_json::Value) -> Result<serde_json::Value, String> {
         let action = body
@@ -401,7 +401,9 @@ impl CronService {
 
         match action {
             "create" => {
-                let mut request = parse_create_request(body)?;
+                let mut body = body.clone();
+                self.fill_delivery_channel_from_token(&mut body).await?;
+                let mut request = parse_create_request(&body)?;
                 if let Some(delivery) = request.delivery.as_mut() {
                     self.pin_announce_delivery_target(delivery).await?;
                 }
@@ -447,6 +449,53 @@ impl CronService {
             }
             other => Err(format!("Unknown action: {other}")),
         }
+    }
+
+    /// `amuxd cron add --to <reply token>` with no `--channel`: the token
+    /// already says which chat, so take the channel from it. A delivery with
+    /// neither a channel nor a token is left for the parser to refuse.
+    async fn fill_delivery_channel_from_token(
+        &self,
+        body: &mut serde_json::Value,
+    ) -> Result<(), String> {
+        let reply_token = body
+            .get("reply_token")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let Some(delivery) = body.get_mut("delivery").and_then(|d| d.as_object_mut()) else {
+            return Ok(());
+        };
+        if delivery.get("mode").and_then(|m| m.as_str()) == Some("none") {
+            return Ok(());
+        }
+        let has_channel = delivery
+            .get("channel")
+            .and_then(|c| c.as_str())
+            .is_some_and(|c| !c.trim().is_empty());
+        if has_channel {
+            return Ok(());
+        }
+        let to = delivery
+            .get("to")
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+            .or(reply_token);
+        let Some(token) = to.filter(|t| looks_like_reply_token(t)) else {
+            return Err("delivery needs a channel unless `to` is a reply token".to_string());
+        };
+        let executor = self
+            .wiring
+            .executor()
+            .ok_or("cron is not started yet; try again in a moment")?;
+        let resolved = executor
+            .resolve_reply_token(&token)
+            .await
+            .map_err(|e| format!("could not resolve the reply token: {e}"))?;
+        delivery.insert("channel".into(), serde_json::json!(resolved.channel));
+        delivery.insert("to".into(), serde_json::json!(token));
+        Ok(())
     }
 
     async fn pin_announce_delivery_target(
