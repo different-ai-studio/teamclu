@@ -375,9 +375,19 @@ they usually use this name or a close variant.\n\nParticipants:\n",
     }
     out.push('\n');
     out.push_str("@mentions in messages indicate who the sender is addressing.\n\n");
+    out.push_str(CLI_LINE);
+    out.push('\n');
     out.push_str(APPS_LINE);
     out
 }
+
+/// The whole of what a session is told up front about the agent-facing
+/// `amuxd` commands that replaced the introspect MCP tools; each command's
+/// `--help` carries the rest. (Skills have their own line in the
+/// skill-creation policy.)
+pub const CLI_LINE: &str = "Manage these with the `amuxd` CLI (each has `--help`): \
+scheduled jobs `amuxd cron`, agent roles `amuxd role`, chat channels `amuxd channel show|set`, \
+and syncing the team's shared folder `amuxd team sync`.";
 
 /// The whole of what a session is told about apps up front (P2.5 exit
 /// criterion 1); the rest is `amuxd app --help` and the `deploy-app` skill,

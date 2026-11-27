@@ -315,6 +315,13 @@ pub(crate) enum SockCommand {
         platform: String,
         config_json: String,
     },
+    /// `channel-set` from `amuxd channel set`: the same save as
+    /// `ChannelSave`, answered with `{ok}` or `{ok:false,error}` so an agent
+    /// knows whether it took.
+    ChannelSet {
+        payload: serde_json::Value,
+        reply_tx: oneshot::Sender<String>,
+    },
     /// Replace `daemon_config.channels.model` — the model every gateway session
     /// starts on when the chat has not set its own with `/model` — persist to
     /// team.toml, and reload the channel manager. An empty string clears it,
@@ -1939,6 +1946,15 @@ impl DaemonServer {
                             Some(SockCommand::ChannelSave { platform, config_json }) => {
                                 self.save_channel_config(&platform, &config_json).await;
                             }
+                            Some(SockCommand::ChannelSet { payload, reply_tx }) => {
+                                let platform = payload["platform"].as_str().unwrap_or("").to_string();
+                                let config_json = payload["config"].to_string();
+                                let resp = match self.try_save_channel_config(&platform, &config_json).await {
+                                    Ok(()) => serde_json::json!({ "ok": true, "platform": platform }),
+                                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                                };
+                                let _ = reply_tx.send(resp.to_string());
+                            }
                             Some(SockCommand::GatewayModelSave { model }) => {
                                 self.save_gateway_model(&model).await;
                             }
@@ -2389,6 +2405,32 @@ where
                                 }
                                 Err(_) => {
                                     warn!("amuxd.sock: mcp-send reply dropped");
+                                }
+                            }
+                        } else if cmd == "channel-set" {
+                            let (reply_tx, reply_rx) = oneshot::channel();
+                            if tx
+                                .send(SockCommand::ChannelSet {
+                                    payload: v,
+                                    reply_tx,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            match reply_rx.await {
+                                Ok(body) => {
+                                    let mut stream = reader.into_inner();
+                                    if let Err(e) = stream.write_all(body.as_bytes()).await {
+                                        warn!("amuxd.sock: channel-set write failed: {e}");
+                                        return;
+                                    }
+                                    let _ = stream.write_all(b"\n").await;
+                                    let _ = stream.shutdown().await;
+                                }
+                                Err(_) => {
+                                    warn!("amuxd.sock: channel-set reply dropped");
                                 }
                             }
                         } else if cmd == "skills-manage" {

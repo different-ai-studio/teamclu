@@ -1,6 +1,5 @@
 mod capabilities;
 mod channel_state;
-mod channels;
 mod config;
 mod cron;
 mod daemon_http;
@@ -8,14 +7,9 @@ mod daemon_sock;
 mod desktop_api;
 mod env_vars;
 mod knowledge;
-mod mcp;
 mod participants;
-mod roles;
 mod send;
 mod session;
-mod skills;
-mod sync;
-mod team_skills;
 
 use clap::Parser;
 use serde_json::{json, Value};
@@ -107,117 +101,6 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "manage_cron_job",
-            "description": "Create, pause, resume, delete, list, or inspect cron jobs. New jobs are stored as Global tasks (the default settings list). Works without the desktop app: jobs live in the local amuxd daemon, which runs them. When announcing results to this chat, set delivery.to to this run's reply_token (from the prompt) or an explicit wecom target such as single:<userid> / group:<chatid> — an empty to is not this conversation.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "description": "The action to perform.",
-                        "enum": ["create", "list", "pause", "resume", "delete", "run", "get_runs"]
-                    },
-                    "scope": {
-                        "type": "string",
-                        "description": "Where to store the job. Defaults to 'global' (the default settings list). Use 'workspace' only for jobs that must run in a specific project folder.",
-                        "enum": ["global", "workspace"]
-                    },
-                    "job_id": {
-                        "type": "string",
-                        "description": "The cron job ID (required for pause/resume/delete/run/get_runs)."
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Job name (required for create)."
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Human-readable description of what the job does."
-                    },
-                    "schedule": {
-                        "description": "Schedule for the job (required for create). Pass an object, do not stringify it. One-time: {\"kind\":\"at\",\"at\":\"2026-09-09T20:10:30+08:00\"} (ISO-8601). Interval: {\"kind\":\"every\",\"everyMs\":3600000}. Recurring cron: {\"kind\":\"cron\",\"expr\":\"0 9 * * 1-5\",\"tz\":\"Asia/Shanghai\"}. A plain string is only a 5-field cron expression (e.g. '0 9 * * 1-5') or an ISO-8601 timestamp.",
-                        "anyOf": [
-                            { "type": "string" },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "type": "string", "enum": ["at", "every", "cron"] },
-                                    "at": { "type": "string" },
-                                    "everyMs": { "type": "integer" },
-                                    "expr": { "type": "string" },
-                                    "tz": { "type": "string" }
-                                },
-                                "required": ["kind"]
-                            }
-                        ]
-                    },
-                    "message": {
-                        "type": "string",
-                        "description": "Message or prompt to execute on each run (required for create)."
-                    },
-                    "reply_token": {
-                        "type": "string",
-                        "description": "This run's reply_token from the prompt. When creating a job that should announce back to this chat, pass it here or as delivery.to; it is resolved to a stable chat id before the job is stored."
-                    },
-                    "delivery": {
-                        "type": "object",
-                        "description": "Optional delivery settings for cron results. Announce needs a real target — empty to does not mean the current conversation.",
-                        "properties": {
-                            "mode": { "type": "string", "enum": ["announce", "none"] },
-                            "channel": { "type": "string", "enum": ["discord", "feishu", "email", "kook", "wechat", "wecom"] },
-                            "to": {
-                                "type": "string",
-                                "minLength": 1,
-                                "description": "Where to send the run result. For the current WeCom/Feishu chat, pass this run's reply_token. WeCom also accepts single:<userid> or group:<chatid>. Do not pass an empty string."
-                            },
-                            "bestEffort": { "type": "boolean" }
-                        },
-                        "required": ["mode", "channel", "to"]
-                    }
-                },
-                "required": ["action"]
-            }
-        },
-        {
-            "name": "sync_team_dir",
-            "description": "Sync the shared team directory (team knowledge and documents) through the TeamClu daemon: uploads local changes, downloads remote ones, and returns a summary.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {}
-            }
-        },
-        {
-            "name": "manage_roles",
-            "description": "Manage AI agent roles: list available roles, create a new role, update an existing role, or delete one. Roles are defined by a name, description, and working style.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["list", "create", "update", "delete"],
-                        "description": "The action to perform."
-                    },
-                    "slug": {
-                        "type": "string",
-                        "description": "Role identifier (directory name). Required for update/delete. Auto-generated from name if omitted for create."
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Display name for the role (required for create)."
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Short description of what this role does."
-                    },
-                    "working_style": {
-                        "type": "string",
-                        "description": "Working style instructions for the role."
-                    }
-                },
-                "required": ["action"]
-            }
-        },
-        {
             "name": "manage_env_vars",
             "description": "Manage environment variables: list registered keys (no values returned), set a key-value pair, or delete a key. Values are stored securely in the system keychain.",
             "inputSchema": {
@@ -239,83 +122,6 @@ fn tool_definitions() -> Value {
                     "description": {
                         "type": "string",
                         "description": "Optional description for the env var (used for set)."
-                    }
-                },
-                "required": ["action"]
-            }
-        },
-        {
-            "name": "manage_channels",
-            "description": "View or update message channel configuration (WeCom, Discord, Feishu, Email, KOOK, WeChat). Use 'get' to check what's configured (sensitive values are redacted). Use 'set' to configure a channel with the provided fields.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["get", "set"],
-                        "description": "The action to perform."
-                    },
-                    "channel": {
-                        "type": "string",
-                        "enum": ["wecom", "discord", "feishu", "email", "kook", "wechat", "seatalk"],
-                        "description": "Target channel. Required for set; optional for get (omit to get all channels)."
-                    },
-                    "config": {
-                        "type": "object",
-                        "description": "Channel config fields to set. Required for set. Fields vary by channel:\n- wecom: botId, secret, encodingAesKey, ownerId\n- discord: token, dm, guilds\n- feishu: appId, appSecret, chats\n- email: provider, gmailEmail, gmailClientId, gmailClientSecret (or imapServer, smtpServer, username, password for custom)\n- kook: token, dm, guilds\n- wechat: botToken, accountId, baseUrl"
-                    }
-                },
-                "required": ["action"]
-            }
-        },
-        {
-            "name": "manage_mcp",
-            "description": "Manage MCP servers for this workspace: list configured servers, get one by name, add/update a local (stdio) or remote (HTTP) server, enable/disable, or remove a custom server. Built-in servers (teamclu-introspect, playwright, chrome-control, open-computer-use) cannot be deleted; servers installed from the team MCP catalog cannot be edited or deleted here. Env/header secret values are redacted on list/get. Changes require an agent runtime restart to take effect.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["list", "get", "add", "update", "remove", "enable", "disable"],
-                        "description": "The action to perform."
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "MCP server name. Required for get/add/update/remove/enable/disable."
-                    },
-                    "type": {
-                        "type": "string",
-                        "enum": ["local", "remote"],
-                        "description": "Server kind. Required for add; optional for update."
-                    },
-                    "command": {
-                        "description": "Local stdio command as an argv array, or a whitespace-separated string (e.g. 'npx -y @modelcontextprotocol/server-filesystem /tmp'). Required for add when type=local.",
-                        "anyOf": [
-                            { "type": "string" },
-                            { "type": "array", "items": { "type": "string" } }
-                        ]
-                    },
-                    "environment": {
-                        "type": "object",
-                        "description": "Environment variables for local servers (string values).",
-                        "additionalProperties": { "type": "string" }
-                    },
-                    "url": {
-                        "type": "string",
-                        "description": "Base URL for remote HTTP MCP servers. Required for add when type=remote."
-                    },
-                    "headers": {
-                        "type": "object",
-                        "description": "HTTP headers for remote servers (string values).",
-                        "additionalProperties": { "type": "string" }
-                    },
-                    "enabled": {
-                        "type": "boolean",
-                        "description": "Whether the server is enabled (default true on add)."
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Optional timeout in milliseconds."
                     }
                 },
                 "required": ["action"]
@@ -360,117 +166,6 @@ fn tool_definitions() -> Value {
                     "name": {
                         "type": "string",
                         "description": "Display name to add or remove, as an alternative to actor_id. Must match exactly one actor in the team; otherwise the candidate list is returned and nothing is written."
-                    }
-                },
-                "required": ["action"]
-            }
-        },
-        {
-            "name": "manage_team_skills",
-            "description": "List the team's Skills catalog, install/uninstall a team Skill for this Agent, or edit the local working copy draft of an installed team Skill. Draft edits affect only this machine until published from the team Skills page; new sessions pick up draft changes, the current session keeps its prior content. get_draft returns SKILL.md plus a file listing (no sidecar bodies). Use read_draft_file with a specific path to fetch a chunk. Then update_draft with expectedDigest; content is optional when only files or deleteFiles change. Cannot target another Actor and cannot manage MCP servers.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["list", "install", "uninstall", "get_draft", "read_draft_file", "update_draft"]
-                    },
-                    "slug": { "type": "string", "description": "Required except for list." },
-                    "version": { "type": "integer", "minimum": 1, "description": "Required for install." },
-                    "path": {
-                        "type": "string",
-                        "description": "Skill-relative file path. Required for read_draft_file (e.g. scripts/run.py or SKILL.md)."
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Byte offset for read_draft_file. Defaults to 0."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Max bytes for read_draft_file. Defaults to 16384, capped at 32768."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full SKILL.md with YAML frontmatter. Optional on update_draft when patching files or deleteFiles only."
-                    },
-                    "files": {
-                        "type": "array",
-                        "description": "Optional files to add or replace under the skill root on update_draft.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "path": { "type": "string" },
-                                "content": { "type": "string" },
-                                "encoding": { "type": "string", "enum": ["utf8", "base64"] }
-                            },
-                            "required": ["path", "content"]
-                        }
-                    },
-                    "deleteFiles": {
-                        "type": "array",
-                        "description": "Relative paths to remove explicitly on update_draft.",
-                        "items": { "type": "string" }
-                    },
-                    "expectedDigest": {
-                        "type": "string",
-                        "description": "Required. Optimistic concurrency digest (sha256:...) from get_draft."
-                    }
-                },
-                "required": ["action"],
-                "allOf": [
-                    {
-                        "if": { "properties": { "action": { "const": "update_draft" } } },
-                        "then": { "required": ["slug", "expectedDigest"] }
-                    },
-                    {
-                        "if": { "properties": { "action": { "const": "read_draft_file" } } },
-                        "then": { "required": ["slug", "path"] }
-                    }
-                ]
-            }
-        },
-        {
-            "name": "manage_skills",
-            "description": "Create, update, or read a personal reusable skill stored under ~/.agents/skills/<slug>/. Use this for normal personal skills. For installed team Skills use manage_team_skills get_draft/update_draft instead. Do not write skills directly to .opencode/skills, .pi/skills, or .claude/skills.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["create", "update", "get"],
-                        "description": "The action to perform."
-                    },
-                    "slug": {
-                        "type": "string",
-                        "description": "Skill directory name (lowercase letters, digits, hyphens). Required for all actions."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full SKILL.md content with YAML frontmatter (name must match slug). Required for create and update."
-                    },
-                    "files": {
-                        "type": "array",
-                        "description": "Optional files to add or replace under the skill root. Omitted paths are preserved on update.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "path": { "type": "string" },
-                                "content": { "type": "string" },
-                                "encoding": { "type": "string", "enum": ["utf8"] }
-                            },
-                            "required": ["path", "content"]
-                        }
-                    },
-                    "deleteFiles": {
-                        "type": "array",
-                        "description": "Relative paths to remove explicitly on update.",
-                        "items": { "type": "string" }
-                    },
-                    "expectedDigest": {
-                        "type": "string",
-                        "description": "Optimistic concurrency digest (sha256:...) from a prior get/create."
                     }
                 },
                 "required": ["action"]
@@ -666,27 +361,6 @@ async fn handle_request(
                         Err(e) => tool_err(&e),
                     }
                 }
-                "manage_cron_job" => match cron::handle(workspace, &arguments).await {
-                    Ok(v) => {
-                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                        tool_ok(&text)
-                    }
-                    Err(e) => tool_err(&e),
-                },
-                "sync_team_dir" => match sync::handle(workspace, api_port, &arguments).await {
-                    Ok(v) => {
-                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                        tool_ok(&text)
-                    }
-                    Err(e) => tool_err(&e),
-                },
-                "manage_roles" => match roles::handle(workspace, &arguments).await {
-                    Ok(v) => {
-                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                        tool_ok(&text)
-                    }
-                    Err(e) => tool_err(&e),
-                },
                 "manage_env_vars" => {
                     match env_vars::handle(workspace, api_port, &arguments).await {
                         Ok(v) => {
@@ -696,22 +370,6 @@ async fn handle_request(
                         Err(e) => tool_err(&e),
                     }
                 }
-                "manage_channels" => {
-                    match channels::handle(workspace, api_port, &arguments).await {
-                        Ok(v) => {
-                            let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                            tool_ok(&text)
-                        }
-                        Err(e) => tool_err(&e),
-                    }
-                }
-                "manage_mcp" => match mcp::handle(workspace, api_port, &arguments).await {
-                    Ok(v) => {
-                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                        tool_ok(&text)
-                    }
-                    Err(e) => tool_err(&e),
-                },
                 "get_session_deeplink" => match session::handle(workspace, &arguments) {
                     Ok(v) => {
                         let text = serde_json::to_string_pretty(&v).unwrap_or_default();
@@ -728,20 +386,6 @@ async fn handle_request(
                         Err(e) => tool_err(&e),
                     }
                 }
-                "manage_team_skills" => match team_skills::handle(api_port, &arguments).await {
-                    Ok(v) => {
-                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                        tool_ok(&text)
-                    }
-                    Err(e) => tool_err(&e),
-                },
-                "manage_skills" => match skills::handle(workspace, sock, &arguments).await {
-                    Ok(v) => {
-                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                        tool_ok(&text)
-                    }
-                    Err(e) => tool_err(&e),
-                },
                 "knowledge_search" | "knowledge_read" => {
                     match knowledge::handle(sock, tool_name, &arguments).await {
                         Ok(v) => {

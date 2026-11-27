@@ -1,9 +1,9 @@
 //! `/v1/cron/*` — the daemon-owned scheduler's API (ADR-0010).
 //!
-//! The desktop settings page proxies its `cron_*` Tauri commands here, and the
-//! `teamclu-introspect` sidecar calls `/v1/cron/manage` and `/v1/cron/jobs`
-//! directly (no desktop needed), so there is one store and one scheduler
-//! however a job is made.
+//! The desktop settings page proxies its `cron_*` Tauri commands here, agents
+//! call `/v1/cron/manage` through `amuxd cron`, and the `teamclu-introspect`
+//! sidecar reads `/v1/cron/jobs` (no desktop needed for either), so there is
+//! one store and one scheduler however a job is made.
 //!
 //! | Method | Path                          | Scope             |
 //! |--------|-------------------------------|-------------------|
@@ -30,7 +30,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use super::auth::{require_scope, Principal};
-use super::errors::{ErrorCode, HttpError};
+use super::errors::HttpError;
 use super::state::HttpState;
 use crate::cron::types::{CreateCronJobRequest, CronJob, CronRunRecord, UpdateCronJobRequest};
 use crate::cron::{CronModelSource, CronService, CronStatus};
@@ -186,8 +186,9 @@ pub async fn import_jobs(
     Ok(Json(serde_json::json!({ "added": added })))
 }
 
-/// MCP body as `teamclu-introspect` sends it (`action`, `scope`, …). Errors
-/// come back as 422 with the service's message, which the agent reads.
+/// The agent-facing body `amuxd cron` sends (`action`, `scope`, …). Errors
+/// carry the service's message, which the agent reads; a missing job is a
+/// 404 and a cron not started yet a 503, like the other cron routes.
 pub async fn manage(
     principal: Principal,
     State(state): State<HttpState>,
@@ -198,7 +199,7 @@ pub async fn manage(
         .mcp_manage(&body)
         .await
         .map(Json)
-        .map_err(|e| HttpError::new(ErrorCode::ValidationFailed, e))
+        .map_err(map_err)
 }
 
 pub async fn status(

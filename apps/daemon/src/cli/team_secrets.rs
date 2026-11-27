@@ -13,7 +13,16 @@ use crate::sync::secret_store::{validate_team_secret, SecretStore, TeamSecrets};
 use super::{TeamAction, TeamArgs, TeamSecretsAction};
 
 pub fn run(args: TeamArgs) -> anyhow::Result<()> {
-    let TeamAction::Secrets(secrets) = args.action;
+    let secrets = match args.action {
+        TeamAction::Secrets(secrets) => secrets,
+        TeamAction::Sync { output } => {
+            let code = sync(&output)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
+        }
+    };
     match secrets.action {
         TeamSecretsAction::Set {
             team_id,
@@ -146,4 +155,23 @@ mod tests {
         assert_eq!(resolve_team_id(Some("t-1".into())).unwrap(), "t-1");
         assert!(resolve_team_id(Some("   ".into())).is_err());
     }
+}
+
+/// `amuxd team sync`: push local changes to the team's shared folder and pull
+/// remote ones now, through the running daemon (`POST /v1/team/sync`, forced).
+/// It replaced the `teamclu-introspect` `sync_team_dir` MCP tool, so it keeps
+/// the agent output contract (`amuxd app`'s), unlike `team secrets`.
+///
+/// No workspace is named: sync is per team, and naming one only asks the
+/// daemon to repair that folder's team links — from an agent's arbitrary
+/// current directory that would plant links where nobody wants them.
+fn sync(output: &str) -> anyhow::Result<i32> {
+    super::envelope::run_http(
+        output,
+        "team-sync-cli",
+        reqwest::Method::POST,
+        "/v1/team/sync",
+        Some(serde_json::json!({ "forceSync": true, "allowBulkAdd": false })),
+        None,
+    )
 }

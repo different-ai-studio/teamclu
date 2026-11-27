@@ -1,8 +1,8 @@
 //! Turn-scoped detection when agents write skill packs to native runtime dirs
-//! instead of `manage_skills` → `~/.agents/skills/<slug>/`.
+//! instead of `amuxd skill create` → `~/.agents/skills/<slug>/`.
 //!
 //! PR3 ships **fail-closed detect** only: violations replace the turn-final
-//! agent success reply and instruct recreation via `manage_skills`.
+//! agent success reply and instruct recreation via `amuxd skill create`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -17,8 +17,9 @@ pub const ERROR_CODE: &str = "skill_created_in_unsupported_directory";
 pub const AGENT_REPLY_CONTENT: &str = "\
 [Skill created in unsupported directory] A skill pack was written under a native \
 agent directory (.opencode/skills, .pi/skills, or .claude/skills) instead of \
-through manage_skills. The native copy was not adopted. Remove it and recreate \
-the skill with manage_skills action=create so it lands in ~/.agents/skills/<slug>/.";
+through `amuxd skill`. The native copy was not adopted. Remove it and recreate \
+the skill with `amuxd skill create <slug> --from-dir <folder>` so it lands in \
+~/.agents/skills/<slug>/.";
 
 /// Per-parent-session guard opened at logical turn start and closed at turn end.
 #[derive(Debug, Clone)]

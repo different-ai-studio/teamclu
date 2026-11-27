@@ -44,6 +44,9 @@ fn main() -> anyhow::Result<()> {
     let args = cli::app::normalize_app_args(std::env::args().collect());
     let parsed = <Cli as clap::CommandFactory>::command()
         .mut_subcommand("app", cli::app::compact_help)
+        .mut_subcommand("cron", cli::app::compact_help)
+        .mut_subcommand("skill", cli::app::compact_help)
+        .mut_subcommand("role", cli::app::compact_help)
         .try_get_matches_from(&args)
         .and_then(|m| <Cli as clap::FromArgMatches>::from_arg_matches(&m));
     let cli = match parsed {
@@ -243,6 +246,24 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::App(args) => {
             let code = cli::app::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::Cron(args) => {
+            let code = cli::cron::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::Role(args) => {
+            let code = cli::role::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::Skill(args) => {
+            let code = cli::skill::run(args)?;
             if code != 0 {
                 std::process::exit(code);
             }

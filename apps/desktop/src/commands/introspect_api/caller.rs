@@ -42,8 +42,6 @@ pub(crate) fn route_access(path: &str) -> RouteAccess {
     use RouteAccess::*;
     match path {
         "/session-participants" => ReadActions(&["list", "list_candidates"]),
-        // `/mcp-get` only reads, but what it returns is MCP config — API keys in
-        // `environment`, bearer headers — so it stays agent-only.
         _ => AgentOnly,
     }
 }
@@ -273,12 +271,11 @@ mod tests {
         // No action, a body that does not parse, a route with no reads.
         assert!(!reads("/session-participants", "{}"));
         assert!(!reads("/session-participants", "not json"));
-        assert!(!reads("/mcp-put", r#"{"action":"list"}"#));
-        // MCP config carries credentials.
-        assert!(!reads("/mcp-get", "{}"));
-        // A route nobody classified fails closed — the retired app routes too.
+        assert!(!reads("/session-archive", r#"{"action":"list"}"#));
+        // A route nobody classified fails closed — the retired app and MCP routes too.
         assert!(!reads("/something-new", r#"{"action":"list"}"#));
         assert!(!reads("/app-manage", r#"{"action":"list"}"#));
+        assert!(!reads("/mcp-get", "{}"));
     }
 
     fn caller_headers(token: &str, generation: &str, backend: &str) -> HeaderMap {
@@ -331,7 +328,7 @@ mod tests {
         let echo = post(|body: Bytes| async move { body });
         Router::new()
             .route("/session-participants", echo.clone())
-            .route("/mcp-put", echo)
+            .route("/session-archive", echo)
             .layer(axum::middleware::from_fn_with_state(verifier, caller_gate))
     }
 
@@ -452,7 +449,7 @@ mod tests {
         let (verifier, _) = stub_verifier(|| Err(CallerRejection::UnknownAgent));
         let (status, _) = call(
             guarded_router(verifier),
-            "/mcp-put",
+            "/session-archive",
             "{}",
             Some(caller_headers("rtctx_made_up", "pi-1", "pi")),
         )
@@ -463,7 +460,7 @@ mod tests {
             stub_verifier(|| Err(CallerRejection::Unverifiable("connection refused".into())));
         let (status, message) = call(
             guarded_router(verifier),
-            "/mcp-put",
+            "/session-archive",
             "{}",
             Some(caller_headers("rtctx_a", "pi-1", "pi")),
         )

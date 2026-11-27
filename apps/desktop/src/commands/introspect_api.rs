@@ -2,15 +2,13 @@
 //
 // Listens on 127.0.0.1:13144 and handles:
 //   POST /send-wecom        — send a proactive WeCom message
-//   POST /team-sync-all     — trigger team sync
 //   POST /env-var-set       — create or update an env var (`scope`: personal | team)
 //   POST /env-var-delete    — delete an env var (`scope`: personal | team)
-//   POST /mcp-get           — fetch merged workspace MCP map (daemon)
-//   POST /mcp-put           — replace workspace MCP map (daemon)
 //   POST /session-archive   — archive a cloud session (PATCH archivedAt)
 //   POST /session-participants — list/add/remove a session's participants
 //
-// Apps are not here: agents manage them with `amuxd app` (P2.5).
+// Apps, cron, skills, roles, channels and team sync are not here: agents use
+// the `amuxd` CLI for those. Workspace MCP config is not agent-writable at all.
 //
 // Served by axum. STR-10: this used to be a raw `TcpStream` with hand-rolled
 // request parsing — a fixed 64 KiB header read, a `\r\n\r\n` scan, a
@@ -21,8 +19,8 @@
 // transport is now hyper's and what is left here is routing and policy.
 //
 // Access control (SEC-1). Every route here has side effects an agent runtime
-// must not be able to trigger by accident, and `/mcp-put` is local code
-// execution — so binding to loopback is not enough: any process on the machine,
+// must not be able to trigger by accident — so binding to loopback is not
+// enough: any process on the machine,
 // and any web page via a `no-cors` fetch, can reach 127.0.0.1. Three checks
 // gate every request, before the route is even looked at:
 //
@@ -42,7 +40,6 @@
 // agent host amuxd spawned: see `introspect_api/caller.rs`.
 
 mod caller;
-mod confirm;
 mod publication;
 
 pub use publication::withdraw as withdraw_publication;
@@ -319,12 +316,8 @@ fn router(app: AppHandle, token: Arc<str>, verifier: caller::CallerVerifier) -> 
         .route("/send-wecom", post_route!(handle_send_wecom))
         .route("/send-seatalk", post_route!(handle_send_seatalk))
         .route("/channel-state", post_route!(handle_channel_state))
-        .route("/team-sync-all", post_route!(handle_team_sync_all))
         .route("/env-var-set", post_route!(handle_env_var_set))
         .route("/env-var-delete", post_route!(handle_env_var_delete))
-        .route("/channel-set", post_route!(handle_channel_set))
-        .route("/mcp-get", post_route!(handle_mcp_get))
-        .route("/mcp-put", post_route!(handle_mcp_put))
         .route(
             "/session-participants",
             post_route!(handle_session_participants),
@@ -454,24 +447,6 @@ async fn handle_send_wecom(app: &AppHandle, body: &[u8]) -> Result<String, Strin
         dispatch_target,
         media_bytes.is_some()
     ))
-}
-
-async fn handle_team_sync_all(app: &AppHandle, _body: &[u8]) -> Result<String, String> {
-    // introspect_api has no calling-window context (HTTP server), so it reads
-    // current_workspace from the WindowRegistry — and takes `None` for an
-    // answer. Team sync is per team, not per workspace; a workspace only asks
-    // the daemon to repair that workspace's team links on the way through.
-    // Refusing without one made this endpoint unusable on a client with no
-    // folder open, for an operation that never needed it.
-    let registry = app.state::<super::window::WindowRegistry>();
-    let workspace = registry
-        .current_workspace
-        .lock()
-        .ok()
-        .and_then(|cw| cw.clone());
-    let result =
-        super::team_sync_proxy::daemon_team_sync(workspace.as_deref(), true, false).await?;
-    serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -699,117 +674,6 @@ async fn handle_channel_state(_app: &AppHandle, _body: &[u8]) -> Result<String, 
         .await
         .map_err(|e| format!("channel-state task failed: {e}"))?;
     Ok(serde_json::json!({ "configured": configured }).to_string())
-}
-
-// ─── Channel Handler ─────────────────────────────────────────────────────────
-
-async fn handle_channel_set(app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
-
-    let channel = v
-        .get("channel")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing field: channel")?;
-    let patch = v.get("config").ok_or("Missing field: config")?;
-
-    let valid_channels = [
-        "wecom", "discord", "feishu", "email", "kook", "wechat", "seatalk",
-    ];
-    if !valid_channels.contains(&channel) {
-        return Err(format!(
-            "Unknown channel: '{}'. Valid: {}",
-            channel,
-            valid_channels.join(", ")
-        ));
-    }
-
-    let workspace = {
-        let registry = app.state::<super::window::WindowRegistry>();
-        registry
-            .current_workspace
-            .lock()
-            .ok()
-            .and_then(|cw| cw.clone())
-            .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())?
-    };
-
-    let mut json = super::env_vars::read_teamclu_json(&workspace)?;
-
-    // Ensure channels object exists
-    if json.get("channels").is_none() {
-        json["channels"] = serde_json::json!({});
-    }
-
-    let channels = json["channels"]
-        .as_object_mut()
-        .ok_or("channels is not an object")?;
-
-    // Merge patch fields into channel config (shallow merge)
-    let ch_entry = channels
-        .entry(channel.to_string())
-        .or_insert_with(|| serde_json::json!({}));
-
-    if let (Some(obj), Some(patch_obj)) = (ch_entry.as_object_mut(), patch.as_object()) {
-        for (k, val) in patch_obj {
-            obj.insert(k.clone(), val.clone());
-        }
-    } else {
-        return Err("config must be a JSON object".to_string());
-    }
-
-    super::env_vars::write_teamclu_json(&workspace, &json)?;
-
-    Ok(format!(r#"{{"ok":true,"channel":"{}"}}"#, channel))
-}
-
-fn resolve_workspace_path(app: &AppHandle, body: &serde_json::Value) -> Result<String, String> {
-    if let Some(ws) = body
-        .get("workspace")
-        .or_else(|| body.get("workspace_path"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return Ok(ws.to_string());
-    }
-    let registry = app.state::<super::window::WindowRegistry>();
-    registry
-        .current_workspace
-        .lock()
-        .ok()
-        .and_then(|cw| cw.clone())
-        .ok_or_else(|| "No workspace path set. Please select a workspace first.".to_string())
-}
-
-/// Body: `{ "workspace"?: string }`. Returns the merged MCP server map from amuxd.
-async fn handle_mcp_get(app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let v: serde_json::Value = if body.is_empty() {
-        serde_json::json!({})
-    } else {
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?
-    };
-    let workspace = resolve_workspace_path(app, &v)?;
-    let servers = super::daemon_http::get_mcp_via_daemon(&workspace).await?;
-    serde_json::to_string(&servers).map_err(|e| format!("Serialization error: {e}"))
-}
-
-/// Body: `{ "workspace"?: string, "servers": { ... } }`. Replaces workspace MCP map.
-async fn handle_mcp_put(app: &AppHandle, body: &[u8]) -> Result<String, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {}", e))?;
-    let workspace = resolve_workspace_path(app, &v)?;
-    let servers = v.get("servers").ok_or("Missing field: servers")?;
-    if !servers.is_object() {
-        return Err("servers must be a JSON object".to_string());
-    }
-    confirm::confirm_with_user(
-        app,
-        confirm::mcp_servers_replace(super::prefers_zh_locale(), &workspace, servers),
-    )
-    .await?;
-    let result = super::daemon_http::put_mcp_via_daemon(&workspace, servers).await?;
-    serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }
 
 /// Archive a cloud session via `PATCH /v1/sessions/:id` with `{ archivedAt }`.
@@ -1354,7 +1218,10 @@ mod tests {
 
     fn gated_router(token: Arc<str>) -> Router {
         Router::new()
-            .route("/mcp-put", axum::routing::post(|| async { "handler ran" }))
+            .route(
+                "/session-archive",
+                axum::routing::post(|| async { "handler ran" }),
+            )
             .fallback(not_found)
             .layer(axum::middleware::from_fn_with_state(token, gate))
     }
@@ -1423,7 +1290,7 @@ mod tests {
     async fn router_runs_the_handler_for_a_valid_bearer() {
         let (status, body) = send(
             gated_router(Arc::from(TOKEN)),
-            post("/mcp-put")
+            post("/session-archive")
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .body(axum::body::Body::from("{}"))
                 .unwrap(),
@@ -1453,7 +1320,11 @@ mod tests {
     async fn router_rejects_a_missing_bearer_with_a_challenge() {
         use tower::ServiceExt as _;
         let response = gated_router(Arc::from(TOKEN))
-            .oneshot(post("/mcp-put").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                post("/session-archive")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -1464,7 +1335,7 @@ mod tests {
     async fn router_rejects_a_browser_request_even_with_a_valid_bearer() {
         let (status, _) = send(
             gated_router(Arc::from(TOKEN)),
-            post("/mcp-put")
+            post("/session-archive")
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("origin", "https://evil.example")
                 .body(axum::body::Body::empty())
@@ -1480,7 +1351,7 @@ mod tests {
             gated_router(Arc::from(TOKEN)),
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/mcp-put")
+                .uri("/session-archive")
                 .header("host", "evil.example")
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .body(axum::body::Body::empty())
@@ -1493,10 +1364,12 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_path_is_gated_before_it_is_404() {
         // The whole reason the layer wraps the fallback: without a bearer,
-        // "does /mcp-put exist?" must be unanswerable.
+        // "does /session-archive exist?" must be unanswerable.
         let (unauth_known, _) = send(
             gated_router(Arc::from(TOKEN)),
-            post("/mcp-put").body(axum::body::Body::empty()).unwrap(),
+            post("/session-archive")
+                .body(axum::body::Body::empty())
+                .unwrap(),
         )
         .await;
         let (unauth_unknown, _) = send(
@@ -1528,7 +1401,7 @@ mod tests {
             gated_router(Arc::from(TOKEN)),
             axum::http::Request::builder()
                 .method("GET")
-                .uri("/mcp-put")
+                .uri("/session-archive")
                 .header("host", "127.0.0.1")
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .body(axum::body::Body::empty())
