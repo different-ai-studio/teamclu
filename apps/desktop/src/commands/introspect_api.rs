@@ -37,7 +37,9 @@
 //   1. `Authorization: Bearer <token>` must match the per-launch token this
 //      process generated and wrote 0600 to `<amuxd home>/run/introspect.http.token`
 //      (the same directory and convention as the daemon's `amuxd.http.token`).
-//      The sidecar reads that file; nothing else is meant to.
+//      The sidecar reads that file; nothing else is meant to. Another process
+//      on the same amuxd home can overwrite it, so this one keeps its token
+//      and port published while it runs (`introspect_api/publication.rs`).
 //   2. Any `Origin` header is refused. Browsers always attach one to a
 //      cross-origin POST; the sidecar never does.
 //   3. `Host` must be a loopback name, closing the DNS-rebinding hole where a
@@ -50,6 +52,9 @@
 mod apps;
 mod caller;
 mod confirm;
+mod publication;
+
+pub use publication::withdraw as withdraw_publication;
 
 /// The port this API asks for first. Every brand's build asks for the same one,
 /// so when two brands' apps run at once the second finds it taken and binds an
@@ -368,26 +373,24 @@ fn router(app: AppHandle, token: Arc<str>, verifier: caller::CallerVerifier) -> 
 }
 
 pub async fn start_introspect_api(app: AppHandle) -> anyhow::Result<()> {
-    // Mint and publish the bearer before accepting anything, so there is no
-    // window where the listener is up and unauthenticated.
+    // Bind, then publish the bearer and port before serving anything, so there
+    // is no window where the listener answers and nobody holds the token.
     let token: Arc<str> = Arc::from(generate_token());
+    let listener = bind_listener(INTROSPECT_API_PORT).await?;
+    let port = listener.local_addr()?.port();
     let token_path = introspect_token_path();
-    write_token_file(&token_path, &token).map_err(|e| {
+    let port_path = introspect_port_path();
+    let publication =
+        publication::Publication::new(token.clone(), port, token_path.clone(), port_path.clone());
+    publication.write().map_err(|e| {
         anyhow::anyhow!(
-            "cannot write introspect token to {}: {e}",
+            "cannot write the introspect token/port to {}: {e}",
             token_path.display()
         )
     })?;
-
-    let listener = bind_listener(INTROSPECT_API_PORT).await?;
-    let port = listener.local_addr()?.port();
-    let port_path = introspect_port_path();
-    write_token_file(&port_path, &port.to_string()).map_err(|e| {
-        anyhow::anyhow!(
-            "cannot write the introspect port to {}: {e}",
-            port_path.display()
-        )
-    })?;
+    // Another process sharing this amuxd home can overwrite both files and
+    // exit; keep ours in place for as long as we serve (see `publication`).
+    publication::watch(publication);
     log::info!(
         "[IntrospectAPI] Listening on 127.0.0.1:{port} (bearer in {}, port in {})",
         token_path.display(),
