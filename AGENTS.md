@@ -385,15 +385,20 @@ domain, that is usually a sign it is doing two things.
 `lib/__tests__/` keeps the tests that span domains (or test a root module);
 everything else lives in its domain's own `__tests__/`.
 
-### Supabase schema changes
+### Database schema changes
 
-- For any live Supabase schema/RLS/RPC change, use the configured Supabase
-  MCP first. Do not silently switch to `supabase db push`, `psql`, REST
-  calls, or ad-hoc scripts when the user asked for MCP.
-- If the Supabase MCP is not exposed in the current Codex tool list, or it is
-  configured but unusable because auth is unsupported/missing, say that
-  explicitly and stop for MCP setup instead of pretending the live database
-  was changed.
+- For routine Hangzhou production platform RDS schema, RLS and RPC changes,
+  use the approved ACK `db-migrations` Job with `teamclu_platform_admin`.
+  Keep the reviewed migration SQL and relevant pgTAP tests under
+  `services/supabase/`. Verify the Job, ledger and affected behavior under the
+  [Hangzhou production runbook](docs/release/hangzhou-production.md).
+- For live Supabase schema/RLS/RPC changes in other environments, use the
+  configured Supabase MCP first. Do not silently switch to `supabase db push`,
+  `psql`, REST calls, or ad-hoc scripts when the user asked for MCP.
+- In those environments, if the Supabase MCP is not exposed in the current
+  Codex tool list, or it is configured but unusable because auth is
+  unsupported/missing, say that explicitly and stop for MCP setup instead
+  of pretending the live database was changed.
 - Keep the matching migration and pgTAP test under `services/supabase/` even
   when applying the same SQL through MCP, so local and live schemas do not
   diverge.

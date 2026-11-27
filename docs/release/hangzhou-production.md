@@ -16,11 +16,16 @@ remains compatible with its database at deployment time.
    targets `teamclu-prod`, and renders the empty overlay at the reviewed Git
    revision. Auto Sync is enabled and prune is disabled. Enrollment has no
    release Job.
-2. Confirm the existing `cloud-api-db-migrate-psql` Secret in `teamclu-prod` has
-   `PGUSER` and `PGPASSWORD` keys for `teamclu_migration_runner`. Check only
-   the keys, without printing their values. Confirm private RDS connectivity,
-   ACK DNS and the migration NetworkPolicy scope. Keep production connection
-   settings in private GitOps and credentials in the existing Secret.
+2. Provision the dedicated `db-migrate-platform-admin` Secret in
+   `teamclu-prod` through the approved credential handoff. It supplies
+   `PGUSER` and `PGPASSWORD` for the standing `teamclu_platform_admin`
+   migration identity. Check Secret keys without printing their values.
+   Confirm private RDS connectivity, ACK DNS and the migration NetworkPolicy.
+   Limit use of this Secret to the migration Job. The account has broad
+   platform database privileges, so treat workloads that can mount it
+   as able to use those privileges. Keep production connection settings in
+   private GitOps and credentials in the Secret. Repeat the Job preflight
+   after credential rotation.
 3. Confirm the Hangzhou ACR Personal repository
    `teamclu/teamclu-prod-db-migrate` is public. From Hangzhou ACK, run an
    image-pull smoke test in `atlas-accept` by digest using the ACR VPC
@@ -59,7 +64,7 @@ a batch against the live ledger before deciding which files are pending.
    file. Use the full filename as the release target since legacy timestamps
    can repeat.
 2. Review the pending SQL and dependency order explicitly. Check the current
-   object owners and the migration role's effective permissions, runtime
+   object owners and the platform administrator's effective permissions, runtime
    impact, compatibility with the running Cloud API, and backup posture. Use
    SQL that can run in a PostgreSQL transaction through the psql runner. An
    operation that requires its own transaction or cannot run inside one needs
@@ -105,12 +110,13 @@ a batch against the live ledger before deciding which files are pending.
 
 ## Merge the database release and verify the ledger
 
-1. Schedule the approved release window. The DBA grants the dedicated login
-   the scoped ability to assume `teamclu_migration_owner` and insert ledger
-   filenames, with the owner grants needed for this batch. Record who will
-   revoke the temporary grants and when. Confirm the live identity, private
-   connection, predecessor ledger, and prior Job state. Record the observed
-   TLS status alongside the approved RDS connection settings.
+1. Schedule the approved release window. Confirm the Job expects
+   `teamclu_platform_admin`, its private connection targets the platform
+   primary, and the predecessor ledger and prior Job state match the plan.
+   Preflight verifies the login, selected role and ledger insert permission.
+   The standing account uses its existing privileges for each approved
+   release. Record the observed TLS status alongside the approved
+   RDS connection settings.
 2. Merge the preflight PR during the approved window. Argo CD automatically
    reconciles `db-migrations` from GitOps `main`. Verify the live operation
    selected the expected manifest and wait for the preflight Job to finish.
@@ -137,9 +143,9 @@ a batch against the live ledger before deciding which files are pending.
    objects and compatibility, including a read-only PostgREST check when
    affected. Argo's Sync may report success while the Job is still active.
    The release gate is Job completion **and** database readback.
-4. When the Job reaches a terminal state, revoke temporary database grants and
-   verify closure, including after failure or timeout. Save the receipt in
-   private GitOps with the commit, image digest, Job and ledger evidence. Retain
+4. When the Job reaches a terminal state, confirm the migration connection
+   closed, including after failure or timeout. Save the receipt in private
+   GitOps with the commit, image digest, Job and ledger evidence. Retain
    the completed Job until the receipt is recorded. Remove retired Jobs and
    their ConfigMaps or policies through the migration Application's scoped
    cleanup procedure after their desired manifests are retired. Before
@@ -149,7 +155,7 @@ a batch against the live ledger before deciding which files are pending.
 
 A file's SQL and filename insert commit in one transaction. Earlier successful
 files can remain committed if a later file fails. Read the ledger and compare
-the applied prefix before opening another permission window. For a transient
+the applied prefix before approving another attempt. For a transient
 failure, retain the exact digest, approved batch and predecessor values, and
 merge a new reviewed attempt after the previous Job is terminal. The runner
 skips recorded files and rejects drift outside the approved prefix. Stop if
