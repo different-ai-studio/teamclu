@@ -1,5 +1,6 @@
 import postgres from "postgres";
 import { appSchemaName, appRoleName, orgDatabaseName } from "./pg-name.js";
+import { logPgNotice, withoutStatementContext } from "./pg-notice.js";
 
 const SAFE_IDENT = /^[a-z0-9_]+$/;
 
@@ -119,6 +120,14 @@ export function withDatabaseName(adminUrl: string, database: string): string {
 }
 
 /**
+ * The provisioning connection. `onnotice` keeps postgres.js from printing a
+ * notice whole: the role statements carry the app's password (pg-notice.ts).
+ */
+export function connectForProvisioning(url: string): ReturnType<typeof postgres> {
+  return postgres(url, { max: 1, prepare: false, idle_timeout: 5, connect_timeout: 10, onnotice: logPgNotice });
+}
+
+/**
  * Idempotent CREATE DATABASE for an org.
  *
  * Postgres has no `CREATE DATABASE IF NOT EXISTS` on the versions we run, so
@@ -128,8 +137,7 @@ export function withDatabaseName(adminUrl: string, database: string): string {
 export async function ensureOrgDatabaseExists(
   adminUrl: string,
   orgId: string,
-  connect: (url: string) => ReturnType<typeof postgres> = (url) =>
-    postgres(url, { max: 1, prepare: false, idle_timeout: 5, connect_timeout: 10 }),
+  connect: (url: string) => ReturnType<typeof postgres> = connectForProvisioning,
 ): Promise<string> {
   const database = orgDatabaseName(orgId);
   assertSafe(database);
@@ -167,15 +175,14 @@ export interface ProvisionAppPostgresParams {
 export async function provisionAppPostgres(
   adminUrl: string,
   params: ProvisionAppPostgresParams,
-  connect: (url: string) => ReturnType<typeof postgres> = (url) =>
-    postgres(url, { max: 1, prepare: false, idle_timeout: 5, connect_timeout: 10 }),
+  connect: (url: string) => ReturnType<typeof postgres> = connectForProvisioning,
 ): Promise<AppConnection> {
   const database = await ensureOrgDatabaseExists(adminUrl, params.orgId, connect);
   const orgDbUrl = withDatabaseName(adminUrl, database);
   const sql = connect(orgDbUrl);
   try {
     const exec: SqlExecutor = async (statement) => {
-      await sql.unsafe(statement);
+      await sql.unsafe(statement).catch((err) => { throw withoutStatementContext(err); });
     };
     return await ensureAppSchema(exec, {
       appId: params.appId,
@@ -207,11 +214,12 @@ export function getAppsAdminExecutor(): SqlExecutor {
       idle_timeout: Number(process.env.PG_IDLE_TIMEOUT ?? "20"),
       connect_timeout: Number(process.env.PG_CONNECT_TIMEOUT ?? "10"),
       prepare: false,
+      onnotice: logPgNotice,
     });
   }
   const sql = _adminSql;
   return async (statement: string) => {
-    await sql.unsafe(statement);
+    await sql.unsafe(statement).catch((err) => { throw withoutStatementContext(err); });
   };
 }
 
