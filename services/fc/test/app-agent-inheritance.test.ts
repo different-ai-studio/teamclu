@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { appsRepo, appsSupabase, fakeGitea } from "./fixtures/apps-repository.js";
-import { giteaOrgName, giteaUserName } from "../src/lib/provisioning/gitea.js";
-import { syncAppToGitea } from "../src/lib/provisioning/gitea-sync.js";
-import { appGitLevel } from "../src/lib/supabase-repo/app-git-access.js";
-import { higherAppLevel, inheritedGiteaLevel } from "../src/lib/app-permission.js";
+import { giteaOrgName, giteaUserName } from "../src/lib/forge/gitea/client.js";
+import { syncAppToGitea } from "../src/lib/forge/gitea/sync.js";
+import { appGitLevel } from "../src/lib/forge/app-git-access.js";
+import { higherAppLevel } from "../src/lib/app-permission.js";
+import { inheritedRepoLevel } from "../src/lib/forge/app-git-access.js";
 
 // An active agent reaches the apps its owner reaches (20261120120000), at its
 // owner's level, minus the two things a bot never does for its owner: change
@@ -54,9 +55,8 @@ const asCaller = (actor: any, over: Record<string, unknown> = {}) =>
 test("the creator's agent inherits admin, marked inherited", async () => {
   assert.deepEqual(await asCaller(CREATOR_BOT).resolveAppCallerPermissionForApp(APP), {
     level: "admin",
-    callerActorId: "creator-bot",
-    callerMemberId: null,
     inherited: true,
+    callerUserId: "user-app-1",
   });
 });
 
@@ -117,6 +117,28 @@ test("an agent with inherited admin cannot delete the app", async () => {
     () => asCaller(CREATOR_BOT).deleteApp("app-1"),
     (e: any) => e.statusCode === 403 && e.code === "inherited_access_not_allowed",
   );
+});
+
+// updateApp answers with the mapped app, which needs a real app code.
+const MAPPABLE_APP = { ...APP, slug: "yuce-qushu", app_code: "a-k7m2p9x4q1w8" };
+
+test("an agent with inherited admin cannot open or close the app to the org", async () => {
+  // The org grant travels as `visibility` on PATCH /v1/apps/:id (P3 Q1), so it
+  // is managing access like the grant routes above.
+  await assert.rejects(
+    () => asCaller(CREATOR_BOT).updateApp("app-1", { visibility: "team" }),
+    (e: any) => e.statusCode === 403 && e.code === "inherited_access_not_allowed",
+  );
+});
+
+test("an agent with inherited admin still saves settings, even when they echo the current visibility", async () => {
+  const updated = await asCaller(CREATOR_BOT, { apps: [MAPPABLE_APP] }).updateApp("app-1", { name: "改名", visibility: "personal" });
+  assert.equal(updated?.name, "改名");
+});
+
+test("the creator still opens the app to the org", async () => {
+  const updated = await asCaller(CREATOR, { apps: [MAPPABLE_APP] }).updateApp("app-1", { visibility: "team" });
+  assert.equal(updated?.visibility, "team");
 });
 
 test("an explicitly granted admin agent still manages access", async () => {
@@ -217,22 +239,23 @@ test("git access counts an inherited level as Gitea enforces it", () => {
   assert.equal(appGitLevel({ isCreator: false, grant: null, inherited: "admin", visibility: "personal" }), "write");
   assert.equal(appGitLevel({ isCreator: false, grant: "read", inherited: "write", visibility: "personal" }), "write");
   assert.equal(appGitLevel({ isCreator: false, grant: null, inherited: null, visibility: "personal" }), null);
-  assert.equal(inheritedGiteaLevel("read"), "read");
+  assert.equal(inheritedRepoLevel("read"), "read");
   assert.equal(higherAppLevel(null, "read"), "read");
 });
 
 // ── before the migration ──────────────────────────────────────────────────
 
-test("a database without the inheritance functions reads as no inheritance, not as an error", async () => {
+test("a database without amux.caller_app_access is a 503 naming the migration, not a silent no-access", async () => {
+  // P2.4b dropped the legacy actor rule: the platform reads only its own
+  // model, so migrations P2.1–P2.3 go before the image.
   for (const code of ["PGRST202", "42883"]) {
     const client = appsSupabase({ seed: seed(), actorRow: CREATOR_BOT });
-    const realRpc = client.rpc.bind(client);
-    client.rpc = async (name: string, args: any) =>
-      name === "app_inherited_agents" || name === "agent_inherited_app_level"
-        ? { data: null, error: { code, message: "function does not exist" } }
-        : realRpc(name, args);
-    const repo = appsRepo(client);
-    assert.equal(await repo.resolveAppCallerPermissionForApp(APP), null, code);
+    client.rpc = async () => ({ data: null, error: { code, message: "function does not exist" } });
+    await assert.rejects(
+      () => appsRepo(client).resolveAppCallerPermissionForApp(APP),
+      (e: any) => e.statusCode === 503 && e.code === "app_platform_schema_missing",
+      code,
+    );
   }
 });
 
@@ -240,4 +263,50 @@ test("any other database error from the inheritance functions is raised", async 
   const client = appsSupabase({ seed: seed(), actorRow: CREATOR_BOT });
   client.rpc = async () => ({ data: null, error: { code: "57014", message: "canceling statement due to statement timeout" } });
   await assert.rejects(() => appsRepo(client).resolveAppCallerPermissionForApp(APP), (e: any) => e.code === "57014");
+});
+
+// ── P2.2: the level comes from the platform model ─────────────────────────
+
+test("the level comes from amux.caller_app_access when the database has it", async () => {
+  const client = appsSupabase({ seed: seed(), actorRow: GRANTEE });
+  const realRpc = client.rpc.bind(client);
+  const asked: string[] = [];
+  client.rpc = async (name: string, args: any) => {
+    asked.push(name);
+    // The platform says admin, delegated; the legacy tables say write.
+    if (name === "caller_app_access") return { data: [{ level: "admin", delegated: true, is_creator: false }], error: null };
+    return realRpc(name, args);
+  };
+  assert.deepEqual(await appsRepo(client).resolveAppCallerPermissionForApp(APP), {
+    level: "admin",
+    inherited: true,
+    callerUserId: "user-app-1",
+  });
+  assert.deepEqual(asked, ["caller_app_access"], "the legacy inheritance function is not consulted");
+});
+
+test("no row from amux.caller_app_access is no access, whatever the legacy tables say", async () => {
+  const client = appsSupabase({ seed: seed(), actorRow: GRANTEE });
+  const realRpc = client.rpc.bind(client);
+  client.rpc = async (name: string, args: any) =>
+    name === "caller_app_access" ? { data: [], error: null } : realRpc(name, args);
+  assert.equal(await appsRepo(client).resolveAppCallerPermissionForApp(APP), null);
+});
+
+test("the platform level needs no actor in the app's team at all", async () => {
+  const client = appsSupabase({ seed: seed(), actorRow: null });
+  client.rpc = async () => ({ data: [{ level: "write", delegated: true, is_creator: false }], error: null });
+  assert.deepEqual(await appsRepo(client).resolveAppCallerPermissionForApp(APP), {
+    level: "write",
+    inherited: true,
+    callerUserId: "user-app-1",
+  });
+});
+
+test("isAppCreator says what apps_update_if_creator says: the platform's creator test", async () => {
+  const client = appsSupabase({ seed: seed(), actorRow: GRANTEE });
+  client.rpc = async () => ({ data: [{ level: "admin", delegated: false, is_creator: true }], error: null });
+  assert.equal(await appsRepo(client).isAppCreator(APP), true, "the account that created it, whatever actor the legacy column names");
+  client.rpc = async () => ({ data: [{ level: "admin", delegated: false, is_creator: false }], error: null });
+  assert.equal(await appsRepo(client).isAppCreator(APP), false, "an admin grantee is not the creator");
 });

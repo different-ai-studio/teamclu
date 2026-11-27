@@ -2,10 +2,20 @@ import {
   appLevelAtLeast,
   callAgentInheritance,
   higherAppLevel,
-  inheritedGiteaLevel,
   storedAppPermissionLevel,
   type AppPermissionLevel,
 } from "../app-permission.js";
+
+/**
+ * The level an inherited agent gets on the repo (mirrored to Gitea). Gitea's `admin` collaborator
+ * adds nothing an agent needs — merging a PR is `write` — and is the level
+ * that could change the repo's settings, so an agent that inherits `admin`
+ * from the app's creator is mirrored as `write`. The Cloud API still treats it
+ * as admin for deploys (see agent inheritance in supabase-repo).
+ */
+export function inheritedRepoLevel(level: AppPermissionLevel): AppPermissionLevel {
+  return level === "admin" ? "write" : level;
+}
 
 /**
  * What an account holds on an app, for `GET /v1/git/access` — the credential
@@ -29,7 +39,7 @@ export interface AppGitAccess {
 /**
  * The level Gitea ends up enforcing for an actor of the app's team: the
  * creator is admin, a grant counts at its level, an agent's inherited level
- * counts as the sync mirrors it (admin → write, `inheritedGiteaLevel`), and a
+ * counts as the sync mirrors it (admin → write, `inheritedRepoLevel`), and a
  * team-visible app is readable by the whole team (the Gitea team the sync
  * maintains).
  */
@@ -43,7 +53,7 @@ export function appGitLevel(input: {
   const inheritedLevel = storedAppPermissionLevel(input.inherited);
   const granted = higherAppLevel(
     storedAppPermissionLevel(input.grant),
-    inheritedLevel ? inheritedGiteaLevel(inheritedLevel) : null,
+    inheritedLevel ? inheritedRepoLevel(inheritedLevel) : null,
   );
   if (input.visibility === "team" && (!granted || !appLevelAtLeast(granted, "read"))) return "read";
   return granted;

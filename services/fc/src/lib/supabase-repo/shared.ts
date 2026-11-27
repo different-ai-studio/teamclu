@@ -6,13 +6,7 @@ import WebSocket from "ws";
 import { ApiError } from "../http-utils.js";
 import { appPublicUrl, normalizeAppCode } from "../apps-public-host.js";
 import { typeChangeNeedsRedeploy } from "../validation/app-type.js";
-import {
-  GITEA_AUTH_KIND,
-  giteaHttpUrlFromRemote,
-  isTeamCluOrgOwner,
-  repoOwnerFromRemote,
-} from "../provisioning/gitea.js";
-import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
+import { NO_FORGE_FIELDS } from "../app-platform/hooks.js";
 
 // FC runtime is Node 20 which lacks native WebSocket. supabase-js v2.45+ tries
 // to construct a RealtimeClient at createClient() time and throws without a
@@ -168,20 +162,11 @@ export function appRelationshipFor(
   return { relationship: "invited", invitedByActorId: null };
 }
 
-export function appGitAccountFields(r: any): { gitAccountAuth: boolean; gitHttpUrl: string | null } {
-  const accountAuth =
-    r.git_auth_kind === GITEA_AUTH_KIND &&
-    giteaAccountAuthEnabled() &&
-    isTeamCluOrgOwner(repoOwnerFromRemote(r.git_remote_url));
-  return {
-    gitAccountAuth: accountAuth,
-    gitHttpUrl: accountAuth ? giteaHttpUrlFromRemote(r.git_remote_url, process.env.GITEA_PUBLIC_URL) : null,
-  };
-}
-
 // Exposes EXACTLY the canonical app fields. Reads snake_case DB columns
 // (PostgREST returns the table's native column names).
-export function mapApp(r: any) {
+// `forgeFields` is what the forge integration adds (`AppLifecycleHooks.decorate`,
+// e.g. the per-account `gitHttpUrl`); the repository passes it in.
+export function mapApp(r: any, forgeFields: Record<string, unknown> = NO_FORGE_FIELDS) {
   const appCode = normalizeAppCode(r.app_code);
   if (!appCode) throw new ApiError(502, "upstream_unavailable", "apps.mapApp returned invalid app_code");
   return {
@@ -205,11 +190,9 @@ export function mapApp(r: any) {
     // no access to. The client needs the distinction to know whether deploy can
     // go through Gitea at all.
     gitAuthKind: r.git_auth_kind ?? null,
-    // Per-account Gitea auth (GITEA_ACCOUNT_AUTH): a new client points the
-    // checkout at this HTTPS address and authenticates with its own account.
-    // The stored remote and auth kind stay as they were so older daemons keep
-    // working over SSH + deploy keys.
-    ...appGitAccountFields(r),
+    // The forge's own fields — for Gitea, `gitAccountAuth` and `gitHttpUrl`
+    // (forge/index.ts giteaAccountFields).
+    ...forgeFields,
     gitCommitSha: r.git_commit_sha ?? null,
     runtime: r.runtime ?? "node",
     startSpec: r.start_spec ?? null,

@@ -1,6 +1,6 @@
 import { generateKeyPairSync, randomBytes, randomUUID, type KeyObject } from "node:crypto";
 
-import type { GiteaClient } from "./gitea.js";
+import type { GiteaClient } from "./client.js";
 
 export type DeployKeyPair = {
   /** OpenSSH single-line public key for Gitea deploy key registration. */

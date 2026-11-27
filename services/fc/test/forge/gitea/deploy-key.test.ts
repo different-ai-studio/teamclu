@@ -13,7 +13,7 @@ import {
   revokeOwnJitDeployKey,
   sweepExpiredDeployKeys,
   JIT_DEPLOY_KEY_TTL_MS,
-} from "../../src/lib/provisioning/deploy-key.js";
+} from "../../../src/lib/forge/gitea/deploy-key.js";
 
 test("generateDeployKeyPair returns an ed25519 OpenSSH public + OpenSSH private key", () => {
   const { publicKeyOpenSSH, privateKeyPem } = generateDeployKeyPair();

@@ -15,8 +15,7 @@ import {
   makeDeployDeps,
   makeTeardownDeps,
 } from "./lib/app-platform/deps.js";
-import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
-import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "./lib/provisioning/gitea-sync-runner.js";
+import { forgeFromEnv } from "./lib/forge/index.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
 import { makeSupabaseLoginAppLookup } from "./lib/apps-login-service.js";
@@ -38,13 +37,11 @@ const SUPABASE_PUBLIC_URL_FN = () =>
   process.env.SUPABASE_PUBLIC_URL || process.env.SUPABASE_URL || "";
 const SUPABASE_PUBLISHABLE_KEY = () => publishableKeyFromEnv(process.env);
 
-// Gitea repo provisioning deps. Returns `giteaUnavailableReason` when any of
-// GITEA_URL / GITEA_TOKEN / GITEA_OWNER is empty so createApp surfaces a 503
-// that names the missing variable rather than half-provisioning a row.
-function makeGiteaDeps() {
-  const resolved = readGiteaConfig();
-  if (resolved.error) return { giteaUnavailableReason: resolved.error };
-  return { gitea: makeGiteaClient(resolved.config) };
+// Who hosts apps' code: the forge integration over this deployment's Gitea.
+// With any of GITEA_URL / GITEA_TOKEN / GITEA_OWNER empty, createApp surfaces
+// a 503 that names the missing variable rather than half-provisioning a row.
+function makeForgeDeps() {
+  return { forge: forgeFromEnv() };
 }
 
 function makeGotrueOAuthDeps() {
@@ -53,7 +50,7 @@ function makeGotrueOAuthDeps() {
   return { gotrue: makeGotrueOAuthClient(resolved.config) };
 }
 
-export { makeGiteaDeps };
+export { makeForgeDeps };
 
 /**
  * Vanity-host lookup, wired for whichever backend this deployment runs.
@@ -200,7 +197,7 @@ export function makeAuthRepoFactory() {
       // Whose SMS account sends verification codes. Falls back to DEFAULT_ORG_ID,
       // which is being retired (docs/plans/2026-10-08-staff-only-identity-model.md).
       smsConfigOrgId: process.env.SMS_CONFIG_ORG_ID || undefined,
-      syncTeamToGitea: makeTeamGiteaSync(),
+      syncTeamToGitea: makeTeamForgeSync(),
       ssoService: () =>
         ssoServiceFromEnv({
           env: process.env,
@@ -211,17 +208,14 @@ export function makeAuthRepoFactory() {
 }
 
 /** Team re-sync for the auth repository's join paths; a no-op unless GITEA_ACCOUNT_AUTH=on. */
-function makeTeamGiteaSync() {
-  const { gitea } = makeGiteaDeps();
-  const runner = makeGiteaSyncRunner({
-    gitea,
-    enabled: giteaAccountAuthEnabled(),
+function makeTeamForgeSync() {
+  const forge = forgeFromEnv()({
     serviceRoleClient: async () => {
       const { createServiceRoleClient } = await import("./lib/supabase.js");
       return createServiceRoleClient();
     },
   });
-  return (teamId: string) => runner.team(teamId);
+  return (teamId: string) => forge.teamAccessChanged(teamId);
 }
 
 /**
@@ -296,7 +290,7 @@ export function makeBusinessRepoFactory() {
       ...makeAppDataDeps(),
       ...makeAppStorageDeps(),
       ...makeAppLogsDeps(),
-      ...makeGiteaDeps(),
+      ...makeForgeDeps(),
       ...makeGotrueOAuthDeps(),
     });
   };
@@ -322,7 +316,7 @@ export function makeSystemRepoFactory() {
       accessToken: serviceKey,
       ...makeDeployDeps(),
       ...makeAppStorageDeps(),
-      ...makeGiteaDeps(),
+      ...makeForgeDeps(),
       ...makeGotrueOAuthDeps(),
     });
   };

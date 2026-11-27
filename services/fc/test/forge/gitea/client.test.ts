@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeGiteaClient, readGiteaConfig, giteaUnavailable } from "../../src/lib/provisioning/gitea.js";
+import { makeGiteaClient, readGiteaConfig, giteaUnavailable } from "../../../src/lib/forge/gitea/client.js";
 
 function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -159,7 +159,7 @@ test("listDeployKeys reports id + title for the sweep", async () => {
 });
 
 test("users FC creates get a noreply address under the public git host, not FC's internal route", async () => {
-  const { giteaNoreplyHost, makeGiteaClient } = await import("../../src/lib/provisioning/gitea.js");
+  const { giteaNoreplyHost, makeGiteaClient } = await import("../../../src/lib/forge/gitea/client.js");
   assert.equal(giteaNoreplyHost("http://caddy:8081", { GITEA_PUBLIC_URL: "https://git.example.com" }), "git.example.com");
   assert.equal(giteaNoreplyHost("http://caddy:8081", {}), "caddy");
   assert.equal(giteaNoreplyHost("not a url", { GITEA_PUBLIC_URL: "" }), "gitea.local");

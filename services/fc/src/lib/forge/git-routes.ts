@@ -8,10 +8,11 @@ import {
   signGitToken,
   verifyGitToken,
   GIT_TOKEN_TTL_SECONDS,
-} from "../git-token.js";
-import { giteaUserName } from "../provisioning/gitea.js";
-import { giteaAccountAuthEnabled } from "../provisioning/gitea-sync-runner.js";
-import { readAppGitAccess } from "../supabase-repo/app-git-access.js";
+} from "./git-token.js";
+import { giteaUserName } from "./gitea/client.js";
+import { giteaAccountAuthEnabled } from "./gitea/sync-runner.js";
+import { readAppGitAccess } from "./app-git-access.js";
+import { parseGitHttpsCredentialInput } from "./imported-http.js";
 
 /**
  * Per-account git over HTTPS (docs/specs/2026-11-16-app-platform-identity-design.md §4, §6).
@@ -304,4 +305,66 @@ export function registerGit(router, deps: GitRouteDeps = defaultDeps()) {
     if (!access) throw new ApiError(404, "not_found", "app not found");
     return { body: access };
   });
+}
+
+/**
+ * The per-app git routes: credentials for the machines that clone an app's
+ * repo, and the repo HEAD the deploy path checks against. They moved here from
+ * `routes/apps.ts` with the rest of the forge integration; the paths, bodies
+ * and status codes are unchanged, and they still answer through the
+ * repository, which decides who may see what.
+ */
+export function registerAppGitRoutes(router) {
+  // Secret response — never log the body (private deploy key).
+  router.get("/v1/apps/:appId/git-credential", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.getAppGitCredential(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  // Handing a key back the moment ssh exits — see `amuxd git-ssh`. Idempotent:
+  // a key already gone answers 200 with `revoked: false`, because "not usable
+  // any more" is what the caller asked for either way.
+  router.delete("/v1/apps/:appId/git-credential/:deployKeyId", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const deployKeyId = Number.parseInt(decodeURIComponent(ctx.params.deployKeyId), 10);
+    if (!Number.isInteger(deployKeyId)) {
+      throw new ApiError(400, "bad_request", "deployKeyId must be an integer");
+    }
+    const out = await ctx.repository.revokeAppGitCredential(appId, deployKeyId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  // Store the token for an imported app's http(s) repo. Admin only, and
+  // write-only here: the value comes back out only through GET above, to the
+  // machines that clone. Secret request — never log the body.
+  router.put("/v1/apps/:appId/git-credential", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const input = parseGitHttpsCredentialInput(ctx.json);
+    const out = await ctx.repository.setAppGitHttpsCredential(appId, input);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.delete("/v1/apps/:appId/git-credential", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.clearAppGitHttpsCredential(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  // `?compare=1` also reports how many commits the branch is ahead of what is
+  // deployed. Opt-in: the deploy path calls this endpoint on every deploy and
+  // reads only `sha`, so the extra forge round trip is not made for it.
+  router.get("/v1/apps/:appId/git-head", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.getAppGitHead(appId, {
+      compare: ctx.query.get("compare") === "1",
+    });
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
 }

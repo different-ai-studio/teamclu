@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { makeDeployKeyExpirySweep } from "../../src/lib/provisioning/deploy-key-expiry.js";
-import { JIT_DEPLOY_KEY_TTL_MS } from "../../src/lib/provisioning/deploy-key.js";
+import { makeDeployKeyExpirySweep } from "../../../src/lib/forge/gitea/deploy-key-expiry.js";
+import { JIT_DEPLOY_KEY_TTL_MS } from "../../../src/lib/forge/gitea/deploy-key.js";
 
 test("heartbeat sweeps quiet legacy and per-org repos, resuming from its last app", async () => {
   const now = 1_800_000_000_000;

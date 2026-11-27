@@ -1,5 +1,5 @@
-import type { GiteaClient } from "./gitea.js";
-import { syncAppToGitea, syncTeamAppsToGitea } from "./gitea-sync.js";
+import type { GiteaClient } from "./client.js";
+import { syncAppToGitea, syncTeamAppsToGitea } from "./sync.js";
 
 type Env = NodeJS.ProcessEnv;
 

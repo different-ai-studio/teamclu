@@ -513,7 +513,7 @@ services:
       # mirrored to Gitea collaborators, and clients are told to use HTTPS
       # through the forward_auth gateway. Blank/"off" changes nothing.
       GITEA_ACCOUNT_AUTH: "${GITEA_ACCOUNT_AUTH:-}"
-      # Signs the git-only tokens desktops hold (src/lib/git-token.ts). >= 32
+      # Signs the git-only tokens desktops hold (src/lib/forge/git-token.ts). >= 32
       # chars; gen-secrets.sh writes one. Blank: POST /v1/git/token answers 503.
       GIT_TOKEN_SECRET: "${GIT_TOKEN_SECRET:-}"
       # The HTTPS base clients clone from; its host is where desktops point

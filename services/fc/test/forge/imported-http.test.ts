@@ -6,7 +6,7 @@ import {
   isHttpGitRemote,
   parseGitHttpsCredentialInput,
   serializeGitHttpsCredential,
-} from "../src/lib/app-git-credential.js";
+} from "../../src/lib/forge/imported-http.js";
 
 const rejects = (fn: () => unknown, match: RegExp) =>
   assert.throws(fn, (e: any) => e.statusCode === 400 && match.test(e.message), "accepted it");
