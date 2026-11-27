@@ -298,7 +298,7 @@ export function makeAppStorageOps(
           Bucket: bucket,
           Key: key,
           // Without this the browser renders whatever the object's type says,
-          // and an HTML file uploaded by one member would run on the OSS origin.
+          // and an HTML file uploaded by one user would run on the OSS origin.
           ResponseContentDisposition: `attachment; filename="${(filename ?? key.split("/").pop() ?? "file").replace(/"/g, "")}"`,
         }),
         { expiresIn: 900 },
