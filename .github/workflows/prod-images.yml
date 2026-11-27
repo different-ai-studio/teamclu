@@ -188,9 +188,14 @@ jobs:
           if [[ "$SERVICE" == db-migrate ]]; then
             # Pull by digest and read the index from the published image itself.
             docker pull --platform linux/amd64 "$public_ref"
-            docker run --rm --platform linux/amd64 --read-only --entrypoint /bin/sh "$public_ref" -ec '
+            docker run --rm --platform linux/amd64 --network none --read-only --entrypoint /bin/sh "$public_ref" -ec '
               test "$(id -u):$(id -g)" = 70:70
-              psql --version
+              version=$(psql --version)
+              printf "%s\n" "$version"
+              case "$version" in
+                "psql (PostgreSQL) 17."*) ;;
+                *) printf "Expected psql major version 17: %s\n" "$version" >&2; exit 1 ;;
+              esac
               cd migrations
               sha256sum -c migrations.sha256 >/dev/null
             '
