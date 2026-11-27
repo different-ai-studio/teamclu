@@ -121,6 +121,7 @@ export function createWecomClient(deps: WecomClientDeps) {
   // provider_access_token per provider corp, and gettoken per (corp, secret).
   const providerTokens = new Map<string, { token: string; expiresAt: number }>();
   const corpTokens = new Map<string, { token: string; expiresAt: number }>();
+  const openCorpIds = new Map<string, string>();
 
   async function providerAccessToken(providerCorpId: string, providerSecret: string): Promise<string> {
     const cached = providerTokens.get(providerCorpId);
@@ -249,6 +250,33 @@ export function createWecomClient(deps: WecomClientDeps) {
       const qrcodeUrl = String(body.qrcode_url ?? "");
       if (!qrcodeUrl) throw new ApiError(502, "upstream_error", "WeCom get_customized_auth_url returned no link");
       return { qrcodeUrl, expiresInSec: Number(body.expires_in ?? 0) || 0 };
+    },
+
+    /**
+     * A company's corpid as the provider's 代开发 apps see it
+     * (service/corpid_to_opencorpid, document/path/95327). The sign-in app may
+     * hold a plaintext `ww…` corpid while the 代开发 app gets the encrypted
+     * `wp…` one; this is how the two are matched. Cached for the process: the
+     * mapping is fixed per provider.
+     */
+    async openCorpId(args: { providerCorpId: string; providerSecret: string; corpId: string }): Promise<string> {
+      const cached = openCorpIds.get(args.corpId);
+      if (cached) return cached;
+      const token = await providerAccessToken(args.providerCorpId, args.providerSecret);
+      const body = await call(
+        fetchImpl,
+        `${API}/service/corpid_to_opencorpid?provider_access_token=${encodeURIComponent(token)}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ corpid: args.corpId }),
+        },
+        "corpid_to_opencorpid",
+      );
+      const open = String(body.open_corpid ?? "");
+      if (!open) throw new ApiError(502, "upstream_error", "WeCom corpid_to_opencorpid returned no corpid");
+      openCorpIds.set(args.corpId, open);
+      return open;
     },
 
     /** Exchange a 代开发 create_auth / reset_permanent_code AuthCode for the company's secret. */
