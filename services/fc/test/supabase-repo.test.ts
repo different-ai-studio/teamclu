@@ -3733,6 +3733,47 @@ test("apps: createApp grants write to the agents the caller picked", async () =>
   assert.deepEqual(upserts.map((c) => [c.row.member_id, c.row.permission_level]), [["agent-7", "write"]]);
 });
 
+test("apps: an app an agent creates is granted admin to the agent's owner", async () => {
+  // `amuxd app create` runs as the daemon's agent account; delegation only
+  // runs owner → agent, so without this grant the owner could not see it (#1885).
+  const calls: any[] = [];
+  const agentActor = { id: "agent-7", team_id: "team-1", actor_type: "agent", user_id: "daemon-7" };
+  const owner = { id: "member-1", team_id: "team-1", actor_type: "member", user_id: "owner-1" };
+  const supabase = appsSupabase({
+    calls,
+    actorRow: agentActor,
+    seed: {
+      actors: [agentActor, owner],
+      agents: [{ id: "agent-7", owner_member_id: "member-1", status: "active" }],
+    },
+  });
+  const repo = appsRepo(supabase, { createServiceRoleClient: () => supabase.serviceRole() });
+  await repo.createApp({
+    teamId: "team-1",
+    name: "Agent App",
+    type: "slides",
+    gitRemoteUrl: "https://github.com/owner/repo.git",
+  });
+  const upserts = calls.filter((c) => c.table === "app_member_access" && c.op === "upsert");
+  assert.deepEqual(upserts.map((c) => [c.row.member_id, c.row.permission_level]), [["member-1", "admin"]]);
+});
+
+test("apps: an app a member creates grants nobody else", async () => {
+  const calls: any[] = [];
+  const supabase = appsSupabase({
+    calls,
+    seed: { agents: [{ id: "agent-7", owner_member_id: "actor-app-1", status: "active" }] },
+  });
+  const repo = appsRepo(supabase, { createServiceRoleClient: () => supabase.serviceRole() });
+  await repo.createApp({
+    teamId: "team-1",
+    name: "Member App",
+    type: "slides",
+    gitRemoteUrl: "https://github.com/owner/repo.git",
+  });
+  assert.deepEqual(calls.filter((c) => c.table === "app_member_access" && c.op === "upsert"), []);
+});
+
 test("apps: updateApp returns null when no row updated (RLS non-creator)", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [] } }));
   const result = await repo.updateApp("app-1", { name: "New" });
