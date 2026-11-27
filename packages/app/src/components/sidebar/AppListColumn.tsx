@@ -263,7 +263,7 @@ export function AppListColumn() {
     <div className="flex h-full min-w-0 flex-col border-r border-border bg-background">
       <div
         className="flex items-center justify-between gap-2 border-b border-border px-4 py-3"
-        data-tauri-drag-region
+        data-tauri-drag-region="deep"
       >
         {sidebarCollapsed && (
           <div className="flex shrink-0 items-center gap-1">

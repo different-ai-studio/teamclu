@@ -179,7 +179,7 @@ export function KnowledgeReviewTab({ candidateId }: { candidateId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="border-b border-border px-6 py-4" data-tauri-drag-region>
+      <div className="border-b border-border px-6 py-4" data-tauri-drag-region="deep">
         <div className="text-[10.5px] font-semibold uppercase tracking-[0.8px] text-faint">
           {t('knowledgeReview.kicker', '审稿')}
         </div>

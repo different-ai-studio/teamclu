@@ -162,7 +162,7 @@ export function AppLibraryView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-3 border-b border-border px-5 py-3" data-tauri-drag-region>
+      <div className="flex items-center gap-3 border-b border-border px-5 py-3" data-tauri-drag-region="deep">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-panel text-muted-foreground">
           <AppWindow className="h-[17px] w-[17px]" />
         </span>

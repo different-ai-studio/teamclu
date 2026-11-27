@@ -90,7 +90,7 @@ export function TabBar({ trailing }: {
   return (
     <div
       className="flex h-10 shrink-0 items-stretch border-b bg-muted/30"
-      data-tauri-drag-region
+      data-tauri-drag-region="deep"
     >
     <div
       className="flex min-w-0 flex-1 items-stretch overflow-x-auto"

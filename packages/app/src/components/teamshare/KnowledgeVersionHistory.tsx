@@ -81,7 +81,7 @@ export function KnowledgeVersionHistory({ path }: { path: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3" data-tauri-drag-region>
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3" data-tauri-drag-region="deep">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-faint">
             <History className="h-3 w-3" />

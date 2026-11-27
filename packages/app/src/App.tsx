@@ -539,7 +539,7 @@ function AppContent() {
         <SidebarInset className="flex h-svh flex-col overflow-hidden">
           <header
             className="sticky top-0 z-10 flex h-12 shrink-0 items-center gap-2 bg-background px-4"
-            data-tauri-drag-region
+            data-tauri-drag-region="deep"
           >
             {collapsedInsetLeading}
             <span className="font-medium">{appDisplayName}</span>
@@ -582,7 +582,7 @@ function AppContent() {
           {showChatSessionHeader ? (
           <header
             className="sticky top-0 z-10 flex h-12 shrink-0 items-center gap-2 bg-background px-4"
-            data-tauri-drag-region
+            data-tauri-drag-region="deep"
           >
             {collapsedInsetLeading}
 

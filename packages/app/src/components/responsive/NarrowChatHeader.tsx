@@ -83,7 +83,7 @@ export function NarrowChatHeader() {
   }, [])
 
   return (
-    <div className="flex h-11 shrink-0 items-center border-b border-border bg-background px-2" data-tauri-drag-region>
+    <div className="flex h-11 shrink-0 items-center border-b border-border bg-background px-2" data-tauri-drag-region="deep">
       <TrafficLights />
       <div className="flex items-center gap-0.5">
         {showNavToggle ? <SidebarCollapseToggle className="h-8 w-8" /> : null}
