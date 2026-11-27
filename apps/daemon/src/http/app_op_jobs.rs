@@ -299,6 +299,12 @@ impl OpStore {
 mod tests {
     use super::*;
 
+    // `LIVE` is process-wide and `list()` folds it in by team id alone, while
+    // cargo runs these tests on parallel threads in one process. Tests that
+    // start operations therefore each use their own team and app ids; sharing
+    // `t1`/`a1` let one test's briefly-running deploy show up in another's
+    // `active_on("a1")` (seen in CI as `left: 2, right: 1`).
+
     async fn finished(store: &OpStore, op: &str) -> OpRecord {
         store.wait(op, Duration::from_secs(5)).await.unwrap()
     }
@@ -306,17 +312,21 @@ mod tests {
     #[tokio::test]
     async fn an_operation_ends_in_the_state_its_outcome_says() {
         let dir = tempfile::tempdir().unwrap();
-        let store = OpStore::new(dir.path(), "t1");
+        let store = OpStore::new(dir.path(), "t-outcomes");
 
-        let ok = store.start("deploy", "t1", Some("a1".into()), None, async {
-            Ok(json!({ "deployed": true }))
-        });
+        let ok = store.start(
+            "deploy",
+            "t-outcomes",
+            Some("a-outcomes".into()),
+            None,
+            async { Ok(json!({ "deployed": true })) },
+        );
         assert_eq!(ok.state, "running");
         let ok = finished(&store, &ok.op).await;
         assert_eq!(ok.state, "succeeded");
         assert_eq!(ok.result.unwrap()["deployed"], true);
 
-        let failed = store.start("deploy", "t1", None, None, async {
+        let failed = store.start("deploy", "t-outcomes", None, None, async {
             Err(OpError::conflict(
                 "deploy_locked",
                 "another deploy is running",
@@ -326,12 +336,12 @@ mod tests {
         assert_eq!(failed.state, "failed");
         assert_eq!(failed.error.unwrap()["exit"], 6);
 
-        let unknown = store.start("deploy", "t1", None, None, async {
+        let unknown = store.start("deploy", "t-outcomes", None, None, async {
             Err(OpError::unknown("deploy_outcome_unknown", "no answer"))
         });
         assert_eq!(finished(&store, &unknown.op).await.state, "unknown");
 
-        let crashed = store.start("undeploy", "t1", None, None, async {
+        let crashed = store.start("undeploy", "t-outcomes", None, None, async {
             panic!("boom");
         });
         let crashed = finished(&store, &crashed.op).await;
@@ -342,17 +352,23 @@ mod tests {
     #[tokio::test]
     async fn a_wait_that_runs_out_returns_the_running_record() {
         let dir = tempfile::tempdir().unwrap();
-        let store = OpStore::new(dir.path(), "t1");
-        let rec = store.start("deploy", "t1", Some("a1".into()), None, async {
-            tokio::time::sleep(Duration::from_secs(30)).await;
-            Ok(json!({}))
-        });
+        let store = OpStore::new(dir.path(), "t-wait-runs-out");
+        let rec = store.start(
+            "deploy",
+            "t-wait-runs-out",
+            Some("a-wait".into()),
+            None,
+            async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(json!({}))
+            },
+        );
         let snap = store
             .wait(&rec.op, Duration::from_millis(50))
             .await
             .unwrap();
         assert_eq!(snap.state, "running");
-        assert_eq!(store.active_on("a1").len(), 1);
+        assert_eq!(store.active_on("a-wait").len(), 1);
         assert_eq!(store.list(true, 10).len(), 1);
     }
 
