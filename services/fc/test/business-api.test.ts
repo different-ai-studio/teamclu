@@ -1207,6 +1207,36 @@ test("PUT /v1/sessions/:sessionId/participants/:actorId/workspace moves the seat
   });
 });
 
+test("POST /v1/sessions/:sessionId/app links the session to the app", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "POST",
+    path: "/v1/sessions/session-1/app",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ appId: "app-1" }),
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 204);
+  assert.deepEqual(repo.calls[0], {
+    method: "linkSessionApp",
+    sessionId: "session-1",
+    input: { appId: "app-1" },
+  });
+});
+
+test("POST /v1/sessions/:sessionId/app returns 400 without appId", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "POST",
+    path: "/v1/sessions/session-1/app",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({}),
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(repo.calls.length, 0);
+});
+
 test("PUT /v1/sessions/:sessionId/participants/:actorId/workspace returns 400 without workspaceId", async () => {
   const repo = fakeRepo();
   const response = await handleBusinessApiRequest({
@@ -2225,6 +2255,7 @@ function fakeRepo({ sessions = [], error = null, workspaces = [], ideas = null, 
     async listSessionRoster(sessionId) { calls.push({ method: "listSessionRoster", sessionId }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); const participants = s?.participants ?? []; return { sessionId, callerActorId: participants[0]?.actorId ?? "actor-1", title: s?.title ?? null, selfAgent: null, items: participants.map(p => ({ actorId: p.actorId, displayName: "Alice", kind: "member", isSelf: p.actorId === (participants[0]?.actorId ?? "actor-1") })) }; },
     async upsertSessionParticipant(sessionId, input) { calls.push({ method: "upsertSessionParticipant", sessionId, input }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); const existing = s?.participants?.find(p => p.actorId === input.actorId); if (existing) { existing.role = input.role ?? existing.role; return existing; } const newP = { sessionId, actorId: input.actorId, role: input.role ?? "member", joinedAt: null }; if (s) s.participants.push(newP); return newP; },
     async updateParticipantModel(sessionId, actorId, input) { calls.push({ method: "updateParticipantModel", sessionId, actorId, input }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); const p = s?.participants?.find(p => p.actorId === actorId); if (p) p.model = input.model; },
+    async linkSessionApp(sessionId, input) { calls.push({ method: "linkSessionApp", sessionId, input }); if (error) throw error; },
     async setParticipantWorkspace(sessionId, actorId, input) { calls.push({ method: "setParticipantWorkspace", sessionId, actorId, input }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); const p = s?.participants?.find(p => p.actorId === actorId); if (p) p.workspaceId = input.workspaceId; },
     async removeSessionParticipant(sessionId, actorId) { calls.push({ method: "removeSessionParticipant", sessionId, actorId }); if (error) throw error; const store = sessions.length > 0 ? sessions : sessionStore; const s = store.find(s => s.id === sessionId); if (s?.participants) s.participants = s.participants.filter(p => p.actorId !== actorId); },
     async getSessionByAcp(acpSessionId) { calls.push({ method: "getSessionByAcp", acpSessionId }); if (error) throw error; return gatewayBindings[acpSessionId] ?? null; },

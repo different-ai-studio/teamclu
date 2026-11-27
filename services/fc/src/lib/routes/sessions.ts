@@ -243,6 +243,17 @@ export function registerSessions(router) {
     return { statusCode: 204, body: null };
   });
 
+  // Give an existing session an app (`sessions.app_id`): the desktop offers it
+  // when an agent creates an app in a session (#1885). The repository
+  // authorizes the link; seating the agent on the app's checkout is the
+  // participant workspace route above.
+  router.post("/v1/sessions/:sessionId/app", async (ctx) => {
+    const body = ctx.json ?? {};
+    const appId = requireString(body.appId, "appId");
+    await ctx.repository.linkSessionApp(decodeURIComponent(ctx.params.sessionId), { appId });
+    return { statusCode: 204, body: null };
+  });
+
   router.delete("/v1/sessions/:sessionId/participants/:actorId", async (ctx) => {
     const sessionId = decodeURIComponent(ctx.params.sessionId);
     const actorId = decodeURIComponent(ctx.params.actorId);

@@ -254,6 +254,12 @@ function contractRepo() {
       const p = s?.participants?.find(p => p.actorId === actorId);
       if (p) p.workspaceId = workspaceId;
     },
+    async linkSessionApp(sessionId, { appId }) {
+      const s = sessionStore.find(s => s.id === sessionId);
+      if (!s) throw Object.assign(new Error("session not found"), { statusCode: 404 });
+      if (s.appId && s.appId !== appId) throw Object.assign(new Error("already linked"), { statusCode: 409 });
+      s.appId = appId;
+    },
     async removeSessionParticipant(sessionId, actorId) {
       const s = sessionStore.find(s => s.id === sessionId);
       if (s?.participants) s.participants = s.participants.filter(p => p.actorId !== actorId);

@@ -286,6 +286,15 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     assert.equal(row.workspaceId, "workspace-1");
   });
 
+  test("repository contract: linkSessionApp links a session and is idempotent", async () => {
+    // A session could only get an app at create, so one in which an agent built
+    // an app stayed apart from it (#1885). Linking it to the same app twice
+    // changes nothing; the second call must not fail.
+    const repo = createRepository();
+    await repo.linkSessionApp("session-1", { appId: "app-1" });
+    await repo.linkSessionApp("session-1", { appId: "app-1" });
+  });
+
   test("repository contract: removeSessionParticipant succeeds", async () => {
     const repo = createRepository();
     await repo.removeSessionParticipant("session-1", "actor-1");

@@ -1380,6 +1380,54 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/app:
+    post:
+      operationId: linkSessionApp
+      summary: Link an existing session to an app
+      description: |
+        Sets `sessions.app_id` on a session that has none, so it appears in
+        the app's session list (`GET /v1/apps/{appId}/sessions`). The desktop
+        offers it when an agent creates an app in a session (#1885). It links
+        only: putting the session's agent on the app's checkout is
+        `PUT /v1/sessions/{sessionId}/participants/{actorId}/workspace`.
+
+        The caller must be a member seated in the session, must be able to see
+        the app, and the app must be in the session's team. Only a regular
+        session (`source = 'user'`) can be linked. Linking a session to the app
+        it already has changes nothing; a session that has another app is
+        refused with 409 — the link is not moved.
+
+        Errors: 403 when the caller is not a member seated in the session; 404
+        when the session or the app is not visible to the caller; 409
+        `session_already_linked`, `session_not_linkable` or
+        `app_in_other_team`.
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appId]
+              properties:
+                appId:
+                  type: string
+                  format: uuid
+      responses:
+        "204":
+          description: Linked (or already linked to this app).
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
   /v1/sessions/{sessionId}/participants/{actorId}/model:
     patch:
       operationId: updateParticipantModel
@@ -13157,10 +13205,11 @@ components:
             - "null"
           format: uuid
           description: >-
-            The app this session belongs to (`sessions.app_id`). Only settable
-            at create. It links the session to the app and does not seat any
-            agent on the app's checkout: pass that workspace in
-            `workspaceByActorId`.
+            The app this session belongs to (`sessions.app_id`). Settable at
+            create; an existing session without one is linked through
+            `POST /v1/sessions/{sessionId}/app`. It links the session to the
+            app and does not seat any agent on the app's checkout: pass that
+            workspace in `workspaceByActorId`.
         primaryAgentActorId:
           type:
             - string
