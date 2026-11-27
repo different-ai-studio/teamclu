@@ -130,6 +130,9 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
     updateColumns(patch) {
       return patch.visibility === "team" || patch.visibility === "personal" ? { visibility: patch.visibility } : {};
     },
+    // That org grant is access: a delegate (an agent acting for its owner)
+    // may not widen or narrow who sees the owner's app (P2 spec §6 Q1).
+    accessColumns: ["visibility"],
 
     // Desktop introspect decodes `teamId` as required.
     authInfoFields(app) {

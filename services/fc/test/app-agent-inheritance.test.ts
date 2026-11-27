@@ -119,6 +119,28 @@ test("an agent with inherited admin cannot delete the app", async () => {
   );
 });
 
+// updateApp answers with the mapped app, which needs a real app code.
+const MAPPABLE_APP = { ...APP, slug: "yuce-qushu", app_code: "a-k7m2p9x4q1w8" };
+
+test("an agent with inherited admin cannot open or close the app to the org", async () => {
+  // The org grant travels as `visibility` on PATCH /v1/apps/:id (P3 Q1), so it
+  // is managing access like the grant routes above.
+  await assert.rejects(
+    () => asCaller(CREATOR_BOT).updateApp("app-1", { visibility: "team" }),
+    (e: any) => e.statusCode === 403 && e.code === "inherited_access_not_allowed",
+  );
+});
+
+test("an agent with inherited admin still saves settings, even when they echo the current visibility", async () => {
+  const updated = await asCaller(CREATOR_BOT, { apps: [MAPPABLE_APP] }).updateApp("app-1", { name: "改名", visibility: "personal" });
+  assert.equal(updated?.name, "改名");
+});
+
+test("the creator still opens the app to the org", async () => {
+  const updated = await asCaller(CREATOR, { apps: [MAPPABLE_APP] }).updateApp("app-1", { visibility: "team" });
+  assert.equal(updated?.visibility, "team");
+});
+
 test("an explicitly granted admin agent still manages access", async () => {
   const repo = asCaller(GRANTEE_BOT, {
     app_member_access: [

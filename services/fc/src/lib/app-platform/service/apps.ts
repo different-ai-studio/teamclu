@@ -774,7 +774,14 @@ export function makeAppsRepo(host: any) {
       const set: any = { updated_at: new Date().toISOString() };
       if (typeof patch.name === "string" && patch.name.length > 0) set.name = patch.name;
       // The tenant's own fields of the patch (TeamClu: visibility).
-      const tenantSet = tenantFactory(this).updateColumns(patch);
+      const tenant = tenantFactory(this);
+      const tenantSet = tenant.updateColumns(patch);
+      // Changing who may reach the app is managing access; a delegate may
+      // not, here as on the grant routes. Only an actual change counts, so a
+      // settings form that echoes the current value back still saves.
+      if ((tenant.accessColumns ?? []).some((col) => col in tenantSet && tenantSet[col] !== (cur as any)?.[col])) {
+        this.assertNotInheritedFor(callerPermission, "manage_access");
+      }
       Object.assign(set, tenantSet);
       // Written as-is and nothing else moves: whether the function gets a
       // database is decided at the next finalize (needsDatabase), which also

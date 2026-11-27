@@ -49,6 +49,13 @@ export interface AppTenantHooks {
   /** Columns an update writes for the product's own fields of the patch. */
   updateColumns(patch: Record<string, unknown>): Record<string, unknown>;
 
+  /**
+   * Which of those columns decide who may reach the app (an org grant, say).
+   * Changing one is managing access, which a caller whose level came through
+   * a delegation may not do — the same rule as the grant routes.
+   */
+  readonly accessColumns?: readonly string[];
+
   /** Extra fields for an app's auth info (`GET /v1/apps/:id/auth-info`). */
   authInfoFields(app: Record<string, any>): Record<string, unknown>;
 
