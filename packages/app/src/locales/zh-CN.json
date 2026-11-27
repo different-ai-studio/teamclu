@@ -805,6 +805,14 @@
     "todo": {
       "stackSummary": "{{count}} 项任务 · {{completed}} 已完成"
     },
+    "appLink": {
+      "prompt": "已创建应用「{{name}}」。要把当前会话关联到这个应用吗？关联后会话会出现在应用下，文件树切到应用目录。",
+      "link": "关联",
+      "linking": "关联中…",
+      "dismiss": "不用",
+      "linked": "已关联到应用「{{name}}」",
+      "failed": "关联失败：{{message}}"
+    },
     "toolCall": {
       "status": {
         "running": "运行中",

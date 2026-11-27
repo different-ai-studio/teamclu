@@ -274,6 +274,12 @@ export interface SessionsBackend {
     options?: { lock?: boolean },
   ): Promise<boolean>;
   archiveSession(sessionId: string, archivedAt: string): Promise<void>;
+  /**
+   * Link an existing session to an app (`POST /v1/sessions/:id/app`). Linking
+   * to the app it already has is a no-op; another app is a 409. It only links:
+   * seating the agent on the checkout is `openAppSession` (#1885).
+   */
+  linkApp(sessionId: string, appId: string): Promise<void>;
   getSessionParticipants(sessionId: string): Promise<SessionParticipant[]>;
   getSession(sessionId: string, teamId?: string | null): Promise<SessionDetailRow | null>;
   joinSession(sessionId: string): Promise<SessionDetailRow>;
