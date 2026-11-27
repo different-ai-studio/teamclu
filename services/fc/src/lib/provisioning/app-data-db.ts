@@ -1,6 +1,7 @@
 import postgres from "postgres";
 import { appRoleName, appSchemaName, orgDatabaseName } from "./pg-name.js";
 import { withDatabaseName } from "./app-postgres.js";
+import { logPgNotice } from "./pg-notice.js";
 import { ApiError } from "../http-utils.js";
 
 /**
@@ -82,6 +83,7 @@ function defaultConnect(url: string): AppDataSql {
     idle_timeout: Number(process.env.PG_IDLE_TIMEOUT ?? "20"),
     connect_timeout: Number(process.env.PG_CONNECT_TIMEOUT ?? "10"),
     prepare: false,
+    onnotice: logPgNotice,
   }) as unknown as AppDataSql;
   orgPools.set(url, sql);
   return sql;
