@@ -3,7 +3,23 @@
 -- adding it changes nothing about the old tables.
 begin;
 
-select plan(26);
+select plan(27);
+
+select ok(not exists (
+  select 1
+    from pg_roles r
+    cross join (values
+      ('amux.trg_apps_creator_user()'),
+      ('amux.trg_apps_project()'),
+      ('amux.trg_app_member_access_project()'),
+      ('amux.trg_app_member_access_unproject()'),
+      ('amux.trg_agents_project()'),
+      ('amux.trg_actors_project()'),
+      ('amux.trg_app_operator_user()')
+    ) as f(signature)
+   where r.rolname in ('anon', 'authenticated', 'service_role', 'teamclu_migration_runner')
+     and has_function_privilege(r.oid, f.signature, 'EXECUTE')
+), 'trigger-only functions do not grant EXECUTE to runtime roles or the legacy runner');
 
 -- ── fixtures (session role) ───────────────────────────────────────────────
 -- Org O, team T:

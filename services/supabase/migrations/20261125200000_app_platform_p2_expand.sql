@@ -404,3 +404,25 @@ update amux.app_env_vars e
    set updated_by_user_id = a.user_id
   from amux.actors a
  where a.id = e.updated_by_member_id and e.updated_by_user_id is null;
+
+-- These security-definer functions are entry points for installed triggers only.
+-- Also remove the direct default grant on deployments with the legacy runner.
+do $trigger_acl$
+declare
+  grant_roles text := 'PUBLIC, anon, authenticated, service_role';
+begin
+  if exists (select 1 from pg_roles where rolname = 'teamclu_migration_runner') then
+    grant_roles := grant_roles || ', teamclu_migration_runner';
+  end if;
+
+  execute 'revoke execute on function
+  amux.trg_apps_creator_user(),
+  amux.trg_apps_project(),
+  amux.trg_app_member_access_project(),
+  amux.trg_app_member_access_unproject(),
+  amux.trg_agents_project(),
+  amux.trg_actors_project(),
+  amux.trg_app_operator_user()
+    from ' || grant_roles;
+end;
+$trigger_acl$;
