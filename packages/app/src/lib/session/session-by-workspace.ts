@@ -1,5 +1,6 @@
 import { resolveSessionWorkspaceForViewer } from "@/lib/session/session-viewer-workspace";
 import { workspacePathsMatch } from "@/stores/session-utils";
+import { workspacePathAvailableHere } from "@/lib/workspace/path-available-here";
 
 /**
  * Viewer-scoped local path for a session. Only adopts workspaces tied to the
@@ -59,28 +60,4 @@ export async function switchToSessionWorkspaceIfNeeded(
   }
 
   await useWorkspaceStore.getState().setWorkspace(targetPath);
-}
-
-/**
- * Whether `path` is a folder this machine has.
- *
- * Asked of Rust (`path_is_directory`), not the fs plugin's `exists`: that one
- * is scope-gated, and the webview scope only holds folders this run has opened.
- * A window started on an app checkout had never opened the session's own
- * folder, so the check was refused, read as "not here", and the switch skipped.
- *
- * Errors count as unavailable: the only caller uses this to decide whether to
- * adopt and persist a path, and adopting one we could not check is the failure
- * this guard exists to prevent.
- */
-async function workspacePathAvailableHere(path: string): Promise<boolean> {
-  const trimmed = path.trim();
-  if (!trimmed) return false;
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return (await invoke<boolean>("path_is_directory", { path: trimmed })) === true;
-  } catch (error) {
-    console.warn("[session] could not check session workspace path:", error);
-    return false;
-  }
 }

@@ -235,7 +235,7 @@ describe('useWorkspaceInit', () => {
 
   it('clears a saved workspace when it no longer exists in Tauri and falls back to default', async () => {
     mockIsTauri.mockReturnValue(true)
-    mockExists.mockResolvedValue(false)
+    mockInvoke.mockImplementation(async (cmd: string) => (cmd === 'path_is_directory' ? false : null))
     localStorage.setItem('teamclu-workspace-path', '/tmp/missing-workspace')
 
     const { useWorkspaceInit } = await import('@/hooks/use-workspace-init')
@@ -245,6 +245,42 @@ describe('useWorkspaceInit', () => {
       expect(localStorage.getItem('teamclu-workspace-path')).toBeNull()
       expect(result.current.initialWorkspaceResolved).toBe(true)
     })
+    expect(mockSetWorkspace).toHaveBeenCalledWith(DEFAULT_WORKSPACE_PATH)
+  })
+
+  it('restores a saved workspace in Tauri when Rust confirms the folder is here', async () => {
+    mockIsTauri.mockReturnValue(true)
+    mockInvoke.mockImplementation(async (cmd: string) => (cmd === 'path_is_directory' ? true : null))
+    localStorage.setItem('teamclu-workspace-path', '/tmp/teamclu-here')
+
+    const { useWorkspaceInit } = await import('@/hooks/use-workspace-init')
+    const { result } = renderHook(() => useWorkspaceInit())
+
+    await waitFor(() => {
+      expect(result.current.initialWorkspaceResolved).toBe(true)
+    })
+    expect(mockInvoke).toHaveBeenCalledWith('path_is_directory', { path: '/tmp/teamclu-here' })
+    expect(mockSetWorkspace).toHaveBeenCalledWith('/tmp/teamclu-here')
+  })
+
+  // #1579: the old `exists` check was scope-gated and its errors meant "restore
+  // anyway", so a folder persisted from another machine came back every launch.
+  it('does not restore a saved workspace it could not check', async () => {
+    mockIsTauri.mockReturnValue(true)
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'path_is_directory') throw new Error('ipc unavailable')
+      return null
+    })
+    localStorage.setItem('teamclu-workspace-path', '/Users/someone-else/TeamClu')
+
+    const { useWorkspaceInit } = await import('@/hooks/use-workspace-init')
+    const { result } = renderHook(() => useWorkspaceInit())
+
+    await waitFor(() => {
+      expect(result.current.initialWorkspaceResolved).toBe(true)
+    })
+    expect(localStorage.getItem('teamclu-workspace-path')).toBeNull()
+    expect(mockSetWorkspace).not.toHaveBeenCalledWith('/Users/someone-else/TeamClu')
     expect(mockSetWorkspace).toHaveBeenCalledWith(DEFAULT_WORKSPACE_PATH)
   })
 
