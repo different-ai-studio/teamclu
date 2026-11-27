@@ -8,6 +8,7 @@ import {
   type RuntimeInfo,
 } from '@/lib/proto/amux_pb'
 import { mqttSubscribe, listenForEnvelopes, type IncomingEnvelope } from '@/lib/mqtt/mqtt-bridge'
+import { parseActorStateTopic } from '@/lib/mqtt/actor-state-topic'
 import { sessionFlowLog } from '@/lib/session/session-flow-log'
 import { createSharedModuleLeaseManager, type SharedModuleLease } from '@/lib/shared-module-lease'
 
@@ -216,16 +217,7 @@ export const useRuntimeStateStore = createZustand<RuntimeStateState>((set, get) 
   clear: () => set({ byRuntimeId: {}, defaultCatalogByActorId: {} }),
 }))
 
-/** `amux/{team}/{actor}/state` — the one retained topic per actor. */
-export function parseActorStateTopic(
-  topic: string
-): { teamId: string; actorId: string } | null {
-  const parts = topic.split('/')
-  if (parts.length !== 4) return null
-  if (parts[0] !== 'amux') return null
-  if (parts[3] !== 'state') return null
-  return { teamId: parts[1], actorId: parts[2] }
-}
+export { parseActorStateTopic }
 
 type ActorPresenceSync = {
   daemonActorId: string

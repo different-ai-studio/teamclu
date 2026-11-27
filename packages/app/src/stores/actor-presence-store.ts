@@ -2,6 +2,7 @@ import { create as createZustand } from 'zustand'
 import { fromBinary } from '@bufbuild/protobuf'
 import { ActorPresenceSchema } from '@/lib/proto/amux_pb'
 import { mqttSubscribe, listenForEnvelopes, type IncomingEnvelope } from '@/lib/mqtt/mqtt-bridge'
+import { parseActorStateTopic } from '@/lib/mqtt/actor-state-topic'
 import { createSharedModuleLeaseManager, type SharedModuleLease } from '@/lib/shared-module-lease'
 
 // Per-actor presence. Fed by retained `amux/{team}/{actor}/state` publishes —
@@ -39,15 +40,7 @@ export const useActorPresenceStore = createZustand<ActorPresenceState>((set, get
   clear: () => set({ byActorId: {} }),
 }))
 
-export function parseActorStateTopic(
-  topic: string,
-): { teamId: string; actorId: string } | null {
-  const parts = topic.split('/')
-  if (parts.length !== 4) return null
-  if (parts[0] !== 'amux') return null
-  if (parts[3] !== 'state') return null
-  return { teamId: parts[1], actorId: parts[2] }
-}
+export { parseActorStateTopic }
 
 const presenceLeaseManager = createSharedModuleLeaseManager<string>({
   key: (teamId) => teamId.trim(),
