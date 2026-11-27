@@ -1498,6 +1498,33 @@ test("patchWorkspace without archived:true never touches sessions", async () => 
   );
 });
 
+test("patchWorkspace moves path_key with path so the unique index sees the new folder", async () => {
+  const tableCalls = [];
+  const repo = createRepo(fakeSupabase({
+    tableCalls,
+    tableData: { workspaces: [{ id: "ws-1", team_id: "team-1", name: "Repo", path: "C:/Users/a/TeamClu" }] },
+  }));
+
+  await repo.patchWorkspace("ws-1", { path: "C:\\Users\\a\\TeamClu\\" });
+
+  const update = tableCalls.find((c) => c.table === "workspaces" && c.op === "update");
+  assert.equal(update?.row.path, "C:/Users/a/TeamClu");
+  assert.equal(update?.row.path_key, "C:/Users/a/TeamClu");
+});
+
+test("patchWorkspace without a path leaves path and path_key alone", async () => {
+  const tableCalls = [];
+  const repo = createRepo(fakeSupabase({
+    tableCalls,
+    tableData: { workspaces: [{ id: "ws-1", team_id: "team-1", name: "Renamed", path: "/repo" }] },
+  }));
+
+  await repo.patchWorkspace("ws-1", { name: "Renamed" });
+
+  const update = tableCalls.find((c) => c.table === "workspaces" && c.op === "update");
+  assert.ok(!("path" in update.row) && !("path_key" in update.row));
+});
+
 // --- Actor directory ---
 
 test("listTeamActors selects actor_directory columns without removed agent_kind", async () => {

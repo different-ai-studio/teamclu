@@ -20,6 +20,30 @@ use crate::runtime::execution_context::WorkspaceIdentity;
 pub struct ResolvedWorkspace {
     pub path: String,
     pub team_id: Option<String>,
+    /// Archived rows stay resolvable by id (old sessions still name them) but
+    /// never take part in path → id lookups, so a retired duplicate cannot
+    /// make the live row for the same folder ambiguous.
+    pub archived: bool,
+    /// The agent that registered the row. When several live rows claim one
+    /// folder, the one registered by this daemon's own agent wins: a row from
+    /// another machine that happens to use the same path (every Windows PC's
+    /// default is `C:/Users/Administrator/TeamClu`) is not a conflict here.
+    pub agent_id: Option<String>,
+}
+
+impl ResolvedWorkspace {
+    fn from_row(path: String, row: &crate::backend::WorkspaceRow) -> Self {
+        Self {
+            path,
+            team_id: if row.team_id.is_empty() {
+                None
+            } else {
+                Some(row.team_id.clone())
+            },
+            archived: row.archived,
+            agent_id: row.agent_id.clone().filter(|id| !id.trim().is_empty()),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -82,17 +106,11 @@ impl WorkspaceResolver {
 
         let path = row
             .path
+            .clone()
             .filter(|p| !p.is_empty())
             .ok_or_else(|| ResolveError::PathMissing(workspace_id.to_string()))?;
 
-        let resolved = ResolvedWorkspace {
-            path,
-            team_id: if row.team_id.is_empty() {
-                None
-            } else {
-                Some(row.team_id)
-            },
-        };
+        let resolved = ResolvedWorkspace::from_row(path, &row);
 
         self.cache
             .write()
@@ -111,8 +129,59 @@ impl WorkspaceResolver {
             .await
             .entries
             .iter()
-            .find(|(_, v)| v.path == path)
+            .find(|(_, v)| !v.archived && v.path == path)
             .map(|(id, _)| id.clone())
+    }
+
+    /// The identity a caller asked for by id, provided its folder exists on
+    /// this machine. Unlike a path lookup this is never ambiguous: other rows
+    /// claiming the same folder do not matter when the id is named outright.
+    pub fn identity_for_id(
+        workspace_id: &str,
+        resolved: &ResolvedWorkspace,
+    ) -> Option<WorkspaceIdentity> {
+        workspace_identity(workspace_id, resolved)
+    }
+
+    /// Explain why `path` resolved to no workspace, for error messages: either
+    /// no live row owns it, or several do and none could be preferred. Reads
+    /// only the cache that the preceding `resolve_identity_for_path` filled.
+    pub async fn describe_unresolved_path(&self, path: &Path, team_id: Option<&str>) -> String {
+        let cache = self.cache.read().await;
+        let local_agent = self.local_agent();
+        let candidate = path.canonicalize().ok();
+        let mut claimants: Vec<String> = cache
+            .entries
+            .iter()
+            .filter(|(_, resolved)| !resolved.archived && team_matches(resolved, team_id))
+            .filter(|(_, resolved)| {
+                let root = Path::new(resolved.path.trim());
+                match (&candidate, root.canonicalize().ok()) {
+                    (Some(candidate), Some(root)) => owns_worktree(&root, candidate),
+                    _ => root == path,
+                }
+            })
+            .map(|(id, resolved)| match (&local_agent, &resolved.agent_id) {
+                (Some(local), Some(agent)) if local == agent => format!("{id} (this agent)"),
+                (_, Some(agent)) => format!("{id} (agent {agent})"),
+                (_, None) => id.clone(),
+            })
+            .collect();
+        claimants.sort();
+        if claimants.len() > 1 {
+            format!(
+                "{} is claimed by several workspaces ({}); archive or remove the duplicates",
+                path.display(),
+                claimants.join(", ")
+            )
+        } else {
+            format!("no registered workspace owns {}", path.display())
+        }
+    }
+
+    fn local_agent(&self) -> Option<String> {
+        let id = self.backend.actor_id().trim();
+        (!id.is_empty()).then(|| id.to_string())
     }
 
     /// Resolve a local path to its registered cloud workspace identity. A
@@ -148,6 +217,15 @@ impl WorkspaceResolver {
         Ok(self.identity_from_cache(path, team_id).await)
     }
 
+    /// True when `candidate` is the workspace root itself or sits under its
+    /// `.worktrees` directory — the same ownership rule path lookups apply.
+    pub fn root_owns_path(root: &Path, candidate: &Path) -> bool {
+        match (root.canonicalize(), candidate.canonicalize()) {
+            (Ok(root), Ok(candidate)) => owns_worktree(&root, &candidate),
+            _ => root == candidate,
+        }
+    }
+
     /// Resolve an agent's configured default workspace, falling back to the
     /// first usable workspace registered for the supplied team.
     pub async fn resolve_default_workspace(
@@ -176,27 +254,18 @@ impl WorkspaceResolver {
 
         let team_id = team_id.filter(|id| !id.trim().is_empty())?;
         let rows = self.backend.get_workspaces_by_team(team_id).await.ok()?;
-        let conflicting_ids = conflicting_workspace_ids(&rows);
+        let conflicting_ids = conflicting_workspace_ids(&rows, self.local_agent().as_deref());
 
-        rows.into_iter().find_map(|row| {
+        rows.iter().find_map(|row| {
             let path = row.path.as_deref()?.trim();
             if path.is_empty()
+                || row.archived
                 || conflicting_ids.contains(&row.id)
                 || !super::workspace_path::is_linkable_workspace_path(path)
             {
                 return None;
             }
-            workspace_identity(
-                &row.id,
-                &ResolvedWorkspace {
-                    path: path.to_string(),
-                    team_id: if row.team_id.is_empty() {
-                        None
-                    } else {
-                        Some(row.team_id)
-                    },
-                },
-            )
+            workspace_identity(&row.id, &ResolvedWorkspace::from_row(path.to_string(), row))
         })
     }
 
@@ -211,31 +280,27 @@ impl WorkspaceResolver {
         generation: u64,
         rows: Vec<crate::backend::WorkspaceRow>,
     ) -> bool {
-        let conflicting_ids = conflicting_workspace_ids(&rows);
         let mut cache = self.cache.write().await;
         if cache.generation != generation {
             return false;
         }
 
+        // Every row with a path is cached, duplicates included: which of
+        // several rows claiming one folder may answer a path lookup is decided
+        // at lookup time (`select_workspace_identity`), where archived rows and
+        // this daemon's own agent are taken into account.
         for row in rows {
             cache.entries.remove(&row.id);
-            if conflicting_ids.contains(&row.id) {
-                continue;
-            }
-            let Some(path) = row.path.filter(|path| !path.trim().is_empty()) else {
+            let Some(path) = row
+                .path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+            else {
                 continue;
             };
-            cache.entries.insert(
-                row.id,
-                ResolvedWorkspace {
-                    path: path.trim().to_string(),
-                    team_id: if row.team_id.is_empty() {
-                        None
-                    } else {
-                        Some(row.team_id)
-                    },
-                },
-            );
+            let resolved = ResolvedWorkspace::from_row(path.to_string(), &row);
+            cache.entries.insert(row.id, resolved);
         }
         cache.loaded_teams.insert(team_id.to_string());
         true
@@ -247,9 +312,20 @@ impl WorkspaceResolver {
         team_id: Option<&str>,
     ) -> Option<WorkspaceIdentity> {
         let cache = self.cache.read().await;
+        let local_agent = self.local_agent();
         match candidate.canonicalize() {
-            Ok(candidate) => select_workspace_identity(&cache.entries, &candidate, team_id),
-            Err(_) => select_missing_workspace_identity(&cache.entries, candidate, team_id),
+            Ok(candidate) => select_workspace_identity(
+                &cache.entries,
+                &candidate,
+                team_id,
+                local_agent.as_deref(),
+            ),
+            Err(_) => select_missing_workspace_identity(
+                &cache.entries,
+                candidate,
+                team_id,
+                local_agent.as_deref(),
+            ),
         }
     }
 
@@ -293,15 +369,9 @@ impl WorkspaceResolver {
 
         let mut cache = self.cache.write().await;
         for row in rows {
-            if let Some(path) = row.path.filter(|p| !p.is_empty()) {
-                let team_id = if row.team_id.is_empty() {
-                    None
-                } else {
-                    Some(row.team_id)
-                };
-                cache
-                    .entries
-                    .insert(row.id, ResolvedWorkspace { path, team_id });
+            if let Some(path) = row.path.clone().filter(|p| !p.is_empty()) {
+                let resolved = ResolvedWorkspace::from_row(path, &row);
+                cache.entries.insert(row.id, resolved);
             }
         }
 
@@ -309,75 +379,110 @@ impl WorkspaceResolver {
     }
 }
 
-fn conflicting_workspace_ids(rows: &[crate::backend::WorkspaceRow]) -> HashSet<String> {
-    let exact_conflicts: HashSet<_> = conflicting_workspace_paths(rows)
-        .into_iter()
-        .map(|(path, _)| path)
-        .collect();
-    let mut conflicting_ids: HashSet<String> = rows
-        .iter()
-        .filter(|row| {
-            row.path
-                .as_deref()
-                .map(str::trim)
-                .is_some_and(|path| exact_conflicts.contains(path))
-        })
-        .map(|row| row.id.clone())
-        .collect();
-
-    let mut ids_by_canonical_root: HashMap<PathBuf, Vec<String>> = HashMap::new();
-    for row in rows {
-        let Some(root) = row
+/// Ids of live rows that cannot be told apart by path: several rows claim the
+/// same folder (exact text, or the same directory once canonicalized) and
+/// preferring this daemon's own agent does not leave exactly one of them.
+fn conflicting_workspace_ids(
+    rows: &[crate::backend::WorkspaceRow],
+    local_agent: Option<&str>,
+) -> HashSet<String> {
+    let live = rows.iter().filter(|row| !row.archived).filter_map(|row| {
+        let path = row
             .path
             .as_deref()
             .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .and_then(|path| Path::new(path).canonicalize().ok())
-        else {
+            .filter(|p| !p.is_empty())?;
+        Some((row, path))
+    });
+    let mut by_path: HashMap<String, Vec<(&str, Option<&str>)>> = HashMap::new();
+    let mut by_canonical_root: HashMap<PathBuf, Vec<(&str, Option<&str>)>> = HashMap::new();
+    for (row, path) in live {
+        let claim = (row.id.as_str(), row.agent_id.as_deref());
+        let group = by_path.entry(path.to_string()).or_default();
+        if !group.iter().any(|(id, _)| *id == claim.0) {
+            group.push(claim);
+        }
+        if let Ok(root) = Path::new(path).canonicalize() {
+            let group = by_canonical_root.entry(root).or_default();
+            if !group.iter().any(|(id, _)| *id == claim.0) {
+                group.push(claim);
+            }
+        }
+    }
+
+    let mut conflicting = HashSet::new();
+    for group in by_path.into_values().chain(by_canonical_root.into_values()) {
+        if group.len() < 2 {
             continue;
-        };
-        let ids = ids_by_canonical_root.entry(root).or_default();
-        if !ids.contains(&row.id) {
-            ids.push(row.id.clone());
         }
+        let winner = pick_unique_claim(
+            group.iter().map(|(id, agent)| (*agent, *id)).collect(),
+            local_agent,
+        );
+        conflicting.extend(
+            group
+                .iter()
+                .map(|(id, _)| *id)
+                .filter(|id| Some(*id) != winner)
+                .map(str::to_string),
+        );
     }
-    for ids in ids_by_canonical_root.into_values() {
-        if ids.len() > 1 {
-            conflicting_ids.extend(ids);
-        }
+    conflicting
+}
+
+/// Choose the one claim on a folder that may answer for it: the only claim,
+/// or else the only one registered by this daemon's own agent. `None` when
+/// neither leaves exactly one.
+fn pick_unique_claim<T>(
+    mut claims: Vec<(Option<&str>, T)>,
+    local_agent: Option<&str>,
+) -> Option<T> {
+    if claims.len() == 1 {
+        return claims.pop().map(|(_, claim)| claim);
     }
-    conflicting_ids
+    let local_agent = local_agent?;
+    let mut local: Vec<T> = claims
+        .into_iter()
+        .filter(|(agent, _)| *agent == Some(local_agent))
+        .map(|(_, claim)| claim)
+        .collect();
+    (local.len() == 1).then(|| local.pop()).flatten()
+}
+
+fn team_matches(resolved: &ResolvedWorkspace, team_id: Option<&str>) -> bool {
+    team_id.is_none() || resolved.team_id.is_none() || resolved.team_id.as_deref() == team_id
 }
 
 fn select_workspace_identity(
     entries: &HashMap<String, ResolvedWorkspace>,
     candidate: &Path,
     team_id: Option<&str>,
+    local_agent: Option<&str>,
 ) -> Option<WorkspaceIdentity> {
-    let candidates: Vec<_> = entries
-        .iter()
-        .filter(|(_, resolved)| {
-            team_id.is_none()
-                || resolved.team_id.is_none()
-                || resolved.team_id.as_deref() == team_id
-        })
-        .filter_map(|(workspace_id, resolved)| {
-            let canonical_root = Path::new(resolved.path.trim()).canonicalize().ok()?;
-            let identity = workspace_identity(workspace_id, resolved)?;
-            Some((canonical_root, identity))
-        })
-        .collect();
-    let mut canonical_root_counts: HashMap<PathBuf, usize> = HashMap::new();
-    for (canonical_root, _) in &candidates {
-        *canonical_root_counts
-            .entry(canonical_root.clone())
-            .or_default() += 1;
+    let mut claims_by_root: HashMap<PathBuf, Vec<(Option<&str>, WorkspaceIdentity)>> =
+        HashMap::new();
+    for (workspace_id, resolved) in entries {
+        if resolved.archived || !team_matches(resolved, team_id) {
+            continue;
+        }
+        let Ok(canonical_root) = Path::new(resolved.path.trim()).canonicalize() else {
+            continue;
+        };
+        let Some(identity) = workspace_identity(workspace_id, resolved) else {
+            continue;
+        };
+        claims_by_root
+            .entry(canonical_root)
+            .or_default()
+            .push((resolved.agent_id.as_deref(), identity));
     }
 
-    candidates
+    claims_by_root
         .into_iter()
-        .filter(|(canonical_root, _)| canonical_root_counts[canonical_root] == 1)
         .filter(|(canonical_root, _)| owns_worktree(canonical_root, candidate))
+        .filter_map(|(canonical_root, claims)| {
+            pick_unique_claim(claims, local_agent).map(|identity| (canonical_root, identity))
+        })
         .max_by_key(|(canonical_root, _)| canonical_root.components().count())
         .map(|(_, identity)| identity)
 }
@@ -386,17 +491,27 @@ fn select_missing_workspace_identity(
     entries: &HashMap<String, ResolvedWorkspace>,
     candidate: &Path,
     team_id: Option<&str>,
+    local_agent: Option<&str>,
 ) -> Option<WorkspaceIdentity> {
-    let mut matches = entries.iter().filter(|(_, resolved)| {
-        (team_id.is_none() || resolved.team_id.is_none() || resolved.team_id.as_deref() == team_id)
-            && Path::new(resolved.path.trim()) == candidate
-    });
-    let (workspace_id, resolved) = matches.next()?;
-    matches.next().is_none().then(|| WorkspaceIdentity {
-        workspace_id: workspace_id.clone(),
-        workspace_root: PathBuf::from(resolved.path.trim()),
-        team_id: resolved.team_id.clone(),
-    })
+    let claims = entries
+        .iter()
+        .filter(|(_, resolved)| {
+            !resolved.archived
+                && team_matches(resolved, team_id)
+                && Path::new(resolved.path.trim()) == candidate
+        })
+        .map(|(workspace_id, resolved)| {
+            (
+                resolved.agent_id.as_deref(),
+                WorkspaceIdentity {
+                    workspace_id: workspace_id.clone(),
+                    workspace_root: PathBuf::from(resolved.path.trim()),
+                    team_id: resolved.team_id.clone(),
+                },
+            )
+        })
+        .collect();
+    pick_unique_claim(claims, local_agent)
 }
 
 fn workspace_identity(
@@ -427,7 +542,7 @@ pub fn conflicting_workspace_paths(
     rows: &[crate::backend::WorkspaceRow],
 ) -> Vec<(String, Vec<String>)> {
     let mut by_path: HashMap<String, Vec<String>> = HashMap::new();
-    for row in rows {
+    for row in rows.iter().filter(|row| !row.archived) {
         let Some(path) = row.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
             continue;
         };
@@ -650,6 +765,103 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    fn seed_row(
+        backend: &MockBackend,
+        id: &str,
+        path: &str,
+        archived: bool,
+        agent_id: Option<&str>,
+    ) {
+        backend.state().workspaces_by_id.insert(
+            id.to_string(),
+            WorkspaceRow {
+                id: id.to_string(),
+                team_id: "team-x".to_string(),
+                path: Some(path.to_string()),
+                archived,
+                agent_id: agent_id.map(str::to_string),
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn archived_duplicate_does_not_make_live_root_ambiguous() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().to_string_lossy();
+        let mock = MockBackend::new();
+        seed_row(&mock, "ws-live", &path, false, None);
+        seed_row(&mock, "ws-retired", &path, true, None);
+        let backend: Arc<dyn Backend> = Arc::new(mock);
+        let resolver = WorkspaceResolver::new(backend);
+        // An old session naming the archived id still puts it in the cache.
+        resolver.resolve("ws-retired").await.unwrap();
+
+        let identity = resolver
+            .resolve_identity_for_path(root.path(), Some("team-x"))
+            .await
+            .unwrap()
+            .expect("the archived row must not count as a second claim");
+        assert_eq!(identity.workspace_id, "ws-live");
+    }
+
+    #[tokio::test]
+    async fn own_agents_row_wins_over_another_machines_row_on_the_same_path() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().to_string_lossy();
+        let mock = MockBackend::with_identity("team-x", "agent-here");
+        seed_row(&mock, "ws-here", &path, false, Some("agent-here"));
+        seed_row(&mock, "ws-other-pc", &path, false, Some("agent-other-pc"));
+        let backend: Arc<dyn Backend> = Arc::new(mock);
+        let resolver = WorkspaceResolver::new(backend);
+
+        let identity = resolver
+            .resolve_identity_for_path(root.path(), Some("team-x"))
+            .await
+            .unwrap()
+            .expect("this agent's row answers for its own folder");
+        assert_eq!(identity.workspace_id, "ws-here");
+    }
+
+    #[tokio::test]
+    async fn two_rows_of_the_same_agent_stay_ambiguous_and_are_named() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().to_string_lossy();
+        let mock = MockBackend::with_identity("team-x", "agent-here");
+        seed_row(&mock, "ws-first", &path, false, Some("agent-here"));
+        seed_row(&mock, "ws-second", &path, false, Some("agent-here"));
+        let backend: Arc<dyn Backend> = Arc::new(mock);
+        let resolver = WorkspaceResolver::new(backend);
+
+        assert!(resolver
+            .resolve_identity_for_path(root.path(), Some("team-x"))
+            .await
+            .unwrap()
+            .is_none());
+        let reason = resolver
+            .describe_unresolved_path(root.path(), Some("team-x"))
+            .await;
+        assert!(reason.contains("ws-first (this agent)"), "{reason}");
+        assert!(reason.contains("ws-second (this agent)"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn default_workspace_fallback_skips_archived_and_prefers_own_agent() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().to_string_lossy();
+        let mock = MockBackend::with_identity("team-x", "agent-here");
+        seed_row(&mock, "ws-retired", &path, true, Some("agent-here"));
+        seed_row(&mock, "ws-other-pc", &path, false, Some("agent-other-pc"));
+        seed_row(&mock, "ws-here", &path, false, Some("agent-here"));
+        let backend: Arc<dyn Backend> = Arc::new(mock);
+        let resolver = WorkspaceResolver::new(backend);
+
+        let identity = resolver
+            .resolve_default_workspace(Some("team-x"), "agent-here")
+            .await
+            .expect("the fallback finds this agent's live row");
+        assert_eq!(identity.workspace_id, "ws-here");
     }
 
     #[tokio::test]

@@ -2807,8 +2807,19 @@ export function createSupabaseBusinessRepository(options) {
       const row: any = {};
       if (patch.name !== undefined) row.name = patch.name;
       if (patch.archived !== undefined) row.archived = patch.archived;
-      if (patch.slug !== undefined) row.path = patch.slug;
-      if (patch.path !== undefined) row.path = patch.path;
+      // `path_key` is the workspace's identity: the partial unique index on
+      // (team_id, path_key) is what keeps two live rows off one folder. A PATCH
+      // that moved `path` alone left `path_key` behind, so a row could be
+      // repointed at a folder another live row already held and the index
+      // never saw it — the daemon then refused every session there as
+      // "ambiguous or invalid workspace". Normalize the same way the upsert
+      // does and move both; a collision now fails as 409 duplicate_key.
+      const rawPath = patch.path !== undefined ? patch.path : patch.slug;
+      if (rawPath !== undefined) {
+        const normalizedPath = normalizeWorkspacePath(rawPath);
+        row.path = normalizedPath;
+        row.path_key = normalizedPath;
+      }
       if (patch.agentId !== undefined) row.agent_id = patch.agentId;
       const { data, error } = await supabase
         .from("workspaces")
