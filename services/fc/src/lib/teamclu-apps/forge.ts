@@ -8,6 +8,7 @@
  * and live here (P2.4b of docs/specs/2026-11-25-app-platform-p2-de-team.md).
  */
 import { noForge, type AppHookContext, type AppLifecycleHooks, type AppRepoRow } from "../app-platform/hooks.js";
+import { readForgeRepos, writeForgeRepo } from "./forge-repos.js";
 
 export interface TeamCluForge extends AppLifecycleHooks {
   /** Who is in a team changed, so every team-visible app of it changed too. */
@@ -22,11 +23,26 @@ export interface TeamCluForge extends AppLifecycleHooks {
 
 export type TeamCluForgeFactory = (ctx: AppHookContext) => TeamCluForge;
 
-/** No forge: the platform's `noForge`, and nothing to sync or issue. */
+/**
+ * Where apps' code lives, kept in TeamClu's `app_forge_repos` whether or not
+ * this deployment hosts any repo: an imported app is recorded the same way.
+ */
+export function forgeRepoRecords(ctx: AppHookContext): Pick<AppLifecycleHooks, "repos" | "recordImportedRepo"> {
+  return {
+    repos: (client, appIds) => readForgeRepos(client, appIds),
+    async recordImportedRepo(appId, remoteUrl) {
+      const admin = await ctx.serviceRoleClient("record an imported app's repo");
+      await writeForgeRepo(admin, appId, { remoteUrl, authKind: null });
+    },
+  };
+}
+
+/** No forge: the platform's `noForge` plus TeamClu's repo records, and nothing to sync or issue. */
 export function noTeamCluForge(): TeamCluForgeFactory {
   const base = noForge();
   return (ctx) => ({
     ...base(ctx),
+    ...forgeRepoRecords(ctx),
     async teamAccessChanged() {},
     async memberWriteRevoked() {},
     async issueCredential() { return null; },

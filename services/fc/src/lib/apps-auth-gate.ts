@@ -36,8 +36,6 @@ export type GateApp = {
   slug: string;
   appCode?: string | null;
   usesAppCodeDomain?: boolean;
-  /** `apps.team_id` — identity of the owning team. Not the org source. */
-  teamId: string | null;
   /** `apps.org_id` — the app's tenant org. Null is a misconfigured app. */
   orgId: string | null;
   /** `apps.auth_mode`; only `platform` has a wall. */

@@ -17,13 +17,29 @@
  */
 import { ApiError } from "../http-utils.js";
 
-/** The app columns a forge reads. Still on `amux.apps` until P1.5 moves them. */
+/**
+ * An app as a forge sees it: the app's own columns, and where its code lives
+ * as the forge itself recorded it (`AppLifecycleHooks.repos`, attached by the
+ * platform before it calls a hook). P3.3 of
+ * docs/specs/2026-11-26-app-platform-p3-retire-legacy.md moved the repo off
+ * the app row.
+ */
 export interface AppRepoRow {
   id: string;
   org_id?: string | null;
+  /** The source revision of the last finalized deploy (`apps.deployed_revision`). */
+  deployed_revision?: string | null;
+  /** From the forge's record (`AppRepo.remoteUrl`). */
   git_remote_url?: string | null;
+  /** From the forge's record (`AppRepo.authKind`). */
   git_auth_kind?: string | null;
-  git_commit_sha?: string | null;
+}
+
+/** Where an app's code lives, as the forge recorded it. */
+export interface AppRepo {
+  remoteUrl: string;
+  /** How this deployment authenticates to it; null for an import with no credential. */
+  authKind: string | null;
 }
 
 export interface AppRepoHead {
@@ -44,8 +60,15 @@ export interface AppLifecycleHooks {
   // --- create ---
   /** Throws when a new app that needs a hosted repo cannot get one on this deployment. */
   assertCanHostRepo(): void;
-  /** Create the app's repo; the platform stores what comes back on the app row. */
+  /** Create the app's repo and record it; returns what was recorded. */
   provisionRepo(app: AppRepoRow): Promise<{ remoteUrl: string; authKind: string }>;
+  /** Record that the app's code lives at `remoteUrl`, a repo this deployment does not host (an import). */
+  recordImportedRepo(appId: string, remoteUrl: string): Promise<void>;
+  /**
+   * Where each app's code lives, read with `client` — the caller's, for apps
+   * it has just read, or the service role. Apps with no repo are absent.
+   */
+  repos(client: any, appIds: string[]): Promise<Map<string, AppRepo>>;
   /** The error a failed `provisionRepo` surfaces as, once the platform has recorded it. */
   provisionFailed(message: string, details: Record<string, unknown>): Error;
 
@@ -73,9 +96,9 @@ export interface AppLifecycleHooks {
   ): Promise<void>;
 
   // --- credentials for a repo hosted elsewhere (an app imported over http(s)) ---
-  /** Validate and keep the credential; the platform records the auth kind it returns. */
+  /** Validate and keep the credential, and record the auth kind it returns. */
   storeExternalCredential(app: AppRepoRow, input: unknown): Promise<{ authKind: string }>;
-  /** Forget it, after the platform has stopped naming it on the row. */
+  /** Stop naming it on the app's repo record, then forget it. */
   forgetExternalCredential(app: AppRepoRow): Promise<void>;
 
   // --- delete ---
@@ -94,7 +117,8 @@ export const NO_FORGE_FIELDS = Object.freeze({ gitAccountAuth: false, gitHttpUrl
 
 /**
  * A deployment with no forge: imported and local apps work; an app that needs
- * a repo of ours cannot be created.
+ * a repo of ours cannot be created. Nothing records where an imported app's
+ * code lives, so its `gitRemoteUrl` reads null.
  */
 export function noForge(): AppLifecycleHooksFactory {
   return () => ({
@@ -107,6 +131,8 @@ export function noForge(): AppLifecycleHooksFactory {
     provisionFailed(message, details) {
       return new ApiError(502, "repo_provision_failed", message, { details });
     },
+    async recordImportedRepo() {},
+    async repos() { return new Map(); },
     async appAccessChanged() {},
     hostsRepo: () => false,
     async repoHead() { return null; },

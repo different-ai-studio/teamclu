@@ -52,23 +52,6 @@ export function higherAppLevel(
   return RANK[a] >= RANK[b] ? a : b;
 }
 
-/**
- * Call one of the agent-inheritance functions of 20261120120000
- * (`app_inherited_agents`, `agent_inherited_app_level`).
- *
- * A database that has not had that migration yet answers PGRST202 (not in
- * PostgREST's schema cache) or 42883 (no such function). That reads as "no
- * agent inherits anything" — exactly the behaviour before the migration —
- * rather than failing every agent's permission check, the Gitea sync and the
- * access tab. Belayo applies migrations by hand, so the image can land first.
- */
-export async function callAgentInheritance(client: any, fn: string, args: Record<string, unknown>): Promise<any> {
-  const { data, error } = await client.rpc(fn, args);
-  if (!error) return data;
-  if (error.code === "PGRST202" || error.code === "42883") return null;
-  throw error;
-}
-
 /** The caller's standing on one app, from the platform model. */
 export type CallerAppAccess = {
   level: AppPermissionLevel;
@@ -82,9 +65,7 @@ export type CallerAppAccess = {
  * the platform model — creator, user grants, delegations inside the app's org.
  *
  * Null is no access. Undefined means the database has not had that migration
- * yet (PGRST202 / 42883); the caller then falls back to the legacy actor rule,
- * so the image can land before belayo's hand-applied migration, like
- * `callAgentInheritance`.
+ * yet (PGRST202 / 42883); the caller answers 503 app_platform_schema_missing.
  */
 export async function callCallerAppAccess(client: any, appId: string): Promise<CallerAppAccess | null | undefined> {
   const { data, error } = await client.rpc("caller_app_access", { p_app_id: appId });

@@ -53,7 +53,6 @@ async function withEnv(
 const app = (over: Partial<GateApp> = {}): GateApp => ({
   id: APP_ID,
   slug: "report",
-  teamId: TEAM_ID,
   orgId: ORG_A,
   authMode: "platform",
   authAudience: "any",

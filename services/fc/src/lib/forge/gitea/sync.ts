@@ -10,11 +10,12 @@ import {
 } from "./client.js";
 import {
   appLevelAtLeast,
-  callAgentInheritance,
-  storedAppPermissionLevel,
   type AppPermissionLevel,
 } from "../../app-permission.js";
 import { inheritedRepoLevel } from "../app-git-access.js";
+import { readTeamAppAccess, readTeamAppIds } from "../../teamclu-apps/team-app-access.js";
+import { readForgeApp } from "../../teamclu-apps/forge-repos.js";
+import { chunkedIn } from "../../supabase-repo/shared.js";
 
 /**
  * Projects an app's TeamClu access onto its Gitea repo
@@ -73,7 +74,8 @@ interface ActorRow {
   display_name: string | null;
 }
 
-const APP_SYNC_COLUMNS = "id, team_id, org_id, visibility, created_by_actor_id, git_remote_url, git_auth_kind";
+// Where the repo is comes from the forge's record (P3.3); who is in, from
+// readTeamAppAccess (P3.1d).
 
 /** What an actor is called in Gitea. An agent says so, so a push is never mistaken for a person's. */
 function giteaFullName(actor: ActorRow): string {
@@ -90,18 +92,6 @@ function hasGiteaIdentity(actor: ActorRow | undefined): actor is ActorRow & { us
   return !!actor && !!actor.user_id && (actor.actor_type === "member" || actor.actor_type === "agent");
 }
 
-async function readActors(admin: AdminClient, ids: string[]): Promise<Map<string, ActorRow>> {
-  const out = new Map<string, ActorRow>();
-  if (ids.length === 0) return out;
-  const { data, error } = await admin
-    .from("actors")
-    .select("id, team_id, actor_type, user_id, display_name")
-    .in("id", ids);
-  if (error) throw error;
-  for (const row of (data ?? []) as ActorRow[]) out.set(row.id, row);
-  return out;
-}
-
 async function readTeamActors(admin: AdminClient, teamId: string): Promise<ActorRow[]> {
   const { data, error } = await admin
     .from("actors")
@@ -114,8 +104,7 @@ async function readTeamActors(admin: AdminClient, teamId: string): Promise<Actor
 /** Bring one app's repo in line with TeamClu. */
 export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promise<GiteaSyncResult> {
   const { admin } = deps;
-  const { data: app, error } = await admin.from("apps").select(APP_SYNC_COLUMNS).eq("id", appId).maybeSingle();
-  if (error) throw error;
+  const app = await readForgeApp(admin, appId);
   if (!app) return { status: "skipped", reason: "not_found" };
   if (app.git_auth_kind !== GITEA_AUTH_KIND) return { status: "skipped", reason: "not_gitea" };
   const owner = repoOwnerFromRemote(app.git_remote_url);
@@ -133,46 +122,25 @@ export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promis
     pass?.users.add(username);
   };
 
-  // ── Collaborators: the creator (admin) and every grant ─────────────────
-  const { data: grants, error: grantErr } = await admin
-    .from("app_member_access")
-    .select("member_id, permission_level")
-    .eq("app_id", appId);
-  if (grantErr) throw grantErr;
-  // ── …and the agents that inherit from them (20261120120000). The rule is
-  // the database's (amux.app_inherited_agents), so this, the Cloud API's own
-  // permission check and the access tab can never disagree about who is in.
-  const inheritedRows = await callAgentInheritance(admin, "app_inherited_agents", { p_app_id: appId });
-  const inherited = ((inheritedRows ?? []) as any[])
-    .map((r) => ({ agentId: r.agent_id as string, level: storedAppPermissionLevel(r.permission_level) }))
-    .filter((r): r is { agentId: string; level: AppPermissionLevel } => !!r.agentId && !!r.level);
-
-  const actorIds = [
-    ...new Set(
-      [
-        app.created_by_actor_id,
-        ...((grants ?? []) as any[]).map((g) => g.member_id),
-        ...inherited.map((r) => r.agentId),
-      ].filter(Boolean),
-    ),
-  ] as string[];
-  const actors = await readActors(admin, actorIds);
+  // ── Collaborators: the creator (admin), every grant, and the agents that
+  // inherit from them — the platform model as TeamClu reads it, so this, the
+  // Cloud API's own permission check and the access tab never disagree.
+  const access = await readTeamAppAccess(admin, appId);
+  if (!access) return { status: "skipped", reason: "not_found" };
+  const actors = access.actors as Map<string, ActorRow>;
 
   const desired = new Map<string, { level: GiteaCollaboratorPermission; actor: ActorRow }>();
   const want = (actorId: string, level: AppPermissionLevel) => {
     const actor = actors.get(actorId);
     // A grant to an agent that never got an account names nobody Gitea can
     // know; it starts working the moment the daemon claims one.
-    if (!hasGiteaIdentity(actor) || actor.team_id !== app.team_id) return;
+    if (!hasGiteaIdentity(actor) || actor.team_id !== access.teamId) return;
     const username = giteaUserName(actor.user_id);
     desired.set(username, { level: higher(desired.get(username)?.level, level), actor });
   };
-  if (app.created_by_actor_id) want(app.created_by_actor_id, "admin");
-  for (const g of (grants ?? []) as any[]) {
-    const level = storedAppPermissionLevel(g.permission_level);
-    if (level) want(g.member_id, level);
-  }
-  for (const r of inherited) want(r.agentId, inheritedRepoLevel(r.level));
+  if (access.createdByActorId) want(access.createdByActorId, "admin");
+  for (const g of access.grants) want(g.actorId, g.level);
+  for (const r of access.inherited) want(r.agentId, inheritedRepoLevel(r.level));
 
   for (const [username, { actor }] of desired) await ensureUser(username, actor);
   const current = new Map<string, GiteaCollaboratorPermission>(
@@ -186,12 +154,12 @@ export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promis
   }
 
   // ── Team visibility: teammates read through the team ──────────────────
-  const teamName = giteaTeamName(app.team_id);
+  const teamName = giteaTeamName(access.teamId);
   let teamMembers: number | null = null;
-  if (app.visibility === "team") {
+  if (access.teamVisible) {
     const teamId = await gitea.ensureReadTeam(owner, teamName);
     const done = pass?.teams.get(teamId);
-    teamMembers = done ?? (await syncGiteaTeamMembers(deps, gitea, teamId, app.team_id, ensureUser));
+    teamMembers = done ?? (await syncGiteaTeamMembers(deps, gitea, teamId, access.teamId, ensureUser));
     pass?.teams.set(teamId, teamMembers);
     await gitea.setTeamRepo(teamId, appId, true);
   } else {
@@ -224,18 +192,22 @@ async function syncGiteaTeamMembers(
  * the team's read access and any grants that cascaded away must catch up.
  */
 export async function syncTeamAppsToGitea(deps: GiteaSyncDeps, teamId: string): Promise<void> {
-  const { data, error } = await deps.admin
-    .from("apps")
-    .select("id")
-    .eq("team_id", teamId)
-    .eq("git_auth_kind", GITEA_AUTH_KIND);
-  if (error) throw error;
+  const ids = await readTeamAppIds(deps.admin, teamId);
+  const data = ids.length === 0 ? [] : await chunkedIn(ids, async (chunk) => {
+    const { data: rows, error } = await deps.admin
+      .from("app_forge_repos")
+      .select("app_id")
+      .in("app_id", chunk)
+      .eq("auth_kind", GITEA_AUTH_KIND);
+    if (error) throw error;
+    return rows ?? [];
+  });
   const pass = { ...deps, pass: deps.pass ?? newGiteaSyncPass() };
-  for (const row of (data ?? []) as { id: string }[]) {
+  for (const row of (data ?? []) as { app_id: string }[]) {
     try {
-      await syncAppToGitea(pass, row.id);
+      await syncAppToGitea(pass, row.app_id);
     } catch (e) {
-      deps.log?.(`[gitea-sync] team ${teamId} app ${row.id} failed: ${String((e as Error)?.message ?? e)}`);
+      deps.log?.(`[gitea-sync] team ${teamId} app ${row.app_id} failed: ${String((e as Error)?.message ?? e)}`);
     }
   }
 }
@@ -249,9 +221,9 @@ export async function reconcileGiteaApps(
   opts: { deadline?: number } = {},
 ): Promise<{ synced: number; failed: number; skipped: number; truncated: boolean }> {
   const { data, error } = await deps.admin
-    .from("apps")
-    .select("id, git_remote_url")
-    .eq("git_auth_kind", GITEA_AUTH_KIND);
+    .from("app_forge_repos")
+    .select("app_id, remote_url")
+    .eq("auth_kind", GITEA_AUTH_KIND);
   if (error) throw error;
   let synced = 0;
   let failed = 0;
@@ -259,7 +231,9 @@ export async function reconcileGiteaApps(
   // Oldest-synced-first would be fairer, but nothing records when an app was
   // last synced; a deadline that cuts the pass short just resumes next time
   // from a shuffled order, so no app is starved for long.
-  const rows = [...((data ?? []) as { id: string; git_remote_url: string | null }[])].sort(() => Math.random() - 0.5);
+  const rows = [...((data ?? []) as { app_id: string; remote_url: string | null }[])]
+    .map((r) => ({ id: r.app_id, git_remote_url: r.remote_url }))
+    .sort(() => Math.random() - 0.5);
   const pass = { ...deps, pass: deps.pass ?? newGiteaSyncPass() };
   for (const row of rows) {
     if (opts.deadline !== undefined && Date.now() >= opts.deadline) {

@@ -806,7 +806,7 @@ for (const storedCode of ["k7m2q9vx4n8p", "a-k7m2q9vx4n8p"]) {
     const found = await withDomain(() => lookup(`A-K7M2Q9VX4N8P.${DOMAIN}:443`));
     assert.deepEqual(found, {
       id: APP_ID, slug: "shop", appCode: storedCode, functionNamingMode: "legacy", usesAppCodeDomain: true,
-      teamId: "team-right", orgId: null, fcEndpoint: "https://right.example", fcStatus: "live",
+      orgId: null, fcEndpoint: "https://right.example", fcStatus: "live",
       authMode: "platform", authAudience: "org", authScope: "paths",
       authRules: [{ path: "/private/*", access: "authenticated" }],
       customDomain: "shop.example.org", customDomainVerifiedAt: "2026-10-19T00:00:00Z",

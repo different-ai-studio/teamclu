@@ -3,24 +3,64 @@
  *
  * In TeamClu an app is created inside a team, by one of its actors, with a
  * 1:1 workspace for its sessions; lists are per team; responses carry the
- * team, the creating actor and the caller's relationship to the app. Until P3
- * those live on the app row (team_id, created_by_actor_id, workspace_id,
- * visibility) and P2.1's triggers project them into app_links and grants.
- * P2.4b of docs/specs/2026-11-25-app-platform-p2-de-team.md.
+ * team, the creating actor and the caller's relationship to the app.
+ *
+ * Reads come from app_links (team, workspace, creating actor) and app_grants
+ * (org grant = `visibility: team`; the caller's user grants = `invited`), P3.1
+ * of docs/specs/2026-11-26-app-platform-p3-retire-legacy.md. Writes still go
+ * to the legacy columns on the app row until P3.2; P2.1's triggers project
+ * them into those tables.
  */
 import { ApiError } from "../http-utils.js";
 import type { AppTenantHooksFactory } from "../app-platform/tenant.js";
-import { appRelationshipFor } from "../supabase-repo/shared.js";
+import { chunkedIn } from "../supabase-repo/shared.js";
+import { setOrgGrant } from "../app-platform/grants.js";
+
+export type AppRelationship = "owner" | "invited" | "team";
+
+/**
+ * How the caller came to see an app, collapsed to one answer.
+ *
+ * Owner first, then invited, then team: a grant on a team app is what gives
+ * the caller rights beyond reading it, so it is the fact worth showing. A row
+ * that is neither the caller's nor a team app can only be visible through a
+ * grant, so it is `invited` even when the grants could not be read — just
+ * without the name of whoever granted it.
+ */
+export function appRelationshipFor(
+  app: { id: string; createdByActorId: string | null; visibility: string },
+  callerActorId: string | null,
+  grants: Map<string, string | null> | null,
+): { relationship: AppRelationship; invitedByActorId: string | null } {
+  if (callerActorId && app.createdByActorId === callerActorId) {
+    return { relationship: "owner", invitedByActorId: null };
+  }
+  if (grants?.has(app.id)) {
+    return { relationship: "invited", invitedByActorId: grants.get(app.id) ?? null };
+  }
+  if (app.visibility === "team") return { relationship: "team", invitedByActorId: null };
+  return { relationship: "invited", invitedByActorId: null };
+}
+
+/** TeamClu's fields of an app (`AppTenantHooks.fields`). */
+export type TeamCluAppFields = {
+  teamId: string | null;
+  visibility: "team" | "personal";
+  workspaceId: string | null;
+  createdByActorId: string | null;
+};
 
 export type TeamCluAppTenantDeps = {
   supabase: any;
+  /** For TeamClu's writes to app_links and the platform's grants (P3.2). */
+  serviceRoleClient: (why: string) => Promise<any>;
   getCurrentUser: () => Promise<any>;
   /** Archive the sessions of a workspace (supabase-repo.ts). */
   archiveSessionsForWorkspace: (admin: any, workspaceId: string) => Promise<unknown>;
 };
 
 export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFactory {
-  const { supabase, getCurrentUser, archiveSessionsForWorkspace } = deps;
+  const { supabase, serviceRoleClient, getCurrentUser, archiveSessionsForWorkspace } = deps;
 
   async function currentUserId(): Promise<string> {
     const { data: userData, error: userErr } = await getCurrentUser();
@@ -68,6 +108,7 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
         throw new ApiError(409, "team_has_no_org", "该团队尚未关联组织，无法创建应用");
       }
 
+      let workspaceId: string | null = null;
       return {
         orgId,
         async writeColumns({ slug }) {
@@ -83,6 +124,7 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
             .select("id")
             .single();
           if (wsErr) throw wsErr;
+          workspaceId = ws.id;
           return {
             team_id: input.teamId,
             created_by_actor_id: createdByActorId,
@@ -91,6 +133,17 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
           };
         },
         async created(row) {
+          // The app's link and, for a team-visible app, its org grant, written
+          // directly (P3.2). P2.1's trigger has projected both from the
+          // columns above already; these settle them either way and are the
+          // only writes once P3.4 drops those columns.
+          const admin = await serviceRoleClient("link a new app to its team");
+          const { error: linkErr } = await admin.from("app_links").upsert(
+            { app_id: row.id, team_id: input.teamId, workspace_id: workspaceId, created_by_actor_id: createdByActorId },
+            { onConflict: "app_id" },
+          );
+          if (linkErr) throw linkErr;
+          if (input.visibility === "team") await setOrgGrant(admin, row.id, orgId, true);
           for (const actorId of [...new Set((input.grantActorIds ?? []) as unknown[])]) {
             if (typeof actorId !== "string" || !actorId || actorId === createdByActorId) continue;
             try {
@@ -103,26 +156,96 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
       };
     },
 
-    // Lists are per team: `GET /v1/apps?teamId=`.
+    // Lists are per team: `GET /v1/apps?teamId=`, through the app's link.
+    // app_links is readable for the apps the caller sees (20261127100000).
+    listEmbed() {
+      return "app_links!inner(team_id)";
+    },
     scopeList(query: any, scope) {
-      return query.eq("team_id", scope.teamId);
+      return query.eq("app_links.team_id", scope.teamId);
+    },
+
+    // Team, workspace and creating actor from app_links; `visibility: team`
+    // is an org grant on the app for its own org. Both readable with the
+    // caller's token for the apps they see (20261127100000).
+    async fields(rows) {
+      const ids = [...new Set(rows.map((r) => r.id).filter(Boolean))] as string[];
+      if (ids.length === 0) return rows.map(() => ({}));
+      const admin = supabase;
+      const [links, orgGrants] = await Promise.all([
+        chunkedIn(ids, async (chunk) => {
+          const { data, error } = await admin
+            .from("app_links")
+            .select("app_id, team_id, workspace_id, created_by_actor_id")
+            .in("app_id", chunk);
+          if (error) throw error;
+          return data ?? [];
+        }),
+        chunkedIn(ids, async (chunk) => {
+          const { data, error } = await admin
+            .from("app_grants")
+            .select("app_id, principal_org_id")
+            .in("app_id", chunk)
+            .not("principal_org_id", "is", null);
+          if (error) throw error;
+          return data ?? [];
+        }),
+      ]);
+      const linkOf = new Map(links.map((l: any) => [l.app_id, l]));
+      return rows.map((r): TeamCluAppFields => {
+        const link: any = linkOf.get(r.id);
+        const teamVisible = orgGrants.some(
+          (g: any) => g.app_id === r.id && (r.org_id == null || g.principal_org_id === r.org_id),
+        );
+        return {
+          teamId: link?.team_id ?? null,
+          visibility: teamVisible ? "team" : "personal",
+          workspaceId: link?.workspace_id ?? null,
+          createdByActorId: link?.created_by_actor_id ?? null,
+        };
+      });
     },
 
     // `relationship` / `invitedByActorId`: the caller's relationship to each
-    // app, from their actor in its team.
-    async decorate(rows) {
-      const byTeam = new Map<string, string[]>();
-      for (const r of rows) {
-        const ids = byTeam.get(r.team_id) ?? [];
-        ids.push(r.id);
-        byTeam.set(r.team_id, ids);
+    // app, from their actor in its team and their own grants (by account; the
+    // grantor's account named as their actor in that team).
+    async decorate(rows, fields) {
+      const apps = rows.map((r, i) => ({ id: r.id as string, ...(fields[i] as TeamCluAppFields) }));
+      const userId = await currentUserId();
+      const teams = [...new Set(apps.map((a) => a.teamId).filter(Boolean))] as string[];
+      const actorIn = new Map<string, string | null>();
+      for (const teamId of teams) actorIn.set(teamId, (await repo.resolveCurrentActor(teamId, userId))?.id ?? null);
+
+      let grants: Map<string, string | null> | null = null;
+      try {
+        const admin = supabase;
+        const mine = await chunkedIn(apps.map((a) => a.id), async (chunk) => {
+          const { data, error } = await admin
+            .from("app_grants")
+            .select("app_id, granted_by_user_id")
+            .eq("principal_user_id", userId)
+            .in("app_id", chunk);
+          if (error) throw error;
+          return data ?? [];
+        });
+        const grantors = [...new Set(mine.map((g: any) => g.granted_by_user_id).filter(Boolean))] as string[];
+        const grantorActors = grantors.length === 0 ? [] : await chunkedIn(grantors, async (chunk) => {
+          const { data, error } = await admin
+            .from("actors")
+            .select("id, team_id, user_id")
+            .in("user_id", chunk);
+          if (error) throw error;
+          return data ?? [];
+        });
+        const teamOf = new Map(apps.map((a) => [a.id, a.teamId]));
+        grants = new Map(mine.map((g: any) => [
+          g.app_id,
+          grantorActors.find((a: any) => a.user_id === g.granted_by_user_id && a.team_id === teamOf.get(g.app_id))?.id ?? null,
+        ]));
+      } catch (e) {
+        console.warn(`[apps] app grants unavailable for the list: ${String(e)}`);
       }
-      const viewers = new Map<string, any>();
-      for (const [teamId, ids] of byTeam) viewers.set(teamId, await repo.resolveAppViewer(teamId, ids));
-      return rows.map((r) => {
-        const viewer = viewers.get(r.team_id);
-        return appRelationshipFor(r as { id: string }, viewer.actorId, viewer.grants);
-      });
+      return apps.map((a) => appRelationshipFor(a, a.teamId ? actorIn.get(a.teamId) ?? null : null, grants));
     },
 
     // `visibility: team` is the team's org seeing the app (an org grant,
@@ -134,6 +257,15 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
     // may not widen or narrow who sees the owner's app (P2 spec §6 Q1).
     accessColumns: ["visibility"],
 
+    // The org grant follows `visibility` (P3.2), alongside the legacy column
+    // updateColumns wrote.
+    async updated(row, patch) {
+      if (patch.visibility !== "team" && patch.visibility !== "personal") return;
+      if (!row?.id || !row.org_id) return;
+      const admin = await serviceRoleClient("set an app's org grant");
+      await setOrgGrant(admin, row.id, row.org_id, patch.visibility === "team");
+    },
+
     // Desktop introspect decodes `teamId` as required.
     authInfoFields(app) {
       return { teamId: app.teamId };
@@ -143,9 +275,9 @@ export function teamCluAppTenant(deps: TeamCluAppTenantDeps): AppTenantHooksFact
     // lives, and so are its sessions.
     async appDeleting(appId, { admin, archivedRepoUrl, remoteUrl }) {
       const { data: link, error: linkErr } = await admin
-        .from("apps")
+        .from("app_links")
         .select("workspace_id")
-        .eq("id", appId)
+        .eq("app_id", appId)
         .maybeSingle();
       if (linkErr) throw linkErr;
       const workspaceId = link?.workspace_id;

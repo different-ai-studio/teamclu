@@ -367,6 +367,24 @@ export function makeAppsRepo(host: any) {
     return userId;
   }
 
+  /**
+   * Rows with where their code lives attached — `git_remote_url` /
+   * `git_auth_kind`, the `AppRepoRow` fields — from the forge's record, read
+   * with `client` (the caller's by default: these are rows it just read). The
+   * repo is not on the app row (P3.3).
+   */
+  async function withRepos<T extends { id: string }>(rows: T[], client: any = supabase): Promise<T[]> {
+    if (rows.length === 0) return rows;
+    const repos = await forge.repos(client, rows.map((r) => r.id));
+    return rows.map((r) => {
+      const repo = repos.get(r.id);
+      return { ...r, git_remote_url: repo?.remoteUrl ?? null, git_auth_kind: repo?.authKind ?? null };
+    });
+  }
+  async function withRepo<T extends { id: string }>(row: T, client?: any): Promise<T> {
+    return (await withRepos([row], client))[0];
+  }
+
   /** amux.caller_app_access, which this code cannot run without (P2.2). */
   async function callerAccess(appId: string) {
     const access = await callCallerAppAccess(supabase, appId);
@@ -490,6 +508,23 @@ export function makeAppsRepo(host: any) {
     },
 
     /**
+     * Apps as `/v1/apps*` answers them: the platform's fields, the forge's,
+     * and the product's (AppTenantHooks.fields). Every response that carries
+     * an app goes through here (or through list / detail, which add
+     * `decorate`), so no client ever sees one without the product's fields.
+     */
+    async presentApps(rows: any[]) {
+      if (rows.length === 0) return [];
+      rows = await withRepos(rows);
+      const fields = await tenantFactory(this).fields(rows);
+      return rows.map((r: any, i: number) => ({ ...appView(r), ...fields[i] }));
+    },
+
+    async presentApp(row: any) {
+      return (await this.presentApps([row]))[0];
+    },
+
+    /**
      * One page of a team's apps, newest first, and where the next starts.
      *
      * The cursor is made here, from the raw row, not by the route from the
@@ -505,21 +540,24 @@ export function makeAppsRepo(host: any) {
       [scope: string]: unknown;
     }) {
       const tenant = tenantFactory(this);
+      const embed = tenant.listEmbed(scope);
       let query = tenant.scopeList(supabase
         .from("apps")
-        .select(APP_COLUMNS), scope)
+        .select(embed ? `${APP_COLUMNS}, ${embed}` : APP_COLUMNS), scope)
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
         .limit(limit);
       if (cursor?.createdAt) query = applyKeysetCursor(query, "created_at", cursor.createdAt, cursor.id);
       const { data, error } = await query;
       if (error) throw error;
-      const rows = data ?? [];
-      const extra = await tenant.decorate(rows);
+      const rows = await withRepos((data ?? []) as any[]);
+      const fields = await tenant.fields(rows);
+      const extra = await tenant.decorate(rows, fields);
       const last = rows.length >= limit ? rows[rows.length - 1] : null;
       return {
         items: rows.map((r: any, i: number) => ({
           ...appView(r),
+          ...fields[i],
           ...extra[i],
         })),
         nextCursor: last ? encodeCursor({ createdAt: String(last.created_at), id: last.id }) : null,
@@ -574,16 +612,19 @@ export function makeAppsRepo(host: any) {
     async getApp(appId: string) {
       // RLS returns nothing (PGRST116 on .single()) when the app is not
       // visible to the caller; surface that as null so the route 404s.
-      const { data, error } = await supabase
+      const { data: found, error } = await supabase
         .from("apps")
         .select(APP_COLUMNS)
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
-      if (!data) return null;
-      const [extra] = await tenantFactory(this).decorate([data]);
+      if (!found) return null;
+      const data = await withRepo(found);
+      const tenant = tenantFactory(this);
+      const fields = await tenant.fields([data]);
+      const [extra] = await tenant.decorate([data], fields);
       const permission = await this.resolveAppCallerPermissionForApp(data);
-      return { ...appView(data), canManageDeployment: permission?.level === "admin", ...extra,
+      return { ...appView(data), ...fields[0], canManageDeployment: permission?.level === "admin", ...extra,
         originSecurity: projectOriginSecurity(await readAppOriginSecurity(data)) };
     },
 
@@ -613,6 +654,10 @@ export function makeAppsRepo(host: any) {
       const localOnly = input.localOnly === true;
       if (!importUrl && !localOnly) forge.assertCanHostRepo();
       const tenantColumns = await placement.writeColumns({ slug });
+      // The creating account, written by the platform (P3.2). P2.1's trigger
+      // keeps an explicit value; until P3.4 it would otherwise derive it from
+      // the product's creating actor.
+      const createdByUserId = await currentUserId();
 
       let row: any;
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -621,6 +666,7 @@ export function makeAppsRepo(host: any) {
           .insert({
             ...tenantColumns,
             org_id: placement.orgId,
+            created_by_user_id: createdByUserId,
             function_naming_mode: "app_code",
             name: input.name,
             slug,
@@ -653,12 +699,15 @@ export function makeAppsRepo(host: any) {
 
       // Both import paths stop here: the app's code lives somewhere we did not
       // provision, so there is no repo of ours to create and no deploy key to
-      // hold. `git_auth_kind` stays null, which is what makes deploy build the
-      // workdir as it sits.
-      if (importUrl || localOnly) return appView(row);
+      // hold. Its auth kind stays null, which is what makes deploy build the
+      // workdir as it sits. The forge records where an import lives (P3.3;
+      // the legacy column above is projected there too until P3.4).
+      if (importUrl) await forge.recordImportedRepo(row.id, importUrl);
+      if (importUrl || localOnly) return this.presentApp(row);
 
       try {
-        // Ours to host: the forge creates the repo and says where it lives.
+        // Ours to host: the forge creates the repo, records it, and says
+        // where it lives; the legacy columns follow until P3.4.
         const repo = await forge.provisionRepo(row);
         const { data: updated, error: updErr } = await supabase
           .from("apps")
@@ -674,7 +723,7 @@ export function makeAppsRepo(host: any) {
           .single();
         if (updErr) throw updErr;
         await forge.appAccessChanged(row.id);
-        return appView(updated);
+        return this.presentApp(updated);
       } catch (e: unknown) {
         const msg = e instanceof ApiError ? e.message : String((e as Error)?.message ?? e);
         const { data: errored, error: errUpd } = await supabase
@@ -689,7 +738,7 @@ export function makeAppsRepo(host: any) {
           .single();
         if (errUpd) throw errUpd;
         if (e instanceof ApiError) throw e;
-        throw forge.provisionFailed(msg, { app: appView(errored) });
+        throw forge.provisionFailed(msg, { app: await this.presentApp(errored) });
       }
     },
 
@@ -725,7 +774,7 @@ export function makeAppsRepo(host: any) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, org_id, custom_domain, deploy_token, deploy_started_at, visibility",
+          "provision_status, fc_status, name, slug, app_code, uses_app_code_domain, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, org_id, custom_domain, deploy_token, deploy_started_at",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -776,13 +825,18 @@ export function makeAppsRepo(host: any) {
       // The tenant's own fields of the patch (TeamClu: visibility).
       const tenant = tenantFactory(this);
       const tenantSet = tenant.updateColumns(patch);
+      // The product's fields as they stood, to tell whether this changed them.
+      const fieldsBefore: Record<string, unknown> | null = Object.keys(tenantSet).length > 0
+        ? (await tenant.fields([{ ...cur, id: appId }]))[0]
+        : null;
       // Changing who may reach the app is managing access; a delegate may
       // not, here as on the grant routes. Only an actual change counts, so a
       // settings form that echoes the current value back still saves.
-      if ((tenant.accessColumns ?? []).some((col) => col in tenantSet && tenantSet[col] !== (cur as any)?.[col])) {
+      if ((tenant.accessColumns ?? []).some((col) => col in tenantSet && tenantSet[col] !== fieldsBefore?.[col])) {
         this.assertNotInheritedFor(callerPermission, "manage_access");
       }
       Object.assign(set, tenantSet);
+      const tenantBefore = fieldsBefore === null ? null : JSON.stringify(fieldsBefore);
       // Written as-is and nothing else moves: whether the function gets a
       // database is decided at the next finalize (needsDatabase), which also
       // stamps `deployed_type`. Switching away from data_app never drops the
@@ -931,8 +985,13 @@ export function makeAppsRepo(host: any) {
       invalidateAppHosts({ id: appId, slug: cur.slug, appCode: cur.app_code, usesAppCodeDomain: cur.uses_app_code_domain, customDomain: cur.custom_domain });
       // A tenant field that changed may change who reaches the app (TeamClu:
       // visibility is read access for the whole org in the forge too).
-      if (Object.keys(tenantSet).some((k) => tenantSet[k] !== cur[k])) await forge.appAccessChanged(appId);
-      return appView(data);
+      if (Object.keys(tenantSet).length > 0) await tenant.updated(data, patch);
+      const presented = await this.presentApp(data);
+      if (tenantBefore !== null) {
+        const after = (await tenant.fields([data]))[0];
+        if (JSON.stringify(after) !== tenantBefore) await forge.appAccessChanged(appId);
+      }
+      return presented;
     },
 
     /**
@@ -1088,11 +1147,12 @@ export function makeAppsRepo(host: any) {
     },
 
     async preflightAppDeploy(appId: string, input: { revision?: string; gitCommitSha?: string; declaration?: unknown; migrationIntent?: boolean }) {
-      const { data: existing, error } = await supabase.from("apps")
-        .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, provision_status, git_auth_kind, git_remote_url, fc_status, deploy_started_at, deploy_token, deploy_attempt_id")
+      const { data: found, error } = await supabase.from("apps")
+        .select("id, slug, app_code, function_naming_mode, fc_function_name, fc_endpoint, env_deployed_at, start_spec, provision_status, deployed_revision, fc_status, deploy_started_at, deploy_token, deploy_attempt_id")
         .eq("id", appId).maybeSingle();
       if (error) throw error;
-      if (!existing) return null;
+      if (!found) return null;
+      const existing = await withRepo(found);
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return null;
       const target = appFunctionTargetFromRow(existing);
@@ -1177,13 +1237,14 @@ export function makeAppsRepo(host: any) {
       const declaredBuildKind = declaration.build.kind;
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
-      const { data: existing, error: selErr } = await supabase
+      const { data: found, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind, git_remote_url")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, deployed_revision")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
-      if (!existing) return null;
+      if (!found) return null;
+      const existing = await withRepo(found);
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return null;
       if (!input?.preflightToken || existing.deploy_token !== input.preflightToken) {
@@ -1253,7 +1314,7 @@ export function makeAppsRepo(host: any) {
         if (updErr) throw updErr;
         if (!row) throw new ApiError(409, "deploy_in_progress", "app deploy state changed before upload handle was issued");
         return {
-          ...appView(row),
+          ...(await this.presentApp(row)),
           // Exactly one of these is set — see startDeploy. The daemon branches
           // on which one it got.
           ossObjectName: r.ossObjectName,
@@ -1295,13 +1356,14 @@ export function makeAppsRepo(host: any) {
       const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
       // visible to the caller → surface null so the route 404s.
-      const { data: existing, error: selErr } = await supabase
+      const { data: found, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, deploy_use_app_code_domain, org_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, git_auth_kind")
+        .select("id, slug, app_code, function_naming_mode, uses_app_code_domain, deploy_use_app_code_domain, org_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, deployed_revision")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
-      if (!existing) return null;
+      if (!found) return null;
+      const existing = await withRepo(found);
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return null;
       if (!existing.deploy_token || existing.deploy_token !== deployToken) {
@@ -1400,7 +1462,8 @@ export function makeAppsRepo(host: any) {
             fc_status: "live",
             uses_app_code_domain: usesAppCodeDomain,
             fc_endpoint: r.fcEndpoint,
-            ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
+            // Both until P3.4 drops git_commit_sha (an older FC reads it).
+            ...(gitCommitSha ? { deployed_revision: gitCommitSha, git_commit_sha: gitCommitSha } : {}),
             // What is now running, as opposed to what the deploy set out to
             // build. They differ when an app's declaration changed mid-deploy.
             runtime: declaration.build.kind,
@@ -1448,7 +1511,7 @@ export function makeAppsRepo(host: any) {
         await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: deployToken });
         // The proxy caches fc_endpoint/fc_status per host.
         invalidateAppHosts({ id: appId, slug: existing.slug, appCode: existing.app_code, usesAppCodeDomain: row.uses_app_code_domain, customDomain: existing.custom_domain });
-        return appView(row);
+        return this.presentApp(row);
       } catch (e: any) {
         await writer
           .from("apps")
@@ -1598,7 +1661,7 @@ export function makeAppsRepo(host: any) {
     async getAppRuntimeInfo(appId: string, language?: AppLanguage) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, slug, app_code, function_naming_mode, type, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, artifact_verification, git_commit_sha, env_deployed_at, updated_at, undeploy_operation")
+        .select("id, slug, app_code, function_naming_mode, type, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, artifact_verification, deployed_revision, env_deployed_at, updated_at, undeploy_operation")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -1627,7 +1690,7 @@ export function makeAppsRepo(host: any) {
         currentDeployment = {
           runtime: app.runtime ?? null,
           startSpec: app.start_spec ?? null,
-          commit: app.git_commit_sha ?? null,
+          commit: app.deployed_revision ?? null,
           artifactVerification: app.artifact_verification ?? null,
           deployedAt: app.env_deployed_at ?? null,
           functionName: app.fc_function_name ?? null,
@@ -1805,13 +1868,14 @@ export function makeAppsRepo(host: any) {
      * that `apps_update_if_creator` would otherwise refuse.
      */
     async authorizeAppGitCredentialWrite(appId: string): Promise<{ cur: any; writer: any } | null> {
-      const { data: cur, error } = await supabase
+      const { data: found, error } = await supabase
         .from("apps")
-        .select("id, git_remote_url, git_auth_kind")
+        .select("id")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
-      if (!cur) return null;
+      if (!found) return null;
+      const cur = await withRepo(found);
       const permission = await this.resolveAppCallerPermissionForApp(cur);
       if (permission?.level !== "admin") return null;
       if (forge.hostsRepo(cur)) {
@@ -1831,10 +1895,12 @@ export function makeAppsRepo(host: any) {
     /**
      * Store (or replace) the token for an imported app's http(s) repo.
      *
-     * The secret is written before the row names it, and deleted only after the
-     * row stops naming it (clearAppGitHttpsCredential), so a row that says
+     * The secret is written before anything names it, and deleted only after
+     * nothing does (clearAppGitHttpsCredential), so an auth kind that says
      * `https_token` always has a secret behind it. The other order leaves a
-     * window in which every fetch reads "no credential".
+     * window in which every fetch reads "no credential". The forge records
+     * the auth kind on its repo record; `git_auth_kind` is written here too
+     * until P3.4.
      */
     async setAppGitHttpsCredential(appId: string, input: unknown) {
       const gate = await this.authorizeAppGitCredentialWrite(appId);
@@ -1848,7 +1914,7 @@ export function makeAppsRepo(host: any) {
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
-      return appView(data);
+      return this.presentApp(data);
     },
 
     /** Forget an imported app's stored token. Idempotent. */
@@ -1864,7 +1930,7 @@ export function makeAppsRepo(host: any) {
       if (error) throw error;
       if (!data) return null;
       await forge.forgetExternalCredential(gate.cur);
-      return appView(data);
+      return this.presentApp(data);
     },
 
     /**
@@ -1875,13 +1941,14 @@ export function makeAppsRepo(host: any) {
      * buy a number nothing reads. The panel asks for it; the deploy does not.
      */
     async getAppGitHead(appId: string, opts: { compare?: boolean } = {}) {
-      const { data: existing, error: selErr } = await supabase
+      const { data: found, error: selErr } = await supabase
         .from("apps")
-        .select("id, git_auth_kind, git_commit_sha, git_remote_url")
+        .select("id, deployed_revision")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
-      if (!existing) return null;
+      if (!found) return null;
+      const existing = await withRepo(found);
       // Null for a repo this deployment does not host: "we cannot see the
       // branch" is a legitimate, permanent state for an imported app.
       return forge.repoHead(existing, { compare: opts.compare === true });
@@ -2506,15 +2573,16 @@ export function makeAppsRepo(host: any) {
     },
 
     async deleteApp(appId: string) {
-      const { data: existing, error: selErr } = await supabase
+      const { data: found, error: selErr } = await supabase
         .from("apps")
         .select(
-          "id, slug, name, app_code, function_naming_mode, uses_app_code_domain, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, custom_domain",
+          "id, slug, name, app_code, function_naming_mode, uses_app_code_domain, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, custom_domain",
         )
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
-      if (!existing) return false;
+      if (!found) return false;
+      const existing = await withRepo(found);
 
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return false;

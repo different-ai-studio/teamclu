@@ -869,7 +869,6 @@ test("the app lookup reads the custom domain columns the return check needs", as
     app_code: "k7m2q9vx4n8p",
     uses_app_code_domain: true,
     name: "周报",
-    team_id: TEAM_ID,
     auth_mode: "platform",
     custom_domain: "hire.example.org",
     custom_domain_verified_at: "2026-09-10T10:43:48Z",
@@ -881,7 +880,10 @@ test("the app lookup reads the custom domain columns the return check needs", as
         select(cols: string) { calls.push(["select", table, cols]); return q; },
         eq(col: string, val: string) { calls.push(["eq", table, col, val]); return q; },
         maybeSingle: async () =>
-          table === "apps" ? { data: row, error: null } : { data: { name: " 研发效能部 " }, error: null },
+          table === "apps" ? { data: row, error: null }
+            // The team is the app's link (P3.1), then its name.
+            : table === "app_links" ? { data: { team_id: TEAM_ID }, error: null }
+            : { data: { name: " 研发效能部 " }, error: null },
       };
       return q;
     },
@@ -911,11 +913,14 @@ test("the app lookup reads the custom domain columns the return check needs", as
   // assertion exists to catch, which is how the custom-domain pair got here.
   for (const col of [
     "app_code", "uses_app_code_domain",
-    "custom_domain", "custom_domain_verified_at", "name", "team_id", "auth_mode",
+    "custom_domain", "custom_domain_verified_at", "name", "auth_mode",
     "org_id", "auth_audience", "auth_scope", "auth_rules",
   ]) {
     assert.ok(selected.includes(col), `the apps lookup must select ${col}`);
   }
+  // The team comes from the app's link (P3.1); apps.team_id goes in P3.4.
+  assert.ok(!selected.includes("team_id"), "the apps lookup must not select team_id");
+  assert.deepEqual(calls.find((c) => c[0] === "eq" && c[1] === "app_links"), ["eq", "app_links", "app_id", APP_ID]);
   assert.deepEqual(calls.find((c) => c[0] === "eq" && c[1] === "teams"), ["eq", "teams", "id", TEAM_ID]);
 
   assert.equal(await lookup("not-a-uuid"), null);

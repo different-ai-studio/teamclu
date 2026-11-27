@@ -29,12 +29,10 @@ export interface VanityApp {
   fcEndpoint: string | null;
   fcFunctionName?: string | null;
   fcStatus: string | null;
-  /** `apps.team_id`. Identity of the owning team; no longer the org source. */
-  teamId: string | null;
   /**
    * `apps.org_id` — the app's tenant org, read straight off the row.
    *
-   * Was resolved through `teamId → teams.oid` until 20260923200000 made this
+   * Was resolved through the team (`teams.oid`) until 20260923200000 made this
    * column the live tenant pointer. One read instead of two, and the same
    * value the login page narrows its account picker by — the gate and the
    * login page disagreeing about an app's tenant is the bug that change fixed.
@@ -94,7 +92,7 @@ export function selectByIdPrefix(rows: VanityApp[], idPrefix: string): VanityApp
  * result. At most one row per team shares a slug, so the list is tiny.
  */
 const LOOKUP_COLUMNS =
-  "id, slug, app_code, function_naming_mode, uses_app_code_domain, fc_endpoint, fc_function_name, fc_status, team_id, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
+  "id, slug, app_code, function_naming_mode, uses_app_code_domain, fc_endpoint, fc_function_name, fc_status, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
 
 function mapVanityRow(r: any): VanityApp {
   return {
@@ -106,7 +104,6 @@ function mapVanityRow(r: any): VanityApp {
     fcEndpoint: r.fc_endpoint ?? null,
     ...(r.fc_function_name ? { fcFunctionName: r.fc_function_name } : {}),
     fcStatus: r.fc_status ?? null,
-    teamId: r.team_id ?? null,
     orgId: r.org_id ?? null,
     authMode: r.auth_mode ?? null,
     authAudience: r.auth_audience ?? null,

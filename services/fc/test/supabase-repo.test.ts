@@ -1420,6 +1420,10 @@ function createSelectableQuery(table, calls, data, error) {
       calls.push({ table, op: "in", column, values });
       return query;
     },
+    not(column, operator, value) {
+      calls.push({ table, op: "not", column, operator, value });
+      return query;
+    },
     or(expr) {
       calls.push({ table, op: "or", expr });
       return query;
@@ -2583,12 +2587,16 @@ test("apps: typePendingRedeploy is derived from the deployed type", async () => 
   );
 });
 
-test("apps: listApps filters by team_id, orders created_at desc, limits", async () => {
+test("apps: listApps filters by team through app_links, not apps.team_id (P3.1)", async () => {
   const calls: any[] = [];
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] }, calls }));
   await repo.listApps({ teamId: "team-7", limit: 25 });
-  const teamEq = calls.find((c) => c.table === "apps" && c.column === "team_id");
+  const select = calls.find((c) => c.table === "apps" && c.op === "select");
+  assert.match(select?.columns ?? "", /app_links!inner\(team_id\)/);
+  assert.doesNotMatch(select?.columns ?? "", /\bteam_id\b(?!\))/, "apps.team_id is not selected");
+  const teamEq = calls.find((c) => c.table === "apps" && c.column === "app_links.team_id");
   assert.equal(teamEq?.value, "team-7");
+  assert.equal(calls.some((c) => c.table === "apps" && c.column === "team_id"), false);
 });
 
 test("apps: listApps says how the caller is related to each app, owner before invited before team", async () => {
@@ -2601,12 +2609,13 @@ test("apps: listApps says how the caller is related to each app, owner before in
     { ...APP_ROW, id: "team-only", created_by_actor_id: "actor-lin", visibility: "team" },
   ];
   const calls: any[] = [];
-  // The grants are read with the service role, filtered to the caller's actor
-  // in THIS team: the caller-token policy keys on current_member_id(), which is
-  // the user's oldest actor and so hides their grants in any later team.
-  const admin = appsSupabase({
+  // The caller's grants are read by account (app_grants, P3.1), with their own
+  // token; the grantor's account is named as their actor in the app's team.
+  const repo = appsRepo(appsSupabase({
     calls,
     seed: {
+      apps,
+      actors: [{ id: "actor-lin", team_id: "team-1", user_id: "user-lin" }, { id: "actor-x", team_id: "team-1", user_id: "user-x" }],
       app_member_access: [
         { app_id: "mine-granted", member_id: me, permission_level: "admin", granted_by_member_id: "actor-x" },
         { app_id: "team-granted", member_id: me, permission_level: "prompt", granted_by_member_id: "actor-lin" },
@@ -2614,8 +2623,7 @@ test("apps: listApps says how the caller is related to each app, owner before in
         { app_id: "team-only", member_id: "actor-someone-else", permission_level: "admin", granted_by_member_id: "actor-lin" },
       ],
     },
-  });
-  const repo = appsRepo(appsSupabase({ seed: { apps } }), { createServiceRoleClient: () => admin });
+  }));
 
   const items = await repo.listApps({ teamId: "team-1", limit: 100 });
   const byId = Object.fromEntries(items.map((a: any) => [a.id, [a.relationship, a.invitedByActorId]]));
@@ -2627,11 +2635,12 @@ test("apps: listApps says how the caller is related to each app, owner before in
     "personal-granted": ["invited", null],
     "team-only": ["team", null],
   });
-  const memberEq = calls.find((c) => c.table === "app_member_access" && c.column === "member_id");
-  assert.equal(memberEq?.value, me);
+  const mine = calls.find((c) => c.table === "app_grants" && c.column === "principal_user_id");
+  assert.equal(mine?.value, "user-app-1");
+  assert.equal(calls.some((c) => c.table === "app_member_access"), false, "the legacy grant table is not read");
 });
 
-test("apps: listApps still labels every app when the grants cannot be read", async () => {
+test("apps: listApps needs no service role — every TeamClu field is read with the caller's token", async () => {
   const apps = [
     { ...APP_ROW, id: "mine", created_by_actor_id: "actor-app-1", visibility: "personal" },
     { ...APP_ROW, id: "team", created_by_actor_id: "actor-lin", visibility: "team" },
@@ -2653,17 +2662,15 @@ test("apps: listApps still labels every app when the grants cannot be read", asy
 });
 
 test("apps: getApp carries the caller's relationship too", async () => {
-  const admin = appsSupabase({
+  const repo = appsRepo(appsSupabase({
     seed: {
+      apps: [{ ...APP_ROW, created_by_actor_id: "actor-lin" }],
+      actors: [{ id: "actor-lin", team_id: APP_ROW.team_id, user_id: "user-lin" }],
       app_member_access: [
         { app_id: "app-1", member_id: "actor-app-1", permission_level: "prompt", granted_by_member_id: "actor-lin" },
       ],
     },
-  });
-  const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, created_by_actor_id: "actor-lin" }] } }),
-    { createServiceRoleClient: () => admin },
-  );
+  }));
 
   const app = await repo.getApp("app-1");
 
@@ -2771,6 +2778,9 @@ test("apps: listAppAccess returns rows for creator", async () => {
     granted_by_member_id: "actor-app-1",
     created_at: "2026-08-27T00:00:00.000Z",
   }];
+  // A legacy grant to an agent that never got an account: a grant is to an
+  // account (app_grants, P2.1/P3.1), so it was never projected and is not
+  // listed. New ones are refused (agent_not_connected); it could never act.
   const unclaimedAgent = { id: "agent-3", team_id: "team-1", actor_type: "agent", user_id: null };
   accessRows.push({
     app_id: "app-1",
@@ -2779,15 +2789,15 @@ test("apps: listAppAccess returns rows for creator", async () => {
     granted_by_member_id: "actor-app-1",
     created_at: "2026-08-28T00:00:00.000Z",
   });
+  const creator = { id: "actor-app-1", team_id: "team-1", actor_type: "member", user_id: "user-app-1" };
   const admin = appsSupabase({
-    seed: { apps: [APP_ROW], app_member_access: accessRows, actors: [MEMBER_2_ACTOR, unclaimedAgent] },
+    seed: { apps: [APP_ROW], app_member_access: accessRows, actors: [creator, MEMBER_2_ACTOR, unclaimedAgent] },
   });
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }), {
     createServiceRoleClient: () => admin,
   });
   const items = await repo.listAppAccess("app-1");
-  // A row written before the rename still reads back under the new name; an
-  // agent with no account yet is marked not connected.
+  // A row written before the rename still reads back under the new name.
   assert.deepEqual(items, [{
     memberId: "member-2",
     permissionLevel: "write",
@@ -2795,16 +2805,6 @@ test("apps: listAppAccess returns rows for creator", async () => {
     createdAt: "2026-08-27T00:00:00.000Z",
     actorType: "member",
     connected: true,
-    displayName: null,
-    inherited: false,
-    inheritedFrom: null,
-  }, {
-    memberId: "agent-3",
-    permissionLevel: "read",
-    grantedByMemberId: "actor-app-1",
-    createdAt: "2026-08-28T00:00:00.000Z",
-    actorType: "agent",
-    connected: false,
     displayName: null,
     inherited: false,
     inheritedFrom: null,
@@ -3329,6 +3329,7 @@ test("apps: git head compares against the deployed commit only when asked", asyn
   const managed = {
     ...APP_ROW,
     created_by_actor_id: "actor-app-1",
+    git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
     git_auth_kind: "gitea_deploy_key",
     git_commit_sha: "deadbee",
   };
@@ -3358,6 +3359,7 @@ test("apps: a deployed commit that IS the head needs no forge round trip", async
   const managed = {
     ...APP_ROW,
     created_by_actor_id: "actor-app-1",
+    git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
     git_auth_kind: "gitea_deploy_key",
     git_commit_sha: "abc123",
   };
@@ -3377,6 +3379,7 @@ test("apps: an app that never deployed reports an unknown distance, not zero", a
   const managed = {
     ...APP_ROW,
     created_by_actor_id: "actor-app-1",
+    git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
     git_auth_kind: "gitea_deploy_key",
     git_commit_sha: null,
   };
@@ -4277,6 +4280,22 @@ test("redeploy retains the legacy function name from preflight through finalize"
   assert.equal(started.fcFunctionName, "legacy-fn");
   await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
   assert.equal(finalizedName, "legacy-fn");
+});
+
+test("finalize records the deployed revision in deployed_revision and, until P3.4, git_commit_sha", async () => {
+  // P3.3: the platform's own column, written alongside the one an older FC reads.
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+    startDeploy: async (input: any) => ({ fcFunctionName: "fn", fcRegion: input.region,
+      ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put" }),
+    finalizeDeploy: async () => ({ fcEndpoint: "https://new.fcapp.run" }),
+  });
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const app: any = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+  const live = calls.find((c) => c.table === "apps" && c.op === "update" && c.row.fc_status === "live");
+  assert.equal(live?.row.deployed_revision, APP_SHA);
+  assert.equal(live?.row.git_commit_sha, APP_SHA);
+  assert.equal(app.gitCommitSha, APP_SHA, "the response field reads deployed_revision");
 });
 
 test("apps: deployApp wraps startDeploy failure as 502", async () => {
@@ -6601,7 +6620,7 @@ test("getHomeOrgId is null when there is no users row", async () => {
 
 function authInfoRepo({appOrg="org-1", teamOrg="org-1", member=true, rolesError=null, appVisible=true, authRules: authRules = [{path:"/staff",auth:"required",audience:"org"}]}={}) {
  const calls=[];
- const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{app_code:"a-k7m2q9vx4n8p",id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
+ const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{app_code:"a-k7m2q9vx4n8p",id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],app_links:[{app_id:"app",team_id:"team",workspace_id:null,created_by_actor_id:null}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
  return {repo,calls};
 }
 test("auth_info_checks_app_and_catalog_visibility",async()=>{

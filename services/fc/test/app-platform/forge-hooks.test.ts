@@ -19,6 +19,7 @@ function recordingForge(over: Partial<TeamCluForge> = {}) {
     assertCanHostRepo() { calls.push("assertCanHostRepo"); },
     async provisionRepo(app) { calls.push(`provisionRepo ${app.id}`); return { remoteUrl: "ssh://forge.test/app.git", authKind: "forge_kind" }; },
     provisionFailed(message, details) { calls.push(`provisionFailed ${message}`); return new ApiError(502, "forge_failed", message, { details }); },
+    async recordImportedRepo(appId, remoteUrl) { calls.push(`recordImportedRepo ${appId} ${remoteUrl}`); },
     async appAccessChanged(appId) { calls.push(`appAccessChanged ${appId}`); },
     async teamAccessChanged(teamId) { calls.push(`teamAccessChanged ${teamId}`); },
     async memberWriteRevoked(appId, memberId) { calls.push(`memberWriteRevoked ${appId} ${memberId}`); },
@@ -64,12 +65,16 @@ test("a hosted app: the forge is asked first, provisions the repo, and hears abo
   assert.equal(app.forgeField, "from-the-forge", "responses carry the forge's fields");
 });
 
-test("imported and local apps never reach the forge", async () => {
-  for (const extra of [{ gitRemoteUrl: "https://github.com/owner/repo.git" }, { localOnly: true }]) {
+test("imported and local apps provision nothing; an import is recorded with the forge", async () => {
+  const cases: [Record<string, unknown>, (id: string) => string[]][] = [
+    [{ gitRemoteUrl: "https://github.com/owner/repo.git" }, (id) => [`recordImportedRepo ${id} https://github.com/owner/repo.git`]],
+    [{ localOnly: true }, () => []],
+  ];
+  for (const [extra, expected] of cases) {
     const { calls, factory } = recordingForge();
     const repo = appsRepo(appsSupabase(), { forge: factory });
-    await repo.createApp({ teamId: "team-1", name: "Elsewhere", type: "imported", ...extra });
-    assert.deepEqual(calls, [], JSON.stringify(extra));
+    const app: any = await repo.createApp({ teamId: "team-1", name: "Elsewhere", type: "imported", ...extra });
+    assert.deepEqual(calls, expected(app.id), JSON.stringify(extra));
   }
 });
 

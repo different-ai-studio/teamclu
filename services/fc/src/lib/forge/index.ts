@@ -11,7 +11,8 @@ import type {
   AppRepoRow,
   ForgeHeartbeat,
 } from "../app-platform/hooks.js";
-import type { TeamCluForge, TeamCluForgeFactory } from "../teamclu-apps/forge.js";
+import { forgeRepoRecords, type TeamCluForge, type TeamCluForgeFactory } from "../teamclu-apps/forge.js";
+import { readForgeApp, setForgeRepoAuthKind, writeForgeRepo } from "../teamclu-apps/forge-repos.js";
 import { ApiError } from "../http-utils.js";
 import {
   GITEA_AUTH_KIND,
@@ -99,6 +100,8 @@ export function makeGiteaForge(opts: GiteaForgeOptions): TeamCluForgeFactory {
     }
 
     const hooks: TeamCluForge = {
+      ...forgeRepoRecords(ctx),
+
       assertCanHostRepo() {
         if (!gitea) throw giteaUnavailable(unavailableReason);
       },
@@ -116,7 +119,9 @@ export function makeGiteaForge(opts: GiteaForgeOptions): TeamCluForgeFactory {
           repoGitea = gitea.withOwner(owner);
         }
         const { sshUrl } = await repoGitea.createAppRepo(app.id);
-        return { remoteUrl: sshUrl, authKind: GITEA_AUTH_KIND };
+        const repo = { remoteUrl: sshUrl, authKind: GITEA_AUTH_KIND };
+        await writeForgeRepo(await ctx.serviceRoleClient("record a provisioned app repo"), app.id, repo);
+        return repo;
       },
 
       provisionFailed(message, details) {
@@ -142,12 +147,7 @@ export function makeGiteaForge(opts: GiteaForgeOptions): TeamCluForgeFactory {
         if (!gitea) return;
         try {
           const admin = await ctx.serviceRoleClient("revoke deploy keys on deauth");
-          const { data: app, error } = await admin
-            .from("apps")
-            .select("id, git_auth_kind, git_remote_url")
-            .eq("id", appId)
-            .maybeSingle();
-          if (error) throw error;
+          const app = await readForgeApp(admin, appId);
           if (!app || !hostsRepo(app)) return;
           await revokeActorDeployKeys(repoClient(app), appId, memberId);
         } catch (e) {
@@ -210,7 +210,7 @@ export function makeGiteaForge(opts: GiteaForgeOptions): TeamCluForgeFactory {
         if (!gitea) throw giteaUnavailable(unavailableReason);
         const repoGitea = repoClient(app);
         const head = await repoGitea.getRepoHead(app.id);
-        const deployedSha = app.git_commit_sha ?? null;
+        const deployedSha = app.deployed_revision ?? null;
         if (!compare) return { ...head, deployedSha, undeployedCommits: null };
 
         // Three cases, and only the last one costs a request:
@@ -251,9 +251,9 @@ export function makeGiteaForge(opts: GiteaForgeOptions): TeamCluForgeFactory {
 
       /**
        * Keep the token for an imported app's http(s) repo. The secret is
-       * written before the platform's row names it, and deleted only after the
-       * row stops naming it, so a row that says `https_token` always has a
-       * secret behind it.
+       * written before the repo record (and the platform's legacy column, until
+       * P3.4) names it, and deleted only after they stop naming it, so a record
+       * that says `https_token` always has a secret behind it.
        */
       async storeExternalCredential(app, input) {
         if (!isHttpGitRemote(app.git_remote_url)) {
@@ -270,11 +270,13 @@ export function makeGiteaForge(opts: GiteaForgeOptions): TeamCluForgeFactory {
           APP_GIT_HTTPS_CREDENTIAL_KIND,
           serializeGitHttpsCredential(input as GitHttpsCredential),
         );
+        await setForgeRepoAuthKind(admin, app.id, GIT_HTTPS_AUTH_KIND);
         return { authKind: GIT_HTTPS_AUTH_KIND };
       },
 
       async forgetExternalCredential(app) {
         const admin = await ctx.serviceRoleClient("clear app git credential");
+        await setForgeRepoAuthKind(admin, app.id, null);
         await deleteAppSecretSupabase(admin, app.id, APP_GIT_HTTPS_CREDENTIAL_KIND);
       },
 

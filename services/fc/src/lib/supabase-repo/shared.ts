@@ -116,12 +116,17 @@ export function mapSetTeamMemberRoleError(error: any) {
 
 // --- Apps helpers ---
 
+// The platform's columns only (P3.1). TeamClu's fields of an app — teamId,
+// visibility, workspaceId, createdByActorId, relationship — come from
+// AppTenantHooks.fields / decorate (teamclu-apps/tenant.ts), read from
+// app_links and app_grants, so nothing here reads the legacy columns P3.4 drops.
+//
 // `org_id` is selected but intentionally NOT mapped: it is the server's
 // deployment ledger (which database the schema was created in), not part of
 // the client contract. Selecting it keeps finalizeDeploy and the data browser
 // from needing a second round trip.
 export const APP_COLUMNS =
-  "id, team_id, org_id, created_by_actor_id, name, slug, app_code, function_naming_mode, uses_app_code_domain, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, start_spec, artifact_verification, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, undeploy_operation, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, deploy_token, deploy_attempt_id, deploy_started_at, custom_domain, custom_domain_verified_at, created_at, updated_at";
+  "id, org_id, name, slug, app_code, function_naming_mode, uses_app_code_domain, type, deployed_revision, runtime, start_spec, artifact_verification, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, undeploy_operation, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, deploy_token, deploy_attempt_id, deploy_started_at, custom_domain, custom_domain_verified_at, created_at, updated_at";
 
 export function slugify(name: string): string {
   return (
@@ -135,33 +140,6 @@ export function slugify(name: string): string {
 
 export const appIso = (v: any): string | null => (v ? new Date(v).toISOString() : null);
 
-export type AppRelationship = "owner" | "invited" | "team";
-
-/**
- * How the caller came to see an app — the three routes `apps_select_if_visible`
- * lets a row through by, collapsed to one answer.
- *
- * Owner first, then invited, then team: a grant on a team app is what gives
- * the caller rights beyond reading it, so it is the fact worth showing. A row
- * that is neither the caller's nor a team app can only be visible through a
- * grant, so it is `invited` even when the grants could not be read — just
- * without the name of whoever granted it.
- */
-export function appRelationshipFor(
-  r: { id: string; created_by_actor_id?: string | null; visibility?: string | null },
-  callerActorId: string | null,
-  grants: Map<string, string | null> | null,
-): { relationship: AppRelationship; invitedByActorId: string | null } {
-  if (callerActorId && r.created_by_actor_id === callerActorId) {
-    return { relationship: "owner", invitedByActorId: null };
-  }
-  if (grants?.has(r.id)) {
-    return { relationship: "invited", invitedByActorId: grants.get(r.id) ?? null };
-  }
-  if (r.visibility === "team") return { relationship: "team", invitedByActorId: null };
-  return { relationship: "invited", invitedByActorId: null };
-}
-
 // Exposes EXACTLY the canonical app fields. Reads snake_case DB columns
 // (PostgREST returns the table's native column names).
 // `forgeFields` is what the forge integration adds (`AppLifecycleHooks.decorate`,
@@ -172,18 +150,14 @@ export function mapApp(r: any, forgeFields: Record<string, unknown> = NO_FORGE_F
   return {
     id: r.id,
     ...(r.undeploy_operation ? { undeployOperation: r.undeploy_operation } : {}),
-    teamId: r.team_id,
     name: r.name,
     slug: r.slug,
     appCode,
     usesAppCodeDomain: r.uses_app_code_domain === true,
     appCodeUrl: appPublicUrl(r.slug, r.id, process.env, appCode),
     type: r.type,
-    visibility: r.visibility,
-    workspaceId: r.workspace_id ?? null,
-    // Who made it. The apps list names them, which is the difference between a
-    // team list you can act on and a list of names nobody recognises.
-    createdByActorId: r.created_by_actor_id ?? null,
+    // Where the code lives is the forge's record (P3.3), attached to the row
+    // by the platform before it gets here (`AppRepoRow`).
     gitRemoteUrl: r.git_remote_url ?? null,
     // `gitea_deploy_key` marks an app whose repo this deployment provisioned
     // and holds a credential for; null marks one imported from a remote we have
@@ -193,7 +167,8 @@ export function mapApp(r: any, forgeFields: Record<string, unknown> = NO_FORGE_F
     // The forge's own fields — for Gitea, `gitAccountAuth` and `gitHttpUrl`
     // (forge/index.ts giteaAccountFields).
     ...forgeFields,
-    gitCommitSha: r.git_commit_sha ?? null,
+    // The revision of the last deploy, named for what it is to a git client.
+    gitCommitSha: r.deployed_revision ?? null,
     runtime: r.runtime ?? "node",
     startSpec: r.start_spec ?? null,
     artifactVerification: r.artifact_verification ?? null,
@@ -256,7 +231,7 @@ export function mapApp(r: any, forgeFields: Record<string, unknown> = NO_FORGE_F
       approval: "unknown",
       startedAt: appIso(r.deploy_started_at),
       lastPublishedAt: appIso(r.env_deployed_at),
-      lastPublishedRevision: r.artifact_verification?.revision ?? r.git_commit_sha ?? null,
+      lastPublishedRevision: r.artifact_verification?.revision ?? r.deployed_revision ?? null,
     },
     fcEndpoint: r.fc_endpoint ?? null,
     // Only an active code domain is canonical; the candidate alone changes no URL.
