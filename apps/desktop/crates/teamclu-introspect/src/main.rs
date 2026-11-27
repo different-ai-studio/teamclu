@@ -1,4 +1,3 @@
-mod apps;
 mod capabilities;
 mod channel_state;
 mod channels;
@@ -520,10 +519,9 @@ fn tool_definitions() -> Value {
             }
         }
     ]);
-    // The app control panel's tools live with their handlers.
+    // The knowledge tools live with their handlers.
     if let Value::Array(list) = &mut tools {
         list.extend(knowledge::tool_definitions());
-        list.extend(apps::tool_definitions());
     }
     tools
 }
@@ -771,15 +769,6 @@ async fn handle_request(
                         Err(e) => tool_err(&e),
                     }
                 }
-                app_tool if apps::is_app_tool(app_tool) => {
-                    match apps::handle(app_tool, workspace, api_port, &arguments).await {
-                        Ok(v) => {
-                            let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                            tool_ok(&text)
-                        }
-                        Err(e) => tool_err(&e),
-                    }
-                }
                 unknown => tool_err(&format!("Unknown tool: {unknown}")),
             };
 
@@ -804,8 +793,8 @@ async fn handle_request(
 /// How often a call that is still running tells the client so.
 ///
 /// The MCP client in pi gives up on a request after 60 s of silence, and some
-/// calls here legitimately take minutes — a deploy builds, uploads and
-/// finalizes. Progress notifications reset that clock (the client asks for them
+/// calls here legitimately take minutes — one waiting on a native approval
+/// dialog, a long export. Progress notifications reset that clock (the client asks for them
 /// by sending a `progressToken`), so a call stays alive exactly as long as it is
 /// actually running, with no fixed cap that a slow build could outgrow.
 const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
@@ -891,8 +880,8 @@ async fn main() {
             }
         }
 
-        // A deploy may keep waiting for a native approval or a build after
-        // the MCP host times out. Let a following deploy_status request run
+        // A call may keep waiting on the desktop (a native approval, a slow
+        // write) after the MCP host times out. Let a following request run
         // immediately instead of queuing it behind that unresolved call.
         let stdout = std::sync::Arc::clone(&stdout);
         let workspace = workspace.clone();
@@ -959,8 +948,9 @@ mod tests {
 
     #[test]
     fn tool_names_are_unique() {
-        // The app tools are spliced in from `apps`; a name defined in both
-        // places would list twice and dispatch to whichever arm matched first.
+        // The knowledge tools are spliced in from `knowledge`; a name defined
+        // in both places would list twice and dispatch to whichever arm
+        // matched first.
         let tools = tool_definitions();
         let names: Vec<&str> = tools
             .as_array()
@@ -972,7 +962,8 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(names.len(), unique.len(), "{names:?}");
-        assert!(names.contains(&"manage_app_cron"));
+        // P2.5: apps are `amuxd app`, not MCP tools.
+        assert!(!names.iter().any(|n| n.contains("_app")), "{names:?}");
         assert!(names.contains(&"knowledge_search"));
         assert!(names.contains(&"knowledge_read"));
     }

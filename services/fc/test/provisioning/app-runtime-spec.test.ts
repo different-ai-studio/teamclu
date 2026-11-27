@@ -150,7 +150,7 @@ test("parse: start.entry is rejected even alongside explicit fields", () => {
   ]) {
     assert.throws(
       () => parseAppDeployDeclaration({ build: { kind: "node" }, start }),
-      (e: any) => /start\.entry/.test(String(e?.message ?? e)) && /fcRuntime/.test(String(e?.message ?? e)) && /runtime_info/.test(String(e?.message ?? e)),
+      (e: any) => /start\.entry/.test(String(e?.message ?? e)) && /fcRuntime/.test(String(e?.message ?? e)) && /amuxd app runtime/.test(String(e?.message ?? e)),
     );
   }
 });
@@ -185,7 +185,7 @@ test("parse: non-container startup requires explicit layers without choosing a v
       build: { kind: "node" },
       start: { fcRuntime: "custom.debian10", command: ["/var/fc/lang/nodejs20/bin/node"], args: ["server/index.mjs"], port: 9000 },
     }),
-    (e: any) => /start\.layers/.test(String(e?.message ?? e)) && /runtime_info/.test(String(e?.message ?? e)),
+    (e: any) => /start\.layers/.test(String(e?.message ?? e)) && /amuxd app runtime/.test(String(e?.message ?? e)),
   );
 });
 

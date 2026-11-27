@@ -8741,7 +8741,6 @@ dependencies = [
  "flate2",
  "futures-util",
  "gethostname",
- "gtk",
  "hound",
  "ignore",
  "libc",
@@ -8782,7 +8781,6 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-shell",
  "tauri-plugin-window-state",
- "teamclu-apps",
  "teamclu-binpath",
  "teamclu-gateway",
  "teamclu-runtime-env",
@@ -8813,7 +8811,9 @@ name = "teamclu-apps"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "serde_json",
+ "tempfile",
  "tokio",
  "urlencoding",
 ]

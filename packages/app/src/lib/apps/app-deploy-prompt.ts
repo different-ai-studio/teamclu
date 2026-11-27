@@ -5,17 +5,17 @@ import type { AppRow } from '@/lib/backend/types'
  * The message the deploy button sends on the user's behalf.
  *
  * Deploying is the agent's job now, not the desktop's: the agent holds the
- * `deploy-app` skill and the `manage_app deploy` tool, and those already carry
- * every check the old client-side pipeline did (clean checkout at the remote
- * HEAD, regional runtime facts, artifact verification, preflight preview and
- * native approval). The click is the user's explicit request to publish, which
- * is what the skill waits for before calling `deploy`.
+ * `deploy-app` skill and `amuxd app deploy`, and those already carry every
+ * check the old client-side pipeline did (clean checkout at the remote HEAD,
+ * regional runtime facts, artifact verification, the preflight). The click is
+ * the user's explicit request to publish, which is what the skill waits for
+ * before deploying.
  */
 export function deployPromptForApp(app: Pick<AppRow, 'name'>): string {
   const name = app.name.trim()
   return i18n.t(
     'apps.deployPrompt',
-    '请把应用「{{name}}」部署上线。\n\n按 deploy-app 技能的流程来：先用 manage_app status 看清当前状态；有没提交或没推送的改动就先提交并推送；然后调用 manage_app deploy 发布。部署完成后告诉我线上地址、部署的版本，以及你验证了什么。',
+    '请把应用「{{name}}」部署上线。\n\n按 deploy-app 技能的流程来：先用 amuxd app status 看清当前状态；有没提交或没推送的改动就先提交并推送；然后运行 amuxd app deploy 发布。部署完成后告诉我线上地址、部署的版本，以及你验证了什么。',
     { name },
   )
 }

@@ -1,11 +1,20 @@
 //! `update` and `delete` — the app row's settings, and the app itself.
 
+use crate::OpError;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
 use crate::row::{app_brief, app_path, app_settings, row_id, row_str, APP_TYPES};
-use crate::{AppOps, Method, Surface};
+use crate::{AppOps, Method};
+
+/// How long `undeploy` follows the uninstall before answering "still running".
+const UNDEPLOY_WAIT: Duration = Duration::from_secs(300);
+const UNDEPLOY_POLL: Duration = Duration::from_secs(3);
+
+fn undeploy_finished(operation: &Value) -> bool {
+    matches!(operation["status"].as_str(), Some("succeeded" | "failed"))
+}
 
 /// An `update` call: every setting an operator may change, all optional.
 ///
@@ -28,13 +37,20 @@ pub struct UpdateArgs {
     pub auth_rules: Option<Value>,
 }
 
-fn one_of(field: &str, value: &Option<String>, allowed: &[&str]) -> Result<Option<String>, String> {
+fn one_of(
+    field: &str,
+    value: &Option<String>,
+    allowed: &[&str],
+) -> Result<Option<String>, OpError> {
     match value {
         None => Ok(None),
         Some(value) if allowed.contains(&value.as_str()) => Ok(Some(value.clone())),
-        Some(value) => Err(format!(
-            "{field} must be one of: {} (got {value:?})",
-            allowed.join(", ")
+        Some(value) => Err(OpError::invalid(
+            &format!("invalid_{field}"),
+            format!(
+                "{field} must be one of: {} (got {value:?})",
+                allowed.join(", ")
+            ),
         )),
     }
 }
@@ -43,7 +59,7 @@ impl UpdateArgs {
     /// The `PATCH /v1/apps/:id` body, checked for the errors that need no
     /// round trip. The server validates again (rules as a set, the scope/rules
     /// pair) and its message is passed on.
-    pub fn patch(&self) -> Result<Value, String> {
+    pub fn patch(&self) -> Result<Value, OpError> {
         let mut patch = Map::new();
         if let Some(name) = &self.name {
             patch.insert("name".into(), json!(name));
@@ -66,25 +82,28 @@ impl UpdateArgs {
             patch.insert("authScope".into(), json!(scope));
         }
         if let Some(rules) = &self.auth_rules {
-            let list = rules
-                .as_array()
-                .ok_or("auth_rules must be an array of {path, auth, audience?, roles?}")?;
+            let list = rules.as_array().ok_or_else(|| {
+                OpError::invalid(
+                    "invalid_auth_rules",
+                    "auth_rules must be an array of {path, auth, audience?, roles?}",
+                )
+            })?;
             for rule in list {
                 let path = rule.get("path").and_then(Value::as_str).unwrap_or("");
                 let auth = rule.get("auth").and_then(Value::as_str).unwrap_or("");
                 if !path.starts_with('/') || !matches!(auth, "required" | "public") {
-                    return Err(format!(
+                    return Err(OpError::invalid("invalid_auth_rules", format!(
                         "each auth rule needs a path starting with \"/\" and auth \"required\" or \"public\" (got {rule})"
-                    ));
+                    )));
                 }
             }
             patch.insert("authRules".into(), rules.clone());
         }
         if patch.is_empty() {
-            return Err(
-                "update needs at least one of: name, type, visibility, auth_mode, auth_audience, auth_scope, auth_rules"
-                    .to_string(),
-            );
+            return Err(OpError::invalid(
+                "nothing_to_update",
+                "update needs at least one of: name, type, visibility, auth_mode, auth_audience, auth_scope, auth_rules",
+            ));
         }
         Ok(Value::Object(patch))
     }
@@ -99,7 +118,7 @@ fn needs_database(app_type: &str) -> bool {
 
 /// What an operator needs to hear about the change they just made — the
 /// consequences that are not visible on the row itself.
-pub fn update_notes(surface: Surface, before: &Value, patch: &Value, after: &Value) -> Vec<String> {
+pub fn update_notes(before: &Value, patch: &Value, after: &Value) -> Vec<String> {
     let mut notes = Vec::new();
 
     if patch.get("name").is_some() {
@@ -115,10 +134,7 @@ pub fn update_notes(surface: Surface, before: &Value, patch: &Value, after: &Val
         if needs_database(prev) && !needs_database(next) {
             notes.push(format!(
                 "WARNING: from the next deploy on this app has no database — DATABASE_URL disappears from it, and code that uses the database will fail. The data is kept, and comes back if the type is set to data_app again. {} already reports no database. Type was {prev}.",
-                match surface {
-                    Surface::Mcp => "manage_app_data",
-                    Surface::Cli => "Its data API",
-                }
+                crate::step("data tables")
             ));
         } else if !needs_database(prev) && needs_database(next) {
             notes.push(
@@ -134,7 +150,7 @@ pub fn update_notes(surface: Surface, before: &Value, patch: &Value, after: &Val
         if after.get("typePendingRedeploy").and_then(Value::as_bool) == Some(true) {
             notes.push(format!(
                 "The running app still has the old type; deploy ({}) for it to take effect.",
-                surface.step("manage_app", "deploy")
+                crate::step("deploy")
             ));
         }
     }
@@ -146,7 +162,7 @@ pub fn update_notes(surface: Surface, before: &Value, patch: &Value, after: &Val
         notes.push(if visibility == "personal" {
             format!(
                 "Only the creator and members granted access ({}) see this app now. The local daemon cannot see it either unless it created it, so agents it runs lose sight of it.",
-                surface.step("manage_app_access", "grant")
+                crate::step("access grant")
             )
         } else {
             "Everyone on the team can see this app now.".to_string()
@@ -181,11 +197,7 @@ pub fn update_notes(surface: Surface, before: &Value, patch: &Value, after: &Val
 impl AppOps<'_> {
     /// `update` — every setting on the row in one PATCH, the way the control
     /// panel saves a field: name, type, visibility and the login wall.
-    ///
-    /// Approval of an exposure change, where a surface asks for one, is the
-    /// caller's to obtain before this runs: it needs the row and the patch,
-    /// and nothing here has changed yet.
-    pub async fn update(&self, row: &Value, args: &UpdateArgs) -> Result<Value, String> {
+    pub async fn update(&self, row: &Value, args: &UpdateArgs) -> Result<Value, OpError> {
         let patch = args.patch()?;
         let app_id = row_id(row)?;
         let updated = self
@@ -202,14 +214,20 @@ impl AppOps<'_> {
             "ok": true,
             "action": "update",
             "app": app_settings(&updated),
-            "notes": update_notes(self.surface(), row, &patch, &updated),
+            "notes": update_notes(row, &patch, &updated),
         }))
     }
 
     /// `undeploy` — take the deployed site down and keep everything else: the
     /// app, its code, sessions and data. A deployed app has to be uninstalled
     /// this way before [`AppOps::delete`] will take it.
-    pub async fn undeploy(&self, row: &Value) -> Result<Value, String> {
+    ///
+    /// The Cloud API only accepts the uninstall and runs it in the background
+    /// (trigger, domain, function, artifact), so this follows the app's
+    /// `undeployOperation` until it succeeds or fails — the caller (and an
+    /// agent) gets the outcome, not a promise to go and poll. Past
+    /// [`UNDEPLOY_WAIT`] it answers "not yet complete" with the step to check.
+    pub async fn undeploy(&self, row: &Value) -> Result<Value, OpError> {
         let app_id = row_id(row)?;
         let result = self
             .call(
@@ -220,21 +238,53 @@ impl AppOps<'_> {
                 "Uninstalling the deployment (needs admin on it)",
             )
             .await?;
-        self.host.app_changed(&result["app"]);
-        let complete = result["operation"]["status"].as_str() == Some("succeeded");
+        let mut app = result["app"].clone();
+        let mut operation = result["operation"].clone();
+        let mut waited = Duration::ZERO;
+        while !undeploy_finished(&operation) && waited < UNDEPLOY_WAIT {
+            self.cloud.pause(UNDEPLOY_POLL).await;
+            waited += UNDEPLOY_POLL;
+            // A failed read is not a failed uninstall: try again next round.
+            if let Ok(fresh) = self.get(&app_path(&app_id, ""), "Reading the app").await {
+                if fresh["undeployOperation"].is_object() {
+                    operation = fresh["undeployOperation"].clone();
+                }
+                app = fresh;
+            }
+        }
+        self.host.app_changed(&app);
+        let status = operation["status"].as_str().unwrap_or("");
+        if status == "failed" {
+            let reason = operation["error"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| operation["error"]["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "no reason given".to_string());
+            return Err(OpError::upstream(
+                "undeploy_failed",
+                format!(
+                    "Uninstalling the deployment failed: {reason}. Steps so far: {}",
+                    operation["steps"]
+                ),
+            )
+            .with_next(crate::next_cmd(&format!("undeploy --id {app_id}")))
+            .retryable());
+        }
+        let complete = status == "succeeded";
         let note = if complete {
             "Deployment uninstalled. App, code, sessions and user data were retained.".to_string()
         } else {
             format!(
-                "Uninstall accepted, not yet complete. Read {} to verify cleanup progress; do not claim success until the operation succeeds.",
-                self.surface().step("manage_app", "status")
+                "Uninstall still running after {}s. Read {} to verify cleanup progress; do not claim success until undeploy_operation.status is succeeded.",
+                UNDEPLOY_WAIT.as_secs(),
+                crate::step("status")
             )
         };
         Ok(json!({
             "ok": true,
             "action": "undeploy",
-            "app": app_brief(&result["app"]),
-            "operation": result["operation"],
+            "app": app_brief(&app),
+            "operation": operation,
             "complete": complete,
             "note": note,
         }))
@@ -243,7 +293,7 @@ impl AppOps<'_> {
     /// `delete` — the app, its function and its login client; the repository
     /// is archived. Cannot be undone from here, so callers name the app
     /// outright ([`crate::AppSelector::is_explicit`]) and confirm first.
-    pub async fn delete(&self, row: &Value) -> Result<Value, String> {
+    pub async fn delete(&self, row: &Value) -> Result<Value, OpError> {
         let app_id = row_id(row)?;
         // Tears down the function, its trigger, the artifact and the login
         // client, and archives the repo — well past 30 s on a slow region.
@@ -352,29 +402,21 @@ mod tests {
     fn leaving_data_app_warns_that_the_database_goes_away_on_deploy() {
         let before = json!({ "type": "data_app" });
         let after = json!({ "type": "static_web", "typePendingRedeploy": true });
-        let notes = update_notes(
-            Surface::Mcp,
-            &before,
-            &json!({ "type": "static_web" }),
-            &after,
-        )
-        .join("\n");
+        let notes = update_notes(&before, &json!({ "type": "static_web" }), &after).join("\n");
         assert!(
             notes.contains("WARNING") && notes.contains("DATABASE_URL"),
             "{notes}"
         );
         assert!(notes.contains("data is kept"), "{notes}");
-        assert!(notes.contains("manage_app action \"deploy\""), "{notes}");
+        assert!(notes.contains("`amuxd app deploy`"), "{notes}");
 
         // Legacy rows store an unrecognised type, which IS a data app.
         let legacy = json!({ "type": "fullstack_tanstack_postgres" });
-        let notes =
-            update_notes(Surface::Cli, &legacy, &json!({ "type": "slides" }), &after).join("\n");
+        let notes = update_notes(&legacy, &json!({ "type": "slides" }), &after).join("\n");
         assert!(notes.contains("WARNING"), "{notes}");
         assert!(notes.contains("`amuxd app deploy`"), "{notes}");
 
         let notes = update_notes(
-            Surface::Mcp,
             &json!({ "type": "static_web" }),
             &json!({ "type": "data_app" }),
             &json!({ "type": "data_app" }),
@@ -387,7 +429,6 @@ mod tests {
     #[test]
     fn a_login_change_says_it_is_live_without_a_deploy() {
         let notes = update_notes(
-            Surface::Mcp,
             &json!({ "authMode": "platform" }),
             &json!({ "authMode": "none" }),
             &json!({ "authMode": "none" }),
@@ -406,7 +447,7 @@ mod tests {
             json!({ "id": "a1", "name": "账本", "visibility": "team" }),
         );
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let out = ops
             .update(
@@ -427,20 +468,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn undeploy_says_whether_cleanup_finished() {
+    async fn undeploy_waits_for_the_uninstall_to_finish() {
+        let cloud = FakeCloud::default();
+        cloud.reply(
+            Method::Post,
+            "/v1/apps/a1/undeploy",
+            json!({ "app": { "id": "a1", "fcStatus": "uninstalling" }, "operation": { "status": "pending" } }),
+        );
+        cloud.reply_in_turn(
+            Method::Get,
+            "/v1/apps/a1",
+            vec![
+                json!({ "id": "a1", "fcStatus": "uninstalling", "undeployOperation": { "status": "running" } }),
+                json!({ "id": "a1", "fcStatus": "uninstalled", "undeployOperation": { "status": "succeeded" } }),
+            ],
+        );
+        let daemon = FakeDaemon::default();
+        let host = TestHost;
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let out = ops.undeploy(&json!({ "id": "a1" })).await.unwrap();
+        assert_eq!(out["complete"], true);
+        assert_eq!(out["app"]["fc_status"], "uninstalled");
+        assert_eq!(*cloud.pauses.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn undeploy_that_never_finishes_says_so_and_names_status() {
         let cloud = FakeCloud::default();
         cloud.reply(
             Method::Post,
             "/v1/apps/a1/undeploy",
             json!({ "app": { "id": "a1", "fcStatus": "uninstalling" }, "operation": { "status": "running" } }),
         );
+        cloud.reply(
+            Method::Get,
+            "/v1/apps/a1",
+            json!({ "id": "a1", "fcStatus": "uninstalling", "undeployOperation": { "status": "running" } }),
+        );
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let out = ops.undeploy(&json!({ "id": "a1" })).await.unwrap();
         assert_eq!(out["complete"], false);
         assert!(out["note"].as_str().unwrap().contains("`amuxd app status`"));
-        assert_eq!(out["app"]["fc_status"], "uninstalling");
+        assert_eq!(*cloud.pauses.lock().unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn a_failed_undeploy_is_an_error_that_can_be_retried() {
+        let cloud = FakeCloud::default();
+        cloud.reply(
+            Method::Post,
+            "/v1/apps/a1/undeploy",
+            json!({ "app": { "id": "a1" }, "operation": { "status": "pending" } }),
+        );
+        cloud.reply(
+            Method::Get,
+            "/v1/apps/a1",
+            json!({ "id": "a1", "undeployOperation": { "status": "failed", "error": "DeleteFunction throttled" } }),
+        );
+        let daemon = FakeDaemon::default();
+        let host = TestHost;
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let err = ops.undeploy(&json!({ "id": "a1" })).await.unwrap_err();
+        assert_eq!(err.code, "undeploy_failed");
+        assert!(err.retryable && err.contains("throttled"), "{err:?}");
+        assert_eq!(err.next.as_deref(), Some("amuxd app undeploy --id a1"));
     }
 
     #[tokio::test]
@@ -453,7 +546,7 @@ mod tests {
             r#"{"code":"app_uninstall_required","message":"Uninstall the deployment successfully before deleting this app."}"#,
         );
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let err = ops.delete(&json!({ "id": "a1" })).await.unwrap_err();
         assert!(err.contains("`amuxd app undeploy`"), "{err}");
@@ -464,7 +557,7 @@ mod tests {
         let cloud = FakeCloud::default();
         cloud.reply(Method::Delete, "/v1/apps/a1", Value::Null);
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let out = ops
             .delete(&json!({ "id": "a1", "name": "记账" }))

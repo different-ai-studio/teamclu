@@ -38,11 +38,18 @@ mod test_brand_env;
 #[cfg(test)]
 mod workspace_meta_gate;
 
-use clap::Parser;
 use cli::{Cli, Commands, TestClientAction};
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let args = cli::app::normalize_app_args(std::env::args().collect());
+    let parsed = <Cli as clap::CommandFactory>::command()
+        .mut_subcommand("app", cli::app::compact_help)
+        .try_get_matches_from(&args)
+        .and_then(|m| <Cli as clap::FromArgMatches>::from_arg_matches(&m));
+    let cli = match parsed {
+        Ok(cli) => cli,
+        Err(e) => cli::app::exit_on_parse_error(e, &args),
+    };
 
     match cli.command {
         Commands::Setup { print_only } => {
@@ -235,8 +242,9 @@ fn main() -> anyhow::Result<()> {
             cli::process::run_status()?;
         }
         Commands::App(args) => {
-            if !cli::app::run(args)? {
-                std::process::exit(1);
+            let code = cli::app::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
             }
         }
         Commands::Doctor => {

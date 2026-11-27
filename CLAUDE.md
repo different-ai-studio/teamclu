@@ -121,9 +121,10 @@ nowhere else; this describes what exists, it decides nothing):
   the module header documents the token file and the rejection rules. Calls
   that change state must also come from an agent host amuxd spawned (checked
   against `/internal/runtime-context/verify`; see `introspect_api/caller.rs`).
-  Publishing or deleting an app, changing who can reach it, or replacing MCP
-  servers waits for a native approval dialog that times out when nobody is at
-  this machine (`introspect_api/confirm.rs`).
+  Replacing MCP servers waits for a native approval dialog that times out when
+  nobody is at this machine (`introspect_api/confirm.rs`). Apps are not here:
+  agents manage them with `amuxd app` (daemon `/v1/app-ops`), where the
+  platform's grants alone decide — no dialog.
 
 **Daemon-owned cron** (ADR-0010): scheduler, storage, execution and delivery
 live in `apps/daemon/src/cron/`, served at `/v1/cron/*` (`http/cron.rs`). Jobs

@@ -322,6 +322,9 @@ async fn fake_cloud() -> String {
                 "id": "a1", "teamId": "team-mock", "name": "Notes", "slug": "notes",
                 "fcStatus": "live", "provisionStatus": "ready",
                 "publicUrl": "https://notes.apps.test",
+                "createdByActorId": "m-owner", "visibility": "personal",
+                "authMode": "platform", "authScope": "all",
+                "authRules": [{ "path": "/health", "auth": "public" }],
             }),
             _ => serde_json::json!({
                 "id": id, "teamId": "team-mock", "name": "Draft", "slug": "draft",
@@ -361,6 +364,177 @@ async fn fake_cloud() -> String {
             }),
         )
         .route(
+            "/v1/teams/:team/actors",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({ "items": [
+                    { "id": "m-owner", "kind": "member", "displayName": "Owner" },
+                    { "id": "m-li", "kind": "member", "displayName": "李雷" },
+                    { "id": "m-wang", "kind": "member", "displayName": "王芳" },
+                    { "id": "g-bot", "kind": "agent", "displayName": "Bot", "agentOwnerMemberId": "m-wang" },
+                ] })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/access",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({ "items": [
+                    { "memberId": "m-li", "permissionLevel": "read", "displayName": "李雷", "actorType": "member", "inherited": false },
+                ] })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/access/:member",
+            axum::routing::put(
+                |headers: HeaderMap, Path((id, member)): Path<(String, String)>, Json(body): Json<Value>| async move {
+                    authed(&headers)?;
+                    if id == "a2" {
+                        return Ok::<_, StatusCode>((
+                            StatusCode::FORBIDDEN,
+                            Json(serde_json::json!({ "error": { "code": "inherited_access_not_allowed", "message": "inherited" } })),
+                        ));
+                    }
+                    Ok((
+                        StatusCode::OK,
+                        Json(serde_json::json!({ "memberId": member, "permissionLevel": body["permissionLevel"] })),
+                    ))
+                },
+            ),
+        )
+        .route(
+            "/v1/apps/:id/storage/objects",
+            get(|headers: HeaderMap, axum::extract::RawQuery(q): axum::extract::RawQuery| async move {
+                authed(&headers)?;
+                assert_eq!(q.as_deref(), Some("limit=100&prefix=uploads%2F&delimiter=%2F"));
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "folders": ["uploads/2026/"],
+                    "items": [{ "path": "uploads/a.png", "size": 3 }],
+                    "nextCursor": null, "canWrite": true,
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/storage/sign-upload",
+            axum::routing::post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+                authed(&headers)?;
+                assert_eq!(body, serde_json::json!({ "path": "img/logo.png", "contentType": "image/png" }));
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "path": "img/logo.png", "url": "https://bucket.test/put?sig", "expiresIn": 600,
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/storage/purge",
+            axum::routing::post(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({ "deleted": 7 })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/undeploy",
+            axum::routing::post(|headers: HeaderMap, Path(id): Path<String>| async move {
+                authed(&headers)?;
+                // a2 is slow: the CLI's first reply comes back while it runs.
+                if id == "a2" {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "app": row(&id), "operation": { "status": "succeeded" },
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/sessions",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "items": [{ "id": "s1", "title": "改首页", "lastMessageAt": "2026-11-26T08:00:00Z" }],
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/runtime-info",
+            get(|headers: HeaderMap, axum::extract::RawQuery(q): axum::extract::RawQuery| async move {
+                authed(&headers)?;
+                assert_eq!(q.as_deref(), Some("language=node"));
+                Ok::<_, StatusCode>(Json(serde_json::json!({ "currentDeployment": null, "runtimes": ["nodejs20"] })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/env",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "canWrite": true,
+                    "items": [{ "key": "STRIPE_KEY", "isSecret": true, "value": null }],
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/env/:key",
+            axum::routing::put(
+                |headers: HeaderMap, Path((_, key)): Path<(String, String)>, Json(body): Json<Value>| async move {
+                    authed(&headers)?;
+                    let secret = body["isSecret"] == true;
+                    Ok::<_, StatusCode>(Json(serde_json::json!({
+                        "key": key, "isSecret": secret,
+                        "value": if secret { Value::Null } else { body["value"].clone() },
+                    })))
+                },
+            ),
+        )
+        .route(
+            "/v1/apps/:id/cron-jobs",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "items": [{ "id": "11111111-1111-1111-1111-111111111111", "name": "nightly", "enabled": true }],
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/cron-jobs/:job/run",
+            axum::routing::post(
+                |headers: HeaderMap, Path((_, job)): Path<(String, String)>| async move {
+                    authed(&headers)?;
+                    assert_eq!(job, "11111111-1111-1111-1111-111111111111");
+                    Ok::<_, StatusCode>(Json(serde_json::json!({ "status": "succeeded", "responseStatus": 200 })))
+                },
+            ),
+        )
+        .route(
+            "/v1/apps/:id/custom-domain/verify",
+            axum::routing::post(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>((
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({ "error": { "code": "dns_not_visible", "message": "TXT record not found" } })),
+                ))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/data/tables",
+            get(|headers: HeaderMap| async move {
+                authed(&headers)?;
+                Ok::<_, StatusCode>(Json(serde_json::json!({
+                    "items": [{ "name": "orders", "primaryKey": ["tenant", "id"] }],
+                })))
+            }),
+        )
+        .route(
+            "/v1/apps/:id/data/tables/:table/rows/:key",
+            axum::routing::delete(
+                |headers: HeaderMap, Path((_, table, key)): Path<(String, String, String)>| async move {
+                    authed(&headers)?;
+                    assert_eq!(table, "orders");
+                    // ["acme",42], unpadded base64url, in the catalog's key order.
+                    assert_eq!(key, "WyJhY21lIiw0Ml0");
+                    Ok::<_, StatusCode>(StatusCode::NO_CONTENT)
+                },
+            ),
+        )
+        .route(
             "/v1/apps/:id/logs",
             get(|headers: HeaderMap| async move {
                 authed(&headers)?;
@@ -388,31 +562,53 @@ async fn app_ops(app: &TestApp, body: Value) -> (u16, Value) {
     (status, resp.json().await.expect("app-ops body"))
 }
 
-/// `amuxd app list` / `logs` run the shared flows on the daemon's own token.
+/// The contract envelope's `data`, asserting the call succeeded.
+fn data_of(status: u16, body: &Value) -> Value {
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["v"], 1, "{body}");
+    assert_eq!(body["ok"], true, "{body}");
+    body["data"].clone()
+}
+
+/// The contract envelope's `error`, asserting the call failed with `exit`.
+fn error_of(status: u16, body: &Value, exit: i64) -> Value {
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["v"], 1, "{body}");
+    assert_eq!(body["ok"], false, "{body}");
+    assert_eq!(body["error"]["exit"], exit, "{body}");
+    body["error"].clone()
+}
+
+/// `amuxd app list` / `logs` / `whoami` run the shared flows on the daemon's own token.
 #[tokio::test]
 async fn app_ops_runs_the_shared_flows_as_the_daemon_agent() {
     let backend = backend::mock::MockBackend::new();
     backend.state().cloud_base_url = Some(fake_cloud().await);
     let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
 
-    let (status, listed) = app_ops(&app, serde_json::json!({ "action": "list" })).await;
-    assert_eq!(status, 200, "{listed}");
+    let (status, body) = app_ops(&app, serde_json::json!({ "action": "list" })).await;
+    let listed = data_of(status, &body);
     assert_eq!(listed["team_id"], "team-mock");
     assert_eq!(listed["apps"][0]["url"], "https://notes.apps.test");
 
-    let (status, logs) = app_ops(
+    let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "logs", "appName": "notes", "sinceMinutes": 5 }),
     )
     .await;
-    assert_eq!(status, 200, "{logs}");
+    let logs = data_of(status, &body);
     assert_eq!(logs["app_id"], "a1");
     assert_eq!(logs["since_minutes"], 5);
     assert_eq!(logs["entries"][0]["message"], "listening on :9000");
+
+    let (status, body) = app_ops(&app, serde_json::json!({ "action": "whoami" })).await;
+    let me = data_of(status, &body);
+    assert_eq!(me["principal"], "daemon_agent");
+    assert_eq!(me["teamId"], "team-mock");
 }
 
-/// A flow that says no answers 422 with its whole sentence as `detail`, and
-/// names the next step as a CLI command rather than an MCP tool.
+/// A flow that says no answers with a stable code, its whole sentence, the
+/// exit status it stands for, and the next step as a CLI command.
 #[tokio::test]
 async fn app_ops_refusals_carry_the_cli_next_step() {
     let backend = backend::mock::MockBackend::new();
@@ -421,14 +617,23 @@ async fn app_ops_refusals_carry_the_cli_next_step() {
 
     let (status, body) =
         app_ops(&app, serde_json::json!({ "action": "logs", "appId": "a2" })).await;
-    assert_eq!(status, 422, "{body}");
-    let detail = body["detail"].as_str().unwrap();
-    assert!(detail.contains("never been deployed"), "{detail}");
-    assert!(detail.contains("`amuxd app deploy`"), "{detail}");
+    let e = error_of(status, &body, 6);
+    assert_eq!(e["code"], "app_not_deployed");
+    let message = e["message"].as_str().unwrap();
+    assert!(message.contains("never been deployed"), "{message}");
+    assert!(message.contains("`amuxd app deploy`"), "{message}");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "status", "appName": "nope" }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 5)["code"], "app_not_found");
 
     let (status, body) = app_ops(&app, serde_json::json!({ "action": "publish" })).await;
-    assert_eq!(status, 422, "{body}");
-    assert!(body["detail"].as_str().unwrap().contains("unknown action"));
+    let e = error_of(status, &body, 2);
+    assert_eq!(e["code"], "unknown_action");
+    assert_eq!(e["next"], "amuxd app --help");
 }
 
 /// No cloud session to act on: a daemon that was never onboarded says so
@@ -437,8 +642,9 @@ async fn app_ops_refusals_carry_the_cli_next_step() {
 async fn app_ops_needs_an_onboarded_daemon() {
     let (app, _dir) = test_app_inner(Some(Arc::new(backend::mock::MockBackend::new()))).await;
     let (status, body) = app_ops(&app, serde_json::json!({ "action": "list" })).await;
-    assert_eq!(status, 503, "{body}");
-    assert!(body["detail"].as_str().unwrap().contains("amuxd init"));
+    let e = error_of(status, &body, 7);
+    assert_eq!(e["code"], "daemon_not_onboarded");
+    assert_eq!(e["next"], "amuxd init");
 }
 
 /// `update` reaches the row; `delete` refuses an app inferred from a directory
@@ -454,45 +660,379 @@ async fn app_ops_update_and_the_delete_guards() {
         serde_json::json!({ "action": "update", "appId": "a1", "visibility": "team" }),
     )
     .await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body["app"]["visibility"], "team");
+    assert_eq!(data_of(status, &body)["app"]["visibility"], "team");
 
     let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "update", "appId": "a1", "authMode": "third" }),
     )
     .await;
-    assert_eq!(status, 422, "{body}");
+    assert_eq!(error_of(status, &body, 2)["code"], "invalid_auth_mode");
 
     let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "delete", "workspacePath": "/work/notes", "confirm": true }),
     )
     .await;
-    assert_eq!(status, 422, "{body}");
-    assert!(body["detail"].as_str().unwrap().contains("explicit"));
+    assert_eq!(error_of(status, &body, 2)["code"], "explicit_app_required");
 
     let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "undeploy", "workspacePath": "/work/notes" }),
     )
     .await;
-    assert_eq!(status, 422, "{body}");
-    assert!(body["detail"].as_str().unwrap().contains("explicit"));
+    assert_eq!(error_of(status, &body, 2)["code"], "explicit_app_required");
 
     let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "delete", "appId": "a1" }),
     )
     .await;
-    assert_eq!(status, 422, "{body}");
-    assert!(body["detail"].as_str().unwrap().contains("--yes"));
+    let e = error_of(status, &body, 2);
+    assert!(e["message"].as_str().unwrap().contains("--yes"));
 
     let (status, body) = app_ops(
         &app,
         serde_json::json!({ "action": "delete", "appId": "a1", "confirm": true }),
     )
     .await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body["action"], "delete");
+    assert_eq!(data_of(status, &body)["action"], "delete");
+}
+
+/// The resource groups run on the same envelope: env, cron by name, a domain
+/// whose DNS is not visible yet, a row addressed by its primary key.
+#[tokio::test]
+async fn app_ops_resource_groups() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "env_list", "appId": "a1" }),
+    )
+    .await;
+    let env = data_of(status, &body);
+    assert_eq!(env["variables"][0]["key"], "STRIPE_KEY");
+    assert_eq!(env["variables"][0]["value"], Value::Null);
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "env_set", "appId": "a1",
+            "args": { "key": "STRIPE_KEY", "value": "sk_live", "isSecret": true } }),
+    )
+    .await;
+    let set = data_of(status, &body);
+    assert_eq!(
+        set["variable"]["value"],
+        Value::Null,
+        "a secret is never echoed"
+    );
+    assert!(set["note"].as_str().unwrap().contains("`amuxd app deploy`"));
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "cron_run", "appId": "a1", "args": { "job": "nightly" } }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["outcome"]["status"], "succeeded");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "cron_run", "appId": "a1", "args": { "job": "weekly" } }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 5)["code"], "no_such_name");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "domain_verify", "appId": "a1" }),
+    )
+    .await;
+    let e = error_of(status, &body, 6);
+    assert_eq!(e["code"], "dns_not_visible");
+    assert_eq!(e["retryable"], true);
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "data_delete", "appId": "a1",
+            "args": { "table": "orders", "key": { "id": 42, "tenant": "acme" } } }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["action"], "delete_row");
+}
+
+/// Long operations run in the daemon: a quick one answers within the grace
+/// second, a slow one answers `running` and `op_wait` sees it end.
+#[tokio::test]
+async fn app_ops_long_operations_run_in_the_daemon() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "undeploy", "appId": "a1" }),
+    )
+    .await;
+    let quick = data_of(status, &body);
+    assert_eq!(quick["state"], "succeeded", "{quick}");
+    assert_eq!(quick["result"]["complete"], true);
+    assert_eq!(quick["app"]["id"], "a1");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "undeploy", "appId": "a2" }),
+    )
+    .await;
+    let slow = data_of(status, &body);
+    assert_eq!(slow["state"], "running");
+    let op = slow["op"].as_str().unwrap().to_string();
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "status", "appId": "a2" }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["active_ops"][0]["op"], op.as_str());
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "op_wait", "args": { "op": op, "timeoutS": 10 } }),
+    )
+    .await;
+    let ended = data_of(status, &body);
+    assert_eq!(ended["state"], "succeeded");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "op_list", "args": { "active": false } }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["ops"].as_array().unwrap().len(), 2);
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "op_status", "args": { "op": "op_nope" } }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 5)["code"], "no_such_op");
+}
+
+/// `runtime`, `sessions` and `checkout where|bind|move` — the app as this
+/// machine sees it.
+#[tokio::test]
+async fn app_ops_runtime_sessions_and_checkout() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, dir) = test_app_inner(Some(Arc::new(backend))).await;
+    let call = |action: &str, args: Value| serde_json::json!({ "action": action, "appId": "a1", "args": args });
+
+    let (status, body) = app_ops(&app, call("sessions", Value::Null)).await;
+    assert_eq!(data_of(status, &body)["sessions"][0]["title"], "改首页");
+
+    let (status, body) = app_ops(
+        &app,
+        call("runtime", serde_json::json!({ "language": "node" })),
+    )
+    .await;
+    let rt = data_of(status, &body);
+    assert_eq!(rt["runtime"]["runtimes"][0], "nodejs20");
+    assert!(rt["this_machine"]["os"].is_string(), "{rt}");
+
+    let (status, body) = app_ops(
+        &app,
+        call("runtime", serde_json::json!({ "language": "cobol" })),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 2)["code"], "invalid_language");
+
+    let folder = dir.path().join("notes-code");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "checkout_bind",
+            serde_json::json!({ "dir": folder.to_str().unwrap() }),
+        ),
+    )
+    .await;
+    let bound = data_of(status, &body);
+    assert_eq!(bound["workdir"], folder.to_str().unwrap());
+
+    let (status, body) = app_ops(&app, call("checkout_where", Value::Null)).await;
+    let here = data_of(status, &body);
+    assert_eq!(here["workdir"], folder.to_str().unwrap());
+    assert_eq!(here["exists"], true);
+
+    // Moving the checkout the caller stands in is refused before anything moves.
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "checkout_move", "appId": "a1",
+            "workspacePath": folder.join("src").to_str().unwrap(),
+            "args": { "dir": dir.path().join("moved").to_str().unwrap() } }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 6)["code"], "moves_own_checkout");
+    assert!(folder.is_dir());
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "checkout_bind",
+            serde_json::json!({ "dir": "/definitely/not/here" }),
+        ),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 5)["code"], "dir_not_found");
+}
+
+/// `amuxd app files`: the daemon lists, signs and deletes; purge needs the
+/// app named outright and --yes.
+#[tokio::test]
+async fn app_ops_files() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "files_ls", "appId": "a1", "args": { "prefix": "uploads/" } }),
+    )
+    .await;
+    let ls = data_of(status, &body);
+    assert_eq!(ls["files"][0]["path"], "uploads/a.png");
+    assert_eq!(ls["folders"][0], "uploads/2026/");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "files_sign_upload", "appId": "a1",
+            "args": { "path": "img/logo.png", "contentType": "image/png" } }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["url"], "https://bucket.test/put?sig");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "files_purge", "workspacePath": "/nowhere",
+            "args": { "confirm": true } }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 2)["code"], "explicit_app_required");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "files_purge", "appId": "a1", "args": {} }),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 2)["code"], "confirmation_required");
+
+    let (status, body) = app_ops(
+        &app,
+        serde_json::json!({ "action": "files_purge", "appId": "a1", "args": { "confirm": true } }),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["deleted"], 7);
+}
+
+/// `amuxd app access` / `gate`: grants by name, the org grant as visibility,
+/// single-rule edits, and the platform's refusal as exit 4.
+#[tokio::test]
+async fn app_ops_access_and_gate() {
+    let backend = backend::mock::MockBackend::new();
+    backend.state().cloud_base_url = Some(fake_cloud().await);
+    let (app, _dir) = test_app_inner(Some(Arc::new(backend))).await;
+    let call = |action: &str, app_id: &str, args: Value| serde_json::json!({ "action": action, "appId": app_id, "args": args });
+
+    let (status, body) = app_ops(&app, call("access_ls", "a1", Value::Null)).await;
+    let ls = data_of(status, &body);
+    assert_eq!(ls["creator"]["name"], "Owner");
+    assert_eq!(ls["grants"][0]["source"], "direct");
+    assert_eq!(ls["org"], Value::Null);
+    let members: Vec<&str> = ls["candidates"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        members,
+        vec!["王芳"],
+        "neither the creator nor a grantee is a candidate"
+    );
+    assert_eq!(ls["candidates"]["agents"][0]["owner"]["name"], "王芳");
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "access_grant",
+            "a1",
+            serde_json::json!({ "who": "王芳", "level": "write" }),
+        ),
+    )
+    .await;
+    let grant = data_of(status, &body);
+    assert_eq!(grant["grant"]["actor_id"], "m-wang");
+    assert_eq!(grant["grant"]["level"], "write");
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "access_grant",
+            "a2",
+            serde_json::json!({ "who": "王芳", "level": "admin" }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        error_of(status, &body, 4)["code"],
+        "inherited_access_not_allowed"
+    );
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "access_grant",
+            "a1",
+            serde_json::json!({ "org": true, "level": "read" }),
+        ),
+    )
+    .await;
+    assert_eq!(data_of(status, &body)["org"], "read");
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "access_grant",
+            "a1",
+            serde_json::json!({ "org": true, "level": "write" }),
+        ),
+    )
+    .await;
+    assert_eq!(error_of(status, &body, 2)["code"], "org_level_unsupported");
+
+    let (status, body) = app_ops(
+        &app,
+        call(
+            "gate_rule_add",
+            "a1",
+            serde_json::json!({ "path": "/admin", "auth": "required", "audience": "org" }),
+        ),
+    )
+    .await;
+    let gate = data_of(status, &body);
+    assert_eq!(gate["gate"]["rules"].as_array().unwrap().len(), 2);
+    assert_eq!(gate["gate"]["rules"][1]["path"], "/admin");
+
+    let (status, body) = app_ops(
+        &app,
+        call("gate_rule_rm", "a1", serde_json::json!({ "path": "/nope" })),
+    )
+    .await;
+    let e = error_of(status, &body, 5);
+    assert_eq!(e["code"], "no_such_rule");
+    assert_eq!(e["next"], "amuxd app gate show", "a command, not Markdown");
+
+    let (status, body) = app_ops(&app, call("gate_set", "a1", serde_json::json!({}))).await;
+    assert_eq!(error_of(status, &body, 2)["code"], "nothing_to_set");
 }

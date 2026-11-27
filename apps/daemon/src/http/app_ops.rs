@@ -1,8 +1,7 @@
 //! `POST /v1/app-ops` — the app control plane, as `amuxd app …` drives it.
 //!
-//! The flows themselves are `teamclu-apps`, the same crate the desktop's
-//! `manage_app` MCP tool runs. What this module adds is how amuxd plugs into
-//! it:
+//! The flows themselves are `teamclu-apps`. What this module adds is how
+//! amuxd plugs into them:
 //!
 //! - **Cloud** — the daemon's own agent account ([`DaemonCloud`]). Apps it
 //!   creates are created by that agent, which administers them. Anyone
@@ -17,6 +16,12 @@
 //! The work runs here rather than in the CLI process because only this
 //! process may refresh the agent's cloud session: the refresh token rotates on
 //! use, and a second process refreshing it would sign the running daemon out.
+//!
+//! Every outcome a flow reaches — done, refused, failed — answers 200 with the
+//! CLI contract's envelope (docs/specs/2026-11-24-amuxd-app-cli-design.md
+//! §2.2): `{"v":1,"ok":true,"data":…}` or `{"v":1,"ok":false,"error":{code,
+//! message,next,retryable,kind,exit}}`. HTTP errors are left to the layer
+//! below the flows: a token without the scope.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,13 +31,15 @@ use axum::{extract::State, Json};
 use serde::Deserialize;
 use serde_json::Value;
 use teamclu_apps::{
-    AppOps, AppSelector, Cloud, CloudError, CreateArgs, DaemonError, Host, LocalDaemon, LogsArgs,
-    Method, Surface, UpdateArgs,
+    AppOps, AppSelector, Cloud, CloudError, CreateArgs, CronFields, DaemonError, FilesQuery,
+    GateRule, GateSet, Host, LocalDaemon, LogsArgs, Method, Named, OpError, RowRef, RowsQuery,
+    UpdateArgs,
 };
 
+use super::app_op_jobs::{OpStore, MAX_WAIT};
 use super::apps;
 use super::auth::{require_scope, Principal};
-use super::errors::{ErrorCode, HttpError};
+use super::errors::HttpError;
 use super::state::HttpState;
 use crate::backend::Backend;
 
@@ -74,7 +81,13 @@ impl Cloud for DaemonCloud {
                 .backend
                 .auth_token()
                 .await
-                .map_err(|e| CloudError::network(format!("no cloud session: {e}")))?;
+                // Nothing was sent: not "the cloud did not answer" (which a
+                // finalize reads as an unknown outcome), but no identity.
+                .map_err(|e| CloudError {
+                    status: 401,
+                    code: "no_cloud_session".to_string(),
+                    message: format!("this daemon has no cloud session: {e}"),
+                })?;
             let mut request = self
                 .http
                 .request(reqwest_method(method), format!("{}{path}", self.base_url))
@@ -110,6 +123,10 @@ impl Cloud for DaemonCloud {
             });
         }
         unreachable!("app-ops cloud retry loop exhausted")
+    }
+
+    async fn pause(&self, duration: Duration) {
+        tokio::time::sleep(duration).await;
     }
 }
 
@@ -265,6 +282,27 @@ impl LocalDaemon for InProcessDaemon {
         )
     }
 
+    async fn move_workdir(
+        &self,
+        app_id: &str,
+        team_id: &str,
+        dest: &str,
+    ) -> Result<Value, DaemonError> {
+        to_value(
+            apps::move_app_workdir(
+                self.principal.clone(),
+                State(self.state.clone()),
+                axum::extract::Path(app_id.to_string()),
+                Json(apps::MoveAppWorkdirBody {
+                    team_id: team_id.to_string(),
+                    dest_path: dest.to_string(),
+                }),
+            )
+            .await
+            .map_err(daemon_error)?,
+        )
+    }
+
     async fn actor_id(&self) -> Option<String> {
         let id = self.state.backend.as_ref()?.actor_id().to_string();
         (!id.is_empty()).then_some(id)
@@ -275,19 +313,19 @@ impl LocalDaemon for InProcessDaemon {
 
 struct CliHost;
 
-impl Host for CliHost {
-    fn surface(&self) -> Surface {
-        Surface::Cli
-    }
-}
+impl Host for CliHost {}
 
 // ─── The route ──────────────────────────────────────────────────────────────
 
 /// One call. `action` picks the flow; the rest are its arguments, all
 /// optional at this layer so the flow's own validation is the one answer.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppOpsBody {
+    /// Set by the daemon itself when it runs a long operation in the
+    /// background; never read from a request.
+    #[serde(skip)]
+    pub background: bool,
     pub action: String,
     #[serde(default)]
     pub app_id: Option<String>,
@@ -308,6 +346,9 @@ pub struct AppOpsBody {
     pub git_remote_url: Option<String>,
     #[serde(default)]
     pub local_dir: Option<String>,
+    /// create: leave the template's code off this machine.
+    #[serde(default)]
+    pub no_checkout: bool,
     // update
     #[serde(default)]
     pub auth_mode: Option<String>,
@@ -338,12 +379,143 @@ pub struct AppOpsBody {
     pub contains: Option<String>,
     #[serde(default)]
     pub request_id: Option<String>,
+    /// The arguments of the resource groups (env, cron, domain, data), as
+    /// the CLI parsed them.
+    #[serde(default)]
+    pub args: Value,
 }
 
-const READ_ACTIONS: [&str; 3] = ["list", "status", "logs"];
-const WRITE_ACTIONS: [&str; 7] = [
-    "create", "reseed", "download", "update", "deploy", "undeploy", "delete",
+const READ_ACTIONS: [&str; 21] = [
+    "whoami",
+    "runtime",
+    "sessions",
+    "checkout_where",
+    "op_status",
+    "op_wait",
+    "op_list",
+    "files_ls",
+    "files_url",
+    "files_usage",
+    "access_ls",
+    "gate_show",
+    "list",
+    "status",
+    "logs",
+    "env_list",
+    "cron_list",
+    "cron_runs",
+    "domain_show",
+    "data_tables",
+    "data_rows",
 ];
+const WRITE_ACTIONS: [&str; 34] = [
+    "checkout_bind",
+    "checkout_move",
+    "files_sign_upload",
+    "files_uploaded",
+    "files_rm",
+    "files_rm_r",
+    "files_purge",
+    "files_quota",
+    "access_grant",
+    "access_revoke",
+    "gate_set",
+    "gate_rule_add",
+    "gate_rule_rm",
+    "create",
+    "reseed",
+    "download",
+    "update",
+    "deploy",
+    "undeploy",
+    "delete",
+    "env_set",
+    "env_delete",
+    "cron_create",
+    "cron_update",
+    "cron_delete",
+    "cron_run",
+    "cron_enable",
+    "cron_disable",
+    "domain_set",
+    "domain_verify",
+    "domain_remove",
+    "data_insert",
+    "data_update",
+    "data_delete",
+];
+
+fn is_write(action: &str) -> bool {
+    WRITE_ACTIONS.contains(&action)
+}
+
+/// A string argument of a resource group, trimmed; `None` when absent or empty.
+fn arg_str(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// A string argument that must be there.
+fn need_str(args: &Value, key: &str, what: &str) -> Result<String, OpError> {
+    arg_str(args, key).ok_or_else(|| OpError::invalid("missing_argument", format!("needs {what}")))
+}
+
+/// `args[key]`: an id when it looks like one, otherwise a name that must
+/// match exactly one.
+fn named(args: &Value, key: &str, what: &str) -> Result<Named, OpError> {
+    let value = need_str(args, key, what)?;
+    let is_uuid = value.len() == 36 && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    Ok(if is_uuid {
+        Named::Id(value)
+    } else {
+        Named::Name(value)
+    })
+}
+
+fn named_job(args: &Value) -> Result<Named, OpError> {
+    named(args, "job", "a job id or name")
+}
+
+/// `org: true` means the whole org instead of one actor.
+fn for_org(args: &Value) -> bool {
+    args.get("org").and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn cron_fields(args: &Value) -> CronFields {
+    CronFields {
+        name: arg_str(args, "name"),
+        schedule: arg_str(args, "schedule"),
+        timezone: arg_str(args, "timezone"),
+        method: arg_str(args, "method"),
+        path: arg_str(args, "path"),
+        headers: args.get("headers").filter(|h| !h.is_null()).cloned(),
+        body: match args.get("body") {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(Value::String(s)) => Some(Some(s.clone())),
+            // An object is what a caller reaches for when it means a JSON body.
+            Some(other) => Some(Some(other.to_string())),
+        },
+        timeout_ms: args.get("timeoutMs").and_then(Value::as_u64),
+        enabled: args.get("enabled").and_then(Value::as_bool),
+    }
+}
+
+fn row_ref(args: &Value) -> Result<RowRef, OpError> {
+    if let Some(opaque) = arg_str(args, "rowKey") {
+        return Ok(RowRef::Opaque(opaque));
+    }
+    match args.get("key") {
+        Some(key) if key.is_object() || key.is_array() => Ok(RowRef::Key(key.clone())),
+        _ => Err(OpError::invalid(
+            "missing_argument",
+            "needs the row's primary-key columns (--key COL=VAL …)",
+        )),
+    }
+}
 
 /// A non-empty, trimmed string.
 fn present(v: &Option<String>) -> Option<String> {
@@ -353,10 +525,12 @@ fn present(v: &Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// A flow's refusal, as a problem body whose `detail` is the whole sentence.
-/// 422, not 500: the flow ran and said no, and the sentence is for the agent.
-fn refused(message: String) -> HttpError {
-    HttpError::new(ErrorCode::ValidationFailed, message)
+/// The contract's envelope (cli-design §2.2).
+pub fn envelope(out: Result<Value, OpError>) -> Value {
+    match out {
+        Ok(data) => serde_json::json!({ "v": 1, "ok": true, "data": data }),
+        Err(e) => serde_json::json!({ "v": 1, "ok": false, "error": e.to_json() }),
+    }
 }
 
 pub async fn app_ops(
@@ -365,28 +539,120 @@ pub async fn app_ops(
     Json(body): Json<AppOpsBody>,
 ) -> Result<Json<Value>, HttpError> {
     let action = body.action.trim().to_string();
-    if WRITE_ACTIONS.contains(&action.as_str()) {
+    if is_write(&action) {
         require_scope(&principal, "workspace:write")?;
     } else if READ_ACTIONS.contains(&action.as_str()) {
         require_scope(&principal, "workspace:read")?;
     } else {
-        return Err(HttpError::validation(format!(
-            "unknown action {action:?} (expected one of: {}, {})",
-            READ_ACTIONS.join(", "),
-            WRITE_ACTIONS.join(", ")
-        )));
+        return Ok(Json(envelope(Err(OpError::invalid(
+            "unknown_action",
+            format!(
+                "unknown action {action:?} (expected one of: {}, {})",
+                READ_ACTIONS.join(", "),
+                WRITE_ACTIONS.join(", ")
+            ),
+        )
+        .with_next("amuxd app --help")))));
     }
+    Ok(Json(envelope(run(principal, state, &action, &body).await)))
+}
 
-    let backend = state
-        .backend
-        .clone()
-        .ok_or_else(|| HttpError::runtime_unavailable("this daemon has no cloud backend"))?;
+/// [`run`] with owned arguments, for a background operation.
+fn run_owned(
+    principal: Principal,
+    state: HttpState,
+    action: String,
+    body: AppOpsBody,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, OpError>> + Send>> {
+    Box::pin(async move { run(principal, state, &action, &body).await })
+}
+
+fn row_id_of(row: &Value) -> Option<String> {
+    row.get("id").and_then(Value::as_str).map(str::to_string)
+}
+
+async fn run(
+    principal: Principal,
+    state: HttpState,
+    action: &str,
+    body: &AppOpsBody,
+) -> Result<Value, OpError> {
+    let Some(backend) = state.backend.clone() else {
+        return Err(
+            OpError::upstream("daemon_not_onboarded", "this daemon has no cloud backend")
+                .with_next("amuxd init"),
+        );
+    };
     let team_id = backend.team_id().to_string();
     let base_url = backend.cloud_base_url().unwrap_or_default();
     if team_id.is_empty() || base_url.is_empty() {
-        return Err(HttpError::runtime_unavailable(
+        return Err(OpError::upstream(
+            "daemon_not_onboarded",
             "this daemon is not onboarded to a team yet — run `amuxd init` first",
-        ));
+        )
+        .with_next("amuxd init"));
+    }
+    // Long operations' records live under the daemon's run directory, next
+    // to its token file, one folder per team.
+    let store = OpStore::new(
+        state
+            .config
+            .token_file
+            .clone()
+            .unwrap_or_else(crate::config::DaemonConfig::http_token_path)
+            .parent()
+            .unwrap_or(std::path::Path::new(".")),
+        &team_id,
+    );
+    match action {
+        "op_status" | "op_wait" => {
+            let op = need_str(&body.args, "op", "an operation id (op_…)")?;
+            let rec = if action == "op_wait" {
+                let secs = body.args.get("timeoutS").and_then(Value::as_u64);
+                let timeout = secs
+                    .map(Duration::from_secs)
+                    .unwrap_or(MAX_WAIT)
+                    .min(MAX_WAIT);
+                store.wait(&op, timeout).await
+            } else {
+                store.get(&op)
+            };
+            return rec.map(|r| r.snapshot()).ok_or_else(|| {
+                OpError::not_found(
+                    "no_such_op",
+                    format!(
+                        "no operation {op:?} on this daemon in this team (records are kept 7 days)"
+                    ),
+                )
+                .with_next("amuxd app op list")
+            });
+        }
+        "op_list" => {
+            let active = body
+                .args
+                .get("active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let ops: Vec<Value> = store
+                .list(active, 20)
+                .iter()
+                .map(|r| r.snapshot())
+                .collect();
+            return Ok(serde_json::json!({ "action": "op_list", "ops": ops }));
+        }
+        _ => {}
+    }
+    if action == "whoami" {
+        // CLI design §2.5, without the agent / person split (P2.5 decision):
+        // every command acts as this daemon's agent account, and the platform
+        // decides what that account may do.
+        return Ok(serde_json::json!({
+            "principal": "daemon_agent",
+            "actorId": backend.actor_id(),
+            "teamId": team_id,
+            "cloud": base_url,
+            "note": "Every `amuxd app` command acts as this daemon's agent account. What it may do is that account's grants on each app, including what its owner delegates to it (up to deploy; never delete or managing access).",
+        }));
     }
 
     let cloud = DaemonCloud {
@@ -394,6 +660,7 @@ pub async fn app_ops(
         base_url,
         http: state.http_client.clone(),
     };
+    let background_principal = principal.clone();
     let daemon = InProcessDaemon {
         state: state.clone(),
         principal,
@@ -415,32 +682,47 @@ pub async fn app_ops(
     };
     // Argument mistakes are refused before anything is resolved, so they cost
     // no round trip and read as the mistakes they are.
-    match action.as_str() {
+    match action {
         "update" => {
-            update.patch().map_err(refused)?;
+            update.patch()?;
         }
         // The app a directory happens to be is the right default for
         // deploying, and the wrong one for deleting: an agent that lost track
         // of which checkout it is in must not destroy the one it stands in.
         "undeploy" if !selector.is_explicit() => {
-            return Err(refused(
-                "undeploy takes the app's site offline, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory".to_string(),
+            return Err(OpError::invalid(
+                "explicit_app_required",
+                "undeploy takes the app's site offline, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory",
             ))
         }
         "delete" if !selector.is_explicit() => {
-            return Err(refused(
-                "delete cannot be undone, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory".to_string(),
+            return Err(OpError::invalid(
+                "explicit_app_required",
+                "delete cannot be undone, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory",
+            ))
+        }
+        "files_purge" if !selector.is_explicit() => {
+            return Err(OpError::invalid(
+                "explicit_app_required",
+                "files purge deletes every file of the app and cannot be undone, so it needs an explicit --id or --app — it does not act on the app inferred from the current directory",
+            ))
+        }
+        "files_purge" if body.args.get("confirm").and_then(Value::as_bool) != Some(true) => {
+            return Err(OpError::invalid(
+                "confirmation_required",
+                "files purge deletes every file the app stored and cannot be undone. Pass --yes to purge.",
             ))
         }
         "delete" if !body.confirm => {
-            return Err(refused(
-                "delete cannot be undone: the app's site goes offline and its repository is archived. Pass --yes to delete it.".to_string(),
+            return Err(OpError::invalid(
+                "confirmation_required",
+                "delete cannot be undone: the app's site goes offline and its repository is archived. Pass --yes to delete it.",
             ))
         }
         _ => {}
     }
 
-    let out = match action.as_str() {
+    match action {
         "list" => ops.list(&team_id).await,
         "create" => {
             let args = CreateArgs {
@@ -449,19 +731,60 @@ pub async fn app_ops(
                 app_type: present(&body.app_type),
                 git_remote_url: present(&body.git_remote_url),
                 local_dir: present(&body.local_dir),
+                no_checkout: body.no_checkout,
             };
             ops.create(&team_id, &args).await
         }
         _ => {
-            let row = ops
-                .resolve_app(&team_id, &selector)
-                .await
-                .map_err(refused)?;
-            match action.as_str() {
+            let row = ops.resolve_app(&team_id, &selector).await?;
+            match action {
                 "status" => {
-                    Ok(serde_json::json!({ "action": "status", "app": ops.status(&row).await }))
+                    let active = row_id_of(&row)
+                        .map(|id| store.active_on(&id))
+                        .unwrap_or_default();
+                    Ok(serde_json::json!({
+                        "action": "status",
+                        "app": ops.status(&row).await,
+                        "active_ops": active,
+                    }))
+                }
+                // Checked and resolved here, run in the background: the CLI
+                // only waits, and dying does not stop the operation.
+                "deploy" | "undeploy" if !body.background => {
+                    let mut bg = body.clone();
+                    bg.background = true;
+                    bg.app_id = row_id_of(&row);
+                    let rec = store.start(
+                        action,
+                        &team_id,
+                        bg.app_id.clone(),
+                        row.get("name").and_then(Value::as_str).map(str::to_string),
+                        run_owned(background_principal, state.clone(), action.to_string(), bg),
+                    );
+                    // A failure that comes at once (a lock held, nothing
+                    // committed) is answered at once.
+                    let rec = store
+                        .wait(&rec.op, Duration::from_secs(1))
+                        .await
+                        .unwrap_or(rec);
+                    Ok(rec.snapshot())
                 }
                 "reseed" => ops.reseed(&row).await,
+                "runtime" => {
+                    ops.runtime_info(&row, arg_str(&body.args, "language").as_deref())
+                        .await
+                }
+                "sessions" => ops.sessions(&row).await,
+                "checkout_where" => ops.checkout_where(&row).await,
+                "checkout_bind" => {
+                    let dir = need_str(&body.args, "dir", "the folder to use (absolute)")?;
+                    ops.checkout_bind(&row, &dir).await
+                }
+                "checkout_move" => {
+                    let dir = need_str(&body.args, "dir", "where to move the checkout (absolute)")?;
+                    ops.checkout_move(&row, &dir, present(&body.workspace_path).as_deref())
+                        .await
+                }
                 "download" => ops.download(&row).await,
                 "update" => ops.update(&row, &update).await,
                 "undeploy" => ops.undeploy(&row).await,
@@ -483,9 +806,210 @@ pub async fn app_ops(
                     };
                     ops.logs(&row, &args).await
                 }
-                other => unreachable!("action {other} passed the allow-list"),
+                _ => resource(&ops, &row, action, &body.args).await,
             }
         }
-    };
-    out.map(Json).map_err(refused)
+    }
+}
+
+/// The resource groups: env, cron, domain, data (P2.5 S2a).
+async fn resource(
+    ops: &AppOps<'_>,
+    row: &Value,
+    action: &str,
+    args: &Value,
+) -> Result<Value, OpError> {
+    match action {
+        "files_ls" => {
+            let q = FilesQuery {
+                prefix: arg_str(args, "prefix"),
+                recursive: args
+                    .get("recursive")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                after: arg_str(args, "after"),
+                limit: args.get("limit").and_then(Value::as_u64),
+            };
+            ops.files_list(row, &q).await
+        }
+        "files_url" => {
+            ops.files_url(row, &need_str(args, "path", "a file path")?)
+                .await
+        }
+        "files_sign_upload" => {
+            let path = need_str(args, "path", "where to store the file")?;
+            let content_type = need_str(args, "contentType", "the upload's content type")?;
+            ops.files_sign_upload(row, &path, &content_type).await
+        }
+        "files_uploaded" => ops.files_uploaded(row),
+        "files_rm" => {
+            ops.files_delete(row, &need_str(args, "path", "a file path")?)
+                .await
+        }
+        "files_rm_r" => {
+            ops.files_delete_folder(row, &need_str(args, "prefix", "a folder")?)
+                .await
+        }
+        "files_purge" => ops.files_purge(row).await,
+        "files_usage" => {
+            let refresh = args
+                .get("refresh")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            ops.files_usage(row, refresh).await
+        }
+        "files_quota" => {
+            let bytes = match args.get("bytes") {
+                Some(Value::Null) | None => None,
+                Some(v) => Some(v.as_u64().ok_or_else(|| {
+                    OpError::invalid(
+                        "invalid_quota",
+                        "a quota is a positive number of bytes, or `default`",
+                    )
+                })?),
+            };
+            ops.files_set_quota(row, bytes).await
+        }
+        "access_ls" => ops.access_list(row).await,
+        "access_grant" => {
+            let level = need_str(args, "level", "a level: read, write or admin")?;
+            if for_org(args) {
+                ops.access_org(row, Some(&level)).await
+            } else {
+                let who = named(args, "who", "who to grant: an actor id or a name")?;
+                ops.access_grant(row, &who, &level).await
+            }
+        }
+        "access_revoke" => {
+            if for_org(args) {
+                ops.access_org(row, None).await
+            } else {
+                let who = named(args, "who", "whose grant to revoke: an actor id or a name")?;
+                ops.access_revoke(row, &who).await
+            }
+        }
+        "gate_show" => ops.gate_show(row).await,
+        "gate_set" => {
+            let set = GateSet {
+                mode: arg_str(args, "mode"),
+                audience: arg_str(args, "audience"),
+                scope: arg_str(args, "scope"),
+                rules: args.get("rules").filter(|v| !v.is_null()).cloned(),
+            };
+            ops.gate_set(row, &set).await
+        }
+        "gate_rule_add" => {
+            let rule = GateRule {
+                path: need_str(args, "path", "a path starting with /")?,
+                auth: need_str(args, "auth", "--auth required or public")?,
+                audience: arg_str(args, "audience"),
+                roles: args.get("roles").and_then(Value::as_array).map(|roles| {
+                    roles
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                }),
+            };
+            ops.gate_rule_add(row, &rule).await
+        }
+        "gate_rule_rm" => {
+            ops.gate_rule_rm(row, &need_str(args, "path", "the rule's path")?)
+                .await
+        }
+        "env_list" => ops.env_list(row).await,
+        "env_set" => {
+            let key = need_str(args, "key", "the variable name")?;
+            // Empty is a real value; only a missing one is refused.
+            let value = args.get("value").and_then(Value::as_str).ok_or_else(|| {
+                OpError::invalid(
+                    "missing_argument",
+                    "needs a value (an empty string is allowed)",
+                )
+            })?;
+            let secret = args
+                .get("isSecret")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            ops.env_set(row, &key, value, secret).await
+        }
+        "env_delete" => {
+            ops.env_delete(row, &need_str(args, "key", "the variable name")?)
+                .await
+        }
+        "cron_list" => ops.cron_list(row).await,
+        "cron_create" => ops.cron_create(row, &cron_fields(args)).await,
+        "cron_update" => {
+            ops.cron_update(row, &named_job(args)?, &cron_fields(args))
+                .await
+        }
+        "cron_enable" | "cron_disable" => {
+            let fields = CronFields {
+                enabled: Some(action == "cron_enable"),
+                ..Default::default()
+            };
+            ops.cron_update(row, &named_job(args)?, &fields).await
+        }
+        "cron_delete" => ops.cron_delete(row, &named_job(args)?).await,
+        "cron_run" => ops.cron_run(row, &named_job(args)?).await,
+        "cron_runs" => {
+            ops.cron_runs(
+                row,
+                &named_job(args)?,
+                args.get("limit").and_then(Value::as_u64),
+            )
+            .await
+        }
+        "domain_show" => ops.domain_show(row),
+        "domain_set" => {
+            ops.domain_set(
+                row,
+                &need_str(args, "domain", "a hostname, like app.example.com")?,
+            )
+            .await
+        }
+        "domain_verify" => ops.domain_verify(row).await,
+        "domain_remove" => ops.domain_remove(row).await,
+        "data_tables" => ops.data_tables(row).await,
+        "data_rows" => {
+            let table = need_str(args, "table", "a table name")?;
+            let filter = match (arg_str(args, "filterColumn"), arg_str(args, "filterOp")) {
+                (Some(column), Some(op)) => Some((column, op, arg_str(args, "filterValue"))),
+                (None, None) => None,
+                _ => {
+                    return Err(OpError::invalid(
+                        "invalid_filter",
+                        "a filter needs a column and an op (eq, contains, isNull, notNull)",
+                    ))
+                }
+            };
+            let q = RowsQuery {
+                limit: args.get("limit").and_then(Value::as_u64),
+                after: arg_str(args, "after"),
+                direction: arg_str(args, "direction"),
+                filter,
+            };
+            ops.data_rows(row, &table, &q).await
+        }
+        "data_insert" => {
+            let table = need_str(args, "table", "a table name")?;
+            ops.data_insert(row, &table, args.get("values").unwrap_or(&Value::Null))
+                .await
+        }
+        "data_update" => {
+            let table = need_str(args, "table", "a table name")?;
+            ops.data_update(
+                row,
+                &table,
+                &row_ref(args)?,
+                args.get("patch").unwrap_or(&Value::Null),
+            )
+            .await
+        }
+        "data_delete" => {
+            let table = need_str(args, "table", "a table name")?;
+            ops.data_delete(row, &table, &row_ref(args)?).await
+        }
+        other => unreachable!("action {other} passed the allow-list"),
+    }
 }

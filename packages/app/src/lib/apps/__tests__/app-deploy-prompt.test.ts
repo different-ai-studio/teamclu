@@ -57,7 +57,8 @@ describe('deployPromptForApp', () => {
   it('names the app and the deploy tool', () => {
     const text = deployPromptForApp(app)
     expect(text).toContain('「Alpha」')
-    expect(text).toContain('manage_app deploy')
+    expect(text).toContain('amuxd app deploy')
+    expect(text).not.toContain('manage_app')
   })
 })
 
@@ -68,7 +69,7 @@ describe('requestAgentDeploy', () => {
     await expect(requestAgentDeploy(app)).resolves.toBe('s-open')
     expect(mocks.ensureAppSession).not.toHaveBeenCalled()
     expect(mocks.switchToSession).not.toHaveBeenCalled()
-    expect(mocks.send).toHaveBeenCalledWith(expect.stringContaining('manage_app deploy'))
+    expect(mocks.send).toHaveBeenCalledWith(expect.stringContaining('amuxd app deploy'))
   })
 
   it("switches to the app's latest session when another one is open", async () => {

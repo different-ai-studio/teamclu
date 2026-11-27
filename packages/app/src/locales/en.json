@@ -1502,7 +1502,7 @@
     "deploying": "Deploying…",
     "preview": "Preview",
     "deployFailed": "Deploy failed",
-    "deployPrompt": "Please deploy the app \"{{name}}\".\n\nFollow the deploy-app skill: check the current state with manage_app status, commit and push any uncommitted or unpushed changes, then publish with manage_app deploy. When it is done, tell me the live URL, the deployed revision, and what you verified.",
+    "deployPrompt": "Please deploy the app \"{{name}}\".\n\nFollow the deploy-app skill: check the current state with amuxd app status, commit and push any uncommitted or unpushed changes, then publish with amuxd app deploy. When it is done, tell me the live URL, the deployed revision, and what you verified.",
     "deployPromptFailed": "Could not send the deploy request to the AI. Open the app session and try again.",
     "deployViaAgentHint": "Send a message asking the AI to check, commit and deploy",
     "gitUrl": {

@@ -27,6 +27,7 @@
 //! - [`limit`] — rate limiting + body limits (PR8)
 
 pub mod ai;
+pub mod app_op_jobs;
 pub mod app_ops;
 pub mod apps;
 pub mod auth;

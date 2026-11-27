@@ -1,6 +1,7 @@
 //! `deploy` — the same legs the desktop UI runs: preflight, mint the upload
 //! handle, have the local daemon build and upload the artifact, publish it.
 
+use crate::OpError;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -33,7 +34,7 @@ pub struct GitCredential {
 
 /// Mint a deploy key for the app's Gitea repo — for a deploy's fetch, a seed's
 /// push, or a download's clone.
-pub async fn mint_git_credential(ops: &AppOps<'_>, app_id: &str) -> Result<GitCredential, String> {
+pub async fn mint_git_credential(ops: &AppOps<'_>, app_id: &str) -> Result<GitCredential, OpError> {
     let cred = ops
         .get(
             &app_path(app_id, "/git-credential"),
@@ -47,7 +48,10 @@ pub async fn mint_git_credential(ops: &AppOps<'_>, app_id: &str) -> Result<GitCr
         .unwrap_or_default()
         .to_string();
     if remote_url.is_empty() || private_key_pem.trim().is_empty() {
-        return Err("Could not mint a Gitea deploy credential for this app.".to_string());
+        return Err(OpError::upstream(
+            "git_credential_unavailable",
+            "Could not mint a Gitea deploy credential for this app.",
+        ));
     }
     Ok(GitCredential {
         remote_url,
@@ -76,7 +80,7 @@ pub async fn return_git_credential(ops: &AppOps<'_>, app_id: &str, deploy_key_id
     }
 }
 
-pub fn require_artifact_verification(build: &Value, revision: &str) -> Result<(), String> {
+pub fn require_artifact_verification(build: &Value, revision: &str) -> Result<(), OpError> {
     let verification = build.get("artifactVerification");
     if verification.and_then(|value| row_str(value, "status")) == Some("checked")
         && verification.and_then(|value| row_str(value, "revision")) == Some(revision)
@@ -98,10 +102,10 @@ pub fn require_artifact_verification(build: &Value, revision: &str) -> Result<()
                 .join(", ")
         })
         .filter(|files| !files.is_empty());
-    Err(format!(
+    Err(OpError::conflict("artifact_verification_unknown", format!(
         "artifact_verification_unknown: selected daemon could not verify the Linux/x86_64 artifact{}; run an explicit target-runtime test before publishing",
         unknown.map(|files| format!(" ({files})")).unwrap_or_default()
-    ))
+    )))
 }
 
 /// How a failed deploy is reported back.
@@ -137,25 +141,47 @@ enum DeployHandle {
     Push(Value),
 }
 
+/// The daemon could not read the checkout's declaration. A missing file gets
+/// the way to make one; anything else (bad JSON, a legacy shape) the daemon's
+/// own words, which name the field at fault.
+fn declaration_error(e: &crate::DaemonError) -> OpError {
+    let text = daemon_error_text(e);
+    if text.contains(&format!("{} is required", crate::DECLARATION_FILE)) {
+        return OpError::conflict(
+            "declaration_missing",
+            format!(
+                "The checkout has no {}. {}",
+                crate::DECLARATION_FILE,
+                crate::missing_declaration_hint()
+            ),
+        )
+        .with_next(crate::next_cmd("runtime"));
+    }
+    OpError::conflict(
+        "declaration_unreadable",
+        format!("Could not read the app's build + start declaration: {text}"),
+    )
+    .with_next(crate::next_cmd("runtime"))
+}
+
 impl AppOps<'_> {
     /// The checkout's required build-and-start declaration.
-    async fn app_manifest(&self, app_id: &str, team_id: &str) -> Result<Value, String> {
+    async fn app_manifest(&self, app_id: &str, team_id: &str) -> Result<Value, OpError> {
         let out = self
             .daemon
             .manifest(app_id, team_id)
             .await
             .map_err(|e| {
                 if e.unreachable {
-                    "The local amuxd is not reachable, so the app's build + start declaration cannot be read.".to_string()
+                    OpError::daemon_down("The local amuxd is not reachable, so the app's build + start declaration cannot be read.")
                 } else {
-                    format!(
-                        "Could not read the app's build + start declaration: {}",
-                        daemon_error_text(&e)
-                    )
+                    declaration_error(&e)
                 }
             })?;
         if out.get("declaration").is_none() {
-            return Err("The daemon returned no build + start declaration.".to_string());
+            return Err(OpError::from(
+                "The daemon returned no build + start declaration.",
+            ));
         }
         Ok(out)
     }
@@ -172,7 +198,7 @@ impl AppOps<'_> {
         revision: &str,
         deploy_token: &str,
         handle: &DeployHandle,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, OpError> {
         let credential = if via_gitea {
             Some(mint_git_credential(self, app_id).await?)
         } else {
@@ -219,9 +245,15 @@ impl AppOps<'_> {
         }
         let build = build.map_err(|e| {
             if e.unreachable {
-                "The local amuxd is not connected, so nothing can build this app.".to_string()
+                OpError::daemon_down(
+                    "The local amuxd is not connected, so nothing can build this app.",
+                )
             } else {
-                format!("Daemon build failed: {}", daemon_error_text(&e))
+                OpError::new(
+                    crate::ErrorKind::Conflict,
+                    "build_failed",
+                    format!("Daemon build failed: {}", daemon_error_text(&e)),
+                )
             }
         })?;
         let declaration = build
@@ -230,9 +262,10 @@ impl AppOps<'_> {
         if row_str(&build, "revision") != Some(revision)
             || (via_gitea && row_str(&build, "gitCommitSha") != Some(revision))
         {
-            return Err(
-                "daemon built a different revision than preflight; publish stopped".to_string(),
-            );
+            return Err(OpError::conflict(
+                "revision_drift",
+                "daemon built a different revision than preflight; publish stopped",
+            ));
         }
         require_artifact_verification(&build, revision)?;
 
@@ -266,6 +299,10 @@ impl AppOps<'_> {
         // artifact. The UI waits for it with no timeout at all; giving up at a
         // 30 s client default reported a deploy the server went on to finish as
         // a failure, and wrote `deploy_error` over it.
+        //
+        // No answer at all is not a failure: the server may have finished.
+        // Nor is a gateway timeout (504): the proxy gave up, finalize did not.
+        // Those are the outcomes the caller must not retry blindly.
         self.call(
             Method::Post,
             &app_path(app_id, "/deploy/finalize"),
@@ -274,6 +311,19 @@ impl AppOps<'_> {
             "Publishing the build (deploy finalize)",
         )
         .await
+        .map_err(|e| {
+            if e.code == "cloud_unreachable" || e.code == "http_504" {
+                OpError {
+                    kind: crate::ErrorKind::Unknown,
+                    code: "deploy_outcome_unknown".to_string(),
+                    message: format!("{} — the deploy may or may not have gone live", e.message),
+                    next: Some(crate::next_cmd("status")),
+                    retryable: false,
+                }
+            } else {
+                e
+            }
+        })
     }
 
     /// Publish the app's checkout. Replies `{ ok, action: "deploy", app }`.
@@ -281,22 +331,22 @@ impl AppOps<'_> {
     /// A failure after `/deploy` must report `deploy_error` back: nothing
     /// server-side can observe that the local build never finished, and a row
     /// left at `awaiting_build` blocks every later deploy for 30 minutes.
-    pub async fn deploy(&self, row: &Value, args: DeployArgs) -> Result<Value, String> {
+    pub async fn deploy(&self, row: &Value, args: DeployArgs) -> Result<Value, OpError> {
         let deployed = self.run_deploy(row, args).await;
         // Refresh after success or a rejected attempt alike.
         self.host.app_changed(row);
         Ok(json!({ "ok": true, "action": "deploy", "app": app_brief(&deployed?) }))
     }
 
-    async fn run_deploy(&self, row: &Value, args: DeployArgs) -> Result<Value, String> {
+    async fn run_deploy(&self, row: &Value, args: DeployArgs) -> Result<Value, OpError> {
         let app_id = row_id(row)?;
         let team_id = row_str(row, "teamId").unwrap_or_default().to_string();
         let provision = row_str(row, "provisionStatus").unwrap_or_default();
         if provision != "ready" {
-            return Err(format!(
+            return Err(OpError::conflict("app_not_ready", format!(
                 "This app is not ready to deploy (provisionStatus={provision}). Its checkout has to be seeded first ({}).",
-                self.surface().step("manage_app", "reseed")
-            ));
+                crate::step("checkout reseed")
+            )).with_next(crate::next_cmd("checkout reseed")));
         }
         let via_gitea = is_gitea_managed(row);
 
@@ -312,8 +362,12 @@ impl AppOps<'_> {
                     "Reading the repository HEAD",
                 )
                 .await?;
-            let sha = row_str(&head, "sha")
-                .ok_or("The app's Gitea repo has no HEAD — commit and push before deploying.")?;
+            let sha = row_str(&head, "sha").ok_or_else(|| {
+                OpError::conflict(
+                    "no_repo_head",
+                    "The app's Gitea repo has no HEAD — commit and push before deploying.",
+                )
+            })?;
             git_commit_sha = Some(sha.to_string());
         }
 
@@ -328,10 +382,10 @@ impl AppOps<'_> {
             && (manifest["clean"] != true
                 || row_str(&manifest, "gitCommitSha") != git_commit_sha.as_deref())
         {
-            return Err(
-                "commit and push all changes; checkout HEAD must equal Gitea HEAD before deploy"
-                    .to_string(),
-            );
+            return Err(OpError::conflict(
+                "checkout_not_pushed",
+                "commit and push all changes; checkout HEAD must equal Gitea HEAD before deploy",
+            ));
         }
         let revision = if via_gitea {
             git_commit_sha.as_deref()
@@ -356,9 +410,8 @@ impl AppOps<'_> {
         let preflight_token = row_str(&preflight, "token").ok_or("preflight returned no token")?;
         let mut build_started = false;
         let result = async {
-            let switch_domain = self.host.approve_deploy(row, &preflight["preview"]).await?;
             // Absent keeps whatever domain the app is on; only a yes is sent.
-            if switch_domain || args.use_app_code_domain {
+            if args.use_app_code_domain {
                 start_body["useAppCodeDomain"] = json!(true);
             }
             start_body["preflightToken"] = json!(preflight_token);
@@ -380,13 +433,13 @@ impl AppOps<'_> {
                 None => {
                     let url = row_str(&started, "presignedPut").unwrap_or_default();
                     if url.is_empty() {
-                        return Err("deploy start returned no upload handle".to_string());
+                        return Err(OpError::from("deploy start returned no upload handle"));
                     }
                     DeployHandle::Upload(url.to_string())
                 }
             };
             if deploy_token.is_empty() {
-                return Err("deploy start returned no deploy token".to_string());
+                return Err(OpError::from("deploy start returned no deploy token"));
             }
 
             self.finish_deploy(
@@ -401,8 +454,14 @@ impl AppOps<'_> {
             .await
         }
         .await;
-        if let Err(reason) = &result {
-            let reason = redact_deploy_secrets(reason);
+        // An outcome nobody knows is not reported as a failure: that would
+        // write `deploy_error` over a deploy the server may have finished.
+        if let Some(reason) = result
+            .as_ref()
+            .err()
+            .filter(|e| e.kind != crate::ErrorKind::Unknown)
+        {
+            let reason = redact_deploy_secrets(&reason.message);
             let (method, path, body) =
                 deploy_failure_request(preflight_token, build_started, &reason);
             let _ = self
@@ -415,7 +474,10 @@ impl AppOps<'_> {
                 )
                 .await;
         }
-        result.map_err(|reason| redact_deploy_secrets(&reason))
+        result.map_err(|e| OpError {
+            message: redact_deploy_secrets(&e.message),
+            ..e
+        })
     }
 }
 
@@ -423,7 +485,7 @@ impl AppOps<'_> {
 mod tests {
     use super::*;
     use crate::test_support::{FakeCloud, FakeDaemon, TestHost};
-    use crate::{DaemonError, Surface};
+    use crate::DaemonError;
 
     #[test]
     fn approval_cancellation_only_withdraws_preflight() {
@@ -501,7 +563,7 @@ mod tests {
                 build["migrations"] = m;
             }
             *daemon.build.lock().unwrap() = Some(Ok(build));
-            let host = TestHost(Surface::Cli);
+            let host = TestHost;
             let ops = AppOps::new(&cloud, &daemon, &host);
             ops.deploy(&imported_row(), DeployArgs::default())
                 .await
@@ -514,6 +576,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_missing_declaration_names_the_static_template_and_runtime() {
+        let err = declaration_error(&DaemonError {
+            unreachable: false,
+            message: "teamclu.app.json is required; add e.g. {}".into(),
+        });
+        assert_eq!(err.code, "declaration_missing");
+        assert!(
+            err.contains("`amuxd app create <name> --type static_web`"),
+            "{err:?}"
+        );
+        assert!(!err.contains("docs/specs"), "{err:?}");
+        assert_eq!(err.next.as_deref(), Some("amuxd app runtime"));
+        let bad = declaration_error(&DaemonError {
+            unreachable: false,
+            message: "invalid teamclu.app.json: expected value at line 1".into(),
+        });
+        assert_eq!(bad.code, "declaration_unreadable");
+        assert!(bad.contains("line 1"));
+    }
+
+    /// A gateway timeout at finalize is not a failure: finalize may have gone
+    /// on to publish. Unknown, and no `deploy_error` written over it.
+    #[tokio::test]
+    async fn a_gateway_timeout_at_finalize_is_an_unknown_outcome() {
+        let (cloud, daemon) = deploy_world();
+        *daemon.build.lock().unwrap() = Some(Ok(json!({
+            "declaration": { "build": { "kind": "node" } },
+            "revision": "sha256:d",
+            "artifactVerification": { "status": "checked", "revision": "sha256:d", "unknownFiles": [] },
+        })));
+        cloud.fail(
+            Method::Post,
+            "/v1/apps/a1/deploy/finalize",
+            504,
+            "Gateway Timeout",
+        );
+        let host = TestHost;
+        let ops = AppOps::new(&cloud, &daemon, &host);
+        let err = ops
+            .deploy(&imported_row(), DeployArgs::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, crate::ErrorKind::Unknown, "{err:?}");
+        assert_eq!(err.next.as_deref(), Some("amuxd app status"));
+        let reported = cloud.calls_to(Method::Patch, "/v1/apps/a1");
+        assert!(
+            reported
+                .iter()
+                .all(|b| b.as_ref().and_then(|b| b.get("fcStatus")) != Some(&json!("deploy_error"))),
+            "{reported:?}"
+        );
+    }
+
     #[tokio::test]
     async fn an_imported_app_deploys_its_checkout_end_to_end() {
         let (cloud, daemon) = deploy_world();
@@ -522,7 +638,7 @@ mod tests {
             "revision": "sha256:d",
             "artifactVerification": { "status": "checked", "revision": "sha256:d", "unknownFiles": [] },
         })));
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
 
         let out = ops
@@ -560,7 +676,7 @@ mod tests {
             "revision": "sha256:d",
             "artifactVerification": { "status": "checked", "revision": "sha256:d", "unknownFiles": [] },
         })));
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let args = DeployArgs {
             use_app_code_domain: true,
@@ -578,7 +694,7 @@ mod tests {
         *daemon.build.lock().unwrap() = Some(Err(DaemonError::failed(
             "PUT https://oss/put?Signature=s returned 403",
         )));
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
 
         let err = ops
@@ -593,46 +709,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refused_approval_only_withdraws_the_preflight() {
-        struct Refuses;
-        #[async_trait::async_trait]
-        impl crate::Host for Refuses {
-            fn surface(&self) -> Surface {
-                Surface::Mcp
-            }
-            async fn approve_deploy(&self, _: &Value, _: &Value) -> Result<bool, String> {
-                Err("The user declined.".to_string())
-            }
-        }
-        let (cloud, daemon) = deploy_world();
-        cloud.reply(Method::Delete, "/v1/apps/a1/deploy/preflight", json!({}));
-        let ops = AppOps::new(&cloud, &daemon, &Refuses);
-
-        let err = ops
-            .deploy(&imported_row(), DeployArgs::default())
-            .await
-            .unwrap_err();
-        assert_eq!(err, "The user declined.");
-        assert!(cloud
-            .calls_to(Method::Post, "/v1/apps/a1/deploy")
-            .is_empty());
-        assert_eq!(
-            cloud
-                .calls_to(Method::Delete, "/v1/apps/a1/deploy/preflight")
-                .len(),
-            1
-        );
-        assert!(daemon.builds.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn an_unseeded_app_is_refused_with_this_surface_s_next_step() {
+    async fn an_unseeded_app_is_refused_with_the_next_step() {
         let cloud = FakeCloud::default();
         let daemon = FakeDaemon::default();
-        let host = TestHost(Surface::Cli);
+        let host = TestHost;
         let ops = AppOps::new(&cloud, &daemon, &host);
         let row = json!({ "id": "a1", "provisionStatus": "pending" });
         let err = ops.deploy(&row, DeployArgs::default()).await.unwrap_err();
-        assert!(err.contains("`amuxd app reseed`"), "{err}");
+        assert!(err.contains("`amuxd app checkout reseed`"), "{err}");
     }
 }

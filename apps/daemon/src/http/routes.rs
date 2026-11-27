@@ -199,9 +199,8 @@ pub fn build(state: HttpState) -> Router {
             "/v1/apps/:app_id/move-workdir",
             post(apps::move_app_workdir),
         )
-        // The app control plane for `amuxd app …`: list, status, create,
-        // reseed, download, update, deploy, logs, delete — the flows the desktop's manage_app tool runs
-        // (`teamclu-apps`), on this daemon's own agent account.
+        // The app control plane for `amuxd app …` — every flow of
+        // `teamclu-apps`, on this daemon's own agent account.
         .route("/v1/app-ops", post(app_ops::app_ops))
         // Device-level provider config (#742). Credentials are per-machine, not
         // per-workspace, so these need no workspace id — which is what lets
