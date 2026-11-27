@@ -39,7 +39,7 @@ fn prepare(dir: &Path, exe: &Path) -> std::io::Result<()> {
     {
         let link = dir.join("amuxd");
         if std::fs::read_link(&link).ok().as_deref() != Some(exe) {
-            let tmp = dir.join(format!(".amuxd.{}", std::process::id()));
+            let tmp = dir.join(format!("amuxd.{}.tmp", std::process::id()));
             let _ = std::fs::remove_file(&tmp);
             std::os::unix::fs::symlink(exe, &tmp)?;
             std::fs::rename(&tmp, &link)?;
