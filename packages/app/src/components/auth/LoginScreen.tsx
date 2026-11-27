@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { ExtensionServerSwitch } from "@/components/extension/ExtensionServerSwitch";
 import { isTauri } from "@/lib/utils";
 import { capabilities, isChromeExtension } from "@/lib/config/platform";
-import { GoogleIcon, WechatIcon } from "./oauth-icons";
+import { GoogleIcon, WechatIcon, WecomIcon } from "./oauth-icons";
 import { WebSsoOverlay } from "./WebSsoOverlay";
 import type { OAuthProvider } from "@/lib/auth";
 import { useShallow } from "zustand/react/shallow";
@@ -31,8 +31,11 @@ export function OAuthButtons() {
   // domain is registered against the desktop flow.
   const showGoogle = capabilities.oauthSignIn && auth.google;
   const showWechat = isTauri() && auth.wechat;
+  // WeCom's QR flow lands on the native loopback listener, so desktop only
+  // for now (the extension has no chrome.identity redirect FC would accept).
+  const showWecom = isTauri() && auth.wecom;
   const showWebSso = isTauri() && auth.webSSO;
-  if (!showGoogle && !showWechat && !showWebSso) return null;
+  if (!showGoogle && !showWechat && !showWecom && !showWebSso) return null;
 
   const Btn = ({ provider, icon, label }: { provider: OAuthProvider; icon: React.ReactNode; label: string }) => (
     <button
@@ -104,6 +107,9 @@ export function OAuthButtons() {
         {t("auth.orContinueWith", "or continue with")}
         <span className="h-px flex-1 bg-border" />
       </div>
+      {showWecom && (
+        <Btn provider="wecom" icon={<WecomIcon className="h-4 w-4" />} label={t("auth.signInWithWecom", "Sign in with WeCom")} />
+      )}
       {showWechat && (
         <Btn provider="wechat" icon={<WechatIcon className="h-4 w-4" />} label={t("auth.signInWithWechat", "Sign in with WeChat")} />
       )}

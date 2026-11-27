@@ -113,7 +113,7 @@ function resolveDesktopDownloadUrl(): string {
 // from whatever the profile/env happens to contain. Config decides the values;
 // code decides the surface. An operator who writes `updater: false` into
 // APP_FEATURES_JSON gets it dropped here — see the note on `updater` below.
-const AUTH_KEYS = ["google", "wechat", "phone", "password", "webSSO"] as const;
+const AUTH_KEYS = ["google", "wechat", "wecom", "phone", "password", "webSSO"] as const;
 const CHANNEL_KEYS = ["discord", "feishu", "email", "kook", "wecom", "wechat", "wechatpad", "seatalk"] as const;
 const BOOTSTRAP_BOOL_KEYS = ["apps", "lockLlmConfig", "allowNewOrg", "autoRestartPaused"] as const;
 
@@ -218,7 +218,12 @@ export function resolveFeatures(env: NodeJS.ProcessEnv = process.env): FeatureFl
 /** Login-screen flags. Public endpoint only — bootstrap runs too late. */
 function buildPublicFeatures() {
   const { auth } = resolveFeatures();
-  return auth && Object.keys(auth).length ? { auth } : null;
+  if (!auth || !Object.keys(auth).length) return null;
+  // The WeCom button needs the provider app behind it; a profile (or override)
+  // that turns it on for a deployment without WECOM_SUITE_ID would only lead
+  // to a 501, so it is withheld there.
+  if (auth.wecom && !process.env.WECOM_SUITE_ID?.trim()) return { auth: { ...auth, wecom: false } };
+  return { auth };
 }
 
 /** Post-sign-in flags. UI gating only — never a substitute for server-side authorization. */

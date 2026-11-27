@@ -17,3 +17,16 @@ export function WechatIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/**
+ * WeCom sign-in. A plain enterprise-chat glyph in WeCom's blue rather than the
+ * WeCom logo itself.
+ */
+export function WecomIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="#0082EF" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 5.5h10a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H9l-3.5 3v-3H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2Z" />
+      <path d="M16 9.5h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-1v2.5L16 17.5h-3" />
+    </svg>
+  );
+}

@@ -6,6 +6,7 @@ import type { DocumentLibrariesBackend } from "@/lib/backend/cloud-api/document-
 import type { WikiMaintainerBackend } from "@/lib/backend/cloud-api/wiki-maintainer";
 import type { TeamEnvSecretsBackend } from "@/lib/backend/cloud-api/team-env-secrets";
 import type { MemberRoleRef, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
+import type { OrgSsoBackend } from "@/lib/backend/cloud-api/org-sso";
 import type { AdminBackend } from "@/lib/backend/cloud-api/admin";
 import type { OAuthProvider } from "@/lib/auth";
 import type { AppTypeId } from "@/lib/apps/app-types";
@@ -1963,6 +1964,8 @@ export interface TeamCluBackend {
   wikiMaintainer: WikiMaintainerBackend;
   teamEnvSecrets: TeamEnvSecretsBackend;
   orgRoles: OrgRolesBackend;
+  /** Enterprise IM sign-in binding of the team's org (WeCom). */
+  orgSso: OrgSsoBackend;
   /** Platform operators of this deployment — not a team role. */
   admin: AdminBackend;
 }

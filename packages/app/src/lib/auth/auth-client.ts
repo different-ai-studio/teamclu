@@ -41,8 +41,19 @@ export type AuthClient = {
   updateUser(attrs: Record<string, unknown>): Promise<{ user?: unknown } | null>;
   refresh(): Promise<Session>;
   oauthAuthorizeUrl(provider: string, redirect: string, codeChallenge: string): string;
-  exchangeOAuthCode(code: string, codeVerifier: string): Promise<Session>;
+  /** `provider` picks the endpoint: enterprise IM providers exchange through FC's own SSO flow. */
+  exchangeOAuthCode(code: string, codeVerifier: string, provider?: string): Promise<Session>;
 };
+
+/**
+ * Providers GoTrue does not speak (WeCom; DingTalk / Feishu later). FC runs
+ * their flow itself under /v1/auth/sso/*, with the same PKCE + loopback shape
+ * as the GoTrue OAuth path, so callers only pass the provider through.
+ */
+const SSO_PROVIDERS = new Set(["wecom"]);
+export function isSsoProvider(provider: string | undefined): boolean {
+  return !!provider && SSO_PROVIDERS.has(provider);
+}
 
 function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/+$/, "")}${path.startsWith("/") ? "" : "/"}${path}`;
@@ -285,13 +296,17 @@ export function createAuthClient(opts: AuthClientOptions): AuthClient {
       return data;
     },
     oauthAuthorizeUrl(provider, redirect, codeChallenge) {
-      const u = new URL(url(`/v1/auth/oauth/${encodeURIComponent(provider)}/authorize`));
+      const sso = isSsoProvider(provider);
+      const base = sso ? "/v1/auth/sso" : "/v1/auth/oauth";
+      const u = new URL(url(`${base}/${encodeURIComponent(provider)}/authorize`));
       u.searchParams.set("redirect", redirect);
       u.searchParams.set("code_challenge", codeChallenge);
+      if (sso) u.searchParams.set("code_challenge_method", "S256");
       return u.toString();
     },
-    async exchangeOAuthCode(code, codeVerifier): Promise<Session> {
-      const data = (await post("/v1/auth/oauth/exchange", { code, codeVerifier })) as Session;
+    async exchangeOAuthCode(code, codeVerifier, provider): Promise<Session> {
+      const path = isSsoProvider(provider) ? "/v1/auth/sso/exchange" : "/v1/auth/oauth/exchange";
+      const data = (await post(path, { code, codeVerifier })) as Session;
       setSession(data, "SIGNED_IN");
       return data;
     },

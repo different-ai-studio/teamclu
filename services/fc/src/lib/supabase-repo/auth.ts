@@ -55,6 +55,9 @@ export function createSupabaseAuthRepository(options) {
     // Re-sync a team's apps to Gitea after someone joins it
     // (provisioning/gitea-sync-runner.ts). Absent: nothing to mirror to.
     syncTeamToGitea = undefined as undefined | ((teamId: string) => Promise<void>),
+    // Enterprise IM sign-in (lib/sso). A process-wide service handed in by the
+    // factory; null/absent = not configured on this deployment.
+    ssoService = undefined as undefined | (() => unknown),
   } = options;
 
   if (!supabaseUrl) throw new Error("SUPABASE_URL is required");
@@ -158,6 +161,10 @@ export function createSupabaseAuthRepository(options) {
   }
 
   return {
+    ssoService() {
+      return ssoService ? ssoService() : null;
+    },
+
     // ctx.accessToken (optional): the joining user's bearer. Forwarded so the
     // `claim_team_invite` RPC resolves `auth.uid()` for member invites. Absent
     // for agent invites (daemon `amuxd init`), which the RPC self-provisions.

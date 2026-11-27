@@ -3,6 +3,7 @@ import { useEffect, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Toaster, toast } from "sonner";
 import { PageAccessConsentDialog } from "@/components/extension/PageAccessConsentDialog";
+import { SsoNamePrompt } from "@/components/auth/SsoNamePrompt";
 import { cn, isTauri, removeStartupSkeleton } from "@/lib/utils";
 import { capabilities } from "@/lib/config/platform";
 import { isSoloBuild } from "@/lib/config/solo-build";
@@ -881,6 +882,7 @@ function App() {
         }}
       />
       <NewSessionDialog />
+      <SsoNamePrompt />
       {capabilities.pageCapture ? <PageAccessConsentDialog /> : null}
     </>
   )

@@ -7,6 +7,7 @@ import { useUIStore } from "@/stores/ui"
 import { useWorkspaceStore } from "@/stores/workspace"
 import { useCronStore } from "@/stores/cron"
 import { useAuthStore } from "@/stores/auth-store"
+import { isSsoPlaceholderEmail } from "@/lib/auth/sso-identity"
 import { useCurrentTeamStore } from "@/stores/current-team"
 import { useActorDirectory } from "@/stores/actor-directory-store"
 import {
@@ -256,7 +257,9 @@ function SidebarUserAccountMenu() {
   const providerAvatarUrl = typeof meta?.avatar_url === 'string' ? meta.avatar_url : null
   const avatarUrl =
     [memberAvatarUrl, providerAvatarUrl].find((url) => !!url && !failedAvatarUrls.includes(url)) ?? null
-  const email = authSession.user.email || ""
+  // Enterprise sign-in accounts carry an internal, never-mailed address; show
+  // nothing rather than a uuid.
+  const email = isSsoPlaceholderEmail(authSession.user.email) ? "" : authSession.user.email || ""
   const fallbackName =
     (typeof meta?.full_name === 'string' && meta.full_name) ||
     (typeof meta?.name === 'string' && meta.name) ||
@@ -363,15 +366,17 @@ function SidebarUserAccountMenu() {
         ) : null}
         <DropdownMenuSeparator />
         <div className="space-y-1 px-2 py-1.5 text-[12px]">
-          <div className="flex items-start gap-2">
-            <Mail className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <div className="min-w-0">
-              <div className="text-faint">{t("auth.email", "Email")}</div>
-              <div className="truncate font-mono text-[11px] text-foreground">
-                {email || t("common.notAvailable", "Not available")}
+          {email ? (
+            <div className="flex items-start gap-2">
+              <Mail className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0">
+                <div className="text-faint">{t("auth.email", "Email")}</div>
+                <div className="truncate font-mono text-[11px] text-foreground">
+                  {email}
+                </div>
               </div>
             </div>
-          </div>
+          ) : null}
           <div className="flex items-start gap-2">
             <Users className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <div className="min-w-0">

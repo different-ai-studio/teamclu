@@ -1,3 +1,4 @@
+import { wecomDomainVerifyBody } from "./lib/sso/domain-verify.js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { parseCorsOrigins, resolveCorsAllowOrigin } from "./lib/cors-origin.js";
@@ -254,6 +255,13 @@ export function createApp(deps: AppDeps): Hono {
 
   // Container liveness/readiness probe — no DB access.
   app.get("/healthz", (c) => c.json({ ok: true }));
+
+  // WeCom's domain-ownership file (lib/sso/domain-verify.ts). Root path, since
+  // that is where the provider console looks; allowlisted codes only.
+  app.get("/:file{WW_verify_[A-Za-z0-9]+\\.txt}", (c) => {
+    const body = wecomDomainVerifyBody(c.req.param("file"), process.env);
+    return body === null ? c.notFound() : c.text(body);
+  });
 
   // /v1 business routes — registered through the adapter so routes/*.ts are unchanged.
   const v1Router = createHonoRouterAdapter(app, deps);

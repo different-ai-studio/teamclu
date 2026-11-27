@@ -1,5 +1,6 @@
 import { registerDiagnostics } from "./diagnostics.js";
 import { registerAuth } from "./auth.js";
+import { registerSso } from "./sso.js";
 import { registerTeams } from "./teams.js";
 import { registerSessions } from "./sessions.js";
 import { registerApps } from "./apps.js";
@@ -35,6 +36,9 @@ import { registerWikiMaintainer } from "./wiki-maintainer.js";
 
 export function registerAllRoutes(router) {
   registerAuth(router);
+  // Owns /v1/auth/sso/* and /v1/teams/:teamId/sso/*; the team-scoped half must
+  // precede workspaces' broader team match, like every team module below.
+  registerSso(router);
   registerDiagnostics(router);
   registerAccount(router);
   registerTeams(router);

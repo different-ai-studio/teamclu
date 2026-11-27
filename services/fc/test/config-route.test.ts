@@ -5,6 +5,7 @@ import {
   buildBootstrapConfig,
   buildPublicConfig,
   DEFAULT_DESKTOP_DOWNLOAD_URL,
+  resolveFeatures,
 } from "../src/lib/routes/config.js";
 import { FEATURE_PROFILES } from "../src/lib/feature-profiles.js";
 
@@ -498,9 +499,10 @@ test("every shipped profile survives sanitization intact — no silently dropped
   // A typo in a profile (`teamSharebrowser`, `webSso`) is dropped by the
   // allowlist and the deployment then serves a flag nobody notices is missing.
   // Round-tripping each profile through the real resolver catches that here
-  // instead of in production.
+  // instead of in production. WECOM_SUITE_ID is set so the WeCom-configured
+  // gate (tested on its own below) passes auth.wecom through unchanged.
   for (const [name, profile] of Object.entries(FEATURE_PROFILES)) {
-    withEnv({ APP_FEATURES_PROFILE: name, APP_FEATURES_JSON: undefined }, () => {
+    withEnv({ APP_FEATURES_PROFILE: name, APP_FEATURES_JSON: undefined, WECOM_SUITE_ID: "wwsuite" }, () => {
       const served = {
         ...(buildPublicConfig().features ?? {}),
         ...(buildBootstrapConfig().features ?? {}),
@@ -526,6 +528,7 @@ test("belayo offers quick sign-in and phone, never Google", () => {
   assert.deepEqual(FEATURE_PROFILES.belayo.auth, {
     google: false,
     wechat: false,
+    wecom: false,
     phone: true,
     password: false,
     webSSO: true,
@@ -547,5 +550,21 @@ test("partnerConsoleHosts lists WEB_HANDOFF_HOSTS, normalised, and is absent whe
 test("partnerConsoleHosts stays out of the authed bootstrap config", async () => {
   await withEnv({ WEB_HANDOFF_HOSTS: "admin.example.test" }, () => {
     assert.equal("partnerConsoleHosts" in buildBootstrapConfig(), false);
+  });
+});
+
+test("auth.wecom: on for self-host only, and only advertised where WeCom is configured", async () => {
+  for (const name of Object.keys(FEATURE_PROFILES)) {
+    assert.equal(FEATURE_PROFILES[name].auth?.wecom, name === "self-host", name);
+  }
+  await withEnv({ APP_FEATURES_PROFILE: "self-host", APP_FEATURES_JSON: undefined, WECOM_SUITE_ID: undefined }, () => {
+    assert.equal(buildPublicConfig().features?.auth?.wecom, false, "no provider app → no button");
+    assert.equal(buildPublicConfig().features?.auth?.google, true, "other auth flags untouched");
+  });
+  await withEnv({ APP_FEATURES_PROFILE: "self-host", APP_FEATURES_JSON: undefined, WECOM_SUITE_ID: "wwsuite" }, () => {
+    assert.equal(buildPublicConfig().features?.auth?.wecom, true);
+  });
+  await withEnv({ APP_FEATURES_PROFILE: "belayo", APP_FEATURES_JSON: '{"auth":{"wecom":true}}', WECOM_SUITE_ID: "wwsuite" }, () => {
+    assert.equal(resolveFeatures().auth?.wecom, true, "a deployment can still opt in by override");
   });
 });

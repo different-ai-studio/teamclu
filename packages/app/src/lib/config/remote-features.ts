@@ -36,6 +36,8 @@ type FeatureScope = "public" | "session";
 interface AuthFeatures {
   google: boolean;
   wechat: boolean;
+  /** WeCom QR sign-in (Cloud API /v1/auth/sso/wecom). */
+  wecom: boolean;
   phone: boolean;
   webSSO: boolean;
 }
@@ -65,7 +67,7 @@ interface ResolvedFeatures {
 // `updater` is on neither list, deliberately. It gates the startup auto-check
 // as well as the UI, so a remote `false` would strand the fleet with no way to
 // update out of it. It stays build-time.
-const AUTH_KEYS = ["google", "wechat", "phone", "webSSO"] as const;
+const AUTH_KEYS = ["google", "wechat", "wecom", "phone", "webSSO"] as const;
 const CHANNEL_KEYS = ["discord", "feishu", "email", "kook", "wecom", "wechat", "wechatpad", "seatalk"] as const;
 const BOOL_KEYS = ["apps", "lockLlmConfig", "autoRestartPaused"] as const;
 
@@ -193,6 +195,7 @@ function resolveFrom(patches: RemoteFeaturePatch[]): ResolvedFeatures {
     auth: {
       google: merged.auth?.google ?? false,
       wechat: merged.auth?.wechat ?? false,
+      wecom: merged.auth?.wecom ?? false,
       phone: merged.auth?.phone ?? false,
       // Server-controlled like every other flag. Where the flow may point is
       // server-controlled too (WEBSSO_LOGIN_URL) — there is no build-time host

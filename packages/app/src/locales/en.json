@@ -590,6 +590,14 @@
     "orContinueWith": "or continue with",
     "signInWithGoogle": "Sign in with Google",
     "signInWithWechat": "Sign in with WeChat",
+    "signInWithWecom": "Sign in with WeCom",
+    "ssoNamePrompt": {
+      "title": "What should your team call you?",
+      "description": "WeCom doesn't share your name with TeamClu. Enter the name your teammates know you by; you can change it later in your profile.",
+      "placeholder": "Your name",
+      "later": "Later",
+      "failed": "Could not save your name. Try again."
+    },
     "oauthWaiting": "Finish signing in in your browser, then come back.",
     "oauthCancel": "Cancel and try another way",
     "signInWithWebSso": "Quick sign-in",
@@ -3586,6 +3594,27 @@
         "exhausted": "out of balance or quota",
         "rate_limited": "throttled",
         "invalid": "key rejected"
+      }
+    },
+    "enterpriseSso": {
+      "title": "WeCom sign-in",
+      "description": "Connect your WeCom company so members can scan in to TeamClu and join this organization automatically. A WeCom admin of the company completes the install in the browser.",
+      "waiting": "Have a WeCom admin finish the install in the browser, then come back here.",
+      "connected": "Connected to {{name}}. Company members can sign in by scanning with WeCom; their first sign-in adds them to this organization.",
+      "connect": "Connect WeCom",
+      "disconnect": "Disconnect",
+      "confirmDisconnect": "After disconnecting, members of this company can no longer sign in with WeCom. Existing accounts stay. Disconnect?",
+      "names": {
+        "title": "Member names",
+        "description": "WeCom doesn't give the sign-in app member names. Once a WeCom admin authorizes TeamClu by scanning a QR code, members show their directory names; names members set themselves are kept.",
+        "authorize": "Get member names",
+        "scan": "Ask a WeCom admin to scan this QR code with WeCom to let TeamClu read member names, then come back here.",
+        "pending": "Authorized, not active yet: TeamClu has to finish this company's go-live review, and a WeCom admin has to grant the 「姓名」 permission and set visibility to all members.",
+        "recheck": "Check again",
+        "active": "Member names are on. Members show their real names when they sign in.",
+        "syncNow": "Sync now",
+        "synced": "Synced; updated {{count}} member names.",
+        "stillPending": "Names still can't be read. Check that the go-live review passed and 「姓名」 is granted."
       }
     },
     "teamRoles": {

@@ -42,7 +42,7 @@ describe("runDesktopOAuth", () => {
     );
     expect(shellOpen).toHaveBeenCalledWith("https://auth.example/url");
     expect(invoke).toHaveBeenNthCalledWith(2, "oauth_loopback_await");
-    expect(client.exchangeOAuthCode).toHaveBeenCalledWith("CODE", "VER");
+    expect(client.exchangeOAuthCode).toHaveBeenCalledWith("CODE", "VER", "wechat");
     expect(session.access_token).toBe("at");
   });
 

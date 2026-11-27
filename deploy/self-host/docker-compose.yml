@@ -545,6 +545,27 @@ services:
       # Partner web consoles that FC hands one-time sign-in links to
       # (POST /v1/auth/web-handoff), comma-separated hosts. Empty = off.
       WEB_HANDOFF_HOSTS: "${WEB_HANDOFF_HOSTS:-}"
+      # Enterprise IM sign-in, WeCom service-provider app (lib/sso/from-env.ts).
+      # Unset WECOM_SUITE_ID = off (routes answer 501). The login button also
+      # needs the deployment's `auth.wecom` feature flag.
+      WECOM_SUITE_ID: "${WECOM_SUITE_ID:-}"
+      WECOM_SUITE_SECRET: "${WECOM_SUITE_SECRET:-}"
+      WECOM_LOGIN_SUITE_ID: "${WECOM_LOGIN_SUITE_ID:-}"
+      WECOM_LOGIN_SUITE_SECRET: "${WECOM_LOGIN_SUITE_SECRET:-}"
+      WECOM_CALLBACK_TOKEN: "${WECOM_CALLBACK_TOKEN:-}"
+      WECOM_CALLBACK_AES_KEY: "${WECOM_CALLBACK_AES_KEY:-}"
+      WECOM_LOGIN_CALLBACK_TOKEN: "${WECOM_LOGIN_CALLBACK_TOKEN:-}"
+      WECOM_LOGIN_CALLBACK_AES_KEY: "${WECOM_LOGIN_CALLBACK_AES_KEY:-}"
+      WECOM_CUSTOMIZED_SUITE_ID: "${WECOM_CUSTOMIZED_SUITE_ID:-}"
+      WECOM_CUSTOMIZED_SUITE_SECRET: "${WECOM_CUSTOMIZED_SUITE_SECRET:-}"
+      WECOM_PROVIDER_SECRET: "${WECOM_PROVIDER_SECRET:-}"
+      WECOM_PROVIDER_CORPID: "${WECOM_PROVIDER_CORPID:-}"
+      WECOM_REDIRECT_BASE_URL: "${WECOM_REDIRECT_BASE_URL:-}"
+      WECOM_INSTALL_TEST_MODE: "${WECOM_INSTALL_TEST_MODE:-}"
+      # Codes the WeCom console asks to find at /WW_verify_<code>.txt when it
+      # verifies domain ownership, comma-separated (lib/sso/domain-verify.ts).
+      WECOM_DOMAIN_VERIFY_CODES: "${WECOM_DOMAIN_VERIFY_CODES:-}"
+      SSO_ALLOWED_REDIRECT_SCHEMES: "${SSO_ALLOWED_REDIRECT_SCHEMES:-}"
       # Desktop download link served by /v1/config/public (iOS onboarding).
       # Empty falls back to the GitHub releases page inside FC.
       DESKTOP_DOWNLOAD_URL: "${DESKTOP_DOWNLOAD_URL:-}"

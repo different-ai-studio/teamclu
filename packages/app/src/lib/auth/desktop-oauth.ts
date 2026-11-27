@@ -7,7 +7,7 @@ import type { AuthClient } from "@/lib/auth/auth-client";
 import { generatePkce } from "@/lib/auth/oauth-pkce";
 import { AuthError, type Session } from "@/lib/auth/types";
 
-export type OAuthProvider = "google" | "wechat";
+export type OAuthProvider = "google" | "wechat" | "wecom";
 
 function friendlyError(raw: unknown): AuthError {
   const text = typeof raw === "string" ? raw : raw instanceof Error ? raw.message : String(raw);
@@ -32,7 +32,7 @@ export async function runDesktopOAuth(
   } catch (err) {
     throw friendlyError(err);
   }
-  return authClient.exchangeOAuthCode(code, pkce.verifier);
+  return authClient.exchangeOAuthCode(code, pkce.verifier, provider);
 }
 
 /**

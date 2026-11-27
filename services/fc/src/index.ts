@@ -4,6 +4,7 @@ import {
   publishableKeyFromEnv,
 } from "./lib/supabase-repo.js";
 import { fanoutMessage } from "./lib/push-dispatch.js";
+import { ssoServiceFromEnv } from "./lib/sso/from-env.js";
 import { pushDeps } from "./lib/admin-handlers.js";
 import { ApiError } from "./lib/http-utils.js";
 import { assertSupportSessionLive, cachedAgentAccessCheck } from "./lib/platform-operators.js";
@@ -200,6 +201,12 @@ export function makeAuthRepoFactory() {
       // which is being retired (docs/plans/2026-10-08-staff-only-identity-model.md).
       smsConfigOrgId: process.env.SMS_CONFIG_ORG_ID || undefined,
       syncTeamToGitea: makeTeamGiteaSync(),
+      ssoService: () =>
+        ssoServiceFromEnv({
+          env: process.env,
+          supabaseUrl: SUPABASE_URL_FN(),
+          publishableKey: SUPABASE_PUBLISHABLE_KEY(),
+        }),
     });
 }
 
