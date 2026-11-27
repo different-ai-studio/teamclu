@@ -72,7 +72,10 @@ pub async fn stream(
     let hb = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(heartbeat))
         .map(|_| Ok::<_, std::io::Error>(b":hb\n\n".to_vec()));
 
-    let body = Body::from_stream(futures::stream::select(live, hb));
+    // Ends at daemon shutdown: the heartbeat never would, and an open stream
+    // holds axum's graceful shutdown until the client hangs up.
+    let stream = futures::stream::select(live, hb).take_until(state.shutdown.triggered());
+    let body = Body::from_stream(stream);
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")

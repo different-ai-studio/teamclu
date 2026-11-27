@@ -13,6 +13,7 @@ import { isLocaleLocked, availableLanguages } from "@/lib/i18n";
 import { LanguageStep } from "@/components/onboarding/LanguageStep";
 import { useOnboardingStore } from "@/stores/onboarding";
 import { DaemonOnboardingWizard } from "@/components/auth/DaemonOnboardingWizard";
+import { GateHold } from "@/components/auth/GateHold";
 import { TeamBootstrapErrorScreen } from "@/components/auth/TeamBootstrapErrorScreen";
 import { useDaemonOnboardingStore } from "@/stores/daemon-onboarding";
 import { markLocalAgentInstallPending, useLocalAgentInstallStore } from "@/stores/local-agent-install";
@@ -623,10 +624,12 @@ export function AuthGate({ children }: AuthGateProps) {
     setBootstrap("ready");
   };
 
-  // Each gate below either (a) is a pure-loading state — return null so the
-  // static #skeleton (z-9999, mirrors the real shell) keeps showing through an
-  // empty #root, no blank flash; or (b) renders real/interactive UI — tear the
-  // skeleton down first so the screen is visible and clickable.
+  // Each gate below either (a) is a pure-loading state — render <GateHold />,
+  // which is empty while the static #skeleton (z-9999, mirrors the real shell)
+  // still covers #root and a visible progress screen once it is gone (after a
+  // sign-out, where a bare null used to leave the window white); or (b)
+  // renders real/interactive UI — tear the skeleton down first so the screen
+  // is visible and clickable.
   //
   // Desktop happy path: children deliberately do NOT remove the skeleton —
   // App removes it once the workspace resolves (skeleton → real UI).
@@ -665,7 +668,7 @@ export function AuthGate({ children }: AuthGateProps) {
   // purpose: an unblocked gate showing the login screen beats a gate that never
   // unblocks and leaves the startup skeleton up forever.
   if (!authHydrated) {
-    return null;
+    return <GateHold />;
   }
 
   if (!session) {
@@ -687,7 +690,7 @@ export function AuthGate({ children }: AuthGateProps) {
   }
 
   if (loading) {
-    return null;
+    return <GateHold />;
   }
 
   // Team bootstrap failed (e.g. createTeam rejected by a drifted backend).
@@ -743,13 +746,13 @@ export function AuthGate({ children }: AuthGateProps) {
   // used to fall through here and paint children, then bounce back to null
   // while myTeams loaded — a white flash once the skeleton was already gone.
   if (bootstrap !== "ready") {
-    return joinLinkNotice ? <p role="alert">{joinLinkNotice}</p> : null;
+    return joinLinkNotice ? <p role="alert">{joinLinkNotice}</p> : <GateHold />;
   }
 
   // Wait for the saved-team restoration decision before rendering the picker
   // or shell (desktop and extension/web alike).
   if (!teamChosen && !teamChoiceResolved) {
-    return null;
+    return <GateHold />;
   }
 
   // Multi-team picker gate: after team-bootstrap, before the daemon gate. If the
@@ -760,7 +763,7 @@ export function AuthGate({ children }: AuthGateProps) {
   // the chosen team and triggers re-onboard on mismatch.
   if (session && !teamChosen) {
     if (myTeams === null) {
-      return null; // Still loading the team list — keep the skeleton.
+      return <GateHold />; // Still loading the team list.
     }
     const teamChoices = narrowToHomeOrg(myTeams);
     if (needsTeamPicker(teamChoices)) {
@@ -786,7 +789,7 @@ export function AuthGate({ children }: AuthGateProps) {
   // through.
   if (isTauri() && !daemonOnboardingAck && !installGateSkipped) {
     if (!daemonLoaded) {
-      return null;
+      return <GateHold />;
     }
     if (
       daemonAwaitingName ||

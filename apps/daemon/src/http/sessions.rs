@@ -308,7 +308,7 @@ pub async fn stream(
     let sub = state.runtime.subscribe(id, last_event_id).await?;
     let heartbeat = state.config.heartbeat_interval;
 
-    let response = build_sse_response(sub.backlog, sub.live, heartbeat);
+    let response = build_sse_response(sub.backlog, sub.live, heartbeat, state.shutdown.triggered());
     Ok(response)
 }
 
@@ -316,6 +316,8 @@ fn build_sse_response(
     backlog: Vec<SessionEvent>,
     live: tokio::sync::broadcast::Receiver<SessionEvent>,
     heartbeat: Duration,
+    // Ends the stream at daemon shutdown (see `ShutdownSignal`).
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Response {
     // 1. Flush backlog first
     let backlog_stream = stream::iter(
@@ -341,7 +343,7 @@ fn build_sse_response(
     };
 
     let live_with_hb = futures::stream::select(live_stream, hb_stream);
-    let combined = backlog_stream.chain(live_with_hb);
+    let combined = backlog_stream.chain(live_with_hb).take_until(shutdown);
 
     let body = Body::from_stream(combined);
     Response::builder()
