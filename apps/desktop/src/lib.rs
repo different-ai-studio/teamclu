@@ -1051,6 +1051,8 @@ pub fn run() {
                     });
                 }
                 tauri::RunEvent::Exit => {
+                    // Leave no port/token behind for a sidecar to chase.
+                    commands::introspect_api::withdraw_publication();
                     // Primary quit path on macOS (Cmd+Q often skips ExitRequested).
                     if let Some(sup) =
                         app.try_state::<commands::amuxd_supervisor::AmuxdSupervisor>()
