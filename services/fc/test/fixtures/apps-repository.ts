@@ -101,7 +101,7 @@ function projectedTables(state: any, actorRow: any, callerUserId: string) {
 
 export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [],
   projectSelects = false, appInsertDefaults = { app_code: "a-k7m2q9vx4n8p" }, appInsertId,
-  creatorOnlyAppUpdates = false, sharedState,
+  creatorOnlyAppUpdates = false, sharedState, maxRows = Infinity,
 }: any = {}): any {
   const state: any = sharedState ?? {
     apps: [...(seed.apps ?? [])],
@@ -124,9 +124,9 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
   };
   return {
     auth: appsAuth(),
-    serviceRole: () => appsSupabase({ actorRow, calls, projectSelects, appInsertDefaults, appInsertId, sharedState: state }),
+    serviceRole: () => appsSupabase({ actorRow, calls, projectSelects, appInsertDefaults, appInsertId, sharedState: state, maxRows }),
     from(table: string) {
-      const ctx: any = { table, op: null, filters: {}, isFilters: {}, neqFilters: {}, inFilters: {}, limitCount: null };
+      const ctx: any = { table, op: null, filters: {}, isFilters: {}, neqFilters: {}, inFilters: {}, limitCount: null, rangeStart: null, rangeEnd: null };
       // `resolveCurrentMemberActor` filters `actor_type = 'member'` and the
       // agent git-credential path filters `'agent'`. A seeded `actorRow` that
       // names its own type must answer only the matching lookup; one that does
@@ -169,7 +169,9 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         if (creatorOnlyAppUpdates && table === "apps" && ctx.op === "update") {
           rows = rows.filter((r) => r.created_by_actor_id === actorRow?.id);
         }
+        if (typeof ctx.rangeStart === "number") rows = rows.slice(ctx.rangeStart, ctx.rangeEnd + 1);
         if (typeof ctx.limitCount === "number") rows = rows.slice(0, ctx.limitCount);
+        rows = rows.slice(0, maxRows);
         return rows;
       };
       // Older repository tests intentionally read complete rows. Integration opts in
@@ -275,6 +277,11 @@ export function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, call
         // table rows (used by listApps / workspace dedup lookups).
         limit(count: number) {
           ctx.limitCount = count;
+          return builder;
+        },
+        range(from: number, to: number) {
+          ctx.rangeStart = from;
+          ctx.rangeEnd = to;
           return builder;
         },
         single() {
