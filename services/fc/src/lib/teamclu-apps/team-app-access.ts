@@ -19,7 +19,7 @@
  * sync, the git credential path).
  */
 import { higherAppLevel, storedAppPermissionLevel, type AppPermissionLevel } from "../app-permission.js";
-import { chunkedIn } from "../supabase-repo/shared.js";
+import { chunkedIn, pagedRows } from "../supabase-repo/shared.js";
 
 export type TeamAppActor = {
   id: string;
@@ -166,7 +166,7 @@ export async function readTeamAppAccess(admin: any, appId: string): Promise<Team
 
 /** The ids of a team's apps (app_links), for passes that walk a team. */
 export async function readTeamAppIds(admin: any, teamId: string): Promise<string[]> {
-  const { data, error } = await admin.from("app_links").select("app_id").eq("team_id", teamId);
-  if (error) throw error;
-  return ((data ?? []) as any[]).map((r) => r.app_id);
+  const rows = await pagedRows((from, to) => admin.from("app_links")
+    .select("app_id").eq("team_id", teamId).order("app_id").range(from, to));
+  return rows.map((r) => r.app_id);
 }

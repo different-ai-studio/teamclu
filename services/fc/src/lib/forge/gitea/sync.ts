@@ -15,7 +15,7 @@ import {
 import { inheritedRepoLevel } from "../app-git-access.js";
 import { readTeamAppAccess, readTeamAppIds } from "../../teamclu-apps/team-app-access.js";
 import { readForgeApp } from "../../teamclu-apps/forge-repos.js";
-import { chunkedIn } from "../../supabase-repo/shared.js";
+import { chunkedIn, pagedRows } from "../../supabase-repo/shared.js";
 
 /**
  * Projects an app's TeamClu access onto its Gitea repo
@@ -93,18 +93,16 @@ function hasGiteaIdentity(actor: ActorRow | undefined): actor is ActorRow & { us
 }
 
 async function readTeamActors(admin: AdminClient, teamId: string): Promise<ActorRow[]> {
-  const { data, error } = await admin
-    .from("actors")
+  const rows = await pagedRows((from, to) => admin.from("actors")
     .select("id, team_id, actor_type, user_id, display_name")
-    .eq("team_id", teamId);
-  if (error) throw error;
-  return ((data ?? []) as ActorRow[]).filter(hasGiteaIdentity);
+    .eq("team_id", teamId).order("id").range(from, to));
+  return (rows as ActorRow[]).filter(hasGiteaIdentity);
 }
 
 async function readOrgTeamIds(admin: AdminClient, orgId: string, appTeamId: string): Promise<string[]> {
-  const { data, error } = await admin.from("teams").select("id").eq("oid", orgId);
-  if (error) throw error;
-  return [...new Set([appTeamId, ...((data ?? []) as { id: string }[]).map((team) => team.id)])];
+  const rows = await pagedRows((from, to) => admin.from("teams")
+    .select("id").eq("oid", orgId).order("id").range(from, to));
+  return [...new Set([appTeamId, ...(rows as { id: string }[]).map((team) => team.id)])];
 }
 
 /** Bring one app's repo in line with TeamClu. */

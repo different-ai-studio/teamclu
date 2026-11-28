@@ -5,6 +5,7 @@ set -euo pipefail
 set +x
 
 : "${TEAMCLU_GIT_TEST_REPO_URL:?dedicated HTTPS App repo URL required}"
+: "${TEAMCLU_GIT_FIXTURE_RECORD:?reviewed acceptance fixture JSON path required}"
 : "${TEAMCLU_GIT_ADMIN_TOKEN:?admin git token required}"
 : "${TEAMCLU_GIT_WRITE_TOKEN:?write git token required}"
 : "${TEAMCLU_GIT_READ_TOKEN:?read git token required}"
@@ -18,6 +19,19 @@ validate_repo_url() { node -e '
   }
 ' "$1"; }
 validate_repo_url "$TEAMCLU_GIT_TEST_REPO_URL" || { echo "Refusing non-dedicated Git URL" >&2; exit 2; }
+node -e '
+  const fs = require("node:fs");
+  const f = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const expected = `https://gitea.teamclu.cn/o${f.orgId?.replaceAll("-", "")}/tc-app-${f.appId}.git`;
+  if (f.purpose !== "hangzhou-git-account-auth-acceptance" || !uuid.test(f.orgId) ||
+      !uuid.test(f.appId) || f.repoUrl !== expected || process.argv[2] !== expected ||
+      !["admin", "write", "read", "outsider"].every((role) => /^u[0-9a-f]{32}$/.test(f.accounts?.[role] ?? ""))) {
+    process.exitCode = 1;
+  }
+' "$TEAMCLU_GIT_FIXTURE_RECORD" "$TEAMCLU_GIT_TEST_REPO_URL" || {
+  echo "Refusing Git URL outside the reviewed acceptance fixture" >&2; exit 2;
+}
 if [[ -n "${TEAMCLU_GIT_PERSONAL_REPO_URL:-}" ]]; then
   validate_repo_url "$TEAMCLU_GIT_PERSONAL_REPO_URL" || { echo "Refusing non-dedicated personal Git URL" >&2; exit 2; }
 fi
@@ -28,6 +42,36 @@ node -e '
   if (h.gitHost !== "gitea.teamclu.cn" || h.gitScheme !== "https") process.exitCode = 1;
 ' "$host_json" || { echo "Cloud API Git host is not the production HTTPS host" >&2; exit 1; }
 echo "PASS /v1/git/host: gitea.teamclu.cn (https)"
+
+git_identity() {
+  TEAMCLU_GIT_ACTIVE_TOKEN="$1" node -e '
+    const value = Buffer.from(`teamclu:${process.env.TEAMCLU_GIT_ACTIVE_TOKEN}`).toString("base64");
+    fetch("https://api.teamclu.cn/v1/git/authz", { headers: { Authorization: `Basic ${value}` } })
+      .then((r) => {
+        const user = r.headers.get("x-webauth-user");
+        if (r.status !== 200 || !/^u[0-9a-f]{32}$/.test(user ?? "")) process.exitCode = 1;
+        else process.stdout.write(user);
+      })
+      .catch(() => { process.exitCode = 1; });
+  '
+}
+admin_user="$(git_identity "$TEAMCLU_GIT_ADMIN_TOKEN")" || { echo "Admin token is not accepted by Cloud API" >&2; exit 1; }
+write_user="$(git_identity "$TEAMCLU_GIT_WRITE_TOKEN")" || { echo "Write token is not accepted by Cloud API" >&2; exit 1; }
+read_user="$(git_identity "$TEAMCLU_GIT_READ_TOKEN")" || { echo "Read token is not accepted by Cloud API" >&2; exit 1; }
+outsider_user="$(git_identity "$TEAMCLU_GIT_OUTSIDER_TOKEN")" || { echo "Outsider token is not accepted by Cloud API" >&2; exit 1; }
+if [[ "$(printf '%s\n' "$admin_user" "$write_user" "$read_user" "$outsider_user" | sort -u | wc -l | tr -d ' ')" != 4 ]]; then
+  echo "Acceptance tokens must identify four distinct accounts" >&2
+  exit 2
+fi
+echo "PASS four distinct Cloud API Git identities"
+TEAMCLU_GIT_OBSERVED_ACCOUNTS="$admin_user,$write_user,$read_user,$outsider_user" node -e '
+  const fs = require("node:fs");
+  const expected = fs.readFileSync(process.argv[1], "utf8");
+  const fixture = JSON.parse(expected);
+  const roles = ["admin", "write", "read", "outsider"];
+  if (roles.map((role) => fixture.accounts[role]).join(",") !== process.env.TEAMCLU_GIT_OBSERVED_ACCOUNTS) process.exitCode = 1;
+' "$TEAMCLU_GIT_FIXTURE_RECORD" || { echo "Git token identities do not match the reviewed fixture" >&2; exit 2; }
+echo "PASS Git identities match reviewed fixture roles"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -55,7 +99,11 @@ expect_rejected() {
     echo "FAIL $label: operation unexpectedly succeeded" >&2
     exit 1
   fi
-  if ! grep -Eiq '401|403|404|authentication failed|access denied|repository not found|could not read username|unable to read askpass' "$work/probe.log"; then
+  local denial='403|404|access denied|permission denied|not allowed|repository not found'
+  if [[ "$label" == "anonymous clone" || "$label" == "forged identity without token" ]]; then
+    denial="$denial|401|authentication failed|could not read username|unable to read askpass"
+  fi
+  if ! grep -Eiq "$denial" "$work/probe.log"; then
     echo "FAIL $label: failure was not a recognized authorization rejection" >&2
     exit 1
   fi
@@ -64,7 +112,7 @@ expect_rejected() {
 
 expect_rejected "anonymous clone" env GIT_ASKPASS=/bin/false git ls-remote "$TEAMCLU_GIT_TEST_REPO_URL"
 expect_rejected "forged identity without token" env GIT_ASKPASS=/bin/false GIT_CONFIG_COUNT=1 \
-  GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="X-WEBAUTH-USER: u00000000000000000000000000000000" \
+  GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="X-WEBAUTH-USER: $admin_user" \
   git ls-remote "$TEAMCLU_GIT_TEST_REPO_URL"
 expect_rejected "outside-org clone" git_as "$TEAMCLU_GIT_OUTSIDER_TOKEN" ls-remote "$TEAMCLU_GIT_TEST_REPO_URL"
 
@@ -98,7 +146,7 @@ for role in admin write read outsider; do
     if [[ "$role" == read ]]; then
       expect_rejected "read token with forged admin identity push" env \
         TEAMCLU_GIT_ACTIVE_TOKEN="$TEAMCLU_GIT_READ_TOKEN" GIT_ASKPASS="$askpass" GIT_CONFIG_COUNT=1 \
-        GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="X-WEBAUTH-USER: u00000000000000000000000000000000" \
+        GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="X-WEBAUTH-USER: $admin_user" \
         git -C "$work/repo" push --quiet "$TEAMCLU_GIT_TEST_REPO_URL" "HEAD:refs/heads/$branch"
     fi
   fi

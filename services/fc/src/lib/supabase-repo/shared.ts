@@ -73,6 +73,21 @@ export async function chunkedIn(
   return out;
 }
 
+/** Read every row from a stable ordered PostgREST query, past its row cap. */
+export async function pagedRows(
+  fetchPage: (from: number, to: number) => Promise<{ data: any[] | null; error: any }>,
+  pageSize = 500,
+): Promise<any[]> {
+  const rows: any[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await fetchPage(from, from + pageSize - 1);
+    if (error) throw error;
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < pageSize) return rows;
+  }
+}
+
 // ── Column constants + row mappers (moved from supabase-repo.ts) ──
 
 export const DEFAULT_ATTACHMENT_BUCKET = "attachments";

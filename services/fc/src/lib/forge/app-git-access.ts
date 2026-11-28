@@ -1,4 +1,5 @@
 import { readTeamAppAccess } from "../teamclu-apps/team-app-access.js";
+import { pagedRows } from "../supabase-repo/shared.js";
 import {
   appLevelAtLeast,
   higherAppLevel,
@@ -76,19 +77,13 @@ export async function readAppGitAccess(admin: any, appId: string, userId: string
   if (actorErr) throw actorErr;
   let actor = teamActor;
   if (!actor && access.teamVisible && access.orgId) {
-    const { data: orgTeams, error: orgError } = await admin.from("teams").select("id").eq("oid", access.orgId);
-    if (orgError) throw orgError;
-    const teamIds = ((orgTeams ?? []) as { id: string }[]).map((team) => team.id);
-    if (teamIds.length) {
-      const { data: orgActors, error: memberError } = await admin
-        .from("actors")
-        .select("id, actor_type, display_name")
-        .in("team_id", teamIds)
-        .eq("user_id", userId)
-        .limit(1);
-      if (memberError) throw memberError;
-      actor = orgActors?.[0] ?? null;
-    }
+    const orgTeams = await pagedRows((from, to) => admin.from("teams")
+      .select("id").eq("oid", access.orgId).order("id").range(from, to));
+    const teamIds = new Set((orgTeams as { id: string }[]).map((team) => team.id));
+    const orgActors = await pagedRows((from, to) => admin.from("actors")
+      .select("id, team_id, actor_type, display_name")
+      .eq("user_id", userId).order("id").range(from, to));
+    actor = orgActors.find((candidate) => teamIds.has(candidate.team_id)) ?? null;
   }
   if (!actor) return null;
 

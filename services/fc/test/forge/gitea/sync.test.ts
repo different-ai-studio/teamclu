@@ -201,6 +201,40 @@ test("leaving the last team in an org removes org-visible Git read access", asyn
   assert.equal(await readAppGitAccess(admin, "app-1", user), null);
 });
 
+test("org visibility includes actors beyond the first PostgREST page", async () => {
+  const members = Array.from({ length: 501 }, (_, i) => ({
+    id: `member-${i}`, team_id: TEAM, actor_type: "member",
+    user_id: `aaaaaaaa-0000-4000-8000-${i.toString(16).padStart(12, "0")}`,
+    display_name: `Member ${i}`,
+  }));
+  const admin = appsSupabase({
+    seed: { apps: [orgApp({ visibility: "team" })], teams: [{ id: TEAM, oid: ORG }], actors: members },
+    actorRow: null, maxRows: 500,
+  });
+  const gitea = fakeGitea();
+  await syncAppToGitea({ gitea, admin }, "app-1");
+  const team = gitea.state.teams.get(`${OWNER}/${giteaTeamName(TEAM)}`);
+  assert.ok(team?.members.has(giteaUserName(members.at(-1)!.user_id)));
+});
+
+test("org visibility includes teams beyond the first PostgREST page", async () => {
+  const teams = Array.from({ length: 501 }, (_, i) => ({ id: `team-${i}`, oid: ORG }));
+  const lastUser = "aaaaaaaa-0000-4000-8000-000000000099";
+  const admin = appsSupabase({
+    seed: {
+      apps: [orgApp({ visibility: "team" })],
+      teams: [{ id: TEAM, oid: ORG }, ...teams],
+      actors: [actors[0], { id: "last-team-member", team_id: teams.at(-1)!.id, actor_type: "member", user_id: lastUser, display_name: "Last" }],
+    },
+    actorRow: null, maxRows: 500,
+  });
+  const gitea = fakeGitea();
+  await syncAppToGitea({ gitea, admin }, "app-1");
+  const team = gitea.state.teams.get(`${OWNER}/${giteaTeamName(TEAM)}`);
+  assert.ok(team?.members.has(giteaUserName(lastUser)));
+  assert.equal((await readAppGitAccess(admin, "app-1", lastUser))?.permission, "read");
+});
+
 test("legacy repos and imported apps are left alone", async () => {
   const gitea = fakeGitea();
   const legacy = appsSupabase({ seed: { apps: [orgApp({ git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git" })], actors } });
