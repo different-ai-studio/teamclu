@@ -72,6 +72,63 @@ pub enum SkillAction {
     /// The team's Skills catalog, and editing installed team Skills.
     #[command(subcommand)]
     Team(TeamSkillAction),
+    /// The skills marketplace: search it, and adopt a skill into the team.
+    #[command(subcommand)]
+    Market(MarketAction),
+}
+
+/// The categories the marketplace accepts (`TeamSkillCategory`).
+const MARKET_CATEGORIES: &[&str] = &[
+    "general",
+    "coding",
+    "devops",
+    "data",
+    "research",
+    "writing",
+    "communication",
+    "integration",
+];
+
+#[derive(Subcommand, Debug)]
+pub enum MarketAction {
+    /// Search the marketplace catalog. With no query, lists the first page.
+    ///
+    /// Each row has `adoptedByTeam` when the team already adopted it.
+    ///
+    /// Example: amuxd skill market search review --category coding
+    Search {
+        /// Free-text query over name, summary and tags.
+        query: Option<String>,
+        /// general, coding, devops, data, research, writing, communication or integration.
+        #[arg(long)]
+        category: Option<String>,
+        /// Page size, 1 to 200 (default 100).
+        #[arg(long)]
+        limit: Option<u32>,
+        /// `nextCursor` from the previous reply.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Adopt a marketplace skill into the team's Skills, following its
+    /// marketplace updates. Without `--install` this does not install it for
+    /// this agent; then run `amuxd skill team install <slug> --version <n>`.
+    /// With `--install` the adopted version is installed here in the same step;
+    /// the reply is then `{ skill, install }`.
+    ///
+    /// Example: amuxd skill market adopt review-checklist --slug team-review --install
+    Adopt {
+        /// The marketplace slug.
+        marketplace_slug: String,
+        /// The team slug to adopt it as (default: the marketplace slug).
+        #[arg(long)]
+        slug: Option<String>,
+        /// The version to adopt (default: the catalog's latest).
+        #[arg(long)]
+        version: Option<i64>,
+        /// Also install the adopted version for this agent.
+        #[arg(long)]
+        install: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -320,6 +377,89 @@ fn build(action: &SkillAction, workspace: &Path) -> Result<Request, Usage> {
             }
             sock(body)
         }
+        SkillAction::Market(MarketAction::Search {
+            query,
+            category,
+            limit,
+            cursor,
+        }) => {
+            if let Some(category) = category {
+                if !MARKET_CATEGORIES.contains(&category.as_str()) {
+                    return Err(usage(
+                        "invalid_category",
+                        format!("category must be one of: {}", MARKET_CATEGORIES.join(", ")),
+                        Some("amuxd skill market search --help"),
+                    ));
+                }
+            }
+            if let Some(limit) = limit {
+                if !(1..=200).contains(limit) {
+                    return Err(usage(
+                        "invalid_limit",
+                        "--limit must be from 1 to 200",
+                        None,
+                    ));
+                }
+            }
+            let mut qs: Vec<String> = Vec::new();
+            for (key, value) in [
+                ("q", query.as_deref()),
+                ("category", category.as_deref()),
+                ("cursor", cursor.as_deref()),
+            ] {
+                if let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) {
+                    qs.push(format!("{key}={}", urlencode(value)));
+                }
+            }
+            if let Some(limit) = limit {
+                qs.push(format!("limit={limit}"));
+            }
+            let path = if qs.is_empty() {
+                "/v1/team/marketplace/skills".to_string()
+            } else {
+                format!("/v1/team/marketplace/skills?{}", qs.join("&"))
+            };
+            http(reqwest::Method::GET, path, None)
+        }
+        SkillAction::Market(MarketAction::Adopt {
+            marketplace_slug,
+            slug,
+            version,
+            install,
+        }) => {
+            let marketplace_slug = marketplace_slug.trim();
+            if marketplace_slug.is_empty() {
+                return Err(usage(
+                    "missing_slug",
+                    "the marketplace slug must not be empty",
+                    Some("amuxd skill market search <query>"),
+                ));
+            }
+            if let Some(version) = version {
+                if *version < 1 {
+                    return Err(usage(
+                        "invalid_version",
+                        "--version must be at least 1",
+                        None,
+                    ));
+                }
+            }
+            let mut body = json!({ "marketplaceSlug": marketplace_slug });
+            if let Some(slug) = slug {
+                body["slug"] = json!(slug);
+            }
+            if let Some(version) = version {
+                body["version"] = json!(version);
+            }
+            if *install {
+                body["install"] = json!(true);
+            }
+            http(
+                reqwest::Method::POST,
+                "/v1/team/marketplace/adopt".into(),
+                Some(body),
+            )
+        }
         SkillAction::Team(TeamSkillAction::Ls) => {
             http(reqwest::Method::GET, "/v1/team/skills".into(), None)
         }
@@ -447,7 +587,7 @@ fn skill_error_exit(code: &str) -> (i32, Option<&'static str>) {
     }
 }
 
-fn http_envelope(outcome: anyhow::Result<Result<Value, (u16, String)>>) -> Value {
+fn http_envelope(path: &str, outcome: anyhow::Result<Result<Value, (u16, String)>>) -> Value {
     match outcome {
         Ok(Ok(value)) => json!({ "v": 1, "ok": true, "data": value }),
         // An unclaimed daemon answers team calls with a 422; it is not the
@@ -465,12 +605,15 @@ fn http_envelope(outcome: anyhow::Result<Result<Value, (u16, String)>>) -> Value
                 401 => ("daemon_unauthorized", 3, false, None),
                 403 => ("forbidden", 4, false, None),
                 404 => ("not_found", 5, false, Some("amuxd skill team ls")),
-                409 => (
+                // Only a draft write is refused for a stale digest; any other
+                // 409 (a slug already in the team, say) is a plain conflict.
+                409 if path.split('?').next().unwrap_or(path).ends_with("/draft") => (
                     "draft_changed",
                     6,
                     false,
                     Some("amuxd skill team draft show <slug>, then retry with its digest"),
                 ),
+                409 => ("conflict", 6, false, Some("amuxd skill team ls")),
                 503 => ("daemon_unavailable", 7, true, None),
                 _ => ("daemon_error", 7, false, None),
             };
@@ -519,7 +662,7 @@ pub fn run(args: SkillArgs) -> anyhow::Result<i32> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
                 match LocalDaemonClient::connect("skill-cli").await {
-                    Ok(daemon) => http_envelope(daemon.send(method, &path, body).await),
+                    Ok(daemon) => http_envelope(&path, daemon.send(method, &path, body).await),
                     Err(e) => unreachable_envelope(e),
                 }
             })
@@ -646,6 +789,103 @@ mod tests {
     }
 
     #[test]
+    fn market_search_builds_the_query_string_and_checks_its_flags() {
+        let action = parse(&[
+            "amuxd",
+            "skill",
+            "market",
+            "search",
+            "代码 审查",
+            "--category",
+            "coding",
+            "--limit",
+            "5",
+        ]);
+        assert_eq!(
+            build(&action, Path::new("/ws")).unwrap(),
+            Request::Http {
+                method: reqwest::Method::GET,
+                path: "/v1/team/marketplace/skills?q=%E4%BB%A3%E7%A0%81%20%E5%AE%A1%E6%9F%A5&category=coding&limit=5".into(),
+                body: None,
+            }
+        );
+        let bare = parse(&["amuxd", "skill", "market", "search"]);
+        assert_eq!(
+            build(&bare, Path::new("/ws")).unwrap(),
+            Request::Http {
+                method: reqwest::Method::GET,
+                path: "/v1/team/marketplace/skills".into(),
+                body: None,
+            }
+        );
+        let bad_category = parse(&["amuxd", "skill", "market", "search", "--category", "games"]);
+        assert_eq!(
+            build(&bad_category, Path::new("/ws")).unwrap_err().code,
+            "invalid_category"
+        );
+        let bad_limit = parse(&["amuxd", "skill", "market", "search", "--limit", "0"]);
+        assert_eq!(
+            build(&bad_limit, Path::new("/ws")).unwrap_err().code,
+            "invalid_limit"
+        );
+    }
+
+    #[test]
+    fn market_adopt_sends_only_the_fields_given() {
+        let action = parse(&["amuxd", "skill", "market", "adopt", "review-checklist"]);
+        assert_eq!(
+            build(&action, Path::new("/ws")).unwrap(),
+            Request::Http {
+                method: reqwest::Method::POST,
+                path: "/v1/team/marketplace/adopt".into(),
+                body: Some(json!({ "marketplaceSlug": "review-checklist" })),
+            }
+        );
+        let renamed = parse(&[
+            "amuxd",
+            "skill",
+            "market",
+            "adopt",
+            "review-checklist",
+            "--slug",
+            "team-review",
+            "--version",
+            "3",
+        ]);
+        let Request::Http { body, .. } = build(&renamed, Path::new("/ws")).unwrap() else {
+            panic!("adopt goes over HTTP")
+        };
+        assert_eq!(
+            body.unwrap(),
+            json!({
+                "marketplaceSlug": "review-checklist",
+                "slug": "team-review",
+                "version": 3,
+            })
+        );
+        let installed = parse(&[
+            "amuxd",
+            "skill",
+            "market",
+            "adopt",
+            "review-checklist",
+            "--install",
+        ]);
+        let Request::Http { body, .. } = build(&installed, Path::new("/ws")).unwrap() else {
+            panic!("adopt goes over HTTP")
+        };
+        assert_eq!(
+            body.unwrap(),
+            json!({ "marketplaceSlug": "review-checklist", "install": true })
+        );
+        let blank = parse(&["amuxd", "skill", "market", "adopt", " "]);
+        assert_eq!(
+            build(&blank, Path::new("/ws")).unwrap_err().code,
+            "missing_slug"
+        );
+    }
+
+    #[test]
     fn draft_cat_builds_the_chunked_read() {
         let action = parse(&[
             "amuxd",
@@ -687,10 +927,34 @@ mod tests {
 
     #[test]
     fn an_unclaimed_daemon_is_no_identity_not_bad_arguments() {
-        let reply = http_envelope(Ok(Err((422, "daemon is not onboarded to a team".into()))));
+        let reply = http_envelope(
+            "/v1/team/skills",
+            Ok(Err((422, "daemon is not onboarded to a team".into()))),
+        );
         assert_eq!(reply["error"]["exit"], 3);
         assert_eq!(reply["error"]["code"], "not_onboarded");
-        let bad = http_envelope(Ok(Err((422, "slug is required".into()))));
+        let bad = http_envelope("/v1/team/skills", Ok(Err((422, "slug is required".into()))));
         assert_eq!(bad["error"]["exit"], 2);
+    }
+
+    #[test]
+    fn a_409_on_a_draft_write_is_a_stale_digest_but_other_409s_are_conflicts() {
+        let stale = http_envelope(
+            "/v1/team/skills/rc/draft",
+            Ok(Err((409, "draft changed".into()))),
+        );
+        assert_eq!(stale["error"]["code"], "draft_changed");
+        assert_eq!(stale["error"]["exit"], 6);
+
+        let adopt = http_envelope(
+            "/v1/team/marketplace/adopt",
+            Ok(Err((
+                409,
+                "slug review-checklist is already in the team".into(),
+            ))),
+        );
+        assert_eq!(adopt["error"]["code"], "conflict");
+        assert_eq!(adopt["error"]["exit"], 6);
+        assert_eq!(adopt["error"]["next"], "amuxd skill team ls");
     }
 }

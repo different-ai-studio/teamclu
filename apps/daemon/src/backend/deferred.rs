@@ -212,6 +212,22 @@ impl Backend for DeferredBackend {
             .await
     }
 
+    async fn marketplace_skills(
+        &self,
+        team_id: &str,
+        search: &super::MarketplaceSearch,
+    ) -> BackendResult<serde_json::Value> {
+        self.inner()?.marketplace_skills(team_id, search).await
+    }
+
+    async fn adopt_marketplace_skill(
+        &self,
+        team_id: &str,
+        body: &serde_json::Value,
+    ) -> BackendResult<serde_json::Value> {
+        self.inner()?.adopt_marketplace_skill(team_id, body).await
+    }
+
     async fn record_team_skill_install(
         &self,
         team_id: &str,

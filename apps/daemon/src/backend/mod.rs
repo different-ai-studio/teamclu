@@ -174,6 +174,17 @@ pub struct TeamSkillRow {
 }
 
 /// A short-lived signed URL for one version's package
+/// Query for the marketplace search. Every field is optional; `None` is not
+/// sent.
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceSearch {
+    pub q: Option<String>,
+    pub category: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
 /// (`GET /v1/teams/:id/skills/:slug/versions/:v/download`).
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -438,6 +449,32 @@ pub trait Backend: Send + Sync {
     ) -> BackendResult<TeamSkillDownload> {
         Err(BackendError::NotFound(
             "team skill download unavailable on this backend".to_string(),
+        ))
+    }
+
+    /// Search the first-party skills marketplace
+    /// (`GET /v1/marketplace/skills`). The reply is the endpoint's JSON as-is;
+    /// `teamId` is sent so each row carries `adoptedByTeam`.
+    async fn marketplace_skills(
+        &self,
+        _team_id: &str,
+        _search: &MarketplaceSearch,
+    ) -> BackendResult<serde_json::Value> {
+        Err(BackendError::NotFound(
+            "marketplace unavailable on this backend".to_string(),
+        ))
+    }
+
+    /// Adopt a marketplace skill into the team registry
+    /// (`POST /v1/teams/:id/skills/adopt`). `body` is the endpoint's request
+    /// JSON (`marketplaceSlug`, optional `slug` and `version`).
+    async fn adopt_marketplace_skill(
+        &self,
+        _team_id: &str,
+        _body: &serde_json::Value,
+    ) -> BackendResult<serde_json::Value> {
+        Err(BackendError::NotFound(
+            "marketplace unavailable on this backend".to_string(),
         ))
     }
 

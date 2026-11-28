@@ -334,6 +334,14 @@ pub fn build(state: HttpState) -> Router {
         .route("/v1/team/documents/release", post(team_sync::release_local))
         .route("/v1/team/skills", get(team_sync::list_team_skills))
         .route(
+            "/v1/team/marketplace/skills",
+            get(team_sync::search_marketplace_skills),
+        )
+        .route(
+            "/v1/team/marketplace/adopt",
+            post(team_sync::adopt_marketplace_skill),
+        )
+        .route(
             "/v1/team/skills/reconcile",
             post(team_sync::reconcile_team_skills),
         )
