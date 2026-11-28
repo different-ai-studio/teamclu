@@ -7,7 +7,23 @@ Atlas stays dormant. The Belayo Dokploy and legacy dev Compose workflows continu
 to run independently. Coordinate shared changes so each environment's Cloud API
 remains compatible with its database at deployment time.
 
-## One-time enrollment
+## Release from GitHub
+
+1. Merge the reviewed source PR in [TeamClu](https://github.com/different-ai-studio/teamclu)
+   and download the successful production image artifacts.
+2. If the release has pending database migrations, coordinate the ledger and
+   schema checks with the DBA. In [teamclu-k8s](https://github.com/different-ai-studio/teamclu-k8s),
+   merge the reviewed preflight and apply PRs separately. Wait for each Job's
+   GitHub result before proceeding.
+3. Merge the reviewed Cloud API image PR in `teamclu-k8s`. With auto-sync on,
+   wait for the workflow to report `Synced` and `Healthy`, then run the
+   relevant API smoke checks.
+
+Release operators perform these steps in GitHub. The DBA supplies database
+verification. Platform operators handle one-time enrollment and troubleshoot
+cluster access when needed.
+
+## One-time enrollment for platform operators
 
 1. Review and merge the TeamClu publishing changes and the independent
    `db-migrations` Application in `teamclu-k8s` through their PRs. Enroll the
@@ -32,6 +48,9 @@ remains compatible with its database at deployment time.
    hostname, the prod Job architecture, and no database or registry
    credentials. Verify the pod's image ID and run `psql --version`.
    Use the DB Job only after the exact digest pulls.
+4. Configure the [Argo CD Actions integration](https://github.com/different-ai-studio/teamclu-k8s/blob/main/docs/production-argocd-actions.md).
+   GitHub-hosted runners use the scoped Argo CD credentials in repository
+   Actions Secrets. Release operators do not need to copy the credentials.
 
 ## Build images
 
@@ -118,38 +137,43 @@ a batch against the live ledger before deciding which files are pending.
    release. Record the observed TLS status alongside the approved
    RDS connection settings.
 2. Merge the preflight PR during the approved window. Argo CD automatically
-   reconciles `db-migrations` from GitOps `main`. Verify the live operation
-   selected the expected manifest and wait for the preflight Job to finish.
-   Check the logs and reconfirm the predecessor. Merge the reviewed apply
-   PR during the approved window, with the same inputs and a distinct Job
-   name. Merging this PR releases production SQL. Keep one database release
-   in flight at a time and avoid auto-merge on migration PRs.
-
-   From an authenticated Hangzhou ACK context, use the expected Job name:
-
-   ```sh
-   kubectl -n argocd get application db-migrations \
-     -o jsonpath='{.status.operationState.syncResult.revision}{"\n"}'
-   kubectl -n teamclu-prod wait --for=condition=complete "job/$JOB" --timeout=8m
-   kubectl -n teamclu-prod logs "job/$JOB" -c migrate
-   ```
-
-   Record the merge SHA and the revision Argo observed. If another commit
-   advanced `main` before reconciliation, confirm the migration manifests
-   at the observed revision match the reviewed release before proceeding.
-3. Require `Complete=True` for the exact apply Job. Save the Job name, UID,
-   image ID and logs. Independently read back every selected filename and the
-   final count and digest on the RDS primary. Verify the expected schema
-   objects and compatibility, including a read-only PostgREST check when
-   affected. Argo's Sync may report success while the Job is still active.
-   The release gate is Job completion **and** database readback.
+   reconciles `db-migrations` from GitOps `main`. Open the
+   [Observe Hangzhou Argo CD releases workflow](https://github.com/different-ai-studio/teamclu-k8s/actions/workflows/watch-production-argocd.yml)
+   run for the **GitOps merge SHA**. Check the `db-migrations` job summary
+   for the expected preflight Job and `Complete`, then reconfirm the
+   predecessor with the DBA.
+3. Merge the reviewed apply PR during the approved window, with the same
+   inputs and a distinct Job name. The merge releases production SQL. Keep
+   one database release in flight at a time and avoid auto-merge on migration
+   PRs. In the workflow run for the apply merge, require `Complete` for the
+   exact apply Job. Record the merge SHA, observed revision, Job name and UID,
+   image digest, and the GitHub run link. The workflow can accept a later
+   `main` revision when it renders the same desired resources. An Argo CD
+   sync can succeed while the migration Job is still running. Retained
+   historical resources can also leave the DB Application `OutOfSync`
+   after the current Job completes.
 4. When the Job reaches a terminal state, confirm the migration connection
-   closed, including after failure or timeout. Save the receipt in private
-   GitOps with the commit, image digest, Job and ledger evidence. Retain
+   closed. Have the DBA independently verify each selected filename and the
+   final ledger count and digest on the RDS primary, the expected schema, and
+   a read-only PostgREST check when affected. Save that evidence alongside the
+   GitHub Job result in the private GitOps receipt. Retain
    the completed Job until the receipt is recorded. Remove retired Jobs and
    their ConfigMaps or policies through the migration Application's scoped
    cleanup procedure after their desired manifests are retired. Before
    cleanup, check app ownership and resource names.
+
+### Recheck a Job in GitHub
+
+On the workflow page, select **Run workflow** on `main`. Set `app` to
+`db-migrations`, `revision` to the full preflight or apply GitOps merge
+SHA, and `action` to `observe`. This reads the Job state without running
+the migration again. The summary reports the exact Job and its terminal
+result. Job logs are available to platform operators for troubleshooting.
+
+For `Failed`, a timeout, or an authorization or revision error, hold the
+release. A timeout leaves the Job outcome unknown. Have the platform owner
+check the current Job and have the DBA confirm its connection and ledger
+state before any retry.
 
 ### Retry and rollback
 
@@ -171,9 +195,25 @@ change for the release, record the compatible deployed schema and skip the DB
 PR. Job failure, unexpected ledger contents, or an affected PostgREST check
 failure keeps the application release on hold.
 
-After review and merge, render the Cloud API Argo Application at the reviewed
-commit, inspect its diff and resource ownership, and manually Sync the intended
-revision with prune disabled. Confirm deployment readiness, running image
-digest, and the relevant API smoke checks. If necessary, use a GitOps PR to
-restore the prior Cloud API digest after checking that it works with the
-schema already committed.
+After review and merge, find the `cloud-api` job in the same GitHub workflow
+for that GitOps merge SHA. With auto-sync enabled, wait for `Synced` and
+`Healthy` at the reviewed revision or an equivalent descendant. Confirm
+deployment readiness, the running image digest, and the relevant API smoke
+checks. Use **Run workflow** with `app=cloud-api`, the full GitOps merge SHA,
+and `action=observe` to check again.
+
+Use **manual Sync** only for an approved Cloud API release when auto-sync is
+disabled and there is no operation in flight. If auto-sync is off for a
+release freeze, honor the freeze until it is lifted. In GitHub select
+**Run workflow** on `main`, set `app=cloud-api`, enter the full GitOps
+merge SHA as `revision`, and set `action=sync`. The dispatch requires
+`TEAMCLU_ENABLE_CLOUD_API_MANUAL_SYNC=true` and the scoped sync credential.
+It verifies Argo CD has
+compared the reviewed release and that `main` still renders it, then syncs
+the configured Git target with prune off. If a manual dispatch times out,
+use `observe` and confirm the current operation before dispatching again.
+For `db-migrations` with auto-sync disabled, hold the release and coordinate
+with the DBA and platform owner.
+
+Use a reviewed GitOps PR to restore the prior Cloud API digest if needed.
+First check that the prior version works with the schema already committed.
