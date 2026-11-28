@@ -587,7 +587,7 @@ fn skill_error_exit(code: &str) -> (i32, Option<&'static str>) {
     }
 }
 
-fn http_envelope(outcome: anyhow::Result<Result<Value, (u16, String)>>) -> Value {
+fn http_envelope(path: &str, outcome: anyhow::Result<Result<Value, (u16, String)>>) -> Value {
     match outcome {
         Ok(Ok(value)) => json!({ "v": 1, "ok": true, "data": value }),
         // An unclaimed daemon answers team calls with a 422; it is not the
@@ -605,12 +605,15 @@ fn http_envelope(outcome: anyhow::Result<Result<Value, (u16, String)>>) -> Value
                 401 => ("daemon_unauthorized", 3, false, None),
                 403 => ("forbidden", 4, false, None),
                 404 => ("not_found", 5, false, Some("amuxd skill team ls")),
-                409 => (
+                // Only a draft write is refused for a stale digest; any other
+                // 409 (a slug already in the team, say) is a plain conflict.
+                409 if path.split('?').next().unwrap_or(path).ends_with("/draft") => (
                     "draft_changed",
                     6,
                     false,
                     Some("amuxd skill team draft show <slug>, then retry with its digest"),
                 ),
+                409 => ("conflict", 6, false, Some("amuxd skill team ls")),
                 503 => ("daemon_unavailable", 7, true, None),
                 _ => ("daemon_error", 7, false, None),
             };
@@ -659,7 +662,7 @@ pub fn run(args: SkillArgs) -> anyhow::Result<i32> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
                 match LocalDaemonClient::connect("skill-cli").await {
-                    Ok(daemon) => http_envelope(daemon.send(method, &path, body).await),
+                    Ok(daemon) => http_envelope(&path, daemon.send(method, &path, body).await),
                     Err(e) => unreachable_envelope(e),
                 }
             })
@@ -924,10 +927,34 @@ mod tests {
 
     #[test]
     fn an_unclaimed_daemon_is_no_identity_not_bad_arguments() {
-        let reply = http_envelope(Ok(Err((422, "daemon is not onboarded to a team".into()))));
+        let reply = http_envelope(
+            "/v1/team/skills",
+            Ok(Err((422, "daemon is not onboarded to a team".into()))),
+        );
         assert_eq!(reply["error"]["exit"], 3);
         assert_eq!(reply["error"]["code"], "not_onboarded");
-        let bad = http_envelope(Ok(Err((422, "slug is required".into()))));
+        let bad = http_envelope("/v1/team/skills", Ok(Err((422, "slug is required".into()))));
         assert_eq!(bad["error"]["exit"], 2);
+    }
+
+    #[test]
+    fn a_409_on_a_draft_write_is_a_stale_digest_but_other_409s_are_conflicts() {
+        let stale = http_envelope(
+            "/v1/team/skills/rc/draft",
+            Ok(Err((409, "draft changed".into()))),
+        );
+        assert_eq!(stale["error"]["code"], "draft_changed");
+        assert_eq!(stale["error"]["exit"], 6);
+
+        let adopt = http_envelope(
+            "/v1/team/marketplace/adopt",
+            Ok(Err((
+                409,
+                "slug review-checklist is already in the team".into(),
+            ))),
+        );
+        assert_eq!(adopt["error"]["code"], "conflict");
+        assert_eq!(adopt["error"]["exit"], 6);
+        assert_eq!(adopt["error"]["next"], "amuxd skill team ls");
     }
 }
