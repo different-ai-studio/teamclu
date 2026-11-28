@@ -84,7 +84,7 @@ pub struct GateSet {
     pub rules: Option<Value>,
 }
 
-/// One path rule, as `gate rule add` builds it.
+/// One path rule, as `gate rule set` builds it.
 #[derive(Debug, Clone, Default)]
 pub struct GateRule {
     pub path: String,
@@ -384,7 +384,7 @@ impl AppOps<'_> {
         .await
     }
 
-    /// `gate rule add` — adds the rule, or replaces the one on the same path.
+    /// `gate rule set` — adds the rule, or replaces the one on the same path.
     pub async fn gate_rule_add(&self, row: &Value, rule: &GateRule) -> Result<Value, OpError> {
         let new_rule = rule.to_value()?;
         let mut rules = current_rules(row);

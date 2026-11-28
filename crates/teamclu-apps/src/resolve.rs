@@ -193,7 +193,7 @@ impl AppOps<'_> {
     ) -> Result<String, OpError> {
         let ask = format!(
             "name the app by id or name, or run {} to see this team's apps",
-            crate::step("list")
+            crate::step("ls")
         );
         let workspace = selector.workspace_path.as_deref().ok_or_else(|| {
             OpError::invalid(
@@ -212,7 +212,7 @@ impl AppOps<'_> {
                 "not_a_checkout",
                 format!("{workspace} is not the checkout of any app in this team — {ask}"),
             )
-            .with_next(crate::next_cmd("list"))
+            .with_next(crate::next_cmd("ls"))
         })
     }
 
@@ -382,6 +382,6 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(err.contains("`amuxd app list`"), "{err}");
+        assert!(err.contains("`amuxd app ls`"), "{err}");
     }
 }

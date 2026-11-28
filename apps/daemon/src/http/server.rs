@@ -1389,6 +1389,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn team_session_and_member_routes_pass_through_as_this_agent() {
+        let home = tempfile::tempdir().unwrap();
+        let team_id = "team-cloud-route-test";
+        let backend = Arc::new(crate::backend::mock::MockBackend::with_identity(
+            team_id, "agent-me",
+        ));
+        backend.state().cloud_replies.insert(
+            "GET /v1/sessions/s-locked?teamId=team-cloud-route-test".to_string(),
+            crate::backend::CloudReply {
+                status: 403,
+                body: serde_json::json!({ "error": { "message": "not a participant" } }),
+            },
+        );
+        let backend_dyn: Arc<dyn Backend> = backend.clone();
+        let token_path = home.path().join("http-token");
+        let cfg = HttpConfig {
+            bind: "127.0.0.1:0".into(),
+            token_file: Some(token_path.clone()),
+            port_file: Some(home.path().join("http-port")),
+            cloud_token_socket: Some(home.path().join("rtctx.sock")),
+            ..HttpConfig::default()
+        };
+        let runtime = crate::http::runtime_adapter::StubRuntimeAdapter::new(32);
+        let handle = spawn(
+            cfg,
+            metadata("agent-me".into(), "test"),
+            runtime,
+            None,
+            None,
+            test_dispatcher(),
+            None,
+            Some(backend_dyn),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", handle.local_addr);
+        let root = std::fs::read_to_string(&token_path).unwrap();
+        let client = reqwest::Client::new();
+        let exchanged: serde_json::Value = client
+            .post(format!("{base}/v1/auth/exchange"))
+            .bearer_auth(root.trim())
+            .json(&serde_json::json!({ "scopes": ["workspace:read", "workspace:write"] }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let token = exchanged["token"].as_str().unwrap();
+
+        // Create: this agent is seated and primary unless told otherwise.
+        let created = client
+            .post(format!("{base}/v1/team/sessions"))
+            .bearer_auth(token)
+            .json(
+                &serde_json::json!({ "title": "周报", "participantActorIds": ["m-1", "agent-me"] }),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), 201);
+        // Post: as this agent, into the named session.
+        client
+            .post(format!("{base}/v1/team/sessions/s-1/messages"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "content": "hi" }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        // Archive.
+        client
+            .patch(format!("{base}/v1/team/sessions/s-1"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "archived": true }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        // `me` is this daemon's own actor.
+        client
+            .get(format!("{base}/v1/team/members/me"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        // A Cloud API refusal keeps its status.
+        let refused = client
+            .get(format!("{base}/v1/team/sessions/s-locked"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 403);
+
+        let sent = backend.state().cloud_requests.clone();
+        let (method, path, body) = &sent[0];
+        assert_eq!((method.as_str(), path.as_str()), ("POST", "/v1/sessions"));
+        let body = body.as_ref().unwrap();
+        assert_eq!(body["teamId"], team_id);
+        assert_eq!(body["primaryAgentActorId"], "agent-me");
+        assert_eq!(
+            body["participantActorIds"],
+            serde_json::json!(["agent-me", "m-1"])
+        );
+        let (_, path, body) = &sent[1];
+        assert_eq!(path, "/v1/sessions/s-1/messages");
+        let body = body.as_ref().unwrap();
+        assert_eq!(body["senderActorId"], "agent-me");
+        assert_eq!(body["content"], "hi");
+        let (method, _, body) = &sent[2];
+        assert_eq!(method, "PATCH");
+        assert!(body.as_ref().unwrap()["archivedAt"].is_string());
+        assert_eq!(sent[3].1, "/v1/actors/agent-me");
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn team_management_routes_use_the_daemon_backend() {
         let home = tempfile::tempdir().unwrap();
         let team_id = "team-manage-http-route-test";

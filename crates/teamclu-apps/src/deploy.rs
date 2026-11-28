@@ -317,7 +317,7 @@ impl AppOps<'_> {
                     kind: crate::ErrorKind::Unknown,
                     code: "deploy_outcome_unknown".to_string(),
                     message: format!("{} — the deploy may or may not have gone live", e.message),
-                    next: Some(crate::next_cmd("status")),
+                    next: Some(crate::next_cmd("show")),
                     retryable: false,
                 }
             } else {
@@ -620,7 +620,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.kind, crate::ErrorKind::Unknown, "{err:?}");
-        assert_eq!(err.next.as_deref(), Some("amuxd app status"));
+        assert_eq!(err.next.as_deref(), Some("amuxd app show"));
         let reported = cloud.calls_to(Method::Patch, "/v1/apps/a1");
         assert!(
             reported

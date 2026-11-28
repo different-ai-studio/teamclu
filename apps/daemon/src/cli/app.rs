@@ -64,14 +64,16 @@ pub enum AppAction {
     Whoami,
     /// The team's apps this agent can see, with local checkouts.
     ///
-    /// Example: amuxd app list -o table
+    /// Example: amuxd app ls -o table
+    #[command(name = "ls", alias = "list")]
     List,
     /// One app: settings, checkout, declaration, ahead of live.
     ///
     /// Without --id/--app: the app whose checkout this directory is in. Also
     /// lists the app's running operations. Needs read.
     ///
-    /// Example: amuxd app status --app 记账
+    /// Example: amuxd app show --app 记账
+    #[command(name = "show", alias = "status")]
     Status(AppTarget),
     /// Create an app and put its code on this machine.
     ///
@@ -217,7 +219,8 @@ pub enum AppAction {
     ///
     /// Undeploy it first. Needs --id or --app, --yes, and admin held directly.
     ///
-    /// Example: amuxd app delete --app 记账 --yes
+    /// Example: amuxd app rm --app 记账 --yes
+    #[command(name = "rm", alias = "delete")]
     Delete {
         #[command(flatten)]
         target: AppTarget,
@@ -333,7 +336,8 @@ pub enum GateRuleCmd {
     ///
     /// Needs admin.
     ///
-    /// Example: amuxd app gate rule add /admin --auth required --audience org
+    /// Example: amuxd app gate rule set /admin --auth required --audience org
+    #[command(name = "set", alias = "add")]
     Add {
         /// A path prefix starting with /.
         path: String,
@@ -543,7 +547,7 @@ pub enum EnvCmd {
     },
 }
 
-/// The schedule fields of `cron add` / `cron edit`.
+/// The schedule fields of `cron create` / `cron update`.
 #[derive(Args, Debug, Default)]
 pub struct CronSpec {
     /// The task's name.
@@ -577,11 +581,13 @@ pub enum CronCmd {
     Ls,
     /// Add a task. Needs admin.
     ///
-    /// Example: amuxd app cron add --name 对账 --schedule "0 9 * * 1-5" --path /api/reconcile
+    /// Example: amuxd app cron create --name 对账 --schedule "0 9 * * 1-5" --path /api/reconcile
+    #[command(name = "create", alias = "add")]
     Add(CronSpec),
     /// Change only the fields given. <JOB>: id or name.
     ///
-    /// Example: amuxd app cron edit 对账 --schedule "0 10 * * *"
+    /// Example: amuxd app cron update 对账 --schedule "0 10 * * *"
+    #[command(name = "update", alias = "edit")]
     Edit {
         /// Job id or name.
         job: String,
@@ -1230,7 +1236,7 @@ fn request_body(action: &AppAction, cwd: Option<String>) -> Result<Value, Usage>
                 (
                     "--auth-rules",
                     old_auth_rules.is_some(),
-                    "amuxd app gate rule add|rm, or gate set --rules-file",
+                    "amuxd app gate rule set|rm, or gate set --rules-file",
                 ),
             ] {
                 if set {
@@ -1686,7 +1692,7 @@ pub fn normalize_app_args(args: Vec<String>) -> Vec<String> {
     out
 }
 
-/// `amuxd app status 记账`: a stray word where an app's name was meant. When
+/// `amuxd app show 记账`: a stray word where an app's name was meant. When
 /// the same line with `--app <word>` parses, that line is the next step.
 fn name_as_app_flag(e: &clap::Error, args: &[String]) -> Option<String> {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
@@ -1731,10 +1737,22 @@ fn shell_word(a: &str) -> String {
 pub fn exit_on_parse_error(e: clap::Error, args: &[String]) -> ! {
     use clap::error::ErrorKind;
     // Every agent-facing command tree keeps the JSON contract on a bad line.
-    let tree = args
-        .get(1)
-        .map(String::as_str)
-        .filter(|t| matches!(*t, "app" | "cron" | "skill" | "role"));
+    let tree = args.get(1).map(String::as_str).filter(|t| {
+        matches!(
+            *t,
+            "app"
+                | "cron"
+                | "skill"
+                | "role"
+                | "session"
+                | "member"
+                | "workspace"
+                | "knowledge"
+                | "channel"
+                | "config"
+                | "team"
+        )
+    });
     let Some(tree) = tree else { e.exit() };
     if matches!(
         e.kind(),
@@ -1763,8 +1781,11 @@ pub fn exit_on_parse_error(e: clap::Error, args: &[String]) -> ! {
     } else {
         None
     };
+    // An unknown subcommand has no help of its own: point at the tree's.
     let next = suggested.unwrap_or_else(|| match args.get(2) {
-        Some(sub) if !sub.starts_with('-') => format!("amuxd {tree} {sub} --help"),
+        Some(sub) if !sub.starts_with('-') && e.kind() != ErrorKind::InvalidSubcommand => {
+            format!("amuxd {tree} {sub} --help")
+        }
         _ => format!("amuxd {tree} --help"),
     });
     println!(
@@ -2258,8 +2279,8 @@ mod tests {
             name_as_app_flag(&e, &args)
         };
         assert_eq!(
-            suggest(&["amuxd", "app", "status", "记账"]).as_deref(),
-            Some("amuxd app status --app 记账")
+            suggest(&["amuxd", "app", "show", "记账"]).as_deref(),
+            Some("amuxd app show --app 记账")
         );
         assert_eq!(
             suggest(&["amuxd", "app", "logs", "my app"]).as_deref(),
@@ -2793,9 +2814,9 @@ mod tests {
         assert_eq!(t.lines().count(), 3);
         assert!(t.starts_with("name\tid"));
         let e = table(
-            &json!({"v":1,"ok":false,"error":{"code":"x","message":"m","next":"amuxd app list"}}),
+            &json!({"v":1,"ok":false,"error":{"code":"x","message":"m","next":"amuxd app ls"}}),
         );
-        assert!(e.contains("next: amuxd app list"));
+        assert!(e.contains("next: amuxd app ls"));
     }
 }
 

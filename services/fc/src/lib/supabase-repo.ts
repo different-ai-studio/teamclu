@@ -3493,7 +3493,13 @@ export function createSupabaseBusinessRepository(options) {
       if (userErr) throw userErr;
       const userId = userData?.user?.id;
       if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      const resolved = await this.resolveCurrentMemberActor(input.teamId, userId);
+      // A person opens it as their member actor. An agent account (a daemon
+      // opening a session with `amuxd session create`) has no member actor in
+      // the team, only its agent one, which the INSERT policy accepts the same
+      // way: it checks `current_actor_id_for_team`, whatever the actor type.
+      const resolved =
+        (await this.resolveCurrentMemberActor(input.teamId, userId)) ??
+        (await this.resolveCurrentActor(input.teamId, userId));
       if (!resolved?.id) throw new ApiError(403, "forbidden", "not a member of this team");
       const createdByActorId = resolved.id;
       const additionalIds = Array.isArray(input.additionalActorIds) ? input.additionalActorIds : [];
@@ -4084,7 +4090,7 @@ export function createSupabaseBusinessRepository(options) {
           }
         } catch (error) {
           // App context is useful but must never take the session identity
-          // prompt down with it. The agent can still run `amuxd app status`.
+          // prompt down with it. The agent can still run `amuxd app show`.
           console.warn(`[session-roster] app context unavailable for ${sessionId}: ${String(error)}`);
         }
       }

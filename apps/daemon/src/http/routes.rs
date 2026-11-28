@@ -30,6 +30,7 @@ use super::sessions;
 use super::setup;
 use super::state::HttpState;
 use super::team;
+use super::team_cloud;
 use super::team_sync;
 use super::workspaces;
 use crate::mqtt::MqttRecoveryReason;
@@ -327,6 +328,28 @@ pub fn build(state: HttpState) -> Router {
         .route("/v1/team/link", post(team::link_team_workspace))
         .route("/v1/team/unlink", post(team::unlink_team_workspace))
         // Daemon-owned team sync: desktop triggers sync + reads status over loopback.
+        .route("/v1/team/members", get(team_cloud::list_members))
+        .route("/v1/team/members/:actor_id", get(team_cloud::get_member))
+        .route(
+            "/v1/team/sessions",
+            get(team_cloud::list_sessions).post(team_cloud::create_session),
+        )
+        .route(
+            "/v1/team/sessions/:session_id",
+            get(team_cloud::get_session).patch(team_cloud::update_session),
+        )
+        .route(
+            "/v1/team/sessions/:session_id/messages",
+            get(team_cloud::list_messages).post(team_cloud::send_message),
+        )
+        .route(
+            "/v1/team/sessions/:session_id/participants",
+            post(team_cloud::add_participant),
+        )
+        .route(
+            "/v1/team/sessions/:session_id/participants/:actor_id",
+            delete(team_cloud::remove_participant),
+        )
         .route("/v1/team/sync", post(team_sync::sync_now))
         .route("/v1/team/sync/status", get(team_sync::sync_status))
         .route("/v1/team/documents/known", get(team_sync::list_known))

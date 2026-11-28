@@ -125,7 +125,10 @@ nowhere else; this describes what exists, it decides nothing):
   `amuxd app` (daemon `/v1/app-ops`), where the platform's grants alone
   decide — no dialog. Cron jobs, skills, roles, channels and team sync are not
   sidecar tools either: `amuxd cron`, `amuxd skill`, `amuxd role`,
-  `amuxd channel show|set`, `amuxd team sync`.
+  `amuxd channel`, `amuxd team sync`; nor are sessions, members, workspaces
+  and the knowledge vault: `amuxd session`, `amuxd member`,
+  `amuxd workspace`, `amuxd knowledge`. Verbs and output are one contract
+  across these trees (`docs/specs/2026-11-28-amuxd-cli-conventions.md`).
 
 **Daemon-owned cron** (ADR-0010): scheduler, storage, execution and delivery
 live in `apps/daemon/src/cron/`, served at `/v1/cron/*` (`http/cron.rs`). Jobs

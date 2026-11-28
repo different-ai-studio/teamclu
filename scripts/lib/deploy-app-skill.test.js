@@ -11,7 +11,7 @@ test('deploy-app skill keeps discovery metadata to a trigger and covers the depl
   const description = skill.match(/^description: (.+)$/m)?.[1];
   assert.match(description ?? '', /^Use when /);
   assert.doesNotMatch(description ?? '', /status|runtime|commit|push|verify/i);
-  const gates = ['amuxd app status', 'amuxd app runtime --language', 'amuxd app deploy', '--migration', 'op wait', 'Exit 8', 'exit 4', 'migration', 'selected', 'linux/x86_64', 'clean', 'remote HEAD', 'live'];
+  const gates = ['amuxd app show', 'amuxd app runtime --language', 'amuxd app deploy', '--migration', 'op wait', 'Exit 8', 'exit 4', 'migration', 'selected', 'linux/x86_64', 'clean', 'remote HEAD', 'live'];
   for (const gate of gates) assert.ok(skill.includes(gate), `missing ${gate} gate`);
   assert.match(skill, /dirty.{0,100}checkout/is);
   assert.match(skill, /unknown.{0,100}(stop|block|test)/is);
@@ -36,7 +36,7 @@ test('uninstall guidance requires explicit intent, an explicit app and verified 
   const skill = readFileSync(skillPath, 'utf8');
   const section = skill.split('## Uninstalling a deployment')[1] ?? '';
   assert.doesNotMatch(skill, /[\u4e00-\u9fff]/);
-  for (const contract of ['user explicitly requests', 'explicit app ID or name', '--app', 'uploaded files', 'amuxd app status', 'operator reconciliation', 'real-account verification as pending']) {
+  for (const contract of ['user explicitly requests', 'explicit app ID or name', '--app', 'uploaded files', 'amuxd app show', 'operator reconciliation', 'real-account verification as pending']) {
     assert.ok(section.includes(contract), `missing uninstall contract: ${contract}`);
   }
   assert.match(section, /waits for the uninstall itself/);

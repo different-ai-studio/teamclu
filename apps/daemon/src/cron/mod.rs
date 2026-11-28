@@ -451,7 +451,7 @@ impl CronService {
         }
     }
 
-    /// `amuxd cron add --to <reply token>` with no `--channel`: the token
+    /// `amuxd cron create --to <reply token>` with no `--channel`: the token
     /// already says which chat, so take the channel from it. A delivery with
     /// neither a channel nor a token is left for the parser to refuse.
     async fn fill_delivery_channel_from_token(

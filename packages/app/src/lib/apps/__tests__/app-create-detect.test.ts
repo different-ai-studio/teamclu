@@ -50,7 +50,7 @@ describe('detectCreatedApp', () => {
     const refused = JSON.stringify({ v: 1, ok: false, error: { code: 'forbidden' } })
     expect(detectCreatedApp(bash('amuxd app create', refused))).toBeNull()
     const status = JSON.stringify({ v: 1, ok: true, data: { action: 'status', app: { id: 'app-1' } } })
-    expect(detectCreatedApp(bash('amuxd app status', status))).toBeNull()
+    expect(detectCreatedApp(bash('amuxd app show', status))).toBeNull()
     expect(detectCreatedApp(bash('echo amuxd-app create', ENVELOPE))).toBeNull()
     expect(detectCreatedApp(bash('amuxd app create', 'not json'))).toBeNull()
   })

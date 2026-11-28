@@ -4,9 +4,10 @@ mod messages;
 
 use super::{
     AgentDefaults, AppGitCredential, Backend, BackendError, BackendResult,
-    BackendSessionAndParticipants, BootstrapMqttOverride, CloudAuthSnapshot, GatewaySessionRow,
-    ManagedLlmConfig, ManagedLlmModelInfo, StoredMessage, TeamEnvSecretRow, TeamSkillDownload,
-    TeamSkillRow, TurnTraceStatus, TurnTraceUpload, WorkspaceRow, WorkspaceUpsert,
+    BackendSessionAndParticipants, BootstrapMqttOverride, CloudAuthSnapshot, CloudReply,
+    GatewaySessionRow, ManagedLlmConfig, ManagedLlmModelInfo, StoredMessage, TeamEnvSecretRow,
+    TeamSkillDownload, TeamSkillRow, TurnTraceStatus, TurnTraceUpload, WorkspaceRow,
+    WorkspaceUpsert,
 };
 use crate::provider_config::CloudApiConfig;
 use async_trait::async_trait;
@@ -729,6 +730,51 @@ impl Backend for CloudApiBackend {
 
     async fn auth_token(&self) -> BackendResult<String> {
         self.access_token().await
+    }
+
+    async fn cloud_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> BackendResult<CloudReply> {
+        for is_retry in [false, true] {
+            let token = self.access_token().await?;
+            let url = self.cloud_url(path);
+            let resp = self
+                .send_with_doh_fallback(&url, |http| {
+                    let mut req = http
+                        .request(method.clone(), &url)
+                        .bearer_auth(&token)
+                        .header("x-request-id", request_id());
+                    if let Some(body) = &body {
+                        req = req.json(body);
+                    }
+                    req
+                })
+                .await
+                .map_err(network_error)?;
+            let status = resp.status();
+            // Same as `get`: a stale cached token is retried once with a
+            // fresh one; a second 401 is the caller's answer.
+            if status == reqwest::StatusCode::UNAUTHORIZED && !is_retry {
+                self.invalidate_access_token_cache();
+                continue;
+            }
+            let bytes = resp.bytes().await.map_err(network_error)?;
+            let body = if bytes.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                    serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned())
+                })
+            };
+            return Ok(CloudReply {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        unreachable!("cloud_api cloud_request retry loop exhausted")
     }
 
     fn cloud_auth_health(&self) -> Option<CloudAuthSnapshot> {

@@ -8,7 +8,7 @@
 use clap::{Args, Subcommand};
 use serde_json::json;
 
-use super::envelope::{call_http, emit, usage, workspace_root, Usage};
+use super::envelope::{call_http, emit, usage, workspace_id, Usage};
 
 #[derive(Args, Debug)]
 pub struct RoleArgs {
@@ -39,9 +39,10 @@ pub enum RoleAction {
     /// The file: frontmatter with `name` and `description`, then sections
     /// `## Role`, `## When to use`, `## Working style`, and optionally
     /// `## Available role skills`. Write it anywhere (e.g. /tmp/ROLE.md),
-    /// then put it. `amuxd role ls` shows existing ones to start from.
+    /// then set it. `amuxd role ls` shows existing ones to start from.
     ///
-    /// Example: amuxd role put code-reviewer --file /tmp/ROLE.md
+    /// Example: amuxd role set code-reviewer --file /tmp/ROLE.md
+    #[command(name = "set", alias = "put")]
     Put {
         /// Role identifier: lowercase letters, digits, hyphens.
         slug: String,
@@ -116,27 +117,9 @@ fn build(
 
 /// Run one command; returns the process exit status.
 pub fn run(args: RoleArgs) -> anyhow::Result<i32> {
-    let dir = match args
-        .workspace
-        .clone()
-        .or_else(|| std::env::current_dir().ok())
-    {
-        Some(d) => workspace_root(&d),
-        None => {
-            return Ok(emit(
-                &args.output,
-                usage("no_workspace", "no current directory", None).envelope(),
-            ))
-        }
-    };
-    let workspace_id = match crate::config::encode_workspace_path(&dir) {
+    let workspace_id = match workspace_id(args.workspace.as_deref()) {
         Ok(id) => id,
-        Err(e) => {
-            return Ok(emit(
-                &args.output,
-                usage("no_workspace", e.to_string(), Some("--workspace <dir>")).envelope(),
-            ))
-        }
+        Err(u) => return Ok(emit(&args.output, u.envelope())),
     };
     let (method, path, body) = match build(&args.action, &workspace_id) {
         Ok(r) => r,

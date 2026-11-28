@@ -783,7 +783,7 @@ fn create_next(outcome: &str, declared: Option<bool>) -> String {
         ),
         _ => format!(
             "Check the app with {}.",
-            crate::step("status")
+            crate::step("show")
         ),
     }
 }

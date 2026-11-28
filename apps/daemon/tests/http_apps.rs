@@ -579,7 +579,7 @@ fn error_of(status: u16, body: &Value, exit: i64) -> Value {
     body["error"].clone()
 }
 
-/// `amuxd app list` / `logs` / `whoami` run the shared flows on the daemon's own token.
+/// `amuxd app ls` / `logs` / `whoami` run the shared flows on the daemon's own token.
 #[tokio::test]
 async fn app_ops_runs_the_shared_flows_as_the_daemon_agent() {
     let backend = backend::mock::MockBackend::new();

@@ -1058,6 +1058,24 @@ impl DaemonServer {
         config_json: &str,
     ) -> Result<(), String> {
         let parsed: Result<(), String> = (|| -> Result<(), String> {
+            // `null` removes the channel (`amuxd channel rm`); its stored
+            // credentials go with it, since `save_value` drops secrets whose
+            // path no longer resolves.
+            if config_json.trim() == "null" {
+                let c = &mut self.config.channels;
+                match platform {
+                    "discord" => c.discord = None,
+                    "wecom" => c.wecom = None,
+                    "feishu" => c.feishu = None,
+                    "kook" => c.kook = None,
+                    "wechat" => c.wechat = None,
+                    "wechatpad" => c.wechatpad = None,
+                    "email" => c.email = None,
+                    "seatalk" => c.seatalk = None,
+                    other => return Err(format!("unknown platform '{other}'")),
+                }
+                return Ok(());
+            }
             match platform {
                 "discord" => {
                     let v: crate::config::DiscordChannel = serde_json::from_str(config_json)

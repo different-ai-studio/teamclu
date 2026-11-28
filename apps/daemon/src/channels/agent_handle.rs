@@ -957,7 +957,7 @@ Pass it as `reply_token` to attach a FILE to your reply, e.g. \
 `send_channel_message(reply_token=\"{token}\", file_path=\"/tmp/report.pdf\")`. \
 Your text reply needs no tool — it is delivered on its own.\n\
 To schedule a job that delivers back here, pass this same token: \
-`amuxd cron add … --to {token}`. An empty `--to` is not this chat."
+`amuxd cron create … --to {token}`. An empty `--to` is not this chat."
     )
 }
 
