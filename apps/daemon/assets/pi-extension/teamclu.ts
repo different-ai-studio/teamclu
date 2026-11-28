@@ -2354,6 +2354,18 @@ export default async function (pi: ExtensionAPI) {
   WATCH_STATE.target = { pi, ownTools };
   ensureMcpConfigWatcher();
 
+  // The effective file first. A host outlives the MCP list it was spawned
+  // with: amuxd rewrites the file before every attach and no longer replaces a
+  // host just because the list changed (#2059). Bridging a new session from
+  // the spawn snapshot would drop what was added since (and bring back what
+  // was removed). The env payload is the fallback for a file that is missing
+  // or unreadable — `null`, never "no servers".
+  const configPath = process.env.TEAMCLU_MCP_CONFIG_PATH;
+  const fromFile = configPath ? readMcpServers(configPath) : null;
+  if (fromFile) {
+    await reconcileBridges(pi, ownTools, fromFile);
+    return;
+  }
   const serversRaw = process.env.TEAMCLU_MCP_SERVERS;
   if (serversRaw) {
     let servers: Record<string, unknown>;

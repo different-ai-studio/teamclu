@@ -229,7 +229,13 @@ impl PiProcessPool {
             LaunchMode::Host => "host",
             LaunchMode::LegacyRpc => "rpc",
         };
-        let servers = env.mcp_servers.clone().unwrap_or_default();
+        // `env.mcp_servers` is deliberately not part of it. A live host takes
+        // MCP changes in place: every attach rewrites `mcp.effective.json`
+        // before it reaches here, and the extension watches that file and
+        // re-bridges (and a new session bridges from the file, not the spawn
+        // snapshot). Fingerprinting the list made two attaches whose MCP layers
+        // differed — a team link landing between them — kill the shared host,
+        // and with it a turn another session had running on it (#2059).
         // Sort extra env for a stable fingerprint regardless of map order.
         let mut extra: Vec<String> = env
             .extra_env
@@ -238,7 +244,7 @@ impl PiProcessPool {
             .collect();
         extra.sort();
         format!(
-            "node={}\x1fpkg={}\x1fmode={mode}\x1fforce={}\x1fservers={servers}\x1fextra={}",
+            "node={}\x1fpkg={}\x1fmode={mode}\x1fforce={}\x1fextra={}",
             launch.node.display(),
             launch.package_root.display(),
             env.force_env_override,
@@ -512,8 +518,23 @@ impl PiProcessPool {
                 self.envs.lock().insert(key.clone(), p.spawn_env.clone());
                 return Ok(p);
             }
+            // A turn is running on this host (any session routed to the key):
+            // replacing it now would end that turn with no reply (#2059). Keep
+            // it, and replace it once the turn settles — the same deferral a
+            // credential refresh gets (`refresh_sparing`). The key's record
+            // already holds the new env, so that respawn uses it.
+            if super::busy_pool_keys(shared).contains(key) {
+                info!(
+                    worktree = %key.worktree,
+                    caller = %caller,
+                    diff = %diff,
+                    "pi env changed mid-turn; keeping the host until the turn settles"
+                );
+                self.pending_retire.lock().insert(key.clone());
+                return Ok(p);
+            }
             // Env or mode changed since this child spawned (e.g. a prewarmed
-            // child that predates the session's MCP servers/secrets) — replace.
+            // child that predates the session's secrets) — replace.
             info!(
                 worktree = %key.worktree,
                 caller = %caller,
@@ -1663,11 +1684,13 @@ mod tests {
         );
 
         // A same-key change that keeps the team binding still respawns.
-        let mut with_mcp = team_env.clone();
-        with_mcp.mcp_servers = Some("{\"x\":{}}".into());
+        let mut changed = team_env.clone();
+        changed
+            .extra_env
+            .insert("TEAMCLU_OTHER".to_string(), "1".to_string());
         let replaced = shared
             .pool
-            .ensure_with_env(&shared, &key, with_mcp)
+            .ensure_with_env(&shared, &key, changed)
             .expect("respawn");
         assert!(
             !Arc::ptr_eq(&attached, &replaced),
@@ -1924,6 +1947,98 @@ mod tests {
         let respawned = shared.pool.ensure(&shared, &busy_key).expect("respawn");
         assert!(respawned.is_alive());
         assert!(!Arc::ptr_eq(&busy, &respawned));
+        shared.pool.kill_all();
+    }
+
+    /// #2059: a second session attached to the same worktree with a different
+    /// MCP list, and `ensure` killed the shared host — ending the first
+    /// session's turn with no reply. A live host takes MCP changes through the
+    /// effective file, so the list is not part of what forces a respawn.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_mcp_list_change_keeps_the_live_host() {
+        let _home = fake_pi_home("#!/bin/sh\ncat > /dev/null\n");
+        let dir = tempfile::tempdir().unwrap();
+        let shared = super::Shared::new();
+        let key = test_key("ws-mcp", &dir);
+        let first = shared
+            .pool
+            .ensure_with_env(&shared, &key, SpawnEnv::default())
+            .expect("spawn");
+
+        let with_mcp = SpawnEnv {
+            mcp_servers: Some("{\"added\":{\"type\":\"remote\",\"url\":\"https://x\"}}".into()),
+            ..Default::default()
+        };
+        let again = shared
+            .pool
+            .ensure_with_env(&shared, &key, with_mcp.clone())
+            .expect("ensure");
+        assert!(Arc::ptr_eq(&first, &again), "same host, not a respawn");
+        assert!(first.is_alive());
+        assert!(!shared.pool.is_pending_retire(&key));
+        assert_eq!(
+            shared.pool.envs.lock().get(&key),
+            Some(&with_mcp),
+            "the newer list is recorded for a later (crash) respawn"
+        );
+        shared.pool.kill_all();
+    }
+
+    /// #2059: an env change that does need a new host (here a changed extra
+    /// env) arriving while a turn runs on the host must not end that turn. The
+    /// host is kept, marked, and replaced once the turn settles — and the
+    /// replacement is spawned with the new env.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_env_change_mid_turn_waits_for_the_turn() {
+        let _home = fake_pi_home("#!/bin/sh\ncat > /dev/null\n");
+        let dir = tempfile::tempdir().unwrap();
+        let shared = super::Shared::new();
+        let key = test_key("ws-turn", &dir);
+        let running = shared
+            .pool
+            .ensure_with_env(&shared, &key, SpawnEnv::default())
+            .expect("spawn");
+        shared
+            .routes
+            .lock()
+            .insert("pi:/a.jsonl".into(), test_route(&key, true));
+
+        let changed = SpawnEnv {
+            extra_env: HashMap::from([("TEAMCLU_OTHER".into(), "1".into())]),
+            ..Default::default()
+        };
+        let during = shared
+            .pool
+            .ensure_with_env(&shared, &key, changed.clone())
+            .expect("ensure mid-turn");
+        assert!(
+            Arc::ptr_eq(&running, &during),
+            "the attaching session shares the live host"
+        );
+        assert!(running.is_alive(), "the running turn's host is not killed");
+        assert!(shared.pool.is_pending_retire(&key));
+
+        // Another ensure while the turn still runs changes nothing.
+        let still = shared.pool.ensure(&shared, &key).expect("ensure");
+        assert!(Arc::ptr_eq(&running, &still));
+        crate::runtime::pi_rpc::retire_stale_host_after_turn(&shared, &key);
+        assert!(running.is_alive(), "not replaced while the turn runs");
+
+        // The turn settles: replaced, and the next ensure spawns with the new env.
+        shared
+            .routes
+            .lock()
+            .get_mut("pi:/a.jsonl")
+            .unwrap()
+            .turn_active = false;
+        crate::runtime::pi_rpc::retire_stale_host_after_turn(&shared, &key);
+        assert!(wait_dead(&running).await, "replaced once the turn settled");
+        let fresh = shared.pool.ensure(&shared, &key).expect("respawn");
+        assert!(!Arc::ptr_eq(&running, &fresh));
+        assert_eq!(fresh.spawn_env, changed, "the replacement has the new env");
+        assert!(!shared.pool.is_pending_retire(&key));
         shared.pool.kill_all();
     }
 

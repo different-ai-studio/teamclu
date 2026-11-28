@@ -165,3 +165,55 @@ test(
     }
   },
 );
+
+test(
+  "a new session bridges from the effective file, not the host's spawn snapshot",
+  { skip: jitiModule ? false : `pi node_modules not found at ${nodeModules}` },
+  async () => {
+    // #2059: amuxd keeps a live host when the MCP list changes and rewrites the
+    // effective file instead. A session that starts on that host afterwards
+    // must see the file's list; the spawn-time env would drop `added-later`.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "teamclu-mcp-session-"));
+    fs.symlinkSync(nodeModules, path.join(dir, "node_modules"), "dir");
+    fs.copyFileSync(path.join(here, "teamclu.ts"), path.join(dir, "teamclu.ts"));
+    fs.writeFileSync(path.join(dir, "stub.mjs"), STUB_SERVER);
+
+    const stub = { type: "local", command: [process.execPath, path.join(dir, "stub.mjs")] };
+    const effective = path.join(dir, "ws", "mcp.effective.json");
+    fs.mkdirSync(path.dirname(effective));
+    fs.writeFileSync(
+      effective,
+      JSON.stringify({ workspace: "/ws", mcp: { "teamclu-introspect": stub, "added-later": stub } }),
+    );
+    process.env.TEAMCLU_MCP_SERVERS = JSON.stringify({ "teamclu-introspect": stub });
+    process.env.TEAMCLU_MCP_CONFIG_PATH = effective;
+    delete process.env.TEAMCLU_MCP_TOOL_CACHE_DIR;
+    delete globalThis.__teamcluMcpBridges;
+    delete globalThis.__teamcluMcpSdk;
+    delete globalThis.__teamcluMcpToolOwners;
+    delete globalThis.__teamcluMcpWatchState;
+
+    const jiti = jitiModule.createJiti(import.meta.url, { moduleCache: false });
+    const extension = await jiti.import(path.join(dir, "teamclu.ts"));
+    const tools = new Map();
+    const pi = new Proxy(
+      { registerTool: (tool) => tools.set(tool.name, tool) },
+      { get: (target, key) => target[key] ?? (() => {}) },
+    );
+    const call = async (name) => {
+      const result = await tools.get(name).execute("call", {}, undefined, undefined, { ui: {} });
+      return result.content[0].text;
+    };
+
+    try {
+      await extension.default(pi);
+      const whoamis = [...tools.keys()].filter((n) => n.endsWith("whoami"));
+      assert.equal(whoamis.length, 2, `both servers in the file are bridged (have: ${[...tools.keys()].join(", ")})`);
+    } finally {
+      for (const name of tools.keys()) {
+        if (name.endsWith("crash")) await call(name).catch(() => {});
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
