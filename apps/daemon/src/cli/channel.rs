@@ -1,52 +1,35 @@
-use crate::cli::{ChannelAction, ChannelArgs, ChannelBindArgs, ChannelBindPlatform};
-use crate::config::DaemonConfig;
-use std::path::Path;
+//! `amuxd channel …` — the team's channel bindings (WeCom, Feishu, …), for
+//! agents first and people second. One set of commands, one source:
+//! everything reads the team's team.toml and writes through the running
+//! daemon's `channel-set`, which stores credentials encrypted and reloads the
+//! channel. Output: the `amuxd app` contract.
+//!
+//! `bind` / `unbind` / `list` were a second, offline set that wrote the file
+//! directly and printed text. `list` and `unbind` are now aliases of `ls` and
+//! `rm`; `bind` survives hidden, translated into a `set`.
 
-pub fn run(args: ChannelArgs, config_path: &Path) -> anyhow::Result<()> {
-    match args.action {
-        ChannelAction::List => {
-            let mut cfg = DaemonConfig::load_hydrated(config_path)?;
-            list(&cfg);
-        }
-        ChannelAction::Bind(b) => {
-            let mut cfg = DaemonConfig::load_hydrated(config_path)?;
-            bind(&mut cfg, b)?;
-            crate::config::team_config::persist_from(&cfg)
-                .map_err(|e| crate::error::AmuxError::Config(format!("write team.toml: {e}")))?;
-            println!("bound.");
-        }
-        ChannelAction::Unbind { platform } => {
-            let mut cfg = DaemonConfig::load_hydrated(config_path)?;
-            unbind(&mut cfg, &platform)?;
-            crate::config::team_config::persist_from(&cfg)
-                .map_err(|e| crate::error::AmuxError::Config(format!("write team.toml: {e}")))?;
-            println!("unbound.");
-        }
-        ChannelAction::Test { platform } => {
-            let mut cfg = DaemonConfig::load_hydrated(config_path)?;
-            test_channel(&cfg, &platform)?;
-        }
-        ChannelAction::Reload => {
-            reload()?;
-        }
-        ChannelAction::Show { platform, output } => {
-            let code = super::envelope::emit(&output, show(platform.as_deref()));
-            if code != 0 {
-                std::process::exit(code);
-            }
-        }
+use crate::cli::{ChannelAction, ChannelArgs, ChannelBindPlatform};
+use crate::config::DaemonConfig;
+use serde_json::{json, Map, Value};
+
+/// Run one command; returns the process exit status.
+pub fn run(args: ChannelArgs) -> anyhow::Result<i32> {
+    let envelope = match args.action {
+        ChannelAction::Ls => list(),
+        ChannelAction::Show { platform } => show(platform.as_deref()),
         ChannelAction::Set {
             platform,
             config_file,
-            output,
-        } => {
-            let code = super::envelope::emit(&output, set(&platform, &config_file));
-            if code != 0 {
-                std::process::exit(code);
-            }
+        } => set(&platform, &config_file),
+        ChannelAction::Rm { platform } => remove(&platform),
+        ChannelAction::Test { platform } => test_channel(&platform),
+        ChannelAction::Reload => reload(),
+        ChannelAction::Bind(b) => {
+            let (platform, patch) = bind_patch(b.platform);
+            set_patch(platform, patch)
         }
-    }
-    Ok(())
+    };
+    Ok(super::envelope::emit(&args.output, envelope))
 }
 
 const PLATFORMS: &[&str] = &[
@@ -196,22 +179,59 @@ fn merged(
 }
 
 fn set(platform: &str, config_file: &str) -> serde_json::Value {
-    use super::envelope::{error_envelope, success, unreachable};
     if !PLATFORMS.contains(&platform) {
         return unknown_platform(platform);
     }
-    let patch = match super::envelope::read_json_object(config_file) {
-        Ok(p) => p,
-        Err(u) => return u.envelope(),
-    };
+    match super::envelope::read_json_object(config_file) {
+        Ok(patch) => set_patch(platform, patch),
+        Err(u) => u.envelope(),
+    }
+}
+
+/// `patch` merged over the channel's current settings, saved by the daemon.
+fn set_patch(platform: &str, patch: Map<String, Value>) -> serde_json::Value {
+    if !PLATFORMS.contains(&platform) {
+        return unknown_platform(platform);
+    }
     let channels = match team_channels() {
         Ok(c) => c,
         Err(envelope) => return envelope,
     };
-    let line = serde_json::json!({
+    save(platform, merged(channels.get(platform), patch))
+}
+
+/// Take a channel out: settings and stored credentials.
+fn remove(platform: &str) -> serde_json::Value {
+    if !PLATFORMS.contains(&platform) {
+        return unknown_platform(platform);
+    }
+    let channels = match team_channels() {
+        Ok(c) => c,
+        Err(envelope) => return envelope,
+    };
+    if !channels.contains_key(platform) {
+        return super::envelope::error_envelope(
+            "not_configured",
+            &format!("channel {platform} is not configured"),
+            Some("amuxd channel ls"),
+            5,
+            false,
+        );
+    }
+    let mut envelope = save(platform, Value::Null);
+    if envelope["ok"] == true {
+        envelope["data"] = json!({ "platform": platform, "removed": true });
+    }
+    envelope
+}
+
+/// One `channel-set` to the running daemon (`config: null` removes).
+fn save(platform: &str, config: Value) -> serde_json::Value {
+    use super::envelope::{error_envelope, success, unreachable};
+    let line = json!({
         "cmd": "channel-set",
         "platform": platform,
-        "config": merged(channels.get(platform), patch),
+        "config": config,
     });
     let sock = DaemonConfig::sock_path();
     let raw = match super::sock::sock_roundtrip(&sock, &line.to_string()) {
@@ -263,6 +283,44 @@ mod agent_tests {
     }
 
     #[test]
+    fn bind_becomes_an_enabling_patch_without_unset_fields() {
+        let (name, patch) = bind_patch(ChannelBindPlatform::Discord {
+            bot_token: "t".into(),
+            default_username: None,
+        });
+        assert_eq!(name, "discord");
+        assert_eq!(
+            serde_json::Value::Object(patch),
+            json!({ "enabled": true, "bot_token": "t" })
+        );
+        let (_, patch) = bind_patch(ChannelBindPlatform::Seatalk {
+            app_id: "a".into(),
+            app_secret: "s".into(),
+        });
+        assert_eq!(patch["bots"][0]["app_id"], "a");
+    }
+
+    #[test]
+    fn the_old_spellings_still_parse() {
+        use clap::Parser;
+        for (words, want) in [
+            (&["amuxd", "channel", "list"][..], "ls"),
+            (&["amuxd", "channel", "unbind", "kook"][..], "rm"),
+        ] {
+            let action = match crate::cli::Cli::try_parse_from(words).unwrap().command {
+                crate::cli::Commands::Channel(args) => args.action,
+                _ => unreachable!(),
+            };
+            let got = match action {
+                ChannelAction::Ls => "ls",
+                ChannelAction::Rm { .. } => "rm",
+                _ => "other",
+            };
+            assert_eq!(got, want);
+        }
+    }
+
+    #[test]
     fn unknown_platforms_are_refused_before_anything_is_read() {
         assert_eq!(show(Some("slack"))["error"]["exit"], 2);
         assert_eq!(
@@ -272,106 +330,88 @@ mod agent_tests {
     }
 }
 
-fn list(cfg: &DaemonConfig) {
-    let line =
-        |k: &str, on: bool| println!("  {:<8} {}", k, if on { "enabled" } else { "disabled" });
-    line(
-        "discord",
-        cfg.channels.discord.as_ref().is_some_and(|c| c.enabled),
-    );
-    line(
-        "wecom",
-        cfg.channels.wecom.as_ref().is_some_and(|c| c.enabled),
-    );
-    line(
-        "feishu",
-        cfg.channels.feishu.as_ref().is_some_and(|c| c.enabled),
-    );
-    line(
-        "kook",
-        cfg.channels.kook.as_ref().is_some_and(|c| c.enabled),
-    );
-    line(
-        "wechat",
-        cfg.channels.wechat.as_ref().is_some_and(|c| c.enabled),
-    );
-    line(
-        "wechatpad",
-        cfg.channels.wechatpad.as_ref().is_some_and(|c| c.enabled),
-    );
-    line(
-        "email",
-        cfg.channels.email.as_ref().is_some_and(|c| c.enabled),
-    );
-    line(
-        "seatalk",
-        cfg.channels.seatalk.as_ref().is_some_and(|c| c.enabled),
-    );
+/// Every channel with whether it is on and which credentials are stored.
+fn list() -> serde_json::Value {
+    let mut envelope = show(None);
+    if envelope["ok"] != true {
+        return envelope;
+    }
+    let rows: Vec<Value> = envelope["data"]["channels"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|c| {
+            json!({
+                "platform": c["platform"],
+                "enabled": c["config"]["enabled"].as_bool().unwrap_or(false),
+                "secretsSet": c["secretsSet"],
+            })
+        })
+        .collect();
+    envelope["data"] = json!({ "items": rows });
+    envelope
 }
 
-fn bind(cfg: &mut DaemonConfig, b: ChannelBindArgs) -> anyhow::Result<()> {
-    use crate::config::{
-        DiscordChannel, EmailChannel, FeishuChannel, KookChannel, SeaTalkBot, SeaTalkChannel,
-        WeChatChannel, WeComChannel,
-    };
-    match b.platform {
+/// Configured, enabled, and the stored credentials of one channel.
+fn test_channel(platform: &str) -> serde_json::Value {
+    let envelope = show(Some(platform));
+    match envelope["error"]["code"].as_str() {
+        Some("not_configured") => super::envelope::success(json!({
+            "platform": platform, "configured": false, "enabled": false, "secretsSet": [],
+        })),
+        Some(_) => envelope,
+        None => super::envelope::success(json!({
+            "platform": platform,
+            "configured": true,
+            "enabled": envelope["data"]["config"]["enabled"].as_bool().unwrap_or(false),
+            "secretsSet": envelope["data"]["secretsSet"],
+        })),
+    }
+}
+
+fn reload() -> serde_json::Value {
+    let sock = DaemonConfig::sock_path();
+    if !sock.exists() {
+        return super::envelope::unreachable(format!("no socket at {}", sock.display()));
+    }
+    match crate::cli::process::send_control(&sock, "channel-reload") {
+        Ok(_) => super::envelope::success(json!({ "reloading": true })),
+        Err(e) => super::envelope::unreachable(e),
+    }
+}
+
+/// The old per-platform `bind` flags as a `set` patch: the same fields the
+/// typed bind used to write, enabled.
+fn bind_patch(platform: ChannelBindPlatform) -> (&'static str, Map<String, Value>) {
+    let (name, value) = match platform {
         ChannelBindPlatform::Discord {
             bot_token,
             default_username,
-        } => {
-            cfg.channels.discord = Some(DiscordChannel {
-                enabled: true,
-                bot_token,
-                default_username,
-                workspace_id: None,
-                model: None,
-            });
-        }
+        } => (
+            "discord",
+            json!({ "bot_token": bot_token, "default_username": default_username }),
+        ),
         ChannelBindPlatform::Wecom {
             bot_id,
             secret,
             encoding_aes_key,
-        } => {
-            cfg.channels.wecom = Some(WeComChannel {
-                enabled: true,
-                bot_id,
-                secret,
-                encoding_aes_key,
-                bots: vec![],
-                stream_max_secs: 240,
-                progress_frame_gap_secs: 10,
-                final_max_retries: 3,
-            });
-        }
-        ChannelBindPlatform::Feishu { app_id, app_secret } => {
-            cfg.channels.feishu = Some(FeishuChannel {
-                enabled: true,
-                app_id,
-                app_secret,
-                workspace_id: None,
-                model: None,
-            });
-        }
-        ChannelBindPlatform::Kook { bot_token } => {
-            cfg.channels.kook = Some(KookChannel {
-                enabled: true,
-                bot_token,
-                workspace_id: None,
-                model: None,
-            });
-        }
+        } => (
+            "wecom",
+            json!({ "bot_id": bot_id, "secret": secret, "encoding_aes_key": encoding_aes_key }),
+        ),
+        ChannelBindPlatform::Feishu { app_id, app_secret } => (
+            "feishu",
+            json!({ "app_id": app_id, "app_secret": app_secret }),
+        ),
+        ChannelBindPlatform::Kook { bot_token } => ("kook", json!({ "bot_token": bot_token })),
         ChannelBindPlatform::Wechat {
             ilink_account,
             ilink_token,
-        } => {
-            cfg.channels.wechat = Some(WeChatChannel {
-                enabled: true,
-                ilink_account,
-                ilink_token,
-                workspace_id: None,
-                model: None,
-            });
-        }
+        } => (
+            "wechat",
+            json!({ "ilink_account": ilink_account, "ilink_token": ilink_token }),
+        ),
         ChannelBindPlatform::Email {
             imap_host,
             imap_port,
@@ -381,103 +421,27 @@ fn bind(cfg: &mut DaemonConfig, b: ChannelBindArgs) -> anyhow::Result<()> {
             smtp_port,
             smtp_user,
             smtp_pass,
-        } => {
-            cfg.channels.email = Some(EmailChannel {
-                enabled: true,
-                imap_host,
-                imap_port,
-                imap_user,
-                imap_pass,
-                smtp_host,
-                smtp_port,
-                smtp_user,
-                smtp_pass,
-                allowed_senders: vec![],
-                workspace_id: None,
-                model: None,
-            });
-        }
-        ChannelBindPlatform::Seatalk { app_id, app_secret } => {
-            cfg.channels.seatalk = Some(SeaTalkChannel {
-                enabled: true,
-                app_id: String::new(),
-                app_secret: String::new(),
-                mode: "websocket".to_string(),
-                dm_policy: "open".to_string(),
-                allow_from: vec![],
-                group_policy: "open".to_string(),
-                group_allow_from: vec![],
-                system_prompt: None,
-                bots: vec![SeaTalkBot {
-                    enabled: true,
-                    app_id,
-                    app_secret,
-                    system_prompt: None,
-                    workspace_id: None,
-                    model: None,
-                }],
-            });
-        }
-    }
-    Ok(())
-}
-
-fn unbind(cfg: &mut DaemonConfig, platform: &str) -> anyhow::Result<()> {
-    match platform {
-        "discord" => {
-            cfg.channels.discord = None;
-        }
-        "wecom" => {
-            cfg.channels.wecom = None;
-        }
-        "feishu" => {
-            cfg.channels.feishu = None;
-        }
-        "kook" => {
-            cfg.channels.kook = None;
-        }
-        "wechat" => {
-            cfg.channels.wechat = None;
-        }
-        "wechatpad" => {
-            cfg.channels.wechatpad = None;
-        }
-        "email" => {
-            cfg.channels.email = None;
-        }
-        "seatalk" => {
-            cfg.channels.seatalk = None;
-        }
-        other => anyhow::bail!("unknown platform: {other}"),
-    }
-    Ok(())
-}
-
-fn test_channel(cfg: &DaemonConfig, platform: &str) -> anyhow::Result<()> {
-    let ok = match platform {
-        "discord" => cfg.channels.discord.is_some(),
-        "wecom" => cfg.channels.wecom.is_some(),
-        "feishu" => cfg.channels.feishu.is_some(),
-        "kook" => cfg.channels.kook.is_some(),
-        "wechat" => cfg.channels.wechat.is_some(),
-        "wechatpad" => cfg.channels.wechatpad.is_some(),
-        "email" => cfg.channels.email.is_some(),
-        "seatalk" => cfg.channels.seatalk.is_some(),
-        other => anyhow::bail!("unknown platform: {other}"),
+        } => (
+            "email",
+            json!({
+                "imap_host": imap_host, "imap_port": imap_port,
+                "imap_user": imap_user, "imap_pass": imap_pass,
+                "smtp_host": smtp_host, "smtp_port": smtp_port,
+                "smtp_user": smtp_user, "smtp_pass": smtp_pass,
+            }),
+        ),
+        ChannelBindPlatform::Seatalk { app_id, app_secret } => (
+            "seatalk",
+            json!({ "bots": [{ "enabled": true, "app_id": app_id, "app_secret": app_secret }] }),
+        ),
     };
-    println!(
-        "{platform}: {}",
-        if ok { "configured" } else { "not configured" }
-    );
-    Ok(())
-}
-
-fn reload() -> anyhow::Result<()> {
-    let sock = DaemonConfig::sock_path();
-    if !sock.exists() {
-        anyhow::bail!("amuxd not running (no socket at {})", sock.display());
-    }
-    crate::cli::process::send_control(&sock, "channel-reload")?;
-    println!("reload requested.");
-    Ok(())
+    let mut patch: Map<String, Value> = value
+        .as_object()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, v)| !v.is_null())
+        .collect();
+    patch.insert("enabled".into(), json!(true));
+    (name, patch)
 }

@@ -46,7 +46,8 @@ pub enum CronAction {
     /// token as --to (stored as a stable chat id). Without --to, results
     /// stay in the job's run history.
     ///
-    /// Example: amuxd cron add 日报 --cron "0 9 * * 1-5" --tz Asia/Shanghai --message "汇总昨天的进展" --to <reply_token>
+    /// Example: amuxd cron create 日报 --cron "0 9 * * 1-5" --tz Asia/Shanghai --message "汇总昨天的进展" --to <reply_token>
+    #[command(name = "create", alias = "add")]
     Add {
         /// Job name.
         name: String,
@@ -85,13 +86,15 @@ pub enum CronAction {
         #[arg(long)]
         workspace: bool,
     },
-    /// Stop a job from running until resumed.
+    /// Stop a job from running until enabled again.
     ///
-    /// Example: amuxd cron pause <job-id>
+    /// Example: amuxd cron disable <job-id>
+    #[command(name = "disable", alias = "pause")]
     Pause { job: String },
-    /// Let a paused job run again.
+    /// Let a disabled job run again.
     ///
-    /// Example: amuxd cron resume <job-id>
+    /// Example: amuxd cron enable <job-id>
+    #[command(name = "enable", alias = "resume")]
     Resume { job: String },
     /// Delete a job and its run history.
     ///
@@ -168,7 +171,7 @@ fn read_message(message: Option<&str>, file: Option<&str>) -> Result<String, Usa
             return Err(usage(
                 "missing_message",
                 "a job needs --message or --message-file",
-                Some("amuxd cron add --help"),
+                Some("amuxd cron create --help"),
             ))
         }
     };
@@ -251,7 +254,7 @@ fn request_body(action: &CronAction, cwd: Option<&std::path::Path>) -> Result<Va
                     return Err(usage(
                         "missing_schedule",
                         "a job needs one of --at, --every, --cron",
-                        Some("amuxd cron add --help"),
+                        Some("amuxd cron create --help"),
                     ))
                 }
             };
@@ -323,7 +326,7 @@ fn to_envelope(outcome: anyhow::Result<Result<Value, (u16, String)>>) -> Value {
         Ok(Err((status, detail))) => {
             let (code, exit, retryable, next) = match status {
                 404 => ("not_found", 5, false, Some("amuxd cron ls")),
-                400 | 422 => ("invalid_job", 2, false, Some("amuxd cron add --help")),
+                400 | 422 => ("invalid_job", 2, false, Some("amuxd cron create --help")),
                 401 => ("daemon_unauthorized", 3, false, None),
                 403 => ("daemon_forbidden", 4, false, None),
                 503 => ("cron_unavailable", 7, true, None),

@@ -79,9 +79,9 @@ editing LLM settings or triggering a sync.
 Non-interactive equivalents:
 
 ```bash
-amuxd team secrets set --team-secret <64-hex>   # --team-id defaults to daemon.toml's
+printf %s "$SECRET" | amuxd team secrets set --team-secret-file -   # --team-id defaults to daemon.toml's
 amuxd team secrets show                         # values masked
-amuxd team secrets clear --force
+amuxd team secrets rm --yes
 ```
 
 Restart the daemon after `team secrets set`; the sync timer reads its
@@ -94,11 +94,11 @@ workspace list at startup.
 
 ```bash
 amuxd config path
-amuxd config list
-amuxd config get mqtt.broker_url
+amuxd config ls
+amuxd config show mqtt.broker_url
 amuxd config set mqtt.broker_url mqtts://broker.example.com:8883
 amuxd config set idle_runtime_timeout_secs 1800
-amuxd config unset idle_runtime_timeout_secs
+amuxd config rm idle_runtime_timeout_secs
 ```
 
 Values are parsed as TOML literals. If a value is not valid TOML, it is written
@@ -107,19 +107,43 @@ overwritten.
 
 ## Channels
 
+One set of commands, all through the running daemon (it stores credentials
+encrypted in the team's secret store and reloads the channel). Settings are a
+JSON object merged over the current ones; pass it on stdin so a secret never
+sits on a command line. Field names are those `amuxd channel show` prints.
+
 ```bash
-amuxd channel list
-amuxd channel bind wecom --bot-id <id> --secret <secret> [--encoding-aes-key <key>]
-amuxd channel bind feishu --app-id <id> --app-secret <secret>
-amuxd channel bind discord --bot-token <token> [--default-username <name>]
-amuxd channel bind kook --bot-token <token>
-amuxd channel bind wechat --ilink-account <account> --ilink-token <token>
-amuxd channel bind seatalk --app-id <id> --app-secret <secret>
-amuxd channel bind email --imap-host … --imap-port … --imap-user … --imap-pass … \
-                         --smtp-host … --smtp-port … --smtp-user … --smtp-pass …
-amuxd channel test <platform>     # are the credentials configured
-amuxd channel unbind <platform>
+amuxd channel ls                  # every channel: enabled, stored credentials
+amuxd channel show wecom          # one channel's settings (no credentials)
+echo '{"enabled":true,"bot_id":"<id>","secret":"<secret>"}' \
+  | amuxd channel set wecom --config-file -
+echo '{"enabled":false}' | amuxd channel set wecom --config-file -
+amuxd channel test <platform>     # configured, enabled, which credentials are stored
+amuxd channel rm <platform>       # settings and stored credentials
 amuxd channel reload              # make a running daemon re-read channel config
+```
+
+`list`, `bind` and `unbind` still parse (`bind`'s per-platform flags become a
+`set`), but put secrets on the command line; prefer `set --config-file -`.
+
+## Command conventions
+
+Every agent-facing tree (`app`, `cron`, `skill`, `role`, `session`, `member`,
+`workspace`, `knowledge`, `channel`, `config`, `team`) answers with one line of
+JSON, `{"v":1,"ok":…}`, `-o table` for people, and the exit codes of
+`amuxd app`. Verbs mean the same thing everywhere; see
+`docs/specs/2026-11-28-amuxd-cli-conventions.md`.
+
+```bash
+amuxd session ls                                  # sessions this agent is in
+amuxd session messages <id> --limit 50            # read one
+amuxd session create "整理周报" --agent 写作助手    # hand work to another agent
+amuxd session send <id> --message-file -          # post into it
+amuxd member show 海港                             # a name → an actor id
+amuxd workspace show                              # runtime status here
+amuxd workspace models                            # models this workspace can use
+amuxd knowledge search 渠道 接入                    # the team vault
+amuxd knowledge inbox propose --title … --file page.md
 ```
 
 ## Apps from the command line
@@ -141,20 +165,20 @@ unknown — check before retrying. `-o table` is for people; `amuxd app --help`
 and `amuxd app <command> --help` are short and carry examples.
 
 ```bash
-amuxd app list -o table                          # this team's apps, with local checkouts
+amuxd app ls -o table                          # this team's apps, with local checkouts
 amuxd app create 记账                             # starter template (static_web)
 amuxd app create site --from-dir ./site          # an existing folder, used in place
-amuxd app status                                 # the app whose checkout cwd is in
+amuxd app show                                 # the app whose checkout cwd is in
 amuxd app runtime --language node                # runtimes on offer, and this machine's tools
 amuxd app deploy                                 # build here, publish; waits
 amuxd app op wait <op>                           # pick a cut-off wait up again
 amuxd app logs --since 10m --grep error
 printf %s "$KEY" | amuxd app env set STRIPE_KEY --secret
 amuxd app access grant 王芳 write                 # who may work on it
-amuxd app gate rule add /admin --auth required --audience org   # who may open the site
+amuxd app gate rule set /admin --auth required --audience org   # who may open the site
 amuxd app checkout clone --app 记账               # a teammate's app, onto this machine
 amuxd app undeploy --app 记账                     # site offline; app, code and data kept
-amuxd app delete --app 记账 --yes                 # after undeploy; repository archived
+amuxd app rm --app 记账 --yes                 # after undeploy; repository archived
 ```
 
 With neither `--id` nor `--app`, a command acts on the app whose checkout the

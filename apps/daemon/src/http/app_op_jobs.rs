@@ -88,7 +88,7 @@ fn interrupted(mut rec: OpRecord) -> OpRecord {
                 rec.action
             ),
         )
-        .with_next("amuxd app status")
+        .with_next("amuxd app show")
         .to_json(),
     );
     rec
@@ -190,7 +190,7 @@ impl OpStore {
                             "op_crashed",
                             format!("the {} stopped unexpectedly ({join}); whether it finished is unknown", done.action),
                         )
-                        .with_next("amuxd app status")
+                        .with_next("amuxd app show")
                         .to_json(),
                     );
                 }

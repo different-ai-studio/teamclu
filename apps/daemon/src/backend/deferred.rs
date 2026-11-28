@@ -129,6 +129,15 @@ impl Backend for DeferredBackend {
         self.inner()?.auth_token().await
     }
 
+    async fn cloud_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> BackendResult<super::CloudReply> {
+        self.inner()?.cloud_request(method, path, body).await
+    }
+
     fn cached_credential_expiry_epoch(&self) -> Option<i64> {
         self.inner_opt()?.cached_credential_expiry_epoch()
     }

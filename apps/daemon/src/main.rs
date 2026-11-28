@@ -47,6 +47,13 @@ fn main() -> anyhow::Result<()> {
         .mut_subcommand("cron", cli::app::compact_help)
         .mut_subcommand("skill", cli::app::compact_help)
         .mut_subcommand("role", cli::app::compact_help)
+        .mut_subcommand("session", cli::app::compact_help)
+        .mut_subcommand("member", cli::app::compact_help)
+        .mut_subcommand("workspace", cli::app::compact_help)
+        .mut_subcommand("knowledge", cli::app::compact_help)
+        .mut_subcommand("channel", cli::app::compact_help)
+        .mut_subcommand("config", cli::app::compact_help)
+        .mut_subcommand("team", cli::app::compact_help)
         .try_get_matches_from(&args)
         .and_then(|m| <Cli as clap::FromArgMatches>::from_arg_matches(&m));
     let cli = match parsed {
@@ -94,7 +101,10 @@ fn main() -> anyhow::Result<()> {
             cli::clear::run(force)?;
         }
         Commands::Team(args) => {
-            cli::team_secrets::run(args)?;
+            let code = cli::team_secrets::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
         }
         Commands::Start {
             daemonize: _,
@@ -268,6 +278,30 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(code);
             }
         }
+        Commands::Session(args) => {
+            let code = cli::session::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::Member(args) => {
+            let code = cli::member::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::Workspace(args) => {
+            let code = cli::workspace::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::Knowledge(args) => {
+            let code = cli::knowledge::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         Commands::Doctor => {
             cli::doctor::run()?;
         }
@@ -275,12 +309,17 @@ fn main() -> anyhow::Result<()> {
             pi_install::run_install(force)?;
         }
         Commands::Channel(args) => {
-            let path = config::DaemonConfig::default_path();
-            cli::channel::run(args, &path)?;
+            let code = cli::channel::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
         }
         Commands::Config(args) => {
             let path = config::DaemonConfig::default_path();
-            cli::config_cmd::run(args, &path)?;
+            let code = cli::config_cmd::run(args, &path)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
         }
         Commands::GitSsh(args) => {
             let sock = args

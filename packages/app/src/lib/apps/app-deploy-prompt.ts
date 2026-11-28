@@ -15,7 +15,7 @@ export function deployPromptForApp(app: Pick<AppRow, 'name'>): string {
   const name = app.name.trim()
   return i18n.t(
     'apps.deployPrompt',
-    '请把应用「{{name}}」部署上线。\n\n按 deploy-app 技能的流程来：先用 amuxd app status 看清当前状态；有没提交或没推送的改动就先提交并推送；然后运行 amuxd app deploy 发布。部署完成后告诉我线上地址、部署的版本，以及你验证了什么。',
+    '请把应用「{{name}}」部署上线。\n\n按 deploy-app 技能的流程来：先用 amuxd app show 看清当前状态；有没提交或没推送的改动就先提交并推送；然后运行 amuxd app deploy 发布。部署完成后告诉我线上地址、部署的版本，以及你验证了什么。',
     { name },
   )
 }

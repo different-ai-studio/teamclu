@@ -277,7 +277,7 @@ impl AppOps<'_> {
             format!(
                 "Uninstall still running after {}s. Read {} to verify cleanup progress; do not claim success until undeploy_operation.status is succeeded.",
                 UNDEPLOY_WAIT.as_secs(),
-                crate::step("status")
+                crate::step("show")
             )
         };
         Ok(json!({
@@ -510,7 +510,7 @@ mod tests {
         let ops = AppOps::new(&cloud, &daemon, &host);
         let out = ops.undeploy(&json!({ "id": "a1" })).await.unwrap();
         assert_eq!(out["complete"], false);
-        assert!(out["note"].as_str().unwrap().contains("`amuxd app status`"));
+        assert!(out["note"].as_str().unwrap().contains("`amuxd app show`"));
         assert_eq!(*cloud.pauses.lock().unwrap(), 100);
     }
 

@@ -5,36 +5,30 @@
 //! offline: the daemon need not be running, and a running daemon picks the
 //! secrets up on its next sync tick without a reload signal.
 
-use std::io::Write;
+use serde_json::{json, Value};
 
 use crate::config::DaemonConfig;
 use crate::sync::secret_store::{validate_team_secret, SecretStore, TeamSecrets};
 
+use super::envelope::{emit, error_envelope, success, usage};
 use super::{TeamAction, TeamArgs, TeamSecretsAction};
 
-pub fn run(args: TeamArgs) -> anyhow::Result<()> {
-    let secrets = match args.action {
-        TeamAction::Secrets(secrets) => secrets,
-        TeamAction::Sync { output } => {
-            let code = sync(&output)?;
-            if code != 0 {
-                std::process::exit(code);
-            }
-            return Ok(());
-        }
-    };
-    match secrets.action {
-        TeamSecretsAction::Set {
+/// Run one command; returns the process exit status. Output: the
+/// `amuxd app` contract.
+pub fn run(args: TeamArgs) -> anyhow::Result<i32> {
+    let envelope = match args.action {
+        TeamAction::Sync => return sync(&args.output),
+        TeamAction::Secrets(TeamSecretsAction::Set {
             team_id,
+            team_secret_file,
             team_secret,
-        } => set(team_id, team_secret),
-        TeamSecretsAction::Show { team_id } => show(team_id),
-        TeamSecretsAction::Clear { team_id, force } => clear(team_id, force),
-    }
+        }) => set(team_id, team_secret_file, team_secret),
+        TeamAction::Secrets(TeamSecretsAction::Show { team_id }) => show(team_id),
+        TeamAction::Secrets(TeamSecretsAction::Rm { team_id, yes }) => clear(team_id, yes),
+    };
+    Ok(emit(&args.output, envelope))
 }
 
-/// The team this daemon is bound to. `amuxd init` writes it; the daemon is
-/// single-team, so an explicit `--team-id` is only for unusual cases.
 fn resolve_team_id(explicit: Option<String>) -> anyhow::Result<String> {
     if let Some(id) = explicit {
         let id = id.trim().to_string();
@@ -46,7 +40,7 @@ fn resolve_team_id(explicit: Option<String>) -> anyhow::Result<String> {
     let path = DaemonConfig::default_path();
     let config = DaemonConfig::load(&path).map_err(|e| {
         anyhow::anyhow!(
-            "read {}: {e}\nRun `amuxd init <teamclu://invite?token=...>` first, or pass --team-id.",
+            "read {}: {e}. Run `amuxd init <teamclu://invite?token=...>` first, or pass --team-id.",
             path.display()
         )
     })?;
@@ -55,77 +49,120 @@ fn resolve_team_id(explicit: Option<String>) -> anyhow::Result<String> {
         .filter(|t| !t.trim().is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no team_id in {}.\nRun `amuxd init <teamclu://invite?token=...>` first, or pass --team-id.",
+                "no team_id in {}. Run `amuxd init <teamclu://invite?token=...>` first, or pass --team-id.",
                 path.display()
             )
         })
 }
 
-fn set(team_id: Option<String>, team_secret: Option<String>) -> anyhow::Result<()> {
-    let team_id = resolve_team_id(team_id)?;
+fn no_team(e: anyhow::Error) -> Value {
+    error_envelope(
+        "no_team",
+        &e.to_string(),
+        Some("amuxd init <invite-url>"),
+        3,
+        false,
+    )
+}
 
-    let team_secret = team_secret.map(|s| s.trim().to_string());
-    if let Some(s) = &team_secret {
-        validate_team_secret(s).map_err(|e| anyhow::anyhow!("--team-secret: {e}"))?;
+fn store_error(e: impl std::fmt::Display) -> Value {
+    error_envelope("secret_store", &e.to_string(), None, 7, false)
+}
+
+/// What is set, masked.
+fn state(store: &SecretStore, team_id: &str) -> Value {
+    match store.load(team_id) {
+        Ok(s) => success(json!({
+            "teamId": team_id,
+            "teamSecret": mask(s.oss_team_secret.as_deref()),
+        })),
+        Err(e) => store_error(e),
     }
+}
 
-    if team_secret.is_none() {
-        anyhow::bail!("nothing to set: pass --team-secret");
+fn read_secret_file(path: &str) -> Result<String, Value> {
+    let text = if path == "-" {
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)
+            .map_err(|e| usage("unreadable_file", format!("read stdin: {e}"), None).envelope())?;
+        s
+    } else {
+        std::fs::read_to_string(path)
+            .map_err(|e| usage("unreadable_file", format!("read {path}: {e}"), None).envelope())?
+    };
+    Ok(text.trim().to_string())
+}
+
+fn set(
+    team_id: Option<String>,
+    team_secret_file: Option<String>,
+    team_secret: Option<String>,
+) -> Value {
+    let team_id = match resolve_team_id(team_id) {
+        Ok(id) => id,
+        Err(e) => return no_team(e),
+    };
+    let secret = match (team_secret_file, team_secret) {
+        (Some(path), _) => match read_secret_file(&path) {
+            Ok(s) => s,
+            Err(envelope) => return envelope,
+        },
+        (None, Some(s)) => s.trim().to_string(),
+        (None, None) => {
+            return usage(
+                "missing_secret",
+                "nothing to set: pass --team-secret-file <path> (or - for stdin)",
+                Some("printf %s \"$SECRET\" | amuxd team secrets set --team-secret-file -"),
+            )
+            .envelope()
+        }
+    };
+    if let Err(e) = validate_team_secret(&secret) {
+        return usage("invalid_secret", format!("team secret: {e}"), None).envelope();
     }
-
     let incoming = TeamSecrets {
-        oss_team_secret: team_secret,
-        // The daemon self-supplies its own cloud bearer for OSS sync, so this
-        // field is intentionally not settable here.
+        oss_team_secret: Some(secret),
         user_jwt: None,
         channel_secrets: Default::default(),
     };
-
     let store = SecretStore::new();
-    store
-        .merge(&team_id, &incoming)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    println!("✓ secrets updated for team {team_id}");
-    print_state(&store, &team_id)?;
-    println!("\nRestart the daemon (`amuxd stop && amuxd start`) so the sync timer picks up this team's workspaces.");
-    Ok(())
+    if let Err(e) = store.merge(&team_id, &incoming) {
+        return store_error(e);
+    }
+    let mut envelope = state(&store, &team_id);
+    if envelope["ok"] == true {
+        envelope["data"]["next"] =
+            json!("restart the daemon (`amuxd stop && amuxd start`) so sync picks it up");
+    }
+    envelope
 }
 
-fn show(team_id: Option<String>) -> anyhow::Result<()> {
-    let team_id = resolve_team_id(team_id)?;
-    let store = SecretStore::new();
-    println!("team {team_id}");
-    print_state(&store, &team_id)
-}
-
-fn print_state(store: &SecretStore, team_id: &str) -> anyhow::Result<()> {
-    let s = store.load(team_id).map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("  team_secret    = {}", mask(s.oss_team_secret.as_deref()));
-    Ok(())
+fn show(team_id: Option<String>) -> Value {
+    match resolve_team_id(team_id) {
+        Ok(id) => state(&SecretStore::new(), &id),
+        Err(e) => no_team(e),
+    }
 }
 
 use crate::sync::secret_store::mask_secret as mask;
 
-fn clear(team_id: Option<String>, force: bool) -> anyhow::Result<()> {
-    let team_id = resolve_team_id(team_id)?;
-    let store = SecretStore::new();
-
-    if !force {
-        print!("Remove all stored secrets for team {team_id}? [y/N]: ");
-        std::io::stdout().flush()?;
-        let mut buf = String::new();
-        std::io::stdin().read_line(&mut buf)?;
-        let answer = buf.trim().to_lowercase();
-        if answer != "y" && answer != "yes" {
-            println!("Aborted.");
-            return Ok(());
-        }
+fn clear(team_id: Option<String>, yes: bool) -> Value {
+    let team_id = match resolve_team_id(team_id) {
+        Ok(id) => id,
+        Err(e) => return no_team(e),
+    };
+    if !yes {
+        return usage(
+            "confirm_required",
+            format!("this removes every stored secret for team {team_id} and cannot be undone"),
+            Some("amuxd team secrets rm --yes"),
+        )
+        .envelope();
     }
-
-    store.clear(&team_id).map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("✓ secrets cleared for team {team_id}");
-    Ok(())
+    match SecretStore::new().clear(&team_id) {
+        Ok(()) => success(json!({ "teamId": team_id, "removed": true })),
+        Err(e) => store_error(e),
+    }
 }
 
 #[cfg(test)]

@@ -5037,6 +5037,18 @@ test("createSession is server-authoritative for created_by (ignores client creat
   );
 });
 
+test("createSession lets an agent account open a session as its agent actor", async () => {
+  // A daemon (`amuxd session create`) is a bot user with only an agent actor in
+  // the team. The INSERT policy checks current_actor_id_for_team, which is that
+  // actor, so the session is created by it rather than refused as non-member.
+  const calls: any[] = [];
+  const supabase = appsSupabase({ actorRow: { id: "agent-actor-1", actor_type: "agent" }, calls });
+  const repo = appsRepo(supabase);
+  await repo.createSession({ id: "sess-agent-1", teamId: "team-1", title: "Delegated" });
+  const insert = calls.find((c) => c.table === "sessions" && c.op === "insert");
+  assert.equal(insert?.row.created_by_actor_id, "agent-actor-1");
+});
+
 test("createSession returns 403 when the caller is not a member of the team", async () => {
   const supabase = appsSupabase({ actorRow: null });
   const repo = appsRepo(supabase);

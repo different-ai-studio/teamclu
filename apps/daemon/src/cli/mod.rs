@@ -9,16 +9,20 @@ pub mod envelope;
 pub mod git_account;
 pub mod git_credential;
 pub mod git_ssh;
+pub mod knowledge;
 pub mod manage;
+pub mod member;
 pub mod process;
 pub mod role;
 pub mod service;
+pub mod session;
 pub mod setup;
 pub mod skill;
 pub mod sock;
 pub mod team_secrets;
 pub mod test_client;
 pub mod update;
+pub mod workspace;
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -82,11 +86,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: TestClientAction,
     },
-    /// Manage channel bindings (discord, wecom, feishu, kook, wechat, wechatpad, email).
+    /// Channel bindings (discord, wecom, feishu, kook, wechat, wechatpad, email, seatalk): ls, show, set, rm, test, reload.
     Channel(ChannelArgs),
-    /// Read and edit daemon.toml values by dotted key.
+    /// daemon.toml and team.toml values by dotted key: ls, show, set, rm.
     Config(ConfigArgs),
-    /// Manage team-share state for this daemon.
+    /// Team share: sync now, and the secrets a headless daemon needs.
     Team(TeamArgs),
     /// Create, deploy and manage TeamClu apps, as this daemon's agent account.
     ///
@@ -95,7 +99,7 @@ pub enum Commands {
     /// 7 platform/daemon (see `retryable`), 8 outcome unknown — do not retry
     /// blindly. Needs `amuxd start` running.
     App(app::AppArgs),
-    /// Scheduled jobs: list, create, pause, resume, delete, run now, runs.
+    /// Scheduled jobs: ls, create, enable, disable, rm, run now, runs.
     ///
     /// Same JSON contract as `amuxd app`. Jobs live in this daemon, which
     /// runs them unattended. Needs `amuxd start` running.
@@ -105,11 +109,29 @@ pub enum Commands {
     /// Same JSON contract as `amuxd app`. A skill is a folder: write it, then
     /// `create`/`update --from-dir`. Needs `amuxd start` running.
     Skill(skill::SkillArgs),
-    /// This workspace's agent roles: list, create or replace from a ROLE.md,
-    /// delete.
+    /// This workspace's agent roles: ls, set (create or replace from a
+    /// ROLE.md), rm.
     ///
     /// Same JSON contract as `amuxd app`. Needs `amuxd start` running.
     Role(role::RoleArgs),
+    /// The team's conversations: list, read, open, post, archive, seats.
+    ///
+    /// Same JSON contract as `amuxd app`, as this daemon's agent account.
+    /// Needs `amuxd start` running.
+    Session(session::SessionArgs),
+    /// The team's people and agents, by id or name.
+    ///
+    /// Same JSON contract as `amuxd app`. Needs `amuxd start` running.
+    Member(member::MemberArgs),
+    /// This machine's workspaces and their runtimes: status, reload,
+    /// diagnose, models, MCP tools (read-only).
+    ///
+    /// Same JSON contract as `amuxd app`. Needs `amuxd start` running.
+    Workspace(workspace::WorkspaceArgs),
+    /// The team's knowledge vault: search, read, and the review inbox.
+    ///
+    /// Same JSON contract as `amuxd app`. Needs `amuxd start` running.
+    Knowledge(knowledge::KnowledgeArgs),
     /// Report install status of amuxd / the managed Node / pi / git as JSON.
     Doctor,
     /// Install or repair the managed pi runtime: the pinned Node.js, then pi
@@ -150,8 +172,17 @@ pub enum Commands {
 
 #[derive(Args, Debug)]
 pub struct ConfigArgs {
+    /// json (default), table, or file:<path>.
+    #[arg(
+        short = 'o',
+        long = "output",
+        global = true,
+        default_value = "json",
+        hide_default_value = true
+    )]
+    pub output: String,
     /// Config file path. Defaults to `~/.amuxd/daemon.toml`.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub config: Option<PathBuf>,
     #[command(subcommand)]
     pub action: ConfigAction,
@@ -159,21 +190,42 @@ pub struct ConfigArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ConfigAction {
-    /// Print the config file path that would be used.
+    /// The config file path that would be used.
     Path,
-    /// List all scalar config values as dotted keys.
-    List,
-    /// Print one config value by dotted key.
-    Get { key: String },
-    /// Set one config value by dotted key. Values are parsed as TOML literals;
+    /// Every scalar value by dotted key (daemon.toml and the team's
+    /// team.toml). Credentials show as "(set)"; `show <key>` reads one.
+    ///
+    /// Example: amuxd config ls -o table
+    #[command(alias = "list")]
+    Ls,
+    /// One value by dotted key.
+    ///
+    /// Example: amuxd config show update.auto
+    #[command(alias = "get")]
+    Show { key: String },
+    /// Set one value by dotted key. Values are parsed as TOML literals;
     /// invalid literals are written as strings.
+    ///
+    /// Example: amuxd config set update.auto false
     Set { key: String, value: String },
-    /// Remove one config value by dotted key.
-    Unset { key: String },
+    /// Remove one value by dotted key.
+    ///
+    /// Example: amuxd config rm update.channel
+    #[command(alias = "unset")]
+    Rm { key: String },
 }
 
 #[derive(Args, Debug)]
 pub struct TeamArgs {
+    /// json (default), table, or file:<path>.
+    #[arg(
+        short = 'o',
+        long = "output",
+        global = true,
+        default_value = "json",
+        hide_default_value = true
+    )]
+    pub output: String,
     #[command(subcommand)]
     pub action: TeamAction,
 }
@@ -182,60 +234,55 @@ pub struct TeamArgs {
 pub enum TeamAction {
     /// Provision the secrets a headless daemon cannot obtain on its own.
     ///
-    /// `--team-secret` seals this machine's copy of the team's secrets and
+    /// The team secret seals this machine's copy of the team's secrets and
     /// decrypts team files uploaded before sync switched to plaintext
     /// (ADR-0008). Sync itself does not need it. It is user-held and has no
     /// server-side copy, so a headless install can only be handed one here.
-    Secrets(TeamSecretsArgs),
+    #[command(subcommand)]
+    Secrets(TeamSecretsAction),
     /// Sync the team's shared folder (knowledge, documents) now: upload local
     /// changes, download remote ones, and report what happened.
     ///
-    /// One line of JSON, like `amuxd app`. Needs `amuxd start` running.
+    /// Needs `amuxd start` running.
     ///
     /// Example: amuxd team sync
-    Sync {
-        /// json (default), table, or file:<path>.
-        #[arg(
-            short = 'o',
-            long = "output",
-            default_value = "json",
-            hide_default_value = true
-        )]
-        output: String,
-    },
-}
-
-#[derive(Args, Debug)]
-pub struct TeamSecretsArgs {
-    #[command(subcommand)]
-    pub action: TeamSecretsAction,
+    Sync,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum TeamSecretsAction {
-    /// Set one or more secrets. Omitted fields keep their stored value.
-    /// Restart the daemon afterwards so it picks the new value up.
+    /// Set the team secret (64 hex chars), read from a file or stdin so it
+    /// never sits on a command line. Restart the daemon afterwards.
+    ///
+    /// Example: printf %s "$SECRET" | amuxd team secrets set --team-secret-file -
     Set {
         /// Team to write. Defaults to `team_id` from daemon.toml.
         #[arg(long)]
         team_id: Option<String>,
-        /// Team secret, 64 hex chars. Seals the local secrets file and
-        /// decrypts team files uploaded before sync switched to plaintext.
-        #[arg(long, alias = "oss-secret")]
+        /// File holding the team secret (`-` for stdin).
+        #[arg(long, conflicts_with = "team_secret")]
+        team_secret_file: Option<String>,
+        /// The secret itself. Kept for old scripts; prefer --team-secret-file.
+        #[arg(long, alias = "oss-secret", hide = true)]
         team_secret: Option<String>,
     },
-    /// Show which secrets are set. Values are masked.
+    /// Which secrets are set. Values are masked.
+    ///
+    /// Example: amuxd team secrets show
     Show {
         #[arg(long)]
         team_id: Option<String>,
     },
     /// Remove all stored secrets for a team.
-    Clear {
+    ///
+    /// Example: amuxd team secrets rm --yes
+    #[command(alias = "clear")]
+    Rm {
         #[arg(long)]
         team_id: Option<String>,
-        /// Skip the interactive confirmation prompt.
-        #[arg(long)]
-        force: bool,
+        /// Required: this cannot be undone.
+        #[arg(long, alias = "force")]
+        yes: bool,
     },
 }
 
@@ -272,49 +319,41 @@ pub struct GitCredentialArgs {
 
 #[derive(Args, Debug)]
 pub struct ChannelArgs {
+    /// json (default), table, or file:<path>.
+    #[arg(
+        short = 'o',
+        long = "output",
+        global = true,
+        default_value = "json",
+        hide_default_value = true
+    )]
+    pub output: String,
     #[command(subcommand)]
     pub action: ChannelAction,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ChannelAction {
-    /// List all channels and their enabled state.
-    List,
-    /// Bind a channel (per-platform credentials).
-    Bind(ChannelBindArgs),
-    /// Remove a channel binding.
-    Unbind { platform: String },
-    /// Verify channel credentials are configured.
-    Test { platform: String },
-    /// Signal a running amuxd to re-read channel config.
-    Reload,
-    /// One channel's settings as JSON (or every channel's), for agents.
+    /// Every channel: enabled or not, which credentials are stored.
     ///
-    /// From the team's team.toml, which holds no credentials: `secretsSet`
-    /// names the credentials that are stored. Same JSON contract as
-    /// `amuxd app`.
+    /// Example: amuxd channel ls -o table
+    #[command(alias = "list")]
+    Ls,
+    /// One channel's settings (or every channel's), from the team's
+    /// team.toml. It holds no credentials: `secretsSet` names the stored ones.
     ///
     /// Example: amuxd channel show wecom
     Show {
         /// discord, wecom, feishu, kook, wechat, wechatpad, email, seatalk.
         platform: Option<String>,
-        /// json (default), table, or file:<path>.
-        #[arg(
-            short = 'o',
-            long = "output",
-            default_value = "json",
-            hide_default_value = true
-        )]
-        output: String,
     },
-    /// Change a channel's settings, for agents: a JSON object of fields is
-    /// merged over the current ones and saved by the running daemon, which
-    /// reloads the channel.
+    /// Change a channel's settings: a JSON object of fields is merged over
+    /// the current ones and saved by the running daemon, which reloads it.
     ///
     /// Credentials go in the same object; they are stored encrypted, never in
-    /// team.toml. Pass the object on stdin (`--config-file -`) so a secret
-    /// never sits on a command line. `{"enabled": false}` turns a channel
-    /// off. Field names are those `amuxd channel show` prints.
+    /// team.toml. Pass it on stdin (`--config-file -`) so a secret never sits
+    /// on a command line. `{"enabled": false}` turns a channel off. Field
+    /// names are those `amuxd channel show` prints.
     ///
     /// Example: echo '{"enabled":true}' | amuxd channel set wecom --config-file -
     Set {
@@ -322,15 +361,25 @@ pub enum ChannelAction {
         /// JSON object of fields to change (`-` for stdin).
         #[arg(long)]
         config_file: String,
-        /// json (default), table, or file:<path>.
-        #[arg(
-            short = 'o',
-            long = "output",
-            default_value = "json",
-            hide_default_value = true
-        )]
-        output: String,
     },
+    /// Remove a channel: its settings and its stored credentials.
+    ///
+    /// Example: amuxd channel rm kook
+    #[command(alias = "unbind")]
+    Rm { platform: String },
+    /// Whether a channel is configured and enabled, and which credentials
+    /// are stored.
+    ///
+    /// Example: amuxd channel test wecom
+    Test { platform: String },
+    /// Make the running daemon re-read its channel config.
+    ///
+    /// Example: amuxd channel reload
+    Reload,
+    /// Old spelling of `set` with per-platform flags (secrets on the command
+    /// line). Use `set --config-file -`.
+    #[command(hide = true)]
+    Bind(ChannelBindArgs),
 }
 
 #[derive(Args, Debug)]

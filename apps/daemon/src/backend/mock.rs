@@ -102,6 +102,11 @@ pub struct RecordedWorkspaceUpsert {
 #[derive(Default, Debug)]
 pub struct MockState {
     // ── Recorded writes ────────────────────────────────────────────────
+    /// `(method, path, body)` per `cloud_request`.
+    pub cloud_requests: Vec<(String, String, Option<serde_json::Value>)>,
+    /// Scripted `cloud_request` answers, keyed by `"METHOD /path?query"`.
+    /// Anything not scripted answers 200 `{}`.
+    pub cloud_replies: HashMap<String, super::CloudReply>,
     pub heartbeats: usize,
     pub upserted_workspaces: Vec<RecordedWorkspaceUpsert>,
     pub session_participants_upserted: Vec<(String, String)>,
@@ -226,6 +231,26 @@ impl Backend for MockBackend {
 
     async fn fetch_bootstrap_mqtt(&self) -> BackendResult<Option<BootstrapMqttOverride>> {
         Ok(self.state().bootstrap_mqtt.clone())
+    }
+
+    async fn cloud_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> BackendResult<super::CloudReply> {
+        let mut state = self.state.lock().unwrap();
+        state
+            .cloud_requests
+            .push((method.to_string(), path.to_string(), body));
+        Ok(state
+            .cloud_replies
+            .get(&format!("{method} {path}"))
+            .cloned()
+            .unwrap_or(super::CloudReply {
+                status: 200,
+                body: serde_json::json!({}),
+            }))
     }
 
     async fn auth_token(&self) -> BackendResult<String> {

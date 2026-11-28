@@ -52,10 +52,10 @@ amuxd team secrets show          # 值是脱敏的，只看设没设
 ```
 
 ```bash
-amuxd team secrets set --team-secret <64 位十六进制>   # --team-id 可选，默认取 daemon.toml 的 team_id
+printf %s "$SECRET" | amuxd team secrets set --team-secret-file -   # 密钥从 stdin 读，不进命令行；--team-id 可选，默认取 daemon.toml 的 team_id
 ```
 
-`--team-secret` 用来解密团队共享环境变量（`_secrets/`）并加密 OSS sync 上传的 blob。
+团队密钥（`--team-secret-file`）用来解密团队共享环境变量（`_secrets/`）并加密 OSS sync 上传的 blob。
 它是用户持有的、**服务端没有副本**，所以无头安装只能在这里被人工递一次。
 
 ⚠️ **设置完要重启 daemon** —— 同步定时器在启动时对工作区列表拍了快照。
@@ -161,7 +161,7 @@ auto = false
 ```bash
 amuxd doctor      # JSON：amuxd / node（托管）/ pi（托管）/ git 各自装没装
 amuxd status
-amuxd config list # 所有标量配置，按点号 key
+amuxd config ls # 所有标量配置，按点号 key
 ```
 
 日志在 `~/.amuxd/logs/amuxd.log`（按**大小**轮转 —— daemon 可能空转数周也可能一分钟

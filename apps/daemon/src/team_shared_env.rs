@@ -256,7 +256,7 @@ pub fn load_team_env_for_workspace_detailed(
         if team_id.is_some() {
             warn!(
                 workspace = %workspace_root.display(),
-                "team env secret missing; set it with `amuxd team secrets set --team-secret <64-hex>`"
+                "team env secret missing; set it with `amuxd team secrets set --team-secret-file -` (the 64-hex secret on stdin)"
             );
         }
         return TeamEnvLoadDiagnostics::default();

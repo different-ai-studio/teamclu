@@ -301,6 +301,16 @@ pub struct ActorSessionRef {
     pub last_message_at: Option<String>,
 }
 
+/// A Cloud API answer kept whole: the status and the JSON body (a non-JSON
+/// body as a string, an empty one as `null`). For daemon routes that only
+/// pass a request through for the CLI (`http::team_cloud`), which answer with
+/// the same status instead of folding every refusal into a 500.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloudReply {
+    pub status: u16,
+    pub body: serde_json::Value,
+}
+
 #[async_trait]
 pub trait Backend: Send + Sync {
     // ── Identity ──────────────────────────────────────────────────────────
@@ -309,6 +319,21 @@ pub trait Backend: Send + Sync {
 
     /// The actor (member or agent) this backend acts as.
     fn actor_id(&self) -> &str;
+
+    // ── Pass-through ──────────────────────────────────────────────────────
+    /// One Cloud API request as this daemon's account, its answer whatever
+    /// the status. Only `http::team_cloud` calls it, and only with paths it
+    /// builds itself: this is not an open proxy.
+    async fn cloud_request(
+        &self,
+        _method: reqwest::Method,
+        _path: &str,
+        _body: Option<serde_json::Value>,
+    ) -> BackendResult<CloudReply> {
+        Err(BackendError::NotFound(
+            "the Cloud API is unavailable on this backend".to_string(),
+        ))
+    }
 
     // ── Credentials ───────────────────────────────────────────────────────
     /// Current auth token for downstream services (MQTT, etc.). Implementations

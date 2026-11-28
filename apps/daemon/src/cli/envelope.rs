@@ -119,6 +119,20 @@ pub(crate) fn workspace_root(dir: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
+/// The daemon's id for a workspace: `--workspace <dir>`, else the current
+/// directory (a pi worktree counts as its workspace).
+pub(crate) fn workspace_id(dir: Option<&std::path::Path>) -> Result<String, Usage> {
+    let dir = match dir
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+    {
+        Some(d) => workspace_root(&d),
+        None => return Err(usage("no_workspace", "no current directory", None)),
+    };
+    crate::config::encode_workspace_path(&dir)
+        .map_err(|e| usage("no_workspace", e.to_string(), Some("--workspace <dir>")))
+}
+
 /// Read a JSON object from a file, or stdin for `-`.
 pub(crate) fn read_json_object(path: &str) -> Result<serde_json::Map<String, Value>, Usage> {
     let text = if path == "-" {
