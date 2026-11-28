@@ -291,10 +291,15 @@ pub struct AdoptMarketplaceSkillRequest {
     pub slug: Option<String>,
     #[serde(default)]
     pub version: Option<i64>,
+    /// Also install the adopted version for this agent.
+    #[serde(default)]
+    pub install: bool,
 }
 
 /// `POST /v1/team/marketplace/adopt` — adopt a marketplace skill into this
-/// daemon's team registry. It does not install it for this agent.
+/// daemon's team registry. With `install`, the adopted version is then
+/// installed for this agent and materialised, and the reply is
+/// `{ skill, install }`; without it the reply is the adopted team skill.
 pub async fn adopt_marketplace_skill(
     principal: Principal,
     State(state): State<HttpState>,
@@ -325,7 +330,25 @@ pub async fn adopt_marketplace_skill(
         .adopt_marketplace_skill(&team_id, &payload)
         .await
         .map_err(|e| HttpError::internal(e.to_string()))?;
-    Ok(Json(skill))
+    if !body.install {
+        return Ok(Json(skill));
+    }
+    let slug = skill["slug"]
+        .as_str()
+        .ok_or_else(|| HttpError::internal("adopted skill has no slug"))?
+        .to_string();
+    let version = body
+        .version
+        .or_else(|| skill["latestVersion"].as_i64())
+        .ok_or_else(|| HttpError::internal("adopted skill has no version"))?;
+    backend
+        .record_team_skill_install(&team_id, &slug, version)
+        .await
+        .map_err(|e| HttpError::internal(e.to_string()))?;
+    let Json(install) = reconcile_team_skills_for_state(&state, team_id).await?;
+    Ok(Json(
+        serde_json::json!({ "skill": skill, "install": install }),
+    ))
 }
 
 #[derive(Debug, Serialize)]

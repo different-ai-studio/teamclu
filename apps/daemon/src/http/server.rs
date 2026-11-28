@@ -1493,6 +1493,43 @@ mod tests {
             vec![(team_id.to_string(), "managed-skill".to_string(), 2)]
         );
 
+        // Marketplace adopt without install: the adopted skill, nothing installed.
+        let adopted: serde_json::Value = client
+            .post(format!("{base}/v1/team/marketplace/adopt"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "marketplaceSlug": "review-checklist" }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(adopted["slug"], "review-checklist");
+        assert_eq!(backend.state().team_skill_installs.len(), 1);
+
+        // With install: the adopted latest version is installed for this agent
+        // in the same call, and the reply carries both.
+        let installed: serde_json::Value = client
+            .post(format!("{base}/v1/team/marketplace/adopt"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "marketplaceSlug": "review-checklist",
+                "slug": "team-review",
+                "install": true
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(installed["skill"]["slug"], "team-review");
+        assert!(installed["install"].is_object(), "got {installed}");
+        assert_eq!(
+            backend.state().team_skill_installs.last().unwrap(),
+            &(team_id.to_string(), "team-review".to_string(), 4)
+        );
+
         handle.shutdown().await;
     }
 

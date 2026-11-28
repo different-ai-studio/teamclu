@@ -14,7 +14,7 @@ pub const SKILL_CREATION_POLICY: &str = r#"TeamClu skill creation policy:
 - Do not create normal skills under .opencode/skills, .pi/skills, or .claude/skills.
 - Do not overwrite an existing or built-in skill.
 - To find a marketplace skill, use `amuxd skill market search <query>`. To add one to the team,
-  use `amuxd skill market adopt <slug>`; then `amuxd skill team install <slug> --version <n>` installs it here.
+  use `amuxd skill market adopt <slug> --install` (or `adopt`, then `amuxd skill team install <slug> --version <n>`).
 - To edit an installed team Skill, use `amuxd skill team draft show|push`.
   Draft edits stay on this machine until published from the team Skills page.
   Tell the user: new sessions use the draft; other members are unaffected until publish.

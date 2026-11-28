@@ -151,6 +151,8 @@ pub struct MockState {
     pub team_skills: HashMap<String, Vec<super::TeamSkillRow>>,
     /// `(team_id, slug, version)` writes made by `record_team_skill_install`.
     pub team_skill_installs: Vec<(String, String, i64)>,
+    /// Request bodies sent to `adopt_marketplace_skill`.
+    pub marketplace_adopts: Vec<serde_json::Value>,
     /// `(team_id, slug)` removals made by `remove_team_skill_install`.
     pub team_skill_uninstalls: Vec<(String, String)>,
     /// `(grant, scope, requester_actor_id, request_id)` tuples that reached
@@ -279,6 +281,23 @@ impl Backend for MockBackend {
             .get(team_id)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn adopt_marketplace_skill(
+        &self,
+        _team_id: &str,
+        body: &serde_json::Value,
+    ) -> BackendResult<serde_json::Value> {
+        self.state
+            .lock()
+            .unwrap()
+            .marketplace_adopts
+            .push(body.clone());
+        let slug = body["slug"]
+            .as_str()
+            .or_else(|| body["marketplaceSlug"].as_str())
+            .unwrap_or_default();
+        Ok(serde_json::json!({ "slug": slug, "latestVersion": 4 }))
     }
 
     async fn record_team_skill_install(

@@ -110,10 +110,12 @@ pub enum MarketAction {
         cursor: Option<String>,
     },
     /// Adopt a marketplace skill into the team's Skills, following its
-    /// marketplace updates. This does not install it for this agent: then run
-    /// `amuxd skill team install <slug> --version <n>`.
+    /// marketplace updates. Without `--install` this does not install it for
+    /// this agent; then run `amuxd skill team install <slug> --version <n>`.
+    /// With `--install` the adopted version is installed here in the same step;
+    /// the reply is then `{ skill, install }`.
     ///
-    /// Example: amuxd skill market adopt review-checklist --slug team-review
+    /// Example: amuxd skill market adopt review-checklist --slug team-review --install
     Adopt {
         /// The marketplace slug.
         marketplace_slug: String,
@@ -123,6 +125,9 @@ pub enum MarketAction {
         /// The version to adopt (default: the catalog's latest).
         #[arg(long)]
         version: Option<i64>,
+        /// Also install the adopted version for this agent.
+        #[arg(long)]
+        install: bool,
     },
 }
 
@@ -420,6 +425,7 @@ fn build(action: &SkillAction, workspace: &Path) -> Result<Request, Usage> {
             marketplace_slug,
             slug,
             version,
+            install,
         }) => {
             let marketplace_slug = marketplace_slug.trim();
             if marketplace_slug.is_empty() {
@@ -444,6 +450,9 @@ fn build(action: &SkillAction, workspace: &Path) -> Result<Request, Usage> {
             }
             if let Some(version) = version {
                 body["version"] = json!(version);
+            }
+            if *install {
+                body["install"] = json!(true);
             }
             http(
                 reqwest::Method::POST,
@@ -850,6 +859,21 @@ mod tests {
                 "slug": "team-review",
                 "version": 3,
             })
+        );
+        let installed = parse(&[
+            "amuxd",
+            "skill",
+            "market",
+            "adopt",
+            "review-checklist",
+            "--install",
+        ]);
+        let Request::Http { body, .. } = build(&installed, Path::new("/ws")).unwrap() else {
+            panic!("adopt goes over HTTP")
+        };
+        assert_eq!(
+            body.unwrap(),
+            json!({ "marketplaceSlug": "review-checklist", "install": true })
         );
         let blank = parse(&["amuxd", "skill", "market", "adopt", " "]);
         assert_eq!(
