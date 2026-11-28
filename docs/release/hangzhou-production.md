@@ -16,8 +16,7 @@ remains compatible with its database at deployment time.
    merge the reviewed preflight and apply PRs separately. Wait for each Job's
    GitHub result before proceeding.
 3. Merge the reviewed Cloud API image PR in `teamclu-k8s`. With auto-sync on,
-   wait for the workflow to report `Synced` and `Healthy`, then run the
-   relevant API smoke checks.
+   wait for the workflow to report `Synced` and `Healthy`.
 
 Release operators perform these steps in GitHub. The DBA supplies database
 verification. Platform operators handle one-time enrollment and troubleshoot
@@ -198,9 +197,12 @@ failure keeps the application release on hold.
 After review and merge, find the `cloud-api` job in the same GitHub workflow
 for that GitOps merge SHA. With auto-sync enabled, wait for `Synced` and
 `Healthy` at the reviewed revision or an equivalent descendant. Confirm
-deployment readiness, the running image digest, and the relevant API smoke
-checks. Use **Run workflow** with `app=cloud-api`, the full GitOps merge SHA,
-and `action=observe` to check again.
+deployment readiness and the running image digest. Use **Run workflow** with
+`app=cloud-api`, the full GitOps merge SHA, and `action=observe` to check
+again.
+
+Run manual API smoke checks when the release PR identifies specific behavior
+that needs live verification. List those checks in the PR.
 
 Use **manual Sync** only for an approved Cloud API release when auto-sync is
 disabled and there is no operation in flight. If auto-sync is off for a
