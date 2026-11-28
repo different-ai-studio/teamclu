@@ -267,6 +267,67 @@ pub struct InstallTeamSkillRequest {
     pub version: i64,
 }
 
+/// `GET /v1/team/marketplace/skills?q=&category=&cursor=&limit=` — search the
+/// marketplace catalog for this daemon's team.
+pub async fn search_marketplace_skills(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Query(q): Query<crate::backend::MarketplaceSearch>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    require_scope(&principal, "workspace:read")?;
+    let (backend, team_id) = daemon_backend_and_team(&state)?;
+    let page = backend
+        .marketplace_skills(&team_id, &q)
+        .await
+        .map_err(|e| HttpError::internal(e.to_string()))?;
+    Ok(Json(page))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdoptMarketplaceSkillRequest {
+    pub marketplace_slug: String,
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub version: Option<i64>,
+}
+
+/// `POST /v1/team/marketplace/adopt` — adopt a marketplace skill into this
+/// daemon's team registry. It does not install it for this agent.
+pub async fn adopt_marketplace_skill(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Json(body): Json<AdoptMarketplaceSkillRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    require_scope(&principal, "workspace:write")?;
+    let marketplace_slug = body.marketplace_slug.trim();
+    if marketplace_slug.is_empty() {
+        return Err(HttpError::validation("marketplace slug must not be empty"));
+    }
+    let mut payload = serde_json::json!({ "marketplaceSlug": marketplace_slug });
+    if let Some(slug) = body
+        .slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        payload["slug"] = serde_json::json!(slug);
+    }
+    if let Some(version) = body.version {
+        if version < 1 {
+            return Err(HttpError::validation("skill version must be at least 1"));
+        }
+        payload["version"] = serde_json::json!(version);
+    }
+    let (backend, team_id) = daemon_backend_and_team(&state)?;
+    let skill = backend
+        .adopt_marketplace_skill(&team_id, &payload)
+        .await
+        .map_err(|e| HttpError::internal(e.to_string()))?;
+    Ok(Json(skill))
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamSkillReconcileResponse {

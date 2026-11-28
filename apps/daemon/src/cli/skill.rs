@@ -72,6 +72,58 @@ pub enum SkillAction {
     /// The team's Skills catalog, and editing installed team Skills.
     #[command(subcommand)]
     Team(TeamSkillAction),
+    /// The skills marketplace: search it, and adopt a skill into the team.
+    #[command(subcommand)]
+    Market(MarketAction),
+}
+
+/// The categories the marketplace accepts (`TeamSkillCategory`).
+const MARKET_CATEGORIES: &[&str] = &[
+    "general",
+    "coding",
+    "devops",
+    "data",
+    "research",
+    "writing",
+    "communication",
+    "integration",
+];
+
+#[derive(Subcommand, Debug)]
+pub enum MarketAction {
+    /// Search the marketplace catalog. With no query, lists the first page.
+    ///
+    /// Each row has `adoptedByTeam` when the team already adopted it.
+    ///
+    /// Example: amuxd skill market search review --category coding
+    Search {
+        /// Free-text query over name, summary and tags.
+        query: Option<String>,
+        /// general, coding, devops, data, research, writing, communication or integration.
+        #[arg(long)]
+        category: Option<String>,
+        /// Page size, 1 to 200 (default 100).
+        #[arg(long)]
+        limit: Option<u32>,
+        /// `nextCursor` from the previous reply.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Adopt a marketplace skill into the team's Skills, following its
+    /// marketplace updates. This does not install it for this agent: then run
+    /// `amuxd skill team install <slug> --version <n>`.
+    ///
+    /// Example: amuxd skill market adopt review-checklist --slug team-review
+    Adopt {
+        /// The marketplace slug.
+        marketplace_slug: String,
+        /// The team slug to adopt it as (default: the marketplace slug).
+        #[arg(long)]
+        slug: Option<String>,
+        /// The version to adopt (default: the catalog's latest).
+        #[arg(long)]
+        version: Option<i64>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -319,6 +371,85 @@ fn build(action: &SkillAction, workspace: &Path) -> Result<Request, Usage> {
                 body["expectedDigest"] = json!(d);
             }
             sock(body)
+        }
+        SkillAction::Market(MarketAction::Search {
+            query,
+            category,
+            limit,
+            cursor,
+        }) => {
+            if let Some(category) = category {
+                if !MARKET_CATEGORIES.contains(&category.as_str()) {
+                    return Err(usage(
+                        "invalid_category",
+                        format!("category must be one of: {}", MARKET_CATEGORIES.join(", ")),
+                        Some("amuxd skill market search --help"),
+                    ));
+                }
+            }
+            if let Some(limit) = limit {
+                if !(1..=200).contains(limit) {
+                    return Err(usage(
+                        "invalid_limit",
+                        "--limit must be from 1 to 200",
+                        None,
+                    ));
+                }
+            }
+            let mut qs: Vec<String> = Vec::new();
+            for (key, value) in [
+                ("q", query.as_deref()),
+                ("category", category.as_deref()),
+                ("cursor", cursor.as_deref()),
+            ] {
+                if let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) {
+                    qs.push(format!("{key}={}", urlencode(value)));
+                }
+            }
+            if let Some(limit) = limit {
+                qs.push(format!("limit={limit}"));
+            }
+            let path = if qs.is_empty() {
+                "/v1/team/marketplace/skills".to_string()
+            } else {
+                format!("/v1/team/marketplace/skills?{}", qs.join("&"))
+            };
+            http(reqwest::Method::GET, path, None)
+        }
+        SkillAction::Market(MarketAction::Adopt {
+            marketplace_slug,
+            slug,
+            version,
+        }) => {
+            let marketplace_slug = marketplace_slug.trim();
+            if marketplace_slug.is_empty() {
+                return Err(usage(
+                    "missing_slug",
+                    "the marketplace slug must not be empty",
+                    Some("amuxd skill market search <query>"),
+                ));
+            }
+            if let Some(version) = version {
+                if *version < 1 {
+                    return Err(usage(
+                        "invalid_version",
+                        "--version must be at least 1",
+                        None,
+                    ));
+                }
+            }
+            let mut body = json!({ "marketplaceSlug": marketplace_slug });
+            if let Some(slug) = slug {
+                body["slug"] = json!(slug);
+            }
+            if let Some(version) = version {
+                body["version"] = json!(version);
+            }
+            http(
+                reqwest::Method::POST,
+                "/v1/team/marketplace/adopt".into(),
+                Some(body),
+            )
         }
         SkillAction::Team(TeamSkillAction::Ls) => {
             http(reqwest::Method::GET, "/v1/team/skills".into(), None)
@@ -642,6 +773,88 @@ mod tests {
         assert_eq!(
             build(&action, Path::new("/ws")).unwrap_err().code,
             "nothing_to_change"
+        );
+    }
+
+    #[test]
+    fn market_search_builds_the_query_string_and_checks_its_flags() {
+        let action = parse(&[
+            "amuxd",
+            "skill",
+            "market",
+            "search",
+            "代码 审查",
+            "--category",
+            "coding",
+            "--limit",
+            "5",
+        ]);
+        assert_eq!(
+            build(&action, Path::new("/ws")).unwrap(),
+            Request::Http {
+                method: reqwest::Method::GET,
+                path: "/v1/team/marketplace/skills?q=%E4%BB%A3%E7%A0%81%20%E5%AE%A1%E6%9F%A5&category=coding&limit=5".into(),
+                body: None,
+            }
+        );
+        let bare = parse(&["amuxd", "skill", "market", "search"]);
+        assert_eq!(
+            build(&bare, Path::new("/ws")).unwrap(),
+            Request::Http {
+                method: reqwest::Method::GET,
+                path: "/v1/team/marketplace/skills".into(),
+                body: None,
+            }
+        );
+        let bad_category = parse(&["amuxd", "skill", "market", "search", "--category", "games"]);
+        assert_eq!(
+            build(&bad_category, Path::new("/ws")).unwrap_err().code,
+            "invalid_category"
+        );
+        let bad_limit = parse(&["amuxd", "skill", "market", "search", "--limit", "0"]);
+        assert_eq!(
+            build(&bad_limit, Path::new("/ws")).unwrap_err().code,
+            "invalid_limit"
+        );
+    }
+
+    #[test]
+    fn market_adopt_sends_only_the_fields_given() {
+        let action = parse(&["amuxd", "skill", "market", "adopt", "review-checklist"]);
+        assert_eq!(
+            build(&action, Path::new("/ws")).unwrap(),
+            Request::Http {
+                method: reqwest::Method::POST,
+                path: "/v1/team/marketplace/adopt".into(),
+                body: Some(json!({ "marketplaceSlug": "review-checklist" })),
+            }
+        );
+        let renamed = parse(&[
+            "amuxd",
+            "skill",
+            "market",
+            "adopt",
+            "review-checklist",
+            "--slug",
+            "team-review",
+            "--version",
+            "3",
+        ]);
+        let Request::Http { body, .. } = build(&renamed, Path::new("/ws")).unwrap() else {
+            panic!("adopt goes over HTTP")
+        };
+        assert_eq!(
+            body.unwrap(),
+            json!({
+                "marketplaceSlug": "review-checklist",
+                "slug": "team-review",
+                "version": 3,
+            })
+        );
+        let blank = parse(&["amuxd", "skill", "market", "adopt", " "]);
+        assert_eq!(
+            build(&blank, Path::new("/ws")).unwrap_err().code,
+            "missing_slug"
         );
     }
 

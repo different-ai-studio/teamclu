@@ -898,6 +898,37 @@ impl Backend for CloudApiBackend {
         self.put_no_content(&path, &Body { version }).await
     }
 
+    async fn marketplace_skills(
+        &self,
+        team_id: &str,
+        search: &super::MarketplaceSearch,
+    ) -> BackendResult<serde_json::Value> {
+        let mut pairs = vec![format!("teamId={}", urlencoding::encode(team_id))];
+        for (key, value) in [
+            ("q", search.q.as_deref()),
+            ("category", search.category.as_deref()),
+            ("cursor", search.cursor.as_deref()),
+        ] {
+            if let Some(value) = value.filter(|v| !v.is_empty()) {
+                pairs.push(format!("{key}={}", urlencoding::encode(value)));
+            }
+        }
+        if let Some(limit) = search.limit {
+            pairs.push(format!("limit={limit}"));
+        }
+        self.get(&format!("/v1/marketplace/skills?{}", pairs.join("&")))
+            .await
+    }
+
+    async fn adopt_marketplace_skill(
+        &self,
+        team_id: &str,
+        body: &serde_json::Value,
+    ) -> BackendResult<serde_json::Value> {
+        let path = format!("/v1/teams/{}/skills/adopt", urlencoding::encode(team_id));
+        self.post(&path, body, None).await
+    }
+
     async fn remove_team_skill_install(&self, team_id: &str, slug: &str) -> BackendResult<()> {
         self.delete_no_content(&format!(
             "/v1/teams/{team_id}/skills/{}/install",
@@ -1982,7 +2013,7 @@ mod tests {
             "mqtts://broker.example.com:8883"
         );
     }
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn config(server: &MockServer) -> CloudApiConfig {
@@ -3296,6 +3327,58 @@ mod tests {
         let backend = CloudApiBackend::new(config(&server));
         let err = backend.team_skills("team-1").await.unwrap_err();
         assert!(matches!(err, BackendError::NotFound(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn marketplace_search_sends_team_and_only_the_set_filters() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/marketplace/skills"))
+            .and(query_param("teamId", "team-1"))
+            .and(query_param("q", "代码 审查"))
+            .and(query_param("category", "coding"))
+            .and(query_param("limit", "5"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "items": [{ "slug": "review" }] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        let search = super::super::MarketplaceSearch {
+            q: Some("代码 审查".into()),
+            category: Some("coding".into()),
+            cursor: None,
+            limit: Some(5),
+        };
+        let page = backend.marketplace_skills("team-1", &search).await.unwrap();
+        assert_eq!(page["items"][0]["slug"], "review");
+    }
+
+    #[tokio::test]
+    async fn adopt_posts_the_marketplace_slug_to_the_team() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/v1/teams/team-1/skills/adopt"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "marketplaceSlug": "review"
+            })))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(serde_json::json!({ "slug": "review" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        let body = serde_json::json!({ "marketplaceSlug": "review" });
+        let skill = backend
+            .adopt_marketplace_skill("team-1", &body)
+            .await
+            .unwrap();
+        assert_eq!(skill["slug"], "review");
     }
 
     #[tokio::test]
