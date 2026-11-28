@@ -650,7 +650,8 @@ function registerTeamProvider(pi: ExtensionAPI): void {
       id: m.id as string,
       name: m.name || (m.id as string),
       reasoning: false,
-      input: ["text"] as string[],
+      // Every team tier shares this entry. pi omits images unless "image" is listed.
+      input: ["text", "image"] as string[],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 256000,
       maxTokens: 16000,
