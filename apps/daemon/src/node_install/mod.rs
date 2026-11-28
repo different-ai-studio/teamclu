@@ -110,14 +110,27 @@ pub fn is_managed() -> bool {
 /// makes Windows work without `npm.cmd`, `cmd.exe`, or PATHEXT (#1046), and
 /// what guarantees npm runs on the same Node that pi will (#1232).
 pub fn npm_cli_for(node: &Path) -> PathBuf {
+    distribution_cli(node, cfg!(windows), "npm-cli.js")
+}
+
+/// `npx-cli.js` beside [`npm_cli_for`]. The settings-page MCP probe spawns
+/// `node npx-cli.js` the same way [`npm_cli_for`] spawns npm, so a Windows
+/// `npx.cmd` shim never has to be found by a bare name.
+pub fn npx_cli_for(node: &Path) -> PathBuf {
+    distribution_cli(node, cfg!(windows), "npx-cli.js")
+}
+
+/// `<file>` inside the npm that ships next to `node`.
+///
+/// `windows_layout` is the official Windows zip (`node.exe` beside
+/// `node_modules/`). The Unix layout is `<prefix>/bin/node` and
+/// `<prefix>/lib/node_modules/...`. Callers pass `cfg!(windows)` in
+/// production; tests pass the flag so both layouts run on one OS.
+pub(crate) fn distribution_cli(node: &Path, windows_layout: bool, file: &str) -> PathBuf {
     let dir = node.parent().map(Path::to_path_buf).unwrap_or_default();
-    if cfg!(windows) {
-        dir.join("node_modules")
-            .join("npm")
-            .join("bin")
-            .join("npm-cli.js")
+    if windows_layout {
+        dir.join("node_modules").join("npm").join("bin").join(file)
     } else {
-        // `<prefix>/bin/node` → `<prefix>/lib/node_modules/npm/bin/npm-cli.js`
         dir.parent()
             .map(Path::to_path_buf)
             .unwrap_or_default()
@@ -125,7 +138,7 @@ pub fn npm_cli_for(node: &Path) -> PathBuf {
             .join("node_modules")
             .join("npm")
             .join("bin")
-            .join("npm-cli.js")
+            .join(file)
     }
 }
 
@@ -846,6 +859,31 @@ def0000000000000000000000000000000000000000000000000000000000000  node-v24.20.0-
                 PathBuf::from("/amuxd/node/24.20.0/lib/node_modules/npm/bin/npm-cli.js")
             );
         }
+    }
+
+    #[test]
+    fn npx_cli_sits_beside_npm_cli_in_both_layouts() {
+        // Built with `Path::join` so the assertion does not depend on whether
+        // `\` is a separator on the OS running the test.
+        let win_node = PathBuf::from("node-root").join("node.exe");
+        assert_eq!(
+            distribution_cli(&win_node, true, "npx-cli.js"),
+            PathBuf::from("node-root")
+                .join("node_modules")
+                .join("npm")
+                .join("bin")
+                .join("npx-cli.js")
+        );
+        let unix_node = PathBuf::from("prefix").join("bin").join("node");
+        assert_eq!(
+            distribution_cli(&unix_node, false, "npx-cli.js"),
+            PathBuf::from("prefix")
+                .join("lib")
+                .join("node_modules")
+                .join("npm")
+                .join("bin")
+                .join("npx-cli.js")
+        );
     }
 
     fn sample(bytes: u64, millis: u64) -> crate::route_probe::RouteSample {
