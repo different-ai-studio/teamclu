@@ -1966,9 +1966,15 @@ mod agent_management_tests {
         let by_name: std::collections::HashMap<_, _> =
             items.iter().map(|i| (i.name.as_str(), i)).collect();
 
-        let playwright = by_name
-            .get("playwright")
-            .expect("device server must reach the inventory");
+        let playwright = by_name.get("playwright").unwrap_or_else(|| {
+            let path = crate::config::device_mcp::device_mcp_file();
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| e.to_string());
+            panic!(
+                "device server must reach the inventory; names={:?} file {}:\n{body}",
+                by_name.keys().collect::<Vec<_>>(),
+                path.display()
+            )
+        });
         assert_eq!(playwright.source, "builtin");
         // `ensure_device_mcp` rewrites this file and the RPC has no update
         // action for it, so offering it as editable would be a lie.

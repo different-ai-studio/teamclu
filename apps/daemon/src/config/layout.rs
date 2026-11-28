@@ -474,7 +474,15 @@ mod tests {
 
         // A config that no longer parses must not take path resolution down
         // with it — an unclaimed daemon still has to boot and serve setup.
-        std::fs::write(home.path().join("daemon.toml"), "active_team = [").unwrap();
+        // The active-team lookup is mtime-cached. A filesystem whose stamp
+        // does not move for two writes in the same tick would keep "team-a"
+        // and hide the broken file. Push the mtime forward after the write.
+        let path = home.path().join("daemon.toml");
+        std::fs::write(&path, "active_team = [").unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        let bumped =
+            file.metadata().unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+        file.set_modified(bumped).unwrap();
         assert_eq!(active_team(), UNCLAIMED_TEAM);
     }
 
