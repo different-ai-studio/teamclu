@@ -12,6 +12,7 @@ import {
 import { reconcileGiteaApps, syncAppToGitea, syncTeamAppsToGitea } from "../../../src/lib/forge/gitea/sync.js";
 import { giteaAccountAuthEnabled, makeGiteaSyncRunner } from "../../../src/lib/forge/gitea/sync-runner.js";
 import { giteaAccountFields, isGiteaReconcileMinute } from "../../../src/lib/forge/index.js";
+import { readAppGitAccess } from "../../../src/lib/forge/app-git-access.js";
 import { mapApp } from "../../../src/lib/supabase-repo/shared.js";
 
 /** An app as the repository answers it: the platform's fields plus the Gitea forge's. */
@@ -150,6 +151,54 @@ test("a team-visible app is read by the whole team through its Gitea team; perso
   const personal = appsSupabase({ seed: { ...state, apps: [orgApp({ visibility: "personal" })] } });
   await syncAppToGitea({ gitea, admin: personal }, "app-1");
   assert.equal(team.repos.has(`${OWNER}/tc-app-app-1`), false);
+});
+
+test("an org-visible app grants read to another team in the same org, but not another org", async () => {
+  const sameOrgUser = "aaaaaaaa-0000-4000-8000-000000000009";
+  const otherOrgUser = "aaaaaaaa-0000-4000-8000-000000000010";
+  const seed = {
+    apps: [orgApp({ visibility: "team" })],
+    teams: [{ id: TEAM, oid: ORG }, { id: "team-2", oid: ORG }, { id: "team-3", oid: "other-org" }],
+    actors: [...actors, { id: "foreign", team_id: "team-3", actor_type: "member", user_id: otherOrgUser, display_name: "外组织" }],
+  };
+  const admin = appsSupabase({ seed, actorRow: null });
+  const gitea = fakeGitea();
+  await syncAppToGitea({ gitea, admin }, "app-1");
+  const team = gitea.state.teams.get(`${OWNER}/${giteaTeamName(TEAM)}`);
+  assert.ok(team);
+  assert.ok(team.members.has(giteaUserName(sameOrgUser)));
+  assert.equal(team.members.has(giteaUserName(otherOrgUser)), false);
+  assert.equal((await readAppGitAccess(admin, "app-1", sameOrgUser))?.permission, "read");
+  assert.equal(await readAppGitAccess(admin, "app-1", otherOrgUser), null);
+});
+
+test("a membership change in another org team resyncs org-visible app repos", async () => {
+  const lateUser = "aaaaaaaa-0000-4000-8000-000000000011";
+  const base = { apps: [orgApp({ visibility: "team" })], teams: [{ id: TEAM, oid: ORG }, { id: "team-2", oid: ORG }], actors };
+  const gitea = fakeGitea();
+  await syncAppToGitea({ gitea, admin: appsSupabase({ seed: base }) }, "app-1");
+  const team = gitea.state.teams.get(`${OWNER}/${giteaTeamName(TEAM)}`);
+  assert.ok(team);
+  assert.equal(team.members.has(giteaUserName(lateUser)), false);
+  const joined = appsSupabase({ seed: { ...base, actors: [...actors, { id: "late", team_id: "team-2", actor_type: "member", user_id: lateUser, display_name: "新成员" }] } });
+  await syncTeamAppsToGitea({ gitea, admin: joined }, "team-2");
+  assert.ok(team.members.has(giteaUserName(lateUser)));
+});
+
+test("leaving the last team in an org removes org-visible Git read access", async () => {
+  const user = "aaaaaaaa-0000-4000-8000-000000000009";
+  const teams = [{ id: TEAM, oid: ORG }, { id: "team-2", oid: ORG }];
+  const app = orgApp({ visibility: "team" });
+  const gitea = fakeGitea();
+  await syncAppToGitea({ gitea, admin: appsSupabase({ seed: { apps: [app], teams, actors }, actorRow: null }) }, "app-1");
+  const team = gitea.state.teams.get(`${OWNER}/${giteaTeamName(TEAM)}`);
+  assert.ok(team?.members.has(giteaUserName(user)));
+
+  const remaining = actors.filter((actor) => actor.user_id !== user);
+  const admin = appsSupabase({ seed: { apps: [app], teams, actors: remaining }, actorRow: null });
+  await syncTeamAppsToGitea({ gitea, admin }, "team-2");
+  assert.equal(team.members.has(giteaUserName(user)), false);
+  assert.equal(await readAppGitAccess(admin, "app-1", user), null);
 });
 
 test("legacy repos and imported apps are left alone", async () => {

@@ -37,10 +37,10 @@ export interface AppGitAccess {
 }
 
 /**
- * The level Gitea ends up enforcing for an actor of the app's team: the
+ * The level Gitea ends up enforcing for an account in the app's org: the
  * creator is admin, a grant counts at its level, an agent's inherited level
  * counts as the sync mirrors it (admin → write, `inheritedRepoLevel`), and a
- * team-visible app is readable by the whole team (the Gitea team the sync
+ * org-visible app is readable by the whole org (the Gitea read team the sync
  * maintains).
  */
 export function appGitLevel(input: {
@@ -60,20 +60,36 @@ export function appGitLevel(input: {
 }
 
 /**
- * null when there is no such app, or the account is not in its team — the two
- * are not told apart. Read from the platform model (P3.1d): team, creator,
+ * null when there is no such app, or the account is not in its org — the two
+ * are not told apart. Read from the platform model (P3.1d): org, creator,
  * grants and inheritance through readTeamAppAccess.
  */
 export async function readAppGitAccess(admin: any, appId: string, userId: string): Promise<AppGitAccess | null> {
   const access = await readTeamAppAccess(admin, appId);
   if (!access) return null;
-  const { data: actor, error: actorErr } = await admin
+  const { data: teamActor, error: actorErr } = await admin
     .from("actors")
     .select("id, actor_type, display_name")
     .eq("team_id", access.teamId)
     .eq("user_id", userId)
     .maybeSingle();
   if (actorErr) throw actorErr;
+  let actor = teamActor;
+  if (!actor && access.teamVisible && access.orgId) {
+    const { data: orgTeams, error: orgError } = await admin.from("teams").select("id").eq("oid", access.orgId);
+    if (orgError) throw orgError;
+    const teamIds = ((orgTeams ?? []) as { id: string }[]).map((team) => team.id);
+    if (teamIds.length) {
+      const { data: orgActors, error: memberError } = await admin
+        .from("actors")
+        .select("id, actor_type, display_name")
+        .in("team_id", teamIds)
+        .eq("user_id", userId)
+        .limit(1);
+      if (memberError) throw memberError;
+      actor = orgActors?.[0] ?? null;
+    }
+  }
   if (!actor) return null;
 
   const isCreator = access.createdByActorId === actor.id;

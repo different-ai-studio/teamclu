@@ -47,9 +47,9 @@ export interface GiteaSyncDeps {
 /**
  * What one pass over many apps has already made true in Gitea.
  *
- * A team's apps share their org, their people and their Gitea team, so without
- * this a team of 40 with 30 apps asks Gitea about the same 40 accounts 30
- * times — sequentially, on the request that added one teammate.
+ * An org's apps share its people, and apps linked to one team share a Gitea
+ * read team. Without this, 30 apps can ask Gitea about the same 40 accounts
+ * 30 times on the request that added one member.
  */
 export interface GiteaSyncPass {
   orgs: Set<string>;
@@ -99,6 +99,12 @@ async function readTeamActors(admin: AdminClient, teamId: string): Promise<Actor
     .eq("team_id", teamId);
   if (error) throw error;
   return ((data ?? []) as ActorRow[]).filter(hasGiteaIdentity);
+}
+
+async function readOrgTeamIds(admin: AdminClient, orgId: string, appTeamId: string): Promise<string[]> {
+  const { data, error } = await admin.from("teams").select("id").eq("oid", orgId);
+  if (error) throw error;
+  return [...new Set([appTeamId, ...((data ?? []) as { id: string }[]).map((team) => team.id)])];
 }
 
 /** Bring one app's repo in line with TeamClu. */
@@ -153,13 +159,13 @@ export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promis
     if (!desired.has(username)) await gitea.removeCollaborator(appId, username);
   }
 
-  // ── Team visibility: teammates read through the team ──────────────────
+  // ── Org visibility: members of any team in the org read through this team ──
   const teamName = giteaTeamName(access.teamId);
   let teamMembers: number | null = null;
   if (access.teamVisible) {
     const teamId = await gitea.ensureReadTeam(owner, teamName);
     const done = pass?.teams.get(teamId);
-    teamMembers = done ?? (await syncGiteaTeamMembers(deps, gitea, teamId, access.teamId, ensureUser));
+    teamMembers = done ?? (await syncGiteaTeamMembers(deps, gitea, teamId, access.orgId, access.teamId, ensureUser));
     pass?.teams.set(teamId, teamMembers);
     await gitea.setTeamRepo(teamId, appId, true);
   } else {
@@ -170,15 +176,17 @@ export async function syncAppToGitea(deps: GiteaSyncDeps, appId: string): Promis
   return { status: "synced", owner, collaborators: desired.size, teamMembers };
 }
 
-/** Make a Gitea team's members exactly the TeamClu team's people and connected agents. */
+/** Make a Gitea read team's members exactly the accounts in the app's org. */
 async function syncGiteaTeamMembers(
   deps: GiteaSyncDeps,
   gitea: GiteaClient,
   giteaTeamId: number,
+  orgId: string | null,
   teamId: string,
   ensureUser: (username: string, actor: ActorRow) => Promise<void>,
 ): Promise<number> {
-  const members = await readTeamActors(deps.admin, teamId);
+  const teamIds = orgId ? await readOrgTeamIds(deps.admin, orgId, teamId) : [teamId];
+  const members = (await Promise.all(teamIds.map((id) => readTeamActors(deps.admin, id)))).flat();
   const desired = new Map(members.map((a) => [giteaUserName(a.user_id!), a]));
   for (const [username, actor] of desired) await ensureUser(username, actor);
   const current = new Set(await gitea.listTeamMembers(giteaTeamId));
@@ -188,11 +196,14 @@ async function syncGiteaTeamMembers(
 }
 
 /**
- * Re-sync every managed app of a team: after someone joins or leaves it, both
- * the team's read access and any grants that cascaded away must catch up.
+ * Re-sync every managed app of an org after someone joins or leaves a team:
+ * org-wide read access and any grants that cascaded away must catch up.
  */
 export async function syncTeamAppsToGitea(deps: GiteaSyncDeps, teamId: string): Promise<void> {
-  const ids = await readTeamAppIds(deps.admin, teamId);
+  const { data: team, error: teamError } = await deps.admin.from("teams").select("oid").eq("id", teamId).maybeSingle();
+  if (teamError) throw teamError;
+  const teamIds = team?.oid ? await readOrgTeamIds(deps.admin, team.oid, teamId) : [teamId];
+  const ids = [...new Set((await Promise.all(teamIds.map((id) => readTeamAppIds(deps.admin, id)))).flat())];
   const data = ids.length === 0 ? [] : await chunkedIn(ids, async (chunk) => {
     const { data: rows, error } = await deps.admin
       .from("app_forge_repos")
