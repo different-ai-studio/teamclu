@@ -42,11 +42,9 @@ cluster access when needed.
    private GitOps and credentials in the Secret. Repeat the Job preflight
    after credential rotation.
 3. Confirm the Hangzhou ACR Personal repository
-   `teamclu/teamclu-prod-db-migrate` is public. From Hangzhou ACK, run an
-   image-pull smoke test in `atlas-accept` by digest using the ACR VPC
-   hostname, the prod Job architecture, and no database or registry
-   credentials. Verify the pod's image ID and run `psql --version`.
-   Use the DB Job only after the exact digest pulls.
+   `teamclu/teamclu-prod-db-migrate` is public and reachable from Hangzhou
+   ACK. The release preflight Job runs the selected image in ACK before
+   the apply PR is merged.
 4. Configure the [Argo CD Actions integration](https://github.com/different-ai-studio/teamclu-k8s/blob/main/docs/production-argocd-actions.md).
    GitHub-hosted runners use the scoped Argo CD credentials in repository
    Actions Secrets. Release operators do not need to copy the credentials.
@@ -120,7 +118,7 @@ a batch against the live ledger before deciding which files are pending.
    kubectl kustomize "$prod"
    ```
 
-   Review the digest, mounted checksums, Job name, target, runtime identity,
+   Review the mounted SQL checksums, Job name, target, runtime identity,
    deadline, Secret references and allowed private IPs in the rendered output.
    Use a dedicated preflight Job with the same release inputs as apply. Prepare
    separate reviewed GitOps PRs for preflight and apply, in that order. Leave
@@ -146,7 +144,7 @@ a batch against the live ledger before deciding which files are pending.
    one database release in flight at a time and avoid auto-merge on migration
    PRs. In the workflow run for the apply merge, require `Complete` for the
    exact apply Job. Record the merge SHA, observed revision, Job name and UID,
-   image digest, and the GitHub run link. The workflow can accept a later
+   image artifact link, and the GitHub run link. The workflow can accept a later
    `main` revision when it renders the same desired resources. An Argo CD
    sync can succeed while the migration Job is still running. Retained
    historical resources can also leave the DB Application `OutOfSync`
@@ -196,10 +194,9 @@ failure keeps the application release on hold.
 
 After review and merge, find the `cloud-api` job in the same GitHub workflow
 for that GitOps merge SHA. With auto-sync enabled, wait for `Synced` and
-`Healthy` at the reviewed revision or an equivalent descendant. Confirm
-deployment readiness and the running image digest. Use **Run workflow** with
-`app=cloud-api`, the full GitOps merge SHA, and `action=observe` to check
-again.
+`Healthy` at the reviewed revision or an equivalent descendant. To check
+again, select **Run workflow** with `app=cloud-api`, the full GitOps merge
+SHA, and `action=observe`.
 
 Run manual API smoke checks when the release PR identifies specific behavior
 that needs live verification. List those checks in the PR.
