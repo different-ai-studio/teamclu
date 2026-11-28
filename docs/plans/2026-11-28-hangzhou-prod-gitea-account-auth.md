@@ -28,6 +28,8 @@ The Cloud API endpoint returns 503 whenever `GITEA_ACCOUNT_AUTH` is off **or** `
 
 Record UTC time, exact image digest/commit, GitOps revision, test account role, repo ID, command/HTTP status, and a redacted server-side audit reference for each row. Keep tokens, private keys, clone URLs with userinfo, and customer data out of the record.
 
+Run `services/fc/scripts/accept-prod-git-account-auth.sh` after setting `TEAMCLU_GIT_TEST_REPO_URL` and the dedicated `TEAMCLU_GIT_{ADMIN,WRITE,READ,OUTSIDER}_TOKEN` variables in a private shell. Optionally set `TEAMCLU_GIT_PERSONAL_REPO_URL` to check an ungranted personal App. The script creates two acceptance branches in the dedicated repo and prints their hashes for a separate Gitea pusher-audit readback; remove those branches after recording evidence. It does not exercise an existing App's SSH publish, which needs its desktop/daemon workflow.
+
 | Principal and action | Expected |
 | --- | --- |
 | Public `GET /v1/git/host` | 200; `gitHost=gitea.teamclu.cn`, `gitScheme=https` |
